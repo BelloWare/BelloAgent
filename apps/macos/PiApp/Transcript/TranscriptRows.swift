@@ -703,6 +703,9 @@ struct ActionRowView: View {
     /// then the card draws the inline document, which always parses.
     var fetched: ToolInputDocument? = nil
     var toggle: () -> Void = {}
+    /// Opens a file in a tab (its path, and the lines, from 1, to set apart):
+    /// a file tool's path is a link where it is given.
+    var openFile: ((String, ClosedRange<Int>?) -> Void)? = nil
     /// Where the call stands, as a row state: a call the reader stopped is
     /// amber, not red — it did not fail, it was interrupted — whether it was
     /// skipped before it began or stopped while it ran.
@@ -758,33 +761,48 @@ struct ActionRowView: View {
         let outcome = TranscriptActivity.outcome(of: tool)
         let description = TranscriptActivity.describe(parts, outcome: outcome)
         let rowState = Self.state(of: tool)
+        let summary = Self.summary(of: tool, object: description.object)
+        let link = self.link
         TranscriptWorkRow(icon: actionSymbol(description.kind), title: Self.title(parts, outcome: outcome),
-                          summary: Self.summary(of: tool, object: description.object), suffix: Self.suffix(of: tool),
-                          state: rowState, open: open, toggle: toggle,
+                          summary: summary, suffix: Self.suffix(of: tool),
+                          state: rowState, open: open,
+                          // Only a summary that is the path is its link: a
+                          // failure's words are not, though the row opens the file.
+                          link: link, linksSummary: summary == description.object,
+                          toggle: toggle,
                           trailing: Self.elapsed(of: tool),
                           help: description.path ?? description.object) {
-            card(description: description, outcome: outcome)
+            card(description: description, outcome: outcome, link: link)
         }
     }
+    /// What opens the call's file, if it has one and files open here.
+    private var link: (() -> Void)? {
+        guard opensFiles, let openFile, let file = TranscriptActivity.fileLink(tool) else { return nil }
+        return { openFile(file.path, file.lines) }
+    }
+    @Environment(\.transcriptOpensFiles) private var opensFiles
     /// What the row opens. The fetched document when the host has answered for
     /// the call, the inline one until then: both parse, so a card is never a
     /// fragment of JSON.
-    @ViewBuilder private func card(description: ActionDescription, outcome: ActionOutcome) -> some View {
+    @ViewBuilder private func card(description: ActionDescription, outcome: ActionOutcome, link: (() -> Void)?) -> some View {
         let shown = requested
         let notes = [truncationNote, tool.truncated ? "Preview truncated. The full result is retained in context." : nil]
             .compactMap { $0 }.joined(separator: " · ")
         if let edit = TranscriptActivity.editRequest(shown) {
             TranscriptDiffCard(request: edit, path: description.path, outcome: outcome,
-                               added: tool.added, removed: tool.removed)
+                               added: tool.added, removed: tool.removed, open: link)
         } else if description.kind == .command {
             TranscriptTerminalCard(command: TranscriptActivity.parseCommand(shown.input) ?? description.object,
                                    output: tool.output, failed: outcome == .failed)
         } else if description.kind == .read, !tool.output.isEmpty {
             TranscriptReadCard(text: tool.output, firstLine: TranscriptReadCard.firstLine(of: shown.input),
-                               path: description.path, failed: outcome == .failed)
+                               path: description.path, failed: outcome == .failed, open: link)
         } else {
             let arguments = TranscriptActivity.argumentsText(shown)
-            TranscriptIOCard(input: arguments.text.isEmpty
+            // A file call whose arguments did not read as a request (a write
+            // with no content, say) still opens its file from the card.
+            TranscriptIOCard(path: link == nil ? nil : description.path, open: link,
+                             input: arguments.text.isEmpty
                                 ? "The host bounded this call's arguments and none of them could be read."
                                 : arguments.text,
                              output: tool.output.isEmpty ? nil : tool.output,
@@ -823,14 +841,16 @@ struct ActivityGroupView: View {
     /// Full argument documents the conversation has fetched, by call.
     var fetched: [String: ToolInputDocument] = [:]
     var toggle: (String) -> Void = { _ in }
+    var openFile: ((String, ClosedRange<Int>?) -> Void)? = nil
     var body: some View {
         Group {
             if tools.count >= NativeWorkListSurface.minimumRowCount {
-                NativeWorkListSurface(tools: tools, openTools: openTools, fetched: fetched, toggle: toggle)
+                NativeWorkListSurface(tools: tools, openTools: openTools, fetched: fetched, toggle: toggle, openFile: openFile)
             } else {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(tools) { tool in
-                        ActionRowView(tool: tool, open: openTools.contains(tool.id), fetched: fetched[tool.id], toggle: { toggle(tool.id) }).equatable()
+                        ActionRowView(tool: tool, open: openTools.contains(tool.id), fetched: fetched[tool.id], toggle: { toggle(tool.id) },
+                                      openFile: openFile).equatable()
                     }
                 }
             }
@@ -1015,7 +1035,8 @@ struct BlockRowView: View {
                                             ActivityGroupView(tools: tools,
                                                 openTools: Set(tools.filter { disclosure.openTools.contains(scoped ? ToolOccurrence.key(reply.id,$0.id) : $0.id) }.map(\.id)),
                                                 fetched: Dictionary(tools.compactMap { tool in disclosure.toolInputs[scoped ? ToolOccurrence.key(reply.id,tool.id) : tool.id].map { (tool.id,$0) } }, uniquingKeysWith: { _,last in last }),
-                                                toggle: { toggle(.tool(scoped ? ToolOccurrence.key(reply.id,$0) : $0)) }).equatable()
+                                                toggle: { toggle(.tool(scoped ? ToolOccurrence.key(reply.id,$0) : $0)) },
+                                                openFile: actions.openFile).equatable()
                                         }
                                         if let accounting = reply.accounting, accounting.requests > 0, !(reply.tools ?? []).isEmpty || !(reply.thinking ?? "").isEmpty || reply.id != block.message?.id {
                                             MessageAccountingView(accounting: accounting, onInspect: { actions.inspect(reply.id) })
@@ -1151,6 +1172,8 @@ extension MarkdownBodyView: Equatable {
 extension CodeBlockView: Equatable {
     nonisolated static func == (a: Self, b: Self) -> Bool { a.code == b.code && a.language == b.language && a.size == b.size && a.streaming == b.streaming }
 }
+// A row's links follow the environment (`transcriptOpensFiles`), which a row
+// reads itself; the action they call is the pane's, forwarded, whatever it is.
 extension ActionRowView: Equatable {
     nonisolated static func == (a: Self, b: Self) -> Bool { a.tool == b.tool && a.open == b.open && a.fetched == b.fetched }
 }

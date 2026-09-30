@@ -298,7 +298,10 @@ enum TranscriptActivity {
             // Native file tools report their resolved path once they run.
             // Until then the path is the one member read out of arguments that
             // can carry a whole file or edit behind it — never the whole document.
-            let path = text(tool.path) ?? text(argumentString("path", in: tool.input))
+            // A read says the path it was given, as it always has: the one the
+            // host resolved (since it names it) is where its link opens.
+            let path = tool.name == "read" ? text(argumentString("path", in: tool.input)) ?? text(tool.path)
+                                           : text(tool.path) ?? text(argumentString("path", in: tool.input))
             let object = path.map(shortPath)
             switch tool.name {
             case "read": return ActionParts(kind: .read, done: "Read", doing: "reading", object: object ?? "file", path: path)
@@ -326,6 +329,42 @@ enum TranscriptActivity {
             return ActionParts(kind: .mcp, done: "Called", doing: "calling", object: "\(server ?? "server") · \(text(input["tool"]) ?? "call")")
         default: return ActionParts(kind: .other, done: "Used", doing: "using", object: tool.name)
         }
+    }
+
+    /// Where a file tool's call opens its file, and the lines to set apart
+    /// there (from 1, both kept), if any.
+    struct FileLink: Equatable, Sendable {
+        let path: String
+        let lines: ClosedRange<Int>?
+    }
+    /// A read, a write or an edit opens its file: the path the host resolved
+    /// once the call ran, else the call's own, once its arguments came whole
+    /// (a path still streaming, or cut short, opens nothing). A read of named
+    /// lines opens at the lines it returned (images and failures none), a
+    /// read of the whole file at its top; a write or an edit at the lines it
+    /// changed. The lines are the host's, counted as the viewer counts them,
+    /// when it sent them; an older host's read is read from its arguments
+    /// and result (pi's lines, the same but where a file ends lines in a lone
+    /// "\r"), and its writes and edits open at the top.
+    static func fileLink(_ tool: ToolView) -> FileLink? {
+        guard ["read", "write", "edit"].contains(tool.name) else { return nil }
+        let outcome = outcome(of: tool)
+        let path: String
+        if let resolved = text(tool.path) {
+            path = resolved
+        } else {
+            guard outcome != .running, tool.inputTruncated != true, let argument = text(argumentString("path", in: tool.input)) else { return nil }
+            path = argument
+        }
+        guard outcome == .done else { return FileLink(path: path, lines: nil) }
+        if tool.name == "read" {
+            let input = parseInput(tool.input)
+            guard input["offset"] != nil || input["limit"] != nil, !tool.output.hasPrefix("Read image file [") else { return FileLink(path: path, lines: nil) }
+        }
+        if let first = tool.line, first > 0 { return FileLink(path: path, lines: first...max(first, tool.lastLine ?? first)) }
+        guard tool.name == "read" else { return FileLink(path: path, lines: nil) }
+        let first = TranscriptReadCard.firstLine(of: tool.input), shown = TranscriptReadCard.window(of: tool.output).lines.count
+        return FileLink(path: path, lines: shown > 0 ? first...(first + shown - 1) : nil)
     }
 
     /// A file's identity for counting: its path, else the call itself, so nothing is merged by guesswork.

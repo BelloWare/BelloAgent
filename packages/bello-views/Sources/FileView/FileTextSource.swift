@@ -61,9 +61,19 @@ import Foundation
     /// Whether more lines may still be found: the file is still being read
     /// through. A line asked for beyond the lines found may yet come.
     var isIndexing: Bool { get }
+    /// A search for a query in the text (`FileSearch`): its count, the match
+    /// after or before a place, and the matches on a line drawn.
+    func search(_ matcher: FileMatcher) -> FileSearch
 }
 
 extension FileTextSource {
+    /// A text that cannot be searched through finds nothing, though the
+    /// lines drawn still show their matches.
+    public func search(_ matcher: FileMatcher) -> FileSearch {
+        FileSearch(matcher: matcher, reader: FileLinesSearchReader(lines: []),
+                   lineText: { [weak self] line, range in self?.text(ofLine: line, range: range) },
+                   lineLength: { [weak self] line in self?.utf16Length(ofLine: line) ?? 0 }, longPage: { _ in nil })
+    }
     public var isReading: Bool { true }
     public var isIndexing: Bool { false }
     public func textAtHand(from start: FileTextPosition, to end: FileTextPosition) -> String? { text(from: start, to: end) }
@@ -165,6 +175,12 @@ public struct FileTextPosition: Comparable, Hashable, Sendable {
 
     public var lineCount: Int { lines.count }
     public let generation = 0
+    /// A search through the lines, away from the main thread like any other.
+    public func search(_ matcher: FileMatcher) -> FileSearch {
+        FileSearch(matcher: matcher, reader: FileLinesSearchReader(lines: lines),
+                   lineText: { [weak self] line, range in self?.text(ofLine: line, range: range) },
+                   lineLength: { [weak self] line in self?.utf16Length(ofLine: line) ?? 0 }, longPage: { _ in nil }, linesAtHand: true)
+    }
     public func utf16Length(ofLine index: Int) -> Int {
         guard lines.indices.contains(index) else { return 0 }
         return starts[index + 1] - starts[index] - (index + 1 < lines.count ? 1 : 0)

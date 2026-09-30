@@ -77,6 +77,10 @@ private struct CardMoreLines: View {
 /// The request and the result of one call, each in its own capped, scrolling
 /// section under a gutter label that stays put while its payload scrolls.
 struct TranscriptIOCard: View {
+    /// A file call's file, which the header opens, as the read and diff
+    /// cards' do. Nil for any other call: no header.
+    var path: String? = nil
+    var open: (() -> Void)? = nil
     var input: String? = nil
     var output: String? = nil
     var failed = false
@@ -85,6 +89,16 @@ struct TranscriptIOCard: View {
     var body: some View {
         CardFrame {
             VStack(alignment: .leading, spacing: 0) {
+                if let path {
+                    HStack(spacing: 8) {
+                        TranscriptPathText(text: Text(path).font(.system(size: 11.5)).foregroundStyle(TranscriptPalette.muted),
+                                           label: "Open \((path as NSString).lastPathComponent)", help: path, open: open)
+                            .lineLimit(1).truncationMode(.middle)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 16).padding(.vertical, 8)
+                    Rectangle().fill(TranscriptPalette.hair).frame(height: 1)
+                }
                 if let input, !input.isEmpty { section(label: "IN", text: input, error: false) }
                 if let input, !input.isEmpty, let output, !output.isEmpty {
                     Rectangle().fill(TranscriptPalette.hair).frame(height: 1)
@@ -121,6 +135,28 @@ struct TranscriptIOCard: View {
     }
 }
 
+/// A file's path in the transcript that opens the file: underlined under the
+/// pointer, with the pointing hand, over an AppKit press target of its own,
+/// so the click is its own and not the row's or the card's under it (as the
+/// stat pills take theirs). Without `open`, the text as it is.
+struct TranscriptPathText: View {
+    let text: Text
+    /// What it says it does: "Open notes.md".
+    let label: String
+    var help: String? = nil
+    var open: (() -> Void)?
+    @State private var hovering = false
+    var body: some View {
+        text.underline(open != nil && hovering)
+            .overlay {
+                if let open {
+                    PiPopoverTrigger(label: label, identifier: "transcript-open-file", help: help ?? label,
+                                     onHover: { hovering = $0 }, onPress: { _ in open() })
+                }
+            }
+    }
+}
+
 /// A requested file change: the rows of the diff, capped head and tail, with
 /// the total the collapsed row already showed repeated at its foot.
 struct TranscriptDiffCard: View {
@@ -129,6 +165,8 @@ struct TranscriptDiffCard: View {
     var outcome: ActionOutcome = .done
     var added: Int? = nil
     var removed: Int? = nil
+    /// Opens the file changed, where it changed.
+    var open: (() -> Void)? = nil
     @State private var expanded = false
     var body: some View {
         let rows = request.rows
@@ -194,7 +232,11 @@ struct TranscriptDiffCard: View {
             Text(label).font(.system(size: 11.5, weight: .medium))
                 .foregroundStyle(outcome == .done ? TranscriptPalette.muted : [.running, .unknown].contains(outcome) ? TranscriptPalette.warning : TranscriptPalette.danger)
             Spacer(minLength: 0)
-            if let path { Text(path).font(.system(size: 11.5)).foregroundStyle(TranscriptPalette.faint).lineLimit(1).truncationMode(.middle) }
+            if let path {
+                TranscriptPathText(text: Text(path).font(.system(size: 11.5)).foregroundStyle(TranscriptPalette.faint),
+                                   label: "Open \((path as NSString).lastPathComponent)", help: path, open: open)
+                    .lineLimit(1).truncationMode(.middle)
+            }
         }
         .padding(.horizontal, 16).padding(.vertical, 8)
     }
@@ -250,15 +292,26 @@ struct TranscriptReadCard: View {
     private let lines: [String]
     private let note: String?
 
-    init(text: String, firstLine: Int = 1, path: String? = nil, failed: Bool = false) {
-        self.firstLine = max(1, firstLine); self.path = path; self.failed = failed
+    /// Opens the file the card read, at the lines it read.
+    var open: (() -> Void)? = nil
+
+    init(text: String, firstLine: Int = 1, path: String? = nil, failed: Bool = false, open: (() -> Void)? = nil) {
+        self.firstLine = max(1, firstLine); self.path = path; self.failed = failed; self.open = open
+        let window = Self.window(of: text)
+        lines = window.lines; note = window.note
+    }
+    /// A read's result as the card reads it: its lines, and the host's note
+    /// when the read stopped short of the file. The host ends a bounded read
+    /// with "[Truncated. N total lines; read another range.]": a note about
+    /// the file, not its next line.
+    nonisolated static func window(of text: String) -> (lines: [String], note: String?) {
         var lines = text.isEmpty ? [] : text.components(separatedBy: "\n")
-        // The host ends a bounded read with "[Truncated. N total lines; read
-        // another range.]". That is a note about the file, not its next line.
         if let last = lines.last, last.hasPrefix("[Truncated."), last.hasSuffix("]") {
-            note = String(last.dropFirst().dropLast()); lines.removeLast()
-        } else { note = nil }
-        self.lines = lines
+            let note = String(last.dropFirst().dropLast())
+            lines.removeLast()
+            return (lines, note)
+        }
+        return (lines, nil)
     }
     /// The line a read started at, from its arguments: the host's `offset`, a
     /// 1-based line number, or the first line when the read named none.
@@ -276,7 +329,11 @@ struct TranscriptReadCard: View {
         CardFrame {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 8) {
-                    if let path { Text(path).font(.system(size: 11.5)).foregroundStyle(TranscriptPalette.muted).lineLimit(1).truncationMode(.middle) }
+                    if let path {
+                        TranscriptPathText(text: Text(path).font(.system(size: 11.5)).foregroundStyle(TranscriptPalette.muted),
+                                           label: "Open \((path as NSString).lastPathComponent)", help: path, open: open)
+                            .lineLimit(1).truncationMode(.middle)
+                    }
                     Spacer(minLength: 0)
                     Text(Self.window(shown: shown, total: lines.count))
                         .font(.system(size: 11.5)).monospacedDigit().foregroundStyle(TranscriptPalette.faint)

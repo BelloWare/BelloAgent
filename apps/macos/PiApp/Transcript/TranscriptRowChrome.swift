@@ -153,6 +153,12 @@ struct TranscriptWorkRow<Content: View>: View {
     var follow = false
     /// Shown in place of the icon when the row is a file the reader can open.
     var help: String? = nil
+    /// The row's call has a file: this opens it. VoiceOver has it as the
+    /// row's "Open File" whatever the summary says.
+    var link: (() -> Void)? = nil
+    /// Whether the summary is the file's path, and so the link: a failure's
+    /// words in its place are not.
+    var linksSummary = true
     /// What the row opens, as a closure rather than a stored view: a closed
     /// card must cost nothing at all. Building it eagerly meant every closed
     /// row assembled its whole card — and a file change ran its line diff — on
@@ -170,13 +176,18 @@ struct TranscriptWorkRow<Content: View>: View {
     @State private var ringShown = false
     @Environment(\.piReduceMotion) private var reduceMotion
 
+    /// `link` comes before `toggle`: an unlabelled trailing closure after the
+    /// last argument named binds to the next closure parameter, which must be
+    /// `content`.
     init(icon: String, title: String, summary: String = "", suffix: String? = nil,
          state: TranscriptRowState = .ok, expandable: Bool = true, open: Bool = false,
+         link: (() -> Void)? = nil, linksSummary: Bool = true,
          toggle: @escaping () -> Void = {}, trailing: String? = nil, follow: Bool = false,
          help: String? = nil, @ViewBuilder content: @escaping () -> Content = { EmptyView() }) {
         self.icon = icon; self.title = title; self.summary = summary; self.suffix = suffix
         self.state = state; self.expandable = expandable; self.open = open
         self.toggle = toggle; self.trailing = trailing; self.follow = follow; self.help = help
+        self.link = link; self.linksSummary = linksSummary
         self.content = content
     }
 
@@ -206,6 +217,7 @@ struct TranscriptWorkRow<Content: View>: View {
                 .accessibilityAddTraits(.isButton)
                 .accessibilityLabel(spoken)
                 .accessibilityValue(expandable ? (open ? "Open" : "Closed") : "")
+                .modifier(TranscriptOpenFileAction(link: link))
             if open, expandable { content() }
         }
     }
@@ -220,8 +232,9 @@ struct TranscriptWorkRow<Content: View>: View {
                 // A line still being written reads from its end: the ticker
                 // elides its beginning, so the newest characters are the ones
                 // on screen and the row's height never changes.
-                Text(summary).font(.system(size: 12.5))
-                    .foregroundStyle(state == .failed ? TranscriptPalette.danger : TranscriptPalette.faint)
+                TranscriptPathText(text: Text(summary).font(.system(size: 12.5))
+                                    .foregroundStyle(state == .failed ? TranscriptPalette.danger : TranscriptPalette.faint),
+                                   label: "Open \(summary)", help: help, open: linksSummary ? link : nil)
                     .lineLimit(1).truncationMode(follow ? .head : .tail)
             }
             if let suffix {
@@ -271,5 +284,15 @@ struct TranscriptWorkRow<Content: View>: View {
         RoundedRectangle(cornerRadius: 1).fill(TranscriptPalette.faint)
             .frame(width: 2, height: 2).padding(.horizontal, 8)
             .accessibilityHidden(true)
+    }
+}
+
+/// A row whose call has a file says so to VoiceOver, as an action on the row:
+/// the summary's press target, when it has one, sits under the row's one
+/// accessible element.
+private struct TranscriptOpenFileAction: ViewModifier {
+    let link: (() -> Void)?
+    func body(content: Content) -> some View {
+        if let link { content.accessibilityAction(named: "Open File", link) } else { content }
     }
 }

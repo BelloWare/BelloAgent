@@ -5,6 +5,10 @@ struct ToolView: Codable, Sendable, Equatable, Identifiable {
     var id: String; var name: String; var state: String; var input: String; var output: String; var durationMs: Double?; var truncated: Bool
     /// File tools: resolved path and approximate line counts, from the host.
     var path: String? = nil; var added: Int? = nil; var removed: Int? = nil
+    /// The lines (from 1, both kept) a read returned or a write or an edit
+    /// changed, as the file viewer counts them, when the host said: where
+    /// the file opens. Older hosts and journals leave them nil.
+    var line: Int? = nil; var lastLine: Int? = nil
     /// The inline argument document is short of the whole request, and the
     /// full one can be fetched with `session.tool.input`. Older hosts and
     /// journals leave both nil, which reads as "what you see is all of it".
@@ -189,6 +193,8 @@ struct ToolResultRecord: Sendable, Equatable {
     var path: String? = nil
     var added: Int? = nil
     var removed: Int? = nil
+    var line: Int? = nil
+    var lastLine: Int? = nil
     /// What the helper recorded became of the call: "completed", "failed",
     /// "not_executed" or "unknown". Journals from before it recorded one
     /// leave it nil.
@@ -216,7 +222,8 @@ struct ToolResultRecord: Sendable, Equatable {
         func whole(_ value: WireValue?) -> Int? { value?.number.flatMap { Int(exactly: $0) } }
         return (call, ToolResultRecord(output: output, isError: message["isError"]?.bool ?? false,
                                        durationMs: stats["durationMs"]?.number, path: stats["path"]?.string,
-                                       added: whole(stats["added"]), removed: whole(stats["removed"]), outcome: stats["outcome"]?.string))
+                                       added: whole(stats["added"]), removed: whole(stats["removed"]), line: whole(stats["line"]), lastLine: whole(stats["lastLine"]),
+                                       outcome: stats["outcome"]?.string))
     }
 }
 
@@ -248,6 +255,7 @@ extension TranscriptMessage {
                 card.output = result.output
                 card.durationMs = result.durationMs
                 card.path = result.path; card.added = result.added; card.removed = result.removed
+                card.line = result.line; card.lastLine = result.lastLine
                 return card
             }
         }
@@ -361,6 +369,7 @@ extension TranscriptMessage {
                         input: try string(fields["input"]), output: try string(fields["output"]),
                         durationMs: try optionalDouble(fields["durationMs"]), truncated: try bool(fields["truncated"]),
                         path: try optionalString(fields["path"]), added: try optionalInt(fields["added"]), removed: try optionalInt(fields["removed"]),
+                        line: try optionalInt(fields["line"]), lastLine: try optionalInt(fields["lastLine"]),
                         inputTruncated: try optionalBool(fields["inputTruncated"]), inputBytes: try optionalInt(fields["inputBytes"]))
     }
     // A key that is absent and a key that is null both read as nothing, which

@@ -89,7 +89,7 @@ struct TimelinePartRow: View {
         } else if let card {
             // The call, where it was made. Its arguments are the card's own
             // details, so the raw document is not shown a second time.
-            ActionRowView(tool:card, open:cardOpen, fetched:fetched, toggle:toggleCard).equatable()
+            ActionRowView(tool:card, open:cardOpen, fetched:fetched, toggle:toggleCard, openFile:actions.openFile).equatable()
                 .padding(.leading,4)
         } else {
             let running = source.isStreaming

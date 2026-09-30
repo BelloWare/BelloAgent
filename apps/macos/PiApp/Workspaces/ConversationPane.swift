@@ -71,7 +71,8 @@ struct ConversationPane: View {
                                                             costLimit: { [weak model] action, anchor in model?.costLimitNotice(action, sessionID: session.id, anchor: anchor) },
                                                             fork: forkAction,
                                                             switchVersion: { [weak model] messageID, step in model?.showVersion(sessionID: session.id, messageID: messageID, step: step) },
-                                                            latestVersion: { [weak model] in model?.latestVersion(sessionID: session.id) }),
+                                                            latestVersion: { [weak model] in model?.latestVersion(sessionID: session.id) },
+                                                            openFile: { [weak model] path, lines in model?.openFile(fromChat: session.id, path: path, lines: lines) }),
                                  onAnchorChanged: { anchor in session.scrollAnchor = anchor; model.anchorChanged(session) },
                                  onReadReply: { sessionID, messageID in model.acknowledgeVisibleReply(sessionID: sessionID, messageID: messageID) },
                                  onLoadEarlier: { sessionID in model.loadEarlier(sessionID: sessionID) },
@@ -80,6 +81,7 @@ struct ConversationPane: View {
                                  onViewportReady: { model.historyViewportReady($0, generation: $1) })
                 .equatable()
                 .environment(\.transcriptForks, model.canForkFromReply(session.id))
+                .environment(\.transcriptOpensFiles, true)
                 // A card whose arguments the host had to cut asks it for the
                 // rest when the reader opens it.
                 .task(id: session.id) {

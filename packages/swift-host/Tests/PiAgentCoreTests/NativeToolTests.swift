@@ -20,6 +20,83 @@ final class NativeToolTests: XCTestCase {
         let shell=try await tools.invoke(ToolCall(id:"b",name:"bash",arguments:["command":"printf hello; printf error >&2","timeout":2]),readOnly:false)
         XCTAssertTrue(shell.encoded().contains("hello"));XCTAssertTrue(shell.encoded().contains("error"))
     }
+    /// For the app alone: a read names the file it read, resolved as it was
+    /// read, and the lines it returned; a write or an edit of a file that was
+    /// there says the lines it changed. Lines end as the app's viewer ends
+    /// them. The model's text is as it was.
+    func testFileToolsNameTheirFileAndWhereTheyChangedIt() async throws {
+        let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
+        let tools=NativeTools(cwd:root,outputs:root.appendingPathComponent("out"),mcp:MCPManager(cwd:root))
+        let file=root.resolvingSymlinksInPath().appendingPathComponent("notes.txt").path
+        func call(_ name: String, _ arguments: JSON) async throws -> JSON {
+            try await tools.invoke(ToolCall(id:UUID().uuidString,name:name,arguments:arguments),readOnly:false)
+        }
+        func lines(_ result: JSON) -> ClosedRange<Int>? {
+            guard let first=result["stats"]["line"].int, let last=result["stats"]["lastLine"].int else {
+                XCTAssertTrue(result["stats"]["line"].isNull && result["stats"]["lastLine"].isNull, "both or neither")
+                return nil
+            }
+            return first...last
+        }
+        let created=try await call("write",["path":"notes.txt","content":"one\ntwo\nthree"])
+        XCTAssertNil(lines(created), "a new file is shown from its start")
+        let edited=try await call("edit",["path":"notes.txt","oldText":"three","newText":"3"])
+        XCTAssertEqual(lines(edited), 3...3)
+        XCTAssertEqual(edited["content"].list.first?["text"].text, "Edited \(file) (+1 -1)", "the model's text is as it was")
+        let unchanged=try await call("write",["path":"notes.txt","content":"one\ntwo\n3"])
+        XCTAssertNil(lines(unchanged), "nothing changed")
+        let inserted=try await call("edit",["path":"notes.txt","oldText":"two\n","newText":"two\nand a half\nand more\n"])
+        XCTAssertEqual(lines(inserted), 3...4, "an insertion is where it went, its lines")
+        XCTAssertEqual(inserted["stats"]["removed"].int, 0)
+        _ = try await call("write",["path":"notes.txt","content":"x\r\ny\r\nz"])
+        let crlf=try await call("edit",["path":"notes.txt","oldText":"y\r\nz","newText":"Y\r\nZ"])
+        XCTAssertEqual(lines(crlf), 2...3, "\\r\\n ends one line")
+        _ = try await call("write",["path":"notes.txt","content":"x\ry\rz"])
+        let cr=try await call("edit",["path":"notes.txt","oldText":"y\rz","newText":"Y\rZ"])
+        XCTAssertEqual(lines(cr), 2...3, "\\r ends a line: pi's count (+1 -1) is not the viewer's")
+        let first=try await call("edit",["path":"notes.txt","oldText":"x","newText":"X"])
+        XCTAssertEqual(lines(first), 1...1)
+        let read=try await tools.invoke(ToolCall(id:"r",name:"read",arguments:["path":"notes.txt"]),readOnly:true)
+        XCTAssertEqual(read["stats"]["path"].text, file)
+        XCTAssertEqual(lines(read), 1...3, "the whole of a \\r file is its three lines, however pi counts them")
+
+        // The edited lines as the viewer counts them.
+        XCTAssertEqual(ViewerLines.changed("a\r\nb", "a\r\nc"), 2...2)
+        XCTAssertEqual(ViewerLines.changed("a\r\nb", "a\rxb"), 2...2, "the \\r ends line 1 of the new text")
+        XCTAssertEqual(ViewerLines.changed("a\r", "a\rb"), 2...2)
+        XCTAssertEqual(ViewerLines.changed("", "a"), 1...1)
+        XCTAssertEqual(ViewerLines.changed("a\nb\nc\n", "a\nX\nY\nZ\nc\n"), 2...4, "a replacement: all its new lines")
+        XCTAssertEqual(ViewerLines.changed("a\nb\nc", "a\nc"), 2...2, "a deletion: the line after the cut")
+        XCTAssertEqual(ViewerLines.changed("a\nb\n", "a\n"), 2...2, "cut from the end: the empty last line")
+        XCTAssertEqual(ViewerLines.changed("a\nb", ""), 1...1, "emptied")
+        XCTAssertEqual(ViewerLines.changed("a\nb", "a\nbc\rd"), 2...3, "a bare \\r added ends a line")
+        XCTAssertNil(ViewerLines.changed("same", "same"))
+    }
+
+    /// The lines a read returned, as the viewer counts them: named lines, a
+    /// whole file, a final empty line, a cut at the byte bound (in a line, and
+    /// just after a line's end), past the end, and "\r" files.
+    func testAReadSaysTheLinesItReturnedAsTheViewerCountsThem() {
+        func read(_ text: String, _ offset: Int = 1, _ count: Int = 2000, bound: Int = 32768) -> ClosedRange<Int>? {
+            ViewerLines.read(text, lines: text.components(separatedBy: "\n"), offset: offset, count: count, bound: bound)
+        }
+        XCTAssertEqual(read("a\nb\nc\nd", 2, 2), 2...3)
+        XCTAssertEqual(read("a\nb\nc\nd"), 1...4)
+        XCTAssertEqual(read("a\n", 1, 2), 1...2, "the empty line after a final \\n is returned too")
+        XCTAssertEqual(read("a\n", 1, 1), 1...1)
+        XCTAssertNil(read("a\n", 2, 1), "only that empty line: nothing returned")
+        XCTAssertEqual(read("\n\n", 2, 2), 2...3)
+        XCTAssertNil(read("a\nb", 3), "past the end")
+        XCTAssertNil(read(""))
+        XCTAssertEqual(read("abc\ndef\nghi", bound: 5), 1...2, "cut in a line: the line it cut")
+        XCTAssertEqual(read("abc\ndef\nghi", bound: 4), 1...1, "cut just after a line's end: not the next")
+        XCTAssertEqual(read("a\rb\rc", 1, 1), 1...3, "one of pi's lines, three of the viewer's")
+        XCTAssertEqual(read("a\rb\nc\rd", 2, 1), 3...4)
+        XCTAssertEqual(read("a\r\nb\r\nc", 2, 1), 2...2, "\\r\\n ends one line, the \\r pi leaves on it too")
+        XCTAssertEqual(read("a\r\nb\r\n", 1, 3), 1...3)
+        XCTAssertEqual(read("é\nü\nx", 2, 2), 2...3, "bytes, not characters")
+    }
+
     func testShellTimeoutTerminatesOrphanHoldingPipes() async throws {
         let folder=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at:folder,withIntermediateDirectories:true)
