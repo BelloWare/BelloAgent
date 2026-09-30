@@ -3,7 +3,8 @@ import XCTest
 
 /// How long forking a very large chat takes, phase by phase: the chat's own
 /// open, loading its whole history, the copy, opening the fork, and a fork
-/// from a reply near the end. Opt-in: `PI_PERF_FORK_MB` writes a journal of
+/// from a reply near the end (or `PI_PERF_FORK_AT` of the way in, such as
+/// 0.1). Opt-in: `PI_PERF_FORK_MB` writes a journal of
 /// about that many megabytes through the real run loop (questions, tool
 /// calls with reasoning, tool output with every twentieth one large, answers,
 /// compactions, and an edit), or `PI_PERF_FORK_JOURNAL` reuses one this test
@@ -127,6 +128,13 @@ final class ForkPerformanceTests: XCTestCase {
         let environment = ProcessInfo.processInfo.environment
         let kept = environment["PI_PERF_FORK_JOURNAL"], megabytes = environment["PI_PERF_FORK_MB"].flatMap(Int.init)
         guard kept != nil || megabytes != nil else { throw XCTSkip("Set PI_PERF_FORK_MB (or PI_PERF_FORK_JOURNAL) to measure forking a large chat.") }
+        // The reply the forks from a reply start at: fifty replies back, or
+        // the given fraction of the way in.
+        var fraction: Double?
+        if let text = environment["PI_PERF_FORK_AT"] {
+            guard let value = Double(text), value.isFinite, (0...1).contains(value) else { return XCTFail("PI_PERF_FORK_AT must be a number from 0 to 1, not \(text)") }
+            fraction = value
+        }
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let directory: URL, path: String
         if let kept {
@@ -140,12 +148,12 @@ final class ForkPerformanceTests: XCTestCase {
         print(String(format: "PERF fork journal: %.1f MB", size))
         // The chat as the app has it: opened once before, so it has its metadata file.
         if JournalCheckpoint.read(for: journal) == nil { let first = try session("long", root: root, directory: directory, resume: path); await first.close() }
-        // The reply near the end the forks from a reply start at: fifty replies back.
         let target: String = try await {
             let parent = try session("long", root: root, directory: directory, resume: path)
             try await parent.ensureFullHistory()
             let replies = await parent.history.filter { $0.role == "assistant" && !$0.content.contains { $0["type"].text == "toolCall" } }
             await parent.close()
+            if let fraction { return try XCTUnwrap(replies.isEmpty ? nil : replies[min(replies.count - 1, Int(Double(replies.count) * fraction))].id) }
             return try XCTUnwrap(replies.dropLast(50).last?.id)
         }()
         let repeats = environment["PI_PERF_REPEAT"].flatMap(Int.init) ?? 2

@@ -8,22 +8,12 @@ struct ConversationReplay {
         for record in records { try consume(record) }
     }
     /// The conversation up to and including the record at `cutoff`, counted
-    /// from the reader's next one (empty lines aside), from a journal a fork
-    /// has read to its end (`forkPoint`). Only the records `consume` reads
-    /// are built. Any other is skipped without a check, and nothing past
-    /// `cutoff` is read; the file is checked to be the size it was, as a read
-    /// to its end checks.
+    /// from the reader's next one, from a journal a fork has read to its end
+    /// (`forkPoint`). Nothing past `cutoff` is read, and the file is checked
+    /// to be the size it was, as a read to its end checks.
     init(upTo cutoff: Int, in reader: JournalRecordReader) throws {
         var index = 0
-        while index <= cutoff, let line = try reader.nextLine() {
-            if line.isEmpty { continue }
-            defer { index += 1 }
-            // The scan answers only when a record's kinds are plainly the
-            // parser's; any other record is built.
-            if let fields = JournalLineScan.fields(line),
-               !["message", "compaction", "branch"].contains(fields.type ?? ""), fields.customType != JournalRecordKind.context { continue }
-            try consume(try JSON.parse(line))
-        }
+        while index <= cutoff, let record = try reader.next() { try consume(record); index += 1 }
         try reader.checkUnchanged()
     }
     mutating func consume(_ record: JSON) throws {

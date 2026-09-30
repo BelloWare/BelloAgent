@@ -1,11 +1,11 @@
 import XCTest
 @testable import PiAgentCore
 
-/// A fork from a reply finds where it ends (`forkPoint`) and rebuilds the
-/// conversation up to there (`ConversationReplay`), building only the records
-/// those read. Every other record is still read and checked, to the
-/// journal's end. Where a fork ends, what it holds, and the error a damaged
-/// journal gives, are what building every record gave.
+/// A fork from a reply finds where it ends (`forkPoint`), reading every
+/// record to the journal's end, then rebuilds the conversation up to there
+/// (`ConversationReplay(upTo:in:)`) and copies it, reading nothing past it.
+/// Where a fork ends, what it holds, and the error a damaged journal gives,
+/// are what reading every record each time gave.
 final class ForkPointTests: XCTestCase {
     private struct Chat {
         let root: URL, state: URL, profile: Profile, resources: Resources, traces: TraceStore
@@ -109,14 +109,14 @@ final class ForkPointTests: XCTestCase {
         await source.close()
     }
 
-    /// Records whose kinds the scan cannot be sure of are built, as every
-    /// record was. One begins and ends as a run state does, but its first `id`
-    /// and `type` are a reply's; the parser keeps the first of a repeated key.
-    /// Another's `type` is written with an escape. Around them are empty
-    /// lines, a tool batch that lost a result, and a fork's context record. For every message, the
-    /// point a fork ends at, and the conversation up to it, are what building
-    /// every record gives.
-    func testRecordsWhoseKindsTheScanCannotBeSureOfAreBuilt() async throws {
+    /// Unusual records: one that begins and ends as a run state does, but whose
+    /// first `id` and `type` are a reply's (the parser keeps the first of a
+    /// repeated key); one whose `type` is written with an escape; empty lines;
+    /// a tool batch that lost a result; and a fork's context record. For every
+    /// message, the point a fork ends at, and the conversation up to it, are
+    /// what building every record gives. A shortcut that reads a record's
+    /// kind without building it must keep this so.
+    func testUnusualRecordsForkWhereAndAsBuildingEveryRecordDid() async throws {
         let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
         let escapedType = "typ" + "\\" + "u0065"
         let lines = [

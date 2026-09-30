@@ -167,23 +167,13 @@ extension AgentSession {
     /// left without results is kept, and the fork records their outcome as
     /// unknown when it opens, as any reopened chat does.
     ///
-    /// Every record to the journal's end is read, and one the parser refuses
-    /// fails the fork with its error. Only the reply and the messages after it
-    /// while its batch runs are built; any other record is read for its kind
-    /// and id alone and checked to be JSON the parser takes (`JSONSyntax`).
+    /// It reads every record to the journal's end, so one the parser refuses
+    /// fails the fork with its error; the fork's replay and copy then stop at
+    /// the point.
     func forkPoint(_ messageID: String, in reader: JournalRecordReader) throws -> Int {
         var index=0, start: Int?, end=0, pending=Set<String>(), batchFinished=false
-        while let line=try reader.nextLine() {
-            if line.isEmpty { continue }
+        while let record=try reader.next() {
             defer { index += 1 }
-            // The scan answers only when a record's id and type are plainly
-            // the parser's (not `stateTail`, which reads a run state's own
-            // from its end); any other record is built.
-            if let fields=JournalLineScan.fields(line) {
-                let read = start == nil ? fields.type == "message" && fields.id == messageID : !pending.isEmpty && !batchFinished && fields.type == "message"
-                if !read { if !JSONSyntax.plainlyValid(line) { _ = try JSON.parse(line) }; continue }
-            }
-            let record=try JSON.parse(line)
             if start == nil {
                 guard record["type"].text == "message", record["id"].text == messageID else { continue }
                 start=index; end=index
