@@ -35,14 +35,14 @@ enum MetricFormat {
     static func tokenCount(_ value: Double) -> String { tokens(value) + " tok" }
     static func exactTokenCount(_ value: Double) -> String { exactTokens(value) + " tok" }
 
-    /// `12.3k tok`, `1.0M tok`: a sidebar row's count, one decimal of its
-    /// unit always and the letter lowercase. Rounded as `tokens` rounds, and
-    /// written in the next unit once that reaches a thousand of one: 999,950
-    /// is `1.0M tok`, never `1000.0k tok`, and 999.5 is `1.0k tok`.
+    /// `12.3K tok`, `1.0M tok`: a sidebar row's count, one decimal of its
+    /// unit always. Rounded as `tokens` rounds, and written in the next unit
+    /// once that reaches a thousand of one: 999,950 is `1.0M tok`, never
+    /// `1000.0K tok`, and 999.5 is `1.0K tok`.
     static func rowTokenCount(_ value: Double) -> String {
         guard let value = observed(value) else { return "—" }
         if value.rounded() < 1_000 { return whole(value) + " tok" }
-        let units: [(scale: Double, letter: String)] = [(1_000, "k"), (1_000_000, "M"), (1_000_000_000, "B")]
+        let units: [(scale: Double, letter: String)] = [(1_000, "K"), (1_000_000, "M"), (1_000_000_000, "B")]
         for (index, unit) in units.enumerated() {
             let tenths = (value / unit.scale * 10).rounded()
             if tenths < 10_000 || index == units.count - 1 { return String(format: "%.1f", tenths / 10) + unit.letter + " tok" }

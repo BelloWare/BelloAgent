@@ -240,11 +240,11 @@ struct ContextMeterPresentation {
         return fullLabel + " configured · \(percent)%\(method) · \(source)" + scope + preparation + warning
     }
     /// Each unit starts where the one below would round up to a thousand of
-    /// itself: 999,600 tokens is "1M", never "1000k".
+    /// itself: 999,600 tokens is "1M", never "1000K".
     private func compact(_ value: Double) -> String {
         if value >= 999_500 { return String(format:"%.1fM",value / 1_000_000).replacingOccurrences(of:".0M",with:"M") }
-        if value >= 10_000 { return String(format:"%.0fk",value / 1000) }
-        if value >= 999.5 { return String(format:"%.1fk",value / 1000).replacingOccurrences(of:".0k",with:"k") }
+        if value >= 10_000 { return String(format:"%.0fK",value / 1000) }
+        if value >= 999.5 { return String(format:"%.1fK",value / 1000).replacingOccurrences(of:".0K",with:"K") }
         return String(format:"%.0f",value)
     }
 }

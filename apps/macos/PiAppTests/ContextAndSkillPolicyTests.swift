@@ -185,7 +185,7 @@ final class ContextAndSkillPolicyTests: XCTestCase {
             XCTAssertNil(ContextMeterPresentation(context:["tokens":.number(tokens),"contextWindow":.number(16000)]).fraction)
         }
         let zero = ContextMeterPresentation(context:["tokens":.number(0),"contextWindow":.number(16000)])
-        XCTAssertEqual(zero.fraction,0); XCTAssertEqual(zero.compactLabel,"≈0 / 16k")
+        XCTAssertEqual(zero.fraction,0); XCTAssertEqual(zero.compactLabel,"≈0 / 16K")
         XCTAssertNil(ContextMeterPresentation(context:["tokens":.number(100),"contextWindow":.number(0)]).fraction)
         XCTAssertEqual(ContextMeterPresentation(context:["tokens":.number(8000),"contextWindow":.number(16000)],capacity:32000).fraction,0.25)
     }
@@ -208,7 +208,7 @@ final class ContextAndSkillPolicyTests: XCTestCase {
         XCTAssertEqual(inspection["outputReserve"], .number(2048), "The requested output budget takes precedence over a legacy ceiling")
         let ring = ContextMeterPresentation(context: prepared.context, capacity: 128000)
         XCTAssertEqual(ring.fraction, 850.0 / 16000, "A fingerprinted result retains the capacity used by the helper")
-        XCTAssertFalse(ring.estimated); XCTAssertEqual(ring.compactLabel, "850 / 16k")
+        XCTAssertFalse(ring.estimated); XCTAssertEqual(ring.compactLabel, "850 / 16K")
         XCTAssertEqual(ring.fullLabel, ContextMeterPresentation(context: inspection).fullLabel)
         XCTAssertEqual(ring.methodLabel, "Provider count")
         XCTAssertTrue(ring.modelLabel?.contains("provider/chosen-model") == true)
@@ -225,7 +225,7 @@ final class ContextAndSkillPolicyTests: XCTestCase {
             "contextWindow": .number(16000)]
         let context = try XCTUnwrap(PreparedContextMetrics.context(from: summary))
         let meter = ContextMeterPresentation(context: context)
-        XCTAssertEqual(meter.compactLabel, "≈4k / 16k")
+        XCTAssertEqual(meter.compactLabel, "≈4K / 16K")
         XCTAssertEqual(meter.methodLabel, "Gateway tokenizer")
         XCTAssertEqual(meter.warnings, [warning]); XCTAssertTrue(meter.detailLabel.contains(warning))
         XCTAssertEqual(meter.modelLabel, "Requested auto-router · counted model unverified")
