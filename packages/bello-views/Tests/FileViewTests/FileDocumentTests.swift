@@ -1,6 +1,6 @@
 import XCTest
 import AppKit
-@testable import PiApp
+@testable import FileView
 
 /// A file on disk as the viewer's text (`FileDocument`): where its lines are,
 /// found away from the main thread and exactly as a text held whole finds

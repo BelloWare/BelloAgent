@@ -1,11 +1,12 @@
 import AppKit
+import FileView
 
 // Bello Agent's own look for the file viewer's engine (`FileTextView`), which
 // itself depends on nothing of the app: its colours and its context menu, in
 // the app's design components.
 
 extension FileTextColors {
-    static let pi = FileTextColors(text: .piInk, lineNumber: .piInkTertiary, strongLineNumber: .piInkSecondary, emphasis: .piAccentSoft)
+    @MainActor static let pi = FileTextColors(text: .piInk, lineNumber: .piInkTertiary, strongLineNumber: .piInkSecondary, emphasis: .piAccentSoft)
 }
 
 extension FileTextView {

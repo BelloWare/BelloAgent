@@ -16,7 +16,7 @@ import Foundation
 /// not be: a file is read away from the main thread, so a line's text is
 /// nil until it has come, and asking for it is what reads it. `arrival` says
 /// when asked-for text has come, or lines have changed.
-@MainActor protocol FileTextSource: AnyObject {
+@MainActor public protocol FileTextSource: AnyObject {
     /// At least 1: an empty file is one empty line.
     var lineCount: Int { get }
     /// A line's length in UTF-16 units, without its line ending.
@@ -60,16 +60,16 @@ import Foundation
 }
 
 extension FileTextSource {
-    var isReading: Bool { true }
-    func textAtHand(from start: FileTextPosition, to end: FileTextPosition) -> String? { text(from: start, to: end) }
-    func beginDrawing() {}
-    func endDrawing() {}
+    public var isReading: Bool { true }
+    public func textAtHand(from start: FileTextPosition, to end: FileTextPosition) -> String? { text(from: start, to: end) }
+    public func beginDrawing() {}
+    public func endDrawing() {}
     /// A whole line, if at hand.
-    func line(_ index: Int) -> String? { text(ofLine: index, range: 0..<utf16Length(ofLine: index)) }
+    public func line(_ index: Int) -> String? { text(ofLine: index, range: 0..<utf16Length(ofLine: index)) }
     /// The text from one position to another, lines joined by "\n", if all
     /// of it is at hand: what a small selection copies and what accessibility
     /// reads.
-    func text(from start: FileTextPosition, to end: FileTextPosition) -> String? {
+    public func text(from start: FileTextPosition, to end: FileTextPosition) -> String? {
         guard start < end else { return "" }
         var parts: [String] = []
         for index in start.line...min(end.line, lineCount - 1) {
@@ -82,40 +82,41 @@ extension FileTextSource {
         return parts.joined(separator: "\n")
     }
     /// The position of an offset in the whole text, clamped to it.
-    func position(atUTF16 offset: Int) -> FileTextPosition {
+    public func position(atUTF16 offset: Int) -> FileTextPosition {
         let clamped = max(0, min(offset, utf16Length))
         let line = line(atUTF16: clamped)
         return FileTextPosition(line: line, column: min(clamped - utf16Start(ofLine: line), utf16Length(ofLine: line)))
     }
     /// A position's offset in the whole text.
-    func utf16Offset(of position: FileTextPosition) -> Int {
+    public func utf16Offset(of position: FileTextPosition) -> Int {
         let line = max(0, min(position.line, lineCount - 1))
         return utf16Start(ofLine: line) + max(0, min(position.column, utf16Length(ofLine: line)))
     }
 }
 
 /// A place in a file's text: a line, and a UTF-16 offset into it.
-struct FileTextPosition: Comparable, Hashable, Sendable {
-    var line: Int
-    var column: Int
-    static func < (a: Self, b: Self) -> Bool { a.line != b.line ? a.line < b.line : a.column < b.column }
-    static let start = FileTextPosition(line: 0, column: 0)
+public struct FileTextPosition: Comparable, Hashable, Sendable {
+    public var line: Int
+    public var column: Int
+    public init(line: Int, column: Int) { self.line = line; self.column = column }
+    public static func < (a: Self, b: Self) -> Bool { a.line != b.line ? a.line < b.line : a.column < b.column }
+    public static let start = FileTextPosition(line: 0, column: 0)
 }
 
 /// A text held whole, split into its lines: a small file, or a test's. All
 /// of it is always at hand.
-@MainActor final class FileTextLines: FileTextSource {
+@MainActor public final class FileTextLines: FileTextSource {
     private let lines: [String]
-    var arrival: ((ClosedRange<Int>) -> Void)?
-    func prefetch(lines: ClosedRange<Int>) {}
-    func fetch(from start: FileTextPosition, to end: FileTextPosition, completion: @escaping @MainActor (String?) -> Void) {
+    public var arrival: ((ClosedRange<Int>) -> Void)?
+    public func prefetch(lines: ClosedRange<Int>) {}
+    public func fetch(from start: FileTextPosition, to end: FileTextPosition, completion: @escaping @MainActor (String?) -> Void) {
         completion(text(from: start, to: end))
     }
     /// Where each line starts in the whole text, and the text's end.
     private let starts: [Int]
-    let longestLine: Int
+    public let longestLine: Int
 
-    init(_ text: String) {
+    public init(_ text: String) {
         var lines: [String] = []
         // "\r\n", "\n" and "\r" each end a line; a text that ends with one
         // has an empty last line, as an editor shows it. Both are ASCII, so
@@ -145,21 +146,21 @@ struct FileTextPosition: Comparable, Hashable, Sendable {
         longestLine = longest
     }
 
-    var lineCount: Int { lines.count }
-    let generation = 0
-    func utf16Length(ofLine index: Int) -> Int {
+    public var lineCount: Int { lines.count }
+    public let generation = 0
+    public func utf16Length(ofLine index: Int) -> Int {
         guard lines.indices.contains(index) else { return 0 }
         return starts[index + 1] - starts[index] - (index + 1 < lines.count ? 1 : 0)
     }
-    func text(ofLine index: Int, range: Range<Int>) -> String? {
+    public func text(ofLine index: Int, range: Range<Int>) -> String? {
         guard lines.indices.contains(index) else { return "" }
         let line = lines[index] as NSString
         let low = max(0, min(range.lowerBound, line.length)), high = max(low, min(range.upperBound, line.length))
         return low == 0 && high == line.length ? lines[index] : line.substring(with: NSRange(location: low, length: high - low))
     }
-    func utf16Start(ofLine index: Int) -> Int { starts[max(0, min(index, lines.count - 1))] }
-    var utf16Length: Int { starts[lines.count] }
-    func line(atUTF16 offset: Int) -> Int {
+    public func utf16Start(ofLine index: Int) -> Int { starts[max(0, min(index, lines.count - 1))] }
+    public var utf16Length: Int { starts[lines.count] }
+    public func line(atUTF16 offset: Int) -> Int {
         // The last line whose start is at or before the offset.
         var low = 0, high = lines.count - 1
         while low < high {

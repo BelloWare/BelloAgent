@@ -21,6 +21,8 @@ packages:
   Sparkle:
     url: https://github.com/sparkle-project/Sparkle
     exactVersion: 2.8.1
+  BelloViews:
+    path: packages/bello-views
 targets:
   PiApp:
     type: application
@@ -42,6 +44,8 @@ targets:
         basedOnDependencyAnalysis: false
     dependencies:
       - package: Sparkle
+      - package: BelloViews
+        product: BelloFileView
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.belloware.PiApp

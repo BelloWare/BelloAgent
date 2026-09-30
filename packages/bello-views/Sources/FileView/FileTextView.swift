@@ -83,14 +83,18 @@ import AppKit
 /// One line as CoreText sets it, in pieces, each set when it is first needed.
 /// The colours a file's text is drawn in. The engine knows no app: the
 /// system's colours unless the host app gives its own.
-struct FileTextColors {
-    var text: NSColor = .textColor
-    var lineNumber: NSColor = .tertiaryLabelColor
+public struct FileTextColors {
+    public var text: NSColor
+    public var lineNumber: NSColor
     /// The numbers of the lines selected, or set apart.
-    var strongLineNumber: NSColor = .secondaryLabelColor
+    public var strongLineNumber: NSColor
     /// The band behind lines set apart: those a file was opened at.
-    var emphasis: NSColor = NSColor.controlAccentColor.withAlphaComponent(0.12)
-    @MainActor static var standard = FileTextColors()
+    public var emphasis: NSColor
+    public init(text: NSColor = .textColor, lineNumber: NSColor = .tertiaryLabelColor, strongLineNumber: NSColor = .secondaryLabelColor,
+                emphasis: NSColor = NSColor.controlAccentColor.withAlphaComponent(0.12)) {
+        self.text = text; self.lineNumber = lineNumber; self.strongLineNumber = strongLineNumber; self.emphasis = emphasis
+    }
+    @MainActor public static var standard = FileTextColors()
 }
 
 /// A line up to `FileTextMetrics.gridLine` long is read whole when it is laid
@@ -362,22 +366,22 @@ struct FileTextColors {
 }
 
 /// The text view. Its frame is the whole document; it draws what is asked of it.
-@MainActor final class FileTextView: NSView {
-    private(set) var source: FileTextSource = FileTextLines("")
+@MainActor public final class FileTextView: NSView {
+    public private(set) var source: FileTextSource = FileTextLines("")
     /// What accessibility calls the text: "Contents of Main.swift".
-    private(set) var name = ""
+    public private(set) var name = ""
     /// Lines to set apart, softly: the lines a file was opened at.
-    var emphasized: ClosedRange<Int>? { didSet { if emphasized != oldValue { needsDisplay = true; ruler?.needsDisplay = true } } }
+    public var emphasized: ClosedRange<Int>? { didSet { if emphasized != oldValue { needsDisplay = true; ruler?.needsDisplay = true } } }
     /// What the text is drawn in: the host app's colours, or the system's.
-    var colors = FileTextColors.standard { didSet { needsDisplay = true; ruler?.needsDisplay = true } }
+    public var colors = FileTextColors.standard { didSet { needsDisplay = true; ruler?.needsDisplay = true } }
     /// Where Copy puts text. The general pasteboard; a test's own otherwise.
-    var pasteboard: NSPasteboard = .general
+    public var pasteboard: NSPasteboard = .general
     weak var ruler: FileLineNumberRuler?
 
     /// The selection runs from the anchor to the focus, either way round. The
     /// two are equal when nothing is selected: the insertion point.
-    private(set) var anchor = FileTextPosition.start
-    private(set) var focus = FileTextPosition.start
+    public private(set) var anchor = FileTextPosition.start
+    public private(set) var focus = FileTextPosition.start
     /// Where Up and Down keep the insertion point, across short lines.
     private var goalX: CGFloat?
     private var layouts: [Int: FileLineLayout] = [:]
@@ -385,21 +389,21 @@ struct FileTextColors {
     /// How wide the widest line drawn so far turned out to be.
     private var measuredWidth: CGFloat = 0
 
-    override init(frame: NSRect) {
+    public override init(frame: NSRect) {
         super.init(frame: frame)
         setAccessibilityElement(true)
         setAccessibilityRole(.textArea)
         setAccessibilityIdentifier("file-text-view")
     }
-    required init?(coder: NSCoder) { nil }
+    public required init?(coder: NSCoder) { nil }
 
-    override var isFlipped: Bool { true }
-    override var isOpaque: Bool { false }
-    override var acceptsFirstResponder: Bool { true }
-    override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); needsDisplay = true }
+    public override var isFlipped: Bool { true }
+    public override var isOpaque: Bool { false }
+    public override var acceptsFirstResponder: Bool { true }
+    public override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); needsDisplay = true }
 
     /// Shows a text from its start, with nothing selected.
-    func show(_ source: FileTextSource, name: String) {
+    public func show(_ source: FileTextSource, name: String) {
         self.source.arrival = nil
         self.source = source; self.name = name
         pending = []
@@ -475,7 +479,7 @@ struct FileTextColors {
         let size = NSSize(width: width.rounded(.up), height: height.rounded(.up))
         if frame.size != size { setFrameSize(size) }
     }
-    override func viewDidMoveToSuperview() {
+    public override func viewDidMoveToSuperview() {
         super.viewDidMoveToSuperview()
         NotificationCenter.default.removeObserver(self, name: NSView.frameDidChangeNotification, object: nil)
         NotificationCenter.default.removeObserver(self, name: NSView.boundsDidChangeNotification, object: nil)
@@ -491,7 +495,7 @@ struct FileTextColors {
     // MARK: Drawing
 
     private var selectionActive: Bool { window?.isKeyWindow == true && window?.firstResponder === self }
-    override func viewDidMoveToWindow() {
+    public override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         NotificationCenter.default.removeObserver(self, name: NSWindow.didBecomeKeyNotification, object: nil)
         NotificationCenter.default.removeObserver(self, name: NSWindow.didResignKeyNotification, object: nil)
@@ -500,14 +504,14 @@ struct FileTextColors {
         NotificationCenter.default.addObserver(self, selector: #selector(keyChanged(_:)), name: NSWindow.didResignKeyNotification, object: window)
     }
     @objc private func keyChanged(_ note: Notification) { if hasSelection { needsDisplay = true } }
-    override func becomeFirstResponder() -> Bool {
+    public override func becomeFirstResponder() -> Bool {
         if hasSelection { needsDisplay = true }
         announce(.focusedUIElementChanged)
         return true
     }
-    override func resignFirstResponder() -> Bool { if hasSelection { needsDisplay = true }; return true }
+    public override func resignFirstResponder() -> Bool { if hasSelection { needsDisplay = true }; return true }
 
-    override func draw(_ dirtyRect: NSRect) {
+    public override func draw(_ dirtyRect: NSRect) {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
         let rows = lines(in: dirtyRect)
         source.beginDrawing()
@@ -595,18 +599,18 @@ struct FileTextColors {
         }
     }
 
-    override func resetCursorRects() { addCursorRect(visibleRect, cursor: .iBeam) }
+    public override func resetCursorRects() { addCursorRect(visibleRect, cursor: .iBeam) }
 
     // MARK: Selection
 
-    var hasSelection: Bool { anchor != focus }
-    var selectedRange: (start: FileTextPosition, end: FileTextPosition) { (min(anchor, focus), max(anchor, focus)) }
+    public var hasSelection: Bool { anchor != focus }
+    public var selectedRange: (start: FileTextPosition, end: FileTextPosition) { (min(anchor, focus), max(anchor, focus)) }
     /// The selection's text, if all of it is at hand.
-    var selectedText: String? { hasSelection ? source.text(from: selectedRange.start, to: selectedRange.end) : "" }
+    public var selectedText: String? { hasSelection ? source.text(from: selectedRange.start, to: selectedRange.end) : "" }
 
     /// Selects from `anchor` to `focus`, redrawing the lines either selection
     /// touched, and telling accessibility.
-    func select(from anchor: FileTextPosition, to focus: FileTextPosition, keepGoal: Bool = false) {
+    public func select(from anchor: FileTextPosition, to focus: FileTextPosition, keepGoal: Bool = false) {
         let anchor = clamp(anchor), focus = clamp(focus)
         if !keepGoal { goalX = nil }
         guard anchor != self.anchor || focus != self.focus else { return }
@@ -660,12 +664,12 @@ struct FileTextColors {
     }
 
     /// Scrolls just enough to show a position, with a line to spare.
-    func scrollToVisible(_ position: FileTextPosition) {
+    public func scrollToVisible(_ position: FileTextPosition) {
         let point = point(of: position)
         scrollToVisible(NSRect(x: point.x - 24, y: point.y - lineHeight, width: 48, height: lineHeight * 3))
     }
     /// Shows a line near the top third of the view, as a jump to it should.
-    func scrollTo(line index: Int) {
+    public func scrollTo(line index: Int) {
         guard let clip = enclosingScrollView?.contentView else { return }
         let y = max(0, min(top(ofLine: index) - clip.bounds.height / 3, frame.height - clip.bounds.height))
         clip.scroll(to: NSPoint(x: clip.bounds.minX, y: y))
@@ -679,7 +683,7 @@ struct FileTextColors {
     /// the press) must not leave the main thread waiting.
     static let pressPoll: TimeInterval = 0.1
 
-    override func mouseDown(with event: NSEvent) {
+    public override func mouseDown(with event: NSEvent) {
         guard let window else { return }
         window.makeFirstResponder(self)
         let hit = position(at: convert(event.locationInWindow, from: nil))
@@ -722,8 +726,8 @@ struct FileTextColors {
 
     /// The menu a secondary click opens: the host app's own if it gives
     /// one, else Copy and Select All.
-    var contextMenu: ((FileTextView) -> NSMenu?)?
-    override func menu(for event: NSEvent) -> NSMenu? {
+    public var contextMenu: ((FileTextView) -> NSMenu?)?
+    public override func menu(for event: NSEvent) -> NSMenu? {
         if let contextMenu { return contextMenu(self) }
         let menu = NSMenu()
         menu.autoenablesItems = false
@@ -739,7 +743,7 @@ struct FileTextColors {
 
     /// Copies the selection: at once when its text is at hand, else when it
     /// has been read (a later Copy of another selection supersedes it).
-    @objc func copy(_ sender: Any?) {
+    @objc public func copy(_ sender: Any?) {
         guard hasSelection else { return }
         let (start, end) = selectedRange
         copies += 1
@@ -750,13 +754,13 @@ struct FileTextColors {
         }
     }
     private var copies = 0
-    override func selectAll(_ sender: Any?) { select(from: .start, to: end) }
+    public override func selectAll(_ sender: Any?) { select(from: .start, to: end) }
 
     // MARK: Keys
 
     /// The space bar pages, as it does in a read-only page. Everything else
     /// goes through the key bindings to the commands below.
-    override func keyDown(with event: NSEvent) {
+    public override func keyDown(with event: NSEvent) {
         if event.keyCode == 49, event.modifierFlags.intersection([.command, .control, .option]).isEmpty {
             event.modifierFlags.contains(.shift) ? scrollPageUp(nil) : scrollPageDown(nil)
             return
@@ -766,17 +770,17 @@ struct FileTextColors {
     /// Commands that would change the text do nothing: there is nothing to
     /// insert into or delete from. Anything else this view does not take goes
     /// on, as it would from any view: Escape first.
-    override func doCommand(by selector: Selector) {
+    public override func doCommand(by selector: Selector) {
         if responds(to: selector) { _ = perform(selector, with: nil); return }
         let name = NSStringFromSelector(selector)
         let edits = ["insert", "delete", "transpose", "yank", "capitalize", "lowercase", "uppercase", "indent", "complete", "changeCase"]
         if edits.contains(where: { name.hasPrefix($0) }) { return }
         super.doCommand(by: selector)
     }
-    override func insertText(_ insertString: Any) {}
-    override func cancelOperation(_ sender: Any?) { nextResponder?.doCommand(by: #selector(cancelOperation(_:))) }
-    override func insertTab(_ sender: Any?) { window?.selectNextKeyView(self) }
-    override func insertBacktab(_ sender: Any?) { window?.selectPreviousKeyView(self) }
+    public override func insertText(_ insertString: Any) {}
+    public override func cancelOperation(_ sender: Any?) { nextResponder?.doCommand(by: #selector(cancelOperation(_:))) }
+    public override func insertTab(_ sender: Any?) { window?.selectNextKeyView(self) }
+    public override func insertBacktab(_ sender: Any?) { window?.selectPreviousKeyView(self) }
 
     /// A movement waiting for text to come.
     private struct Pending {
@@ -905,43 +909,43 @@ struct FileTextColors {
     }
     private var pageLines: Int { max(1, Int((enclosingScrollView?.contentView.bounds.height ?? visibleRect.height) / lineHeight) - 1) }
 
-    override func moveLeft(_ sender: Any?) { move(false) { $0.stepOrCollapse(from: $1, forward: false) } }
-    override func moveRight(_ sender: Any?) { move(false) { $0.stepOrCollapse(from: $1, forward: true) } }
-    override func moveBackward(_ sender: Any?) { moveLeft(sender) }
-    override func moveForward(_ sender: Any?) { moveRight(sender) }
-    override func moveLeftAndModifySelection(_ sender: Any?) { move(true) { $0.character(from: $1, forward: false) } }
-    override func moveRightAndModifySelection(_ sender: Any?) { move(true) { $0.character(from: $1, forward: true) } }
-    override func moveBackwardAndModifySelection(_ sender: Any?) { moveLeftAndModifySelection(sender) }
-    override func moveForwardAndModifySelection(_ sender: Any?) { moveRightAndModifySelection(sender) }
-    override func moveUp(_ sender: Any?) { move(false, keepGoal: true) { $0.vertical(from: $1, lines: -1) } }
-    override func moveDown(_ sender: Any?) { move(false, keepGoal: true) { $0.vertical(from: $1, lines: 1) } }
-    override func moveUpAndModifySelection(_ sender: Any?) { move(true, keepGoal: true) { $0.vertical(from: $1, lines: -1) } }
-    override func moveDownAndModifySelection(_ sender: Any?) { move(true, keepGoal: true) { $0.vertical(from: $1, lines: 1) } }
-    override func moveWordLeft(_ sender: Any?) { move(false) { $0.word(from: $1, forward: false) } }
-    override func moveWordRight(_ sender: Any?) { move(false) { $0.word(from: $1, forward: true) } }
-    override func moveWordBackward(_ sender: Any?) { moveWordLeft(sender) }
-    override func moveWordForward(_ sender: Any?) { moveWordRight(sender) }
-    override func moveWordLeftAndModifySelection(_ sender: Any?) { move(true) { $0.word(from: $1, forward: false) } }
-    override func moveWordRightAndModifySelection(_ sender: Any?) { move(true) { $0.word(from: $1, forward: true) } }
-    override func moveWordBackwardAndModifySelection(_ sender: Any?) { moveWordLeftAndModifySelection(sender) }
-    override func moveWordForwardAndModifySelection(_ sender: Any?) { moveWordRightAndModifySelection(sender) }
-    override func moveToBeginningOfLine(_ sender: Any?) { move(false) { FileTextPosition(line: $1.line, column: 0) } }
-    override func moveToEndOfLine(_ sender: Any?) { move(false) { FileTextPosition(line: $1.line, column: $0.source.utf16Length(ofLine: $1.line)) } }
-    override func moveToLeftEndOfLine(_ sender: Any?) { moveToBeginningOfLine(sender) }
-    override func moveToRightEndOfLine(_ sender: Any?) { moveToEndOfLine(sender) }
-    override func moveToBeginningOfLineAndModifySelection(_ sender: Any?) { move(true) { FileTextPosition(line: $1.line, column: 0) } }
-    override func moveToEndOfLineAndModifySelection(_ sender: Any?) { move(true) { FileTextPosition(line: $1.line, column: $0.source.utf16Length(ofLine: $1.line)) } }
-    override func moveToLeftEndOfLineAndModifySelection(_ sender: Any?) { moveToBeginningOfLineAndModifySelection(sender) }
-    override func moveToRightEndOfLineAndModifySelection(_ sender: Any?) { moveToEndOfLineAndModifySelection(sender) }
+    public override func moveLeft(_ sender: Any?) { move(false) { $0.stepOrCollapse(from: $1, forward: false) } }
+    public override func moveRight(_ sender: Any?) { move(false) { $0.stepOrCollapse(from: $1, forward: true) } }
+    public override func moveBackward(_ sender: Any?) { moveLeft(sender) }
+    public override func moveForward(_ sender: Any?) { moveRight(sender) }
+    public override func moveLeftAndModifySelection(_ sender: Any?) { move(true) { $0.character(from: $1, forward: false) } }
+    public override func moveRightAndModifySelection(_ sender: Any?) { move(true) { $0.character(from: $1, forward: true) } }
+    public override func moveBackwardAndModifySelection(_ sender: Any?) { moveLeftAndModifySelection(sender) }
+    public override func moveForwardAndModifySelection(_ sender: Any?) { moveRightAndModifySelection(sender) }
+    public override func moveUp(_ sender: Any?) { move(false, keepGoal: true) { $0.vertical(from: $1, lines: -1) } }
+    public override func moveDown(_ sender: Any?) { move(false, keepGoal: true) { $0.vertical(from: $1, lines: 1) } }
+    public override func moveUpAndModifySelection(_ sender: Any?) { move(true, keepGoal: true) { $0.vertical(from: $1, lines: -1) } }
+    public override func moveDownAndModifySelection(_ sender: Any?) { move(true, keepGoal: true) { $0.vertical(from: $1, lines: 1) } }
+    public override func moveWordLeft(_ sender: Any?) { move(false) { $0.word(from: $1, forward: false) } }
+    public override func moveWordRight(_ sender: Any?) { move(false) { $0.word(from: $1, forward: true) } }
+    public override func moveWordBackward(_ sender: Any?) { moveWordLeft(sender) }
+    public override func moveWordForward(_ sender: Any?) { moveWordRight(sender) }
+    public override func moveWordLeftAndModifySelection(_ sender: Any?) { move(true) { $0.word(from: $1, forward: false) } }
+    public override func moveWordRightAndModifySelection(_ sender: Any?) { move(true) { $0.word(from: $1, forward: true) } }
+    public override func moveWordBackwardAndModifySelection(_ sender: Any?) { moveWordLeftAndModifySelection(sender) }
+    public override func moveWordForwardAndModifySelection(_ sender: Any?) { moveWordRightAndModifySelection(sender) }
+    public override func moveToBeginningOfLine(_ sender: Any?) { move(false) { FileTextPosition(line: $1.line, column: 0) } }
+    public override func moveToEndOfLine(_ sender: Any?) { move(false) { FileTextPosition(line: $1.line, column: $0.source.utf16Length(ofLine: $1.line)) } }
+    public override func moveToLeftEndOfLine(_ sender: Any?) { moveToBeginningOfLine(sender) }
+    public override func moveToRightEndOfLine(_ sender: Any?) { moveToEndOfLine(sender) }
+    public override func moveToBeginningOfLineAndModifySelection(_ sender: Any?) { move(true) { FileTextPosition(line: $1.line, column: 0) } }
+    public override func moveToEndOfLineAndModifySelection(_ sender: Any?) { move(true) { FileTextPosition(line: $1.line, column: $0.source.utf16Length(ofLine: $1.line)) } }
+    public override func moveToLeftEndOfLineAndModifySelection(_ sender: Any?) { moveToBeginningOfLineAndModifySelection(sender) }
+    public override func moveToRightEndOfLineAndModifySelection(_ sender: Any?) { moveToEndOfLineAndModifySelection(sender) }
     // A file's line is its paragraph.
-    override func moveToBeginningOfParagraph(_ sender: Any?) { moveToBeginningOfLine(sender) }
-    override func moveToEndOfParagraph(_ sender: Any?) { moveToEndOfLine(sender) }
-    override func moveToBeginningOfParagraphAndModifySelection(_ sender: Any?) { moveToBeginningOfLineAndModifySelection(sender) }
-    override func moveToEndOfParagraphAndModifySelection(_ sender: Any?) { moveToEndOfLineAndModifySelection(sender) }
-    override func moveParagraphBackwardAndModifySelection(_ sender: Any?) {
+    public override func moveToBeginningOfParagraph(_ sender: Any?) { moveToBeginningOfLine(sender) }
+    public override func moveToEndOfParagraph(_ sender: Any?) { moveToEndOfLine(sender) }
+    public override func moveToBeginningOfParagraphAndModifySelection(_ sender: Any?) { moveToBeginningOfLineAndModifySelection(sender) }
+    public override func moveToEndOfParagraphAndModifySelection(_ sender: Any?) { moveToEndOfLineAndModifySelection(sender) }
+    public override func moveParagraphBackwardAndModifySelection(_ sender: Any?) {
         move(true) { $1.column > 0 ? FileTextPosition(line: $1.line, column: 0) : FileTextPosition(line: max(0, $1.line - 1), column: 0) }
     }
-    override func moveParagraphForwardAndModifySelection(_ sender: Any?) {
+    public override func moveParagraphForwardAndModifySelection(_ sender: Any?) {
         move(true) { view, position in
             let length = view.source.utf16Length(ofLine: position.line)
             if position.column < length { return FileTextPosition(line: position.line, column: length) }
@@ -949,18 +953,18 @@ struct FileTextColors {
             return FileTextPosition(line: next, column: view.source.utf16Length(ofLine: next))
         }
     }
-    override func moveToBeginningOfDocument(_ sender: Any?) { move(false) { _, _ in .start } }
-    override func moveToEndOfDocument(_ sender: Any?) { move(false) { view, _ in view.end } }
-    override func moveToBeginningOfDocumentAndModifySelection(_ sender: Any?) { move(true) { _, _ in .start } }
-    override func moveToEndOfDocumentAndModifySelection(_ sender: Any?) { move(true) { view, _ in view.end } }
-    override func pageUp(_ sender: Any?) { move(false, keepGoal: true) { $0.vertical(from: $1, lines: -$0.pageLines) } }
-    override func pageDown(_ sender: Any?) { move(false, keepGoal: true) { $0.vertical(from: $1, lines: $0.pageLines) } }
-    override func pageUpAndModifySelection(_ sender: Any?) { move(true, keepGoal: true) { $0.vertical(from: $1, lines: -$0.pageLines) } }
-    override func pageDownAndModifySelection(_ sender: Any?) { move(true, keepGoal: true) { $0.vertical(from: $1, lines: $0.pageLines) } }
-    override func selectLine(_ sender: Any?) { let range = lineRange(focus.line); select(from: range.0, to: range.1) }
-    override func selectParagraph(_ sender: Any?) { selectLine(sender) }
-    override func selectWord(_ sender: Any?) { if let range = wordRange(at: focus) { select(from: range.0, to: range.1) } }
-    override func centerSelectionInVisibleArea(_ sender: Any?) {
+    public override func moveToBeginningOfDocument(_ sender: Any?) { move(false) { _, _ in .start } }
+    public override func moveToEndOfDocument(_ sender: Any?) { move(false) { view, _ in view.end } }
+    public override func moveToBeginningOfDocumentAndModifySelection(_ sender: Any?) { move(true) { _, _ in .start } }
+    public override func moveToEndOfDocumentAndModifySelection(_ sender: Any?) { move(true) { view, _ in view.end } }
+    public override func pageUp(_ sender: Any?) { move(false, keepGoal: true) { $0.vertical(from: $1, lines: -$0.pageLines) } }
+    public override func pageDown(_ sender: Any?) { move(false, keepGoal: true) { $0.vertical(from: $1, lines: $0.pageLines) } }
+    public override func pageUpAndModifySelection(_ sender: Any?) { move(true, keepGoal: true) { $0.vertical(from: $1, lines: -$0.pageLines) } }
+    public override func pageDownAndModifySelection(_ sender: Any?) { move(true, keepGoal: true) { $0.vertical(from: $1, lines: $0.pageLines) } }
+    public override func selectLine(_ sender: Any?) { let range = lineRange(focus.line); select(from: range.0, to: range.1) }
+    public override func selectParagraph(_ sender: Any?) { selectLine(sender) }
+    public override func selectWord(_ sender: Any?) { if let range = wordRange(at: focus) { select(from: range.0, to: range.1) } }
+    public override func centerSelectionInVisibleArea(_ sender: Any?) {
         guard let clip = enclosingScrollView?.contentView else { return }
         let y = max(0, min(top(ofLine: focus.line) - (clip.bounds.height - lineHeight) / 2, frame.height - clip.bounds.height))
         clip.scroll(to: NSPoint(x: clip.bounds.minX, y: y))
@@ -975,12 +979,12 @@ struct FileTextColors {
         clip.scroll(to: NSPoint(x: clip.bounds.minX, y: y))
         enclosingScrollView?.reflectScrolledClipView(clip)
     }
-    override func scrollPageUp(_ sender: Any?) { scroll(by: -CGFloat(pageLines) * lineHeight) }
-    override func scrollPageDown(_ sender: Any?) { scroll(by: CGFloat(pageLines) * lineHeight) }
-    override func scrollLineUp(_ sender: Any?) { scroll(by: -lineHeight) }
-    override func scrollLineDown(_ sender: Any?) { scroll(by: lineHeight) }
-    override func scrollToBeginningOfDocument(_ sender: Any?) { scroll(by: -.greatestFiniteMagnitude) }
-    override func scrollToEndOfDocument(_ sender: Any?) { scroll(by: .greatestFiniteMagnitude) }
+    public override func scrollPageUp(_ sender: Any?) { scroll(by: -CGFloat(pageLines) * lineHeight) }
+    public override func scrollPageDown(_ sender: Any?) { scroll(by: CGFloat(pageLines) * lineHeight) }
+    public override func scrollLineUp(_ sender: Any?) { scroll(by: -lineHeight) }
+    public override func scrollLineDown(_ sender: Any?) { scroll(by: lineHeight) }
+    public override func scrollToBeginningOfDocument(_ sender: Any?) { scroll(by: -.greatestFiniteMagnitude) }
+    public override func scrollToEndOfDocument(_ sender: Any?) { scroll(by: .greatestFiniteMagnitude) }
 
     // MARK: Accessibility
 
@@ -989,11 +993,11 @@ struct FileTextColors {
     /// No request builds more than that much text at once.
     static let accessibleTextLimit = 1_000_000
 
-    override func accessibilityLabel() -> String? { name.isEmpty ? "File contents" : "Contents of \(name)" }
+    public override func accessibilityLabel() -> String? { name.isEmpty ? "File contents" : "Contents of \(name)" }
     /// Only text at hand: what has not been read yet is not handed over, but
     /// read, in one go and away from the screen's own, and kept here for when
     /// accessibility asks again, which it is told to (`announce`).
-    override func accessibilityValue() -> Any? {
+    public override func accessibilityValue() -> Any? {
         guard source.utf16Length <= Self.accessibleTextLimit else { return nil }
         return accessibleText(from: .start, to: end)
     }
@@ -1030,46 +1034,46 @@ struct FileTextColors {
         return answers.last { $0.span == span }?.text
     }
     /// The text is read only: its selection can be set, the text itself not.
-    override func isAccessibilitySelectorAllowed(_ selector: Selector) -> Bool {
+    public override func isAccessibilitySelectorAllowed(_ selector: Selector) -> Bool {
         if selector == #selector(setAccessibilityValue(_:)) || selector == #selector(setAccessibilitySelectedText(_:)) { return false }
         return super.isAccessibilitySelectorAllowed(selector)
     }
-    override func setAccessibilityValue(_ value: Any?) {}
-    override func setAccessibilitySelectedText(_ text: String?) {}
-    override func isAccessibilityFocused() -> Bool { window?.firstResponder === self }
-    override func setAccessibilityFocused(_ focused: Bool) { if focused { window?.makeFirstResponder(self) } }
-    override func accessibilityNumberOfCharacters() -> Int { source.utf16Length }
-    override func accessibilitySelectedText() -> String? {
+    public override func setAccessibilityValue(_ value: Any?) {}
+    public override func setAccessibilitySelectedText(_ text: String?) {}
+    public override func isAccessibilityFocused() -> Bool { window?.firstResponder === self }
+    public override func setAccessibilityFocused(_ focused: Bool) { if focused { window?.makeFirstResponder(self) } }
+    public override func accessibilityNumberOfCharacters() -> Int { source.utf16Length }
+    public override func accessibilitySelectedText() -> String? {
         guard accessibilitySelectedTextRange().length <= Self.accessibleTextLimit else { return nil }
         return hasSelection ? accessibleText(from: selectedRange.start, to: selectedRange.end) : ""
     }
-    override func accessibilitySelectedTextRange() -> NSRange {
+    public override func accessibilitySelectedTextRange() -> NSRange {
         let start = source.utf16Offset(of: selectedRange.start), end = source.utf16Offset(of: selectedRange.end)
         return NSRange(location: start, length: end - start)
     }
-    override func setAccessibilitySelectedTextRange(_ range: NSRange) {
+    public override func setAccessibilitySelectedTextRange(_ range: NSRange) {
         let start = source.position(atUTF16: range.location), end = source.position(atUTF16: range.location + max(0, range.length))
         select(from: start, to: end)
         scrollToVisible(end)
     }
-    override func accessibilitySelectedTextRanges() -> [NSValue]? { [NSValue(range: accessibilitySelectedTextRange())] }
-    override func setAccessibilitySelectedTextRanges(_ ranges: [NSValue]?) {
+    public override func accessibilitySelectedTextRanges() -> [NSValue]? { [NSValue(range: accessibilitySelectedTextRange())] }
+    public override func setAccessibilitySelectedTextRanges(_ ranges: [NSValue]?) {
         if let first = ranges?.first { setAccessibilitySelectedTextRange(first.rangeValue) }
     }
-    override func accessibilityInsertionPointLineNumber() -> Int { focus.line }
-    override func accessibilityVisibleCharacterRange() -> NSRange {
+    public override func accessibilityInsertionPointLineNumber() -> Int { focus.line }
+    public override func accessibilityVisibleCharacterRange() -> NSRange {
         let lines = visibleLines
         let start = source.utf16Start(ofLine: lines.lowerBound)
         let end = source.utf16Start(ofLine: lines.upperBound) + source.utf16Length(ofLine: lines.upperBound)
         return NSRange(location: start, length: end - start)
     }
-    override func accessibilityString(for range: NSRange) -> String? {
+    public override func accessibilityString(for range: NSRange) -> String? {
         let clamped = clamped(range)
         guard clamped.length <= Self.accessibleTextLimit else { return nil }
         let start = source.position(atUTF16: clamped.location), end = source.position(atUTF16: NSMaxRange(clamped))
         return accessibleText(from: start, to: end)
     }
-    override func accessibilityAttributedString(for range: NSRange) -> NSAttributedString? {
+    public override func accessibilityAttributedString(for range: NSRange) -> NSAttributedString? {
         guard let text = accessibilityString(for: range) else { return nil }
         let font = FileTextMetrics.font
         let described: [String: Any] = [
@@ -1080,15 +1084,15 @@ struct FileTextColors {
         ]
         return NSAttributedString(string: text, attributes: [.accessibilityFont: described, .accessibilityForegroundColor: colors.text.cgColor])
     }
-    override func accessibilityLine(for index: Int) -> Int { source.line(atUTF16: max(0, min(index, source.utf16Length))) }
+    public override func accessibilityLine(for index: Int) -> Int { source.line(atUTF16: max(0, min(index, source.utf16Length))) }
     /// A line with its "\n", as a text view counts it.
-    override func accessibilityRange(forLine line: Int) -> NSRange {
+    public override func accessibilityRange(forLine line: Int) -> NSRange {
         guard line >= 0, line < source.lineCount else { return NSRange(location: NSNotFound, length: 0) }
         let start = source.utf16Start(ofLine: line)
         let length = source.utf16Length(ofLine: line) + (line + 1 < source.lineCount ? 1 : 0)
         return NSRange(location: start, length: length)
     }
-    override func accessibilityRange(for index: Int) -> NSRange {
+    public override func accessibilityRange(for index: Int) -> NSRange {
         let position = source.position(atUTF16: index)
         let length = source.utf16Length(ofLine: position.line)
         guard position.column < length else {
@@ -1101,12 +1105,12 @@ struct FileTextColors {
         return NSRange(location: source.utf16Start(ofLine: position.line) + base + character.location, length: character.length)
     }
     /// One style throughout a line: a line is a style run.
-    override func accessibilityStyleRange(for index: Int) -> NSRange {
+    public override func accessibilityStyleRange(for index: Int) -> NSRange {
         accessibilityRange(forLine: accessibilityLine(for: index))
     }
     /// The character under a point: the one whose glyphs hold it, or past a
     /// line's end its "\n".
-    override func accessibilityRange(for point: NSPoint) -> NSRange {
+    public override func accessibilityRange(for point: NSPoint) -> NSRange {
         guard let window else { return NSRange(location: NSNotFound, length: 0) }
         let local = convert(window.convertPoint(fromScreen: point), from: nil)
         let caret = position(at: local)
@@ -1128,7 +1132,7 @@ struct FileTextColors {
     /// Where a range is drawn, on the screen. Within a line, exactly; across
     /// lines, the band from its first line to its last, the width of the view
     /// (no line between is set to measure it).
-    override func accessibilityFrame(for range: NSRange) -> NSRect {
+    public override func accessibilityFrame(for range: NSRange) -> NSRect {
         guard let window else { return .zero }
         let clamped = clamped(range)
         let start = source.position(atUTF16: clamped.location), end = source.position(atUTF16: NSMaxRange(clamped))
@@ -1170,7 +1174,7 @@ struct FileTextColors {
 
 extension FileTextView: NSMenuItemValidation {
     /// Copy only with something selected.
-    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+    public func validateMenuItem(_ item: NSMenuItem) -> Bool {
         if item.action == #selector(copy(_:)) { return hasSelection }
         return true
     }
@@ -1179,7 +1183,7 @@ extension FileTextView: NSMenuItemValidation {
 /// The line numbers beside the text, in the scroll view's vertical ruler, so
 /// they stay put when the text scrolls sideways and move with it up and down.
 /// A click on a number selects that line; a drag, the lines it crosses.
-@MainActor final class FileLineNumberRuler: NSRulerView {
+@MainActor public final class FileLineNumberRuler: NSRulerView {
     weak var textView: FileTextView?
 
     init(textView: FileTextView, scrollView: NSScrollView) {
@@ -1193,10 +1197,10 @@ extension FileTextView: NSMenuItemValidation {
         // found no text in it at all.
         setAccessibilityLabel("Line numbers")
     }
-    required init(coder: NSCoder) { fatalError("init(coder:) is not used") }
+    public required init(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
-    override var isFlipped: Bool { true }
-    override var isOpaque: Bool { false }
+    public override var isFlipped: Bool { true }
+    public override var isOpaque: Bool { false }
     /// Wide enough for the last line's number, and room either side.
     func textChanged() {
         let digits = CGFloat(String(textView?.source.lineCount ?? 1).count)
@@ -1208,7 +1212,7 @@ extension FileTextView: NSMenuItemValidation {
         let line = CTLineCreateWithAttributedString(NSAttributedString(string: "0", attributes: [.font: FileTextMetrics.numbersFont]))
         return CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
     }()
-    override var requiredThickness: CGFloat { ruleThickness }
+    public override var requiredThickness: CGFloat { ruleThickness }
 
     /// The lines whose numbers are drawn stronger: the selected ones, or the
     /// insertion point's.
@@ -1218,7 +1222,7 @@ extension FileTextView: NSMenuItemValidation {
         return start.line...max(start.line, end.column == 0 && end.line > start.line ? end.line - 1 : end.line)
     }
 
-    override func draw(_ dirtyRect: NSRect) {
+    public override func draw(_ dirtyRect: NSRect) {
         guard let textView, let context = NSGraphicsContext.current?.cgContext else { return }
         let selected = strong(textView)
         context.textMatrix = .identity
@@ -1241,7 +1245,7 @@ extension FileTextView: NSMenuItemValidation {
         }
     }
 
-    override func mouseDown(with event: NSEvent) {
+    public override func mouseDown(with event: NSEvent) {
         guard let textView, let window else { return }
         window.makeFirstResponder(textView)
         func line(_ event: NSEvent) -> Int { textView.line(at: textView.convert(event.locationInWindow, from: nil).y) }
@@ -1268,15 +1272,15 @@ extension FileTextView: NSMenuItemValidation {
             select(to: line(last))
         }
     }
-    override func resetCursorRects() { addCursorRect(visibleRect, cursor: .arrow) }
+    public override func resetCursorRects() { addCursorRect(visibleRect, cursor: .arrow) }
 }
 
 /// A file's text in a scroll view with its line numbers: what a file tab shows.
-@MainActor final class FileTextScrollView: NSScrollView {
-    let textView = FileTextView(frame: NSRect(x: 0, y: 0, width: 400, height: 400))
-    private(set) var numbers: FileLineNumberRuler!
+@MainActor public final class FileTextScrollView: NSScrollView {
+    public let textView = FileTextView(frame: NSRect(x: 0, y: 0, width: 400, height: 400))
+    public private(set) var numbers: FileLineNumberRuler!
 
-    override init(frame: NSRect) {
+    public override init(frame: NSRect) {
         super.init(frame: frame)
         hasVerticalScroller = true; hasHorizontalScroller = true; autohidesScrollers = true
         borderType = .noBorder; drawsBackground = false
@@ -1285,5 +1289,5 @@ extension FileTextView: NSMenuItemValidation {
         verticalRulerView = numbers
         hasHorizontalRuler = false; hasVerticalRuler = true; rulersVisible = true
     }
-    required init?(coder: NSCoder) { nil }
+    public required init?(coder: NSCoder) { nil }
 }

@@ -2,6 +2,7 @@ import XCTest
 import AppKit
 import ApplicationServices
 @testable import PiApp
+@testable import FileView
 
 /// The file viewer's text (`FileTextView`): lines set only as they come into
 /// view, whatever the file's size; selection by mouse and keyboard as in any

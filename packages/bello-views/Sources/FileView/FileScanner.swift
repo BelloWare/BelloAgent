@@ -11,7 +11,7 @@ import Foundation
 // character. UTF-16 files are known by their byte order mark.
 
 /// How a file's bytes are text.
-enum FileEncoding: Sendable, Equatable {
+public enum FileEncoding: Sendable, Equatable {
     case utf8
     /// Every byte one character: a file that is not valid UTF-8, shown this
     /// way and said to be.

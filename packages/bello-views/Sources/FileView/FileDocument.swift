@@ -101,8 +101,8 @@ struct FileLengths: Sendable {
     mutating func removeAll() { chunks = []; count = 0 }
 }
 
-@MainActor final class FileDocument: FileTextSource {
-    enum Status: Equatable, Sendable {
+@MainActor public final class FileDocument: FileTextSource {
+    public enum Status: Equatable, Sendable {
         case indexing
         case ready
         /// Not text: shown by what it is (images, PDFs) or not at all.
@@ -114,36 +114,36 @@ struct FileLengths: Sendable {
         case failed(String)
     }
     /// How the document reads, for tests to make smaller or slower.
-    struct Options: Sendable {
-        var chunkBytes = 4 << 20
+    public struct Options: Sendable {
+        public var chunkBytes = 4 << 20
         /// The first lines are shown once this much is read (the first read
         /// is no bigger); then more after every `publishBytes`, or 100 ms,
         /// whichever comes first.
-        var firstPublishBytes = 64 << 10
-        var publishBytes = 8 << 20
-        var publishInterval: Duration = .milliseconds(100)
+        public var firstPublishBytes = 64 << 10
+        public var publishBytes = 8 << 20
+        public var publishInterval: Duration = .milliseconds(100)
         /// At most this many lines are kept: 4 bytes each.
-        var lineLimit = 50_000_000
+        public var lineLimit = 50_000_000
         /// Text kept, in UTF-16 units, across pages and windows, each line
         /// costing a little more than its text. What the latest drawing
         /// uses is kept even past it.
-        var cacheUnits = 8 << 20
+        public var cacheUnits = 8 << 20
         /// Called before opening, before each chunk the pass reads, and
         /// before each page or window is read.
-        var beforeOpen: (@Sendable () async -> Void)?
-        var beforeChunk: (@Sendable (Int64) async -> Void)?
-        var beforePage: (@Sendable () async -> Void)?
-        init() {}
+        public var beforeOpen: (@Sendable () async -> Void)?
+        public var beforeChunk: (@Sendable (Int64) async -> Void)?
+        public var beforePage: (@Sendable () async -> Void)?
+        public init() {}
     }
 
-    let url: URL
-    let options: Options
-    private(set) var status: Status = .indexing
-    private(set) var encoding: FileEncoding = .utf8
+    public let url: URL
+    public let options: Options
+    public private(set) var status: Status = .indexing
+    public private(set) var encoding: FileEncoding = .utf8
     /// Read as Latin-1 because its bytes are not UTF-8: said, not hidden.
-    private(set) var fellBack = false
-    private(set) var generation = 0
-    var arrival: ((ClosedRange<Int>) -> Void)?
+    public private(set) var fellBack = false
+    public private(set) var generation = 0
+    public var arrival: ((ClosedRange<Int>) -> Void)?
 
     private var bytes: FileBytes?
     private(set) var identity: FileIdentity?
@@ -166,7 +166,7 @@ struct FileLengths: Sendable {
     /// Where the kept text ends, when there are more lines than are kept.
     private var keptEnd: Int64?
     private var complete = false
-    private(set) var longestLine = 0
+    public private(set) var longestLine = 0
 
     /// Pages by checkpoint, and windows of long lines by (line, mark).
     private struct Page { let firstLine: Int; let lines: [String]; let cost: Int }
@@ -212,12 +212,12 @@ struct FileLengths: Sendable {
     #endif
 
     /// Opens the file away from the main thread: this returns at once.
-    init(url: URL, options: Options = Options()) {
+    public init(url: URL, options: Options = Options()) {
         self.url = url; self.options = options
         open()
     }
     /// Stops reading. Reads under way finish and are dropped.
-    func close() {
+    public func close() {
         indexing?.cancel(); indexing = nil
         version += 1
         bytes = nil
@@ -383,7 +383,7 @@ struct FileLengths: Sendable {
         #endif
         status = .indexing
     }
-    var isReading: Bool { reading }
+    public var isReading: Bool { reading }
     /// Whether more is read of the file: not once it has changed or failed.
     private var reading: Bool {
         switch status {
@@ -395,12 +395,12 @@ struct FileLengths: Sendable {
     // MARK: FileTextSource
 
     /// The lines found, and while the pass goes on the one it is in.
-    var lineCount: Int { max(1, lengths.count + (complete ? 0 : 1)) }
-    func utf16Length(ofLine index: Int) -> Int {
+    public var lineCount: Int { max(1, lengths.count + (complete ? 0 : 1)) }
+    public func utf16Length(ofLine index: Int) -> Int {
         if index < lengths.count { return lengths[index] }
         return index == lengths.count && !complete ? provisional : 0
     }
-    var utf16Length: Int {
+    public var utf16Length: Int {
         let total = complete ? finishedUTF16 - 1 : finishedUTF16 + Int64(provisional)
         return Int(max(0, total))
     }
@@ -413,7 +413,7 @@ struct FileLengths: Sendable {
         }
         return low
     }
-    func utf16Start(ofLine index: Int) -> Int {
+    public func utf16Start(ofLine index: Int) -> Int {
         guard !checkpoints.isEmpty else { return 0 }
         let line = max(0, min(index, lineCount - 1))
         let point = checkpoints[checkpoint(holding: line)]
@@ -421,7 +421,7 @@ struct FileLengths: Sendable {
         for before in point.line..<line { offset += Int64(utf16Length(ofLine: before)) + 1 }
         return Int(offset)
     }
-    func line(atUTF16 offset: Int) -> Int {
+    public func line(atUTF16 offset: Int) -> Int {
         guard !checkpoints.isEmpty else { return 0 }
         var low = 0, high = checkpoints.count - 1
         while low < high {
@@ -435,7 +435,7 @@ struct FileLengths: Sendable {
         return line
     }
 
-    func text(ofLine index: Int, range: Range<Int>) -> String? { text(ofLine: index, range: range, asking: true) }
+    public func text(ofLine index: Int, range: Range<Int>) -> String? { text(ofLine: index, range: range, asking: true) }
     /// Part of a line, if it is at hand; asking for it reads what is not.
     private func text(ofLine index: Int, range: Range<Int>, asking: Bool) -> String? {
         if status == .binary { return "" }
@@ -465,7 +465,7 @@ struct FileLengths: Sendable {
     /// out, as much as half the cache holds, so what is read ahead never
     /// pushes out what is on screen. Its drawing calls this first, once;
     /// what the drawings of this screen use is in use until the next.
-    func prefetch(lines: ClosedRange<Int>) {
+    public func prefetch(lines: ClosedRange<Int>) {
         // What the last screen used goes only now, if it is not used again,
         // and anything older while more is kept than the budget.
         evict()
@@ -705,8 +705,8 @@ struct FileLengths: Sendable {
     // MARK: The cache
 
     /// The screen's drawing of itself: what it uses meanwhile is in use.
-    func beginDrawing() { drawings += 1 }
-    func endDrawing() { drawings = max(0, drawings - 1) }
+    public func beginDrawing() { drawings += 1 }
+    public func endDrawing() { drawings = max(0, drawings - 1) }
     private func tick() -> Int { clock += 1; return clock }
     private func touch(_ key: AnyHashable) {
         used[key] = tick()
@@ -765,7 +765,7 @@ struct FileLengths: Sendable {
     /// nothing: only for a selection small enough to build here, on the main
     /// thread, and short of the line the pass is still in. Anything else is
     /// read and built by `fetch`, off it.
-    func textAtHand(from start: FileTextPosition, to end: FileTextPosition) -> String? {
+    public func textAtHand(from start: FileTextPosition, to end: FileTextPosition) -> String? {
         guard start.line < lineCount, end.line - start.line < 4_096, utf16Offset(of: end) - utf16Offset(of: start) <= 1 << 20 else { return nil }
         // The line the pass is in may be at hand only as far as the pass had
         // gone, a character cut there made placeholders: `fetch` reads it.
@@ -784,7 +784,7 @@ struct FileLengths: Sendable {
     /// The text between two positions, read off the main thread whatever its
     /// size, lines joined by "\n". A long line at either end is read from its
     /// mark nearest the position, not from its start or to its end.
-    func fetch(from start: FileTextPosition, to end: FileTextPosition, completion: @escaping @MainActor (String?) -> Void) {
+    public func fetch(from start: FileTextPosition, to end: FileTextPosition, completion: @escaping @MainActor (String?) -> Void) {
         guard start < end else { completion(""); return }
         if let text = textAtHand(from: start, to: end) { completion(text); return }
         guard reading, let bytes, let identity, !checkpoints.isEmpty else { completion(nil); return }
