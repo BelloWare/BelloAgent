@@ -23,7 +23,7 @@ import AppKit
     }
 
     @Published public var roots: [String] = []
-    @Published public var root: String? { didSet { if root != oldValue { startRefresh() } } }
+    @Published public var root: String? { didSet { if root != oldValue { if suspended { needsFullRead = true }; startRefresh() } } }
     @Published public var repositoryRoot: String?
     /// Coming back to Changes brings up to date a diff that a refresh nobody
     /// asked for left unread while it was hidden.
@@ -49,6 +49,7 @@ import AppKit
     @Published public var selectedCommit: GitCommit? {
         didSet {
             guard selectedCommit != oldValue else { return }
+            commitReadInterrupted = nil
             changingCommit = true; detailFile = nil; changingCommit = false
             startCommitLoad()
         }
@@ -74,7 +75,7 @@ import AppKit
     @Published public private(set) var branches: [String] = []
     @Published public private(set) var stashes: [GitStashEntry] = []
     @Published public var logFilter = GitLogFilter() { didSet { if logFilter != oldValue { startHistoryReload() } } }
-    @Published public var detailFile: String? { didSet { if detailFile != oldValue && !changingCommit { startCommitLoad() } } }
+    @Published public var detailFile: String? { didSet { if detailFile != oldValue && !changingCommit { commitReadInterrupted = nil; startCommitLoad() } } }
     @Published public private(set) var detailFileDiff: [GitDiffFile] = []
     /// How the diff is laid out and which diff is shown whole, held apart
     /// from the state the panel observes: switching the layout, or opening
@@ -103,6 +104,11 @@ import AppKit
     private var selectedDiffTask: Task<Void, Never>?
     private var refreshTask: Task<Void, Never>?
     private var historyTask: Task<Void, Never>?
+    /// The next page of history being read, and which reading of the history
+    /// it continues: a page for a history read again since (a refresh, a
+    /// filter, the panel hidden) is dropped, not added behind the new one.
+    private var pageTask: Task<Void, Never>?
+    private var historyReading = 0
     /// Watches the working tree so a file saved in an editor or a commit made
     /// in a terminal appears without the reader pressing Refresh.
     private var watcher: GitWorkingTreeWatcher?
@@ -167,19 +173,21 @@ import AppKit
     /// its git processes stop instead of racing the new one.
     public func startRefresh() { automaticRefresh = nil; automaticChangePending = false; refreshTask?.cancel(); refreshTask = Task { await refresh() } }
     private func startHistoryReload() { historyTask?.cancel(); historyTask = Task { await reloadHistory() } }
-    /// Stops every read this panel started. The sheet calls it as it closes, so
-    /// no `git show` keeps computing a patch for a panel nobody can see.
+    /// Stops every read this panel started. Hiding the panel stops them
+    /// (`setShown`), so no `git show` keeps computing a patch for a panel
+    /// nobody can see.
     public func stop() {
         generation += 1
         watcher?.stop(); watcher = nil
         refreshTask?.cancel(); refreshTask = nil; automaticRefresh = nil; automaticChangePending = false
         historyTask?.cancel(); historyTask = nil
+        pageTask?.cancel(); pageTask = nil; historyReading += 1
         detailTask?.cancel(); detailTask = nil
         selectedDiffTask?.cancel(); selectedDiffTask = nil
         loading = false; diffLoading = false; commitLoading = false
     }
 
-    /// The sheet has closed for good. Whatever still holds the sheet's views
+    /// The panel has closed for good. Whatever still holds the sheet's views
     /// holds this controller (in a test, XCTest does until the test returns),
     /// and a controller that kept what it had read held its diffs, its history
     /// and up to two dozen commits' patches with it. It goes back to how it
@@ -202,11 +210,80 @@ import AppKit
         // nothing until a panel opens over this controller.
         stop()
         closed = true
+        needsFullRead = false; commitReadInterrupted = nil
     }
-    /// Let go of by a closed sheet; see `letGo()`.
+    /// Let go of by a closed panel; see `letGo()`.
     private var closed = false
     /// A panel is on screen over this controller: it reads again.
     public func opened() { closed = false }
+
+    /// Whether a panel over this controller is on screen (`setShown`).
+    public private(set) var isShown = false
+    /// Hidden after being shown: another tab over the panel, or the report
+    /// over the tabs. A hidden panel reads nothing and watches nothing.
+    public private(set) var suspended = false
+    /// The folder changed while the panel was hidden: shown again, it is read
+    /// as a first open reads it.
+    private var needsFullRead = false
+    /// Which of a commit's reads is running, and which one hiding the panel
+    /// stopped: finished once the panel shows, and kept until it has
+    /// restarted, whatever comes and goes in between.
+    private enum CommitRead { case commit, wholePatch }
+    private var commitRead: CommitRead?
+    /// The read hiding stopped, and for which commit and file: another
+    /// commit or file chosen since starts a read of its own, and this one is
+    /// dropped.
+    private var commitReadInterrupted: (read: CommitRead, commit: String, file: String?)?
+    /// How many times the panel has come or gone, for tests.
+    private(set) var shownChanges = 0
+    /// Reads of the working tree that finished current, for tests.
+    private(set) var refreshesFinished = 0
+
+    /// Whether a panel over this controller is on screen, as the panel says
+    /// when it comes and goes.
+    ///
+    /// Shown for the first time, or again after `letGo()`, it reads as the
+    /// Changes sheet did when it opened: a spinner, and the first file
+    /// chosen. Shown again after being hidden, it reads what changed
+    /// meanwhile quietly: the selection, the ticks, the history paged in and
+    /// the commit being read stay as they were, and a commit's read that
+    /// hiding stopped is finished. Hidden, every read and the watch stop; a
+    /// write already running finishes, and what it changed is read when the
+    /// panel is shown.
+    public func setShown(_ shown: Bool) {
+        guard shown != isShown || (shown && closed) else { return }
+        isShown = shown
+        shownChanges += 1
+        if shown {
+            let reopened = closed
+            closed = false; suspended = false
+            if !statusRead || needsFullRead || reopened { needsFullRead = false; startRefresh() } else { startQuietRefresh() }
+        } else {
+            if commitLoading, let commitRead, let hash = selectedCommit?.hash { commitReadInterrupted = (commitRead, hash, detailFile) }
+            suspended = true
+            stop()
+        }
+    }
+    /// What changed while the panel was hidden, read without moving the
+    /// reader; then the commit's read that hiding stopped, if there was one.
+    private func startQuietRefresh() {
+        automaticRefresh = nil; automaticChangePending = false
+        refreshTask?.cancel()
+        refreshTask = Task { [weak self] in await self?.refresh(automatic: true) }
+    }
+    /// After a read of the working tree that finished while the panel shows,
+    /// whichever read it was (the one showing started, or one the watch
+    /// started in its place): the commit read hiding stopped, if it is still
+    /// for the commit and file chosen.
+    private func resumeInterruptedCommitRead() {
+        guard let interrupted = commitReadInterrupted, !suspended, !closed else { return }
+        commitReadInterrupted = nil
+        guard selectedCommit?.hash == interrupted.commit, detailFile == interrupted.file else { return }
+        switch interrupted.read {
+        case .commit: startCommitLoad()
+        case .wholePatch: loadDeferredCommitDiff()
+        }
+    }
     /// Test seam: commits whose reads are kept for moving back to them.
     var cachedCommits: Int { commitCache.count }
 
@@ -250,7 +327,9 @@ import AppKit
     }
 
     public func refresh(automatic: Bool = false) async {
-        guard let root, !closed else { return }
+        // Hidden or let go of: nothing is read, and the watch stays off. A
+        // hidden panel is read again when it is shown (`setShown`).
+        guard let root, !closed, !suspended else { return }
         // Checked again here and not only where the task was made: the reader
         // may have started a refresh of their own in between, and theirs must
         // not be left half done with a spinner that never stops.
@@ -307,6 +386,7 @@ import AppKit
             guard current(generation) else { return }
             publish(\.branches, branches); publish(\.stashes, stashes)
             await reloadHistory(generation: generation, automatic: automatic)
+            if current(generation) { refreshesFinished += 1; resumeInterruptedCommitRead() }
         } catch is CancellationError {
         } catch { if current(generation) { notice = error.localizedDescription } }
     }
@@ -317,12 +397,17 @@ import AppKit
     private func current(_ generation: Int) -> Bool { !Task.isCancelled && self.generation == generation }
 
     private func reloadHistory(generation: Int? = nil, automatic: Bool = false) async {
-        guard let repositoryRoot else { return }
+        guard let repositoryRoot, !closed, !suspended else { return }
         let generation = generation ?? self.generation
+        // A read nobody asked for keeps the pages the reader has read: it
+        // used to cut a history paged back to its fifth page to its first on
+        // every save, and the reader's place with it.
+        let limit = automatic ? max(50, commits.count) : 50
         do {
-            let commits = try await service.log(in: repositoryRoot, limit: 50, path: logFilter.path, filter: logFilter)
+            let commits = try await service.log(in: repositoryRoot, limit: limit, path: logFilter.path, filter: logFilter)
             guard current(generation) else { return }
-            publish(\.commits, commits); publish(\.historyExhausted, commits.count < 50)
+            historyReading += 1; pageTask?.cancel(); pageTask = nil
+            publish(\.commits, commits); publish(\.historyExhausted, commits.count < limit)
             // A commit pushed off the first page by newer ones is still the
             // commit the reader is reading; only a filter change drops it.
             if !automatic, let selectedCommit, !commits.contains(where: { $0.hash == selectedCommit.hash }) { self.selectedCommit = nil }
@@ -333,16 +418,25 @@ import AppKit
     }
 
     public func loadMoreHistory() async {
-        guard let repositoryRoot, !historyExhausted else { return }
-        do {
-            let more = try await service.log(in: repositoryRoot, limit: 50, skip: commits.count, path: logFilter.path, filter: logFilter)
-            // A set, not a scan of every page already loaded: paging through a
-            // long history was quadratic in the commits on screen.
-            let known = Set(commits.map(\.hash))
-            commits += more.filter { !known.contains($0.hash) }
-            historyExhausted = more.count < 50
-        } catch is CancellationError {
-        } catch { notice = error.localizedDescription }
+        guard let repositoryRoot, !historyExhausted, !closed, !suspended else { return }
+        let reading = historyReading, skip = commits.count, filter = logFilter
+        pageTask?.cancel()
+        let task = Task { [service] in
+            do {
+                let more = try await service.log(in: repositoryRoot, limit: 50, skip: skip, path: filter.path, filter: filter)
+                // A page for a history read again since, or for a panel hidden
+                // or let go of meanwhile, is not added to what it shows now.
+                guard !Task.isCancelled, reading == historyReading, !closed, !suspended, self.repositoryRoot == repositoryRoot, logFilter == filter else { return }
+                // A set, not a scan of every page already loaded: paging through a
+                // long history was quadratic in the commits on screen.
+                let known = Set(commits.map(\.hash))
+                commits += more.filter { !known.contains($0.hash) }
+                historyExhausted = more.count < 50
+            } catch is CancellationError {
+            } catch { if reading == historyReading, !closed, !suspended { notice = error.localizedDescription } }
+        }
+        pageTask = task
+        await task.value
     }
 
     private func prefillHeadMessage() async {
@@ -446,7 +540,7 @@ import AppKit
         let needsDetail = cached == nil
         let needsDiff = file == nil ? (cached?.diff == nil && !(cached?.detail.isLarge ?? false)) : cached?.fileDiffs[file ?? ""] == nil
         guard needsDetail || needsDiff else { commitLoading = false; return }
-        commitLoading = true
+        commitLoading = true; commitRead = .commit
         detailTask = Task { [service] in
             do {
                 var summary = cached?.detail
@@ -481,7 +575,7 @@ import AppKit
         detailDiffDeferred = false
         detailTask?.cancel()
         guard let repositoryRoot else { return }
-        commitLoading = true
+        commitLoading = true; commitRead = .wholePatch
         detailTask = Task { [service] in
             do {
                 let files = try await service.commitDiffFiles(in: repositoryRoot, commit: commit, path: nil)

@@ -15,7 +15,8 @@ import GitView
 struct GitPanelView: View {
     @StateObject private var controller: GitController
     @PiDismiss private var dismiss
-    @State private var panelWindow: NSWindow?
+    /// Where the panel is, and the discard question it has up, if any.
+    @State private var place = GitPanelPlace()
     /// The panel's own asker, so a question about discarding is only ever
     /// refused by another question about discarding.
     @StateObject private var questions = PiQuestion()
@@ -24,9 +25,10 @@ struct GitPanelView: View {
         _controller = StateObject(wrappedValue: GitController(roots: roots))
     }
     /// A panel over a controller made elsewhere: the tests that time the
-    /// sheet drive its controller directly.
-    init(controller: @autoclosure @escaping () -> GitController) {
+    /// sheet drive its controller directly, and may keep its place.
+    init(controller: @autoclosure @escaping () -> GitController, place: GitPanelPlace = GitPanelPlace()) {
         _controller = StateObject(wrappedValue: controller())
+        _place = State(initialValue: place)
     }
 
     var body: some View {
@@ -52,9 +54,13 @@ struct GitPanelView: View {
             GitPanelActions(controller: controller, working: controller.loading || controller.busy,
                             close: { [dismiss] in dismiss() }).equatable()
         }
-        .background(GitPanelWindowReader(found: { panelWindow = $0 }, closed: { [controller] in controller.letGo() }))
-        .task { controller.opened(); await controller.refresh() }
-        .onDisappear { controller.stop(); questions.cancel() }
+        // On screen or not, as the panel's own view is: the controller reads
+        // and watches only while it is, and a discard question the panel has
+        // up goes down, unanswered, when the panel does.
+        .background(GitPanelPresence(place: place, shown: { [controller, place] shown in
+            controller.setShown(shown)
+            if !shown { place.cancelQuestion() }
+        }, moved: { [place] in place.cancelQuestion() }, closed: { [controller, place] in place.cancelQuestion(); controller.letGo() }))
         .accessibilityIdentifier("git-panel")
     }
 
@@ -92,10 +98,8 @@ struct GitPanelView: View {
     /// a sheet over the panel, never by stopping the main thread in a modal
     /// loop while git, the terminal and every other window wait.
     private var discard: @MainActor ([GitStatusEntry]) -> Void {
-        { [questions, controller, _panelWindow] entries in
-            GitDiscard.ask(questions, discarding: entries, in: _panelWindow.wrappedValue) { entries in
-                Task { await controller.discard(entries) }
-            }
+        { [questions, controller, place] entries in
+            place.askToDiscard(entries, questions: questions) { entries in Task { await controller.discard(entries) } }
         }
     }
 }
@@ -684,13 +688,18 @@ struct GitDiffArray: Equatable {
 /// mechanism, so a second right-click while it is up is dropped rather than
 /// stacked and nothing stops the main thread.
 @MainActor enum GitDiscard {
+    /// The question, up; nil when none was asked (nothing to discard, no
+    /// window, or a question of this asker's already up).
+    @discardableResult
     static func ask(_ questions: PiQuestion, discarding entries: [GitStatusEntry], in window: NSWindow?,
-                    then act: @escaping ([GitStatusEntry]) -> Void) {
-        guard !entries.isEmpty, let window else { return }
-        questions.ask(alert(for: entries), over: window) { response in
-            guard response == .alertFirstButtonReturn else { return }
+                    then act: @escaping ([GitStatusEntry]) -> Void) -> GitDiscardQuestion? {
+        guard !entries.isEmpty, let window else { return nil }
+        let alert = alert(for: entries), question = GitDiscardQuestion(alert: alert)
+        let asked = questions.ask(alert, over: window) { [question] response in
+            guard response == .alertFirstButtonReturn, !question.cancelled else { return }
             act(entries)
         }
+        return asked ? question : nil
     }
 
     static func alert(for entries: [GitStatusEntry]) -> NSAlert {
@@ -704,32 +713,108 @@ struct GitDiffArray: Equatable {
     }
 }
 
-/// Hands the panel the window it is in, so a confirmation can be a sheet on it,
-/// and says when that sheet has closed for good.
+/// A discard question that is up. Taken down unanswered when the panel it is
+/// about is hidden, moves or closes: nothing is discarded, whatever is
+/// pressed after.
+@MainActor final class GitDiscardQuestion {
+    private let alert: NSAlert
+    private(set) var cancelled = false
+    init(alert: NSAlert) { self.alert = alert }
+    func cancel() {
+        guard !cancelled else { return }
+        cancelled = true
+        if let parent = alert.window.sheetParent { parent.endSheet(alert.window, returnCode: .cancel) }
+    }
+}
+
+/// Where a panel is: the view of its that is in a window, read when asked,
+/// and the discard question it has up.
+@MainActor final class GitPanelPlace {
+    /// The panel's view that is in a window (`GitPanelPresence`).
+    weak var probe: NSView?
+    /// The window the panel is in now.
+    var window: NSWindow? { probe?.window }
+    private(set) var question: GitDiscardQuestion?
+    /// Asks, over the window the panel is in now (not the one it was in when
+    /// last told: a tab moves between windows). A request refused because a
+    /// question is already up keeps that question as the one to take down.
+    func askToDiscard(_ entries: [GitStatusEntry], questions: PiQuestion, then act: @escaping ([GitStatusEntry]) -> Void) {
+        if let asked = GitDiscard.ask(questions, discarding: entries, in: window, then: act) { question = asked }
+    }
+    func cancelQuestion() { question?.cancel(); question = nil }
+}
+
+/// Says whether the panel is on screen: in a window and not hidden there,
+/// neither itself nor anything it is in (another tab shown over it, the
+/// report over the tabs). Told on the next turn of the run loop, once for
+/// whatever moved in between, and only when it changes: a view moving into
+/// its window, and `updateNSView`, run inside SwiftUI's update, and a tab
+/// moving between windows leaves one and joins another in the same turn.
 ///
-/// Told on the next turn of the run loop, and only when the window changes:
-/// both `updateNSView` and a view moving into its window run inside SwiftUI's
-/// update, and the panel keeps the window in its `@State` — writing that from
-/// there, on every update of the panel, was a change made during a view update.
-///
-/// `closed` runs once the sheet has left the screen, its closing animation
-/// over, just before its window lets go of the panel (`PiSheetWindow`): the
-/// controller lets go of what it read and stops watching at once, rather than
-/// whenever the last task still holding it ends, and the panel is laid out
-/// once more, emptied.
-struct GitPanelWindowReader: NSViewRepresentable {
-    let found: (NSWindow?) -> Void
+/// `closed` runs once a sheet the panel is in has left the screen, its
+/// closing animation over, just before its window lets go of the panel
+/// (`PiSheetWindow`): the controller lets go of what it read at once, rather
+/// than whenever the last task still holding it ends, and the panel is laid
+/// out once more, emptied.
+struct GitPanelPresence: NSViewRepresentable {
+    let place: GitPanelPlace
+    let shown: (Bool) -> Void
+    /// On screen before and after, but in another window: a question the
+    /// panel had up is on the window it left.
+    var moved: () -> Void = {}
     var closed: () -> Void = {}
-    func makeNSView(context: Context) -> Reader { let view = Reader(); view.found = found; view.closed = closed; return view }
-    func updateNSView(_ view: Reader, context: Context) { view.found = found; view.closed = closed; view.report() }
-    @MainActor final class Reader: NSView {
-        var found: ((NSWindow?) -> Void)?
+    func makeNSView(context: Context) -> Probe {
+        let view = Probe(); view.shown = shown; view.moved = moved; view.closed = closed
+        place.probe = view
+        return view
+    }
+    func updateNSView(_ view: Probe, context: Context) {
+        view.shown = shown; view.moved = moved; view.closed = closed
+        if place.probe !== view { place.probe = view }
+        view.check()
+    }
+    static func dismantleNSView(_ view: Probe, coordinator: ()) { view.gone() }
+    @MainActor final class Probe: NSView {
+        var shown: ((Bool) -> Void)?
+        var moved: (() -> Void)?
         var closed: (() -> Void)?
-        private weak var reported: NSWindow?
-        private var reportedOnce = false
+        private var told: Bool?
+        /// The window it was on screen in, when last told.
+        private weak var toldWindow: NSWindow?
         private var scheduled = false
+        private var dismantled = false
         private weak var watched: NSWindow?
-        override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); report(); watch(window) }
+        override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); check(); watch(window) }
+        override func viewDidHide() { super.viewDidHide(); check() }
+        override func viewDidUnhide() { super.viewDidUnhide(); check() }
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        /// On screen now: in a window, and neither it nor anything it is in hidden.
+        var onScreen: Bool { !dismantled && window != nil && !isHiddenOrHasHiddenAncestor }
+        func check() {
+            guard !scheduled else { return }
+            scheduled = true
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.scheduled = false
+                    let now = self.onScreen, window = now ? self.window : nil
+                    defer { self.toldWindow = window }
+                    if now, self.told == true, let before = self.toldWindow, before !== window { self.moved?() }
+                    guard now != self.told else { return }
+                    self.told = now
+                    self.shown?(now)
+                }
+            }
+        }
+        /// The panel's view is gone for good: it is not on screen. Said on
+        /// the next turn too: SwiftUI takes views down inside its own update,
+        /// and a controller publishing from there broke its exclusive access.
+        func gone() {
+            dismantled = true
+            guard told == true, let shown else { return }
+            told = false
+            DispatchQueue.main.async { MainActor.assumeIsolated { shown(false) } }
+        }
         private func watch(_ window: NSWindow?) {
             guard let window, window !== watched else { return }
             if let watched { NotificationCenter.default.removeObserver(self, name: PiSheetWindow.willRelease, object: watched) }
@@ -746,18 +831,6 @@ struct GitPanelWindowReader: NSViewRepresentable {
             // for a window that has left the screen.
             window.contentView?.needsLayout = true
             window.contentView?.layoutSubtreeIfNeeded()
-        }
-        override func hitTest(_ point: NSPoint) -> NSView? { nil }
-        func report() {
-            guard !scheduled, !reportedOnce || reported !== window else { return }
-            scheduled = true
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                self.scheduled = false
-                guard !self.reportedOnce || self.reported !== self.window else { return }
-                self.reportedOnce = true; self.reported = self.window
-                self.found?(self.window)
-            }
         }
     }
 }
