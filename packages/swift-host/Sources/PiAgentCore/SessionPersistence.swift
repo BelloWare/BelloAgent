@@ -19,7 +19,12 @@ extension AgentSession {
     /// and its context is what replaying those records gives, so the edits and
     /// compactions in effect then are the ones it has. A reply a later
     /// compaction summarized comes back with its whole context.
-    public func fork(to newID: String, at messageID: String? = nil) throws -> JSON {
+    public func fork(to newID: String, at messageID: String? = nil) throws -> JSON { try forked(to: newID, at: messageID).result }
+    /// The fork, and what its journal replays to, made as the journal is
+    /// written: the state the fork's session opens with
+    /// (`AgentSession(prepared:)`), which then does not read the journal
+    /// again. That open writes the metadata file, as a first open does.
+    func forked(to newID: String, at messageID: String? = nil) throws -> (result: JSON, replay: JournalReplay) {
         guard !closed, let journal, !ephemeral else { throw AgentError("session_unavailable", "Save this session before forking its context") }
         try ensureFullHistory()
         _ = try identity(JSON(newID))
@@ -56,8 +61,14 @@ extension AgentSession {
             origin["contextRevision"]=JSON(sha256(Data(contextIDs.joined(separator:"\n").utf8)))
             origin["omittedIncompleteEntries"]=0
         }
+        let replay: JournalReplay
         do {
             let prepared=try SessionJournal(url:temporary,id:newID,cwd:cwd,binding:profile.binding,create:true)
+            // Each record the fork's journal gets, from its marker on, is
+            // replayed as it is written, as the fork's first open would.
+            var consumer=JournalReplayConsumer(id:newID,header:prepared.headerCheck,marker:prepared.markerCheck,spendTracked:false)
+            func replayWritten() throws { if let span=prepared.lastAppend, let line=prepared.lastAppendLine { try consumer.consume(line,at:span.offset) } }
+            try replayWritten()
             let reader=try journal.recordReader(); var index=0
             while let record=try reader.next() {
                 defer { index += 1 }
@@ -68,17 +79,23 @@ extension AgentSession {
                 // Branch records can contain a queued edit. Preserve the branch
                 // and all message bytes, but never authorize its command twice.
                 try prepared.append(record.removing(["id","parentId","timestamp","nativeState"]),id:try identity(record["id"]),flush:false)
+                try replayWritten()
             }
             // As with the copied records, `publish` forces these to disk
             // before the fork takes its name.
             try prepared.append(["type":"custom","customType":JSON(JournalRecordKind.context),"data":["ids":.array(contextIDs.map { JSON($0) }),"visibleIDs":.array(timeline.map { JSON($0) })]],flush:false)
+            try replayWritten()
             try prepared.append(["type":"custom","customType":JSON(JournalRecordKind.forkOrigin),"data":origin],flush:false)
+            try replayWritten()
             var fresh = SessionSpend().record; fresh["source"] = "fork"
             try prepared.append(["type":"custom","customType":JSON(SessionSpend.recordType),"data":fresh],flush:false)
+            try replayWritten()
             try prepared.append(["type":"custom","customType":JSON(JournalRecordKind.state),"data":["active":false,"queue":[],"steering":[],"commands":[],"queuePaused":false,"steeringMode":JSON(steeringMode),"followUpMode":JSON(followUpMode)]],flush:false)
+            try replayWritten()
+            replay=try consumer.finished()
             try prepared.publish(to:destination)
         } catch { try? FileManager.default.removeItem(at:temporary); try? FileManager.default.removeItem(atPath:temporary.path+".lock"); throw error }
-        return ["accepted":true,"sessionId":JSON(newID),"path":JSON(destination.path),"origin":origin]
+        return (["accepted":true,"sessionId":JSON(newID),"path":JSON(destination.path),"origin":origin], replay)
     }
     /// The last journal record a fork at `messageID` keeps: the reply itself,
     /// or the last result of the tools it called, so the fork starts after

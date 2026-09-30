@@ -5,7 +5,7 @@ import Foundation
 /// metadata file's checkpoint when that still matches the journal
 /// (`JournalCheckpoint`), and a chat opened from a checkpoint loads its older
 /// rows the same way when something asks for them (`ensureFullHistory`).
-struct JournalReplay {
+struct JournalReplay: Sendable {
     var history: [ChatMessage] = [], visible: [ChatMessage] = [], context: [ChatMessage] = []
     var versions = MessageVersionStore()
     var spend = SessionSpend(), spendTracked = false
@@ -24,10 +24,13 @@ struct JournalReplay {
     var resumed = false
     /// The newest run state's record: its bytes, where it is, and its key.
     var stateSource: StateSource?
+    /// How much of the journal the records replayed so far take up, from its
+    /// start: where the next record goes, once they are the whole journal.
+    var coveredBytes: UInt64 = 0
 }
 
 /// A run-state record a checkpoint points at.
-struct StateSource {
+struct StateSource: Sendable {
     var line: Data
     var offset: UInt64
     var key: String
@@ -89,6 +92,7 @@ struct JournalReplayConsumer {
 
     /// One record: `line`, not empty, which starts `lineStart` bytes into the journal.
     mutating func consume(_ line: Data, at lineStart: UInt64) throws {
+        r.coveredBytes = lineStart + UInt64(line.count) + 1
         if line.starts(with: JournalLineScan.statePrefix) {
             newestStateLine=line; stateSource=(line, lineStart, "data")
             if CommandReceipts.holdsChanges(line) { receiptChanges.append(line) } else { receiptsBase = .line(line); receiptChanges.removeAll(keepingCapacity: true) }
