@@ -24,6 +24,11 @@ struct GitPanelView: View {
     @StateObject private var questions: PiQuestion
     /// The project the panel shows, named in its header.
     let project: String?
+    /// Wide enough for the list beside the diff; below this the list goes
+    /// above it (`GitPanelSplit`). Set only when the panel's width crosses
+    /// it, so resizing within one layout draws no part again.
+    @State private var wide = true
+    nonisolated static let wideWidth: CGFloat = 900
 
     init(controller: GitController, place: GitPanelPlace = GitPanelPlace(), questions: PiQuestion = PiQuestion(), project: String? = nil) {
         self.controller = controller; self.project = project
@@ -34,7 +39,7 @@ struct GitPanelView: View {
     var body: some View {
         VStack(spacing: 0) {
             GitPanelHeader(controller: controller, inputs: GitPanelHeader.Inputs(controller), project: project).equatable()
-            GitPanelToolbar(controller: controller, inputs: GitPanelToolbar.Inputs(controller)).equatable()
+            GitPanelToolbar(controller: controller, inputs: GitPanelToolbar.Inputs(controller), wide: wide).equatable()
             Rectangle().fill(Color.piHairline).frame(height: 1)
             // The layout the panel keeps is there from its first frame. A
             // panel whose first frame said "Not a git repository", in the
@@ -43,14 +48,15 @@ struct GitPanelView: View {
             if controller.statusRead && controller.repositoryRoot == nil && !controller.loading {
                 notARepository
             } else {
-                HStack(spacing: 0) {
-                    sidebar.frame(width: 340)
-                    Rectangle().fill(Color.piHairline).frame(width: 1)
+                GitPanelSplit(wide: wide) {
+                    sidebar
+                    Rectangle().fill(Color.piHairline)
                     GitPanelDetail(controller: controller, inputs: GitPanelDetail.Inputs(controller)).equatable()
                 }
             }
         }
         .background(Color.piContent)
+        .onGeometryChange(for: Bool.self, of: { $0.size.width >= Self.wideWidth }) { wide = $0 }
         // On screen or not, as the panel's own view is: the controller reads
         // and watches only while it is, and a discard question the panel has
         // up goes down, unanswered, when the panel goes or moves.
@@ -99,6 +105,50 @@ struct GitPanelView: View {
     a.0 === b.0 && a.1 == b.1
 }
 
+/// The list and the diff: side by side where the panel is wide, the list
+/// 340 points wide; where it is narrow (the pane beside the chat), the list
+/// above the diff, both the panel's width. One layout over the same three
+/// parts either way, so the diff table, the lists and what they hold (the
+/// wrap, where they were scrolled) stay the same views when the panel's
+/// width crosses from one to the other.
+struct GitPanelSplit: Layout {
+    let wide: Bool
+    static let listWidth: CGFloat = 340
+    /// Narrow: how tall the list side is, of the `available` height (the
+    /// panel's less the rule): 45% of it, never less than the side needs
+    /// (`least`: its commit box or filters, and a few rows), and leaving the
+    /// diff 180 points where that allows; at most all there is.
+    static func listHeight(available: CGFloat, least: CGFloat) -> CGFloat {
+        min(max((available * 0.45).rounded(), least), max(available - 180, least), available)
+    }
+    /// Three rows of the list, below the side's fixed parts.
+    static let leastRows: CGFloat = 3 * 44
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        proposal.replacingUnspecifiedDimensions()
+    }
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard subviews.count == 3 else {
+            for subview in subviews { subview.place(at: bounds.origin, proposal: ProposedViewSize(bounds.size)) }
+            return
+        }
+        let (list, rule, detail) = (subviews[0], subviews[1], subviews[2])
+        if wide {
+            let width = min(Self.listWidth, bounds.width)
+            list.place(at: bounds.origin, proposal: ProposedViewSize(width: width, height: bounds.height))
+            rule.place(at: CGPoint(x: bounds.minX + width, y: bounds.minY), proposal: ProposedViewSize(width: 1, height: bounds.height))
+            detail.place(at: CGPoint(x: bounds.minX + width + 1, y: bounds.minY), proposal: ProposedViewSize(width: max(0, bounds.width - width - 1), height: bounds.height))
+        } else {
+            // What the side cannot give up, a five-line commit message
+            // included: its size when offered no height at all.
+            let fixed = list.sizeThatFits(ProposedViewSize(width: bounds.width, height: 0)).height
+            let height = Self.listHeight(available: max(0, bounds.height - 1), least: fixed + Self.leastRows)
+            list.place(at: bounds.origin, proposal: ProposedViewSize(width: bounds.width, height: height))
+            rule.place(at: CGPoint(x: bounds.minX, y: bounds.minY + height), proposal: ProposedViewSize(width: bounds.width, height: 1))
+            detail.place(at: CGPoint(x: bounds.minX, y: bounds.minY + height + 1), proposal: ProposedViewSize(width: bounds.width, height: max(0, bounds.height - height - 1)))
+        }
+    }
+}
+
 /// The panel's head, as a file tab's is: the project, and what the
 /// repository is at (its branch, what it tracks, how many files changed, what
 /// is stashed); the spinner while the reader's read runs, and Refresh.
@@ -121,7 +171,7 @@ private struct GitPanelHeader: View, Equatable {
         HStack(spacing: PiSpacing.sm) {
             HStack(spacing: 4) {
                 if let project {
-                    Text(project).font(PiFont.caption.weight(.medium)).foregroundStyle(Color.piInkSecondary).lineLimit(1).fixedSize()
+                    Text(project).font(PiFont.caption.weight(.medium)).foregroundStyle(Color.piInkSecondary).lineLimit(1).truncationMode(.middle).layoutPriority(1)
                     Image(systemName: "chevron.right").font(.system(size: 8, weight: .semibold)).foregroundStyle(Color.piInkTertiary)
                 }
                 Text(subtitle).font(PiFont.caption).foregroundStyle(Color.piInkSecondary).lineLimit(1).truncationMode(.tail)
@@ -148,7 +198,9 @@ private struct GitPanelHeader: View, Equatable {
 // MARK: - Toolbar
 
 /// The folder, the branch menu, fetch, pull and push, the stash menu, the
-/// Changes and History tabs, and what the last action said.
+/// Changes and History tabs, and what the last action said: one row where
+/// the panel is wide; where it is narrow, the tabs and what the last action
+/// said on a second row.
 private struct GitPanelToolbar: View, Equatable {
     struct Inputs: Equatable {
         var roots: [String], root: String?, displayRoot: String, repository: Bool
@@ -162,37 +214,58 @@ private struct GitPanelToolbar: View, Equatable {
     }
     let controller: GitController
     let inputs: Inputs
+    let wide: Bool
     @State private var newBranchName = ""
     @State private var showNewBranch = false
     @State private var stashMessage = ""
     @State private var showStash = false
-    nonisolated static func == (a: Self, b: Self) -> Bool { MainActor.assumeIsolated { samePart((a.controller, a.inputs), (b.controller, b.inputs)) } }
+    nonisolated static func == (a: Self, b: Self) -> Bool { MainActor.assumeIsolated { samePart((a.controller, a.inputs), (b.controller, b.inputs)) && a.wide == b.wide } }
 
     var body: some View {
         let _ = RedrawCounter.note("GitPanelToolbar")
-        HStack(spacing: PiSpacing.sm) {
-            if inputs.roots.count > 1 {
-                PiDropdown(selection: Binding(get: { controller.root ?? "" }, set: { controller.root = $0 }),
-                           items: inputs.roots.map { ($0, ($0 as NSString).lastPathComponent) }, icon: "folder", compact: true)
-            } else {
-                Label(inputs.displayRoot, systemImage: "folder").font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
+        // The folder, branch, remote and stash controls stay first in the
+        // same row either way: their menus and popovers keep their places.
+        VStack(alignment: .leading, spacing: PiSpacing.sm) {
+            HStack(spacing: PiSpacing.sm) {
+                if inputs.roots.count > 1 {
+                    PiDropdown(selection: Binding(get: { controller.root ?? "" }, set: { controller.root = $0 }),
+                               items: inputs.roots.map { ($0, ($0 as NSString).lastPathComponent) }, icon: "folder", compact: true,
+                               maxLabelWidth: wide ? nil : Self.narrowLabelWidth)
+                    .help(wide ? "" : inputs.displayRoot)
+                } else {
+                    Label(inputs.displayRoot, systemImage: "folder").font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
+                        .lineLimit(1).truncationMode(.middle).help(wide ? "" : inputs.displayRoot)
+                }
+                if inputs.repository {
+                    branchMenu
+                    remoteControls
+                    stashMenu
+                }
+                if wide { panelTabs; Spacer(); outcome } else { Spacer(minLength: 0) }
             }
-            if inputs.repository {
-                branchMenu
-                remoteControls
-                stashMenu
+            if !wide {
+                HStack(spacing: PiSpacing.sm) { panelTabs; Spacer(); outcome }
             }
-            PiTabs(selection: Binding(get: { controller.panel }, set: { controller.panel = $0 }), items: GitController.Panel.allCases.map { ($0, $0.title) })
-            Spacer()
-            if !inputs.notice.isEmpty { Text(inputs.notice).font(PiFont.caption).foregroundStyle(Color.piDanger).lineLimit(1).help(inputs.notice) }
-            if let last = inputs.lastCommit { PiBadge(text: "Committed \(last)", tone: .success, icon: "checkmark") }
         }.padding(.horizontal, PiSpacing.lg).padding(.vertical, PiSpacing.sm)
+    }
+
+    /// Where the panel is narrow, the longest a folder's or a branch's name
+    /// is shown; the whole name is its help.
+    static let narrowLabelWidth: CGFloat = 150
+
+    private var panelTabs: some View {
+        PiTabs(selection: Binding(get: { controller.panel }, set: { controller.panel = $0 }), items: GitController.Panel.allCases.map { ($0, $0.title) })
+    }
+    /// What the last action said: a failure, or the commit it made.
+    @ViewBuilder private var outcome: some View {
+        if !inputs.notice.isEmpty { Text(inputs.notice).font(PiFont.caption).foregroundStyle(Color.piDanger).lineLimit(1).help(inputs.notice) }
+        if let last = inputs.lastCommit { PiBadge(text: "Committed \(last)", tone: .success, icon: "checkmark") }
     }
 
     /// IntelliJ's branch popup: the local branches to switch to, and a new branch from HEAD.
     private var branchMenu: some View {
         PiMenuButton(title: inputs.branch.isEmpty ? "detached" : inputs.branch, icon: "arrow.triangle.branch",
-                     identifier: "git-branch-menu") { [controller, _newBranchName, _showNewBranch] in
+                     identifier: "git-branch-menu", maxLabelWidth: wide ? nil : Self.narrowLabelWidth) { [controller, _newBranchName, _showNewBranch] in
             let current = controller.status.branch
             PiMenuEntry.button("New Branch from \(current.isEmpty ? "HEAD" : current)…") { _newBranchName.wrappedValue = ""; _showNewBranch.wrappedValue = true }
             PiMenuEntry.divider

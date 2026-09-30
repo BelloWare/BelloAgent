@@ -44,6 +44,9 @@ struct PiDropdown<Tag: Hashable>: View {
     var placeholder = "Choose"
     var icon: String? = nil
     var compact = false
+    /// The longest the chosen item's name is shown, cut in the middle; nil
+    /// shows it whole.
+    var maxLabelWidth: CGFloat? = nil
     private var current: String { items.first { $0.0 == selection }?.1 ?? placeholder }
     var body: some View {
         PiChoicePicker(title: placeholder, selection: selection,
@@ -52,6 +55,7 @@ struct PiDropdown<Tag: Hashable>: View {
             HStack(spacing: 6) {
                 if let icon { Image(systemName: icon).font(.system(size: 11, weight: .semibold)).foregroundStyle(Color.piInkSecondary) }
                 Text(current).font(.system(size: compact ? 12 : 13, weight: .medium)).foregroundStyle(Color.piInk).lineLimit(1)
+                    .truncationMode(.middle).frame(maxWidth: maxLabelWidth, alignment: .leading)
                 Image(systemName: "chevron.up.chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(Color.piInkTertiary)
             }
             .padding(.horizontal, compact ? 10 : 12).padding(.vertical, compact ? 5 : 7)
@@ -71,16 +75,20 @@ struct PiMenuButton: View {
     var icon: String? = nil
     var identifier: String? = nil
     var help: String = ""
+    /// The longest the title is shown, cut in the middle (its help, when it
+    /// has none of its own, is the whole title); nil shows it whole.
+    var maxLabelWidth: CGFloat? = nil
     let entries: @MainActor () -> [PiMenuEntry]
-    init(title: String, icon: String? = nil, identifier: String? = nil, help: String = "",
+    init(title: String, icon: String? = nil, identifier: String? = nil, help: String = "", maxLabelWidth: CGFloat? = nil,
          @PiMenuBuilder entries: @escaping @MainActor () -> [PiMenuEntry]) {
-        self.title = title; self.icon = icon; self.identifier = identifier; self.help = help; self.entries = entries
+        self.title = title; self.icon = icon; self.identifier = identifier; self.help = help; self.maxLabelWidth = maxLabelWidth; self.entries = entries
     }
     var body: some View {
         PiMenuControl(label: title, identifier: identifier, help: help, entries: entries) { hovering in
             HStack(spacing: 6) {
                 if let icon { Image(systemName: icon).font(.system(size: 11, weight: .semibold)) }
                 Text(title).font(.system(size: 13, weight: .medium)).lineLimit(1)
+                    .truncationMode(.middle).frame(maxWidth: maxLabelWidth, alignment: .leading)
                 Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(Color.piInkTertiary)
             }
             .foregroundStyle(Color.piInk)
