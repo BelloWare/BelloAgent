@@ -154,6 +154,76 @@ private struct Slots<T>: @unchecked Sendable {
 }
 
 extension AgentSession {
+    /// Edits and versions need every retained row. Their requests share one
+    /// load, including the fork's background replay or preparation when it
+    /// is already running. Replay and row construction stay off the actor;
+    /// a changed journal or live row requires a fresh snapshot before adoption.
+    func loadFullHistory() async throws {
+        guard !closed else { throw AgentError("session_closed", "The conversation is closed") }
+        guard partialHistory else { return }
+        if let pending = fullHistoryLoad { return try await pending.value }
+        let load = Task { try await self.loadFullHistoryOnce() }
+        fullHistoryLoad = load
+        defer { fullHistoryLoad = nil; adoptHistoryFillIfIdle() }
+        try await load.value
+    }
+
+    private func loadFullHistoryOnce() async throws {
+        for _ in 0..<8 {
+            guard !closed else { throw AgentError("session_closed", "The conversation is closed") }
+            guard partialHistory else { return }
+            if let fill = historyFill, let preparation = fill.preparation, let snapshot = fill.preparationSnapshot {
+                let made = await preparation.value
+                guard !closed else { Discarded.release(consume made); throw AgentError("session_closed", "The conversation is closed") }
+                guard partialHistory else { Discarded.release(consume made); return }
+                guard journal?.size == snapshot.size, displayGeneration == snapshot.generation else {
+                    // Retire the preparation through its ordinary completion
+                    // path; the replay remains available for the next snapshot.
+                    if historyFill?.token == fill.token {
+                        commitHistoryFill(token: fill.token, generation: snapshot.generation, size: snapshot.size, consume made)
+                    } else { Discarded.release(consume made) }
+                    continue
+                }
+                switch consume made {
+                case .failure(let error): throw error
+                case let .success((full, replay)):
+                    commitFullHistory(full, through: snapshot.size); durable = replay
+                    event("history.loaded")
+                    return
+                }
+            }
+            let replay = Handoff(try await wholeJournalReplay())
+            guard !closed else { Discarded.release(replay.take()); throw AgentError("session_closed", "The conversation is closed") }
+            guard partialHistory, let journal, let identity = journal.fileIdentity, let header = journal.headerCheck else {
+                Discarded.release(replay.take()); return
+            }
+            let size = journal.size, generation = displayGeneration, url = journal.url, marker = journal.markerCheck, id = self.id
+            let live = history, liveTasks = recentTaskPresentations, hold = historyFillHold
+            let made = await Task.detached(priority: .userInitiated) { () -> Result<(FullHistory, JournalReplayConsumer), Error> in
+                if let hold { await hold("full") }
+                return Result {
+                    guard let start = replay.take() else { throw AgentError("history_changed", "The replay was already taken") }
+                    let whole = try Self.replayPrefix(url: url, identity: identity, through: size, id: id, header: header, marker: marker, from: start)
+                    try Task.checkCancellation()
+                    let full = Self.fullHistory(try whole.finished(), live: live, liveTasks: liveTasks)
+                    try Task.checkCancellation()
+                    return (full, whole)
+                }
+            }.value
+            guard !closed else { Discarded.release(consume made); throw AgentError("session_closed", "The conversation is closed") }
+            guard partialHistory else { Discarded.release(consume made); return }
+            guard self.journal?.size == size, displayGeneration == generation else { Discarded.release(consume made); continue }
+            switch consume made {
+            case .failure(let error): throw error
+            case let .success((full, replay)):
+                commitFullHistory(full, through: size); durable = replay
+                event("history.loaded")
+                return
+            }
+        }
+        throw AgentError("history_changed", "The conversation kept changing while its history loaded. Try again.")
+    }
+
     /// A row this chat did not load, from its record, as a replay leaves it.
     static func storedRow(_ span: JournalCheckpoint.Row, descriptor: Int32) -> ChatMessage? {
         guard let bytes = JournalCheckpoint.rowBytes(span, descriptor: descriptor), var message = journalRow(span, bytes: bytes) else { return nil }

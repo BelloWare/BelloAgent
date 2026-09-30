@@ -236,8 +236,10 @@ public actor AgentSession {
     var historyFillTokens = 0
     /// A load of the rows this chat did not load, under way (`loadOlderRows`).
     var olderRowsLoad: Task<Void, Error>?
+    /// Shared full-history read for edits and version requests.
+    var fullHistoryLoad: Task<Void, Error>?
     /// Test seam: what a background load, or a load of older rows, waits on
-    /// before each stage ("replay", "prepare", "index").
+    /// before each stage ("replay", "prepare", "index", "full").
     var historyFillHold: (@Sendable (String) async -> Void)?
     func holdHistoryFill(_ hold: (@Sendable (String) async -> Void)?) { historyFillHold = hold }
     /// Test seams: records written behind the chat's back, and its size.

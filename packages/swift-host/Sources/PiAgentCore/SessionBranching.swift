@@ -15,10 +15,11 @@ extension AgentSession {
         guard !ephemeral else { throw AgentError("side_ephemeral", "Keep this side chat before editing its messages; a branch must be durable") }
         // An edit keeps the rows before it on screen: all of them, not only
         // the ones a chat opened from its metadata file loaded.
-        try ensureFullHistory()
+        let capturedHead = journal?.head
+        try await loadFullHistory()
+        guard !closed, isIdle, journal?.head == capturedHead else { throw AgentError("edit_changed", "The conversation changed while preparing the edit. Select the message again.") }
         try validate(input,steer:false)
         guard try input.savedValue.data().count < 8 * 1024 * 1024 else { throw AgentError("queue_limit", "Queued content exceeds 8 MiB") }
-        let capturedHead = journal?.head
         try await resources.validate(input.skills, tools: await tools.capabilityIDs(readOnly: readOnly))
         guard isIdle, journal?.head == capturedHead else { throw AgentError("edit_changed", "The conversation changed while preparing the edit. Select the message again.") }
         try validate(input,steer:false)

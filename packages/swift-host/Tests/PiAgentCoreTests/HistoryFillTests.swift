@@ -111,6 +111,71 @@ final class HistoryFillTests: XCTestCase {
         try await eventually(timeout: .seconds(30)) { !(await session.partialHistory) }
     }
 
+    func testEditPreparationAndVersionsShareAFullLoadWithoutHoldingTheActor() async throws {
+        let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
+        let path = try await source(chat), session = try chat.session(chatID, resume: path), gate = Gate()
+        let partial = await session.partialHistory
+        XCTAssertTrue(partial)
+        await session.holdHistoryFill { stage in if stage == "full" { await gate.wait() } }
+        let prepared = Task { try await session.prepareEdit("u2b") }
+        try await eventually { await gate.entered == 1 }
+        let versions = Task { try await session.messageVersions(["messageId": "u2b"]) }
+        let page = Task { try await session.versionPage(["messageId": "u2"]) }
+        // A snapshot remains available while all three requests wait on the
+        // worker. The retained prefix is not adopted until the gate opens.
+        let snapshot = await session.snapshot(), stillPartial = await session.partialHistory
+        XCTAssertFalse(snapshot["messages"].list.isEmpty)
+        XCTAssertTrue(stillPartial)
+        await gate.release()
+        let input = try await prepared.value, listed = try await versions.value, original = try await page.value
+        XCTAssertEqual(input["text"].text, "the edited question")
+        XCTAssertEqual(listed["count"].int, 2)
+        XCTAssertEqual(original["messages"].list.first?["text"].text, "the original question")
+        let loads = await gate.entered
+        XCTAssertEqual(loads, 1, "concurrent requests share one full-history preparation")
+        await session.close()
+    }
+
+    func testAReadUsesTheForkPreparationAlreadyRunning() async throws {
+        let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
+        let path = try await source(chat), session = try chat.session(chatID, resume: path), gate = Gate(), unexpected = Gate()
+        await unexpected.release()
+        await session.holdHistoryFill { stage in
+            if stage == "prepare" { await gate.wait() }
+            if stage == "full" { await unexpected.wait() }
+        }
+        await session.startHistoryFill()
+        try await eventually { await gate.entered == 1 }
+        let versions = Task { try await session.messageVersions(["messageId": "u2b"]) }
+        let snapshot = await session.snapshot()
+        XCTAssertFalse(snapshot["messages"].list.isEmpty)
+        await gate.release()
+        let result = try await versions.value, duplicate = await unexpected.entered
+        XCTAssertEqual(result["count"].int, 2)
+        XCTAssertEqual(duplicate, 0, "the fork's preparation is also the version read's preparation")
+        await session.close()
+    }
+
+    func testEditWaitsOffActorAndRejectsAConversationChangedWhileLoading() async throws {
+        let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
+        let path = try await source(chat), gate = Gate()
+        let session = try chat.session(chatID, client: ScriptClient([answer("answer during the load")]), resume: path)
+        await session.holdHistoryFill { stage in if stage == "full" { await gate.wait() } }
+        let edit = Task { try await session.edit(fromMessageID: "u2b", input: Submission(commandID: "edit-again", turnID: "edit-again", text: "replacement")) }
+        try await eventually { await gate.entered == 1 }
+        // A send and its reply finish while the edit's worker is held. Its
+        // first snapshot is now stale, so it must rebuild and reject the edit.
+        try await send(session, "during-load", "a new question")
+        await gate.release()
+        do { _ = try await edit.value; XCTFail("the changed conversation must not be branched") }
+        catch let error as AgentError { XCTAssertEqual(error.code, "edit_changed") }
+        let visible = await session.visible.map(\.id), loads = await gate.entered
+        XCTAssertTrue(visible.contains("during-load"))
+        XCTAssertFalse(visible.contains("edit-again"))
+        XCTAssertEqual(loads, 2, "a write while preparing requires a new snapshot")
+        await session.close()
+    }
+
     /// A whole fork of a chat opened from its metadata file, and a fork from
     /// a reply of a chat opened whole, open with their latest rows and load
     /// the rest: then each is the fork an open of its whole journal gives,

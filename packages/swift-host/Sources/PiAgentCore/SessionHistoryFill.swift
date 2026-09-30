@@ -17,6 +17,7 @@ extension AgentSession {
         var replay: JournalReplayConsumer?
         /// The whole history being made from the replay, off the actor.
         var preparation: Task<Result<(FullHistory, JournalReplayConsumer), Error>, Never>?
+        var preparationSnapshot: (generation: UInt64, size: UInt64)?
     }
 
     /// Starts loading the rest of this chat's history in the background, if
@@ -97,7 +98,7 @@ extension AgentSession {
     /// load's replay, taken on through the records written since, and takes
     /// it (`commitHistoryFill`). A run going defers it to the run's end.
     func adoptHistoryFillIfIdle() {
-        guard var fill = historyFill, let replay = fill.replay, fill.preparation == nil, runTask == nil, partialHistory, !closed, let journal,
+        guard fullHistoryLoad == nil, var fill = historyFill, let replay = fill.replay, fill.preparation == nil, runTask == nil, partialHistory, !closed, let journal,
               let identity = journal.fileIdentity, let header = journal.headerCheck else { return }
         let token = fill.token, size = journal.size, generation = displayGeneration, url = journal.url
         let live = history, liveTasks = recentTaskPresentations, loaded = visible.map(\.id), older = olderRows, lineage = presentationTimeline
@@ -122,7 +123,7 @@ extension AgentSession {
                     return (full, whole)
                 }
         }
-        fill.preparation = preparation; fill.replay = nil; historyFill = fill
+        fill.preparation = preparation; fill.preparationSnapshot = (generation, size); fill.replay = nil; historyFill = fill
         Task.detached { [weak self] in
             let made = await preparation.value
             await self?.commitHistoryFill(token: token, generation: generation, size: size, made)
@@ -135,7 +136,7 @@ extension AgentSession {
     func commitHistoryFill(token: Int, generation: UInt64, size: UInt64, _ made: Result<(FullHistory, JournalReplayConsumer), Error>) {
         // What is not taken here is let go of by the caller, off the actor.
         guard var fill = historyFill, fill.token == token else { return }
-        fill.preparation = nil; historyFill = fill
+        fill.preparation = nil; fill.preparationSnapshot = nil; historyFill = fill
         guard case .success(let (full, replay)) = made else { historyFill = nil; return }
         guard partialHistory, !closed, runTask == nil, let journal, journal.size == size, displayGeneration == generation else {
             // Made again from the replay, taken on, when the chat is next idle.
