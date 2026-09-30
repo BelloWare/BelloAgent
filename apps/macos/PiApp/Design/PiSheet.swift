@@ -67,7 +67,7 @@ struct PiSheet<Content: View, Actions: View, Footer: View>: View {
             }
         }
         .buttonStyle(.piSecondary)
-        .toggleStyle(.switch)
+        .toggleStyle(.piSwitch)
         .foregroundStyle(Color.piInk)
         .background(Color.piWindow)
         .frame(width: width, height: height)

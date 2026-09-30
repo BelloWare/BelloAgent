@@ -81,7 +81,7 @@ final class ComposerBarLayoutTests: XCTestCase, SerialTestLane {
                     Text(text).font(.system(size: 12, weight: .medium)).lineLimit(1).truncationMode(.middle)
                         .frame(maxWidth: maxWidth, alignment: .leading).fixedSize(horizontal: false, vertical: true)
                 }
-                if loading { ProgressView().controlSize(.mini).scaleEffect(0.6).frame(width: 10, height: 10) }
+                if loading { PiSpinner(size: 6, lineWidth: 1.2).frame(width: 10, height: 10) }
                 Image(systemName: "chevron.up.chevron.down").font(.system(size: 9, weight: .semibold))
             }
             .padding(.horizontal, compact ? 7 : 9).padding(.vertical, 4)

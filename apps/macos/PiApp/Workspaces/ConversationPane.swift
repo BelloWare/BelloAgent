@@ -399,7 +399,7 @@ struct LoadingMark: View {
                 .scaleEffect(breathing && !reduceMotion ? 1.06 : 1).opacity(breathing && !reduceMotion ? 1 : 0.82)
                 .animation(reduceMotion ? nil : .easeInOut(duration: 1.1).repeatForever(autoreverses: true), value: breathing)
                 .accessibilityLabel("Bello Agent")
-            HStack(spacing: 6) { ProgressView().controlSize(.small); Text("Preparing…").font(PiFont.caption).foregroundStyle(Color.piInkSecondary) }
+            HStack(spacing: 6) { PiSpinner(controlSize: .small); Text("Preparing…").font(PiFont.caption).foregroundStyle(Color.piInkSecondary) }
         }
         .onAppear { breathing = true }
         .accessibilityIdentifier("loadingMark")

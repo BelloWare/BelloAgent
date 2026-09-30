@@ -96,7 +96,7 @@ struct ReportPage: View {
                     .lineLimit(1).truncationMode(.tail).help(windowCaption)
             }
             Spacer(minLength: PiSpacing.sm)
-            if report.loading { ProgressView().controlSize(.small).transition(.opacity) }
+            if report.loading { PiSpinner(controlSize: .small).transition(.opacity) }
             if !compact { timeRange }
             PiIconButton(symbol: "arrow.clockwise", label: "Refresh") { Task { await report.refresh() } }.disabled(report.loading)
             Button { report.advancedOpen.toggle() } label: {
@@ -172,7 +172,7 @@ struct ReportPage: View {
                     ReportDropdown(selection: optional(\.requestedAlias), items: valueItems(report.aliases, any: "Any requested model", current: report.preferences.requestedAlias), icon: "arrow.triangle.branch")
                     ReportDropdown(selection: optional(\.effectiveModel), items: valueItems(report.models, any: "Any final model", current: report.preferences.effectiveModel), icon: "cpu")
                         .disabled(report.unreportedOnly).opacity(report.unreportedOnly ? 0.5 : 1)
-                    Toggle("Final model not reported", isOn: $report.unreportedOnly).toggleStyle(.checkbox).font(PiFont.caption)
+                    Toggle("Final model not reported", isOn: $report.unreportedOnly).toggleStyle(.piCheckbox).font(PiFont.caption)
                         .help("Includes unreported, conflicting or incomplete model evidence; the inspector preserves the distinct status and provenance.")
                     Button("Reset") { report.reset() }.buttonStyle(.piGhost).disabled(report.loading)
                     Button("Save as Default") { Task { await report.save() } }.buttonStyle(.piGhost).disabled(report.loading || !model.configurationLoaded)
@@ -199,13 +199,13 @@ struct ReportPage: View {
     private func optional(_ path: WritableKeyPath<DashboardPreferences, String?>) -> Binding<String> {
         Binding(get: { report.preferences[keyPath: path] ?? "" }, set: { report.preferences[keyPath: path] = $0.isEmpty ? nil : $0 })
     }
-    /// The date-time picker is the one stock control here; it sits inside a pill.
+    /// The date and time field sits inside a pill, which is its frame.
     private func datePill(_ label: String, anchorFrom: Bool) -> some View {
         HStack(spacing: 6) {
             Text(label).font(PiFont.micro).foregroundStyle(Color.piInkTertiary).textCase(.uppercase).tracking(0.4)
-            DatePicker("", selection: Binding(get: { anchorFrom ? (report.preferences.customFrom ?? report.window.from) : (report.preferences.customUntil ?? report.window.until) },
-                                              set: { report.setCustomBound($0, anchorFrom: anchorFrom) }), displayedComponents: [.date, .hourAndMinute])
-                .datePickerStyle(.field).labelsHidden().controlSize(.small).font(PiFont.caption).fixedSize()
+            PiDateField(date: Binding(get: { anchorFrom ? (report.preferences.customFrom ?? report.window.from) : (report.preferences.customUntil ?? report.window.until) },
+                                      set: { report.setCustomBound($0, anchorFrom: anchorFrom) }))
+                .accessibilityLabel(label).fixedSize()
         }
         .padding(.leading, 10).padding(.trailing, 6).padding(.vertical, 3)
         .background(Color.piSurface, in: Capsule())
@@ -216,7 +216,7 @@ struct ReportPage: View {
 
     private var loadingState: some View {
         VStack(spacing: 10) {
-            ProgressView().controlSize(.regular)
+            PiSpinner(controlSize: .regular)
             Text("Reading retained request metrics…").font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
         }.frame(maxWidth: .infinity, minHeight: 320)
     }
@@ -492,7 +492,7 @@ struct ReportPage: View {
                 Text("No routes match these filters").font(PiFont.caption).foregroundStyle(Color.piInkTertiary).frame(maxWidth: .infinity).padding(PiSpacing.lg)
             }
         } else {
-            HStack(spacing: 6) { ProgressView().controlSize(.mini); Text("Grouping by model…").font(PiFont.caption).foregroundStyle(Color.piInkTertiary) }.frame(maxWidth: .infinity).padding(PiSpacing.lg)
+            HStack(spacing: 6) { PiSpinner(controlSize: .mini); Text("Grouping by model…").font(PiFont.caption).foregroundStyle(Color.piInkTertiary) }.frame(maxWidth: .infinity).padding(PiSpacing.lg)
         }
     }
 
@@ -517,7 +517,7 @@ struct ReportPage: View {
                                 }
                                 if inner.hasNext { Text("Showing the first \(inner.requests.count) of \(inner.selectedRequests) requests · filter by this session for the rest").font(PiFont.caption).foregroundStyle(Color.piInkTertiary).padding(.vertical, 6).padding(.leading, 44) }
                             } else {
-                                HStack(spacing: 6) { ProgressView().controlSize(.mini); Text("Loading requests…").font(PiFont.caption).foregroundStyle(Color.piInkTertiary) }.padding(.vertical, 8).padding(.leading, 44)
+                                HStack(spacing: 6) { PiSpinner(controlSize: .mini); Text("Loading requests…").font(PiFont.caption).foregroundStyle(Color.piInkTertiary) }.padding(.vertical, 8).padding(.leading, 44)
                             }
                         }
                         .background(Color.piSurfaceSunken.opacity(0.6))
@@ -530,7 +530,7 @@ struct ReportPage: View {
                 Text("No sessions match these filters").font(PiFont.caption).foregroundStyle(Color.piInkTertiary).frame(maxWidth: .infinity).padding(PiSpacing.lg)
             }
         } else {
-            HStack(spacing: 6) { ProgressView().controlSize(.mini); Text("Grouping by session…").font(PiFont.caption).foregroundStyle(Color.piInkTertiary) }.frame(maxWidth: .infinity).padding(PiSpacing.lg)
+            HStack(spacing: 6) { PiSpinner(controlSize: .mini); Text("Grouping by session…").font(PiFont.caption).foregroundStyle(Color.piInkTertiary) }.frame(maxWidth: .infinity).padding(PiSpacing.lg)
         }
     }
 

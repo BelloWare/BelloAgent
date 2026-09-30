@@ -404,7 +404,7 @@ private struct CatalogModelMenu: View {
                 Image(systemName: "list.bullet.rectangle").font(.system(size: 11, weight: .semibold))
                 Text(miniSelection ? (draft.profile.miniModelId ?? "Catalog default") : "Choose")
                     .font(.system(size: 12, weight: .medium)).lineLimit(1).truncationMode(.middle)
-                if entry.loading { ProgressView().controlSize(.mini) }
+                if entry.loading { PiSpinner(controlSize: .mini) }
                 Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(Color.piInkTertiary)
             }
             .foregroundStyle(Color.piInk).padding(.horizontal, 10).padding(.vertical, 6)

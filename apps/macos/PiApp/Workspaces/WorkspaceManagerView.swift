@@ -47,7 +47,7 @@ struct WorkspaceFolderList: View {
             HStack(spacing: PiSpacing.sm) {
                 Button { perform { try await model.addFoldersInteractively(to: workspace.id) } } label: { Label("Add Folders…", systemImage: "folder.badge.plus") }
                     .buttonStyle(.piSecondaryCompact).disabled(busy || active || workspace.roots.count >= WorkspaceModel.maximumRoots)
-                if busy { ProgressView().controlSize(.mini) }
+                if busy { PiSpinner(controlSize: .mini) }
                 Text(active ? "Stop this project's work before changing folders." : "\(WorkspaceLabel.folders(workspace.roots.count)) · Changes reopen the host on the next message")
                     .font(PiFont.caption).foregroundStyle(active ? Color.piWarning : Color.piInkTertiary).lineLimit(1)
                 Spacer(minLength: 0)

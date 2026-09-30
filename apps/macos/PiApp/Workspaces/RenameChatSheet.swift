@@ -26,7 +26,7 @@ struct RenameChatSheet: View {
                 HStack {
                     Text("Suggestions").font(PiFont.micro).foregroundStyle(Color.piInkTertiary).textCase(.uppercase).tracking(0.4)
                     Spacer()
-                    if suggesting { ProgressView().controlSize(.small) }
+                    if suggesting { PiSpinner(controlSize: .small) }
                     Button { requested?.cancel(); requested = Task { await suggest() } } label: { Label(suggestions.isEmpty ? "Suggest titles" : "Suggest again", systemImage: "sparkles") }
                         .buttonStyle(.piSecondaryCompact).disabled(suggesting || !canSuggest)
                         .help(canSuggest ? "Ask the connection's mini model for three titles" : "Suggestions need a mini model for this connection; choose one in Settings.")

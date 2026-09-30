@@ -115,7 +115,7 @@ struct WorkspaceView: View {
         }
         .ignoresSafeArea(.container, edges: .top)
         .buttonStyle(.piSecondary)
-        .toggleStyle(.switch)
+        .toggleStyle(.piSwitch)
         .background(Color.piWindow)
         .focusedSceneValue(\.workspaceCommandModel, model)
         // Every sheet in a sheet window of the app's own, let go of whole once
@@ -137,7 +137,7 @@ struct WorkspaceView: View {
         .overlay {
             if model.installPreparing {
                 HStack(spacing: PiSpacing.md) {
-                    ProgressView().controlSize(.small)
+                    PiSpinner(controlSize: .small)
                     Text("Saving drafts and preparing to close…").font(PiFont.body)
                 }.padding(20).piElevated()
             }

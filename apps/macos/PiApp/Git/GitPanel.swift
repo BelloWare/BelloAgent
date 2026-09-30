@@ -118,7 +118,7 @@ private struct GitPanelActions: View, Equatable {
     var body: some View {
         let _ = RedrawCounter.note("GitPanelActions")
         HStack(spacing: PiSpacing.md) {
-            if working { ProgressView().controlSize(.small) }
+            if working { PiSpinner(controlSize: .small) }
             PiIconButton(symbol: "arrow.clockwise", label: "Refresh changes", size: 28) { Task { await controller.refresh() } }
             Button("Done") { close() }.buttonStyle(.piSecondary)
         }
@@ -622,7 +622,7 @@ private struct GitPanelDetail: View, Equatable {
                 // when both were one SwiftUI stack.
                 let file = inputs.detailFile, loading = inputs.commitLoading
                 let files = file == nil ? inputs.detailDiff.files : inputs.detailFileDiff.files
-                let lead = AnyView(commitHeader(detail).foregroundStyle(Color.piInk).buttonStyle(.piSecondary).toggleStyle(.switch))
+                let lead = AnyView(commitHeader(detail).foregroundStyle(Color.piInk).buttonStyle(.piSecondary).toggleStyle(.piSwitch))
                 let leadKey = CommitHeaderKey(commit: detail.commit.hash, files: detail.files.count, selected: file, shown: inputs.filesShown)
                 GitDiffPane(presentation: controller.presentation) { split, expanded in
                     DiffView(files: files, title: file, subtitle: file == nil ? nil : "In \(detail.commit.shortHash)",

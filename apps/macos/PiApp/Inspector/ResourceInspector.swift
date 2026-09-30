@@ -98,7 +98,7 @@ struct ResourceInspector: View {
         VStack(spacing: PiSpacing.sm) {
             HStack(spacing: PiSpacing.md) {
                 PiTextField(placeholder: "Filter by name, description or path", text: $query, icon: "magnifyingglass")
-                Toggle("Show disabled / needs attention", isOn: $management).toggleStyle(.checkbox).font(PiFont.caption)
+                Toggle("Show disabled / needs attention", isOn: $management).toggleStyle(.piCheckbox).font(PiFont.caption)
             }
             HSplitView {
                 ScrollView {
@@ -127,7 +127,7 @@ struct ResourceInspector: View {
                                 PiKeyValue(key: "Path", value: skill.path, mono: true)
                                 PiKeyValue(key: "SHA-256", value: skill.contentHash, mono: true)
                                 Toggle("Enabled in Bello Agent",isOn:Binding(get:{ model.skillEnabledInBelloAgent(skill.id) },set:{ enabled in setEnabled(skill,enabled:enabled) }))
-                                    .toggleStyle(.switch).disabled(policyBusy)
+                                    .toggleStyle(.piSwitch).disabled(policyBusy)
                                     .help("Applies across Bello Agent projects. Enabling does not override Codex or project restrictions.")
                                 Text("Other source and project restrictions still apply. A disabled skill is removed from suggestions and unsent selections.").font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
                                 if !skill.reasons.isEmpty { PiKeyValue(key: "Policy reasons", value: skill.reasons.joined(separator: "\n")) }
@@ -335,7 +335,7 @@ private struct NativeMCPInspector: View {
                 Button { perform { try await refreshServers() } } label: { Label("Refresh Servers", systemImage: "arrow.clockwise") }.disabled(busy)
                 Button { disconnect() } label: { Label("Disconnect All", systemImage: "bolt.slash") }.buttonStyle(.piGhost).disabled(busy)
                 Spacer()
-                if busy { ProgressView().controlSize(.small) }
+                if busy { PiSpinner(controlSize: .small) }
             }
             PiNote("MCP configuration and explicit credentials are stored in the single Keychain vault. External configuration files and inherited credential references are retired.")
             if editingConfiguration {

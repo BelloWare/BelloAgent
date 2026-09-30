@@ -175,7 +175,7 @@ struct CostLimitEditor: View {
                 Image(systemName: "dollarsign.circle").font(.system(size: 12, weight: .medium)).foregroundStyle(Color.piInkTertiary)
                 Text(title).font(PiFont.caption.weight(.semibold)).foregroundStyle(Color.piInk)
                 Spacer(minLength: PiSpacing.sm)
-                if saving { ProgressView().controlSize(.mini) }
+                if saving { PiSpinner(controlSize: .mini) }
                 PiBadge(text: reading.source, tone: reading.override == nil ? .neutral : .accent)
                     .accessibilityIdentifier("cost-limit-source")
             }
