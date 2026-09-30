@@ -9,7 +9,7 @@ import Foundation
 /// branch hid, as positions in `history`, and where every hidden version's
 /// message starts in one of them. Positions stay valid because `history` is
 /// append-only; a presentation update replaces a row in place.
-struct MessageVersionStore {
+struct MessageVersionStore: Sendable {
     var ledger = MessageVersionLedger()
     private(set) var timelines: [[Int]] = []
     private(set) var starts: [String: (timeline: Int, offset: Int)] = [:]

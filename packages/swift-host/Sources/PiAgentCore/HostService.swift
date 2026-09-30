@@ -189,11 +189,11 @@ public actor NativeHostService {
     /// A chat's runtime, built off this actor, which every other chat's
     /// commands go through: opening a chat or a fork parses and replays its
     /// whole journal. (A side starts from its parent's context instead.)
-    private func makeSession(_ id: String, profile: Profile, apiKey: String, readOnly: Bool, resources: Resources, tools: any ToolExecuting, resumePath: String? = nil, seed: [ChatMessage]? = nil, parent: JSON = .null, titleTask: Bool = false, utilityPurpose: String = "title") async throws -> AgentSession {
+    private func makeSession(_ id: String, profile: Profile, apiKey: String, readOnly: Bool, resources: Resources, tools: any ToolExecuting, resumePath: String? = nil, prepared: JournalReplay? = nil, seed: [ChatMessage]? = nil, parent: JSON = .null, titleTask: Bool = false, utilityPurpose: String = "title") async throws -> AgentSession {
         guard let cwd, let directory else { throw AgentError("workspace_required", "Open a workspace first") }
         let client=ProviderClient(traces:traces), traces=traces, gate=editingGate, outcomes=unknownToolOutcomes, changed=notification()
         return try await Task.detached(priority:.userInitiated) {
-            try AgentSession(id:id,profile:profile,apiKey:apiKey,cwd:cwd,directory:directory,readOnly:readOnly,resources:resources,client:client,tools:tools,traces:traces,editingGate:gate,resumePath:resumePath,seed:seed,parent:parent,autoCompaction:!titleTask,titleTask:titleTask,utilityPurpose:utilityPurpose,unknownToolOutcomes:outcomes,changed:changed)
+            try AgentSession(id:id,profile:profile,apiKey:apiKey,cwd:cwd,directory:directory,readOnly:readOnly,resources:resources,client:client,tools:tools,traces:traces,editingGate:gate,resumePath:resumePath,prepared:prepared,seed:seed,parent:parent,autoCompaction:!titleTask,titleTask:titleTask,utilityPurpose:utilityPurpose,unknownToolOutcomes:outcomes,changed:changed)
         }.value
     }
     /// Runs `body` holding the runtime gate, which serializes opens, forks
@@ -406,8 +406,10 @@ public actor NativeHostService {
             let point=params["atMessageId"].isNull ? nil : try identity(params["atMessageId"])
             return try await withRuntimeGate {
                 guard sessions[forkID] == nil, let (profile,key)=profiles[id] else { throw AgentError("session_conflict", "Fork identity is already in use") }
-                let result=try await session.fork(to:forkID,at:point)
-                let fork=try await makeSession(forkID,profile:profile,apiKey:key,readOnly:session.readOnly,resources:resources,tools:session.isConnectionTest ? DisabledTools() : nativeTools,resumePath:result["path"].text)
+                // The fork opens with what its journal replayed to as it was
+                // written, instead of reading it all again.
+                let (result,replay)=try await session.forked(to:forkID,at:point)
+                let fork=try await makeSession(forkID,profile:profile,apiKey:key,readOnly:session.readOnly,resources:resources,tools:session.isConnectionTest ? DisabledTools() : nativeTools,resumePath:result["path"].text,prepared:replay)
                 sessions[forkID]=fork; profiles[forkID]=(profile,key)
                 // A fork is a chat of its own, with its own limit.
                 if let costLimit { await fork.setCostLimit(costLimit) }

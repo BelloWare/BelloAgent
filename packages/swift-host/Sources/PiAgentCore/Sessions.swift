@@ -231,6 +231,11 @@ public actor AgentSession {
     /// metadata file (`JournalCheckpoint`).
     var rowSpans: [String: JournalCheckpoint.Row] = [:]
     public init(id: String, profile: Profile, apiKey: String, cwd: URL, directory: URL, readOnly: Bool, resources: Resources, client: any ModelClient, tools: any ToolExecuting, traces: TraceStore, editingGate: AsyncGate = AsyncGate(), resumePath: String? = nil, seed: [ChatMessage]? = nil, parent: JSON = .null, autoCompaction: Bool = true, titleTask: Bool = false, utilityPurpose: String = "title", unknownToolOutcomes: Bool = true, compactionPolicy: CompactionPolicy = CompactionPolicy(), displayClock: @escaping @Sendable () -> Double = { ProcessInfo.processInfo.systemUptime * 1000 }, beforeJournalAppend: @escaping @Sendable (JSON) throws -> Void = { _ in }, beforeJournalSynchronize: @escaping @Sendable () throws -> Void = {}, changed: @escaping @Sendable (String, Int) -> Void = {_,_ in}) throws {
+        try self.init(id:id,profile:profile,apiKey:apiKey,cwd:cwd,directory:directory,readOnly:readOnly,resources:resources,client:client,tools:tools,traces:traces,editingGate:editingGate,resumePath:resumePath,prepared:nil,seed:seed,parent:parent,autoCompaction:autoCompaction,titleTask:titleTask,utilityPurpose:utilityPurpose,unknownToolOutcomes:unknownToolOutcomes,compactionPolicy:compactionPolicy,displayClock:displayClock,beforeJournalAppend:beforeJournalAppend,beforeJournalSynchronize:beforeJournalSynchronize,changed:changed)
+    }
+    /// `prepared`: what the journal at `resumePath` replays to, made as a fork
+    /// wrote it (`forked`); used only while it is the whole journal as it is.
+    init(id: String, profile: Profile, apiKey: String, cwd: URL, directory: URL, readOnly: Bool, resources: Resources, client: any ModelClient, tools: any ToolExecuting, traces: TraceStore, editingGate: AsyncGate = AsyncGate(), resumePath: String? = nil, prepared: JournalReplay?, seed: [ChatMessage]? = nil, parent: JSON = .null, autoCompaction: Bool = true, titleTask: Bool = false, utilityPurpose: String = "title", unknownToolOutcomes: Bool = true, compactionPolicy: CompactionPolicy = CompactionPolicy(), displayClock: @escaping @Sendable () -> Double = { ProcessInfo.processInfo.systemUptime * 1000 }, beforeJournalAppend: @escaping @Sendable (JSON) throws -> Void = { _ in }, beforeJournalSynchronize: @escaping @Sendable () throws -> Void = {}, changed: @escaping @Sendable (String, Int) -> Void = {_,_ in}) throws {
         self.id=id; self.profile=profile; self.apiKey=apiKey; self.cwd=cwd; self.directory=directory; self.readOnly=readOnly; self.resources=resources; self.client=client; self.tools=tools; self.traces=traces; self.editingGate=editingGate; self.changed=changed; self.autoCompaction=autoCompaction; self.titleTask=titleTask; self.utilityPurpose=utilityPurpose; self.reportsUnknownToolOutcomes=unknownToolOutcomes; self.displayClock=displayClock; self.compactionPolicy=compactionPolicy
         if let seed {
             history=seed; context=seed; boundary=seed; visible=seed; toolHistory=ToolHistoryIndex(seed); parentInfo=parent; ephemeral=true
@@ -242,7 +247,12 @@ public actor AgentSession {
         guard within(url,canonical(directory.path)) else { throw AgentError("session_scope", "Writable sessions must be in the app-managed directory") }
         let stored = resumePath == nil ? nil : JournalCheckpoint.read(for: url)
         let opened=try SessionJournal(url:url,id:id,cwd:cwd,binding:profile.binding,create:resumePath == nil,checkpoint:stored,beforeAppend:beforeJournalAppend,beforeSynchronize:beforeJournalSynchronize); journal=opened
-        let replayed=try Self.replay(opened, url: url, id: id, binding: profile.binding, spendTracked: resumePath == nil, resume: true)
+        // A fork's journal comes with what it replays to, made as it was
+        // written (`forked`): used when it is the whole of this journal as it
+        // is now, and never a replay resumed from a checkpoint.
+        let replayed: JournalReplay
+        if let prepared, resumePath != nil, !prepared.resumed, prepared.coveredBytes == opened.size { replayed=prepared }
+        else { replayed=try Self.replay(opened, url: url, id: id, binding: profile.binding, spendTracked: resumePath == nil, resume: true) }
         history=replayed.history; visible=replayed.visible; context=replayed.context; versions=replayed.versions
         spend=replayed.spend; spendTracked=replayed.spendTracked
         assistantMessageCount=replayed.assistantMessageCount; latestAssistantMessageID=replayed.latestAssistantMessageID
