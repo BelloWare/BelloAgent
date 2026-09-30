@@ -39,16 +39,7 @@ extension WorkspaceModel {
         if page != .chats { page = .chats }
         // A listed symlink may resolve into another project's trust boundary.
         let tab = openFile(row.url, lines: line.map { ($0 - 1)...($0 - 1) })
-        Task { @MainActor [weak tab] in
-            // Once the pane has drawn the tab: its view, in the window.
-            for _ in 0..<60 {
-                if let view = tab?.focusView, let window = view.window {
-                    window.makeFirstResponder(view)
-                    return
-                }
-                try? await Task.sleep(for: .milliseconds(16))
-            }
-        }
+        quickOpen.focusAfterOpening(tab)
     }
 
     /// A key pressed while ⌘P's list is up: true when the list took it.

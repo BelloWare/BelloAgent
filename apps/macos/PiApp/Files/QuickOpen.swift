@@ -75,6 +75,8 @@ import FileFinder
     private var generation = 0
     private var searching: SearchStop?
     private var listing: Task<Void, Never>?
+    private var focusToken = 0
+    private(set) var focusTask: Task<Void, Never>?
     /// Return waits for its query; another query or closing discards it.
     private var pendingOpen: (query: String, id: String?, open: (Row, Int?) -> Void)?
     /// Files opened lately, newest first, by project.
@@ -91,6 +93,7 @@ import FileFinder
 
     /// Shows the list for `project`, the keyboard taken from `window`.
     func show(_ project: Project, in window: NSWindow?) {
+        cancelFileFocus()
         if isOpen, self.project == project, previousWindow === window { return }
         close(restoringFocus: false)
         previousWindow = window
@@ -121,10 +124,10 @@ import FileFinder
         refresh()
         listing = Task { [weak self] in
             let latest = await finder.latest
-            guard let self, self.isOpen, self.project == project else { return }
+            guard let self, !Task.isCancelled, self.isOpen, self.project == project else { return }
             if let latest { self.adopt(latest) }
             let fresh = await finder.refreshed()
-            guard self.isOpen, self.project == project else { return }
+            guard !Task.isCancelled, self.isOpen, self.project == project else { return }
             if let fresh { self.adopt(fresh) }
             else { self.status = .failed(await finder.failure ?? "The project's files could not be listed.") }
         }
@@ -134,6 +137,7 @@ import FileFinder
     /// when that is still on screen in the same window.
     func close(restoringFocus: Bool) {
         guard isOpen else { return }
+        cancelFileFocus()
         isOpen = false
         pendingOpen = nil
         searching?.stop(); searching = nil
@@ -155,6 +159,32 @@ import FileFinder
             }
         }
         previousWindow = nil; previousResponder = nil; previousSelection = nil
+    }
+
+    /// A newer show or open invalidates the delayed handoff to a file.
+    private func cancelFileFocus() {
+        focusToken &+= 1
+        focusTask?.cancel(); focusTask = nil
+    }
+
+    func focusAfterOpening(_ tab: FileTab) {
+        cancelFileFocus()
+        let token = focusToken
+        focusTask = Task { @MainActor [weak self, weak tab] in
+            defer { if self?.focusToken == token { self?.focusTask = nil } }
+            let clock = ContinuousClock(), deadline = clock.now.advanced(by: .seconds(1))
+            while !Task.isCancelled, clock.now < deadline {
+                guard let self, self.focusToken == token, !self.isOpen,
+                      let tab, tab.container?.activeTab === tab else { return }
+                if let view = tab.focusView, let window = view.window {
+                    guard window.isKeyWindow, !view.isHiddenOrHasHiddenAncestor else { return }
+                    window.makeFirstResponder(view)
+                    return
+                }
+                do { try await Task.sleep(for: .milliseconds(16)) }
+                catch { return }
+            }
+        }
     }
 
     /// Forgets the projects that are gone or no longer trusted, and closes

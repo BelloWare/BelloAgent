@@ -29,7 +29,7 @@
   3. [x] a file and its symlink alias share a row id: dedupe by id;
   4. [x] ⌘P in a pop-out tab window shows the list in the main window: use the window it was pressed in;
   5. [x] opening from a text field saves the field editor, not the field: save the delegate control and its selection;
-  6. the delayed focus task can steal focus later: tie it to a token bumped by each show/open;
+  6. [x] the delayed focus task can steal focus later: tie it to a token bumped by each show/open;
   7. a failed refresh still reads as ready: surface `finder.failure` and say the list is as last read;
   8. a truncated listing says only "no match": say how many files were searched.
 - [ ] **Changes narrow-pane layout** — GitPanelWidthTests: the list offset check is too strict (moves 12.5 pt as rows re-measure; compare the first visible row), and the Commit button isn't found in the accessibility tree (assert with the commit field instead). Then run ChangesTabFrameTests at 1280×820, 580×800 and 820×640, add a gallery scene for a narrow window, and review.
