@@ -38,7 +38,7 @@ extension AgentSession {
     public func removeQueued(_ turnID: String) throws {
         guard let item=(queue+steering).first(where:{$0.turnID == turnID}) else { throw AgentError("queue_missing", "Queued message is no longer pending") }
         let oldQ=queue, oldS=steering, oldState=state, oldPaused=queuePaused; queue.removeAll{$0.turnID == turnID}; steering.removeAll{$0.turnID == turnID}; commandState(item,"removed")
-        if runTask == nil && queue.isEmpty && steering.isEmpty { if state != "error" { state="idle" }; queuePaused=false }
+        if runTask == nil && queue.isEmpty && steering.isEmpty { if state != .error { state = .idle }; queuePaused=false }
         do { try persistState() } catch { queue=oldQ; steering=oldS; state=oldState; queuePaused=oldPaused; throw error }; event("queue.changed")
     }
     /// Reorders the pending follow-ups; every pending turn id must appear exactly once.
@@ -92,8 +92,8 @@ extension AgentSession {
         if errorCode == Self.costLimitCode, !costLimitReached {
             // A run stopped at its cost limit with nothing left to continue
             // (a compaction, say) is over once the limit is above the spend.
-            state="idle"; runStatus="idle"; errorMessage=nil; errorCode=nil; try persistState()
-        } else if state != "error" { state="idle" }
+            state = .idle; runStatus = .idle; errorMessage=nil; errorCode=nil; try persistState()
+        } else if state != .error { state = .idle }
         event("state")
     }
     /// Runs the failed or stopped turn again from where it stopped: the last
@@ -106,8 +106,8 @@ extension AgentSession {
     /// arrived but is never replayed. Queued follow-ups go on after the turn.
     public func retryRun(overrides: JSON = [:]) throws {
         guard runTask == nil else { throw AgentError("session_busy", "Run already active") }
-        guard state == "error" || state == "paused", let last=history.last(where: { $0.replayEligible }), last.role != "assistant" else {
-            throw AgentError("nothing_to_retry", "There is no failed request to retry; send a new message instead")
+        guard state == .error || state == .paused, let last=history.last(where: { $0.replayEligible }), last.role != "assistant" else {
+            throw AgentError(AgentErrorCode.nothingToRetry, "There is no failed request to retry; send a new message instead")
         }
         let turnID = currentTurnID.isEmpty ? (history.last(where: { $0.role == "user" })?.id ?? UUID().uuidString) : currentTurnID
         var submission = retrySubmission ?? Submission(commandID: UUID().uuidString, turnID: turnID, text: "")

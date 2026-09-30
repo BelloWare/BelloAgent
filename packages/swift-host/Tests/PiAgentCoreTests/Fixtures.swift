@@ -2,9 +2,10 @@ import XCTest
 @testable import PiAgentCore
 
 // Fixtures every test file in this target shares: a profile that points at a
-// port nothing listens on, a temporary directory, a poll-until helper, and the
-// scripted model, tool and MCP doubles. A fixture used by one file belongs in
-// that file; these are here because several do.
+// port nothing listens on, a temporary directory, a poll-until helper, a
+// Python fixture server, and the scripted model, tool and MCP doubles. A
+// fixture used by one file belongs in that file; these are here because
+// several do.
 func fixtureProfile(_ api: String = "openai-responses") throws -> Profile {
     try Profile(["id":"test","revision":"1","providerId":"litellm","modelId":"fixture-model","api":JSON(api),"baseUrl":"http://127.0.0.1:12345/v1","contextWindow":100000,"maxOutputTokens":4096,"reasoning":true,"thinkingLevel":"default"])
 }
@@ -13,10 +14,56 @@ func temporaryDirectory() throws -> URL {
     try FileManager.default.createDirectory(at:path,withIntermediateDirectories:true)
     return path
 }
-func eventually(_ predicate: @escaping () async -> Bool, file: StaticString = #filePath, line: UInt = #line) async throws {
-    for _ in 0..<500 { if await predicate() { return }; try await Task.sleep(nanoseconds:10_000_000) }
+/// Polls until `predicate` holds. The time allowed is read from a clock, not
+/// counted in polls: a loaded machine that oversleeps every poll neither
+/// shortens nor stretches it. Having run out, it fails the test and throws.
+/// A test whose subject is promptness passes its own `timeout`.
+func eventually(timeout: Duration = .seconds(10), poll: Duration = .milliseconds(10), _ predicate: @escaping () async -> Bool,
+                file: StaticString = #filePath, line: UInt = #line) async throws {
+    let clock = ContinuousClock(), deadline = clock.now.advanced(by: timeout)
+    while true {
+        if await predicate() { return }
+        guard clock.now < deadline else { break }
+        try await Task.sleep(for: poll)
+    }
     XCTFail("Condition did not become true",file:file,line:line)
     throw AgentError("test_timeout","Condition did not become true")
+}
+/// A Python fixture server a test starts. It is given the directory it may
+/// write in, and writes `ready.json` there, with its port, once it listens.
+struct PythonGateway {
+    let process: Process, port: Int
+    /// `http://127.0.0.1:<port>`, without a path.
+    var base: String { "http://127.0.0.1:\(port)" }
+    /// Starts `script` with `root` and `arguments` and waits for its port. A
+    /// server that does not report one in time, or reports none, is stopped,
+    /// and the error is thrown to the test.
+    static func start(script: URL, root: URL, arguments: [String] = [], readyTimeout: Duration = .seconds(10)) async throws -> PythonGateway {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/python3"); process.arguments = [script.path, root.path] + arguments
+        process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
+        try process.run()
+        do {
+            let ready = root.appendingPathComponent("ready.json")
+            let clock = ContinuousClock(), deadline = clock.now.advanced(by: readyTimeout)
+            while !FileManager.default.fileExists(atPath: ready.path) {
+                guard clock.now < deadline else { throw AgentError("fixture_not_ready", "The fixture server did not report its port in time") }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            guard let port = try JSON.parse(Data(contentsOf: ready))["port"].int else { throw AgentError("fixture_port", "The fixture server reported no port") }
+            return PythonGateway(process: process, port: port)
+        } catch {
+            stopFixtureProcess(process)
+            throw error
+        }
+    }
+    /// Writes `source` to `gateway.py` in `root` and starts it.
+    static func start(source: String, root: URL, arguments: [String] = [], readyTimeout: Duration = .seconds(10)) async throws -> PythonGateway {
+        let script = root.appendingPathComponent("gateway.py")
+        try Data(source.utf8).write(to: script)
+        return try await start(script: script, root: root, arguments: arguments, readyTimeout: readyTimeout)
+    }
+    func stop() { stopFixtureProcess(process) }
 }
 /// Ends a fixture process a test started, without hanging the run. A test
 /// resumes after an `await` on whichever thread the pool picks, and

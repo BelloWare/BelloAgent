@@ -23,6 +23,18 @@ public struct AgentError: Error, LocalizedError, Sendable {
     public var errorDescription: String? { message }
     public var json: JSON { ["code": JSON(code), "message": JSON(message)] }
 }
+
+/// Error codes the app reads to choose what it does next, beyond showing the
+/// message: part of the protocol, so they never change. A selection, not a
+/// list of every code: `AgentError` takes any code, and most are only shown.
+public enum AgentErrorCode {
+    /// The chat is not open in this helper; the app opens it again.
+    public static let sessionMissing = "session_missing"
+    /// Retry found no failed request; the app offers a new message instead.
+    public static let nothingToRetry = "nothing_to_retry"
+    /// An edit may or may not have reached the journal; the app reloads it.
+    public static let journalUncertain = "journal_uncertain"
+}
 func required(_ value: JSON, _ name: String, maximum: Int = 4096) throws -> String {
     guard let s = value.text, !s.isEmpty, s.utf8.count <= maximum else { throw AgentError("invalid_params", "Invalid \(name)") }
     return s

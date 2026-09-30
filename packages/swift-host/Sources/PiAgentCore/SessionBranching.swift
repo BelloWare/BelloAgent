@@ -48,7 +48,7 @@ extension AgentSession {
         } catch {
             queue.removeLast(); commands=oldCommands
             wholeCommandsDue=true; journaledCommandsUncertain=true
-            if journal.writeOutcomeUncertain { throw AgentError("journal_uncertain", "The edit may have been saved, but journal synchronization failed. Reopen or recover the preserved journal before sending again.") }
+            if journal.writeOutcomeUncertain { throw AgentError(AgentErrorCode.journalUncertain, "The edit may have been saved, but journal synchronization failed. Reopen or recover the preserved journal before sending again.") }
             throw error
         }
         versions.hide(from: messageID, visible: visible, history: history)
