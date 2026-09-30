@@ -85,6 +85,28 @@ final class FileTabTests: XCTestCase {
         XCTAssertTrue(view.document === preview.pdf)
     }
 
+    @MainActor func testPreviewRetriesAnUnreadableFileWithoutRequiringItsMetadataToChange() async throws {
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 32, pixelsHigh: 32,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+        let url = try file("retry.png", Data(repeating: 0, count: png.count)), preview = FilePreview(url: url)
+        let stamp = Date(timeIntervalSince1970: 1_600_000_000)
+        try FileManager.default.setAttributes([.modificationDate: stamp], ofItemAtPath: url.path)
+        let inode = try FileManager.default.attributesOfItem(atPath: url.path)[.systemFileNumber] as? NSNumber
+        defer { preview.close() }
+        preview.load()
+        try await eventually("preview failure") { preview.error != nil && !preview.loading }
+        // Replace invalid bytes with a valid image, retaining every field
+        // of the cached fingerprint. A failure must never cache a no-op.
+        try png.write(to: url)
+        try FileManager.default.setAttributes([.modificationDate: stamp], ofItemAtPath: url.path)
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        XCTAssertEqual(attributes[.modificationDate] as? Date, stamp)
+        XCTAssertEqual(attributes[.systemFileNumber] as? NSNumber, inode)
+        preview.load()
+        try await eventually("the retry decodes the image") { preview.image != nil && preview.error == nil }
+    }
+
     private var folder: URL!
     @MainActor override func setUp() async throws {
         folder = scratchRoot("file-tab")

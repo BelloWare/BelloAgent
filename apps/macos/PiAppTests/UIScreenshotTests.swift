@@ -1,6 +1,7 @@
 import XCTest
 import SwiftUI
 import AppKit
+import PDFKit
 @testable import PiApp
 @testable import GitView
 
@@ -716,6 +717,31 @@ final class UIScreenshotTests: XCTestCase {
             NSApp.appearance = NSAppearance(named: appearance); try await settle(1.0)
             try capture(tabWindow, to: gallery.appendingPathComponent("24b-tabs-window-\(name).png"))
         }
+        // Native PDF and image previews beside the chat, using a synthetic
+        // page shared by the two formats so their sizing is easy to compare.
+        let illustration = NSImage(size: NSSize(width: 960, height: 540))
+        illustration.lockFocus()
+        NSColor(calibratedWhite: 0.96, alpha: 1).setFill(); NSRect(x: 0, y: 0, width: 960, height: 540).fill()
+        ("Retry budget" as NSString).draw(at: NSPoint(x: 64, y: 420), withAttributes: [.font: NSFont.systemFont(ofSize: 36, weight: .semibold), .foregroundColor: NSColor.darkGray])
+        ("One budget per turn · maximum delay 30 s" as NSString).draw(at: NSPoint(x: 64, y: 368), withAttributes: [.font: NSFont.systemFont(ofSize: 22), .foregroundColor: NSColor.darkGray])
+        for index in 0..<5 {
+            NSColor.piAccent.setFill()
+            NSBezierPath(roundedRect: NSRect(x: 64 + CGFloat(index) * 160, y: 90, width: 110, height: 35 + CGFloat(index) * 42), xRadius: 8, yRadius: 8).fill()
+        }
+        illustration.unlockFocus()
+        let png = projectRoot.appendingPathComponent("retry-budget.png"), pdfURL = projectRoot.appendingPathComponent("retry-budget.pdf")
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(data: try XCTUnwrap(illustration.tiffRepresentation)))
+        try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: png)
+        let pdf = PDFDocument(); pdf.insert(try XCTUnwrap(PDFPage(image: illustration)), at: 0)
+        try XCTUnwrap(pdf.dataRepresentation()).write(to: pdfURL)
+        for (url, scene) in [(png, "24f-image-preview"), (pdfURL, "24g-pdf-preview")] {
+            let tab = model.openFile(url), preview = tab.preview
+            try await until("the preview to load") { preview.image != nil || preview.pdf != nil }
+            for (name, appearance) in appearances {
+                NSApp.appearance = NSAppearance(named: appearance); try await settle(1.0)
+                try capture(window, to: gallery.appendingPathComponent("\(scene)-\(name).png"))
+            }
+        }
         for tab in model.tabs.allTabs { model.tabs.close(tab) }
         try await settle(0.6)
         XCTAssertTrue(model.tabs.windows.isEmpty)
@@ -745,6 +771,32 @@ final class UIScreenshotTests: XCTestCase {
         link?.performClick(nil)
         let readme = FileTab.key(for: projectRoot.appendingPathComponent("README.md"))
         try await until("README.md to open in a tab") { (model.tabs.pane.activeTab as? FileTab)?.key == readme }
+        for tab in model.tabs.allTabs { model.tabs.close(tab) }
+        try await settle(0.6)
+        // Code-formatted paths in ordinary reply text resolve as file links;
+        // the same kind of path in prose remains ordinary text.
+        reading.draft = "The retry budget is in `Sources/Retry/RetryBudget.swift:18`. README.md is mentioned in prose."
+        model.send(sessionID: reader.id)
+        try await waitIdle(reading, model: model, minimumMessages: 6)
+        var replyPath: (MarkdownTextView, URL, Int)?
+        try await until("the reply's code path to be linked") {
+            window.contentView?.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            for surface in window.contentView.map({ self.descendants(NativeMarkdownContainer.self, in: $0) }) ?? [] {
+                guard let storage = surface.textView.textStorage else { continue }
+                let range = (storage.string as NSString).range(of: "Sources/Retry/RetryBudget.swift:18")
+                if range.location != NSNotFound, let link = storage.attribute(.link, at: range.location, effectiveRange: nil) as? URL {
+                    replyPath = (surface.textView, link, range.location); return true
+                }
+            }
+            return false
+        }
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(1.0)
+            try capture(window, to: gallery.appendingPathComponent("24h-reply-file-link-\(name).png"))
+        }
+        let (replyText, fileLink, character) = try XCTUnwrap(replyPath)
+        XCTAssertTrue(replyText.textView(replyText, clickedOnLink: fileLink, at: character))
+        try await until("the reply link to open its file") { (model.tabs.pane.activeTab as? FileTab)?.key == FileTab.key(for: swift) }
         for tab in model.tabs.allTabs { model.tabs.close(tab) }
         try await settle(0.6)
         // 25 · ⌘P: with nothing typed, the files opened lately; then the

@@ -36,7 +36,7 @@ import ImageIO
     }
     func load() {
         token &+= 1
-        let token = token, url = url, previous = fingerprint
+        let token = token, url = url, previous = error == nil ? fingerprint : nil
         task?.cancel()
         loading = image == nil && pdf == nil
         task = Task { [weak self] in
