@@ -58,7 +58,19 @@ func boundedInt(_ value: JSON, fallback: Int = 0, maximum: Int = 1_000_000) thro
     guard let n = value.int, n >= 0, n <= maximum else { throw AgentError("invalid_range", "Invalid numeric range") }; return n
 }
 func nowMS() -> Double { ProcessInfo.processInfo.systemUptime * 1000 }
-func isoNow() -> String { ISO8601DateFormatter().string(from: Date()) }
+/// The time as every record and reply carries it: `2026-09-30T04:33:01Z`. One
+/// `ISO8601DateFormatter`, used under a lock; making one for each call cost a
+/// long chat's fork one for each record. (A format style writes the same text
+/// but for a time within half a millisecond of the next second, which the
+/// formatter rounds up and the style does not.)
+func isoNow() -> String { isoString(Date()) }
+func isoString(_ date: Date) -> String { ISOTime.shared.string(date) }
+private final class ISOTime: @unchecked Sendable {
+    static let shared = ISOTime()
+    // Every use goes through the lock.
+    private let lock = NSLock(), formatter = ISO8601DateFormatter()
+    func string(_ date: Date) -> String { lock.withLock { formatter.string(from: date) } }
+}
 
 func canonical(_ path: String) -> URL { URL(fileURLWithPath: (path as NSString).expandingTildeInPath).standardizedFileURL.resolvingSymlinksInPath() }
 func within(_ path: URL, _ root: URL) -> Bool { path.path == root.path || path.path.hasPrefix(root.path.hasSuffix("/") ? root.path : root.path + "/") }
