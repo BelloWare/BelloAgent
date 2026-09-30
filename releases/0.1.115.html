@@ -1,0 +1,37 @@
+<h2>Bello Agent 0.1.115</h2>
+<h3>New</h3>
+<ul>
+<li><b>A sides panel at the window's right edge.</b> It stays hidden until the pointer rests at the right edge. It lists the open chat's sides, each with its status (working, new reply, quiet) and last activity, with the open side highlighted, and “+ New side” (also shown when the chat has no sides yet).
+<ul>
+<li>Click a side to show it beside its chat.</li>
+<li>Move back toward the center and the panel slides away.</li>
+<li>A pin keeps it as a column, remembered across launches.</li>
+<li>While it's hidden, a faint handle at the edge carries a working ring or a new-reply dot.</li>
+</ul></li>
+<li><b>Newer rows load by themselves.</b> Reaching the bottom of an older window of a long chat loads the newer rows, and a reply still being written keeps streaming in place. The “Load newer messages” button is gone. A slow read shows a spinner, and a failed one shows its error with Retry.</li>
+</ul>
+<h3>Fixed</h3>
+<ul>
+<li><b>A reply no longer stops halfway.</b> In a long chat, a reply stopped growing on screen if you had scrolled up to read, or had clicked into or selected text in a reply further up. Switching away and back showed all of it. This had been there since 0.1.80.</li>
+<li><b>Rows that leave the top of a long chat can be scrolled back to.</b> A chat whose whole history was loaded, then grew past its window, used to lose them until it was reopened.</li>
+<li><b>A short page no longer stops a reply.</b> A page too short to scroll used to fill itself with earlier rows and push out the newest ones.</li>
+<li><b>A held window shrinks again.</b> A window stretched to keep a held row now shrinks back once nothing holds it, even in a chat that has gone quiet.</li>
+<li><b>Newer rows read after a quick scroll.</b> They're now read from where the reader actually is, instead of failing with “The selected text is at the display boundary”.</li>
+<li><b>A long chat's rows stay still while its context is counted.</b> When you open a long chat, its context pill can read “Inspect context”, then “Calculating context…”, then its figure. At many pane widths those words took more room than the row had: the footer grew a row, and the conversation jumped up and back within half a second. The pill now keeps one room for each time the chat is shown. Its words end in “…” where the row has no more, and a shorter figure keeps the room. Nothing in the footer moves while you read that showing. The room lies after the pill, so the pill's highlight and click area stay the size of what it says. A figure is never cut. The same holds for “Preparing request input…” and “Compacting context…”, and in a side's footer.</li>
+<li><b>New side from a pinned sides panel shows the side.</b> Pinned, the panel stays beside the Usage Report and Background Requests too. Its New side there opened the side out of sight; it now switches to the chats page first, as choosing a side in the panel already did.</li>
+<li><b>The sidebar leaves itself alone when you click a side.</b> Clicking a side no longer unfolds its chat's topic or folded sides, or turns the archive switch on.</li>
+<li><b>The cursor goes to the side.</b> A side opened from the sidebar now gets the cursor instead of its chat, and a chat visited earlier no longer takes it.</li>
+<li><b>The same cost reads the same everywhere.</b>
+<ul>
+<li>Every cost now rounds decimal half-up: the transcript, Inspector, pills, report, menu bar, sidebar and the helper's cost-limit notice. A limit of $2.675 reads $2.68 everywhere.</li>
+<li>Tiny amounts read “&lt;$0.0001” (row) or “&lt;$0.000001” (limit) instead of “$0.0000” or “$0.”.</li>
+<li>Token counts change unit at the boundary: “1.0M” instead of “1000k”, “10k” instead of “10.0k”, and “B” from a billion. Ties round half-up: 10,500 now reads “11k”.</li>
+</ul></li>
+<li><b>Rename's title suggestions go out as a utility request,</b> like automatic titles: the short titles-only prompt, tools off, and without your global instructions.</li>
+<li><b>Forking a long chat no longer holds up your other chats.</b> In a test, another chat waited 586 ms during a fork; now it waits 5 ms.</li>
+<li><b>Opening a side no longer writes to disk once per message</b> of its parent's context: 65 syncs for 60 messages, now 2.</li>
+<li><b>The menu bar and the activity graph agree</b> on an interrupted chat.</li>
+<li><b>The Usage Report's views:</b> a misspelt chart, latency or grouping choice can no longer silently fall back to another view.</li>
+</ul>
+<h3>A correction</h3>
+<p>The 0.1.113 and 0.1.114 notes said closed sheets were kept, with their views, and the MB each close saved. Checked in the real app, closed sheets, windows and popovers are freed. What was measured came from the test runner itself, which keeps autoreleased objects until a test returns. The code those releases added is harmless and stays.</p>
