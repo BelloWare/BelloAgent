@@ -85,10 +85,10 @@ struct SessionRatePresentation: Equatable {
     static func compactRate(_ value: Double) -> String {
         guard value.isFinite, value >= 0 else { return SessionTimingMetric.rate.label(value) }
         // Each unit starts where the one below would round up to a thousand
-        // of itself: 999,600 tok/s is "1M", never "1000k".
+        // of itself: 999,600 tok/s is "1M", never "1000K".
         if value >= 999_500 { return String(format: "%.1fM tok/s", value / 1_000_000).replacingOccurrences(of: ".0M", with: "M") }
-        if value >= 10_000 { return String(format: "%.0fk tok/s", value / 1_000) }
-        if value >= 999.5 { return String(format: "%.1fk tok/s", value / 1_000).replacingOccurrences(of: ".0k", with: "k") }
+        if value >= 10_000 { return String(format: "%.0fK tok/s", value / 1_000) }
+        if value >= 999.5 { return String(format: "%.1fK tok/s", value / 1_000).replacingOccurrences(of: ".0K", with: "K") }
         return SessionTimingMetric.rate.label(value)
     }
 }

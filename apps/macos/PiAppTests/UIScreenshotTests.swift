@@ -376,6 +376,7 @@ final class UIScreenshotTests: XCTestCase {
                                                  chatID: main.id, workspaceID: workspace.id, profileID: connections[0].profile.id)
         try await captureSidesPanelScenes(model: model, window: window, gallery: gallery, appearances: appearances,
                                           parentID: main.id, profileID: connections[0].profile.id)
+        try await captureTableWindowScene(gallery: gallery, appearances: appearances)
         // First-launch onboarding, rendered from an empty vault in its own window.
         let freshVault = ConfigurationVault(storage: MemoryVaultStorage())
         let fresh = WorkspaceModel(stateRoot: folder.appendingPathComponent("onboarding-state"), vault: freshVault)
@@ -559,6 +560,33 @@ final class UIScreenshotTests: XCTestCase {
     /// reply. Its handle while it is hidden, carrying the working side's ring
     /// (22); the panel out over the conversation (22a); and pinned, as a
     /// column of the window (22b). The panel is unpinned again afterwards.
+    /// 23 · A large Markdown table's own window: the app's bar and Copy
+    /// action, the grid with its header and a chosen row, and the chosen
+    /// cell's whole text below.
+    @MainActor private func captureTableWindowScene(gallery: URL, appearances: [(String, NSAppearance.Name)]) async throws {
+        let previous = Set(NSApp.windows.map(ObjectIdentifier.init))
+        let header = ["Attempt", "Delay", "Jitter", "Result", "Error", "Retry after"].map { AttributedString($0) }
+        func row(_ attempt: Int) -> [AttributedString] {
+            let failed = attempt % 4 == 0
+            let delay = min(8_000, 100 << min(attempt, 7)), jitter = attempt * 7 % 50
+            let cells: [String] = [String(attempt), "\(delay) ms", "±\(jitter) ms", failed ? "failed" : "ok",
+                                   failed ? "gateway timeout after the first byte; the charge was not taken" : "—", failed ? "\(attempt)s" : "—"]
+            return cells.map { AttributedString($0) }
+        }
+        let rows = (1...60).map(row)
+        MarkdownTableWindow.open(header: header, rows: rows)
+        let table = try XCTUnwrap(NSApp.windows.first { !previous.contains(ObjectIdentifier($0)) && $0.title.hasPrefix("Table ·") })
+        defer { table.close() }
+        table.setContentSize(NSSize(width: 880, height: 560))
+        if let grid = descendants(NSTableView.self, in: try XCTUnwrap(table.contentView)).first {
+            grid.selectRowIndexes(IndexSet(integer: 3), byExtendingSelection: false)
+        }
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(0.6)
+            try capture(table, to: gallery.appendingPathComponent("23-table-window-\(name).png"))
+        }
+    }
+
     @MainActor private func captureSidesPanelScenes(model: WorkspaceModel, window: NSWindow, gallery: URL,
                                                     appearances: [(String, NSAppearance.Name)], parentID: String,
                                                     profileID: String) async throws {

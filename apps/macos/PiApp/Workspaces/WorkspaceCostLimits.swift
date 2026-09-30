@@ -31,7 +31,7 @@ extension WorkspaceModel {
     /// choice is saved with the chat and reaches its helper session at once:
     /// the next model request is checked against it, in a run that is going too.
     func setCostLimit(_ limit: CostLimit?, for id: String) async throws {
-        if let limit, !limit.isValid { throw HostError.failure("Enter an amount in US dollars above $0, up to $1,000,000.") }
+        if let limit, !limit.isValid { throw HostError.failure("Enter an amount in US dollars above $0.00, up to $1,000,000.00.") }
         if let index = chats.firstIndex(where: { $0.id == id }) {
             if chats[index].costLimit != limit {
                 chats[index].costLimit = limit
@@ -49,7 +49,7 @@ extension WorkspaceModel {
     }
     /// Saves the Settings default. Every chat that follows it is told.
     func setDefaultCostLimit(_ limit: CostLimit) async throws {
-        guard limit.isValid else { throw HostError.failure("Enter an amount in US dollars above $0, up to $1,000,000.") }
+        guard limit.isValid else { throw HostError.failure("Enter an amount in US dollars above $0.00, up to $1,000,000.00.") }
         try await updateConfiguration { $0.chatCostLimit = limit }
     }
     /// The default changed (Settings saved, the vault read again): every

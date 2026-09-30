@@ -112,7 +112,7 @@ struct CapturedBodyView: View {
                          : "Events appear in captured order. Expand a frame and its data to inspect JSON. This is a formatted view; UTF-8, Hex and exports preserve the retained bytes.")
                         .font(PiFont.micro).foregroundStyle(Color.piInkTertiary)
                 } else if activeFormat == .combined {
-                    VStack { ProgressView(); Text("Combining captured response events…").font(PiFont.caption) }
+                    VStack { PiSpinner(controlSize: .regular); Text("Combining captured response events…").font(PiFont.caption) }
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     PagedTextView(text: activeFormat == .hex ? hex : utf8, accessibilityLabel: "Complete retained HTTP body")
@@ -130,7 +130,7 @@ struct CapturedBodyView: View {
                 }
             } else if controller.loading {
                 VStack(spacing: PiSpacing.sm) {
-                    ProgressView(value: Double(controller.loaded), total: Double(max(1, controller.total))).frame(maxWidth: 300)
+                    PiProgressBar(value: Double(controller.loaded), total: Double(max(1, controller.total))).frame(maxWidth: 300)
                     Text("Loading all retained bytes · \(controller.loaded.formatted()) / \(controller.total.formatted())")
                         .font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)

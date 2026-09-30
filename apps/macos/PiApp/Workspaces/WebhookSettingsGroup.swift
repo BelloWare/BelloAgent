@@ -45,7 +45,7 @@ struct WebhookSettingsGroup: View {
                 if let test {
                     PiRow(label: "Try it", detail: "Sends the webhook as typed, before you save, filled from a sample chat. The parameters get sample words: no mini model is asked.", last: true) {
                         HStack(spacing: PiSpacing.sm) {
-                            if testing { ProgressView().controlSize(.small) }
+                            if testing { PiSpinner(controlSize: .small) }
                             Button { Task { await run(test) } } label: { Label(testing ? "Sending…" : "Send Test", systemImage: "paperplane") }
                                 .buttonStyle(.piSecondaryCompact).fixedSize().disabled(testing)
                                 .accessibilityIdentifier("settings-webhook-test")

@@ -22,7 +22,7 @@ final class MoneyFormatGoldenTests: XCTestCase {
         Money(value: -1, exact: "Cost unavailable", compact: "cost n/a", row: "Cost unavailable", monitor: "—", line: nil),
         Money(value: .nan, exact: "Cost unavailable", compact: "cost n/a", row: "Cost unavailable", monitor: "—", line: nil),
         Money(value: .infinity, exact: "Cost unavailable", compact: "cost n/a", row: "Cost unavailable", monitor: "—", line: nil),
-        Money(value: 0, exact: "$0 USD", compact: "$0", row: "$0", monitor: "$0", line: "$0 USD"),
+        Money(value: 0, exact: "$0.00 USD", compact: "$0.00", row: "$0.00", monitor: "$0.00", line: "$0.00 USD"),
         Money(value: 5e-13, exact: "$5.00e-13 USD", compact: "$5e-13", row: "$5.00e-13", monitor: "$5e-13", line: "$5.00e-13 USD"),
         Money(value: 1e-12, exact: "$1.00e-12 USD", compact: "$0.000000000001", row: "$1.00e-12", monitor: "$0.000000000001", line: "$1.00e-12 USD"),
         Money(value: 1e-10, exact: "$1.00e-10 USD", compact: "$0.0000000001", row: "$1.00e-10", monitor: "$0.0000000001", line: "$1.00e-10 USD"),
@@ -41,12 +41,12 @@ final class MoneyFormatGoldenTests: XCTestCase {
         Money(value: 0.005, exact: "$0.005 USD", compact: "$0.005", row: "$0.005", monitor: "$0.005", line: "$0.005 USD"),
         Money(value: 0.025, exact: "$0.025 USD", compact: "$0.025", row: "$0.025", monitor: "$0.025", line: "$0.025 USD"),
         Money(value: 0.123456785, exact: "$0.12345679 USD", compact: "$0.123456785", row: "$0.12345679", monitor: "$0.123456785", line: "$0.12345679 USD"),
-        Money(value: 0.5, exact: "$0.5 USD", compact: "$0.5", row: "$0.5", monitor: "$0.5", line: "$0.5 USD"),
-        Money(value: 1, exact: "$1 USD", compact: "$1.00", row: "$1", monitor: "$1", line: "$1 USD"),
-        Money(value: 1.5, exact: "$1.5 USD", compact: "$1.50", row: "$1.5", monitor: "$1.5", line: "$1.5 USD"),
+        Money(value: 0.5, exact: "$0.50 USD", compact: "$0.50", row: "$0.50", monitor: "$0.50", line: "$0.50 USD"),
+        Money(value: 1, exact: "$1.00 USD", compact: "$1.00", row: "$1.00", monitor: "$1.00", line: "$1.00 USD"),
+        Money(value: 1.5, exact: "$1.50 USD", compact: "$1.50", row: "$1.50", monitor: "$1.50", line: "$1.50 USD"),
         Money(value: 2.12345678, exact: "$2.12345678 USD", compact: "$2.12345678", row: "$2.12345678", monitor: "$2.12345678", line: "$2.12345678 USD"),
         Money(value: 12.345, exact: "$12.345 USD", compact: "$12.345", row: "$12.345", monitor: "$12.345", line: "$12.345 USD"),
-        Money(value: 100, exact: "$100 USD", compact: "$100.00", row: "$100", monitor: "$100", line: "$100 USD"),
+        Money(value: 100, exact: "$100.00 USD", compact: "$100.00", row: "$100.00", monitor: "$100.00", line: "$100.00 USD"),
         Money(value: 1234.5678, exact: "$1234.5678 USD", compact: "$1234.5678", row: "$1234.5678", monitor: "$1234.5678", line: "$1234.5678 USD"),
     ]
 
@@ -83,10 +83,10 @@ final class MoneyFormatGoldenTests: XCTestCase {
 
     /// A report's token count, and the pills' count of the same tokens.
     private static let tokens: [(value: Double?, report: String, pill: String?)] = [
-        (nil, "—", nil), (0, "0", "0"), (1, "1", "1"), (999, "999", "999"), (999.4, "999", "999"), (999.5, "1.0k", "1K"),
-        (1_000, "1.0k", "1K"), (1_049, "1.0k", "1K"), (1_050, "1.1k", "1.1K"), (9_949, "9.9k", "9.9K"), (9_950, "10k", "10K"),
-        (9_960, "10k", "10K"), (9_999, "10k", "10K"), (10_000, "10k", "10K"), (10_499, "10k", "10.5K"), (10_500, "11k", "10.5K"),
-        (999_499, "999k", "999K"), (999_500, "1.0M", "1M"), (999_950, "1.0M", "1M"), (1_000_000, "1.0M", "1M"),
+        (nil, "—", nil), (0, "0", "0"), (1, "1", "1"), (999, "999", "999"), (999.4, "999", "999"), (999.5, "1.0K", "1K"),
+        (1_000, "1.0K", "1K"), (1_049, "1.0K", "1K"), (1_050, "1.1K", "1.1K"), (9_949, "9.9K", "9.9K"), (9_950, "10K", "10K"),
+        (9_960, "10K", "10K"), (9_999, "10K", "10K"), (10_000, "10K", "10K"), (10_499, "10K", "10.5K"), (10_500, "11K", "10.5K"),
+        (999_499, "999K", "999K"), (999_500, "1.0M", "1M"), (999_950, "1.0M", "1M"), (1_000_000, "1.0M", "1M"),
         (1_049_999, "1.0M", "1M"), (1_050_000, "1.1M", "1.1M"), (999_949_999, "999.9M", "1B"), (1e9, "1.0B", "1B"),
         (1.5e9, "1.5B", "1.5B"),
     ]

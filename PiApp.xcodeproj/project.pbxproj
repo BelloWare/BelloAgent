@@ -209,6 +209,7 @@
 		64A10C62424EC36F7E6606F8 /* ReportPageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B640CB5874643AC443BB149 /* ReportPageTests.swift */; };
 		64B9634585AAE2EC76A655DC /* ComposerBarLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = C792828E792086EBEDDFD376 /* ComposerBarLayout.swift */; };
 		64C29915F636DD8FBB146477 /* MessageDetailTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 568992BF7BFA841D6C93BCFF /* MessageDetailTests.swift */; };
+		64CA1635711475AFE7E03DB6 /* PiControlSizeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4658BF8CC23F61DAE48E4E0 /* PiControlSizeTests.swift */; };
 		64D41632B5D5FDA52C691A53 /* SwiftUIRuntimeIssues.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DACED3FE4B5383E5A1C8FDE /* SwiftUIRuntimeIssues.swift */; };
 		6585852EDAE4DB0252529EE1 /* InspectorItemsOutline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3ACF5575C7A0765CCE538867 /* InspectorItemsOutline.swift */; };
 		6621AF6609FC04DB65A6A595 /* TurnAccountingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46174FE7691971BD819501D7 /* TurnAccountingTests.swift */; };
@@ -333,6 +334,7 @@
 		9EA1167BAC4C069F78636845 /* TerminalEmulator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 515AE078B7ABC1E661C269F9 /* TerminalEmulator.swift */; };
 		9EA59F3D74B90D1739B2D869 /* GitPanelLayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68EA3EE2DE495E889C907B47 /* GitPanelLayoutTests.swift */; };
 		9EB46C1F18BFAF3BE22D5DB0 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 3C94889199CDA7EAF66BC5C1 /* Assets.xcassets */; };
+		9F683FE848FFCA99CC697BD7 /* PiToggles.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C3376639F9D077F6D2DEC48 /* PiToggles.swift */; };
 		9F7737F4D0F7DC4CD32F8598 /* SidebarInteractionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCB45ED28D0CFCE0466C0AD3 /* SidebarInteractionTests.swift */; };
 		9F88DBA64239F0DF391FE6C3 /* HistoryIndexFilesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD1028C1A3B68D113CE50388 /* HistoryIndexFilesTests.swift */; };
 		9FA2A941679BEDB5F903188B /* TranscriptVersions.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECF164BB4F9E410D5A77E9B6 /* TranscriptVersions.swift */; };
@@ -789,6 +791,7 @@
 		7AEC0013884AB622853DED11 /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
 		7B5AD8CE65CF1E547E8EC42F /* DashboardReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardReader.swift; sourceTree = "<group>"; };
 		7BE0A1DA539E09BB68382ACA /* DashboardQuery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardQuery.swift; sourceTree = "<group>"; };
+		7C3376639F9D077F6D2DEC48 /* PiToggles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PiToggles.swift; sourceTree = "<group>"; };
 		7C6BC000729839911B6DBA18 /* ReportMessageNavigationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReportMessageNavigationTests.swift; sourceTree = "<group>"; };
 		7CED4FC0B8CF56E965F7FA5F /* InspectorComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InspectorComponents.swift; sourceTree = "<group>"; };
 		7D032F1A3FFEA8A35451E518 /* GatewayAccounting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayAccounting.swift; sourceTree = "<group>"; };
@@ -904,6 +907,7 @@
 		B3921B40B1C151EEDA7086F6 /* TranscriptIdleSchedulerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptIdleSchedulerTests.swift; sourceTree = "<group>"; };
 		B3FE9EC1E51DB6F6850942D9 /* SidebarMetricsLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarMetricsLayoutTests.swift; sourceTree = "<group>"; };
 		B4316F0B0B646C3E9888B037 /* WireContractTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WireContractTests.swift; sourceTree = "<group>"; };
+		B4658BF8CC23F61DAE48E4E0 /* PiControlSizeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PiControlSizeTests.swift; sourceTree = "<group>"; };
 		B56CB37CD2AF00EC67420910 /* PiSheetWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PiSheetWindow.swift; sourceTree = "<group>"; };
 		B698FB2F6883BA0D476B08B9 /* MiniModelSettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniModelSettingsTests.swift; sourceTree = "<group>"; };
 		B74A3097492A15D3817A77F3 /* NativeMarkdownSizingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeMarkdownSizingTests.swift; sourceTree = "<group>"; };
@@ -1137,6 +1141,7 @@
 				FF2A4D833450F78AD09D546B /* PiStatPill.swift */,
 				21363228056C7F2F856B961D /* PiSurfaces.swift */,
 				E891E08703A6452E5E43BB30 /* PiTextWidth.swift */,
+				7C3376639F9D077F6D2DEC48 /* PiToggles.swift */,
 			);
 			path = Design;
 			sourceTree = "<group>";
@@ -1606,6 +1611,7 @@
 				FCAC539FBC3E6646B0F278E5 /* PayloadSearchTests.swift */,
 				AA7143E3CD8BAA073AB4A5AE /* PerformanceBaselineTests.swift */,
 				345694E13B96EB76EE0B25A9 /* PiChoicePickerTests.swift */,
+				B4658BF8CC23F61DAE48E4E0 /* PiControlSizeTests.swift */,
 				B21322F80F7292E7CCCD8B63 /* PiMenuTests.swift */,
 				D364649D2D42556361D06677 /* PiSheetCancelTests.swift */,
 				EFCD156F0A9A339BC369804C /* PiSheetWindowTests.swift */,
@@ -2007,6 +2013,7 @@
 				49B3A1BDFD86715C254CFA18 /* PiStatPill.swift in Sources */,
 				44ABD31F4E840667E582DB45 /* PiSurfaces.swift in Sources */,
 				271B6B1EA2A68A1C69630931 /* PiTextWidth.swift in Sources */,
+				9F683FE848FFCA99CC697BD7 /* PiToggles.swift in Sources */,
 				5822A0AF0A0988BE038034BC /* ProfileSettings.swift in Sources */,
 				38D7B9B7C2836AC6EFFCB403 /* ProjectSidebarState.swift in Sources */,
 				BD240A3B8037FFDA8B47470B /* PseudoTerminal.swift in Sources */,
@@ -2286,6 +2293,7 @@
 				DC3F68B11EF860E7BC703359 /* PayloadSearchTests.swift in Sources */,
 				B8BA91D3BF54EA0115F0A4C1 /* PerformanceBaselineTests.swift in Sources */,
 				985053EA191C149D1ACA0814 /* PiChoicePickerTests.swift in Sources */,
+				64CA1635711475AFE7E03DB6 /* PiControlSizeTests.swift in Sources */,
 				61705390E77E8689495CC9E6 /* PiMenuTests.swift in Sources */,
 				9A98F625C481ED75A9E100C6 /* PiSheetCancelTests.swift in Sources */,
 				2B0BA49006E84BBDB51D8F08 /* PiSheetWindowTests.swift in Sources */,

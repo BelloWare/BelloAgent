@@ -120,7 +120,7 @@ final class ModelCatalogEndpointTests: ModelCatalogEndpointTestCase {
         XCTAssertTrue(models[2].deprecated)
         XCTAssertEqual(models[2].displayName, "c")
         XCTAssertEqual(models[3].reasoning, ["off"])
-        XCTAssertEqual(models[0].contextLabel, "400k ctx")
+        XCTAssertEqual(models[0].contextLabel, "400K ctx")
     }
 
     @MainActor func testMiniRecommendationsAndPickerSearchPreserveCatalogAliases() throws {

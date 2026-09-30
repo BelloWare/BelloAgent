@@ -7,8 +7,8 @@ import SwiftUI
 enum CostLimitText {
     /// What a limit does, under every editor.
     static let explanation = "A chat stops before its next model request once the spend the gateway reported for it reaches the limit; a request already running always finishes. Title and name suggestions run as separate small tasks and don't count toward a chat's spend."
-    /// A preset's chip: "$5", "$25".
-    static func preset(_ amount: Double) -> String { amount.rounded() == amount ? "$\(Int(amount))" : CostLimit.dollars(amount) }
+    /// A preset's chip: "$5.00", "$25.00".
+    static func preset(_ amount: Double) -> String { CostLimit.dollars(amount) }
 }
 
 /// "$4.12 of $25.00", the share of the limit and a thin meter, in warning ink
@@ -147,7 +147,7 @@ struct CostLimitChoices: View {
                     Spacer(minLength: 0)
                 }
                 if invalid {
-                    Text("Enter an amount above $0, up to $1,000,000.").font(PiFont.micro).foregroundStyle(Color.piDanger)
+                    Text("Enter an amount above $0.00, up to $1,000,000.00.").font(PiFont.micro).foregroundStyle(Color.piDanger)
                 }
             }
         }
@@ -175,7 +175,7 @@ struct CostLimitEditor: View {
                 Image(systemName: "dollarsign.circle").font(.system(size: 12, weight: .medium)).foregroundStyle(Color.piInkTertiary)
                 Text(title).font(PiFont.caption.weight(.semibold)).foregroundStyle(Color.piInk)
                 Spacer(minLength: PiSpacing.sm)
-                if saving { ProgressView().controlSize(.mini) }
+                if saving { PiSpinner(controlSize: .mini) }
                 PiBadge(text: reading.source, tone: reading.override == nil ? .neutral : .accent)
                     .accessibilityIdentifier("cost-limit-source")
             }

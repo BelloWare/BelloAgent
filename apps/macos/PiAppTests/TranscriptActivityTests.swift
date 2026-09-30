@@ -115,13 +115,13 @@ final class TranscriptActivityTests: XCTestCase {
         XCTAssertEqual(TranscriptActivity.usageBreakdown(partial), "in 5")
         let uncovered = TranscriptActivity.aggregate([message("y", "assistant", "", accounting: reported { $0.requests = 2; $0.costSamples = 1 })])
         XCTAssertEqual(TranscriptActivity.usageBreakdown(uncovered), "in 38 (1/2) · 0 cached (1/2) · out 423 (1/2) · $0.000421875 (1/2)", "partial coverage stays visible, and an uncached share is not derived from partial input and cache reports")
-        XCTAssertEqual(TranscriptActivity.formatCompactTokens(950), "950"); XCTAssertEqual(TranscriptActivity.formatCompactTokens(1_500), "1.5k"); XCTAssertEqual(TranscriptActivity.formatCompactTokens(2_000), "2k"); XCTAssertEqual(TranscriptActivity.formatCompactTokens(48_200), "48k"); XCTAssertEqual(TranscriptActivity.formatCompactTokens(2_500_000), "2.5M")
-        XCTAssertEqual(TranscriptActivity.formatTokenCount(9_999), "9,999"); XCTAssertEqual(TranscriptActivity.formatTokenCount(12_000), "12k")
-        XCTAssertEqual(TranscriptActivity.formatTurnCost(0), "$0"); XCTAssertEqual(TranscriptActivity.formatTurnCost(0.0004), "$0.0004"); XCTAssertEqual(TranscriptActivity.formatTurnCost(0.0123), "$0.0123"); XCTAssertEqual(TranscriptActivity.formatTurnCost(2), "$2.00")
+        XCTAssertEqual(TranscriptActivity.formatCompactTokens(950), "950"); XCTAssertEqual(TranscriptActivity.formatCompactTokens(1_500), "1.5K"); XCTAssertEqual(TranscriptActivity.formatCompactTokens(2_000), "2K"); XCTAssertEqual(TranscriptActivity.formatCompactTokens(48_200), "48K"); XCTAssertEqual(TranscriptActivity.formatCompactTokens(2_500_000), "2.5M")
+        XCTAssertEqual(TranscriptActivity.formatTokenCount(9_999), "9,999"); XCTAssertEqual(TranscriptActivity.formatTokenCount(12_000), "12K")
+        XCTAssertEqual(TranscriptActivity.formatTurnCost(0), "$0.00"); XCTAssertEqual(TranscriptActivity.formatTurnCost(0.0004), "$0.0004"); XCTAssertEqual(TranscriptActivity.formatTurnCost(0.0123), "$0.0123"); XCTAssertEqual(TranscriptActivity.formatTurnCost(2), "$2.00")
     }
 
     func testTurnInfoAndSessionFooterPreserveZeroAndMicroCosts() {
-        for (value, expected) in [(0.0, "$0"), (0.000001, "$0.000001"), (0.00000001, "$0.00000001")] {
+        for (value, expected) in [(0.0, "$0.00"), (0.000001, "$0.000001"), (0.00000001, "$0.00000001")] {
             let accounting = reported { $0.costUSD = value }
             let turn = TranscriptActivity.aggregate([message("a", "assistant", "Done", accounting: accounting)])
             XCTAssertTrue(TranscriptActivity.usageBreakdown(turn).hasSuffix(expected))
@@ -201,7 +201,7 @@ final class TranscriptActivityTests: XCTestCase {
         XCTAssertTrue(pairedLine.detail.contains("Uncached input: 30 (1/3)")); XCTAssertTrue(pairedLine.detail.contains("Its reporting coverage may differ")); XCTAssertFalse(pairedLine.detail.contains("included in total cost"))
         var unpaired = paired; unpaired.uncachedInputSamples = 0; unpaired.uncachedInputReportedTokens = nil
         XCTAssertNil(TranscriptActivity.uncachedInput(unpaired))
-        XCTAssertTrue(TranscriptActivity.accountingPresentation(reported { $0.costUSD = 0 }).summary.hasSuffix("$0 USD"))
+        XCTAssertTrue(TranscriptActivity.accountingPresentation(reported { $0.costUSD = 0 }).summary.hasSuffix("$0.00 USD"))
         XCTAssertTrue(TranscriptActivity.accountingPresentation(reported { $0.costUSD = 1e-10 }).summary.hasSuffix("$1.00e-10 USD"))
         XCTAssertFalse(TranscriptActivity.accountingPresentation(reported { $0.costUSD = -1 }).summary.contains("USD"), "an invalid cost is left out")
         XCTAssertFalse(TranscriptActivity.accountingPresentation(reported { $0.costSamples = 0 }).summary.contains("USD"), "an unreported cost is left out")

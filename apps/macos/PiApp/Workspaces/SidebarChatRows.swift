@@ -71,7 +71,7 @@ struct ChatRowStats: Equatable {
     }
     var costLabel: String? {
         guard let costUSD, costUSD.isFinite, costUSD >= 0 else { return requests > 0 ? "cost n/a" : nil }
-        if costUSD == 0 { return "$0" }
+        if costUSD == 0 { return "$0.00" }
         return MetricFormat.centsUSD(costUSD, places: 4, padded: true)
     }
     var tokensLabel: String? {

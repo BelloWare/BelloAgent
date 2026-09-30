@@ -33,7 +33,7 @@ struct ConversationContentView: View {
                     // Return in the field already runs the search; the one
                     // primary on this sheet is the thing it is named for.
                     Button("Search") { search() }.buttonStyle(.piSecondaryCompact).disabled(busy || query.count > 256)
-                    if busy { ProgressView().controlSize(.small) }
+                    if busy { PiSpinner(controlSize: .small) }
                 }
                 ScrollView {
                     LazyVStack(spacing: 2) {

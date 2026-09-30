@@ -9,7 +9,7 @@ final class SidebarFigureGoldenTests: XCTestCase {
     /// One amount as a sidebar row's cost (`ChatRowStats.costLabel`) and a
     /// cost limit (`CostLimit.dollars`) write it.
     private static let money: [(value: Double, row: String, limit: String)] = [
-        (0, "$0", "$0.00"),
+        (0, "$0.00", "$0.00"),
         (1e-12, "<$0.0001", "<$0.000001"),
         (1e-7, "<$0.0001", "<$0.000001"),
         (4.9e-7, "<$0.0001", "<$0.000001"),
@@ -60,10 +60,10 @@ final class SidebarFigureGoldenTests: XCTestCase {
 
     /// A sidebar row's token count (`ChatRowStats.tokensLabel`).
     private static let tokens: [(value: Double, row: String)] = [
-        (0, "0 tok"), (1, "1 tok"), (92, "92 tok"), (999, "999 tok"), (999.4, "999 tok"), (999.5, "1.0k tok"),
-        (1_000, "1.0k tok"), (1_049, "1.0k tok"), (1_050, "1.1k tok"), (1_250, "1.3k tok"), (9_949, "9.9k tok"),
-        (9_950, "10.0k tok"), (9_999, "10.0k tok"), (12_345, "12.3k tok"), (99_950, "100.0k tok"), (999_499, "999.5k tok"),
-        (999_949, "999.9k tok"), (999_950, "1.0M tok"), (1_000_000, "1.0M tok"), (1_049_999, "1.0M tok"),
+        (0, "0 tok"), (1, "1 tok"), (92, "92 tok"), (999, "999 tok"), (999.4, "999 tok"), (999.5, "1.0K tok"),
+        (1_000, "1.0K tok"), (1_049, "1.0K tok"), (1_050, "1.1K tok"), (1_250, "1.3K tok"), (9_949, "9.9K tok"),
+        (9_950, "10.0K tok"), (9_999, "10.0K tok"), (12_345, "12.3K tok"), (99_950, "100.0K tok"), (999_499, "999.5K tok"),
+        (999_949, "999.9K tok"), (999_950, "1.0M tok"), (1_000_000, "1.0M tok"), (1_049_999, "1.0M tok"),
         (1_050_000, "1.1M tok"), (1_250_000, "1.3M tok"), (999_949_999, "999.9M tok"), (999_950_000, "1.0B tok"),
         (1e9, "1.0B tok"), (1.5e9, "1.5B tok"),
     ]

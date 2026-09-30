@@ -216,7 +216,7 @@ struct CatalogModelPicker: View {
                         .accessibilityIdentifier("model-picker-source")
                 }
                 Spacer(minLength: 8)
-                if loading { ProgressView().controlSize(.small) }
+                if loading { PiSpinner(controlSize: .small) }
                 Button {
                     Task {
                         if let draft { await model.listModels(forDraft: draft.profile, typedKey: draft.key, force: true) }
@@ -409,7 +409,7 @@ private struct PillLabel: View {
                     // chip resizes once, rather than a remove and an insert.
                     .contentTransition(.opacity)
             }
-            if loading { ProgressView().controlSize(.mini).scaleEffect(0.6).frame(width: 10, height: 10).transition(.opacity) }
+            if loading { PiSpinner(size: 6, lineWidth: 1.2).frame(width: 10, height: 10).transition(.opacity) }
             Image(systemName: "chevron.up.chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(Color.piInkTertiary)
         }
         .padding(.horizontal, compact ? 7 : 9).padding(.vertical, 4)

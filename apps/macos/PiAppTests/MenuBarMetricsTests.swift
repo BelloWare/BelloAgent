@@ -99,11 +99,11 @@ final class MenuBarMetricsTests: XCTestCase {
         totals.tokens = GatewayTokenTotals(input: 12_480, output: 2_400, total: 14_880, inputSamples: 3, outputSamples: 3, samples: 3)
         totals.cacheReadTokens = 8_100; totals.cacheReadSamples = 2
         let row = ChatRowStats(totals: totals)
-        XCTAssertEqual(row.usageLabel, "12k in · 8.1k cached · 2.4k out")
+        XCTAssertEqual(row.usageLabel, "12K in · 8.1K cached · 2.4K out")
         XCTAssertTrue(row.usageHelp.contains("input 12,480 (3/3 requests reported)") && row.usageHelp.contains("cached input 8,100 (2/3 reported)") && row.usageHelp.contains("output 2,400 (3/3 reported)"), row.usageHelp)
         XCTAssertEqual(ChatRowStats(totals: GatewayTotals(requests: 1)).usageLabel, "n/a in · n/a cached · n/a out", "Unreported usage never reads as zero")
         XCTAssertNil(ChatRowStats(totals: nil).usageLabel)
-        XCTAssertEqual(compactTokens(812), "812"); XCTAssertEqual(compactTokens(1_000), "1k"); XCTAssertEqual(compactTokens(1_260_000), "1.3M")
+        XCTAssertEqual(compactTokens(812), "812"); XCTAssertEqual(compactTokens(1_000), "1K"); XCTAssertEqual(compactTokens(1_260_000), "1.3M")
     }
 
     func testFooterSplitsSessionAndTurnTimeBetweenModelAndTools() {
@@ -177,7 +177,7 @@ final class MenuBarMetricsTests: XCTestCase {
         XCTAssertEqual(reasoningUsageSummary(totals), "Reasoning 253 tokens (1/3 reported) · $0.0011385 USD (1/3 reported) · included in output")
         XCTAssertEqual(totals.tokens?.total, 340); XCTAssertEqual(totals.costUSD, 0.0013875)
         totals.tokens?.reasoning = 0; totals.reasoningCostUSD = 0
-        XCTAssertTrue(reasoningUsageSummary(totals).contains("Reasoning 0 tokens (1/3 reported) · $0 USD (1/3 reported)"))
+        XCTAssertTrue(reasoningUsageSummary(totals).contains("Reasoning 0 tokens (1/3 reported) · $0.00 USD (1/3 reported)"))
     }
 
     private let until = Date(timeIntervalSince1970: 1_000_000)
