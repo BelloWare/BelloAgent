@@ -163,8 +163,8 @@ final class GatewayAccountingTests: XCTestCase {
         XCTAssertEqual(complete.gateway.requests, 1); XCTAssertEqual(complete.gateway.costUSD, 0); XCTAssertEqual(complete.gateway.costSamples, 1)
         let failed = try await archive.dashboard(filter(status: "failed"))
         XCTAssertNil(failed.gateway.costUSD); XCTAssertEqual(failed.gateway.costSamples, 0)
-        XCTAssertEqual(gatewayUSD(0), "$0 USD"); XCTAssertEqual(gatewayUSD(nil), "Cost unavailable")
-        XCTAssertNotEqual(gatewayUSD(0.000000001), "$0 USD")
+        XCTAssertEqual(gatewayUSD(0), "$0.00 USD"); XCTAssertEqual(gatewayUSD(nil), "Cost unavailable")
+        XCTAssertNotEqual(gatewayUSD(0.000000001), "$0.00 USD")
     }
 
     func testInlineUsageMovesFromUserToStreamingAnswerAndPreservesRequestDetails() async throws {

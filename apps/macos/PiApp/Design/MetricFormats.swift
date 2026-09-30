@@ -166,7 +166,19 @@ enum MetricFormat {
     /// what an unavailable cost reads as.
     static func exactUSD(_ value: Double, unit: Bool = true) -> String {
         let amount = value == 0 ? "0" : value < 0.000_000_01 ? scientific(value) : halfUp(value, places: 8)
-        return "$" + amount + (unit ? " USD" : "")
+        return "$" + atLeastCents(amount) + (unit ? " USD" : "")
+    }
+
+    /// An amount's digits with cents at least: `1.5` is `1.50` and `0` is
+    /// `0.00`; more places stay (`0.0042`, `12.3456`), and an exponent form
+    /// (`1.23e-9`) is left as it is. Every money figure the app writes goes
+    /// through it, so no amount reads with fewer than two decimals.
+    static func atLeastCents(_ digits: String) -> String {
+        guard !digits.contains("e"), !digits.contains("E") else { return digits }
+        let parts = digits.split(separator: ".", maxSplits: 1, omittingEmptySubsequences: false)
+        let fraction = parts.count > 1 ? String(parts[1]) : ""
+        guard fraction.count < 2 else { return digits }
+        return String(parts[0]) + "." + fraction + String(repeating: "0", count: 2 - fraction.count)
     }
 
     /// Dollars as a small label writes them: cents, `$4.13`, and under a cent

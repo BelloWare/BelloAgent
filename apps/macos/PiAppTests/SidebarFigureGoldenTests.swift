@@ -9,7 +9,7 @@ final class SidebarFigureGoldenTests: XCTestCase {
     /// One amount as a sidebar row's cost (`ChatRowStats.costLabel`) and a
     /// cost limit (`CostLimit.dollars`) write it.
     private static let money: [(value: Double, row: String, limit: String)] = [
-        (0, "$0", "$0.00"),
+        (0, "$0.00", "$0.00"),
         (1e-12, "<$0.0001", "<$0.000001"),
         (1e-7, "<$0.0001", "<$0.000001"),
         (4.9e-7, "<$0.0001", "<$0.000001"),

@@ -366,13 +366,8 @@ func gatewayUSD(_ value: Double?) -> String {
 
 /// Turn/footer amount. Retain useful reported precision even in a small
 /// label; a micro-cost must never round into zero or a different amount.
+/// Cents at least, as every amount: `$0.00`, `$0.50`, `$0.0042`.
 func compactGatewayUSD(_ value: Double?) -> String {
     guard let value, value.isFinite, value >= 0 else { return "cost n/a" }
-    if value == 0 { return "$0" }
-    var text = MetricFormat.preciseDecimal(value)
-    if value >= 1 {
-        if !text.contains(".") { text += ".00" }
-        else if text.split(separator: ".").last?.count == 1 { text += "0" }
-    }
-    return "$" + text
+    return "$" + MetricFormat.atLeastCents(value == 0 ? "0" : MetricFormat.preciseDecimal(value))
 }

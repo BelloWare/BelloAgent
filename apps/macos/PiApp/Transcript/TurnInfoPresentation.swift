@@ -153,7 +153,7 @@ enum TurnInfoPresentation {
     static func costLabel(_ turn: TurnSummary) -> String {
         let a = turn.accounting
         guard let cost = a.costUSD, cost.isFinite, cost >= 0 else { return turn.isRunning ? "Pending" : "Unreported" }
-        return "$" + MetricFormat.preciseDecimal(cost) + (a.costSamples > 0 && a.costSamples < a.requests ? " (\(a.costSamples)/\(a.requests) reported)" : "")
+        return "$" + MetricFormat.atLeastCents(MetricFormat.preciseDecimal(cost)) + (a.costSamples > 0 && a.costSamples < a.requests ? " (\(a.costSamples)/\(a.requests) reported)" : "")
     }
     static func inlineFigures(_ turn: TurnSummary) -> [String] {
         var parts = ["\(tokenLabel(turn)) tokens", "Cost \(costLabel(turn))"]

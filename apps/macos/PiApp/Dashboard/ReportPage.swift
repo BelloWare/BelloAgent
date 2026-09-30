@@ -355,7 +355,17 @@ struct ReportPage: View {
                 .chartPercentScale(metric == .cacheRatio)
                 .chartForegroundStyleScale(["p50": Color.piAccent, "p99": Color.piInfo])
                 .chartLegend(metric == .latency ? .visible : .hidden)
-                .chartYAxis { AxisMarks(position: .leading) { AxisGridLine().foregroundStyle(Color.piHairline); AxisValueLabel().foregroundStyle(Color.piInkTertiary) } }
+                .chartYAxis {
+                    AxisMarks(position: .leading) { value in
+                        AxisGridLine().foregroundStyle(Color.piHairline)
+                        // A cost axis reads as every amount does, cents at least.
+                        if metric == .cost, let usd = value.as(Double.self) {
+                            AxisValueLabel { Text(compactGatewayUSD(usd)) }.foregroundStyle(Color.piInkTertiary)
+                        } else {
+                            AxisValueLabel().foregroundStyle(Color.piInkTertiary)
+                        }
+                    }
+                }
                 .chartXAxis { AxisMarks(preset: .aligned) { AxisGridLine().foregroundStyle(Color.piHairline); AxisValueLabel(format: axisFormat, centered: false, anchor: .top).foregroundStyle(Color.piInkTertiary) } }
                 .chartPlotStyle { $0.padding(.trailing, PiSpacing.sm) }
                 .dashboardBrush(filter: snapshot.filter, committed: report.chartSelection, commit: { report.applyBrush($0) })

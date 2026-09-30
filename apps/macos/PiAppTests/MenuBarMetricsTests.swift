@@ -177,7 +177,7 @@ final class MenuBarMetricsTests: XCTestCase {
         XCTAssertEqual(reasoningUsageSummary(totals), "Reasoning 253 tokens (1/3 reported) · $0.0011385 USD (1/3 reported) · included in output")
         XCTAssertEqual(totals.tokens?.total, 340); XCTAssertEqual(totals.costUSD, 0.0013875)
         totals.tokens?.reasoning = 0; totals.reasoningCostUSD = 0
-        XCTAssertTrue(reasoningUsageSummary(totals).contains("Reasoning 0 tokens (1/3 reported) · $0 USD (1/3 reported)"))
+        XCTAssertTrue(reasoningUsageSummary(totals).contains("Reasoning 0 tokens (1/3 reported) · $0.00 USD (1/3 reported)"))
     }
 
     private let until = Date(timeIntervalSince1970: 1_000_000)

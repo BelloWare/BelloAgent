@@ -124,16 +124,16 @@ enum SessionStatsFormat {
         milliseconds < 999.5 ? MetricFormat.latency(milliseconds) : workDuration(milliseconds)
     }
     static func tokens(_ value: Double) -> String { value == 0 ? "0" : MetricFormat.tokens(value) }
-    /// A money axis in one style: every tick with the decimals its step needs,
-    /// cents at least below a dollar — `$0.50 $1.00 $1.50`, `$0.025 $0.050` —
-    /// and whole dollars from a dollar's step up.
+    /// A money axis in one style: every tick with the decimals its step needs
+    /// and cents at least, as every amount — `$0.00 $0.50 $1.00`,
+    /// `$0.025 $0.050`, `$0.00 $5.00 $10.00`.
     static func costTicks(_ ticks: [Double]) -> [String] {
-        guard ticks.count > 1 else { return ticks.map { $0 == 0 ? "$0" : cost($0) } }
+        guard ticks.count > 1 else { return ticks.map { cost($0) } }
         let step = ticks[1] - ticks[0]
         var places = 0
         while places < 8, abs((step * pow(10, Double(places))).rounded() - step * pow(10, Double(places))) > 1e-9 { places += 1 }
-        let decimals = step >= 1 ? 0 : max(2, places)
-        return ticks.map { $0 == 0 ? "$0" : "$" + String(format: "%.\(decimals)f", $0) }
+        let decimals = max(2, places)
+        return ticks.map { "$" + String(format: "%.\(decimals)f", $0) }
     }
     static func rate(_ value: Double) -> String { value == 0 ? "0" : MetricFormat.throughputValue(value) }
 }
