@@ -245,6 +245,10 @@ import FileFinder
 
     /// Shows `rows`, the choice kept on its file if it is still there.
     private func show(_ rows: [Row]) {
+        // Different listed paths may resolve to the same file. Keep the
+        // first (best-ranked, or most recent) row for each tab key.
+        var seen = Set<String>()
+        let rows = rows.filter { seen.insert($0.id).inserted }
         self.rows = rows
         if selection == nil || !rows.contains(where: { $0.id == selection }) { selection = rows.first?.id }
         if let pending = pendingOpen, pending.query == answered {
