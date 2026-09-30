@@ -162,7 +162,7 @@ struct SessionStatsPills: View, Equatable {
         let stats = presentation
         // The pills flow like a sentence: a narrow pane wraps between them
         // rather than cutting a figure in half.
-        PiFlow(spacing: PiSpacing.xs, rowSpacing: 3) {
+        PiFlow(spacing: PiSpacing.xs, rowSpacing: 3, reportsUsedWidth: true) {
             if !compact, stats.steps > 0 {
                 PiStatButton(symbol: "gauge.with.dots.needle.67percent", label: stats.gaugeLabel,
                              accessibility: "Session statistics: " + stats.gaugeLabel, identifier: "session-stats-time",

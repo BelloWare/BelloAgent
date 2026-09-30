@@ -343,6 +343,10 @@ struct PiFlowFillsRow: LayoutValueKey { static let defaultValue = false }
 struct PiFlow: Layout {
     var spacing: CGFloat = 6
     var rowSpacing: CGFloat = 6
+    /// Reports the width its widest row uses, not the width it was offered,
+    /// so a parent can tell what the row leaves free (the composer footer's
+    /// notice). Placed at that width, it lays its rows out the same.
+    var reportsUsedWidth = false
     /// A subview's own width, or the row's when it is wider than a whole row:
     /// a `ViewThatFits` then chooses its shorter form rather than run off the
     /// edge, and anything else is laid out within the row.
@@ -377,7 +381,7 @@ struct PiFlow: Layout {
             if wraps { x = 0; y += rowHeight + rowSpacing; rowHeight = 0 }
             x += size.width + spacing; rowHeight = max(rowHeight, size.height); maxX = max(maxX, x - spacing)
         }
-        return CGSize(width: width.isFinite ? width : maxX, height: y + rowHeight)
+        return CGSize(width: width.isFinite ? (reportsUsedWidth ? min(width, maxX) : width) : maxX, height: y + rowHeight)
     }
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         var x: CGFloat = 0, y: CGFloat = 0, rowHeight: CGFloat = 0
