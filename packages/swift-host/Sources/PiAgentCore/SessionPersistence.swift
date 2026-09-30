@@ -69,13 +69,35 @@ extension AgentSession {
             var consumer=JournalReplayConsumer(id:newID,header:prepared.headerCheck,marker:prepared.markerCheck,spendTracked:false)
             func replayWritten() throws { if let span=prepared.lastAppend, let line=prepared.lastAppendLine { try consumer.consume(line,at:span.offset) } }
             try replayWritten()
+            // A fork is a chat of its own: it starts with no spend of its own.
+            let left: Set<String> = [JournalRecordKind.marker, JournalRecordKind.state, JournalRecordKind.sideOrigin, JournalRecordKind.forkOrigin, JournalRecordKind.contextRecovery, SessionSpend.recordType]
             let reader=try journal.recordReader(); var index=0
-            while let record=try reader.next() {
+            while let line=try reader.nextLine() {
+                if line.isEmpty { continue }
                 defer { index += 1 }
-                if let end, index > end { continue }
-                let kind=record["customType"].text ?? ""
-                // A fork is a chat of its own: it starts with no spend of its own.
-                if [JournalRecordKind.marker, JournalRecordKind.state, JournalRecordKind.sideOrigin, JournalRecordKind.forkOrigin, JournalRecordKind.contextRecovery, SessionSpend.recordType].contains(kind) { continue }
+                // Past the reply a fork ends at, each record is still read in
+                // full, as it always was: the journal is checked to its end.
+                if let end, index > end { _ = try JSON.parse(line); continue }
+                // The record's kind and id, read without building it; a line
+                // the scan cannot read plainly is parsed. The thousands of
+                // run-state records a long chat has are left out, each still
+                // checked to be JSON the parser takes, as parsing it checked.
+                if let fields=JournalLineScan.stateTail(line) ?? JournalLineScan.fields(line), let recordID=fields.id {
+                    if left.contains(fields.customType ?? "") {
+                        if !JSONSyntax.plainlyValid(line) { _ = try JSON.parse(line) }
+                        continue
+                    }
+                    let id=try identity(JSON(recordID))
+                    // Its bytes as they were, but for its envelope; the replay
+                    // below parses what is written, as the fork's open would.
+                    if let copy=JournalEnvelope.rewritten(line,id:id,parentID:prepared.head,timestamp:isoNow()), copy.count <= JournalRecordReader.maximumRecordBytes {
+                        try prepared.appendLine(copy,id:id,flush:false)
+                        try replayWritten()
+                        continue
+                    }
+                }
+                let record=try JSON.parse(line)
+                if left.contains(record["customType"].text ?? "") { continue }
                 // Branch records can contain a queued edit. Preserve the branch
                 // and all message bytes, but never authorize its command twice.
                 try prepared.append(record.removing(["id","parentId","timestamp","nativeState"]),id:try identity(record["id"]),flush:false)
