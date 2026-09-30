@@ -58,10 +58,14 @@ import Foundation
     /// Whether text not at hand may still come: false once the file has
     /// changed, failed or been closed, when what is missing stays missing.
     var isReading: Bool { get }
+    /// Whether more lines may still be found: the file is still being read
+    /// through. A line asked for beyond the lines found may yet come.
+    var isIndexing: Bool { get }
 }
 
 extension FileTextSource {
     public var isReading: Bool { true }
+    public var isIndexing: Bool { false }
     public func textAtHand(from start: FileTextPosition, to end: FileTextPosition) -> String? { text(from: start, to: end) }
     public func showScreen(lines: ClosedRange<Int>, columns: Range<Int>) {}
     public func holding<T>(_ body: () -> T) -> (T, FileTextHold?) { (body(), nil) }

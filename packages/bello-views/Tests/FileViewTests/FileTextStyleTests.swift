@@ -79,3 +79,31 @@ final class FileTextStyleTests: XCTestCase {
         XCTAssertEqual(source.screens, 2, "the same lines in another font are another screen")
     }
 }
+
+/// The line numbers sit beside the text, never over it, however the view is
+/// made and sized, and in a window whose content runs under its title bar.
+final class FileTextGutterPlacementTests: XCTestCase {
+    @MainActor func testTheTextStartsWhereTheLineNumbersEnd() {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 300), styleMask: [.titled, .resizable, .fullSizeContentView],
+                              backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.contentView = nil; window.close() }
+        let container = NSView(frame: .zero)
+        window.contentView = container
+        let scroll = FileTextScrollView(frame: .zero)
+        scroll.autoresizingMask = [.width, .height]
+        container.addSubview(scroll)
+        scroll.textView.show(FileTextLines((0..<200).map { "line \($0)" }.joined(separator: "\n")), name: "gutter.txt")
+        for width in [500.0, 720.0, 380.0] {
+            window.setContentSize(NSSize(width: width, height: 300)); container.frame = NSRect(x: 0, y: 0, width: width, height: 300)
+            scroll.frame = container.bounds
+            window.layoutIfNeeded()
+            let gutter = scroll.numbers.convert(scroll.numbers.bounds, to: scroll)
+            let clip = scroll.contentView.frame
+            XCTAssertEqual(clip.minX, gutter.maxX, accuracy: 0.5, "the text's column starts where the numbers end, at width \(width)")
+            let firstCharacter = scroll.textView.convert(scroll.textView.point(of: FileTextPosition(line: 0, column: 0)), to: scroll)
+            XCTAssertGreaterThanOrEqual(firstCharacter.x, gutter.maxX, "no character under the numbers")
+            XCTAssertEqual(scroll.contentInsets.top, 0, "and no room kept for a title bar")
+        }
+    }
+}

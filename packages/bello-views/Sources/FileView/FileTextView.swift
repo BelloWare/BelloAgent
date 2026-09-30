@@ -436,7 +436,7 @@ public struct FileTextStyle {
         self.source.arrival = nil
         self.source = source; self.name = name
         pending = []
-        dropPending(); accessibilityHold?.release(); accessibilityHold = nil
+        dropPending(); accessibilityHold?.release(); accessibilityHold = nil; revealing = nil
         source.arrival = { [weak self] lines in self?.arrived(lines) }
         layouts = [:]; layoutGeneration = source.generation; measuredWidth = 0; goalX = nil; emphasized = nil; readAhead = nil
         showing &+= 1; answers = []; answering = []
@@ -519,7 +519,7 @@ public struct FileTextStyle {
         NotificationCenter.default.addObserver(self, selector: #selector(clipScrolled(_:)), name: NSView.boundsDidChangeNotification, object: clip)
         updateFrame()
     }
-    @objc private func clipResized(_ note: Notification) { updateFrame() }
+    @objc private func clipResized(_ note: Notification) { updateFrame(); revealIfReady() }
     @objc private func clipScrolled(_ note: Notification) { ruler?.needsDisplay = true }
 
     // MARK: Drawing
@@ -532,6 +532,8 @@ public struct FileTextStyle {
         guard let window else { return }
         NotificationCenter.default.addObserver(self, selector: #selector(keyChanged(_:)), name: NSWindow.didBecomeKeyNotification, object: window)
         NotificationCenter.default.addObserver(self, selector: #selector(keyChanged(_:)), name: NSWindow.didResignKeyNotification, object: window)
+        // Lines to reveal wait for the view to be laid out in its window.
+        if revealing != nil { DispatchQueue.main.async { [weak self] in MainActor.assumeIsolated { self?.revealIfReady() } } }
     }
     @objc private func keyChanged(_ note: Notification) { if hasSelection { needsDisplay = true } }
     public override func becomeFirstResponder() -> Bool {
@@ -822,6 +824,36 @@ public struct FileTextStyle {
 
     // MARK: Keys
 
+    /// Shows lines set apart, near the top third, the insertion point at the
+    /// first of them: at once if the text has them, else when it does, and
+    /// the last line if the text ends before them. Until the text is read
+    /// through: read again (as Latin-1, say), they are shown again.
+    public func reveal(lines: ClosedRange<Int>) {
+        revealing = lines; revealShown = false; revealGeneration = source.generation
+        revealIfReady()
+    }
+    /// The reading of the text the lines were shown in: read again (as
+    /// Latin-1, say), they are shown again once found again.
+    private var revealGeneration = 0
+    private var revealing: ClosedRange<Int>?
+    /// Whether the lines being revealed have been scrolled to: once their
+    /// first is found. Their band grows until their last is.
+    private var revealShown = false
+    private func revealIfReady() {
+        guard let target = revealing, window != nil, (enclosingScrollView?.contentView.bounds.height ?? 0) > 0 else { return }
+        if source.generation != revealGeneration { revealGeneration = source.generation; revealShown = false }
+        let count = source.lineCount, indexing = source.isIndexing
+        guard target.lowerBound < count || !indexing else { return }
+        let first = max(0, min(target.lowerBound, count - 1)), last = min(max(first, target.upperBound), count - 1)
+        emphasized = first...last
+        if !revealShown {
+            revealShown = true
+            select(from: FileTextPosition(line: first, column: 0), to: FileTextPosition(line: first, column: 0))
+            scrollTo(line: first)
+        }
+        if !indexing { revealing = nil }
+    }
+
     /// The space bar pages, as it does in a read-only page. Everything else
     /// goes through the key bindings to the commands below.
     public override func keyDown(with event: NSEvent) {
@@ -915,6 +947,7 @@ public struct FileTextStyle {
     func arrived(_ lines: ClosedRange<Int>) {
         layouts = layouts.filter { !lines.contains($0.key) }
         updateFrame()
+        revealIfReady()
         let clamped = (clamp(anchor), clamp(focus))
         if clamped.0 != anchor || clamped.1 != focus { select(from: clamped.0, to: clamped.1) }
         let drawn = visibleRect.union(preparedContentRect)
@@ -1372,10 +1405,25 @@ extension FileTextView: NSMenuItemValidation {
         super.init(frame: frame)
         hasVerticalScroller = true; hasHorizontalScroller = true; autohidesScrollers = true
         borderType = .noBorder; drawsBackground = false
+        // The text starts under whatever its host puts above it, never under
+        // a title bar it is not under.
+        automaticallyAdjustsContentInsets = false
         documentView = textView
         numbers = FileLineNumberRuler(textView: textView, scrollView: self)
         verticalRulerView = numbers
         hasHorizontalRuler = false; hasVerticalRuler = true; rulersVisible = true
     }
     public required init?(coder: NSCoder) { nil }
+    /// The line numbers beside the text, not over it: AppKit lays a vertical
+    /// ruler over the clip view's left edge, so the clip view is moved to
+    /// start where the ruler ends.
+    public override func tile() {
+        super.tile()
+        guard rulersVisible, let ruler = verticalRulerView, !ruler.isHidden else { return }
+        var clip = contentView.frame
+        let edge = ruler.frame.maxX
+        guard clip.minX < edge else { return }
+        clip.size.width = max(0, clip.width - (edge - clip.minX)); clip.origin.x = edge
+        contentView.frame = clip
+    }
 }

@@ -138,7 +138,13 @@ struct FileLengths: Sendable {
 
     public let url: URL
     public let options: Options
-    public private(set) var status: Status = .indexing
+    public private(set) var status: Status = .indexing {
+        didSet { if status != oldValue { onStatusChange?(status) } }
+    }
+    /// Told when the status changes: for a host's header, beside the view's
+    /// own `arrival`.
+    public var onStatusChange: ((Status) -> Void)?
+    public var isIndexing: Bool { status == .indexing }
     public private(set) var encoding: FileEncoding = .utf8
     /// Read as Latin-1 because its bytes are not UTF-8: said, not hidden.
     public private(set) var fellBack = false

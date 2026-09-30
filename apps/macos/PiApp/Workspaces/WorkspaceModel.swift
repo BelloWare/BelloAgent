@@ -4,7 +4,11 @@ import Combine
 enum WorkspacePage: String, Sendable { case chats, report, background }
 
 @MainActor final class WorkspaceModel: ObservableObject {
-    @Published var workspaces: [WorkspaceRecord] = [] { didSet { sidebarIndex.invalidate(); workspacesRevision &+= 1; noteActivityChanged() } }
+    @Published var workspaces: [WorkspaceRecord] = [] { didSet { sidebarIndex.invalidate(); workspacesRevision &+= 1; noteActivityChanged(); tabs.projectsChanged() } }
+    /// The tabs beside the chats and in windows of their own: the window's,
+    /// publishing on their own (`TabHost`). Kept across launches in the app;
+    /// in tests, nothing is kept.
+    let tabs = TabHost(defaults: ProcessInfo.processInfo.environment["PI_APP_TESTING"] == "1" ? nil : .standard)
     /// Bumped by any change to the list, so views can cache derived labels
     /// instead of rebuilding them on every redraw.
     private(set) var workspacesRevision = 0
@@ -367,6 +371,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
         store = MetadataStore(url: root.appendingPathComponent("desktop.sqlite"))
         report.attach(self)
         TranscriptKeptRows.policy = self
+        FileTab.resolveProject = { [weak self] id in self?.fileProjectState(id) ?? .removed }
     }
     /// Opens the desktop database off the main actor and reports the one state
     /// the rest of the app checks synchronously: there is no storage at all.

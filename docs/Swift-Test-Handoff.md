@@ -1236,6 +1236,12 @@ xcodebuild test -project PiApp.xcodeproj -scheme PiApp -configuration Debug \
 open "$PI_APP_UI_SCREENSHOT_ROOT/screenshots"
 ```
 
+`PI_APP_UI_GALLERY_TABS_ONLY=1` (with `TEST_RUNNER_` beside it) renders only the
+tabs beside the chat: `24-tabs-file-*` (the chat's side and two files as tabs in
+the pane, a Swift file shown at the lines it was opened at), `24a-tabs-side-*`
+(the side shown in their place) and `24b-tabs-window-*` (the file popped out
+into a window of its own). The full gallery renders them after the sides panel.
+
 `PI_APP_UI_GALLERY_COST_ONLY=1` (with `TEST_RUNNER_` beside it) renders only the
 cost-limit scenes after the first turn: `18-cost-limit-*` (the stop notice; the
 limited chat's Session Inspector Overview, with its spend against the limit and
