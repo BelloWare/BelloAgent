@@ -8,6 +8,36 @@ import PDFKit
 /// any, missing with the reason otherwise, or when the file is gone; one tab
 /// a file whichever path reached it; and nothing read before it is shown.
 final class FileTabTests: XCTestCase {
+    @MainActor func testLiveFollowDoesNotReadASymlinkReplacementUnderTheOriginalTrust() async throws {
+        let url = try file("trusted.txt", Data("original".utf8)), secret = try file("private.txt", Data("private replacement".utf8))
+        let tab = FileTab(url: url, projectID: nil)
+        tab.didShow()
+        defer { tab.willClose() }
+        let old = try XCTUnwrap(tab.document)
+        try await eventually("the original read and watch") { old.status == .ready && tab.isWatching }
+        try FileManager.default.removeItem(at: url)
+        try FileManager.default.createSymbolicLink(at: url, withDestinationURL: secret)
+        try await eventually("the replacement is refused") { tab.missingReason != nil }
+        XCTAssertTrue(tab.document === old, "no reading of the new target replaces the approved file")
+        // Explicit opening resolves the new target to a different tab key,
+        // where the workspace checks its project trust afresh.
+        XCTAssertNotEqual(FileTab.key(for: url), tab.key)
+    }
+
+    @MainActor func testAPreviewDoesNotDecodeARedirectedPath() async throws {
+        let image = NSImage(size: NSSize(width: 100, height: 100))
+        image.lockFocus(); NSColor.white.setFill(); NSRect(x: 0, y: 0, width: 100, height: 100).fill(); image.unlockFocus()
+        let pdf = PDFDocument(); pdf.insert(try XCTUnwrap(PDFPage(image: image)), at: 0)
+        let bytes = try XCTUnwrap(pdf.dataRepresentation()), url = try file("preview.pdf", bytes), target = try file("other.pdf", bytes)
+        let preview = FilePreview(url: url)
+        defer { preview.close() }
+        try FileManager.default.removeItem(at: url)
+        try FileManager.default.createSymbolicLink(at: url, withDestinationURL: target)
+        preview.load()
+        try await eventually("the redirected preview is refused") { preview.error != nil }
+        XCTAssertNil(preview.pdf)
+    }
+
     @MainActor func testLiveFollowKeepsTheViewScrollAndSelectionAcrossAnAtomicSaveAndRecreation() async throws {
         let source = (0..<200).map { "Line \($0)" }.joined(separator: "\n")
         let url = try file("follow.txt", Data(source.utf8))

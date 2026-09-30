@@ -47,8 +47,8 @@ final class FileBytes: @unchecked Sendable {
     // Immutable after init; pread is safe from any thread.
     let descriptor: Int32
     let path: String
-    init?(path: String) {
-        let descriptor = open(path, O_RDONLY | O_CLOEXEC)
+    init?(path: String, noFollow: Bool = false) {
+        let descriptor = open(path, O_RDONLY | O_CLOEXEC | (noFollow ? O_NOFOLLOW : 0))
         guard descriptor >= 0 else { return nil }
         self.descriptor = descriptor; self.path = path
     }
@@ -115,6 +115,9 @@ struct FileLengths: Sendable {
     }
     /// How the document reads, for tests to make smaller or slower.
     public struct Options: Sendable {
+        /// A host that has already resolved and approved this path can
+        /// refuse a replacement symlink instead of inheriting its trust.
+        public var requiresResolvedPath = false
         public var chunkBytes = 4 << 20
         /// The first lines are shown once this much is read (the first read
         /// is no bigger); then more after every `publishBytes`, or 100 ms,
@@ -232,10 +235,14 @@ struct FileLengths: Sendable {
     // MARK: Opening
 
     private func open() {
-        let path = url.path, version = version, before = options.beforeOpen
+        let path = url.path, version = version, before = options.beforeOpen, requiresResolvedPath = options.requiresResolvedPath
         indexing = Task.detached(priority: .userInitiated) { [weak self] in
             await before?()
-            guard let bytes = FileBytes(path: path), let identity = FileIdentity.of(descriptor: bytes.descriptor) else {
+            guard !requiresResolvedPath || URL(fileURLWithPath: path).resolvingSymlinksInPath().path == path else {
+                await self?.failed("The file's path changed. Open it again to check its location.", version: version)
+                return
+            }
+            guard let bytes = FileBytes(path: path, noFollow: requiresResolvedPath), let identity = FileIdentity.of(descriptor: bytes.descriptor) else {
                 await self?.failed("The file can't be opened.", version: version)
                 return
             }

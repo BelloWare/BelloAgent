@@ -26,7 +26,7 @@ import ImageIO
         madePDFView = view
         return view
     }
-    init(url: URL) { self.url = url }
+    init(url: URL) { self.url = url.standardizedFileURL.resolvingSymlinksInPath() }
     nonisolated static func kind(for url: URL) -> String? {
         switch url.pathExtension.lowercased() {
         case "pdf": return "pdf"
@@ -41,6 +41,9 @@ import ImageIO
         loading = image == nil && pdf == nil
         task = Task { [weak self] in
             let reading = await Task.detached(priority: .userInitiated) { () -> Reading in
+                guard url.resolvingSymlinksInPath().path == url.path else {
+                    return Reading(fingerprint: nil, content: .failed("The file's path changed. Open it again to check its location."))
+                }
                 let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
                 let fingerprint = attributes.map { Fingerprint(modified: $0[.modificationDate] as? Date,
                     size: ($0[.size] as? NSNumber)?.uint64Value ?? 0, inode: ($0[.systemFileNumber] as? NSNumber)?.uint64Value ?? 0) }

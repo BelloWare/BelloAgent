@@ -78,7 +78,8 @@ enum FileProjectState: Equatable {
         followTask = Task { [weak self] in
             guard await old.hasChanged(), let self, !Task.isCancelled, self.shown, self.readable, self.followToken == token else { return }
             self.following?.close()
-            let fresh = FileDocument(url: self.url)
+            var options = FileDocument.Options(); options.requiresResolvedPath = true
+            let fresh = FileDocument(url: self.url, options: options)
             self.following = fresh
             fresh.onStatusChange = { [weak self, weak fresh] status in
                 guard let self, let fresh, self.following === fresh, self.followToken == token else { return }
@@ -145,7 +146,8 @@ enum FileProjectState: Equatable {
     var document: FileView.FileDocument? {
         guard readable, previewKind == nil else { return nil }
         if let madeDocument { return madeDocument }
-        let document = FileView.FileDocument(url: url)
+        var options = FileDocument.Options(); options.requiresResolvedPath = true
+        let document = FileView.FileDocument(url: url, options: options)
         document.onStatusChange = { [weak self, weak document] status in
             guard let self, let document, self.madeDocument === document else { return }
             self.fellBack = document.fellBack
