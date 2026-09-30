@@ -82,6 +82,7 @@ import FileFinder
     /// Where the keyboard was before this took it.
     private weak var previousWindow: NSWindow?
     private weak var previousResponder: NSResponder?
+    private var previousSelection: NSRange?
     private var resignObserver: NSObjectProtocol?
     /// The window whose keyboard the list took, also where it is drawn.
     var presentationWindow: NSWindow? { isOpen ? previousWindow : nil }
@@ -92,7 +93,16 @@ import FileFinder
     func show(_ project: Project, in window: NSWindow?) {
         if isOpen, self.project == project, previousWindow === window { return }
         close(restoringFocus: false)
-        previousWindow = window; previousResponder = window?.firstResponder
+        previousWindow = window
+        if let editor = window?.firstResponder as? NSTextView, editor.isFieldEditor {
+            // AppKit reuses this editor for the search field. Remember the
+            // control it was editing, not the editor's new contents.
+            previousResponder = editor.delegate as? NSControl
+            previousSelection = editor.selectedRange()
+        } else {
+            previousResponder = window?.firstResponder
+            previousSelection = nil
+        }
         // Another project's files are not this one's, even for a moment.
         if self.project != project { index = nil }
         self.project = project
@@ -132,12 +142,19 @@ import FileFinder
         resignObserver = nil
         if restoringFocus, let window = previousWindow, let responder = previousResponder {
             if let view = responder as? NSView {
-                if view.window === window, !view.isHiddenOrHasHiddenAncestor { window.makeFirstResponder(view) }
+                if view.window === window, !view.isHiddenOrHasHiddenAncestor {
+                    window.makeFirstResponder(view)
+                    if let selection = previousSelection, let editor = (view as? NSControl)?.currentEditor() as? NSTextView {
+                        let length = (editor.string as NSString).length
+                        let location = min(selection.location, length)
+                        editor.setSelectedRange(NSRange(location: location, length: min(selection.length, length - location)))
+                    }
+                }
             } else {
                 window.makeFirstResponder(responder)
             }
         }
-        previousWindow = nil; previousResponder = nil
+        previousWindow = nil; previousResponder = nil; previousSelection = nil
     }
 
     /// Forgets the projects that are gone or no longer trusted, and closes

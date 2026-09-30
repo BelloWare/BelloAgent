@@ -28,7 +28,7 @@
   2. [x] Return before the new query's results opens the previous choice: keep a pending open until results for the current query arrive;
   3. [x] a file and its symlink alias share a row id: dedupe by id;
   4. [x] ⌘P in a pop-out tab window shows the list in the main window: use the window it was pressed in;
-  5. opening from a text field saves the field editor, not the field: save the delegate control and its selection;
+  5. [x] opening from a text field saves the field editor, not the field: save the delegate control and its selection;
   6. the delayed focus task can steal focus later: tie it to a token bumped by each show/open;
   7. a failed refresh still reads as ready: surface `finder.failure` and say the list is as last read;
   8. a truncated listing says only "no match": say how many files were searched.
