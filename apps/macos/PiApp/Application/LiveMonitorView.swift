@@ -224,7 +224,7 @@ extension Color {
 
 func monitorCost(_ cost: Double?) -> String {
     guard let cost, cost.isFinite, cost >= 0 else { return "—" }
-    return "$" + MetricFormat.preciseDecimal(cost)
+    return "$" + MetricFormat.atLeastCents(MetricFormat.preciseDecimal(cost))
 }
 func monitorCacheShare(_ gateway: GatewayTotals?) -> String {
     // A percentage requires paired observations; unmatched samples cannot be

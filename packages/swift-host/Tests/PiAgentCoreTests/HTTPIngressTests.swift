@@ -48,14 +48,8 @@ final class HTTPIngressTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let script = root.appendingPathComponent("server.py")
         try Data(Self.keepAliveServer.utf8).write(to: script)
-        let server = Process()
-        server.executableURL = URL(fileURLWithPath: "/usr/bin/python3"); server.arguments = [script.path, root.path]
-        server.standardOutput = FileHandle.nullDevice; server.standardError = FileHandle.nullDevice
-        try server.run()
-        defer { server.terminate(); server.waitUntilExit() }
-        let ready = root.appendingPathComponent("ready.json")
-        for _ in 0..<1000 where !FileManager.default.fileExists(atPath: ready.path) { try await Task.sleep(for: .milliseconds(10)) }
-        let port = try XCTUnwrap(JSON.parse(Data(contentsOf: ready))["port"].int)
+        let gateway = try await PythonGateway.start(script: script, root: root); defer { gateway.stop() }
+        let port = gateway.port
         let pool = HTTPSessionPool()
         func send(_ turn: String, key: String = "fixture-key") async throws -> HTTPStream {
             var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/v1/responses")!)

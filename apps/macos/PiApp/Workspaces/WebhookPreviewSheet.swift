@@ -29,7 +29,7 @@ struct WebhookPreviewSheet: View {
                     }
                     if preparing {
                         HStack(spacing: PiSpacing.sm) {
-                            ProgressView().controlSize(.small)
+                            PiSpinner(controlSize: .small)
                             Text("Asking the mini model…").font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
                         }
                     }

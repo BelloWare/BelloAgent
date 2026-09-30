@@ -26,11 +26,8 @@ final class CompactionGatewayTests: XCTestCase {
     func testStreamingSummaryAndOutputExhaustionRetainEveryAttemptAndEffort() async throws {
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
         var repo=URL(fileURLWithPath:#filePath);for _ in 0..<5 { repo.deleteLastPathComponent() }
-        let server=Process();server.executableURL=URL(fileURLWithPath:"/usr/bin/python3");server.arguments=[repo.appendingPathComponent("fixtures/native/compaction_gateway.py").path,root.path]
-        server.standardOutput=FileHandle.nullDevice;server.standardError=FileHandle.nullDevice;try server.run()
-        defer { stopFixtureProcess(server) }
-        let ready=root.appendingPathComponent("ready.json");try await eventually { FileManager.default.fileExists(atPath:ready.path) }
-        let port=try XCTUnwrap(JSON.parse(Data(contentsOf:ready))["port"].int)
+        let gateway=try await PythonGateway.start(script:repo.appendingPathComponent("fixtures/native/compaction_gateway.py"),root:root);defer { gateway.stop() }
+        let port=gateway.port
         var raw=try fixtureProfile().raw;raw["baseUrl"]=JSON("http://127.0.0.1:\(port)");raw["contextWindow"]=16000;raw["modelOutputLimit"]=32768;raw["thinkingLevel"]="high"
         var user=ChatMessage(role:"user",content:[textBlock("Preserve the objective.")]);user.id="root";user.taskRootID="root"
         // Two answers of 2,250 tokens each: the second is kept, and the task's
@@ -94,12 +91,8 @@ final class CompactionGatewayTests: XCTestCase {
     func testGatewayIgnoringToolChoiceNeverExecutesAndCapturesIntactPrefix() async throws {
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
         var repo=URL(fileURLWithPath:#filePath);for _ in 0..<5 { repo.deleteLastPathComponent() }
-        let server=Process();server.executableURL=URL(fileURLWithPath:"/usr/bin/python3")
-        server.arguments=[repo.appendingPathComponent("fixtures/native/compaction_gateway.py").path,root.path]
-        server.standardOutput=FileHandle.nullDevice;server.standardError=FileHandle.nullDevice;try server.run()
-        defer { stopFixtureProcess(server) }
-        let ready=root.appendingPathComponent("ready.json");try await eventually { FileManager.default.fileExists(atPath:ready.path) }
-        let port=try XCTUnwrap(JSON.parse(Data(contentsOf:ready))["port"].int)
+        let gateway=try await PythonGateway.start(script:repo.appendingPathComponent("fixtures/native/compaction_gateway.py"),root:root);defer { gateway.stop() }
+        let port=gateway.port
         var raw=try fixtureProfile().raw;raw["baseUrl"]=JSON("http://127.0.0.1:\(port)");raw["thinkingLevel"]="high"
         let profile=try Profile(raw), resources=Resources(cwd:root,home:root), tools=GoldenCompactionTools(root)
         let snapshot=try await resources.resolve(), definitions=await tools.definitions(readOnly:false)
@@ -129,12 +122,8 @@ final class CompactionGatewayTests: XCTestCase {
     func testOneTaskCompactsRecoversAgainstIndependentGatewayAndReopensWithoutRepeatingTools() async throws {
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
         var repo=URL(fileURLWithPath:#filePath);for _ in 0..<5 { repo.deleteLastPathComponent() }
-        let server=Process();server.executableURL=URL(fileURLWithPath:"/usr/bin/python3");server.arguments=[repo.appendingPathComponent("fixtures/native/compaction_gateway.py").path,root.path]
-        server.standardOutput=FileHandle.nullDevice;server.standardError=FileHandle.nullDevice;try server.run()
-        defer { stopFixtureProcess(server) }
-        let ready=root.appendingPathComponent("ready.json")
-        try await eventually { FileManager.default.fileExists(atPath:ready.path) }
-        let port=try XCTUnwrap(JSON.parse(Data(contentsOf:ready))["port"].int)
+        let gateway=try await PythonGateway.start(script:repo.appendingPathComponent("fixtures/native/compaction_gateway.py"),root:root);defer { gateway.stop() }
+        let port=gateway.port
         var raw=try fixtureProfile().raw;raw["baseUrl"]=JSON("http://127.0.0.1:\(port)");raw["contextWindow"]=16000;raw["maxOutputTokens"]=512
         let profile=try Profile(raw),traces=TraceStore(),tools=GoldenCompactionTools(root),state=root.appendingPathComponent("state")
         let s=try AgentSession(id:"compaction-golden",profile:profile,apiKey:"synthetic-compaction-key",cwd:root,directory:state,readOnly:false,resources:Resources(cwd:root,home:root),client:ProviderClient(traces:traces),tools:tools,traces:traces)

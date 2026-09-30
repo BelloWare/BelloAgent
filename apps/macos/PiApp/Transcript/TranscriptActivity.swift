@@ -398,14 +398,14 @@ enum TranscriptActivity {
     static func formatCompactTokens(_ value: Double) -> String {
         guard value.isFinite else { return "—" }
         // Each unit ends where its rounding would reach the next one: 999,500
-        // tokens is "1M", never "1000k".
+        // tokens is "1M", never "1000K".
         if value.rounded() < 1_000 { return grouped(value) }
         if value < 10_000 {
             var text = String(format: "%.1f", value / 1_000)
             if text.hasSuffix(".0") { text.removeLast(2) }
-            return text + "k"
+            return text + "K"
         }
-        if (value / 1_000).rounded() < 1_000 { return "\(Int((value / 1_000).rounded()))k" }
+        if (value / 1_000).rounded() < 1_000 { return "\(Int((value / 1_000).rounded()))K" }
         var text = String(format: "%.2f", value / 1_000_000)
         while text.hasSuffix("0") { text.removeLast() }
         if text.hasSuffix(".") { text.removeLast() }

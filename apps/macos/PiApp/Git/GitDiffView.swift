@@ -77,9 +77,9 @@ struct DiffView: View {
                     if let subtitle { Text(subtitle).font(PiFont.micro).foregroundStyle(Color.piInkTertiary) }
                 }
                 Spacer()
-                if loading { ProgressView().controlSize(.small) }
+                if loading { PiSpinner(controlSize: .small) }
                 PiTabs(selection: $split, items: [(false, "Unified"), (true, "Split")]).accessibilityIdentifier("git-diff-layout")
-                Toggle("Wrap", isOn: $wrap).toggleStyle(.switch).controlSize(.mini).font(PiFont.micro)
+                Toggle("Wrap", isOn: $wrap).toggleStyle(.piSwitch).controlSize(.mini).font(PiFont.micro)
             }.padding(.horizontal, PiSpacing.lg).padding(.top, embedded ? 0 : PiSpacing.lg)
             if files.isEmpty && !loading {
                 Text("No textual changes.").font(PiFont.caption).foregroundStyle(Color.piInkSecondary).padding(.horizontal, PiSpacing.lg)
@@ -88,7 +88,7 @@ struct DiffView: View {
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .foregroundStyle(Color.piInk)
         .buttonStyle(.piSecondary)
-        .toggleStyle(.switch)
+        .toggleStyle(.piSwitch)
     }
 
     private var more: AnyView? {

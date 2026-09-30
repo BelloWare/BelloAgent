@@ -12,6 +12,9 @@ import XCTest
 final class SyntheticGateway: @unchecked Sendable {
     /// Immutable once started; `stop()` only signals and waits.
     let process: Process
+    /// Signalled by the process's termination handler, on Foundation's own
+    /// queue, once the gateway has exited.
+    private let exited: DispatchSemaphore
     let port: Int
     /// `http://127.0.0.1:<port>`: a connection's `baseUrl`.
     let base: String
@@ -23,8 +26,8 @@ final class SyntheticGateway: @unchecked Sendable {
         return repository.appendingPathComponent("fixtures/native/ui-gateway.py")
     }
 
-    private init(process: Process, port: Int) {
-        self.process = process; self.port = port; base = "http://127.0.0.1:\(port)"
+    private init(process: Process, exited: DispatchSemaphore, port: Int) {
+        self.process = process; self.exited = exited; self.port = port; base = "http://127.0.0.1:\(port)"
     }
 
     /// Starts the gateway in `folder`, which it also uses as its temporary
@@ -40,6 +43,8 @@ final class SyntheticGateway: @unchecked Sendable {
         process.currentDirectoryURL = folder; process.standardOutput = pipe; process.standardError = FileHandle.nullDevice
         process.environment = ["PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1", "TMPDIR": folder.path]
             .merging(environment) { _, knob in knob }
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
         try process.run()
         // The greeting is one line, `{"port": N}`, and the gateway writes
         // nothing after it. Read to its end, however the pipe delivers it.
@@ -55,10 +60,10 @@ final class SyntheticGateway: @unchecked Sendable {
         }.value
         let line = greeting.split(separator: UInt8(ascii: "\n")).first.map { Data($0) } ?? greeting
         guard let port = try? JSONDecoder().decode([String: Int].self, from: line)["port"] else {
-            if process.isRunning { process.terminate(); process.waitUntilExit() }
+            Self.stop(process, exited: exited)
             throw DidNotStart(greeting: String(decoding: greeting, as: UTF8.self))
         }
-        return SyntheticGateway(process: process, port: port)
+        return SyntheticGateway(process: process, exited: exited, port: port)
     }
 
     /// The gateway ran but never said which port it listens on: a failure,
@@ -69,9 +74,18 @@ final class SyntheticGateway: @unchecked Sendable {
     }
 
     /// Stops the gateway and waits for it to exit. Harmless once it has.
-    func stop() {
+    func stop() { Self.stop(process, exited: exited) }
+
+    /// The wait is on the termination handler, never `waitUntilExit`. The
+    /// gateway is started off the main actor, and `waitUntilExit` on the main
+    /// thread spins a run loop for a notice that is not delivered there: the
+    /// gallery's teardown once waited 20 minutes on a gateway that had
+    /// long exited. Ten seconds is far past any real exit.
+    private static func stop(_ process: Process, exited: DispatchSemaphore) {
         guard process.isRunning else { return }
-        process.terminate(); process.waitUntilExit()
+        process.terminate()
+        if exited.wait(timeout: .now() + 10) == .timedOut { XCTFail("The synthetic gateway did not exit within 10 s of being stopped") }
+        else { exited.signal() }
     }
 }
 

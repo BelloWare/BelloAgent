@@ -3,10 +3,10 @@ import SwiftUI
 import AppKit
 @testable import PiApp
 
-/// The layout cycles SwiftUI reported while `body` ran: standard error goes
-/// to a file meanwhile, and what AttributeGraph wrote there is counted.
-@MainActor func layoutCycles(_ body: () async throws -> Void) async throws -> Int {
-    let file = FileManager.default.temporaryDirectory.appendingPathComponent("cycles-" + UUID().uuidString + ".log")
+/// What was written to standard error while `body` ran: it goes to a file
+/// meanwhile, where SwiftUI's and AttributeGraph's reports can be read.
+@MainActor func standardError(while body: () async throws -> Void) async throws -> String {
+    let file = FileManager.default.temporaryDirectory.appendingPathComponent("stderr-" + UUID().uuidString + ".log")
     FileManager.default.createFile(atPath: file.path, contents: nil)
     let handle = try FileHandle(forWritingTo: file)
     fflush(stderr)
@@ -19,7 +19,13 @@ import AppKit
     let text = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
     try? FileManager.default.removeItem(at: file)
     if let failure { throw failure }
-    return text.components(separatedBy: "AttributeGraph: cycle detected").count - 1
+    return text
+}
+
+/// The layout cycles SwiftUI reported while `body` ran, as AttributeGraph
+/// wrote them to standard error.
+@MainActor func layoutCycles(_ body: () async throws -> Void) async throws -> Int {
+    try await standardError(while: body).components(separatedBy: "AttributeGraph: cycle detected").count - 1
 }
 
 /// SwiftUI reports a dependency cycle in a view graph as

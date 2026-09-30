@@ -425,7 +425,7 @@ private struct ChatRowContentProbe: View {
                         }
                         HStack(spacing: 6) {
                             Text("$1.23")
-                            Text("· 98.8k tok")
+                            Text("· 98.8K tok")
                             Text("· 3m ago")
                         }
                         .font(PiFont.caption.monospacedDigit()).foregroundStyle(Color.piInkTertiary)

@@ -261,6 +261,7 @@ extension WorkspaceModel {
         if LeadingCommand.reserved.contains(command.name) {
             if command.name == "side" {
                 guard !steer, side(view.id) == nil else { error = "A side command opens from the main chat and cannot steer a run."; return true }
+                if let refusal = orphanedSideRefusal(view.id) { error = refusal; return true }
                 guard canOpenSide(view.id) else { error = "Side chats require a project conversation with tools available."; return true }
                 view.draft = ""; view.directCommand = false; draftChanged(view)
                 openSide(parentID: view.id, question: command.arguments); return true

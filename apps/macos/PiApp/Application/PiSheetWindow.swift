@@ -116,9 +116,12 @@ final class PiSheetWindowAnchorView: NSView {
     /// instead of new ones for every opening.
     private var spare: PiSheetWindow.Reusable?
 
+    /// Called from `updateNSView`, inside SwiftUI's update. What the sheet
+    /// inherits reaches it with the rest, on the next turn (`reconcile`):
+    /// set here, its settings published inside that update, which SwiftUI
+    /// reports as "Publishing changes from within view updates".
     func update(wanted: AnyHashable?, inherited: PiSheetWindowInherited, dismiss: @escaping (AnyHashable) -> Void, content: @escaping (AnyHashable) -> AnyView?) {
-        self.wanted = wanted; self.dismiss = dismiss; self.content = content
-        if self.inherited != inherited { self.inherited = inherited; presented?.sheet.inherit(inherited) }
+        self.wanted = wanted; self.dismiss = dismiss; self.content = content; self.inherited = inherited
         schedule()
     }
     func anchorMoved(to window: NSWindow?) {
@@ -146,6 +149,7 @@ final class PiSheetWindowAnchorView: NSView {
     }
     private func reconcile() {
         if let current = presented {
+            current.sheet.inherit(inherited)
             // Another sheet, or none, is asked for: this one goes first, and
             // the next is presented once it has (`onEnded`).
             if current.identity != wanted { current.sheet.end(animated: true, requested: true) }
@@ -246,8 +250,11 @@ final class PiSheetWindowAnchorView: NSView {
         window.contentMaxSize = size
     }
 
+    /// Only what changed: a published setting set to the same value still
+    /// redraws the sheet.
     func inherit(_ inherited: PiSheetWindowInherited) {
-        settings.reduceMotion = inherited.reduceMotion; settings.enabled = inherited.enabled
+        if settings.reduceMotion != inherited.reduceMotion { settings.reduceMotion = inherited.reduceMotion }
+        if settings.enabled != inherited.enabled { settings.enabled = inherited.enabled }
     }
 
     func present(on parent: NSWindow) {

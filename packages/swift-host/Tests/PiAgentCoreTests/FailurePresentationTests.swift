@@ -126,17 +126,8 @@ final class FailurePresentationTests: XCTestCase {
 
     private func checkGatewayError(model: String, status: Int, errorCode: String) async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
-        let script = root.appendingPathComponent("gateway.py")
-        try Data(ConnectionProbeTests.gatewayScript.utf8).write(to: script)
-        let server = Process()
-        server.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-        server.arguments = [script.path, root.path, "errors"]
-        server.standardOutput = FileHandle.nullDevice; server.standardError = FileHandle.nullDevice
-        try server.run()
-        defer { stopFixtureProcess(server) }
-        let ready = root.appendingPathComponent("ready.json")
-        try await eventually { FileManager.default.fileExists(atPath: ready.path) }
-        let port = try XCTUnwrap(JSON.parse(Data(contentsOf: ready))["port"].int)
+        let gateway = try await PythonGateway.start(source: ConnectionProbeTests.gatewayScript, root: root, arguments: ["errors"]); defer { gateway.stop() }
+        let port = gateway.port
         var raw = try fixtureProfile().raw
         raw["baseUrl"] = JSON("http://127.0.0.1:\(port)"); raw["modelId"] = JSON(model)
         raw["headers"] = ["x-route-key": "synthetic-route-key"]

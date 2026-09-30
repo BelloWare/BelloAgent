@@ -35,14 +35,14 @@ enum MetricFormat {
     static func tokenCount(_ value: Double) -> String { tokens(value) + " tok" }
     static func exactTokenCount(_ value: Double) -> String { exactTokens(value) + " tok" }
 
-    /// `12.3k tok`, `1.0M tok`: a sidebar row's count, one decimal of its
-    /// unit always and the letter lowercase. Rounded as `tokens` rounds, and
-    /// written in the next unit once that reaches a thousand of one: 999,950
-    /// is `1.0M tok`, never `1000.0k tok`, and 999.5 is `1.0k tok`.
+    /// `12.3K tok`, `1.0M tok`: a sidebar row's count, one decimal of its
+    /// unit always. Rounded as `tokens` rounds, and written in the next unit
+    /// once that reaches a thousand of one: 999,950 is `1.0M tok`, never
+    /// `1000.0K tok`, and 999.5 is `1.0K tok`.
     static func rowTokenCount(_ value: Double) -> String {
         guard let value = observed(value) else { return "—" }
         if value.rounded() < 1_000 { return whole(value) + " tok" }
-        let units: [(scale: Double, letter: String)] = [(1_000, "k"), (1_000_000, "M"), (1_000_000_000, "B")]
+        let units: [(scale: Double, letter: String)] = [(1_000, "K"), (1_000_000, "M"), (1_000_000_000, "B")]
         for (index, unit) in units.enumerated() {
             let tenths = (value / unit.scale * 10).rounded()
             if tenths < 10_000 || index == units.count - 1 { return String(format: "%.1f", tenths / 10) + unit.letter + " tok" }
@@ -166,7 +166,19 @@ enum MetricFormat {
     /// what an unavailable cost reads as.
     static func exactUSD(_ value: Double, unit: Bool = true) -> String {
         let amount = value == 0 ? "0" : value < 0.000_000_01 ? scientific(value) : halfUp(value, places: 8)
-        return "$" + amount + (unit ? " USD" : "")
+        return "$" + atLeastCents(amount) + (unit ? " USD" : "")
+    }
+
+    /// An amount's digits with cents at least: `1.5` is `1.50` and `0` is
+    /// `0.00`; more places stay (`0.0042`, `12.3456`), and an exponent form
+    /// (`1.23e-9`) is left as it is. Every money figure the app writes goes
+    /// through it, so no amount reads with fewer than two decimals.
+    static func atLeastCents(_ digits: String) -> String {
+        guard !digits.contains("e"), !digits.contains("E") else { return digits }
+        let parts = digits.split(separator: ".", maxSplits: 1, omittingEmptySubsequences: false)
+        let fraction = parts.count > 1 ? String(parts[1]) : ""
+        guard fraction.count < 2 else { return digits }
+        return String(parts[0]) + "." + fraction + String(repeating: "0", count: 2 - fraction.count)
     }
 
     /// Dollars as a small label writes them: cents, `$4.13`, and under a cent

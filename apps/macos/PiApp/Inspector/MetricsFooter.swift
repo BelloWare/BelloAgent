@@ -18,24 +18,30 @@ struct MetricsFooter: View {
     let compact: Bool
     /// Opens the Session Inspector's Overview.
     let inspect: () -> Void
+    /// The room the capture badge keeps for this showing of the chat
+    /// (`FooterBadgeRoom`).
+    @State private var badgeRoom: FooterBadgeRoom?
     init(model: WorkspaceModel, session: SessionDisplay, contextWindow: Int? = nil, outputReserve: Int? = nil,
          compact: Bool = false, inspect: @escaping () -> Void) {
         self.model = model; self.session = session; self.footer = session.footer; self.selectedContextWindow = contextWindow
         self.selectedOutputReserve = outputReserve; self.compact = compact; self.inspect = inspect
     }
     var body: some View {
+        // The badge's room is worked out before either form is tried, with
+        // what it says now already in it; a showing's first frame is right.
+        let room = FooterBadgeRoom.of(badgeRoom, chat: ObjectIdentifier(footer), showing: session.presentationGeneration, text: badgeText)
         VStack(alignment: .leading, spacing: 0) {
             // Wide: the pills, the run line and the capture badge on one row.
             // Narrower: the run line drops to its own row under the pills.
             Group {
                 if compact { compactBar } else {
                     ViewThatFits(in: .horizontal) {
-                        bar(full: true)
+                        bar(full: true, room: room)
                         // The last form still carries the run line, on its own
                         // row: a narrow pane may drop the notice, never the
                         // clock and the action.
                         VStack(alignment: .leading, spacing: PiSpacing.xs) {
-                            bar(full: false)
+                            bar(full: false, room: room)
                             runLine
                         }
                     }
@@ -50,14 +56,18 @@ struct MetricsFooter: View {
         .task(id: model.automaticContextActivation(session)) { [weak model, id = session.id] in model?.scheduleAutomaticContext(id) }
         .onDisappear { [weak model, id = session.id] in model?.cancelAutomaticContext(id) }
         .help(SettledThroughput.explanation + " " + ContextMeterPresentation.methodExplanation)
+        .onChange(of: room, initial: true) { _, room in
+            // A room for a showing that has since ended is not kept.
+            if room.showing == session.presentationGeneration, badgeRoom != room { badgeRoom = room }
+        }
     }
 
     /// The figures a side conversation owns, and — when there is one — the one
     /// line that tells the reader what to do next.
     private var compactBar: some View {
-        HStack(spacing: PiSpacing.md) {
-            pills(compact: true).frame(maxWidth: .infinity, alignment: .leading)
-            if !session.notice.isEmpty { noticeLine }
+        FooterRowLayout(spacing: PiSpacing.md) {
+            pills(compact: true).layoutValue(key: FooterRowRole.self, value: .pills)
+            if !session.notice.isEmpty { noticeLine.layoutValue(key: FooterRowRole.self, value: .notice) }
         }.accessibilityIdentifier("compactMetricsFooter")
     }
     /// What the composer sits on: how much work this conversation did and how
@@ -72,18 +82,23 @@ struct MetricsFooter: View {
     // A notice is the one line here that tells the reader what to do next
     // ("Run cancelled. Pending messages are paused; resume below"). Capped at
     // 300 points it was cut mid-word on every pane width, so the instruction
-    // never arrived. It now takes whatever the bar has left, and the whole
-    // text is in the help.
+    // never arrived. It takes whatever the row leaves free beside the pills
+    // (`FooterRowLayout`), up to 640 points, and the whole text is in the
+    // help. It never takes room from the pills: a notice coming or going
+    // (an idle helper's "Host runtime unloaded") moved the conversation.
     private var noticeLine: some View {
         HStack(spacing: 5) {
             Image(systemName: "info.circle").font(.system(size: 10.5))
             Text(session.notice).lineLimit(1).truncationMode(.tail).layoutPriority(1)
-        }.frame(maxWidth: 640, alignment: .trailing).help(session.notice)
+        }.frame(maxWidth: 640, alignment: .trailing).clipped().help(session.notice)
             .accessibilityLabel(session.notice)
     }
-    private func bar(full: Bool) -> some View {
-        HStack(spacing: PiSpacing.md) {
-            pills(compact: false).frame(maxWidth: .infinity, alignment: .leading)
+    /// What the badge says in the full form: "Next: " while capture waits for
+    /// the chat's helper.
+    private var badgeText: String { (session.captureAvailable ? "" : "Next: ") + captureTitle }
+    private func bar(full: Bool, room: FooterBadgeRoom) -> some View {
+        FooterRowLayout(spacing: PiSpacing.md) {
+            pills(compact: false).layoutValue(key: FooterRowRole.self, value: .pills)
             // The clock and the action get their room first; the pills wrap
             // into whatever is left rather than pushing them off the bar. The
             // room is one fixed slot: sized by its text, the line widened and
@@ -92,18 +107,28 @@ struct MetricsFooter: View {
             // and two in the middle of a run.
             if full, session.busy {
                 SessionRunLine(session: session, footer: footer)
-                    .frame(width: Self.runSlot, alignment: .leading).layoutPriority(2)
+                    .frame(width: Self.runSlot, alignment: .leading).layoutValue(key: FooterRowRole.self, value: .run)
             }
-            if full && !session.notice.isEmpty { noticeLine.layoutPriority(2) }
-            // An AppKit press target over the badge, as over the pills beside it.
-            PiBadge(text: full ? (session.captureAvailable ? "" : "Next: ") + captureTitle : "", tone: captureTone, icon: session.captureAvailable ? "record.circle.fill" : "record.circle")
-                .accessibilityHidden(true)
-                .overlay {
-                    PiPopoverTrigger(label: "Capture: " + captureTitle + ". Open the Session Inspector", identifier: "capture-badge",
-                                     help: "Capture: " + captureTitle + ". Open the Session Inspector: every request, its bodies and the capture settings",
-                                     onHover: { _ in }, onPress: { [inspect] _ in inspect() })
-                }
+            if full && !session.notice.isEmpty { noticeLine.layoutValue(key: FooterRowRole.self, value: .notice) }
+            badge(full ? badgeText : "", room: full ? room.text : "").layoutValue(key: FooterRowRole.self, value: .badge)
         }
+    }
+    /// The capture badge in the room kept for it this showing: a longer text
+    /// ("Next: " when an idle helper leaves) is cut to it, a shorter one keeps
+    /// it. The room lies before the badge, outside its capsule and its AppKit
+    /// press target, which hug what it says.
+    private func badge(_ text: String, room: String) -> some View {
+        let icon = session.captureAvailable ? "record.circle.fill" : "record.circle"
+        return PiBadge(text: room, tone: captureTone, icon: icon).hidden()
+            .overlay(alignment: .trailing) {
+                PiBadge(text: text, tone: captureTone, icon: icon)
+                    .accessibilityHidden(true)
+                    .overlay {
+                        PiPopoverTrigger(label: "Capture: " + captureTitle + ". Open the Session Inspector", identifier: "capture-badge",
+                                         help: "Capture: " + captureTitle + ". Open the Session Inspector: every request, its bodies and the capture settings",
+                                         onHover: { _ in }, onPress: { [inspect] _ in inspect() })
+                    }
+            }
     }
     /// While a run is going: the elapsed clock and the action under way, and
     /// nothing else. The rate that used to tick here was a live figure — it
@@ -240,11 +265,11 @@ struct ContextMeterPresentation {
         return fullLabel + " configured · \(percent)%\(method) · \(source)" + scope + preparation + warning
     }
     /// Each unit starts where the one below would round up to a thousand of
-    /// itself: 999,600 tokens is "1M", never "1000k".
+    /// itself: 999,600 tokens is "1M", never "1000K".
     private func compact(_ value: Double) -> String {
         if value >= 999_500 { return String(format:"%.1fM",value / 1_000_000).replacingOccurrences(of:".0M",with:"M") }
-        if value >= 10_000 { return String(format:"%.0fk",value / 1000) }
-        if value >= 999.5 { return String(format:"%.1fk",value / 1000).replacingOccurrences(of:".0k",with:"k") }
+        if value >= 10_000 { return String(format:"%.0fK",value / 1000) }
+        if value >= 999.5 { return String(format:"%.1fK",value / 1000).replacingOccurrences(of:".0K",with:"K") }
         return String(format:"%.0f",value)
     }
 }
@@ -346,4 +371,86 @@ func reasoningUsageSummary(_ totals: GatewayTotals) -> String {
     let tokenSamples = totals.tokens?.reasoningSamples ?? 0
     let costSamples = totals.reasoningCostSamples ?? 0
     return "Reasoning \(menuBarTokens(totals.tokens?.reasoning)) tokens (\(tokenSamples)/\(totals.requests) reported) · \(gatewayUSD(totals.reasoningCostUSD)) (\(costSamples)/\(totals.requests) reported) · included in output"
+}
+
+/// The room the capture badge keeps for one showing of its chat
+/// (`SessionDisplay.presentationGeneration`): what it said first there. The
+/// footer is kept across chats, so the room is keyed by the chat too.
+struct FooterBadgeRoom: Equatable {
+    let chat: ObjectIdentifier
+    let showing: UUID
+    let text: String
+    /// The room held for this chat and showing, or a new one that what the
+    /// badge says now starts.
+    static func of(_ held: FooterBadgeRoom?, chat: ObjectIdentifier, showing: UUID, text: String) -> FooterBadgeRoom {
+        if let held, held.chat == chat, held.showing == showing { return held }
+        return FooterBadgeRoom(chat: chat, showing: showing, text: text)
+    }
+}
+
+/// What each part of the footer's row is to `FooterRowLayout`.
+enum FooterRowRole: LayoutValueKey {
+    static let defaultValue = FooterRowRole.pills
+    case pills, run, notice, badge
+}
+
+/// The footer's row: the pills from the leading edge; at the trailing edge
+/// the capture badge and, while a run goes, the run slot before it; and the
+/// notice in what the pills leave free before those, right against them. It
+/// is cut with "…" to that room, and not shown where that is too little to
+/// read. So a notice coming or going never wraps the pills, never moves the
+/// clock or the badge, and never changes which form the footer takes, since
+/// the row's own width leaves it out.
+struct FooterRowLayout: Layout {
+    var spacing: CGFloat
+    /// Narrower than this, a notice is not shown: its help still has it.
+    static let noticeLeast: CGFloat = 48
+
+    private struct Parts {
+        var pills: LayoutSubview?, run: LayoutSubview?, notice: LayoutSubview?, badge: LayoutSubview?
+        init(_ subviews: LayoutSubviews) {
+            for subview in subviews {
+                switch subview[FooterRowRole.self] {
+                case .pills: pills = subview
+                case .run: run = subview
+                case .notice: notice = subview
+                case .badge: badge = subview
+                }
+            }
+        }
+        /// The run slot's and the badge's width, and the gaps before them.
+        func trailing(_ spacing: CGFloat) -> CGFloat {
+            [run, badge].compactMap { $0 }.reduce(0) { $0 + $1.sizeThatFits(.unspecified).width + spacing }
+        }
+        var trailingHeight: CGFloat { [run, badge].compactMap { $0?.sizeThatFits(.unspecified).height }.max() ?? 0 }
+    }
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let parts = Parts(subviews), trailing = parts.trailing(spacing)
+        guard let width = proposal.width, width.isFinite else {
+            let pills = parts.pills?.sizeThatFits(.unspecified) ?? .zero
+            return CGSize(width: pills.width + trailing, height: max(pills.height, parts.trailingHeight))
+        }
+        let pills = parts.pills?.sizeThatFits(ProposedViewSize(width: max(0, width - trailing), height: nil)) ?? .zero
+        return CGSize(width: width, height: max(pills.height, parts.trailingHeight))
+    }
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let parts = Parts(subviews), trailing = parts.trailing(spacing)
+        let pills = parts.pills?.sizeThatFits(ProposedViewSize(width: max(0, bounds.width - trailing), height: nil)) ?? .zero
+        parts.pills?.place(at: CGPoint(x: bounds.minX, y: bounds.midY), anchor: .leading, proposal: ProposedViewSize(pills))
+        // From the trailing edge: the badge, the run slot, then the notice,
+        // so neither of the first two ever moves for the third.
+        var x = bounds.maxX
+        for part in [parts.badge, parts.run].compactMap({ $0 }) {
+            let size = part.sizeThatFits(.unspecified)
+            x -= size.width
+            part.place(at: CGPoint(x: x, y: bounds.midY), anchor: .leading, proposal: ProposedViewSize(size))
+            x -= spacing
+        }
+        if let notice = parts.notice {
+            let free = x - (bounds.minX + pills.width + spacing)
+            let ideal = notice.sizeThatFits(.unspecified)
+            let width = free >= Self.noticeLeast ? min(ideal.width, free) : 0
+            notice.place(at: CGPoint(x: x - width, y: bounds.midY), anchor: .leading, proposal: ProposedViewSize(width: width, height: ideal.height))
+        }
+    }
 }

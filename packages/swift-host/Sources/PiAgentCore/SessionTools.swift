@@ -93,7 +93,7 @@ extension AgentSession {
     /// later, so a batch's rows keep call order; `countsTime` false leaves the
     /// tool time to the caller, which counts a batch's wall time once.
     @discardableResult
-    func recordTool(_ call: ToolCall, result: JSON, started: Double?, state: String, uncertain: Bool = false,
+    func recordTool(_ call: ToolCall, result: JSON, started: Double?, state: ToolRunState, uncertain: Bool = false,
                     appendNow: Bool = true, countsTime: Bool = true) throws -> (message: ChatMessage, observedAt: Double) {
         let observedAt = displayClock()
         var blocks=result["content"].list
@@ -139,7 +139,7 @@ extension AgentSession {
         if countsTime, let durationMs { turnToolMs += durationMs; cumulativeToolMs = ObservedDuration.adding(cumulativeToolMs, durationMs) }
         let stats=result["stats"]
         message.toolStats=["durationMs":durationMs.map { JSON($0) } ?? .null,"path":stats["path"],"added":stats["added"],"removed":stats["removed"]]
-        let outcome = uncertain || (state == "cancelled" && started != nil) ? "unknown" : started == nil ? "not_executed" : state
+        let outcome = uncertain || (state == .cancelled && started != nil) ? "unknown" : started == nil ? "not_executed" : state.rawValue
         message.toolStats?["outcome"]=JSON(outcome)
         if appendNow { try append(message, observedAt: observedAt) }
         // A batch's card that retired while its call ran stays retired.
@@ -147,7 +147,7 @@ extension AgentSession {
         setToolStateOwner(call.id)
         let fields=toolInputFields(call.arguments), keptOutput=shown
         let inputTruncated=fields.first(where: { $0.0 == "inputTruncated" })?.1.flag ?? false
-        setToolState(call.id,merging(["id":JSON(call.id),"name":JSON(call.name),"state":JSON(reportsUnknownToolOutcomes ? Self.cardState(outcome:outcome,isError:message.isError) : state),"output":JSON(keptOutput),"durationMs":durationMs.map { JSON($0) } ?? .null,"truncated":JSON(inputTruncated || keptOutput.utf8.count < text.utf8.count),"path":stats["path"],"added":stats["added"],"removed":stats["removed"]],fields))
+        setToolState(call.id,merging(["id":JSON(call.id),"name":JSON(call.name),"state":JSON(reportsUnknownToolOutcomes ? Self.cardState(outcome:outcome,isError:message.isError) : state.rawValue),"output":JSON(keptOutput),"durationMs":durationMs.map { JSON($0) } ?? .null,"truncated":JSON(inputTruncated || keptOutput.utf8.count < text.utf8.count),"path":stats["path"],"added":stats["added"],"removed":stats["removed"]],fields))
         recordDisplayChange(toolStateOwners[call.id], at: observedAt)
         event("tool_execution_end")
         return (message, observedAt)
@@ -168,7 +168,7 @@ extension AgentSession {
     /// beside the rest, as pi serializes the mutations of a file; the workspace
     /// editing gate still keeps two chats from editing at once.
     func runToolBatch(_ calls: [ToolCall]) async throws {
-        toolInvocationsBegan.removeAll(); runStatus="waitingTool"
+        toolInvocationsBegan.removeAll(); runStatus = .waitingTool
         for call in calls {
             setToolStateOwner(call.id)
             let fields=toolInputFields(call.arguments)
@@ -200,7 +200,7 @@ extension AgentSession {
     /// Runs one call of a batch and ends its card; the row waits for the batch.
     func runToolCall(_ call: ToolCall, index: Int) async -> ToolOutcome {
         let start=nowMS()
-        func outcome(_ result: JSON, started: Double?, state: String, uncertain: Bool = false, cancelled: Bool = false) -> ToolOutcome {
+        func outcome(_ result: JSON, started: Double?, state: ToolRunState, uncertain: Bool = false, cancelled: Bool = false) -> ToolOutcome {
             if let recorded=try? recordTool(call,result:result,started:started,state:state,uncertain:uncertain,appendNow:false,countsTime:false) {
                 return ToolOutcome(index:index,message:recorded.message,observedAt:recorded.observedAt,cancelled:cancelled)
             }
@@ -209,10 +209,10 @@ extension AgentSession {
             message.toolCallId=call.id; message.toolName=call.name; message.isError=true
             return ToolOutcome(index:index,message:message,observedAt:displayClock(),cancelled:cancelled)
         }
-        if Task.isCancelled { return outcome(resultText("Not executed: cancelled before invocation",error:true), started:nil, state:"cancelled", cancelled:true) }
+        if Task.isCancelled { return outcome(resultText("Not executed: cancelled before invocation",error:true), started:nil, state:.cancelled, cancelled:true) }
         do {
             let result=try await invokeTool(call)
-            return outcome(result, started:start, state:result["isError"].flag == true ? "failed" : "completed")
+            return outcome(result, started:start, state:result["isError"].flag == true ? .failed : .completed)
         } catch {
             let cancelled=Task.isCancelled || error is CancellationError
             // A call stopped before its tool was entered (still waiting for
@@ -222,7 +222,7 @@ extension AgentSession {
             // Only an editing tool that had begun, and failed other than by
             // rejecting the call outright, may have left effects: its outcome
             // is unknown, never just failed.
-            return outcome(resultText(text,error:true), started:entered ? start : nil, state:cancelled ? "cancelled" : "failed",
+            return outcome(resultText(text,error:true), started:entered ? start : nil, state:cancelled ? .cancelled : .failed,
                            uncertain:entered && Self.isEditing(call) && !Self.isRejection(error), cancelled:cancelled)
         }
     }

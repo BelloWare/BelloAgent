@@ -89,6 +89,6 @@ final class NativeTranscriptSafetyTests: XCTestCase {
         for value in [Double.nan, .infinity, -.infinity, -Double.greatestFiniteMagnitude] {
             XCTAssertEqual(TranscriptActivity.formatCompactTokens(value), "—")
         }
-        XCTAssertEqual(TranscriptActivity.formatCompactTokens(1_500), "1.5k")
+        XCTAssertEqual(TranscriptActivity.formatCompactTokens(1_500), "1.5K")
     }
 }

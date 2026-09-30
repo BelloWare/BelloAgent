@@ -89,7 +89,7 @@ struct QueuePanel: View {
                     }.help("Deliver after the current tool batch instead of after the run")
                 }
                 if session.queueEditPreparing == item.id {
-                    ProgressView().controlSize(.mini).frame(width: 22).help("Reading the whole message")
+                    PiSpinner(controlSize: .mini).frame(width: 22).help("Reading the whole message")
                 } else {
                     PiIconButton(symbol: "pencil", label: "Edit queued message", size: 22) { model.editQueued(item.id, sessionID: session.id) }
                 }

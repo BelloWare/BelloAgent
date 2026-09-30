@@ -12,8 +12,6 @@ import http.client
 import importlib.util
 import json
 import pathlib
-import queue
-import subprocess
 import sys
 import tempfile
 import threading
@@ -23,6 +21,11 @@ import uuid
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 BINARY = pathlib.Path(sys.argv.pop(1) if len(sys.argv) > 1 and not sys.argv[1].startswith('-') else ROOT / 'packages/swift-host/.build/debug/pi-native-host').resolve()
+# The wire client every wire script shares, loaded by path: scripts/ is not
+# on the import path of every runner.
+_CLIENT_SPEC = importlib.util.spec_from_file_location('native_host_client', pathlib.Path(__file__).resolve().with_name('native_host_client.py'))
+native_host_client = importlib.util.module_from_spec(_CLIENT_SPEC)
+_CLIENT_SPEC.loader.exec_module(native_host_client)
 CONTRACT_SPEC = importlib.util.spec_from_file_location('litellm_contract', ROOT / 'fixtures/native/litellm_contract.py')
 CONTRACT = importlib.util.module_from_spec(CONTRACT_SPEC)
 CONTRACT_SPEC.loader.exec_module(CONTRACT)
@@ -365,34 +368,25 @@ class Fixture(http.server.BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             record['cancelled'] = True
 
-class Peer:
-    def __init__(self, cwd):
-        self.process = subprocess.Popen([str(BINARY)], cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        self.frames = queue.Queue(); self.events = []; self.captures = []; self.reject_capture = False
-        self.write_lock = threading.Lock(); self.capture_lock = threading.Lock()
-        def read():
-            for line in self.process.stdout:
-                frame = json.loads(line)
-                if frame.get('kind') == 'capture':
-                    with self.capture_lock: self.captures.append(frame['packet'])
-                    self.send({'v': 1, 'kind': 'capture.ack', 'hostEpoch': frame['hostEpoch'], 'transferId': frame['transferId'], 'accepted': not self.reject_capture})
-                else: self.frames.put(frame)
-        self.reader = threading.Thread(target=read, daemon=True); self.reader.start()
-        self.send({'v':1,'kind':'hello','major':1,'minor':1})
-        hello = self.frames.get(timeout=10)
-        assert hello['kind'] == 'ready' and hello['engine'] == 'swift', hello
-        assert 'responses' in hello['capabilities'] and 'messages' not in hello['capabilities'], hello
-        self.ready = hello
-        self.epoch = hello['hostEpoch']
-    def send(self, value):
-        with self.write_lock:
-            self.process.stdin.write(encoded(value)+b'\n'); self.process.stdin.flush()
+class Peer(native_host_client.HostPeer):
+    """The helper for one test: replies in order, other frames kept as events."""
+    def __init__(self, cwd, hello=None):
+        self.events = []; self.captures = []; self.reject_capture = False
+        self.capture_lock = threading.Lock()
+        super().__init__(BINARY, cwd, capture=self.record_capture)
+        ready = self.hello(10, **(hello or {}))
+        assert ready['kind'] == 'ready' and ready['engine'] == 'swift', ready
+        assert 'responses' in ready['capabilities'] and 'messages' not in ready['capabilities'], ready
+        self.ready = ready
+        self.epoch = ready['hostEpoch']
+    def record_capture(self, frame):
+        with self.capture_lock: self.captures.append(frame['packet'])
+        return not self.reject_capture
     def request(self, method, params=None, session=None, command_id=None):
-        command_id = command_id or str(uuid.uuid4())
-        self.send({'v':1,'kind':'command','hostEpoch':self.epoch,'commandId':command_id,'sessionId':session,'method':method,'params':params or {}})
+        command_id = self.post(method, params, session, command_id)
         deadline = time.monotonic()+15
         while True:
-            frame = self.frames.get(timeout=max(.01,deadline-time.monotonic()))
+            frame = self.next_frame(timeout=max(.01,deadline-time.monotonic()))
             if frame.get('commandId') == command_id: return frame
             self.events.append(frame)
     def command(self, method, params=None, session=None, command_id=None, fail=False):
@@ -403,14 +397,7 @@ class Peer:
             assert frame['ok'], frame
         return frame.get('result')
     def close(self):
-        if self.process.poll() is None:
-            self.process.stdin.close()
-            try:
-                self.process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self.process.kill(); self.process.wait()
-        self.reader.join(timeout=2)
-        self.process.stdout.close(); self.process.stderr.close()
+        super().close(wait=5, join=2)
 
 class NativeIntegration(unittest.TestCase):
     @classmethod
@@ -587,6 +574,32 @@ class NativeIntegration(unittest.TestCase):
         self.assertEqual(reopened['messages'][2]['id'],ledger['id'])
         self.peer.command('session.message.read',{'messageId':first},session)
         self.peer.command('session.close',session=session)
+    def test_a_result_beyond_the_frame_limit_is_read_back_whole_through_a_display_transfer(self):
+        # A reply over the 1 MiB frame limit, to a reader that takes display
+        # transfers, comes as a transfer and is read back in chunks, whole.
+        value=self.open(session='large')
+        path=pathlib.Path(value['path']); self.peer.command('session.close',session='large')
+        records=[json.loads(line) for line in path.read_bytes().split(b'\n') if line]
+        text=('Complete saved response \U0001F642 "quoted" \\ slash/ \u0001\n'*30000)+'TAIL'
+        record={'type':'message','id':'huge','parentId':records[-1]['id'],'timestamp':'2026-09-14T00:00:00.000Z',
+                'message':{'role':'user','timestamp':1,'content':[{'type':'text','text':text}]}}
+        with path.open('ab') as out: out.write(encoded(record)+b'\n')
+        peer=Peer(self.root,hello={'displayTransfers':True})
+        try:
+            peer.command('workspace.open',{'cwd':str(self.root),'directory':str(self.root/'sessions'),'captureProtocol':1,'resources':{'codexHome':str(self.root/'codex')}})
+            profile={'id':'p','revision':'1','providerId':'litellm','modelId':'text','api':'openai-responses','baseUrl':self.base+'/v1','contextWindow':100000,'maxOutputTokens':4096,'modelOutputLimit':4096,'reasoning':True,'thinkingLevel':'default','routing':{'replayPolicy':'portable'}}
+            peer.command('session.open',{'profile':profile,'apiKey':'fixture-secret','toolMode':'editing','path':str(path)},'large')
+            marker=peer.command('session.history',{'version':2},'large')
+            self.assertEqual(marker.get('_displayTransfer'),1,'a page over the frame limit comes as a transfer')
+            data=b''
+            while True:
+                page=peer.command('display.result.read',{'id':marker['id'],'offset':len(data)})
+                self.assertEqual(page['offset'],len(data)); data+=base64.b64decode(page['data'])
+                if page['next'] is None: break
+            self.assertEqual(len(data),marker['bytes'])
+            self.assertEqual(json.loads(data)['messages'][-1]['text'],text)
+        finally:
+            peer.close()
     def test_message_versions_list_and_page_an_earlier_version_over_the_wire(self):
         # Additive since 0.1.93: an edited message's row says which version it
         # is, session.versions lists them and session.version.page reads the

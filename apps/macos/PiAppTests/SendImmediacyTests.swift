@@ -72,11 +72,13 @@ import AppKit
 extension SendBench {
     func pass() -> TranscriptPass { TranscriptPass(document: document, scroll: scroll) }
     /// Whether the pane's loading mark covers the conversation: its spinner
-    /// is the one progress indicator drawn over the transcript.
+    /// (the app's own ring, or a stock indicator) is the one drawn over the
+    /// transcript.
     var loadingMarkCoversTranscript: Bool {
         guard let scroll else { return false }
         let area = scroll.convert(scroll.bounds, to: nil)
-        return views(NSProgressIndicator.self).contains { !$0.isHiddenOrHasHiddenAncestor && $0.window != nil && area.intersects($0.convert($0.bounds, to: nil)) }
+        let spinners: [NSView] = views(PiSpinnerView.self) + views(NSProgressIndicator.self)
+        return spinners.contains { !$0.isHiddenOrHasHiddenAncestor && $0.window != nil && area.intersects($0.convert($0.bounds, to: nil)) }
     }
 }
 

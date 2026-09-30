@@ -647,6 +647,134 @@ final class SessionTimingTests: XCTestCase {
         return hosted.fittingSize.height
     }
 
+    /// The capture badge keeps its room while the chat is on screen: "Next: "
+    /// coming (an idle helper leaving) or going (the helper opening) never
+    /// changes the footer's rows or form. A new showing lays out from what
+    /// the badge says first. Its press target hugs what it says.
+    @MainActor func testTheCaptureBadgeKeepsItsRoomThroughAShowing() throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        defer { model.shutdown() }
+        let session = longChat("capture-room")
+        session.context = ["tokens": .number(45_000), "contextWindow": .number(200_000)]
+        let hosted = NSHostingView(rootView: FooterWidthProbe(model: model, session: session, width: 600))
+        func target() throws -> CGFloat {
+            func find(_ view: NSView) -> NSView? {
+                if view.accessibilityIdentifier() == "capture-badge" { return view }
+                for child in view.subviews { if let found = find(child) { return found } }
+                return nil
+            }
+            return try XCTUnwrap(find(hosted), "the capture badge's press target").frame.width
+        }
+        var heights: Set<CGFloat> = [], hugged = 0
+        for width in stride(from: CGFloat(500), through: 1_400, by: 4) {
+            for first in [true, false] {
+                session.presentationGeneration = UUID()
+                session.captureAvailable = first
+                let shown = footerHeight(hosted, model: model, session: session, width: width, compact: false)
+                let firstTarget = try target()
+                session.captureAvailable = !first
+                XCTAssertEqual(footerHeight(hosted, model: model, session: session, width: width, compact: false), shown,
+                               "at \(width) pt the badge \(first ? "gaining" : "losing") “Next: ” changed the footer")
+                // In the full form, where the badge has words, the press target
+                // hugs the shorter badge, not its room; icon-only, it is the same.
+                if !first {
+                    let now = try target()
+                    if firstTarget > 30 { XCTAssertLessThan(now, firstTarget, "at \(width) pt the press target hugs the shorter badge, not its room"); hugged += 1 }
+                    else { XCTAssertEqual(now, firstTarget) }
+                }
+                heights.insert(shown)
+            }
+        }
+        XCTAssertGreaterThan(heights.count, 1, "the sweep crosses the widths where the footer changes form")
+        XCTAssertGreaterThan(hugged, 0, "the sweep reaches widths where the badge has words")
+    }
+
+    /// A notice coming or going never moves the footer: it takes only what
+    /// the pills leave free (an idle helper's "Saved history · Host runtime
+    /// unloaded" moved the conversation while it was read), in a run too,
+    /// and in a side's compact footer.
+    @MainActor func testANoticeNeverMovesTheFooter() throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        defer { model.shutdown() }
+        let session = longChat("notice-room")
+        session.context = ["tokens": .number(45_000), "contextWindow": .number(200_000)]
+        let hosted = NSHostingView(rootView: FooterWidthProbe(model: model, session: session, width: 600))
+        for compact in [false, true] {
+            for running in compact ? [false] : [false, true] {
+                session.state = running ? "running" : "idle"
+                var heights: Set<CGFloat> = []
+                for width in stride(from: CGFloat(compact ? 240 : 500), through: compact ? 800 : 1_400, by: 4) {
+                    session.presentationGeneration = UUID()
+                    session.notice = ""
+                    let quiet = footerHeight(hosted, model: model, session: session, width: width, compact: compact)
+                    for notice in ["Saved history · Host runtime unloaded", "Run cancelled. Pending messages are paused; resume below", ""] {
+                        session.notice = notice
+                        XCTAssertEqual(footerHeight(hosted, model: model, session: session, width: width, compact: compact), quiet,
+                                       "\(compact ? "compact" : "full")\(running ? ", running" : "") footer at \(width) pt: “\(notice)” changed it")
+                    }
+                    heights.insert(quiet)
+                }
+                XCTAssertGreaterThan(heights.count, 1, "the sweep crosses the widths where the footer changes form")
+            }
+        }
+        session.state = "idle"
+    }
+
+    /// Nothing in the footer's row moves for a notice: the clock and the
+    /// badge keep their places whatever notice comes, changes or goes; the
+    /// notice sits in what the pills leave free, right against the clock,
+    /// and is not shown where that is too little.
+    @MainActor func testTheFootersRowPlacesANoticeWithoutMovingAnything() {
+        final class Frames: ObservableObject { var parts: [String: CGRect] = [:] }
+        struct Frame: PreferenceKey {
+            static let defaultValue: [String: CGRect] = [:]
+            static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) { value.merge(nextValue()) { $1 } }
+        }
+        struct Row: View {
+            let pills: CGFloat, notice: String?, frames: Frames
+            func part(_ name: String, _ role: FooterRowRole, _ view: some View) -> some View {
+                view.background(GeometryReader { geometry in Color.clear.preference(key: Frame.self, value: [name: geometry.frame(in: .named("row"))]) })
+                    .layoutValue(key: FooterRowRole.self, value: role)
+            }
+            var body: some View {
+                FooterRowLayout(spacing: 12) {
+                    part("pills", .pills, Color.clear.frame(width: pills, height: 20))
+                    part("run", .run, Color.clear.frame(width: 220, height: 20))
+                    // As the footer's notice line: right-aligned in the room it is given.
+                    if let notice { part("notice", .notice, Text(notice).lineLimit(1).truncationMode(.tail).frame(maxWidth: 640, alignment: .trailing).clipped()) }
+                    part("badge", .badge, Color.clear.frame(width: 90, height: 20))
+                }
+                .frame(width: 900).coordinateSpace(name: "row")
+                .onPreferenceChange(Frame.self) { frames.parts = $0 }
+            }
+        }
+        let frames = Frames()
+        let hosted = NSHostingView(rootView: Row(pills: 300, notice: nil, frames: frames))
+        func place(pills: CGFloat, notice: String?) -> [String: CGRect] {
+            hosted.rootView = Row(pills: pills, notice: notice, frames: frames)
+            hosted.layoutSubtreeIfNeeded()
+            return frames.parts
+        }
+        for pills in [CGFloat(300), 480, 540] {
+            let quiet = place(pills: pills, notice: nil)
+            for notice in ["Saved history · Host runtime unloaded", "Run cancelled. Pending messages are paused; resume below"] {
+                let placed = place(pills: pills, notice: notice)
+                XCTAssertEqual(placed["run"], quiet["run"], "the clock stays put for “\(notice)” beside \(pills) pt of pills")
+                XCTAssertEqual(placed["badge"], quiet["badge"], "the badge stays put")
+                XCTAssertEqual(placed["pills"], quiet["pills"], "the pills stay put")
+                let room = (quiet["run"]?.minX ?? 0) - 12 - (pills + 12)
+                if let shown = placed["notice"], room >= FooterRowLayout.noticeLeast {
+                    XCTAssertEqual(shown.maxX, (quiet["run"]?.minX ?? 0) - 12, accuracy: 0.5, "the notice sits right against the clock")
+                    XCTAssertGreaterThanOrEqual(shown.minX, pills + 12 - 0.5, "and never over the pills")
+                } else {
+                    XCTAssertEqual(placed["notice"]?.width ?? 0, 0, accuracy: 0.5, "too little room: the notice is not shown")
+                }
+            }
+        }
+    }
+
     /// A figure is never cut to make room: the pill that shortens its words
     /// keeps every digit of a nearly full window's reading, read off the
     /// screen at the widths where it ends a row.

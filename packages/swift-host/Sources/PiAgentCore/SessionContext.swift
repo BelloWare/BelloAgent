@@ -13,9 +13,9 @@ extension AgentSession {
     /// Semantic input changes, unlike the event sequence, never include partial
     /// output, accounting arrival, timers, titles or queued-but-undelivered turns.
     var contextPhase: String {
-        if runStatus == "compacting" { return "compacting" }
+        if runStatus == .compacting { return "compacting" }
         if modelActive { return publishedObservation["phase"].text == "preparing" ? "preparing" : "current-request" }
-        if ["waitingTool","retrying"].contains(runStatus) { return "last-request" }
+        if runStatus == .waitingTool || runStatus == .retrying { return "last-request" }
         return runTask != nil ? "preparing" : "next-input"
     }
     var contextStateRevision: String { "\(displayEpoch):\(contextMutation):\(observationRevision):\(contextPhase)" }
@@ -74,7 +74,7 @@ extension AgentSession {
         let definitions = await sessionDefinitions()
         let draft = params["text"].text ?? ""
         guard draft.utf8.count <= 256 * 1024 else { throw AgentError("message_limit", "Draft exceeds the supported submission limit") }
-        var messages = active && runStatus == "waitingTool" ? boundary : context
+        var messages = active && runStatus == .waitingTool ? boundary : context
         var includedDraft = false
         if !active {
             let selected = try await resources.freeze(params["skills"].list, text:draft, tools:await tools.capabilityIDs(readOnly:readOnly))

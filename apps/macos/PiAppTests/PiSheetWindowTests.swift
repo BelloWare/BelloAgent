@@ -224,18 +224,25 @@ final class PiSheetWindowTests: XCTestCase {
     /// What the view that presents it sets, the sheet inherits, as SwiftUI's
     /// sheet did: Reduce Motion, and a window made unavailable while an update
     /// installs. A change to either while it is up reaches it.
+    /// And a change reaches the open sheet after the presenter's update, not
+    /// inside it: set from `updateNSView`, the sheet's settings published
+    /// while SwiftUI was updating the presenter, which SwiftUI reports as
+    /// "Publishing changes from within view updates" (undefined behaviour).
     @MainActor func testTheSheetInheritsWhatItsPresenterSets() async throws {
         let presenter = Presenter(), seen = Seen()
         presenter.reduceMotion = true; presenter.disabled = true
         let window = parent(AppHost(presenter: presenter) { Recorder(seen: seen) })
-        autoreleasepool { presenter.showing = true }
-        try await eventually("the sheet") { window.attachedSheet != nil && seen.enabled != nil }
-        XCTAssertEqual(seen.reduceMotion, true)
-        XCTAssertEqual(seen.enabled, false)
-        presenter.reduceMotion = false; presenter.disabled = false
-        try await eventually("the change reaching the sheet") { seen.reduceMotion == false && seen.enabled == true }
-        autoreleasepool { presenter.showing = false }
-        try await eventually("closed") { window.attachedSheet == nil }
+        let logged = try await standardError {
+            autoreleasepool { presenter.showing = true }
+            try await eventually("the sheet") { window.attachedSheet != nil && seen.enabled != nil }
+            XCTAssertEqual(seen.reduceMotion, true)
+            XCTAssertEqual(seen.enabled, false)
+            presenter.reduceMotion = false; presenter.disabled = false
+            try await eventually("the change reaching the sheet") { seen.reduceMotion == false && seen.enabled == true }
+            autoreleasepool { presenter.showing = false }
+            try await eventually("closed") { window.attachedSheet == nil }
+        }
+        XCTAssertFalse(logged.contains("Publishing changes from within view updates"), "The sheet's settings changed inside a view update")
     }
 
     struct Target: Identifiable, Equatable { let id: String }
@@ -330,10 +337,14 @@ final class PiSheetWindowTests: XCTestCase {
             ("Webhook preview", CGSize(width: 640, height: 660), { model.webhookPreviewTarget = RenameTarget(id: chat.id) }, { model.webhookPreviewTarget != nil }),
             ("Changes", CGSize(width: 1180, height: 780), { model.showChanges(in: workspace.id) }, { model.showGit }),
         ]
+        // Eight sheets opened, closed and let go of in turn: none of these
+        // waits is about promptness, and in the parallel lane's load the
+        // suite's ten seconds ran out for one of them (0.1.116).
+        let allowance = 30.0
         var everything: [() -> NSView?] = []
         for (name, size, open, asked) in sheets {
             autoreleasepool { open() }
-            try await eventually("\(name) to open") { window.attachedSheet != nil }
+            try await eventually("\(name) to open", seconds: allowance) { window.attachedSheet != nil }
             try autoreleasepool {
                 let sheet = try XCTUnwrap(window.attachedSheet)
                 XCTAssertTrue(sheet === PiSheetWindow.newest, "\(name) is a window of the app's own")
@@ -351,10 +362,10 @@ final class PiSheetWindowTests: XCTestCase {
             }
             XCTAssertFalse(shown.isEmpty, "\(name) shows views of its own")
             XCTAssertTrue(try autoreleasepool { try XCTUnwrap(host()).performKeyEquivalent(with: try escape()) }, "Escape leaves \(name)")
-            try await eventually("\(name) to close") { !asked() && window.attachedSheet == nil }
+            try await eventually("\(name) to close", seconds: allowance) { !asked() && window.attachedSheet == nil }
             // Closed, none of it is on screen or in the hosting view the next
             // sheet of its kind opens in.
-            try await eventually("\(name)'s views to be out of every window") {
+            try await eventually("\(name)'s views to be out of every window", seconds: allowance) {
                 autoreleasepool {
                     shown.allSatisfy { view in
                         view().map { shownView in shownView.window == nil && !(host().map { shownView.isDescendant(of: $0) } ?? false) } ?? true
@@ -369,7 +380,7 @@ final class PiSheetWindowTests: XCTestCase {
         // left: nothing but the few views TextKit keeps of the Resources
         // sheet's text view, which AppKit holds after the text view has gone.
         autoreleasepool { window.contentView = NSView() }
-        try await eventually("every closed sheet's views to be let go of") {
+        try await eventually("every closed sheet's views to be let go of", seconds: allowance) {
             autoreleasepool { everything.allSatisfy { $0().map { String(describing: type(of: $0)).hasPrefix("_NSText") } ?? true } }
         }
     }

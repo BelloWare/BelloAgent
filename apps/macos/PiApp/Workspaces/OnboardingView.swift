@@ -92,7 +92,7 @@ struct OnboardingView: View {
     private var modelStep: some View {
         Group {
             PiSectionHeader("Choose a model", subtitle: "Catalog choices set the model's context and output ceiling. Your output budget stays separate. The gateway must support the selected alias.") {
-                if setup.listing { ProgressView().controlSize(.small) } else { Button { Task { await setup.listModels() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }.buttonStyle(.piGhost) }
+                if setup.listing { PiSpinner(controlSize: .small) } else { Button { Task { await setup.listModels() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }.buttonStyle(.piGhost) }
             }
             if !setup.listError.isEmpty { PiNote(setup.listError, tone: .warning) }
             if !setup.models.isEmpty {
@@ -122,7 +122,7 @@ struct OnboardingView: View {
                     }.padding(4)
                 }.frame(height: min(220, CGFloat(max(1, filteredModels.count)) * 34 + 8)).piInset(sunken: true)
             } else if setup.listing {
-                HStack(spacing: 8) { ProgressView().controlSize(.small); Text("Loading the model catalog…").font(PiFont.caption).foregroundStyle(Color.piInkSecondary) }
+                HStack(spacing: 8) { PiSpinner(controlSize: .small); Text("Loading the model catalog…").font(PiFont.caption).foregroundStyle(Color.piInkSecondary) }
             }
             field("Model or router alias") { PiTextField(placeholder: "gpt-5.1 or claude-router", text: $setup.profile.modelId, icon: "cpu", mono: true) }
             HStack(spacing: PiSpacing.md) {

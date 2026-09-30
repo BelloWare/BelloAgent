@@ -208,7 +208,17 @@ enum MenuBarChartMetric: String, CaseIterable { case requests, tokens, cost, rat
                         let step = direction == .left ? -1 : direction == .right ? 1 : 0
                         chartSelection = buckets[max(0, min(buckets.count - 1, index + step))].start
                     }
-                    .chartYAxis { AxisMarks(position: .leading) { AxisGridLine().foregroundStyle(Color.piHairline); AxisValueLabel().foregroundStyle(Color.piInkTertiary) } }
+                    .chartYAxis {
+                        AxisMarks(position: .leading) { value in
+                            AxisGridLine().foregroundStyle(Color.piHairline)
+                            // A cost axis reads as every amount does, cents at least.
+                            if chartMetric == .cost, let usd = value.as(Double.self) {
+                                AxisValueLabel { Text(compactGatewayUSD(usd)) }.foregroundStyle(Color.piInkTertiary)
+                            } else {
+                                AxisValueLabel().foregroundStyle(Color.piInkTertiary)
+                            }
+                        }
+                    }
                     .chartXAxis { AxisMarks { AxisGridLine().foregroundStyle(Color.piHairline); AxisValueLabel(format: axisFormat).foregroundStyle(Color.piInkTertiary) } }
                     .frame(height: 110)
                     .accessibilityIdentifier("menu-bar-chart-\(chartMetric.rawValue)")

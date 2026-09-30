@@ -359,7 +359,7 @@ final class CompactionSafetyTests: XCTestCase {
         let s=try session(root,client:SummaryProbe(),messages:seed(count:0))
         let text=String(repeating:"🙂漢é",count:20000),call=ToolCall(id:"large",name:"read",arguments:[:])
         try await s.append(toolReply(["read"]).message)
-        try await s.recordTool(call,result:resultText(text),started:nowMS(),state:"completed")
+        try await s.recordTool(call,result:resultText(text),started:nowMS(),state:.completed)
         let message=await s.history.last!, sent=message.text
         XCTAssertEqual(message.content.count,1,"The text alone, with no reference block after it")
         XCTAssertNil(message.retainedOutput)

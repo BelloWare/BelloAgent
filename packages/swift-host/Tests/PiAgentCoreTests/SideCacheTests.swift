@@ -61,17 +61,8 @@ final class SideCacheTests: XCTestCase {
     /// attempt log and the spend are the side's own.
     func testASidesFirstRequestExtendsItsParentsLastAndIsPaidForByTheSide() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
-        let script = root.appendingPathComponent("gateway.py")
-        try Data(Self.gatewayScript.utf8).write(to: script)
-        let server = Process()
-        server.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-        server.arguments = [script.path, root.path]
-        server.standardOutput = FileHandle.nullDevice; server.standardError = FileHandle.nullDevice
-        try server.run()
-        defer { stopFixtureProcess(server) }
-        let ready = root.appendingPathComponent("ready.json")
-        try await eventually { FileManager.default.fileExists(atPath: ready.path) }
-        let port = try XCTUnwrap(JSON.parse(Data(contentsOf: ready))["port"].int)
+        let gateway = try await PythonGateway.start(source: Self.gatewayScript, root: root); defer { gateway.stop() }
+        let port = gateway.port
         var profile = try fixtureProfile().raw
         profile["baseUrl"] = JSON("http://127.0.0.1:\(port)")
 

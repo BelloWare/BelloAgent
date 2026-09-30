@@ -71,7 +71,7 @@ final class TurnInfoTests: XCTestCase {
     @MainActor func testInlineAndTableKeepZeroMicroCostCoverageAndTokenSubsets() throws {
         var task = record(); task.outcome = "completed"; task.phase = "terminal"; task.endedAt = 4000; task.replies = 1
         let turn = TaskTranscriptPlan.summary([message("u",role:"user",cost:0)],task:task)
-        XCTAssertEqual(TurnInfoPresentation.costLabel(turn),"$0")
+        XCTAssertEqual(TurnInfoPresentation.costLabel(turn),"$0.00")
         XCTAssertTrue(TurnInfoPresentation.inlineFigures(turn).contains("In 38"))
         XCTAssertTrue(TurnInfoPresentation.inlineFigures(turn).contains("Out 302"))
         XCTAssertTrue(TurnInfoPresentation.inlineFigures(turn).contains("Cached 0"))
@@ -79,8 +79,8 @@ final class TurnInfoTests: XCTestCase {
         let rows = Dictionary(uniqueKeysWithValues:TurnInfoPresentation.rows(turn).map { ($0.name,$0) })
         XCTAssertEqual(rows["Total tokens"]?.value,"340")
         XCTAssertEqual(rows["Reasoning tokens (in output)"]?.value,"253")
-        XCTAssertEqual(rows["Total cost"]?.value,"$0 USD")
-        XCTAssertEqual(rows["Reasoning cost (in total)"]?.value,"$0 USD")
+        XCTAssertEqual(rows["Total cost"]?.value,"$0.00 USD")
+        XCTAssertEqual(rows["Reasoning cost (in total)"]?.value,"$0.00 USD")
         XCTAssertEqual(rows["Total cost"]?.coverage,"1/1 requests")
         XCTAssertEqual(rows["Cache-write tokens"]?.value,"Unreported")
         let micro = TaskTranscriptPlan.summary([message("a")],task:task)

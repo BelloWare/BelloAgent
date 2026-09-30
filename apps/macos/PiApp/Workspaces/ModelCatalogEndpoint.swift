@@ -50,7 +50,7 @@ struct ModelDescriptor: Codable, Sendable, Equatable, Identifiable {
     var contextLabel: String? {
         guard let contextWindow else { return nil }
         if contextWindow >= 1_000_000 { return String(format: "%.1fM ctx", Double(contextWindow) / 1_000_000).replacingOccurrences(of: ".0M", with: "M") }
-        if contextWindow >= 1_000 { return "\(contextWindow / 1000)k ctx" }
+        if contextWindow >= 1_000 { return "\(contextWindow / 1000)K ctx" }
         return "\(contextWindow) ctx"
     }
     var outputLimitLabel: String? {

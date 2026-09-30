@@ -48,8 +48,8 @@ extension AgentSession {
     func taskPresentationSnapshot() -> TaskPresentationProjection {
         var active = activeTaskPresentation
         if active != nil {
-            active?.phase = state == "stopping" ? "stopping" : runStatus == "retrying" ? "retrying" :
-                runStatus == "compacting" ? "compacting" : runStatus == "waitingTool" ? "tools" : modelActive ? "model" : "preparing"
+            active?.phase = state == .stopping ? "stopping" : runStatus == .retrying ? "retrying" :
+                runStatus == .compacting ? "compacting" : runStatus == .waitingTool ? "tools" : modelActive ? "model" : "preparing"
             if let partialID { active?.assistantID = partialID }
             active?.attemptID = requestObservation?.attemptID
             active?.preparingCalls = partialToolSeen.count
@@ -57,6 +57,6 @@ extension AgentSession {
         }
         return TaskPresentationProjection(sessionID:id, epoch:displayEpoch, timeline:presentationTimeline,
             sequence:sequence, sourceRevision:displayRevision, active:active, recent:recentTaskPresentations,
-            utilityPhase:presentationUtility && active == nil && (state == "running" || state == "stopping") ? (runStatus == "compacting" ? "compacting" : "preparing") : nil)
+            utilityPhase:presentationUtility && active == nil && (state == .running || state == .stopping) ? (runStatus == .compacting ? "compacting" : "preparing") : nil)
     }
 }

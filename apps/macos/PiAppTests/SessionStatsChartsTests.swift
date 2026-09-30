@@ -100,9 +100,9 @@ final class SessionStatsChartsTests: XCTestCase {
         XCTAssertEqual(SessionStatsFormat.ticks(upTo: 930, within: 1_004), [0, 500, 1_000], "Ticks reach the top of the axis")
         XCTAssertEqual(SessionStatsFormat.ticks(upTo: 7_400, within: 7_992), [0, 2_500, 5_000, 7_500])
         XCTAssertEqual(SessionStatsFormat.ticks(upTo: 0), [0])
-        XCTAssertEqual(SessionStatsFormat.costTicks([0, 0.5, 1, 1.5]), ["$0", "$0.50", "$1.00", "$1.50"], "One money style on one axis")
-        XCTAssertEqual(SessionStatsFormat.costTicks([0, 0.025, 0.05]), ["$0", "$0.025", "$0.050"])
-        XCTAssertEqual(SessionStatsFormat.costTicks([0, 5, 10]), ["$0", "$5", "$10"])
+        XCTAssertEqual(SessionStatsFormat.costTicks([0, 0.5, 1, 1.5]), ["$0.00", "$0.50", "$1.00", "$1.50"], "One money style on one axis")
+        XCTAssertEqual(SessionStatsFormat.costTicks([0, 0.025, 0.05]), ["$0.000", "$0.025", "$0.050"])
+        XCTAssertEqual(SessionStatsFormat.costTicks([0, 5, 10]), ["$0.00", "$5.00", "$10.00"])
     }
 
     /// Every label an axis or a mark carries fits inside its chart at the

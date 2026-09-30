@@ -159,7 +159,7 @@ extension AgentSession {
     /// reader cares about: a stopped run before a busy one, and what the run
     /// is waiting on before the fact that it is running at all.
     var activityPhase: String {
-        state=="error" ? "error" : state=="paused" ? "paused" : state=="stopping" ? "stopping" : runStatus=="compacting" ? "compacting" : runStatus=="waitingTool" ? "tool" : modelActive ? "model" : state=="running" ? "starting" : "idle"
+        state == .error ? "error" : state == .paused ? "paused" : state == .stopping ? "stopping" : runStatus == .compacting ? "compacting" : runStatus == .waitingTool ? "tool" : modelActive ? "model" : state == .running ? "starting" : "idle"
     }
     func activitySnapshot() -> JSON {
         let phase = activityPhase
@@ -192,7 +192,7 @@ extension AgentSession {
                 if let id = message["id"].text, let at = pendingDisplayObservations.removeValue(forKey: id) { observedAt = min(observedAt ?? at, at) }
             }
         }
-        var value: JSON=["sessionId":JSON(id),"seq":JSON(sequence),"state":JSON(state),"runStatus":JSON(runStatus),"retry":retryInfo,"settingsPending":JSON(pendingConfiguration != nil),"preflightError":errorMessage.map { JSON($0) } ?? .null,"cost":costSnapshot,"side":parentInfo,"ephemeral":JSON(ephemeral),"keeping":false,"keepRequested":JSON(keepRequested),"keepError":.null,"queue":.array(queue.map { var v=$0.previewValue;v["kind"]="follow-up";return v }+steering.map { var v=$0.previewValue;v["kind"]="steering";v["text"]=JSON("[Steering] "+(v["text"].text ?? ""));return v }),"steering":.array(steering.map(\.previewValue)),"queueCount":JSON(queue.count+steering.count),"queuePaused":JSON(queuePaused),"path":path.map { JSON($0) } ?? .null,"total":JSON(visible.count),"displayRevision":JSON(revision),"profileId":JSON(profile.id),"toolMode":JSON(readOnly ? "read-only" : "editing"),"context":contextInfo(),"turnMetrics":turnMetrics(),"assistantMessageCount":JSON(assistantMessageCount),"latestAssistantMessageId":latestAssistantMessageID.map { JSON($0) } ?? .null,"activity":activitySnapshot()]
+        var value: JSON=["sessionId":JSON(id),"seq":JSON(sequence),"state":JSON(state.rawValue),"runStatus":JSON(runStatus.rawValue),"retry":retryInfo,"settingsPending":JSON(pendingConfiguration != nil),"preflightError":errorMessage.map { JSON($0) } ?? .null,"cost":costSnapshot,"side":parentInfo,"ephemeral":JSON(ephemeral),"keeping":false,"keepRequested":JSON(keepRequested),"keepError":.null,"queue":.array(queue.map { var v=$0.previewValue;v["kind"]="follow-up";return v }+steering.map { var v=$0.previewValue;v["kind"]="steering";v["text"]=JSON("[Steering] "+(v["text"].text ?? ""));return v }),"steering":.array(steering.map(\.previewValue)),"queueCount":JSON(queue.count+steering.count),"queuePaused":JSON(queuePaused),"path":path.map { JSON($0) } ?? .null,"total":JSON(visible.count),"displayRevision":JSON(revision),"profileId":JSON(profile.id),"toolMode":JSON(readOnly ? "read-only" : "editing"),"context":contextInfo(),"turnMetrics":turnMetrics(),"assistantMessageCount":JSON(assistantMessageCount),"latestAssistantMessageId":latestAssistantMessageID.map { JSON($0) } ?? .null,"activity":activitySnapshot()]
         // Receipts and the task presentation travel only when they changed
         // since the revision the reader sends back; a reader that sends none
         // (any reader before 0.1.85) gets both every time, as before.

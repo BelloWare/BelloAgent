@@ -21,6 +21,22 @@ final class ProtocolWriter: Sendable {
     /// protocol, and the helper still has a stopped run's partial reply and
     /// final state to write to the journal before it exits.
     func inputEnded() { reader.set(\.inputEnded) }
+    /// A reply the service encoded once goes out as those bytes, under the
+    /// same bound and order as every other frame; only a chat's change
+    /// notice is ever coalesced.
+    func send(_ output: HostOutput) {
+        switch output {
+        case .frame(let value): send(value)
+        case .encoded(let bytes):
+            guard !reader.gone else { return }
+            guard slots.wait(timeout:.now()) == .success else { Self.fail("Native host output backpressure limit reached") }
+            queue.async { [self] in
+                defer { slots.signal() }
+                guard !reader.gone else { return }
+                write(bytes: bytes)
+            }
+        }
+    }
     func send(_ value:JSON) {
         guard !reader.gone else { return }
         // A chat's change notice carries only its latest sequence number, and
@@ -46,9 +62,14 @@ final class ProtocolWriter: Sendable {
     }
     /// On the writer queue only.
     private func write(_ value: JSON) {
+        guard let data=try? value.data() else { Self.fail("Native host protocol output failed") }
+        write(bytes: data)
+    }
+    /// On the writer queue only: one frame's bytes, without their newline.
+    private func write(bytes: Data) {
         do {
-            var data=try value.data(); guard data.count<=HostProtocol.frameBytes else { throw AgentError("frame_limit","Protocol output exceeds frame limit") }
-            data.append(10)
+            guard bytes.count<=HostProtocol.frameBytes else { throw AgentError("frame_limit","Protocol output exceeds frame limit") }
+            var data=bytes; data.append(10)
             do { try FileHandle.standardOutput.write(contentsOf:data) }
             catch { guard reader.inputEnded else { throw error }; reader.set(\.gone); return }
         } catch { Self.fail("Native host protocol output failed") }
@@ -93,7 +114,7 @@ final class ReaderState: @unchecked Sendable {
     static func main() async {
         signal(SIGPIPE,SIG_IGN)
         if CommandLine.arguments.contains("--version") { print("pi-native-host \(HostProtocol.engineVersion) (Pi behavior reference \(HostProtocol.piBehaviorReference))"); return }
-        let writer=ProtocolWriter(), service=NativeHostService { writer.send($0) }
+        let writer=ProtocolWriter(), service=NativeHostService(output: { writer.send($0) })
         signal(SIGTERM,SIG_IGN); signal(SIGINT,SIG_IGN)
         let term=DispatchSource.makeSignalSource(signal:SIGTERM,queue:.global()), interrupt=DispatchSource.makeSignalSource(signal:SIGINT,queue:.global())
         // A signal handler cannot await. This task is the shutdown itself, so

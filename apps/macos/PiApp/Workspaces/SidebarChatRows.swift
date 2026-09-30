@@ -71,7 +71,7 @@ struct ChatRowStats: Equatable {
     }
     var costLabel: String? {
         guard let costUSD, costUSD.isFinite, costUSD >= 0 else { return requests > 0 ? "cost n/a" : nil }
-        if costUSD == 0 { return "$0" }
+        if costUSD == 0 { return "$0.00" }
         return MetricFormat.centsUSD(costUSD, places: 4, padded: true)
     }
     var tokensLabel: String? {
@@ -132,7 +132,9 @@ struct ChatRow: View {
             LiveChatRow(session: display, footer: display.footer, title: chat.title, subtitle: subtitle, symbol: symbol, selected: selected, unreadCount: unreadCount, unreadFailure: unreadFailure, hasSide: hasSide, expanded: expanded, available: available, toggle: toggle, pinned: chat.isPinned, archived: chat.isArchived, archive: archiveAction)
         } else {
             RetainedAccountingRow(accounting: model.chatAccounting.row(for: chat.id)) { totals in
-                ChatRowBody(stats: ChatRowStats(totals: totals, now: minute ?? Date()), title: chat.title, subtitle: subtitle, symbol: symbol, selected: selected, unreadCount: unreadCount, unreadFailure: unreadFailure, hasSide: hasSide, expanded: expanded, pinned: chat.isPinned, available: available, archived: chat.isArchived, archive: archiveAction).equatable()
+                // The chevron's action too: without it, a chat not loaded in
+                // this launch could not fold or unfold its sides.
+                ChatRowBody(stats: ChatRowStats(totals: totals, now: minute ?? Date()), title: chat.title, subtitle: subtitle, symbol: symbol, selected: selected, unreadCount: unreadCount, unreadFailure: unreadFailure, hasSide: hasSide, expanded: expanded, toggle: toggle, pinned: chat.isPinned, available: available, archived: chat.isArchived, archive: archiveAction).equatable()
             }
         }
     }
