@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Pull dev/next and check it, for the machine that can run code.
+# Check dev/next, for the machine that can run code.
 #
 # The next release is developed on one branch, dev/next (see NEXT-RELEASE.md).
 # An agent that writes code but cannot run it pushes there; this script, run on
@@ -13,6 +13,8 @@
 #   scripts/check-next.sh helper      the same, then the helper suite and the wire scripts
 #   scripts/check-next.sh gate        the same, then the whole release gate
 #                                      (scripts/verify-release.sh; run it alone)
+#   PI_NEXT_REF=dev/next scripts/check-next.sh ...
+#                                    check local committed work without fetching
 set -uo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
@@ -22,17 +24,23 @@ export PI_BUILD_ROOT="$HOME_DIR/build"
 LOGS="$HOME_DIR/logs"
 mkdir -p "$PI_BUILD_ROOT" "$LOGS"
 
-git -C "$REPO" fetch -q origin || { echo "fetch failed"; exit 1; }
+CHECK_REF=${PI_NEXT_REF:-origin/dev/next}
+if [ -z "${PI_NEXT_REF:-}" ]; then
+  git -C "$REPO" fetch -q origin || { echo "fetch failed"; exit 1; }
+fi
+# Resolve once: all builds and tests in this call check the same commit,
+# even if development advances the local branch while the check runs.
+CHECK_COMMIT=$(git -C "$REPO" rev-parse --verify --end-of-options "$CHECK_REF^{commit}") || { echo "Unknown check ref: $CHECK_REF"; exit 1; }
 if [ ! -d "$WT/.git" ] && [ ! -f "$WT/.git" ]; then
   git -C "$REPO" worktree prune
-  git -C "$REPO" worktree add -q --detach "$WT" origin/dev/next || exit 1
+  git -C "$REPO" worktree add -q --detach "$WT" "$CHECK_COMMIT" || exit 1
 fi
 cd "$WT" || exit 1
 if [ -n "$(git status --porcelain)" ]; then
   echo "The check worktree has local changes; not touching them:"; git status --short; exit 1
 fi
-git checkout -q --detach origin/dev/next || exit 1
-echo "dev/next at $(git log --oneline -1)"
+git checkout -q --detach "$CHECK_COMMIT" || exit 1
+echo "$CHECK_REF at $(git log --oneline -1)"
 
 python3 scripts/build-bundle.py > "$LOGS/bundle.log" 2>&1 || { echo "BUNDLE FAILED ($LOGS/bundle.log)"; tail -20 "$LOGS/bundle.log"; exit 1; }
 xcodegen generate --quiet > "$LOGS/xcodegen.log" 2>&1 || { echo "XCODEGEN FAILED"; exit 1; }

@@ -5,8 +5,8 @@
 ## How work flows
 Current owner instruction (2026-10-01): keep new development commits local until release. The earlier Quick Open findings 1–4 were already pushed; preserve them. Code execution remains on the owner's Mac.
 
-1. A coding agent works directly on `dev/next`: small commits, pushed as it goes. It may not be able to run code, so it says in each commit message what should be checked.
-2. The owner then asks the agent on their Mac to pull and check. It runs `scripts/check-next.sh` (build), `scripts/check-next.sh test <Class> …` (named test classes), `scripts/check-next.sh helper` (helper and package suites, wire scripts) or `scripts/check-next.sh gate` (the full release gate), and reports or fixes what fails.
+1. A coding agent works directly on `dev/next`: small local commits until release, with a final `Check:` paragraph in each commit message naming the tests and helper/gallery needs.
+2. The owner's Mac checks these local commits with `PI_NEXT_REF=dev/next scripts/check-next.sh` (build), `PI_NEXT_REF=dev/next scripts/check-next.sh test <Class> …` (named test classes), `PI_NEXT_REF=dev/next scripts/check-next.sh helper` (helper and package suites, wire scripts) or `PI_NEXT_REF=dev/next scripts/check-next.sh gate` (the full release gate). The script fixes the chosen commit for the whole run in its separate check worktree. Without `PI_NEXT_REF`, it still fetches and checks `origin/dev/next`.
 3. When everything below is done and the gate and an hour-long soak pass, `dev/next` is released.
 
 ## Rules for code on this branch
@@ -46,6 +46,7 @@ Current owner instruction (2026-10-01): keep new development commits local until
 - [x] Remove what's left of the old Changes sheet from current code and tests: panel/tab comments and frame-test names now describe tabs; opening checks assert that the workspace has no attached sheet. `showGit`, `gitWorkspaceID`, and `ChangesSheet` are absent from current code. Historical release validation records keep their original test names. Mac validation pending: ChangesTabTests, ChangesTabFrameTests; helper and gallery not needed for this cleanup.
 
 ## Before release
+- [x] The Mac check script can check a local committed ref without fetching or publishing; CheckNextTests covers local/default ref selection and refusal of a dirty check worktree. Test execution pending.
 - [x] Bring the published 0.1.116 release metadata and validation record into `dev/next`; its build is 120. Prepare 0.1.117's version/build and regenerate the Xcode project before packaging.
 - [ ] `scripts/check-next.sh gate` passes; an hour-long soak of a Release build passes.
 - [ ] A Release build-for-testing with testability compiles `@testable import FileView` and `GitView`.
