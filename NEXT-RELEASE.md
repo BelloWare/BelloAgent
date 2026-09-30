@@ -16,13 +16,15 @@ Current owner instruction (2026-10-01): keep new development commits local until
 - Keep the `packages/bello-views` package (FileView, FileFinder, GitView) free of app types; macOS 13.
 - Update this file's checklist when an item is done.
 
-## State at 2026-10-01 (on this branch)
+## Baseline at takeover (2026-10-01)
 - Fork speed-up: a fork of a 300 MB chat is ready to type in about 0.3 s (was 10–37 s); history loads in the background. Done.
 - File viewer: engine, tabs beside the chat and in their own windows, find and go to line, file links from tool rows. Done.
 - Changes as a tab beside the chat or in its own window, replacing the sheet. Done.
 - Quick Open (⌘P): merged from `wip/viewer-stop`, **unfinished** (see below).
 - Changes narrow-pane layout: merged from `wip/git-stop`, **unfinished** (see below).
 - The build and test target compile at this commit; the unfinished items' tests are not yet all passing.
+
+The implementation work below is now committed locally. No new code has been built or tested by this coding agent. [Mac validation handoff](docs/Next-Release-Validation.md) lists the exact local-ref checks, generated-project preparation, gallery, Release testability, soak, and publication steps. The open owner decisions remain unresolved.
 
 ## Left for 0.1.117
 - [x] **Quick Open app side** — fix Codex's 8 findings, each with a test (Files/QuickOpen.swift, QuickOpenPanel.swift, Workspaces/WorkspaceQuickOpen.swift, Application/PiApp.swift, WindowPresentation.swift). Implementation complete; Mac build, QuickOpenTests, WindowPresentationTests, TabHostTests and gallery validation pending:
@@ -46,6 +48,7 @@ Current owner instruction (2026-10-01): keep new development commits local until
 - [x] Remove what's left of the old Changes sheet from current code and tests: panel/tab comments and frame-test names now describe tabs; opening checks assert that the workspace has no attached sheet. `showGit`, `gitWorkspaceID`, and `ChangesSheet` are absent from current code. Historical release validation records keep their original test names. Mac validation pending: ChangesTabTests, ChangesTabFrameTests; helper and gallery not needed for this cleanup.
 
 ## Before release
+- [x] Prepare `docs/Next-Release-Validation.md` with local-commit checks and the remaining release gates; execution and results are pending.
 - [x] Gallery scenes cover PDF/image previews (`24f`, `24g`) and an actual reply path link (`24h`), including opening its file. Rendering and visual review pending on the Mac.
 - [x] The Mac check script can check a local committed ref without fetching or publishing; CheckNextTests covers local/default ref selection and refusal of a dirty check worktree. Test execution pending.
 - [x] Bring the published 0.1.116 release metadata and validation record into `dev/next`; its build is 120. Prepare 0.1.117's version/build and regenerate the Xcode project before packaging.
