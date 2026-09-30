@@ -32,11 +32,12 @@ extension WorkspaceModel {
     /// back if another page was shown, and the keyboard goes to the file.
     func openQuickOpenChoice(_ id: String? = nil) {
         if let id { quickOpen.select(id) }
-        guard let row = quickOpen.selectedRow, let project = quickOpen.project else { return }
+        guard let row = quickOpen.selectedRow else { return }
         let line = quickOpen.line
         quickOpen.close(restoringFocus: false)
         if page != .chats { page = .chats }
-        let tab = openFile(row.url, lines: line.map { ($0 - 1)...($0 - 1) }, project: project.id)
+        // A listed symlink may resolve into another project's trust boundary.
+        let tab = openFile(row.url, lines: line.map { ($0 - 1)...($0 - 1) })
         Task { @MainActor [weak tab] in
             // Once the pane has drawn the tab: its view, in the window.
             for _ in 0..<60 {
