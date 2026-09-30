@@ -24,10 +24,17 @@ final class GitPanelWidthTests: GitPanelTestCase {
         try write("long.swift", (0..<400).map { "let changed\($0) = \($0 * 3)" }.joined(separator: "\n") + "\n")
         return root
     }
-    @MainActor private func draw(_ window: NSWindow, passes: Int = 3) async throws {
-        for _ in 0..<passes {
-            try await Task.sleep(for: .milliseconds(15))
+    @MainActor private func draw(_ window: NSWindow) async throws {
+        await Task.yield()
+        try await eventually("the panel laid out at the window's width") {
             window.contentView?.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            guard let content = window.contentView,
+                  let diff = self.views(GitDiffTableView.self, in: content).first?.enclosingScrollView,
+                  let field = self.views(NSTextField.self, in: content).first(where: { $0.isEditable && $0.placeholderString == "Commit message" }) else { return false }
+            let width = window.contentLayoutRect.width
+            let left = width >= GitPanelView.wideWidth ? GitPanelSplit.listWidth + 1 : 0
+            let shown = self.frame(diff)
+            return abs(shown.minX - left) < 1 && abs(shown.maxX - width) < 1 && self.frame(field).height > 0
         }
     }
     @MainActor private func views<T: NSView>(_ type: T.Type, in view: NSView) -> [T] {
@@ -133,7 +140,7 @@ final class GitPanelWidthTests: GitPanelTestCase {
             let window = host(GitPanelView(controller: controller), width: 700, height: height)
             defer { window.contentView = nil; window.close() }
             try await eventually("the first read") { controller.status.entries.count == 31 && !controller.diffLoading && !controller.diff.isEmpty }
-            try await draw(window, passes: 4)
+            try await draw(window)
             let content = window.contentLayoutRect
             let field = try XCTUnwrap(views(NSTextField.self, in: window.contentView!).first { $0.isEditable && $0.placeholderString == "Commit message" })
             XCTAssertTrue(content.contains(frame(field)), "At \(height) points the whole commit message fits: \(frame(field)) in \(content)")

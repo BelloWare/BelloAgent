@@ -35,7 +35,7 @@ Current owner instruction (2026-10-01): keep new development commits local until
   7. [x] a failed refresh still reads as ready: surface `finder.failure` and say the list is as last read;
   8. [x] a truncated listing says only "no match": say how many files were searched.
 - [ ] **Changes narrow-pane layout** — GitPanelWidthTests: the list offset check is too strict (moves 12.5 pt as rows re-measure; compare the first visible row), and the Commit button isn't found in the accessibility tree (assert with the commit field instead). Then run ChangesTabFrameTests at 1280×820, 580×800 and 820×640, add a gallery scene for a narrow window, and review.
-  - [x] Compare the first visible file row and assert the full commit field; add `10c-changes-window-narrow` in both gallery themes.
+  - [x] Compare the first visible file row and assert the full commit field; add `10c-changes-window-narrow` in both gallery themes. Layout waits use `eventually` with measured geometry, without counting redraw polls.
   - [ ] Mac validation: GitPanelWidthTests, ChangesTabFrameTests at all three sizes, and review the narrow-window gallery scene.
 - [x] **Diff line → file**: a diff line's Pi context menu opens its current file in a tab at that line; split rows use the side under the pointer and empty sides have no action. Mac validation pending: GitDiffTableTests, ChangesTabTests and Changes gallery.
 - [x] **Tab speed fix**: `TabContentHost.sizeThatFits` returns `proposal.replacingUnspecifiedDimensions()` (Tabs/TabWindows.swift); a SwiftUI layout probe covers full and partial proposals. Mac validation pending: TabHostTests, ChangesTabFrameTests and tab gallery.
