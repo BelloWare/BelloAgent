@@ -78,6 +78,42 @@ final class SideTests: XCTestCase {
         let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("native-side-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true); return root
     }
+    /// A saved side whose chat was deleted stays a chat of its own and opens
+    /// no side (the owner's choice for 0.1.116): not from the menu, the panel,
+    /// a quoted reply, or `/side`, each saying why where it can. A side whose
+    /// chat is still there, and a chat forked from a reply whose chat was
+    /// deleted, still open sides.
+    @MainActor func testASideWhoseChatWasDeletedOpensNoSideOfItsOwn() async throws {
+        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        defer { model.shutdown() }
+        let sessions = root.appendingPathComponent("Workspaces/project/Sessions")
+        func chat(_ id: String, parent: String?, journal: String) -> ChatRecord {
+            var record = ChatRecord(id: id, workspaceID: "project", title: id, path: sessions.appendingPathComponent(journal).path, profileID: "p")
+            record.parentSessionID = parent
+            return record
+        }
+        let kept = ChatRecord(id: "kept", workspaceID: "project", title: "Kept", path: nil, profileID: "p")
+        let orphan = chat("orphan", parent: "deleted", journal: "side_orphan.jsonl")
+        let side = chat("side", parent: kept.id, journal: "side_side.jsonl")
+        let fork = chat("fork", parent: "deleted", journal: "fork_fork.jsonl")
+        model.chats = [kept, orphan, side, fork]
+        XCTAssertFalse(model.canOpenSide(orphan.id), "a side whose chat was deleted opens no side")
+        XCTAssertFalse(model.canQuoteReply(orphan.id), "nor from a quoted reply")
+        XCTAssertTrue(model.canOpenSide(side.id), "a side whose chat is still there does, as before")
+        XCTAssertTrue(model.canOpenSide(fork.id), "and so does a chat forked from a reply, whose chat was deleted")
+
+        let refusal = "The chat this side was opened from was deleted, so it can't open sides of its own."
+        model.openSide(parentID: orphan.id)
+        XCTAssertEqual(model.error, refusal); XCTAssertTrue(model.sides.isEmpty)
+
+        model.error = nil
+        let view = SessionDisplay(id: orphan.id); model.displays[orphan.id] = view
+        view.draft = "/side what does this mean?"; view.directCommand = true
+        XCTAssertTrue(model.resolveLeadingCommand(view, steer: false))
+        XCTAssertEqual(model.error, refusal, "/side says why too"); XCTAssertTrue(model.sides.isEmpty)
+    }
+
     @MainActor func testEphemeralDraftsAndAnchorsNeverEnterSQLiteAndBringBackDoesNotSubmit() async throws {
         let root = try scratch()
         let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage())), parent = SessionDisplay(id: "main"), side = SessionDisplay(id: "side")

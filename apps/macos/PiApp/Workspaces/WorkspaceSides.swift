@@ -51,8 +51,17 @@ extension WorkspaceModel {
         hosts[workspaceID]?.isBusy = sides.values.contains { $0.workspaceID == workspaceID && !$0.kept && !$0.pending } || displays.values.contains { ($0.hasWork || $0.loading) && record($0.id)?.workspaceID == workspaceID }
     }
     func canOpenSide(_ id: String) -> Bool {
-        guard let parent = record(id) else { return false }
+        guard let parent = record(id), orphanedSideRefusal(id) == nil else { return false }
         return !parent.imported && parent.connectionTest != true && parent.workspaceID != WorkspaceRecord.scratchID
+    }
+    /// A saved side whose chat was deleted stays in the sidebar as a chat of
+    /// its own, and opens no side of its own (the owner's choice, 0.1.116).
+    /// A saved side is known by its journal, `side_‹id›.jsonl`: a chat forked
+    /// from a reply also names the chat it came from, and keeps its sides.
+    func orphanedSideRefusal(_ id: String) -> String? {
+        guard let chat = record(id), let parentID = chat.parentSessionID, record(parentID) == nil,
+              let path = chat.path, URL(fileURLWithPath: path).lastPathComponent.hasPrefix("side_") else { return nil }
+        return "The chat this side was opened from was deleted, so it can't open sides of its own."
     }
     func canQuoteReply(_ id: String) -> Bool {
         guard !installPreparing, canOpenSide(id), side(id) == nil, let parent = record(id),
@@ -83,6 +92,7 @@ extension WorkspaceModel {
         guard !installPreparing, let parentID = parentID ?? selectedID, let parent = record(parentID), !parent.imported else { error = "Continue an imported original as a separate chat before opening a side."; return }
         // A new side is listed under its chat, which unfolds to show it.
         quietSidebarReveal = []
+        if let refusal = orphanedSideRefusal(parentID) { error = refusal; return }
         guard canOpenSide(parentID) else { error = "Connection-test chats keep tools disabled and cannot open side chats."; return }
         guard side(parentID) == nil else { error = "Close this side panel before opening a side from its saved chat."; return }
         // Another side can open while one is shown: the shown side stays a
