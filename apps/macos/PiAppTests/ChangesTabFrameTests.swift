@@ -20,7 +20,7 @@ import AppKit
 final class ChangesTabFrameTests: GitPanelTestCase, SerialTestLane {
     static let changedFiles = 400
 
-    /// `a-first.swift`, a one-line change the sheet opens on; `b-long.swift`,
+    /// `a-first.swift`, a one-line change the tab opens on; `b-long.swift`,
     /// 5,000 lines with every one rewritten; four hundred Swift files with
     /// every third line changed. The history: the seed, twenty-eight notes
     /// and a commit that revised twenty-five of the files.
@@ -56,7 +56,7 @@ final class ChangesTabFrameTests: GitPanelTestCase, SerialTestLane {
         return root
     }
 
-    /// What one step cost: until the sheet showed what it was asked for, and
+    /// What one step cost: until the tab showed what it was asked for, and
     /// the main thread's work over that and a short settle after it.
     struct Step: CustomStringConvertible {
         var ready = 0.0, cpu = 0.0, longest = 0.0, cycles = 0, rows = 0
@@ -133,7 +133,7 @@ final class ChangesTabFrameTests: GitPanelTestCase, SerialTestLane {
         return result == 0 ? Double(usage.ri_phys_footprint) / 1_048_576 : 0
     }
 
-    /// Wide, as the sheet was: the list beside the diff.
+    /// Wide: the list beside the diff.
     @MainActor func testTheChangesTabOverABigRepository() async throws {
         try await overABigRepository(width: 1280, height: 820, label: "PERF changes tab")
     }
@@ -155,12 +155,12 @@ final class ChangesTabFrameTests: GitPanelTestCase, SerialTestLane {
         addTeardownBlock { @MainActor in harness.tearDown() }
         try await Task.sleep(for: .milliseconds(500))
         let window = harness.window
-        let sheet: () -> NSWindow? = { window }
+        let shownWindow: () -> NSWindow? = { window }
         let before = footprint()
 
         // Opened: the list of changes, and the first file's diff.
         var tab: ChangesTab?
-        let open = try await step("open", sheet, settle: 1.5, { tab = harness.open(root.path) }) {
+        let open = try await step("open", shownWindow, settle: 1.5, { tab = harness.open(root.path) }) {
             guard let tab, tab.hasController else { return false }
             return tab.controller.status.entries.count == Self.changedFiles + 2 && !tab.controller.diff.isEmpty && !tab.controller.diffLoading
         }
@@ -168,67 +168,66 @@ final class ChangesTabFrameTests: GitPanelTestCase, SerialTestLane {
         print("\(label): open \(open)")
 
         // The long file: 1,500 of its 10,000 rows until the whole diff is asked for.
-        let long = try await step("long", sheet, { controller.selection = GitController.Selection(path: "b-long.swift", staged: false) }) {
+        let long = try await step("long", shownWindow, { controller.selection = GitController.Selection(path: "b-long.swift", staged: false) }) {
             controller.diff.first?.path == "b-long.swift" && !controller.diffLoading
         }
         print("\(label): choose the long file \(long)")
         let diffScroll = try XCTUnwrap(diff(in: window), "The diff scrolls")
-        let sheetWindow = window
-        let first = try await scroll(diffScroll, in: sheetWindow, from: 0, through: 3_000)
+        let first = try await scroll(diffScroll, in: window, from: 0, through: 3_000)
         print(String(format: "%@: scrolling the long diff %.2f ms a step, worst %.1f ms, %d cycles, %d rows built", label, first.mean, first.worst, first.cycles, first.rows))
 
         // A file ticked and unticked twenty times.
-        let ticks = try await step("ticks", sheet, settle: 0.3, {
+        let ticks = try await step("ticks", shownWindow, settle: 0.3, {
             for index in 0..<20 {
                 if index.isMultiple(of: 2) { controller.checked.insert("a-first.swift") } else { controller.checked.remove("a-first.swift") }
-                sheetWindow.contentView?.layoutSubtreeIfNeeded(); sheetWindow.displayIfNeeded()
+                window.contentView?.layoutSubtreeIfNeeded(); window.displayIfNeeded()
             }
         }) { true }
         print("\(label): 20 ticks \(ticks)")
 
         // Typing a commit message.
-        let typing = try await step("typing", sheet, settle: 0.3, {
+        let typing = try await step("typing", shownWindow, settle: 0.3, {
             for character in "Rewrite the long file" {
                 controller.commitMessage.append(character)
-                sheetWindow.contentView?.layoutSubtreeIfNeeded(); sheetWindow.displayIfNeeded()
+                window.contentView?.layoutSubtreeIfNeeded(); window.displayIfNeeded()
             }
         }) { true }
         print("\(label): typing 21 characters \(typing)")
 
         // The whole diff.
-        let whole = try await step("whole", sheet, { controller.wholeDiffShown = GitController.diffIdentity(path: "b-long.swift", staged: false) }) { true }
+        let whole = try await step("whole", shownWindow, { controller.wholeDiffShown = GitController.diffIdentity(path: "b-long.swift", staged: false) }) { true }
         print("\(label): the whole long diff \(whole)")
-        let deep = try await scroll(diffScroll, in: sheetWindow, from: 60_000, through: 3_000)
+        let deep = try await scroll(diffScroll, in: window, from: 60_000, through: 3_000)
         print(String(format: "%@: scrolling deep in the whole diff %.2f ms a step, worst %.1f ms, %d cycles, %d rows built", label, deep.mean, deep.worst, deep.cycles, deep.rows))
         // The tabs glide for some 300 ms after the switch, and every frame of
-        // it laid the sheet out: the toolbar's fetch, pull and push symbols,
+        // it laid the panel out: the toolbar's fetch, pull and push symbols,
         // measured and not shown, were built afresh each time.
         RedrawCounter.reset(); RedrawCounter.recording = true
-        let split = try await step("split", sheet, { controller.splitDiff = true }) { true }
+        let split = try await step("split", shownWindow, { controller.splitDiff = true }) { true }
         let glide = RedrawCounter.counts; RedrawCounter.recording = false; RedrawCounter.reset()
         print("\(label): side by side \(split), panel parts drawn \(glide)")
         controller.splitDiff = false
         let withWhole = footprint()
 
         // Another file, then the history.
-        let other = try await step("other", sheet, { controller.selection = GitController.Selection(path: "Sources/Module0/File1.swift", staged: false) }) {
+        let other = try await step("other", shownWindow, { controller.selection = GitController.Selection(path: "Sources/Module0/File1.swift", staged: false) }) {
             controller.diff.first?.path == "Sources/Module0/File1.swift" && !controller.diffLoading
         }
         print("\(label): choose a short file \(other)")
-        let history = try await step("history", sheet, { controller.panel = .history }) { controller.commits.count == 30 }
+        let history = try await step("history", shownWindow, { controller.panel = .history }) { controller.commits.count == 30 }
         print("\(label): the history \(history)")
         let revised = try XCTUnwrap(controller.commits.first)
-        let medium = try await step("medium", sheet, { controller.selectedCommit = revised }) {
+        let medium = try await step("medium", shownWindow, { controller.selectedCommit = revised }) {
             controller.detail?.commit == revised && !controller.commitLoading && !controller.detailDiff.isEmpty
         }
         print("\(label): a commit of 25 files \(medium)")
         let seed = try XCTUnwrap(controller.commits.last)
-        let big = try await step("big", sheet, { controller.selectedCommit = seed }) { controller.detail?.commit == seed && !controller.commitLoading }
+        let big = try await step("big", shownWindow, { controller.selectedCommit = seed }) { controller.detail?.commit == seed && !controller.commitLoading }
         print("\(label): the seed commit's chips \(big) deferred \(controller.detailDiffDeferred) files \(controller.detail?.files.count ?? 0)")
-        let chip = try await step("chip", sheet, { controller.detailFile = "b-long.swift" }) { !controller.detailFileDiff.isEmpty && !controller.commitLoading }
+        let chip = try await step("chip", shownWindow, { controller.detailFile = "b-long.swift" }) { !controller.detailFileDiff.isEmpty && !controller.commitLoading }
         print("\(label): the long file in the seed commit \(chip)")
         let historyScroll = try XCTUnwrap(diff(in: window), "The commit's diff scrolls")
-        let embedded = try await scroll(historyScroll, in: sheetWindow, from: 0, through: 3_000)
+        let embedded = try await scroll(historyScroll, in: window, from: 0, through: 3_000)
         print(String(format: "%@: scrolling the commit's long file %.2f ms a step, worst %.1f ms, %d cycles, %d rows built", label, embedded.mean, embedded.worst, embedded.cycles, embedded.rows))
         let atHistory = footprint()
 
@@ -272,7 +271,7 @@ final class ChangesTabFrameTests: GitPanelTestCase, SerialTestLane {
 
     /// The tab as the reader opens it, from the workspace window, twice, on
     /// the project's own folder, where the app keeps its state as it runs.
-    /// The sheet it replaced said "Not a git repository" in its first frame,
+    /// The panel used to say "Not a git repository" in its first frame,
     /// in the moment before its first read; once the panel took that
     /// message's place, every update reported layout cycles until it closed:
     /// 44 for each opening and 8 for each closing.

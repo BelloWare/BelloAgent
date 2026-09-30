@@ -10,7 +10,7 @@ import AppKit
     public init() {}
 }
 
-/// State for the Changes sheet: which folder, its status, the selected file's
+/// State for the Changes panel: which folder, its status, the selected file's
 /// diff, the commit history and the selected commit. Reads run on GitService;
 /// stage, unstage and commit are the only writes.
 @MainActor public final class GitController: ObservableObject {
@@ -242,8 +242,8 @@ import AppKit
     /// Whether a panel over this controller is on screen, as the panel says
     /// when it comes and goes.
     ///
-    /// Shown for the first time, or again after `letGo()`, it reads as the
-    /// Changes sheet did when it opened: a spinner, and the first file
+    /// Shown for the first time, or again after `letGo()`, it reads with a
+    /// spinner, and the first file
     /// chosen. Shown again after being hidden, it reads what changed
     /// meanwhile quietly: the selection, the ticks, the history paged in and
     /// the commit being read stay as they were, and a commit's read that

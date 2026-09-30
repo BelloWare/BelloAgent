@@ -8,7 +8,7 @@ import AppKit
 /// it showed before the test returns. XCTest keeps whatever AppKit
 /// autoreleases until a test returns, and with the pointer over a hover
 /// region (every Pi button has one) in a key window that includes the sheet's
-/// hosting view: a Changes sheet closed with its Done button kept its views
+/// hosting view: a sheet closed with its Done button kept its views
 /// and its controller that long, and the checks that nothing keeps them failed
 /// now and then. The app itself lets go of them as the closing turn ends.
 /// Forcing it takes the app in front and the real pointer over the sheet,

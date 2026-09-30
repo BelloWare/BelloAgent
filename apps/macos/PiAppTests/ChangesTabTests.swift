@@ -5,7 +5,7 @@ import FileView
 @testable import PiApp
 @testable import GitView
 
-/// Changes as a tab, in place of the sheet: one tab a project, opened (or
+/// Changes as a tab: one tab a project, opened (or
 /// shown again, wherever it is) by ⇧⌘G and every Changes button, over the
 /// report too; moved between the pane and a window with its controller and
 /// the reader's place; brought back after a relaunch without reading until
@@ -63,6 +63,7 @@ final class ChangesTabTests: GitPanelTestCase {
         XCTAssertEqual(tab.title, "Changes · " + URL(fileURLWithPath: project.path).lastPathComponent)
         window.contentView?.layoutSubtreeIfNeeded()
         try await eventually("its panel, read") { tab.hasController && tab.controller.status.entries.count == 2 && !tab.controller.loading }
+        XCTAssertNil(window.attachedSheet, "Changes leaves the workspace available while its tab is open")
 
         model.showChanges(in: project.id)
         XCTAssertEqual(model.tabs.allTabs.count, 1, "Shown again, not opened twice")
@@ -73,6 +74,7 @@ final class ChangesTabTests: GitPanelTestCase {
         model.showChanges(in: project.id)
         XCTAssertEqual(model.page, .chats)
         XCTAssertTrue(model.tabs.pane.shownTab(sideAvailable: model.paneSideAvailable) === tab)
+        XCTAssertNil(window.attachedSheet, "Opening Changes over the report also uses the tab")
     }
 
     /// Moved to a window and back, the tab keeps its controller and the

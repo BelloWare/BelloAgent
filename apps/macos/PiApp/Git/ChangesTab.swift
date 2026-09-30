@@ -3,7 +3,7 @@ import SwiftUI
 import GitView
 
 // A project's changes and history, as a tab beside the chats or in a window
-// of its own (`TabHost`), in place of the Changes sheet. One tab a project:
+// of its own (`TabHost`). One tab a project:
 // the panel reads the project's folders, and its folder menu chooses among
 // them. Its controller is made the first time the tab is shown, and reads
 // and watches only while the panel is on screen (`GitController.setShown`).

@@ -41,8 +41,8 @@ extension WorkspaceModel {
     }
     /// Whether a window's keyboard focus is in editable text inside a tab's
     /// content (`TabContentContainer`), such as a Changes tab's commit
-    /// message, where ⌘↩, ⌘. and ⌘F are the text's and not the chat's: the
-    /// Changes sheet kept them from the chat while it was up.
+    /// message, where the current shortcut routing keeps ⌘↩, ⌘. and ⌘F
+    /// from acting on the chat.
     static func typingInATab(in window: NSWindow? = NSApp.keyWindow) -> Bool {
         guard let text = window?.firstResponder as? NSTextView, text.isEditable else { return false }
         var view: NSView? = text

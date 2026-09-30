@@ -17,7 +17,7 @@ final class UIScreenshotTests: XCTestCase {
         let gallery = folder.appendingPathComponent("screenshots", isDirectory: true)
         try FileManager.default.createDirectory(at: gallery, withIntermediateDirectories: true)
         try Data("Synthetic UI fixture file: read-tool round trip verified.\n".utf8).write(to: folder.appendingPathComponent("README.md"))
-        // A throwaway repository gives the Changes sheet a branch, history and a working-tree change to show.
+        // A throwaway repository gives the Changes tab a branch, history and a working-tree change to show.
         func git(_ arguments: [String]) throws {
             let process = Process(); process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
             process.arguments = ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.com", "-c", "commit.gpgsign=false"] + arguments

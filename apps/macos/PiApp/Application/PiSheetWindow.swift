@@ -314,7 +314,7 @@ final class PiSheetWindowAnchorView: NSView {
         // XCTest keeps whatever AppKit autoreleases until the test returns,
         // and a sheet closed with the pointer over a hover region (every Pi
         // button has one), the app in front, left its hosting view held that
-        // long, and a Changes sheet's controller with it. In the app nothing
+        // long, and its content's controller with it. In the app nothing
         // else holds the view once the closing turn is over.
         host.rootView = PiSheetWindowRoot(content: AnyView(EmptyView()), settings: settings, close: {})
         host.needsLayout = true
