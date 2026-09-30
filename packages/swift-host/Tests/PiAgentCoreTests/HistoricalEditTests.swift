@@ -110,11 +110,8 @@ final class HistoricalEditTests: XCTestCase {
     func testCompactedForkEditsRetainedTargetAgainstActualGatewayAndReopensWithoutRepeatingEffects() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         var repo = URL(fileURLWithPath: #filePath); for _ in 0..<5 { repo.deleteLastPathComponent() }
-        let server = Process(); server.executableURL = URL(fileURLWithPath: "/usr/bin/python3"); server.arguments = [repo.appendingPathComponent("fixtures/native/edit_gateway.py").path, root.path]
-        server.standardOutput = FileHandle.nullDevice; server.standardError = FileHandle.nullDevice; try server.run()
-        defer { stopFixtureProcess(server) }
-        try await eventually { FileManager.default.fileExists(atPath: root.appendingPathComponent("ready.json").path) }
-        let port = try XCTUnwrap(JSON.parse(Data(contentsOf: root.appendingPathComponent("ready.json")))["port"].int)
+        let gateway = try await PythonGateway.start(script: repo.appendingPathComponent("fixtures/native/edit_gateway.py"), root: root); defer { gateway.stop() }
+        let port = gateway.port
         var raw = try fixtureProfile().raw; raw["baseUrl"] = JSON("http://127.0.0.1:\(port)/v1")
         raw["routing"] = ["replayPolicy":"pinned","expectedModel":"fixture-fixed","replayContract":"Local deterministic fixture fixes compatible provider items"]
         let profile = try Profile(raw), state = root.appendingPathComponent("state"), resources = Resources(cwd: root, home: root), traces = TraceStore(), tools = EditMutationTools(root)

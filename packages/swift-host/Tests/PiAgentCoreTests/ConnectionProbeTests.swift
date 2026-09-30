@@ -65,18 +65,8 @@ final class ConnectionProbeTests: XCTestCase {
         // Deliberately put instructions alongside the helper's workspace. A
         // connection probe must never load these into its small request.
         try Data("PRIVATE WORKSPACE INSTRUCTIONS MUST NEVER BE SENT".utf8).write(to: scratch.appendingPathComponent("AGENTS.md"))
-        let script = scratch.appendingPathComponent("gateway.py")
-        try Data(Self.gatewayScript.utf8).write(to: script)
-        let server = Process()
-        server.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-        server.arguments = [script.path, scratch.path]
-        server.standardOutput = FileHandle.nullDevice; server.standardError = FileHandle.nullDevice
-        try server.run()
-        defer { stopFixtureProcess(server) }
-        let ready = scratch.appendingPathComponent("ready.json")
-        try await eventually { FileManager.default.fileExists(atPath: ready.path) }
-        let port = try JSON.parse(Data(contentsOf: ready))["port"].int!
-        let base = "http://127.0.0.1:\(port)"
+        let gateway = try await PythonGateway.start(source: Self.gatewayScript, root: scratch); defer { gateway.stop() }
+        let base = gateway.base
         let service = NativeHostService(emit: { _ in })
         let journal = scratch.appendingPathComponent("Sessions")
         _ = try await service.command("workspace.open", sessionID: nil,

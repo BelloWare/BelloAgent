@@ -132,13 +132,8 @@ server.serve_forever()
     func testHTTPRejectionsNeverRanAndAForgottenSessionIsSetUpAgain() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let script = root.appendingPathComponent("mcp_http_fixture.py"); try Data(Self.httpServer.utf8).write(to: script)
-        let server = Process()
-        server.executableURL = URL(fileURLWithPath: "/usr/bin/python3"); server.arguments = [script.path, root.path]
-        server.standardOutput = FileHandle.nullDevice; server.standardError = FileHandle.nullDevice
-        try server.run(); defer { stopFixtureProcess(server) }
-        let ready = root.appendingPathComponent("ready.json")
-        try await eventually { FileManager.default.fileExists(atPath: ready.path) }
-        let port = try XCTUnwrap(JSON.parse(Data(contentsOf: ready))["port"].int)
+        let gateway = try await PythonGateway.start(script: script, root: root); defer { gateway.stop() }
+        let port = gateway.port
         let marker = root.appendingPathComponent("unknown.json"), manager = MCPManager(cwd: root, outcomeMarker: marker)
         try await manager.configure(["servers": ["fixture": ["url": JSON("http://127.0.0.1:\(port)/mcp")]]])
         for status in [400, 403, 429] {

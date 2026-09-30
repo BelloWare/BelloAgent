@@ -71,14 +71,8 @@ server.serve_forever()
     /// provider path with its own trace store.
     private func attempts(_ models: [String]) async throws -> [String: JSON] {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
-        let script = root.appendingPathComponent("gateway.py"); try Data(Self.gatewayScript.utf8).write(to: script)
-        let server = Process()
-        server.executableURL = URL(fileURLWithPath: "/usr/bin/python3"); server.arguments = [script.path, root.path]
-        server.standardOutput = FileHandle.nullDevice; server.standardError = FileHandle.nullDevice
-        try server.run(); defer { stopFixtureProcess(server) }
-        let ready = root.appendingPathComponent("ready.json")
-        try await eventually { FileManager.default.fileExists(atPath: ready.path) }
-        let port = try XCTUnwrap(JSON.parse(Data(contentsOf: ready))["port"].int)
+        let gateway = try await PythonGateway.start(source: Self.gatewayScript, root: root); defer { gateway.stop() }
+        let port = gateway.port
         let base = try fixtureProfile().raw
         return try await withThrowingTaskGroup(of: (String, JSON).self) { group in
             for model in models {
