@@ -9,7 +9,7 @@ import XCTest
 final class ForkReplayHandoffTests: XCTestCase {
     private struct Chat {
         let root: URL, state: URL, profile: Profile, resources: Resources, traces: TraceStore
-        func session(_ id: String, replies: [ModelReply] = [], resume: String? = nil, prepared: JournalReplay? = nil) throws -> AgentSession {
+        func session(_ id: String, replies: [ModelReply] = [], resume: String? = nil, prepared: JournalReplayConsumer? = nil) throws -> AgentSession {
             // Everything but the latest turn is summarized when compacted.
             var policy = CompactionPolicy(); policy.keepRecentTokens = 1
             return try AgentSession(id: id, profile: profile, apiKey: "fixture", cwd: root, directory: state, readOnly: false, resources: resources,
@@ -109,7 +109,8 @@ final class ForkReplayHandoffTests: XCTestCase {
         let found = await source.history.first { $0.role == "assistant" && $0.text == "answer three" }?.id
         let reply = try XCTUnwrap(found)
         for (id, point) in [("whole", nil), ("at-reply", reply)] as [(String, String?)] {
-            let (result, made) = try await source.forked(to: id, at: point)
+            let (result, replay) = try await source.forked(to: id, at: point)
+            let made = try replay.finished()
             let path = try XCTUnwrap(result["path"].text)
             // Made as it was written: what a replay of the file gives.
             assertSame(made, try fullReplay(chat, id: id, path: path), id)
@@ -124,7 +125,7 @@ final class ForkReplayHandoffTests: XCTestCase {
             let openedSnapshot = await opened.snapshot(), openedContext = await opened.context.map(\.id)
             await opened.close()
             // Opened with it, the fork is the chat an open from the file is.
-            let handed = try chat.session(id, resume: path, prepared: made)
+            let handed = try chat.session(id, resume: path, prepared: replay)
             XCTAssertEqual(JournalCheckpoint.read(for: url), made.captured, "\(id): opened with the replay, it writes the same metadata file")
             let handedSnapshot = await handed.snapshot(), handedContext = await handed.context.map(\.id)
             XCTAssertEqual(handedSnapshot["messages"], openedSnapshot["messages"], "\(id): rows")

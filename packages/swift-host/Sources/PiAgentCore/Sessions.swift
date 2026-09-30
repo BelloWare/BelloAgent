@@ -227,15 +227,19 @@ public actor AgentSession {
     /// open (`refreshCheckpoint`).
     var liveStateSource: StateSource?
     var spansScannedTo: UInt64 = 0
+    /// The replay of this chat's journal as written, apart from the live
+    /// state a run keeps: where the open's replay stopped, taken on to the
+    /// journal's end when asked for (`durableReplay`).
+    var durable: JournalReplayConsumer?
     /// Where each loaded row's content is in the journal, for the next
     /// metadata file (`JournalCheckpoint`).
     var rowSpans: [String: JournalCheckpoint.Row] = [:]
     public init(id: String, profile: Profile, apiKey: String, cwd: URL, directory: URL, readOnly: Bool, resources: Resources, client: any ModelClient, tools: any ToolExecuting, traces: TraceStore, editingGate: AsyncGate = AsyncGate(), resumePath: String? = nil, seed: [ChatMessage]? = nil, parent: JSON = .null, autoCompaction: Bool = true, titleTask: Bool = false, utilityPurpose: String = "title", unknownToolOutcomes: Bool = true, compactionPolicy: CompactionPolicy = CompactionPolicy(), displayClock: @escaping @Sendable () -> Double = { ProcessInfo.processInfo.systemUptime * 1000 }, beforeJournalAppend: @escaping @Sendable (JSON) throws -> Void = { _ in }, beforeJournalSynchronize: @escaping @Sendable () throws -> Void = {}, changed: @escaping @Sendable (String, Int) -> Void = {_,_ in}) throws {
         try self.init(id:id,profile:profile,apiKey:apiKey,cwd:cwd,directory:directory,readOnly:readOnly,resources:resources,client:client,tools:tools,traces:traces,editingGate:editingGate,resumePath:resumePath,prepared:nil,seed:seed,parent:parent,autoCompaction:autoCompaction,titleTask:titleTask,utilityPurpose:utilityPurpose,unknownToolOutcomes:unknownToolOutcomes,compactionPolicy:compactionPolicy,displayClock:displayClock,beforeJournalAppend:beforeJournalAppend,beforeJournalSynchronize:beforeJournalSynchronize,changed:changed)
     }
-    /// `prepared`: what the journal at `resumePath` replays to, made as a fork
+    /// `prepared`: the replay of the journal at `resumePath`, made as a fork
     /// wrote it (`forked`); used only while it is the whole journal as it is.
-    init(id: String, profile: Profile, apiKey: String, cwd: URL, directory: URL, readOnly: Bool, resources: Resources, client: any ModelClient, tools: any ToolExecuting, traces: TraceStore, editingGate: AsyncGate = AsyncGate(), resumePath: String? = nil, prepared: JournalReplay?, seed: [ChatMessage]? = nil, parent: JSON = .null, autoCompaction: Bool = true, titleTask: Bool = false, utilityPurpose: String = "title", unknownToolOutcomes: Bool = true, compactionPolicy: CompactionPolicy = CompactionPolicy(), displayClock: @escaping @Sendable () -> Double = { ProcessInfo.processInfo.systemUptime * 1000 }, beforeJournalAppend: @escaping @Sendable (JSON) throws -> Void = { _ in }, beforeJournalSynchronize: @escaping @Sendable () throws -> Void = {}, changed: @escaping @Sendable (String, Int) -> Void = {_,_ in}) throws {
+    init(id: String, profile: Profile, apiKey: String, cwd: URL, directory: URL, readOnly: Bool, resources: Resources, client: any ModelClient, tools: any ToolExecuting, traces: TraceStore, editingGate: AsyncGate = AsyncGate(), resumePath: String? = nil, prepared: JournalReplayConsumer?, seed: [ChatMessage]? = nil, parent: JSON = .null, autoCompaction: Bool = true, titleTask: Bool = false, utilityPurpose: String = "title", unknownToolOutcomes: Bool = true, compactionPolicy: CompactionPolicy = CompactionPolicy(), displayClock: @escaping @Sendable () -> Double = { ProcessInfo.processInfo.systemUptime * 1000 }, beforeJournalAppend: @escaping @Sendable (JSON) throws -> Void = { _ in }, beforeJournalSynchronize: @escaping @Sendable () throws -> Void = {}, changed: @escaping @Sendable (String, Int) -> Void = {_,_ in}) throws {
         self.id=id; self.profile=profile; self.apiKey=apiKey; self.cwd=cwd; self.directory=directory; self.readOnly=readOnly; self.resources=resources; self.client=client; self.tools=tools; self.traces=traces; self.editingGate=editingGate; self.changed=changed; self.autoCompaction=autoCompaction; self.titleTask=titleTask; self.utilityPurpose=utilityPurpose; self.reportsUnknownToolOutcomes=unknownToolOutcomes; self.displayClock=displayClock; self.compactionPolicy=compactionPolicy
         if let seed {
             history=seed; context=seed; boundary=seed; visible=seed; toolHistory=ToolHistoryIndex(seed); parentInfo=parent; ephemeral=true
@@ -250,9 +254,10 @@ public actor AgentSession {
         // A fork's journal comes with what it replays to, made as it was
         // written (`forked`): used when it is the whole of this journal as it
         // is now, and never a replay resumed from a checkpoint.
-        let replayed: JournalReplay
-        if let prepared, resumePath != nil, !prepared.resumed, prepared.coveredBytes == opened.size { replayed=prepared }
-        else { replayed=try Self.replay(opened, url: url, id: id, binding: profile.binding, spendTracked: resumePath == nil, resume: true) }
+        let consumer: JournalReplayConsumer
+        if let prepared, resumePath != nil, !prepared.r.resumed, prepared.r.coveredBytes == opened.size { consumer=prepared }
+        else { consumer=try Self.replayConsumer(opened, url: url, id: id, binding: profile.binding, spendTracked: resumePath == nil, resume: true) }
+        let replayed=try consumer.finished(); durable=consumer
         history=replayed.history; visible=replayed.visible; context=replayed.context; versions=replayed.versions
         spend=replayed.spend; spendTracked=replayed.spendTracked
         assistantMessageCount=replayed.assistantMessageCount; latestAssistantMessageID=replayed.latestAssistantMessageID

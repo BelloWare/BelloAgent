@@ -20,11 +20,11 @@ extension AgentSession {
     /// compactions in effect then are the ones it has. A reply a later
     /// compaction summarized comes back with its whole context.
     public func fork(to newID: String, at messageID: String? = nil) throws -> JSON { try forked(to: newID, at: messageID).result }
-    /// The fork, and what its journal replays to, made as the journal is
-    /// written: the state the fork's session opens with
-    /// (`AgentSession(prepared:)`), which then does not read the journal
-    /// again. That open writes the metadata file, as a first open does.
-    func forked(to newID: String, at messageID: String? = nil) throws -> (result: JSON, replay: JournalReplay) {
+    /// The fork, and the replay of its journal, made as the journal is
+    /// written: the fork's session opens with it (`AgentSession(prepared:)`)
+    /// and goes on from it, not reading the journal again. That open writes
+    /// the metadata file, as a first open does.
+    func forked(to newID: String, at messageID: String? = nil) throws -> (result: JSON, replay: JournalReplayConsumer) {
         guard !closed, let journal, !ephemeral else { throw AgentError("session_unavailable", "Save this session before forking its context") }
         // A chat opened from its metadata file has only its latest rows. A
         // fork of the whole chat replays everything it copies, which is the
@@ -59,7 +59,7 @@ extension AgentSession {
     /// also what the copied records replay to, the chat's whole history, and
     /// where each record is in this chat's journal, by its offset in the fork's.
     private func forkCopy(to newID: String, at messageID: String?, journal: SessionJournal, hydrating: Bool)
-        throws -> (result: JSON, replay: JournalReplay, copied: (history: JournalReplay, places: [UInt64: (offset: UInt64, length: Int)])?) {
+        throws -> (result: JSON, replay: JournalReplayConsumer, copied: (history: JournalReplay, places: [UInt64: (offset: UInt64, length: Int)])?) {
         _ = try identity(JSON(newID))
         guard newID != id else { throw AgentError("session_conflict", "A fork needs a new session identity") }
         let temporary=directory.appendingPathComponent(".fork-\(UUID().uuidString).jsonl")
@@ -89,7 +89,7 @@ extension AgentSession {
             origin["contextRevision"]=JSON(sha256(Data(contextIDs.joined(separator:"\n").utf8)))
             origin["omittedIncompleteEntries"]=0
         }
-        let replay: JournalReplay
+        let replay: JournalReplayConsumer
         var copiedHistory: JournalReplay?, sourcePlaces: [UInt64: (offset: UInt64, length: Int)] = [:]
         do {
             let prepared=try SessionJournal(url:temporary,id:newID,cwd:cwd,binding:profile.binding,create:true)
@@ -156,7 +156,7 @@ extension AgentSession {
             try replayWritten()
             try prepared.append(["type":"custom","customType":JSON(JournalRecordKind.state),"data":["active":false,"queue":[],"steering":[],"commands":[],"queuePaused":false,"steeringMode":JSON(steeringMode),"followUpMode":JSON(followUpMode)]],flush:false)
             try replayWritten()
-            replay=try consumer.finished()
+            _=try consumer.finished(); replay=consumer
             try prepared.publish(to:destination)
         } catch { try? FileManager.default.removeItem(at:temporary); try? FileManager.default.removeItem(atPath:temporary.path+".lock"); throw error }
         return (["accepted":true,"sessionId":JSON(newID),"path":JSON(destination.path),"origin":origin], replay, copiedHistory.map { ($0, sourcePlaces) })

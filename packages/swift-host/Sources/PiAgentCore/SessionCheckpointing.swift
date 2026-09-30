@@ -121,7 +121,8 @@ extension AgentSession {
     /// (`loadOlderRows`).
     func ensureFullHistory() throws {
         guard partialHistory, let journal else { return }
-        adoptFullHistory(try Self.replay(journal, url: journal.url, id: id, binding: profile.binding, spendTracked: spendTracked, resume: false))
+        let whole=try Self.replayConsumer(journal, url: journal.url, id: id, binding: profile.binding, spendTracked: spendTracked, resume: false)
+        adoptFullHistory(try whole.finished()); durable=whole
     }
     /// The whole of the chat's rows, as a replay of its whole journal made
     /// them (`ensureFullHistory`, or the replay a fork of the whole chat makes
@@ -138,6 +139,9 @@ extension AgentSession {
         recentTaskPresentations = mergedTasks(replayed.recentTaskPresentations, shown: Set(visible.map(\.id)))
         toolHistory = ToolHistoryIndex(history)
         olderRows = 0; partialHistory = false; checkpointLineage = nil; cachedPresentationTimeline = nil; olderIndex = nil
+        // The replay kept from the open held only the rows it loaded; one of
+        // the whole journal is made when next asked for (`durableReplay`).
+        durable = nil
         spansScannedTo = journal.size
         invalidateDisplay(allRows: true)
     }

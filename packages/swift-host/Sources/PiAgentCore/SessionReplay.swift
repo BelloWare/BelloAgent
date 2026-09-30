@@ -60,6 +60,10 @@ struct JournalReplayConsumer {
     // (`CommandReceipts`). A checkpoint carries them as they stood there.
     private var receiptsBase = CommandReceipts.Base.none, receiptChanges: [Data] = []
     private var capturedReceipts: (base: CommandReceipts.Base, changes: [Data])?
+    // For a replay resumed from a checkpoint: the newest edit marker among the
+    // shown rows it did not load, when the checkpoint says (`older`).
+    private enum Older { case none, marker(String), unknown }
+    private var older = Older.none
 
     /// `header` and `marker` are the journal's, as a checkpoint names them;
     /// `spendTracked` is what a journal with no cost record counts as.
@@ -70,7 +74,11 @@ struct JournalReplayConsumer {
     /// Starts from the metadata file's checkpoint: the rows it names, then
     /// only the records after it. Rows shown before them load when asked for.
     mutating func resume(from checkpoint: JournalCheckpoint, loaded: (rows: [ChatMessage], context: [ChatMessage], state: JSON?, stateLine: Data?)) {
-        r.resumed=true
+        r.resumed=true; r.coveredBytes=checkpoint.start
+        // The checkpoint's lineage is the newest marker among all its shown
+        // rows. One not among the rows it names is among those not loaded, and
+        // the newest there; one among them leaves the newest before it unknown.
+        if let lineage=checkpoint.lineage { older = checkpoint.rows.contains { $0.id == lineage } ? .unknown : .marker(lineage) }
         r.history=loaded.rows; r.visible=loaded.rows; r.context=loaded.context
         for (row, message) in zip(checkpoint.rows, loaded.rows) {
             r.rowSpans[row.id]=row
@@ -182,8 +190,26 @@ struct JournalReplayConsumer {
                                                visible:r.visible,context:r.context,spans:r.rowSpans,state:stateSource,assistantMessageCount:r.assistantMessageCount,
                                                latestAssistantMessageID:r.latestAssistantMessageID,versions:r.versions.ledger,tasks:r.recentTaskPresentations,helper:helper)
             capturedReceipts = (receiptsBase, receiptChanges)
+            // Resumed, the rows it did not load come before the rows it holds:
+            // they count, and their newest marker is the lineage when none
+            // held is one. A lineage it cannot know leaves no checkpoint.
+            if r.resumed, var captured=r.captured {
+                captured.rowsBefore += r.olderRows
+                if captured.lineage == nil {
+                    switch older {
+                    case .none: break
+                    case .marker(let lineage): captured.lineage = lineage
+                    case .unknown: r.captured = nil; capturedReceipts = nil; return
+                    }
+                }
+                r.captured = captured
+            }
         }
     }
+
+    /// Starts past the bytes the reader has already read (the session header),
+    /// for a replay that has consumed nothing yet.
+    mutating func starts(at offset: UInt64) { if r.coveredBytes < offset { r.coveredBytes = offset } }
 
     /// What the records so far replay to. The consumer can go on after it.
     func finished() throws -> JournalReplay {
@@ -220,6 +246,11 @@ extension AgentSession {
     /// `resume` false replays the whole journal whatever its metadata file
     /// says. `spendTracked` is what a journal with no cost record counts as.
     static func replay(_ opened: SessionJournal, url: URL, id: String, binding: JSON, spendTracked: Bool, resume: Bool) throws -> JournalReplay {
+        try replayConsumer(opened, url: url, id: id, binding: binding, spendTracked: spendTracked, resume: resume).finished()
+    }
+    /// The replay itself, at the journal's end: it can go on with the records
+    /// the journal gets next (`durableReplay`).
+    static func replayConsumer(_ opened: SessionJournal, url: URL, id: String, binding: JSON, spendTracked: Bool, resume: Bool) throws -> JournalReplayConsumer {
         var resumeFrom: (checkpoint: JournalCheckpoint, loaded: (rows: [ChatMessage], context: [ChatMessage], state: JSON?, stateLine: Data?))?
         if resume, let checkpoint=opened.resumedFrom, let loaded=Self.loadCheckpoint(checkpoint, url: url) { resumeFrom=(checkpoint, loaded) }
         else if resume, opened.resumedFrom != nil { try opened.checkWhole(id: id, binding: binding) }
@@ -230,6 +261,7 @@ extension AgentSession {
             replay=try opened.recordReader(from: resumeFrom.checkpoint.start)
         } else {
             replay=try opened.recordReader()
+            consumer.starts(at: replay.completeBytes)
         }
         while true {
             let lineStart=replay.completeBytes
@@ -237,7 +269,7 @@ extension AgentSession {
             if line.isEmpty { continue }
             try consumer.consume(line, at: lineStart)
         }
-        return try consumer.finished()
+        return consumer
     }
     /// A progress row the journal holds no terminal receipt for, as a replay
     /// leaves it: interrupted, with the gap said. False for any other row.

@@ -189,7 +189,7 @@ public actor NativeHostService {
     /// A chat's runtime, built off this actor, which every other chat's
     /// commands go through: opening a chat or a fork parses and replays its
     /// whole journal. (A side starts from its parent's context instead.)
-    private func makeSession(_ id: String, profile: Profile, apiKey: String, readOnly: Bool, resources: Resources, tools: any ToolExecuting, resumePath: String? = nil, prepared: JournalReplay? = nil, seed: [ChatMessage]? = nil, parent: JSON = .null, titleTask: Bool = false, utilityPurpose: String = "title") async throws -> AgentSession {
+    private func makeSession(_ id: String, profile: Profile, apiKey: String, readOnly: Bool, resources: Resources, tools: any ToolExecuting, resumePath: String? = nil, prepared: JournalReplayConsumer? = nil, seed: [ChatMessage]? = nil, parent: JSON = .null, titleTask: Bool = false, utilityPurpose: String = "title") async throws -> AgentSession {
         guard let cwd, let directory else { throw AgentError("workspace_required", "Open a workspace first") }
         let client=ProviderClient(traces:traces), traces=traces, gate=editingGate, outcomes=unknownToolOutcomes, changed=notification()
         return try await Task.detached(priority:.userInitiated) {
