@@ -277,6 +277,16 @@ final class SidebarInteractionTests: XCTestCase {
         fixture.model.clearSessionMarks()
         try press(at: CGPoint(x: controls.maxX - 8, y: controls.midY), in: parent, fixture: fixture, modifiers: .command)
         XCTAssertTrue(fixture.model.markedSessionIDs.isEmpty, "The chevron is the row's own button, not a press on the row")
+        // And the chevron does its job for a chat that is not open: such a
+        // row was drawn without the chevron's action, so its sides could not
+        // be folded until the chat was opened (since 0.1.100). Pressed again
+        // it unfolds them. Command, as above: the test app is not in front,
+        // and a plain click on a window in the background only brings it
+        // forward, while a Command-click acts on it.
+        XCTAssertEqual(fixture.model.collapsedSidebarSides, ["parent"], "The chevron folds the sides of a chat that is not open")
+        try press(at: CGPoint(x: controls.maxX - 8, y: controls.midY), in: parent, fixture: fixture, modifiers: .command)
+        XCTAssertTrue(fixture.model.collapsedSidebarSides.isEmpty, "and unfolds them again")
+        XCTAssertTrue(fixture.model.markedSessionIDs.isEmpty)
 
         // The body of that same row, a few points to the left of its buttons, is.
         let folded = try XCTUnwrap(surfaces(fixture.hosted).max { ($0.controls.first?.width ?? 0) < ($1.controls.first?.width ?? 0) })
