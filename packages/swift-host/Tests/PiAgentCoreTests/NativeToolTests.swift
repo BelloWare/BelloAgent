@@ -20,6 +20,45 @@ final class NativeToolTests: XCTestCase {
         let shell=try await tools.invoke(ToolCall(id:"b",name:"bash",arguments:["command":"printf hello; printf error >&2","timeout":2]),readOnly:false)
         XCTAssertTrue(shell.encoded().contains("hello"));XCTAssertTrue(shell.encoded().contains("error"))
     }
+    /// For the app alone: a read names the file it read, resolved as it was
+    /// read; a write or an edit of a file that was there says the first line
+    /// it changed, lines ending as the app's viewer ends them. The model's
+    /// text is as it was.
+    func testFileToolsNameTheirFileAndWhereTheyChangedIt() async throws {
+        let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
+        let tools=NativeTools(cwd:root,outputs:root.appendingPathComponent("out"),mcp:MCPManager(cwd:root))
+        let file=root.resolvingSymlinksInPath().appendingPathComponent("notes.txt").path
+        func call(_ name: String, _ arguments: JSON) async throws -> JSON {
+            try await tools.invoke(ToolCall(id:UUID().uuidString,name:name,arguments:arguments),readOnly:false)
+        }
+        let created=try await call("write",["path":"notes.txt","content":"one\ntwo\nthree"])
+        XCTAssertTrue(created["stats"]["line"].isNull, "a new file is shown from its start")
+        let edited=try await call("edit",["path":"notes.txt","oldText":"three","newText":"3"])
+        XCTAssertEqual(edited["stats"]["line"].int, 3)
+        XCTAssertEqual(edited["content"].list.first?["text"].text, "Edited \(file) (+1 -1)", "the model's text is as it was")
+        let unchanged=try await call("write",["path":"notes.txt","content":"one\ntwo\n3"])
+        XCTAssertTrue(unchanged["stats"]["line"].isNull, "nothing changed")
+        let inserted=try await call("edit",["path":"notes.txt","oldText":"two\n","newText":"two\nand a half\n"])
+        XCTAssertEqual(inserted["stats"]["line"].int, 3, "an insertion is where it went")
+        XCTAssertEqual(inserted["stats"]["removed"].int, 0)
+        _ = try await call("write",["path":"notes.txt","content":"x\r\ny\r\nz"])
+        let crlf=try await call("edit",["path":"notes.txt","oldText":"z","newText":"Z"])
+        XCTAssertEqual(crlf["stats"]["line"].int, 3, "\\r\\n ends one line")
+        _ = try await call("write",["path":"notes.txt","content":"x\ry\rz"])
+        let cr=try await call("edit",["path":"notes.txt","oldText":"z","newText":"Z"])
+        XCTAssertEqual(cr["stats"]["line"].int, 3, "\\r ends a line")
+        let first=try await call("edit",["path":"notes.txt","oldText":"x","newText":"X"])
+        XCTAssertEqual(first["stats"]["line"].int, 1)
+        let read=try await tools.invoke(ToolCall(id:"r",name:"read",arguments:["path":"notes.txt"]),readOnly:true)
+        XCTAssertEqual(read["stats"]["path"].text, file)
+        XCTAssertTrue(read["stats"]["line"].isNull)
+        XCTAssertEqual(firstChangedLine("a\r\nb", "a\r\nc"), 2)
+        XCTAssertEqual(firstChangedLine("a\r\nb", "a\rxb"), 2)
+        XCTAssertEqual(firstChangedLine("a\r", "a\rb"), 2)
+        XCTAssertEqual(firstChangedLine("", "a"), 1)
+        XCTAssertNil(firstChangedLine("same", "same"))
+    }
+
     func testShellTimeoutTerminatesOrphanHoldingPipes() async throws {
         let folder=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at:folder,withIntermediateDirectories:true)

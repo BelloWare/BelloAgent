@@ -14,6 +14,22 @@ func lineDiffStats(_ old: String, _ new: String) -> (added: Int, removed: Int) {
     var suffix = 0; while suffix < a.count - prefix, suffix < b.count - prefix, a[a.count - 1 - suffix] == b[b.count - 1 - suffix] { suffix += 1 }
     return (b.count - prefix - suffix, a.count - prefix - suffix)
 }
+/// Where a write or an edit first changed a file, for the app to show it: the
+/// 1-based line holding the first byte that differs, lines ending at "\n",
+/// "\r\n" or "\r" as the app's file viewer ends them; nil when nothing
+/// changed. Only the app reads it: the model's result text is as before.
+func firstChangedLine(_ old: String, _ new: String) -> Int? {
+    let a = Array(old.utf8), b = Array(new.utf8)
+    var at = 0
+    while at < a.count, at < b.count, a[at] == b[at] { at += 1 }
+    guard at < a.count || at < b.count else { return nil }
+    var line = 1
+    for index in 0..<at {
+        // "\r\n" ends one line; a "\r" the common part ends with ends one too.
+        if a[index] == 0x0A || (a[index] == 0x0D && (index + 1 >= at || a[index + 1] != 0x0A)) { line += 1 }
+    }
+    return line
+}
 func objectSchema(_ properties: JSON, required: [String]) -> JSON { ["type":"object", "properties": properties, "required": .array(required.map { JSON($0) }), "additionalProperties":false] }
 
 /// Output is drained on both pipes even after its retention cap is reached.
@@ -248,6 +264,9 @@ public actor NativeTools: ToolExecuting {
             let stats=lineDiffStats(previous,value)
             var result=resultText("\(call.name == "edit" ? "Edited" : "Wrote") \(file.path) (+\(stats.added) -\(stats.removed))")
             result["stats"]=["path":JSON(file.path),"added":JSON(stats.added),"removed":JSON(stats.removed)]
+            // Where it changed, for a file that was there before: a new file
+            // is shown from its start.
+            if attributes != nil, let line=firstChangedLine(previous,value) { result["stats"]["line"]=JSON(line) }
             return result
         default: throw AgentError("tool_unavailable", "Unsupported tool")
         }
@@ -280,16 +299,22 @@ private struct FileToolContext: Sendable {
                 switch PiImage.process(data, mimeType:mimeType) {
                 case .success(let image):
                     let note=(["Read image file [\(image.mimeType)]"]+image.hints).joined(separator:"\n")
-                    return ["content":.array([textBlock(note),["type":"image","data":JSON(image.data),"mimeType":JSON(image.mimeType)]]),"isError":false]
+                    return ["content":.array([textBlock(note),["type":"image","data":JSON(image.data),"mimeType":JSON(image.mimeType)]]),"isError":false,"stats":["path":JSON(file.path)]]
                 case .failure(let failure):
-                    return resultText("Read image file [\(mimeType)]\n"+failure.message)
+                    var result=resultText("Read image file [\(mimeType)]\n"+failure.message)
+                    result["stats"]=["path":JSON(file.path)]
+                    return result
                 }
             }
             guard let text=String(data:data,encoding:.utf8) else { throw AgentError("binary_file", "read accepts UTF-8 text and images (jpg, png, gif, webp, bmp); other binary contents are not decoded") }
             let offset=try boundedInt(p["offset"],fallback:1,maximum:10_000_000), count=try boundedInt(p["limit"],fallback:2000,maximum:10_000)
             guard offset > 0, count > 0 else { throw AgentError("tool_arguments", "Line offset and limit must be positive") }
             let lines=text.components(separatedBy:"\n"), selected=lines.dropFirst(offset-1).prefix(count).joined(separator:"\n"), bounded=preview(selected,bytes:32768)
-            return resultText(bounded + (offset-1+count < lines.count || bounded.utf8.count < selected.utf8.count ? "\n[Truncated. \(lines.count) total lines; read another range.]" : ""))
+            var result=resultText(bounded + (offset-1+count < lines.count || bounded.utf8.count < selected.utf8.count ? "\n[Truncated. \(lines.count) total lines; read another range.]" : ""))
+            // The file read, resolved as it was read (another root's, say): for
+            // the app alone.
+            result["stats"]=["path":JSON(file.path)]
+            return result
         case "ls":
             let directory=try path(p["path"],optional:true,existing:true), limit=try boundedInt(p["limit"],fallback:200,maximum:2000)
             let all=try FileManager.default.contentsOfDirectory(at:directory,includingPropertiesForKeys:[.isDirectoryKey]).sorted(by:{$0.lastPathComponent < $1.lastPathComponent})

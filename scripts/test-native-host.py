@@ -107,8 +107,11 @@ class Fixture(http.server.BaseHTTPRequestHandler):
         if users and users[-1].startswith('long question'):
             text += ' ' + 'padding ' * 10500  # past pi's 20,000-token recent tail
         if self.path.endswith('/responses'):
-            tool = model in ('tool', 'limited-tool', 'billing-tool') and bool(body.get('tools')) and not any(item.get('type') == 'function_call_output' for item in body['input'])
-            if tool:
+            tool = model in ('tool', 'limited-tool', 'billing-tool', 'edit-tool') and bool(body.get('tools')) and not any(item.get('type') == 'function_call_output' for item in body['input'])
+            if tool and model == 'edit-tool':
+                output = [{'type': 'function_call', 'id': 'fc_1', 'call_id': 'call_1', 'name': 'edit', 'arguments': '{"path":"notes.txt","oldText":"three","newText":"3"}'}]
+                events = [{'type': 'response.output_item.added', 'output_index': 0, 'item': {**output[0], 'arguments': ''}}, {'type': 'response.function_call_arguments.delta', 'output_index': 0, 'delta': output[0]['arguments']}]
+            elif tool:
                 output = [{'type': 'function_call', 'id': 'fc_1', 'call_id': 'call_1', 'name': 'read', 'arguments': '{"path":"README.md"}'}]
                 events = [{'type': 'response.output_item.added', 'output_index': 0, 'item': {**output[0], 'arguments': ''}}, {'type': 'response.function_call_arguments.delta', 'output_index': 0, 'delta': output[0]['arguments']}]
             else:
@@ -633,6 +636,35 @@ class NativeIntegration(unittest.TestCase):
         self.assertEqual([v['messageId'] for v in again['versions']],[second,edited])
         self.assertEqual(pathlib.Path(path).read_bytes(),before)
         self.peer.command('session.close',session=session)
+    def test_file_tool_cards_name_their_file_and_where_an_edit_changed_it(self):
+        # The app opens a file from a tool's card: a read names the file it
+        # read, an edit also the line it first changed, live and from the
+        # journal; the model is sent the same text as ever.
+        (self.root/'notes.txt').write_text('one\ntwo\nthree\n')
+        # As the helper resolves it (Foundation keeps /var, not /private/var).
+        notes=str(self.root/'notes.txt')
+        self.open(model='edit-tool',session='edits'); self.submit('edits'); value=self.settled('edits')
+        self.assertEqual(value['state'],'idle')
+        card=next(t for m in value['messages'] for t in (m.get('tools') or []) if t['name']=='edit')
+        self.assertEqual((card['path'],card['added'],card['removed'],card['line']),(notes,1,1,3))
+        self.assertEqual((self.root/'notes.txt').read_text(),'one\ntwo\n3\n')
+        sent=[json.loads(r['body']) for r in Fixture.requests if b'function_call_output' in r['body'] and b'notes.txt' in r['body']]
+        outputs=[i['output'] for body in sent for i in body['input'] if i.get('type')=='function_call_output']
+        self.assertEqual(outputs,['Edited %s (+1 -1)'%notes],'the model sees what it saw before')
+        path=value['path']; self.peer.command('session.close',session='edits')
+        journal=[json.loads(line) for line in pathlib.Path(path).read_bytes().split(b'\n') if line]
+        stats=[r['message']['nativeToolStats'] for r in journal if r.get('type')=='message' and r['message']['role']=='toolResult']
+        self.assertEqual([(s['path'],s['line']) for s in stats],[(notes,3)])
+        self.open(model='edit-tool',session='edits',path=path)
+        card=next(t for m in self.peer.command('session.snapshot',session='edits')['messages'] for t in (m.get('tools') or []) if t['name']=='edit')
+        self.assertEqual(card['line'],3,'the card from the journal says it too')
+        self.peer.command('session.close',session='edits')
+        self.open(model='tool',session='reads'); self.submit('reads'); value=self.settled('reads')
+        card=next(t for m in value['messages'] for t in (m.get('tools') or []) if t['name']=='read')
+        self.assertEqual(card['path'],str(self.root/'README.md'))
+        self.assertNotIn('line',card,'a read changes no line')
+        self.peer.command('session.close',session='reads')
+
     def test_fork_at_a_reply_keeps_the_journal_up_to_it_and_its_tool_batch(self):
         session='forked'; self.open(model='tool',session=session)
         turns=[str(uuid.uuid4()) for _ in range(3)]

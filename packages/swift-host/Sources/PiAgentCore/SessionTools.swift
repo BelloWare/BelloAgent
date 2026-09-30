@@ -139,6 +139,8 @@ extension AgentSession {
         if countsTime, let durationMs { turnToolMs += durationMs; cumulativeToolMs = ObservedDuration.adding(cumulativeToolMs, durationMs) }
         let stats=result["stats"]
         message.toolStats=["durationMs":durationMs.map { JSON($0) } ?? .null,"path":stats["path"],"added":stats["added"],"removed":stats["removed"]]
+        // Where a write or an edit changed its file, when it says: kept only then.
+        if !stats["line"].isNull { message.toolStats?["line"]=stats["line"] }
         let outcome = uncertain || (state == .cancelled && started != nil) ? "unknown" : started == nil ? "not_executed" : state.rawValue
         message.toolStats?["outcome"]=JSON(outcome)
         if appendNow { try append(message, observedAt: observedAt) }
@@ -147,7 +149,9 @@ extension AgentSession {
         setToolStateOwner(call.id)
         let fields=toolInputFields(call.arguments), keptOutput=shown
         let inputTruncated=fields.first(where: { $0.0 == "inputTruncated" })?.1.flag ?? false
-        setToolState(call.id,merging(["id":JSON(call.id),"name":JSON(call.name),"state":JSON(reportsUnknownToolOutcomes ? Self.cardState(outcome:outcome,isError:message.isError) : state.rawValue),"output":JSON(keptOutput),"durationMs":durationMs.map { JSON($0) } ?? .null,"truncated":JSON(inputTruncated || keptOutput.utf8.count < text.utf8.count),"path":stats["path"],"added":stats["added"],"removed":stats["removed"]],fields))
+        var card:[String:JSON]=["id":JSON(call.id),"name":JSON(call.name),"state":JSON(reportsUnknownToolOutcomes ? Self.cardState(outcome:outcome,isError:message.isError) : state.rawValue),"output":JSON(keptOutput),"durationMs":durationMs.map { JSON($0) } ?? .null,"truncated":JSON(inputTruncated || keptOutput.utf8.count < text.utf8.count),"path":stats["path"],"added":stats["added"],"removed":stats["removed"]]
+        if !stats["line"].isNull { card["line"]=stats["line"] }
+        setToolState(call.id,merging(.object(card),fields))
         recordDisplayChange(toolStateOwners[call.id], at: observedAt)
         event("tool_execution_end")
         return (message, observedAt)

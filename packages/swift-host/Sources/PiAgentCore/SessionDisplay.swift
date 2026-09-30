@@ -146,10 +146,13 @@ extension AgentSession {
             // isError reading, and an error is never shown as completed.
             let stats = result.toolStats ?? .null, fields = toolInputFields(call["arguments"]), keptOutput = output
             let inputTruncated = fields.first(where: { $0.0 == "inputTruncated" })?.1.flag ?? false
-            states[id] = merging(["id": JSON(id), "name": call["name"], "state": JSON(reportsUnknownToolOutcomes ? Self.cardState(outcome: stats["outcome"].text, isError: result.isError) : result.isError ? "failed" : "completed"),
+            var card: [String: JSON] = ["id": JSON(id), "name": call["name"], "state": JSON(reportsUnknownToolOutcomes ? Self.cardState(outcome: stats["outcome"].text, isError: result.isError) : result.isError ? "failed" : "completed"),
                           "output": JSON(keptOutput),
                           "durationMs": stats["durationMs"], "truncated": JSON(inputTruncated || keptOutput.utf8.count < output.utf8.count),
-                          "path": stats["path"], "added": stats["added"], "removed": stats["removed"]], fields)
+                          "path": stats["path"], "added": stats["added"], "removed": stats["removed"]]
+            // Where a write or an edit changed its file, when it was recorded.
+            if !stats["line"].isNull { card["line"] = stats["line"] }
+            states[id] = merging(.object(card), fields)
         }
         var row = message.view(toolStates: states)
         if let mark = versionMark(message) { row["versions"] = mark }
