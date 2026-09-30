@@ -31,6 +31,7 @@ enum FileProjectState: Equatable {
     @Published private(set) var fellBack = false
     private var madeDocument: FileView.FileDocument?
     private var madeScroll: FileTextScrollView?
+    private var syntax: FileSyntax?
     private var target: ClosedRange<Int>?
 
     /// The key a file's tab is found by: one tab a file, whichever path
@@ -88,6 +89,8 @@ enum FileProjectState: Equatable {
         let scroll = FileTextScrollView(frame: NSRect(x: 0, y: 0, width: 400, height: 400))
         scroll.textView.usePiDesign()
         scroll.textView.show(document, name: title)
+        syntax = FileSyntax(source: document, view: scroll.textView, extension: url.pathExtension)
+        scroll.textView.syntax = { [weak syntax] line, range, text in syntax?.colors(line: line, piece: range, text: text) ?? [] }
         if let target { scroll.textView.reveal(lines: target); self.target = nil }
         madeScroll = scroll
         return scroll
@@ -121,7 +124,7 @@ enum FileProjectState: Equatable {
             // may be read again.
             finder?.close(); finder = nil; bar = .none
             madeDocument?.close(); madeDocument = nil
-            madeScroll = nil
+            madeScroll = nil; syntax = nil
             status = .indexing; fellBack = false
         }
         updateHelp(); updateSymbol()
@@ -129,7 +132,7 @@ enum FileProjectState: Equatable {
     override func willClose() {
         finder?.close(); finder = nil
         madeDocument?.close()
-        madeDocument = nil; madeScroll = nil
+        madeDocument = nil; madeScroll = nil; syntax = nil
     }
 
     // MARK: Find and go to line

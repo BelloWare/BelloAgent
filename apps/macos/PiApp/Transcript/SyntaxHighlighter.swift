@@ -16,6 +16,86 @@ enum SyntaxHighlighter {
         let kind: TokenKind
     }
 
+    /// The lexical state at a line boundary, independent of any UI. File
+    /// viewers keep these checkpoints and colour only the lines requested.
+    struct State: Equatable, Sendable {
+        var commentDepth = 0
+        var delimiter: String?
+        var multiline = false
+        var raw = false
+        var previousWord = ""
+    }
+
+    static func resume(_ code: String, language: Language, state initial: State, collect: Bool = true) -> (tokens: [Token], state: State) {
+        let grammar = grammar(language), scalars = Array(code.unicodeScalars)
+        var state = initial, index = 0, tokens: [Token] = []
+        func matches(_ text: String, _ at: Int) -> Bool {
+            let needle = Array(text.unicodeScalars)
+            return at + needle.count <= scalars.count && scalars[at..<(at + needle.count)].elementsEqual(needle)
+        }
+        func word(_ scalar: Unicode.Scalar) -> Bool { CharacterSet.alphanumerics.contains(scalar) || scalar == "_" || scalar == "$" }
+        func emit(_ start: Int, _ end: Int, _ kind: TokenKind) { if collect && end > start { tokens.append(Token(range: start..<end, kind: kind)) } }
+        while index < scalars.count {
+            let start = index
+            if state.commentDepth > 0 {
+                while index < scalars.count {
+                    if language == .swift, matches("/*", index) { state.commentDepth += 1; index += 2 }
+                    else if matches("*/", index) { state.commentDepth -= 1; index += 2; if state.commentDepth == 0 { break } }
+                    else { index += 1 }
+                }
+                emit(start, index, .comment); continue
+            }
+            if let delimiter = state.delimiter {
+                while index < scalars.count {
+                    if matches(delimiter, index) { index += delimiter.unicodeScalars.count; state.delimiter = nil; break }
+                    if !state.raw, scalars[index] == "\\" { index = min(scalars.count, index + 2); continue }
+                    if !state.multiline, scalars[index] == "\n" { state.delimiter = nil; break }
+                    index += 1
+                }
+                emit(start, index, .string); continue
+            }
+            if let marker = grammar.lineComment.first(where: { matches($0, index) }), !(marker == "#" && language == .bash && index > 0 && scalars[index - 1] == "$") {
+                while index < scalars.count, scalars[index] != "\n" { index += 1 }
+                emit(start, index, .comment); state.previousWord = ""; continue
+            }
+            if grammar.blockComment != nil, matches("/*", index) {
+                state.commentDepth = 1; index += 2
+                while index < scalars.count {
+                    if language == .swift, matches("/*", index) { state.commentDepth += 1; index += 2 }
+                    else if matches("*/", index) { state.commentDepth -= 1; index += 2; if state.commentDepth == 0 { break } }
+                    else { index += 1 }
+                }
+                emit(start, index, .comment); state.previousWord = ""; continue
+            }
+            if grammar.quotes.contains(Character(scalars[index])) {
+                let quote = String(scalars[index])
+                let triple = (grammar.tripleQuotes || language == .swift) && matches(String(repeating: quote, count: 3), index)
+                let delimiter = String(repeating: quote, count: triple ? 3 : 1)
+                state.delimiter = delimiter; state.multiline = triple || quote == "`" || language == .bash
+                index += delimiter.unicodeScalars.count
+                while index < scalars.count {
+                    if matches(delimiter, index) { index += delimiter.unicodeScalars.count; state.delimiter = nil; break }
+                    if scalars[index] == "\\" { index = min(scalars.count, index + 2); continue }
+                    if !state.multiline, scalars[index] == "\n" { state.delimiter = nil; break }
+                    index += 1
+                }
+                emit(start, index, .string); state.previousWord = ""; continue
+            }
+            if word(scalars[index]) {
+                index += 1
+                while index < scalars.count, word(scalars[index]) { index += 1 }
+                let value = String(String.UnicodeScalarView(scalars[start..<index]))
+                if CharacterSet.decimalDigits.contains(scalars[start]) { emit(start, index, .number) }
+                else if grammar.keywords.contains(value) || grammar.literals.contains(value) { emit(start, index, .keyword) }
+                else if grammar.declarations.contains(state.previousWord) { emit(start, index, .title) }
+                state.previousWord = value; continue
+            }
+            if !scalars[index].properties.isWhitespace { state.previousWord = "" }
+            index += 1
+        }
+        return (tokens, state)
+    }
+
     /// The language for a fence label, honouring the short aliases people type.
     static func language(named name: String) -> Language? {
         switch name.lowercased() {

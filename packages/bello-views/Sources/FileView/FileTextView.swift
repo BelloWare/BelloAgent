@@ -1,5 +1,13 @@
 import AppKit
 
+/// Optional host-provided ink for a piece of a visible line. The engine
+/// knows no lexer or application palette; ranges are local UTF-16 units.
+public struct FileTextColorRun {
+    public let range: NSRange
+    public let color: NSColor
+    public init(range: NSRange, color: NSColor) { self.range = range; self.color = color }
+}
+
 // A file's text, read only: drawn by CoreText a line at a time as lines come
 // into view, in a document as tall as the file, inside an ordinary scroll
 // view. Nothing is set for lines off screen, so a file of millions of lines
@@ -147,14 +155,16 @@ public struct FileTextStyle {
     /// From the line's start, the pieces set so far.
     private var ordered: [Piece] = []
     private var complete = false
+    private let syntax: ((Int, Range<Int>, String) -> [FileTextColorRun])?
     /// On the grid, the pieces set, by number, and where pieces start, as
     /// found: a piece drawn again reads nothing.
     private var gridPieces: [Int: Piece] = [:]
     private var gridStarts: [Int: Int] = [:]
 
     /// Nil for a line off the grid whose text has not come yet.
-    init?(source: FileTextSource, line index: Int, metrics: FileTextMetrics) {
+    init?(source: FileTextSource, line index: Int, metrics: FileTextMetrics, syntax: ((Int, Range<Int>, String) -> [FileTextColorRun])? = nil) {
         self.source = source; self.index = index; self.metrics = metrics
+        self.syntax = syntax
         length = source.utf16Length(ofLine: index)
         grid = length > FileTextMetrics.gridLine
         if grid { text = nil } else {
@@ -202,7 +212,12 @@ public struct FileTextStyle {
     }
     private func set(_ range: Range<Int>, x: CGFloat) -> Piece? {
         guard let text = read(range) else { return nil }
-        let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: metrics.attributes(origin: x, tabs: text.contains("\t"), grid: grid)))
+        let attributed = NSMutableAttributedString(string: text, attributes: metrics.attributes(origin: x, tabs: text.contains("\t"), grid: grid))
+        for run in syntax?(index, range, text) ?? [] where run.range.location >= 0 && NSMaxRange(run.range) <= attributed.length {
+            attributed.removeAttribute(NSAttributedString.Key(kCTForegroundColorFromContextAttributeName as String), range: run.range)
+            attributed.addAttribute(.foregroundColor, value: run.color, range: run.range)
+        }
+        let line = CTLineCreateWithAttributedString(attributed)
         FileTextRenderCount.built()
         let natural = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
         guard grid else { return Piece(range: range, x: x, width: natural, line: line, squeeze: 1) }
@@ -392,6 +407,8 @@ public struct FileTextStyle {
 
 /// The text view. Its frame is the whole document; it draws what is asked of it.
 @MainActor public final class FileTextView: NSView {
+    public var syntax: ((Int, Range<Int>, String) -> [FileTextColorRun])? { didSet { layouts = [:]; needsDisplay = true } }
+    public func invalidateSyntax(inLine line: Int) { layouts[line] = nil; needsDisplay = true }
     public private(set) var source: FileTextSource = FileTextLines("")
     /// What accessibility calls the text: "Contents of Main.swift".
     public private(set) var name = ""
@@ -438,7 +455,7 @@ public struct FileTextStyle {
     public override var isFlipped: Bool { true }
     public override var isOpaque: Bool { false }
     public override var acceptsFirstResponder: Bool { true }
-    public override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); needsDisplay = true }
+    public override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); if syntax != nil { layouts = [:] }; needsDisplay = true }
 
     /// Shows a text from its start, with nothing selected.
     public func show(_ source: FileTextSource, name: String) {
@@ -482,7 +499,7 @@ public struct FileTextStyle {
             let keep = visibleLines
             layouts = layouts.filter { keep.contains($0.key) }
         }
-        guard let layout = FileLineLayout(source: source, line: index, metrics: metrics) else { return nil }
+        guard let layout = FileLineLayout(source: source, line: index, metrics: metrics, syntax: syntax) else { return nil }
         layouts[index] = layout
         return layout
     }

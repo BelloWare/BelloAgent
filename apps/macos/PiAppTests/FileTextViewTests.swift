@@ -224,6 +224,24 @@ final class FileTextViewTests: XCTestCase {
 
     // MARK: Only what is seen
 
+    @MainActor func testSyntaxIsRequestedOnlyForDrawnLinesInALargeFile() {
+        let source = GeneratedLines(3_000_000)
+        let fixture = fixture(source)
+        var coloured = Set<Int>()
+        fixture.text.syntax = { line, _, text in
+            coloured.insert(line)
+            return [FileTextColorRun(range: NSRange(location: 0, length: min(4, text.utf16.count)), color: .red)]
+        }
+        fixture.draw()
+        XCTAssertFalse(coloured.isEmpty)
+        XCTAssertTrue(coloured.allSatisfy { $0 < 100 }, "the three-million-line prefix is not coloured")
+        coloured = []
+        fixture.text.scrollToEndOfDocument(nil)
+        fixture.draw()
+        XCTAssertFalse(coloured.isEmpty)
+        XCTAssertTrue(coloured.allSatisfy { $0 > 2_999_900 }, "only the last visible lines are coloured at the end")
+    }
+
     /// A file of three million lines sets and reads the lines on screen and no
     /// others, at its start and at its end, and its gutter fits its numbers.
     @MainActor func testOnlyTheLinesOnScreenAreSetAndRead() throws {
