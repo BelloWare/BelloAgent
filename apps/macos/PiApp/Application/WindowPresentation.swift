@@ -179,14 +179,20 @@ extension NSWindow {
             return consumed ? nil : event
         }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            // ⌥← and ⌥→ outside text switch versions; that event is taken.
-            if MainActor.assumeIsolated({ self?.switchVersion(event) == true }) { return nil }
-            // ⌘W closes the tab the pane shows, before the menu closes the window.
-            if MainActor.assumeIsolated({ self?.closeShownTab(event) == true }) { return nil }
-            // Any other event is never swallowed: at most the first responder moves before it is delivered.
-            _ = MainActor.assumeIsolated { self?.redirectTyping(event) != nil }
-            return event
+            MainActor.assumeIsolated { self?.takesKey(event) == true } ? nil : event
         }
+    }
+    /// A key pressed in the app, before it is delivered: true when it is taken here.
+    func takesKey(_ event: NSEvent) -> Bool {
+        // ⌥← and ⌥→ outside text switch versions; that event is taken.
+        if switchVersion(event) { return true }
+        // A tab with focus has its own ⌘ keys first (a file's ⌘F), before the menus.
+        if tabKey(event) { return true }
+        // ⌘W closes the tab the pane shows, before the menu closes the window.
+        if closeShownTab(event) { return true }
+        // Any other event is never swallowed: at most the first responder moves before it is delivered.
+        _ = redirectTyping(event)
+        return false
     }
     func detach() {
         if let eventMonitor { NSEvent.removeMonitor(eventMonitor) }
@@ -215,6 +221,11 @@ extension NSWindow {
             view = current.superview
         }
         return false
+    }
+    /// A ⌘ key in this window while focus is in a tab's content.
+    func tabKey(_ event: NSEvent) -> Bool {
+        guard let window else { return false }
+        return TabHost.tabKey(event, in: window)
     }
     /// ⌘W in this window: the tab its pane shows closes, when it shows one
     /// and no sheet is over the window.

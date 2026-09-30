@@ -113,6 +113,7 @@ enum FileProjectState: Equatable {
             // Not to be read: what was read goes, and the view with it, and
             // what was known of the file: read again from the start if it
             // may be read again.
+            finder?.close(); finder = nil; bar = .none
             madeDocument?.close(); madeDocument = nil
             madeScroll = nil
             status = .indexing; fellBack = false
@@ -120,8 +121,117 @@ enum FileProjectState: Equatable {
         updateHelp(); updateSymbol()
     }
     override func willClose() {
+        finder?.close(); finder = nil
         madeDocument?.close()
         madeDocument = nil; madeScroll = nil
+    }
+
+    // MARK: Find and go to line
+
+    /// The bar under the header: finding in the file, going to a line, or none.
+    enum Bar: Equatable { case none, find, goToLine }
+    @Published private(set) var bar = Bar.none
+    /// The query and whether it matches case: kept while the tab is open.
+    @Published var findQuery = "" { didSet { if findQuery != oldValue { finder?.set(query: findQuery, matchCase: matchCase) } } }
+    @Published var matchCase = false { didSet { if matchCase != oldValue { finder?.set(query: findQuery, matchCase: matchCase) } } }
+    /// What the find bar says of its search.
+    @Published private(set) var findLabel = ""
+    @Published private(set) var canStep = false
+    @Published var lineQuery = ""
+    /// Bumped to put the keys in the bar's field.
+    @Published private(set) var barFocus = 0
+    private var finder: FileFind?
+
+    /// ⌘F in the text or the find bar opens it with the keys in its field;
+    /// ⌘L goes to a line; ⌘G and ⇧⌘G go to the next and previous match
+    /// while the find bar has a query. Any other key goes on.
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        guard madeScroll != nil else { return false }
+        let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
+        switch (modifiers, event.charactersIgnoringModifiers?.lowercased()) {
+        case ([.command], "f"): openFind(); return true
+        case ([.command], "l"): openGoToLine(); return true
+        case ([.command], "g") where bar == .find && !findQuery.isEmpty: findNext(); return true
+        case ([.command, .shift], "g") where bar == .find && !findQuery.isEmpty: findPrevious(); return true
+        default: return false
+        }
+    }
+    /// Opens the find bar: a selection on one line, short enough to be a
+    /// query, becomes it (a longer one is not read to find out).
+    func openFind() {
+        guard let view = madeScroll?.textView else { return }
+        if let text = FileFind.query(fromSelectionIn: view) { findQuery = text }
+        if finder == nil {
+            let finder = FileFind(view: view)
+            finder.onChange = { [weak self] in self?.findChanged() }
+            self.finder = finder
+            finder.set(query: findQuery, matchCase: matchCase)
+        }
+        bar = .find
+        barFocus &+= 1
+        selectFieldText()
+        findChanged()
+    }
+    func findNext() { finder?.next() }
+    func findPrevious() { finder?.previous() }
+    func openGoToLine() {
+        guard madeScroll != nil else { return }
+        finder?.close(); finder = nil
+        lineQuery = ""
+        bar = .goToLine
+        barFocus &+= 1
+        selectFieldText()
+    }
+    /// ⌘F or ⌘L again with the keys already in the bar's field: its text
+    /// selected, to type over (a field given the keys selects it itself).
+    private func selectFieldText() {
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.hasContent, let window = self.contentView.window,
+                      let editor = window.firstResponder as? NSTextView, editor.isFieldEditor, editor.isDescendant(of: self.contentView) else { return }
+                editor.selectAll(nil)
+            }
+        }
+    }
+    /// Goes to the line asked for (from 1): a line not found yet is shown
+    /// once it is, and past the end, the last (`reveal`).
+    func goToLine() {
+        guard let view = madeScroll?.textView, let number = Int(lineQuery.trimmingCharacters(in: .whitespaces)), number > 0 else { return }
+        view.reveal(lines: (number - 1)...(number - 1))
+        closeBar()
+    }
+    /// Closes the bar, the find's matches with it, and gives the keys back to
+    /// the text.
+    func closeBar() {
+        finder?.close(); finder = nil
+        bar = .none
+        if let view = madeScroll?.textView, let window = view.window { window.makeFirstResponder(view) }
+        findChanged()
+    }
+    /// The lines there are, beside the go-to-line field: more may come
+    /// while the file is still being read through.
+    var lineRange: String {
+        guard let source = madeScroll?.textView.source else { return "" }
+        return "Lines 1 to \(source.lineCount.formatted())\(source.isIndexing ? "+" : "")"
+    }
+    private func findChanged() {
+        guard let finder, bar == .find else {
+            if findLabel != "" { findLabel = "" }
+            if canStep { canStep = false }
+            return
+        }
+        let label: String
+        if findQuery.isEmpty { label = "" }
+        else if finder.isTooLong { label = "Too long to search" }
+        else if let stopped = finder.stopped { label = stopped }
+        else if finder.count == 0 { label = finder.isCounting ? "Searching…" : "No matches" }
+        else {
+            let total = finder.count.formatted() + (finder.isCounting ? "+" : "")
+            label = finder.ordinal.map { "\($0.formatted()) of \(total) matches" } ?? "\(total) matches"
+        }
+        if findLabel != label { findLabel = label }
+        let step = finder.count > 0 || finder.current != nil
+        if canStep != step { canStep = step }
     }
 
     private func updateHelp() {
@@ -156,10 +266,90 @@ struct FileTabContent: View {
             } else if tab.status == .binary {
                 FileTabNotice(symbol: "doc", title: "Not text", detail: FileTabNotice.describe(tab.url), url: tab.url)
             } else if let scroll = tab.scroll {
+                switch tab.bar {
+                case .find: FileFindBar(tab: tab)
+                case .goToLine: FileGoToLineBar(tab: tab)
+                case .none: EmptyView()
+                }
                 FileTextHost(view: scroll)
             }
         }
         .background(Color.piContent)
+    }
+}
+
+/// A file's find bar, under its header: the query, where the match shown is
+/// among them all, match case, previous and next, and close.
+private struct FileFindBar: View {
+    @ObservedObject var tab: FileTab
+    @FocusState private var focused: Bool
+    var body: some View {
+        HStack(spacing: PiSpacing.sm) {
+            FileBarField(symbol: "magnifyingglass", placeholder: "Find in file", text: $tab.findQuery, focused: $focused, identifier: "file-find-field") {
+                if NSApp.currentEvent?.modifierFlags.contains(.shift) == true { tab.findPrevious() } else { tab.findNext() }
+            }
+            Text(tab.findLabel).font(PiFont.caption).monospacedDigit().foregroundStyle(Color.piInkSecondary).lineLimit(1)
+                .accessibilityIdentifier("file-find-count")
+            Spacer(minLength: 0)
+            PiIconButton(symbol: "textformat", label: tab.matchCase ? "Match Case: On" : "Match Case: Off", tone: tab.matchCase ? .accent : .neutral, size: 24, filled: tab.matchCase) {
+                tab.matchCase.toggle()
+            }
+            .accessibilityIdentifier("file-find-match-case")
+            Button { tab.findPrevious() } label: { Image(systemName: "chevron.up") }
+                .buttonStyle(.piGhost).disabled(!tab.canStep).help("Previous match").accessibilityLabel("Previous match")
+            Button { tab.findNext() } label: { Image(systemName: "chevron.down") }
+                .buttonStyle(.piGhost).disabled(!tab.canStep).help("Next match").accessibilityLabel("Next match")
+            PiIconButton(symbol: "xmark", label: "Close Find", size: 24) { tab.closeBar() }
+        }
+        .padding(.horizontal, PiSpacing.md).frame(height: 36)
+        .overlay(alignment: .bottom) { Rectangle().fill(Color.piHairline).frame(height: 1) }
+        .onExitCommand { tab.closeBar() }
+        .onAppear { focused = true }
+        .onChange(of: tab.barFocus) { _, _ in focused = true }
+        .accessibilityIdentifier("file-find-bar")
+    }
+}
+
+/// A file's go-to-line bar, where the find bar would be.
+private struct FileGoToLineBar: View {
+    @ObservedObject var tab: FileTab
+    @FocusState private var focused: Bool
+    var body: some View {
+        HStack(spacing: PiSpacing.sm) {
+            FileBarField(symbol: "arrow.right.to.line", placeholder: "Go to line", text: $tab.lineQuery, focused: $focused, identifier: "file-go-to-line-field") {
+                tab.goToLine()
+            }
+            Text(tab.lineRange).font(PiFont.caption).monospacedDigit().foregroundStyle(Color.piInkSecondary).lineLimit(1)
+            Spacer(minLength: 0)
+            PiIconButton(symbol: "xmark", label: "Close", size: 24) { tab.closeBar() }
+        }
+        .padding(.horizontal, PiSpacing.md).frame(height: 36)
+        .overlay(alignment: .bottom) { Rectangle().fill(Color.piHairline).frame(height: 1) }
+        .onExitCommand { tab.closeBar() }
+        .onAppear { focused = true }
+        .onChange(of: tab.barFocus) { _, _ in focused = true }
+        .accessibilityIdentifier("file-go-to-line-bar")
+    }
+}
+
+/// A bar's field: as the inspector's search field is drawn.
+private struct FileBarField: View {
+    let symbol: String
+    let placeholder: String
+    @Binding var text: String
+    var focused: FocusState<Bool>.Binding
+    let identifier: String
+    let submit: () -> Void
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: symbol).font(.system(size: 11, weight: .medium)).foregroundStyle(Color.piInkTertiary)
+            TextField(placeholder, text: $text).textFieldStyle(.plain).font(PiFont.caption)
+                .focused(focused).onSubmit(submit).accessibilityIdentifier(identifier)
+        }
+        .padding(.horizontal, 9).padding(.vertical, 6)
+        .background(Color.piSurface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(focused.wrappedValue ? Color.piAccent.opacity(0.5) : Color.piHairline, lineWidth: 1))
+        .frame(maxWidth: 280)
     }
 }
 

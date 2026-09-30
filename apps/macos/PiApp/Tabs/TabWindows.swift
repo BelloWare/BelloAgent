@@ -73,6 +73,8 @@ import SwiftUI
 final class TabWindow: NSWindow {
     var closeTab: (() -> Bool)?
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        // The tab with focus has its own keys first (a file's ⌘F).
+        if TabHost.tabKey(event, in: self) { return true }
         if TabHost.isCloseTabKey(event), closeTab?() == true { return true }
         return super.performKeyEquivalent(with: event)
     }

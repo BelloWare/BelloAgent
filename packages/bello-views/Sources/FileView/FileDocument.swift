@@ -133,6 +133,10 @@ struct FileLengths: Sendable {
         public var beforeOpen: (@Sendable () async -> Void)?
         public var beforeChunk: (@Sendable (Int64) async -> Void)?
         public var beforePage: (@Sendable () async -> Void)?
+        /// Called before a search's count reads each page, with the page,
+        /// and before each find.
+        public var beforeCount: (@Sendable (Int) async -> Void)?
+        public var beforeFind: (@Sendable () async -> Void)?
         public init() {}
     }
 
@@ -193,6 +197,9 @@ struct FileLengths: Sendable {
     var cachedPages: Int { cache.pageCount }
     var holdsKept: Int { cache.holdCount }
     var readsUnderWay: Int { inFlight.count + fetching }
+    /// Searches waiting for more of the text to be found.
+    private var searchWaiters: [Int: CheckedContinuation<Void, Never>] = [:]
+    private var searchWaiterTickets = 0
     /// Test seam: reads started for copies and accessibility.
     private(set) var fetchReads = 0
     private var fetching = 0
@@ -212,6 +219,7 @@ struct FileLengths: Sendable {
         indexing?.cancel(); indexing = nil
         version += 1
         bytes = nil
+        wakeSearches()
     }
 
     // MARK: Opening
@@ -243,10 +251,13 @@ struct FileLengths: Sendable {
         guard let (encoding, start) = found else {
             status = .binary; complete = true
             arrival?(0...0)
+            // A search asked before now hears it is not text.
+            wakeSearches()
             return
         }
         self.encoding = encoding; self.start = start
         index()
+        wakeSearches()
     }
 
     /// Starts a pass over the file from its text's start, as it is now read.
@@ -324,6 +335,7 @@ struct FileLengths: Sendable {
             indexing?.cancel()
             applyScreen()
             arrival?(before...max(before, lineCount - 1))
+            wakeSearches()
             return false
         }
         openLong = delta.provisionalLong
@@ -334,6 +346,7 @@ struct FileLengths: Sendable {
         // Lines found, or become long: what the screen needs may be other.
         applyScreen()
         arrival?(before...max(before, lineCount - 1))
+        wakeSearches()
         return true
     }
     /// The bytes are not UTF-8: read again as Latin-1, a new reading of the
@@ -348,6 +361,7 @@ struct FileLengths: Sendable {
         generation += 1
         arrival?(0...max(0, shown - 1))
         index()
+        wakeSearches()
     }
     /// Changed on disk: nothing more is read of it, and reads under way are dropped.
     private func changed(version: Int) {
@@ -357,6 +371,7 @@ struct FileLengths: Sendable {
         self.version += 1
         inFlight = [:]
         arrival?(0...max(0, lineCount - 1))
+        wakeSearches()
     }
     private func failed(_ message: String, version: Int) {
         guard version == self.version else { return }
@@ -365,6 +380,7 @@ struct FileLengths: Sendable {
         self.version += 1
         inFlight = [:]
         arrival?(0...max(0, lineCount - 1))
+        wakeSearches()
     }
     private func reset() {
         indexing?.cancel(); indexing = nil
@@ -740,6 +756,214 @@ struct FileLengths: Sendable {
         if let open = openLong, open.line == line { cache.remove(.window(line: line, mark: open.marks.count)) }
     }
 
+    // MARK: Search
+
+    /// A search for a query in the text as it is read now: read again (as
+    /// Latin-1), the search is over and says so (`FileSearch.isStale`).
+    public func search(_ matcher: FileMatcher) -> FileSearch {
+        let reader = FileDocumentSearchReader(document: self, version: version, generation: generation,
+                                              beforeCount: options.beforeCount, beforeFind: options.beforeFind)
+        return FileSearch(matcher: matcher, reader: reader,
+                          lineText: { [weak self] line, range in self?.text(ofLine: line, range: range) },
+                          lineLength: { [weak self] line in self?.utf16Length(ofLine: line) ?? 0 },
+                          lineFinal: { [weak self] line in self.map { $0.complete || line < $0.lengths.count } ?? true },
+                          longPage: { [weak self] line in self?.searchPage(ofLong: line) })
+    }
+    /// How a search reads the file: through the document's descriptor, as
+    /// long as the file is as it was opened.
+    struct SearchReading: Sendable {
+        let bytes: FileBytes
+        let identity: FileIdentity
+        let encoding: FileEncoding
+    }
+    /// What a search asks of the document.
+    enum SearchAsk: Sendable {
+        case pages(from: Int, limit: Int)
+        case page(holding: Int)
+        case count
+    }
+    enum SearchAnswer: Sendable {
+        case pages(FileSearchPages, SearchReading)
+        case count(Int, SearchReading)
+        case end(FileSearchEnd)
+    }
+    /// Answers a search, from the reading it began in, waiting while what it
+    /// asks for has not been found yet but may be.
+    func answer(_ ask: SearchAsk, version: Int, generation: Int) async -> SearchAnswer {
+        while true {
+            if Task.isCancelled { return .end(.stopped("Cancelled")) }
+            if let end = searchEnd(version: version, generation: generation) { return .end(end) }
+            if let bytes, let identity {
+                let reading = SearchReading(bytes: bytes, identity: identity, encoding: encoding)
+                // The pages the pass has finished with: all of them once it is through.
+                let closed = complete ? checkpoints.count : max(0, checkpoints.count - 1)
+                switch ask {
+                case .pages(let first, let limit):
+                    if first < closed || complete {
+                        let pages = (first..<max(first, min(closed, first + max(1, limit)))).map(searchPage)
+                        return .pages(FileSearchPages(pages: pages, complete: complete && first + pages.count >= closed), reading)
+                    }
+                case .page(let line):
+                    if !checkpoints.isEmpty {
+                        let page = checkpoint(holding: max(0, min(line, lineCount - 1)))
+                        if page < closed { return .pages(FileSearchPages(pages: [searchPage(page)], complete: complete), reading) }
+                    } else if complete {
+                        return .end(.stopped("Empty"))
+                    }
+                case .count:
+                    if complete { return .count(checkpoints.count, reading) }
+                }
+            }
+            // Asked without a gap since looking: nothing is found in between.
+            await waitForSearch()
+        }
+    }
+    /// Whether a search begun in a reading may go on: why not if not.
+    private func searchEnd(version: Int, generation: Int) -> FileSearchEnd? {
+        switch status {
+        case .changed: return .stopped("Changed on disk")
+        case .failed(let message): return .stopped(message)
+        case .binary: return .stopped("Not text")
+        default: break
+        }
+        if generation != self.generation { return .reread }
+        if version != self.version { return .stopped("Closed") }
+        return nil
+    }
+    private func searchPage(_ page: Int) -> FileSearchPage {
+        let lines = lines(ofPage: page), point = checkpoints[page]
+        // Where the page's text ends in the whole text, lines joined by one
+        // unit each: the next page's start, less its joining unit, or the
+        // text's end.
+        let end = page + 1 < checkpoints.count ? checkpoints[page + 1].utf16 - 1 : Int64(utf16Length)
+        return FileSearchPage(index: page, firstLine: lines.lowerBound, bytes: byteRange(ofPage: page), lineCount: lines.count,
+                              units: Int(end - point.utf16) - (lines.count - 1), long: longLines[lines.lowerBound],
+                              last: complete && page + 1 == checkpoints.count)
+    }
+    /// A long line's page, once the pass is past it: for drawing matches
+    /// along it.
+    func searchPage(ofLong line: Int) -> FileSearchPage? {
+        guard longLines[line] != nil, !checkpoints.isEmpty else { return nil }
+        let page = checkpoint(holding: line)
+        guard complete || page + 1 < checkpoints.count else { return nil }
+        return searchPage(page)
+    }
+    /// Waits until more of the text is found, or the reading moves on or
+    /// ends, or the search is cancelled.
+    private func waitForSearch() async {
+        searchWaiterTickets += 1
+        let ticket = searchWaiterTickets
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                if Task.isCancelled { continuation.resume() } else { searchWaiters[ticket] = continuation }
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in self?.searchWaiters.removeValue(forKey: ticket)?.resume() }
+        }
+    }
+    private func wakeSearches() {
+        let waiters = searchWaiters
+        searchWaiters = [:]
+        for waiter in waiters.values { waiter.resume() }
+    }
+    /// A page's lines as a search reads them: decoded as they are shown, each
+    /// as long as the pass found it.
+    nonisolated static func searchText(of raw: UnsafeRawBufferPointer, encoding: FileEncoding, last: Bool, lines: Int, units: Int) throws -> FileSearchText {
+        let text = encoding == .utf8 || encoding == .latin1
+            ? quickText(of: raw, latin1: encoding == .latin1, last: last, lines: lines) ?? plainText(of: raw, encoding: encoding, last: last, lines: lines)
+            : plainText(of: raw, encoding: encoding, last: last, lines: lines)
+        guard text.lineCount == lines, text.units.count == units else { throw FileSearchEnd.stopped("Changed on disk") }
+        return text
+    }
+    /// UTF-8 or Latin-1 straight into UTF-16 units, split into lines as
+    /// `lines(of:)` splits them, eight plain ASCII bytes at a time where it
+    /// can: nil at the first byte that is not UTF-8, for `plainText` to
+    /// decode as the view does.
+    nonisolated static func quickText(of raw: UnsafeRawBufferPointer, latin1: Bool, last: Bool, lines wanted: Int) -> FileSearchText? {
+        let count = raw.count
+        var starts = [0]
+        starts.reserveCapacity(wanted + 1)
+        var failed = false
+        let units = [UInt16](unsafeUninitializedCapacity: max(1, count)) { out, written in
+            written = 0
+            guard let source = raw.baseAddress?.assumingMemoryBound(to: UInt8.self), let target = out.baseAddress else { return }
+            var at = 0, to = 0, lineStart = 0
+            func continuation(_ offset: Int) -> Bool { source[at + offset] & 0xC0 == 0x80 }
+            while at < count, starts.count <= wanted {
+                if at + 8 <= count {
+                    let word = UnsafeRawPointer(source + at).loadUnaligned(as: UInt64.self)
+                    if word & 0x8080_8080_8080_8080 == 0, !FileScanner.holds(word, 0x0A), !FileScanner.holds(word, 0x0D) {
+                        for offset in 0..<8 { target[to + offset] = UInt16(source[at + offset]) }
+                        at += 8; to += 8
+                        continue
+                    }
+                }
+                let byte = source[at]
+                if byte == 0x0A || byte == 0x0D {
+                    starts.append(to)
+                    at += 1
+                    if byte == 0x0D, at < count, source[at] == 0x0A { at += 1 }
+                    lineStart = at
+                } else if byte < 0x80 || latin1 {
+                    target[to] = UInt16(byte); to += 1; at += 1
+                } else if byte >= 0xC2, byte <= 0xDF, at + 1 < count, continuation(1) {
+                    target[to] = UInt16(byte & 0x1F) << 6 | UInt16(source[at + 1] & 0x3F)
+                    to += 1; at += 2
+                } else if byte >= 0xE0, byte <= 0xEF, at + 2 < count, continuation(1), continuation(2),
+                          byte != 0xE0 || source[at + 1] >= 0xA0, byte != 0xED || source[at + 1] <= 0x9F {
+                    target[to] = UInt16(byte & 0x0F) << 12 | UInt16(source[at + 1] & 0x3F) << 6 | UInt16(source[at + 2] & 0x3F)
+                    to += 1; at += 3
+                } else if byte >= 0xF0, byte <= 0xF4, at + 3 < count, continuation(1), continuation(2), continuation(3),
+                          byte != 0xF0 || source[at + 1] >= 0x90, byte != 0xF4 || source[at + 1] <= 0x8F {
+                    let scalar = UInt32(byte & 0x07) << 18 | UInt32(source[at + 1] & 0x3F) << 12 | UInt32(source[at + 2] & 0x3F) << 6 | UInt32(source[at + 3] & 0x3F)
+                    let value = scalar - 0x10000
+                    target[to] = 0xD800 + UInt16(value >> 10); target[to + 1] = 0xDC00 + UInt16(value & 0x3FF)
+                    to += 2; at += 4
+                } else {
+                    failed = true
+                    break
+                }
+            }
+            // The text's last line, without a line ending; after a final one,
+            // one more, empty, at the text's end.
+            if !failed, starts.count <= wanted, lineStart < count || last { starts.append(to) }
+            written = to
+        }
+        return failed ? nil : FileSearchText(units: units, starts: starts)
+    }
+    /// Decodes each line as the view does (`lines(of:)`).
+    nonisolated static func plainText(of raw: UnsafeRawBufferPointer, encoding: FileEncoding, last: Bool, lines wanted: Int) -> FileSearchText {
+        var text = FileSearchText()
+        text.units.reserveCapacity(raw.count / encoding.unit + 1)
+        text.starts.reserveCapacity(wanted + 1)
+        let unit = encoding.unit, count = raw.count - raw.count % unit
+        func value(_ at: Int) -> UInt16 {
+            switch encoding {
+            case .utf16LittleEndian: return UInt16(raw[at]) | UInt16(raw[at + 1]) << 8
+            case .utf16BigEndian: return UInt16(raw[at]) << 8 | UInt16(raw[at + 1])
+            default: return UInt16(raw[at])
+            }
+        }
+        func append(_ from: Int, _ to: Int) {
+            text.units.append(contentsOf: decode(UnsafeRawBufferPointer(rebasing: raw[from..<to]), encoding).utf16)
+            text.starts.append(text.units.count)
+        }
+        var start = 0, at = 0
+        while at < count, text.lineCount < wanted {
+            let v = value(at)
+            if v == 0x0A || v == 0x0D {
+                append(start, at)
+                at += unit
+                if v == 0x0D, at < count, value(at) == 0x0A { at += unit }
+                start = at
+            } else { at += unit }
+        }
+        if text.lineCount < wanted {
+            if start < raw.count { append(start, raw.count) } else if last { text.starts.append(text.units.count) }
+        }
+        return text
+    }
+
     // MARK: Copy
 
     /// The text between two positions if all of it is at hand, reading
@@ -818,5 +1042,83 @@ struct FileLengths: Sendable {
                 completion(copied)
             }
         }
+    }
+}
+
+/// How a search reads a document: pages as the pass finishes with them,
+/// through the document's own descriptor, away from the main thread.
+final class FileDocumentSearchReader: FileSearchReader, @unchecked Sendable {
+    // The document is only asked, on the main actor; the reading is kept
+    // under the lock once told.
+    private weak var document: FileDocument?
+    private let version: Int
+    private let generation: Int
+    private let lock = NSLock()
+    private var kept: FileDocument.SearchReading?
+    private let beforeCount: (@Sendable (Int) async -> Void)?
+    private let beforeFind: (@Sendable () async -> Void)?
+
+    init(document: FileDocument, version: Int, generation: Int, beforeCount: (@Sendable (Int) async -> Void)?, beforeFind: (@Sendable () async -> Void)?) {
+        self.document = document; self.version = version; self.generation = generation
+        self.beforeCount = beforeCount; self.beforeFind = beforeFind
+    }
+    func beforeCounting(_ page: Int) async { await beforeCount?(page) }
+    func beforeFinding() async { await beforeFind?() }
+    private func ask(_ ask: FileDocument.SearchAsk) async throws -> FileDocument.SearchAnswer {
+        try Task.checkCancellation()
+        guard let document else { throw FileSearchEnd.stopped("Closed") }
+        let answer = await document.answer(ask, version: version, generation: generation)
+        try Task.checkCancellation()
+        switch answer {
+        case .pages(_, let reading), .count(_, let reading): lock.withLock { kept = reading }
+        case .end(let end): throw end
+        }
+        return answer
+    }
+    private var reading: FileDocument.SearchReading {
+        get throws {
+            guard let reading = lock.withLock({ kept }) else { throw FileSearchEnd.stopped("Closed") }
+            return reading
+        }
+    }
+
+    func pages(from first: Int, limit: Int) async throws -> FileSearchPages {
+        guard case .pages(let pages, _) = try await ask(.pages(from: first, limit: limit)) else { throw FileSearchEnd.stopped("Closed") }
+        return pages
+    }
+    func page(holding line: Int) async throws -> FileSearchPage {
+        guard case .pages(let pages, _) = try await ask(.page(holding: line)), let page = pages.pages.first else { throw FileSearchEnd.stopped("Closed") }
+        return page
+    }
+    func pageCount() async throws -> Int {
+        guard case .count(let count, _) = try await ask(.count) else { throw FileSearchEnd.stopped("Closed") }
+        return count
+    }
+    func text(of page: FileSearchPage) throws -> FileSearchText { try texts(of: [page])[0] }
+    /// Pages that follow one another, read at once and checked once.
+    func texts(of pages: [FileSearchPage]) throws -> [FileSearchText] {
+        guard let low = pages.first?.bytes.lowerBound, let high = pages.last?.bytes.upperBound else { return [] }
+        let reading = try reading
+        let data = try reading.bytes.read(at: low, count: Int(high - low))
+        guard data.count == Int(high - low), reading.bytes.unchanged(since: reading.identity) else { throw FileSearchEnd.stopped("Changed on disk") }
+        return try data.withUnsafeBytes { raw in
+            try pages.map { page in
+                let slice = UnsafeRawBufferPointer(rebasing: raw[Int(page.bytes.lowerBound - low)..<Int(page.bytes.upperBound - low)])
+                return try FileDocument.searchText(of: slice, encoding: reading.encoding, last: page.last, lines: page.lineCount, units: page.units)
+            }
+        }
+    }
+    func window(_ window: Int, of page: FileSearchPage) throws -> [UInt16] {
+        guard let long = page.long else { return [] }
+        let reading = try reading
+        let from = window == 0 ? 0 : long.marks[window - 1].byte
+        let to = window == long.marks.count ? long.bytes : long.marks[window].byte
+        let start = window == 0 ? 0 : long.marks[window - 1].utf16
+        let end = window == long.marks.count ? Int64(page.units) : long.marks[window].utf16
+        let data = try reading.bytes.read(at: long.byte + from, count: Int(to - from))
+        guard data.count == Int(to - from), reading.bytes.unchanged(since: reading.identity) else { throw FileSearchEnd.stopped("Changed on disk") }
+        let units = Array(data.withUnsafeBytes { FileDocument.decode($0, reading.encoding) }.utf16)
+        guard units.count == Int(end - start) else { throw FileSearchEnd.stopped("Changed on disk") }
+        return units
     }
 }

@@ -260,7 +260,7 @@ struct FileScanner: Sendable {
         }
     }
     /// Whether any byte of a word is `byte`.
-    private static func holds(_ word: UInt64, _ byte: UInt8) -> Bool {
+    static func holds(_ word: UInt64, _ byte: UInt8) -> Bool {
         let x = word ^ (0x0101_0101_0101_0101 &* UInt64(byte))
         return (x &- 0x0101_0101_0101_0101) & ~x & 0x8080_8080_8080_8080 != 0
     }

@@ -104,12 +104,18 @@ public struct FileTextStyle {
     public var strongLineNumber: NSColor
     /// The band behind lines set apart: those a file was opened at.
     public var emphasis: NSColor
+    /// Behind every match of a find, and behind the match shown.
+    public var findMatch: NSColor
+    public var findCurrent: NSColor
     public init(font: NSFont = .monospacedSystemFont(ofSize: 12, weight: .regular),
                 lineNumberFont: NSFont = .monospacedDigitSystemFont(ofSize: 11, weight: .regular), lineHeight: CGFloat = 17,
                 text: NSColor = .textColor, lineNumber: NSColor = .tertiaryLabelColor, strongLineNumber: NSColor = .secondaryLabelColor,
-                emphasis: NSColor = NSColor.controlAccentColor.withAlphaComponent(0.12)) {
+                emphasis: NSColor = NSColor.controlAccentColor.withAlphaComponent(0.12),
+                findMatch: NSColor = NSColor.findHighlightColor.withAlphaComponent(0.35),
+                findCurrent: NSColor = NSColor.findHighlightColor.withAlphaComponent(0.8)) {
         self.font = font; self.lineNumberFont = lineNumberFont; self.lineHeight = lineHeight
         self.text = text; self.lineNumber = lineNumber; self.strongLineNumber = strongLineNumber; self.emphasis = emphasis
+        self.findMatch = findMatch; self.findCurrent = findCurrent
     }
     @MainActor public static var standard = FileTextStyle()
 }
@@ -391,6 +397,9 @@ public struct FileTextStyle {
     public private(set) var name = ""
     /// Lines to set apart, softly: the lines a file was opened at.
     public var emphasized: ClosedRange<Int>? { didSet { if emphasized != oldValue { needsDisplay = true; ruler?.needsDisplay = true } } }
+    /// Finding in the text, while a find bar is open (`FileFind`): its
+    /// matches are drawn on the lines drawn, the one shown more strongly.
+    public internal(set) weak var find: FileFind? { didSet { if find !== oldValue { needsDisplay = true } } }
     /// How the text looks: the host app's font and colours, or the system's.
     public var style = FileTextStyle.standard {
         didSet {
@@ -460,7 +469,7 @@ public struct FileTextStyle {
         return low...high
     }
     /// The lines on screen.
-    var visibleLines: ClosedRange<Int> { lines(in: visibleRect) }
+    public var visibleLines: ClosedRange<Int> { lines(in: visibleRect) }
     /// The line under a point, clamped to the text.
     func line(at y: CGFloat) -> Int { max(0, min(source.lineCount - 1, Int(floor((y - FileTextMetrics.top) / lineHeight)))) }
 
@@ -545,6 +554,9 @@ public struct FileTextStyle {
 
     public override func draw(_ dirtyRect: NSRect) {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
+        #if DEBUG
+        matchedColumns = [:]
+        #endif
         let rows = lines(in: dirtyRect)
         // The source is told the screen, its lines and the columns in view,
         // once for each screen, up and down or sideways: drawing part of it
@@ -599,6 +611,9 @@ public struct FileTextStyle {
             // Not come yet: drawn when it has (`arrived`).
             guard let layout else { continue }
             let shown = layout.pieces(from: from, to: to)
+            if let find, let search = find.search {
+                drawMatches(of: search, current: find.current, line: index, layout: layout, pieces: shown, top: top, dirtyRect: dirtyRect, in: context)
+            }
             if layout.extent > measuredWidth { measuredWidth = layout.extent; scheduleWidth() }
             guard !shown.isEmpty else { continue }
             context.saveGState()
@@ -622,6 +637,34 @@ public struct FileTextStyle {
             context.restoreGState()
         }
     }
+    /// A find's matches on a line: a soft band behind each, a stronger one
+    /// behind the match shown. A line set whole is matched whole; along a
+    /// long line, the columns drawn.
+    private func drawMatches(of search: FileSearch, current: FileSearchHit?, line index: Int, layout: FileLineLayout,
+                             pieces: [FileLineLayout.Piece], top: CGFloat, dirtyRect: NSRect, in context: CGContext) {
+        let left = FileTextMetrics.left
+        let window = (dirtyRect.minX - left)...(dirtyRect.maxX - left)
+        // The columns of the pieces drawn: no band sets a piece off screen, and
+        // on the grid, wide characters drawn narrower may sit anywhere in theirs.
+        guard let low = pieces.map(\.range.lowerBound).min(), let high = pieces.map(\.range.upperBound).max() else { return }
+        let columns = low..<high
+        #if DEBUG
+        matchedColumns[index] = columns
+        #endif
+        guard let matches = search.matches(inLine: index, columns: columns) else { return }
+        for match in matches {
+            let shown = current.map { $0.line == index && $0.columns == match } ?? false
+            context.setFillColor((shown ? style.findCurrent : style.findMatch).cgColor)
+            for span in layout.spans(from: match.lowerBound, to: match.upperBound, within: window) where span.upperBound > span.lowerBound {
+                context.fill(CGRect(x: left + span.lowerBound, y: top, width: span.upperBound - span.lowerBound, height: lineHeight))
+            }
+        }
+    }
+    #if DEBUG
+    /// Test seam: the columns of each line matched to be drawn, in the last
+    /// drawing.
+    private(set) var matchedColumns: [Int: Range<Int>] = [:]
+    #endif
     /// The screen the source was last told of: its lines, and where it is
     /// sideways.
     private struct Screen: Equatable { let lines: ClosedRange<Int>; let left: CGFloat; let width: CGFloat }
@@ -674,6 +717,7 @@ public struct FileTextStyle {
         }
         ruler?.needsDisplay = true
         announce(.selectedTextChanged)
+        find?.selectionChanged()
     }
     private func clamp(_ position: FileTextPosition) -> FileTextPosition {
         let line = max(0, min(position.line, source.lineCount - 1))
@@ -714,6 +758,14 @@ public struct FileTextStyle {
     public func scrollToVisible(_ position: FileTextPosition) {
         let point = point(of: position)
         scrollToVisible(NSRect(x: point.x - 24, y: point.y - lineHeight, width: 48, height: lineHeight * 3))
+    }
+    /// Selects a match and shows it: near the top third if its line is off
+    /// screen, as a jump does, and sideways into view along a long line.
+    public func show(match: FileSearchHit) {
+        select(from: match.start, to: match.end)
+        if !lines(in: visibleRect.insetBy(dx: 0, dy: lineHeight)).contains(match.line) { scrollTo(line: match.line) }
+        let from = point(of: match.start), to = point(of: match.end)
+        scrollToVisible(NSRect(x: from.x - 24, y: from.y, width: max(48, to.x - from.x + 48), height: lineHeight))
     }
     /// Shows a line near the top third of the view, as a jump to it should.
     public func scrollTo(line index: Int) {
@@ -893,7 +945,7 @@ public struct FileTextStyle {
     /// can no longer come.
     private var pending: [Pending] = []
     private var pendingRevision = 0
-    private var selectionRevision = 0
+    private(set) var selectionRevision = 0
     /// What the movement waiting now needs, kept until it is done or dropped.
     private var pendingHold: FileTextHold?
     /// A double-clicked word found once its text came.

@@ -6,7 +6,8 @@ import FileView
 // menu, in the app's design components.
 
 extension FileTextStyle {
-    @MainActor static let pi = FileTextStyle(text: .piInk, lineNumber: .piInkTertiary, strongLineNumber: .piInkSecondary, emphasis: .piAccentSoft)
+    @MainActor static let pi = FileTextStyle(text: .piInk, lineNumber: .piInkTertiary, strongLineNumber: .piInkSecondary, emphasis: .piAccentSoft,
+                                             findMatch: NSColor.piWarning.withAlphaComponent(0.28), findCurrent: NSColor.piWarning.withAlphaComponent(0.6))
 }
 
 extension FileTextView {

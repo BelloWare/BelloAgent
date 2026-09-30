@@ -663,6 +663,21 @@ final class UIScreenshotTests: XCTestCase {
             try capture(window, to: gallery.appendingPathComponent("24a-tabs-side-\(name).png"))
             model.tabs.activate(file); try await settle(0.6)
         }
+        // Finding in the file, its matches drawn, the one shown the fourth;
+        // then going to a line.
+        file.openFind(); file.findQuery = "attempts"
+        try await settle(1.2)
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(1.0)
+            try capture(window, to: gallery.appendingPathComponent("24c-tabs-find-\(name).png"))
+        }
+        file.openGoToLine(); file.lineQuery = "18"
+        try await settle(0.8)
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(1.0)
+            try capture(window, to: gallery.appendingPathComponent("24d-tabs-go-to-line-\(name).png"))
+        }
+        file.closeBar(); try await settle(0.6)
         let popped = model.tabs.popOut(file)
         let tabWindow = try XCTUnwrap(model.tabs.window(of: popped))
         tabWindow.setFrame(NSRect(x: 120, y: 120, width: 820, height: 560), display: true)

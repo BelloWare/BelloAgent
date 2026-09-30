@@ -60,6 +60,9 @@ import Combine
     func menuEntries() -> [PiMenuEntry] { [] }
     /// The view that takes the keys when the tab is shown, if any.
     var focusView: NSView? { nil }
+    /// A ⌘ key pressed while focus is in the tab's content, before the
+    /// window and the menus have it: true if the kind took it.
+    func performKeyEquivalent(with event: NSEvent) -> Bool { false }
 
     // MARK: Kept content
 
@@ -69,6 +72,7 @@ import Combine
     var contentView: TabContentView {
         if let madeContent { return madeContent }
         let view = TabContentView(rootView: AnyView(makeContent().piTabRoot()))
+        view.tab = self
         madeContent = view
         return view
     }
@@ -92,7 +96,26 @@ import Combine
 
 /// A tab's content, kept by the tab: a hosting view of its own, so its state
 /// lives while the tab is open, wherever it is shown.
-final class TabContentView: NSHostingView<AnyView> {}
+final class TabContentView: NSHostingView<AnyView> {
+    weak var tab: HostedTab?
+}
+
+extension TabHost {
+    /// A ⌘ key pressed in a window whose focus is in a tab's content, shown
+    /// and not under a sheet: that tab's to take first (`performKeyEquivalent`).
+    static func tabKey(_ event: NSEvent, in window: NSWindow) -> Bool {
+        guard event.type == .keyDown, event.modifierFlags.contains(.command), event.window === window, window.attachedSheet == nil,
+              var view = window.firstResponder as? NSView else { return false }
+        while true {
+            if let content = view as? TabContentView {
+                guard !content.isHiddenOrHasHiddenAncestor, let tab = content.tab else { return false }
+                return tab.performKeyEquivalent(with: event)
+            }
+            guard let parent = view.superview else { return false }
+            view = parent
+        }
+    }
+}
 
 extension View {
     /// What a tab's content inherits in the app, being a root of its own.

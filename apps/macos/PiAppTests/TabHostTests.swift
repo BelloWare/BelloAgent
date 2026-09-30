@@ -12,10 +12,11 @@ final class TabHostTests: XCTestCase {
     /// A kind of tab for the tests: counts what the host tells it.
     @MainActor final class Probe: HostedTab {
         override class var kind: String { "probe" }
-        var shows = 0, hides = 0, closes = 0
+        var shows = 0, hides = 0, closes = 0, keys = 0
         /// What takes the keys in its content, if the test gives it one.
         var focusable: NSView?
         override var focusView: NSView? { focusable }
+        override func performKeyEquivalent(with event: NSEvent) -> Bool { keys += 1; return true }
         init(_ key: String) { super.init(key: key, title: key, symbol: "doc") }
         override func didShow() { shows += 1 }
         override func didHide() { hides += 1 }
@@ -169,6 +170,53 @@ final class TabHostTests: XCTestCase {
         host.moveToPane(tab)
         inThird.show(tab, for: host.pane)
         try await eventually("focused where it went") { focused(third) }
+    }
+
+    /// A tab has the ⌘ keys pressed while focus is in its content, shown and
+    /// not under a sheet; no other keys, and not from elsewhere.
+    @MainActor func testATabHasItsKeysOnlyWhereItsShownContentHasFocus() async throws {
+        final class Keys: NSView { override var acceptsFirstResponder: Bool { true } }
+        let host = host()
+        let tab = open(host, "a")
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 200), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 200))
+        let container = TabContentContainer(frame: NSRect(x: 0, y: 0, width: 300, height: 150))
+        let elsewhere = Keys(frame: NSRect(x: 0, y: 160, width: 100, height: 20))
+        root.addSubview(container); root.addSubview(elsewhere)
+        window.contentView = root
+        addTeardownBlock { @MainActor in window.contentView = nil; window.close() }
+        container.show(tab, for: host.pane)
+        let keys = Keys(frame: NSRect(x: 0, y: 0, width: 100, height: 20))
+        tab.contentView.addSubview(keys)
+        func key(_ characters: String, _ modifiers: NSEvent.ModifierFlags, in window: NSWindow) throws -> NSEvent {
+            try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0, windowNumber: window.windowNumber,
+                                           context: nil, characters: characters, charactersIgnoringModifiers: characters, isARepeat: false, keyCode: 3))
+        }
+        let commandF = try key("f", .command, in: window)
+        XCTAssertTrue(window.makeFirstResponder(elsewhere))
+        XCTAssertFalse(TabHost.tabKey(commandF, in: window), "focus elsewhere")
+        XCTAssertTrue(window.makeFirstResponder(keys))
+        XCTAssertTrue(TabHost.tabKey(commandF, in: window), "focus in its content")
+        XCTAssertEqual(tab.keys, 1)
+        XCTAssertFalse(TabHost.tabKey(try key("f", [], in: window), in: window), "not a ⌘ key")
+        let other = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 100, height: 100), styleMask: [.titled], backing: .buffered, defer: false)
+        other.isReleasedWhenClosed = false
+        addTeardownBlock { @MainActor in other.close() }
+        XCTAssertFalse(TabHost.tabKey(try key("f", .command, in: other), in: window), "another window's key")
+        container.isHidden = true
+        XCTAssertTrue(window.makeFirstResponder(keys))
+        XCTAssertFalse(TabHost.tabKey(commandF, in: window), "covered")
+        container.isHidden = false
+        XCTAssertTrue(window.makeFirstResponder(keys))
+        let sheet = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 100, height: 50), styleMask: [.titled], backing: .buffered, defer: false)
+        sheet.isReleasedWhenClosed = false
+        window.beginSheet(sheet, completionHandler: nil)
+        try await eventually("the sheet up") { window.attachedSheet === sheet }
+        XCTAssertFalse(TabHost.tabKey(commandF, in: window), "under a sheet")
+        window.endSheet(sheet)
+        try await eventually("the sheet down") { window.attachedSheet == nil }
+        XCTAssertEqual(tab.keys, 1)
     }
 
     @MainActor func testAWindowClosedByItsButtonClosesItsTabs() {
