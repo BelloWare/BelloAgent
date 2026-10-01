@@ -28,7 +28,7 @@ Source: `docs/reviews/BelloAgent-0.1.117-deep-review.md`.
 - [ ] **Whole pending-side draft** (finding 4): close, replace, quit and update move text, images and skills to the parent through one merge path; storage failures keep everything recoverable.
 
 ## Workstream 2 — content and rendering correctness (findings 7–10)
-- [ ] **Nested code fence identities** (7): collision-free leaf identity; Copy, display and accessibility match; streaming selection stable.
+- [x] **Nested code fence identities** (7): collision-free leaf identity; Copy, display and accessibility match; streaming selection stable.
 - [ ] **Linear terminal Markdown matching** (9): ordered cursor; candidate-visit test proves linear growth; identity rules unchanged.
 - [ ] **Bounded syntax-state reads** (8): chunked lexer advance, shared state across lines, cancellation; read-size test with a 64 MiB first line.
 - [x] **Empty MCP SSE priming events** (10): ignored; loopback fixture with arbitrary chunk splits, no duplicate tool calls.

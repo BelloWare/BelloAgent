@@ -7,6 +7,16 @@ struct MarkdownBlockIdentity: Hashable {
     /// Which segment of a long list this is: a list is drawn a few items to
     /// a host, and each of those hosts is a block of its own.
     var segment = 0
+    /// Where a nested block sits within its top-level block: the child it is
+    /// at each level, outermost first; empty for the top-level block. No two
+    /// leaves of a block share one, and a leaf keeps its own while it grows.
+    var path: [MarkdownChildStep] = []
+}
+
+/// One level of a nested block's place: which child of a quote, item of a
+/// list, or block of a list item it is.
+enum MarkdownChildStep: Hashable {
+    case quoteChild(Int), listItem(Int), itemBlock(Int)
 }
 
 struct StreamingMarkdownRecord {
