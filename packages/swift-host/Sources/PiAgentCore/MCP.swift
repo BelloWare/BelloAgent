@@ -320,7 +320,7 @@ actor HTTPMCP: MCPTransport {
                 defer { transport.consumed(bytes.count) }
                 if sse {
                     for event in try parser.feed(bytes) {
-                        let v = try JSON.parse(Data(event.data.utf8))
+                        guard let v = try Self.message(event) else { continue }
                         if v["id"].text == expected, expected != nil { return try response(v) }
                         if !v["method"].isNull && !v["id"].isNull { throw AgentError("mcp_capability", "Server requested an unsupported client capability") }
                         if v["method"].text == "notifications/tools/list_changed" { catalogChanges += 1 }
@@ -331,6 +331,14 @@ actor HTTPMCP: MCPTransport {
         if expected == nil, (200..<300).contains(code) { return [:] }
         guard !sse, !body.isEmpty else { throw AgentError("mcp_incomplete", "MCP stream ended without its response; invocation outcome is unknown") }
         let value = try JSON.parse(body); guard value["id"].text == expected else { throw AgentError("mcp_protocol", "Mismatched MCP response identity") }; return try response(value)
+    }
+    /// The JSON-RPC message an SSE event carries, or nil for one that carries
+    /// none: a 2025-11-25 server primes each stream with an event holding only
+    /// an id and empty data, so the client may resume it. Malformed non-empty
+    /// data is still an error.
+    static func message(_ event: SSEEvent) throws -> JSON? {
+        guard event.data.contains(where: { !$0.isWhitespace }) else { return nil }
+        return try JSON.parse(Data(event.data.utf8))
     }
     private func response(_ v: JSON) throws -> JSON {
         guard v.isObject, v["jsonrpc"].text == "2.0" else { throw AgentError("mcp_protocol", "Invalid JSON-RPC response") }
