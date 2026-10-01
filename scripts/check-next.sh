@@ -21,6 +21,8 @@ REPO=$(cd "$(dirname "$0")/.." && pwd)
 HOME_DIR="$HOME/Library/Caches/BelloAgentNext"
 WT="$HOME_DIR/worktree"
 export PI_BUILD_ROOT="$HOME_DIR/build"
+# A helper test that traps writes its stacks into the log (as the gate does).
+export SWIFT_BACKTRACE="enable=yes,interactive=no,threads=all"
 LOGS="$HOME_DIR/logs"
 mkdir -p "$PI_BUILD_ROOT" "$LOGS"
 

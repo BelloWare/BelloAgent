@@ -101,19 +101,14 @@ struct ShownRows {
     }
 }
 
-/// A replay handed to another thread to be let go of there.
-private final class Spent: @unchecked Sendable {
-    private var replay: JournalReplay?
-    init(_ replay: JournalReplay?) { self.replay = replay }
-    func release() { replay = nil }
-}
-
 /// A value handed to another thread: whoever takes it out owns it, and the
-/// box left behind holds nothing.
+/// box left behind holds nothing. Taking is locked, so of two threads that
+/// try at once, one gets it.
 final class Handoff<Value>: @unchecked Sendable {
+    private let lock = NSLock()
     private var value: Value?
     init(_ value: consuming Value) { self.value = value }
-    func take() -> Value? { let taken = value; value = nil; return taken }
+    func take() -> Value? { lock.withLock { value.take() } }
 }
 
 /// The journal file a replay reads, as the system and its checks know it:
