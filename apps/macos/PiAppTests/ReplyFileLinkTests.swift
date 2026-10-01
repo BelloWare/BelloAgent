@@ -3,6 +3,16 @@ import AppKit
 @testable import PiApp
 
 final class ReplyFileLinkTests: XCTestCase {
+    @MainActor private final class Trust { var allowed = true }
+    @MainActor func testMarkdownEqualityIncludesWhetherFileLinksCanOpen() {
+        let withoutAction = MarkdownBodyView(source: "`Sources/App.swift`")
+        var withAction = withoutAction
+        withAction.openFile = { _, _ in }
+        XCTAssertNotEqual(withAction, withoutAction)
+        withAction.openFile = nil
+        XCTAssertEqual(withAction, withoutAction)
+    }
+
     private func files() throws -> URL {
         let root = scratchRoot("reply-file-links")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -48,10 +58,11 @@ final class ReplyFileLinkTests: XCTestCase {
     @MainActor func testOnlyCodeSpansBecomeFileLinksAndClickRevalidatesThem() async throws {
         let (surface, window) = MarkdownTextSurfaceTests.surface("Use `a.swift:2`; a.swift:2 in prose. `missing.swift`.")
         defer { window.contentView = nil; window.close() }
-        var requests: [String] = [], opened: ReplyFileLocation?, trusted = true
+        var requests: [String] = [], opened: ReplyFileLocation?
+        let trust = Trust()
         surface.textView.resolveFile = { text in
             requests.append(text)
-            return trusted && text == "a.swift:2" ? ReplyFileLocation(path: "/project/a.swift", line: 2) : nil
+            return trust.allowed && text == "a.swift:2" ? ReplyFileLocation(path: "/project/a.swift", line: 2) : nil
         }
         surface.textView.openFile = { opened = ReplyFileLocation(path: $0, line: $1?.lowerBound) }
         let storage = try XCTUnwrap(surface.textView.textStorage)
@@ -65,7 +76,7 @@ final class ReplyFileLinkTests: XCTestCase {
         XCTAssertTrue(surface.textView.textView(surface.textView, clickedOnLink: link, at: first.location))
         try await eventually("the linked file opens at its line") { opened != nil }
         XCTAssertEqual(opened, ReplyFileLocation(path: "/project/a.swift", line: 2))
-        opened = nil; trusted = false
+        opened = nil; trust.allowed = false
         let before = requests.count
         XCTAssertTrue(surface.textView.textView(surface.textView, clickedOnLink: link, at: first.location))
         try await eventually("click checked the revoked trust") { requests.count > before }

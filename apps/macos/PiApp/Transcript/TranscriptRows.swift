@@ -214,7 +214,7 @@ struct MarkdownBodyView: View {
     /// room until it is shown again.
     var parked = false
     var resolveFile: (@MainActor (String) async -> ReplyFileLocation?)? = nil
-    var openFile: ((String, ClosedRange<Int>?) -> Void)? = nil
+    var openFile: (@MainActor (String, ClosedRange<Int>?) -> Void)? = nil
     @State private var hovering = false
     var body: some View {
         // The surface reads the message itself, so a token does not run this
@@ -459,6 +459,11 @@ struct MessageRowView: View {
         let id = message.id, toggle = toggle
         return ReplySourceToggle(raw: disclosure.raw) { toggle(.source(id)) }
     }
+    private var markdownOpenFile: (@MainActor (String, ClosedRange<Int>?) -> Void)? {
+        guard let action = actions.openFile else { return nil }
+        return { @MainActor path, lines in action(path, lines) }
+    }
+
     @ViewBuilder private var plain: some View {
         let raw = ReplySource.shows(message, raw: disclosure.raw)
         // A parked body keeps the copy targets it was drawn with, so parking
@@ -506,7 +511,8 @@ struct MessageRowView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     MarkdownBodyView(source: message.text, streaming: message.isStreaming, copyTargets: copyTargets,
                                      sourceIdentity: message.id, parked: raw,
-                                     resolveFile: message.role == "assistant" ? actions.resolveReplyFile : nil, openFile: actions.openFile).equatable()
+                                     resolveFile: message.role == "assistant" ? actions.resolveReplyFile : nil,
+                                     openFile: markdownOpenFile).equatable()
                     if raw { ReplySourceView(source: message.text).equatable() }
                 }
                 .background { if message.role == "assistant" { TranscriptQuoteRegion(messageID: message.id) } }
