@@ -11,6 +11,7 @@ import GitView
 
 @MainActor final class ChangesTab: HostedTab {
     override class var kind: String { "changes" }
+    override var preferredWindowSize: NSSize { NSSize(width: 1040, height: 720) }
     let projectID: String
     /// The project's folder name, and what the panel reads: its folders.
     @Published private(set) var name: String
@@ -33,7 +34,7 @@ import GitView
 
     init(projectID: String, name: String, roots: [String]) {
         self.projectID = projectID; self.name = name; self.roots = roots
-        super.init(key: projectID, title: Self.title(name), symbol: "arrow.triangle.branch")
+        super.init(key: projectID, title: Self.title(name), symbol: "arrow.left.arrow.right")
         help = Self.help(name)
     }
     static func title(_ name: String) -> String { "Changes · " + name }

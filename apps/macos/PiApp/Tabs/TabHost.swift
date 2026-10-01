@@ -40,6 +40,9 @@ import Combine
 
     // MARK: What a kind gives
 
+    /// The initial content size of a new pop-out; restored windows keep their frame.
+    var preferredWindowSize: NSSize { TabWindowController.defaultSize }
+
     /// The tab's content, made once, when it is first shown, and kept while
     /// the tab is open: its state survives other tabs being shown and the tab
     /// moving between the pane and windows.
@@ -265,8 +268,8 @@ extension View {
         }
         let window = TabContainer(isPane: false)
         windows.append(window)
-        let frame = point.map { TabWindowController.frame(topLeft: $0) }
-        makeController(for: window, frame: frame)
+        let frame = point.map { TabWindowController.frame(topLeft: $0, size: tab.preferredWindowSize) }
+        makeController(for: window, frame: frame, initialSize: tab.preferredWindowSize)
         move(tab, to: window)
         return window
     }
@@ -275,8 +278,8 @@ extension View {
 
     // MARK: Windows
 
-    private func makeController(for container: TabContainer, frame: NSRect?) {
-        let controller = TabWindowController(container: container, host: self, frame: frame)
+    private func makeController(for container: TabContainer, frame: NSRect?, initialSize: NSSize = TabWindowController.defaultSize) {
+        let controller = TabWindowController(container: container, host: self, frame: frame, initialSize: initialSize)
         controllers[container.id] = controller
         if showsWindows { controller.showWindow(nil) }
     }

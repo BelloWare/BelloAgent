@@ -61,6 +61,8 @@ final class ChangesTabTests: GitPanelTestCase {
         let tab = try XCTUnwrap(changes(model, project), "A Changes tab, in the pane")
         XCTAssertTrue(model.tabs.pane.tabs.contains { $0 === tab })
         XCTAssertEqual(tab.title, "Changes · " + URL(fileURLWithPath: project.path).lastPathComponent)
+        XCTAssertEqual(tab.symbol, "arrow.left.arrow.right")
+        XCTAssertEqual(tab.preferredWindowSize, NSSize(width: 1040, height: 720))
         window.contentView?.layoutSubtreeIfNeeded()
         try await eventually("its panel, read") { tab.hasController && tab.controller.status.entries.count == 2 && !tab.controller.loading }
         XCTAssertNil(window.attachedSheet, "Changes leaves the workspace available while its tab is open")

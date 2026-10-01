@@ -60,6 +60,5 @@ The implementation work below is now committed locally. No new code has been bui
 
 ## Open decisions for the owner
 - ⌘↩, ⌘. and ⌘F ignored while typing in a tab's text box (e.g. a commit message)?
-- A separate icon for the Changes tab (it shares the side's branch icon)?
-- Below 900 pt the Changes list stacks above the diff, and new pop-out windows open at 820 pt: widen them or lower the threshold?
+- [x] Owner delegated the choices on 2026-10-01: Changes uses the comparison arrows icon; new Changes windows open at 1040×720. Keep the 900 pt stacking threshold, ordinary file windows at 820×640 and restored window frames. TabHostTests and ChangesTabTests cover the choice; gallery validation pending.
 - Sides: may Next/Previous Chat step onto a saved side; what happens to open sides when their chat is deleted or switched?

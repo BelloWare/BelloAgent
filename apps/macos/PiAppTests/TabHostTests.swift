@@ -49,6 +49,8 @@ final class TabHostTests: XCTestCase {
         var shows = 0, hides = 0, closes = 0, keys = 0
         /// What takes the keys in its content, if the test gives it one.
         var focusable: NSView?
+        var initialSize = TabWindowController.defaultSize
+        override var preferredWindowSize: NSSize { initialSize }
         override var focusView: NSView? { focusable }
         override func performKeyEquivalent(with event: NSEvent) -> Bool { keys += 1; return true }
         init(_ key: String) { super.init(key: key, title: key, symbol: "doc") }
@@ -66,6 +68,24 @@ final class TabHostTests: XCTestCase {
         host.open(kind: Probe.kind, key: key, in: container) { Probe(key) } as! Probe
     }
     @MainActor private func titles(_ container: TabContainer) -> [String] { container.tabs.map(\.title) }
+
+    @MainActor func testNewPopOutUsesItsKindsSizeAndAnExistingWindowKeepsItsSize() throws {
+        let host = host()
+        let tab = open(host, "wide")
+        tab.initialSize = NSSize(width: 1040, height: 720)
+        let container = host.popOut(tab)
+        let window = try XCTUnwrap(host.window(of: container))
+        XCTAssertEqual(window.frame.width, 1040)
+        window.setContentSize(NSSize(width: 580, height: 800))
+        let keptFrame = window.frame
+        XCTAssertTrue(host.popOut(tab) === container)
+        XCTAssertEqual(window.frame, keptFrame)
+        let point = NSPoint(x: 200, y: 900)
+        XCTAssertEqual(TabWindowController.frame(topLeft: point, size: tab.initialSize),
+                       NSRect(x: 200, y: 180, width: 1040, height: 720))
+        let ordinary = open(host, "ordinary")
+        XCTAssertEqual(try XCTUnwrap(host.window(of: host.popOut(ordinary))).frame.width, 820)
+    }
 
     @MainActor func testOneTabAKeyOpenedAfterTheTabShown() {
         let host = host()

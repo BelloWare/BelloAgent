@@ -12,9 +12,9 @@ import SwiftUI
     private var closingForHost = false
     static let defaultSize = NSSize(width: 820, height: 640)
 
-    init(container: TabContainer, host: TabHost, frame: NSRect?) {
+    init(container: TabContainer, host: TabHost, frame: NSRect?, initialSize: NSSize = TabWindowController.defaultSize) {
         self.container = container; self.host = host
-        let window = TabWindow(contentRect: NSRect(origin: .zero, size: Self.defaultSize),
+        let window = TabWindow(contentRect: NSRect(origin: .zero, size: initialSize),
                                styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                                backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
@@ -42,8 +42,8 @@ import SwiftUI
         window?.close()
     }
     /// A window's frame, its top left where a drag let go of a tab.
-    static func frame(topLeft point: NSPoint) -> NSRect {
-        NSRect(x: point.x, y: point.y - defaultSize.height, width: defaultSize.width, height: defaultSize.height)
+    static func frame(topLeft point: NSPoint, size: NSSize = defaultSize) -> NSRect {
+        NSRect(x: point.x, y: point.y - size.height, width: size.width, height: size.height)
     }
     /// A frame kept on a screen: on the screen that shows most of it (else
     /// the main one), no bigger than it, and moved inside it.
