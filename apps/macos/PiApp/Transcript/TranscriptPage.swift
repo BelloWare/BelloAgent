@@ -54,13 +54,23 @@ struct ContentGeometry: Equatable {
         guard snapshot?.lifecycle?.active == nil, snapshot?.lifecycle?.recent.isEmpty != false || snapshot?.sending == true else { return nil }
         return Self.liveTurn(busy: busy)
     }
-    @Published private(set) var detached = false
+    /// Not published: nothing on screen shows it (see below), and it changes
+    /// as the clip view moves, which SwiftUI's layout of the transcript does
+    /// while it updates a view, where publishing is undefined behaviour.
+    private(set) var detached = false
     /// Whether the reader is standing in the bottom band right now. The Back
     /// to bottom pill is shown whenever they are not — which is the same
     /// question as whether the page is following, asked of the geometry
     /// rather than of the page's intentions, so the pill can never disagree
     /// with what the reader can see.
-    @Published private(set) var atBottom = true
+    ///
+    /// It changes as the clip view moves, and SwiftUI's layout of the
+    /// transcript moves it as it resizes the scroll view, while it updates a
+    /// view. A change there is announced a turn of the run loop later
+    /// (`announceChange`); the value itself changes at once.
+    private(set) var atBottom = true {
+        willSet { if newValue != atBottom { announceChange() } }
+    }
     /// Set when the page has stopped asking for earlier rows on its own: its
     /// rows do not reach past the viewport, and it has already filled it as
     /// often as it may. From here the reader asks, at the top edge.
@@ -922,6 +932,14 @@ struct ContentGeometry: Equatable {
         viewportResizePending = false
         pendingAnchor = nil; openingPlacementPending = false; openingReadingAnchor = nil
         jumping = false
+    }
+    /// Tells SwiftUI the page is about to change, as @Published does. Inside
+    /// the scroll view's resize, which SwiftUI's own layout makes while it
+    /// updates a view, it does so a turn of the run loop later: there it is
+    /// "Publishing changes from within view updates", undefined behaviour.
+    private func announceChange() {
+        guard (scrollView as? TranscriptNativeScrollView)?.resizing == true else { return objectWillChange.send() }
+        DispatchQueue.main.async { [weak self] in self?.objectWillChange.send() }
     }
     /// Standing in the bottom band pins the page to the newest row; leaving
     /// it unpins; coming back re-pins. Nothing else decides this — not which

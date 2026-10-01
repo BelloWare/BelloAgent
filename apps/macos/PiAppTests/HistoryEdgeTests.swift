@@ -254,7 +254,17 @@ final class HistoryEditTests: HistoryEdgeTestCase, SerialTestLane {
         try await editAndResend("Second question", questions: 6, scrolledUp: true)
     }
 
+    /// None of it publishes while SwiftUI updates a view ("Publishing changes
+    /// from within view updates", undefined behaviour). The scrolled-up edit
+    /// did: SwiftUI resized the transcript, the clip view moved inside that
+    /// layout, and the page published that the reader was back at the end.
     @MainActor private func editAndResend(_ target: String, questions: Int = 3, scrolledUp: Bool = false) async throws {
+        let logged = try await standardError { try await editAndResendSteps(target, questions: questions, scrolledUp: scrolledUp) }
+        // What was written meanwhile stays in the test's log.
+        FileHandle.standardError.write(Data(logged.utf8))
+        XCTAssertFalse(logged.contains("Publishing changes from within view updates"), "The edit published inside a view update")
+    }
+    @MainActor private func editAndResendSteps(_ target: String, questions: Int, scrolledUp: Bool) async throws {
         let live = try await ConversationPaneTests.LiveChat()
         var closed = false
         defer { if !closed { Task { await live.close() } } }
