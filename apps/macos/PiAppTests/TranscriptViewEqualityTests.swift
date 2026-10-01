@@ -38,7 +38,7 @@ final class TranscriptViewEqualityTests: XCTestCase {
                         "foldInMotion", "_hovering", "_reduceMotion", "_forks"],
                        changed("BlockRowView", "TranscriptRows.swift"))
         XCTAssertEqual(properties(MarkdownBodyView(source: "Text")),
-                       ["source", "style", "capsWidth", "streaming", "copyTargets", "sourceIdentity", "parked", "_hovering"],
+                       ["source", "style", "capsWidth", "streaming", "copyTargets", "sourceIdentity", "parked", "resolveFile", "openFile", "_hovering"],
                        changed("MarkdownBodyView", "TranscriptRows.swift"))
         XCTAssertEqual(properties(CodeBlockView(language: "swift", code: "let a = 1")),
                        ["language", "code", "size", "_hovering", "_section", "streaming", "_usesNativeText"],

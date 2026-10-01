@@ -11,6 +11,8 @@ final class ReplyFileLinkTests: XCTestCase {
         XCTAssertNotEqual(withAction, withoutAction)
         withAction.openFile = nil
         XCTAssertEqual(withAction, withoutAction)
+        withAction.resolveFile = { _ in nil }
+        XCTAssertNotEqual(withAction, withoutAction)
     }
 
     private func files() throws -> URL {
