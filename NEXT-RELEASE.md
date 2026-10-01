@@ -51,7 +51,7 @@ The implementation work below is committed locally. The first focused helper run
 - [x] Prepare `docs/Next-Release-Validation.md` with local-commit checks and the remaining release gates; execution and results are pending.
 - [x] Gallery scenes cover PDF/image previews (`24f`, `24g`) and an actual reply path link (`24h`), including opening its file. Rendering and visual review pending on the Mac.
 - [x] The Mac check script can check a local committed ref without fetching or publishing; CheckNextTests covers local/default ref selection and refusal of a dirty check worktree. Test execution pending.
-- [x] Bring the published 0.1.116 release metadata and validation record into `dev/next`; its build is 120. Prepare 0.1.117's version/build and regenerate the Xcode project before packaging.
+- [x] Bring the published 0.1.116 metadata and validation record into `dev/next`; its build is 120. Prepare 0.1.117/build 121 and regenerate with XcodeGen 2.44.1. The public feed was checked before choosing build 121.
 - [ ] `scripts/check-next.sh gate` passes; an hour-long soak of a Release build passes.
 - [ ] A Release build-for-testing with testability compiles `@testable import FileView` and `GitView`.
 - [ ] Forks made by 0.1.116 and earlier open exactly as before. ForkCloneTests now covers the published copied-journal format across open/reopen; Mac execution and a retained old-fork check remain pending.

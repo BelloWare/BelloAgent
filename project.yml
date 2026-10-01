@@ -5,15 +5,15 @@ options:
     macOS: "14.0"
 settings:
   base:
-    MARKETING_VERSION: 0.1.116
-    CURRENT_PROJECT_VERSION: 120
+    MARKETING_VERSION: 0.1.117
+    CURRENT_PROJECT_VERSION: 121
     SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: complete
     SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
     DEVELOPMENT_TEAM: 43TXHV3TM3
     ARCHS: arm64
     ENABLE_HARDENED_RUNTIME: YES
-    RELEASE_MESSAGE: "Thousands read K and money two decimals everywhere, the app's own controls throughout, and a footer that stays still."
+    RELEASE_MESSAGE: "File tabs with syntax colours and native previews, Quick Open, Changes beside the chat, and faster large forks."
   configs:
     Debug:
       ENABLE_HARDENED_RUNTIME: NO

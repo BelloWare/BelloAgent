@@ -2,7 +2,7 @@
 
 All new development remains local on `dev/next` under the owner's 2026-10-01 instruction. No new feature commits have been pushed. The four earlier Quick Open commits were already upstream before that instruction. Published history and `main` are unchanged.
 
-The implementation checklist is updated in [NEXT-RELEASE.md](../NEXT-RELEASE.md). Builds, tests, gallery rendering, signing and publication have not been run by this coding agent. A checked implementation item does not mean its Mac validation passed.
+The implementation checklist is updated in [NEXT-RELEASE.md](../NEXT-RELEASE.md). Validation is now running on this Mac after the owner delegated the remaining decisions. The focused helper run passed 47 tests (one skipped), and CheckNextTests passed 4 tests. Native compilation, the full gate, gallery, signing and publication remain pending. A checked implementation item does not mean its validation passed.
 
 ## Prepare the project
 
@@ -91,7 +91,7 @@ Keep the checked SHA, toolchain versions, pass/fail logs and soak report. If sou
 
 - Open a retained fork made by 0.1.116 or earlier and compare its transcript, context, versions, origin and cost. ForkCloneTests adds generated copied-format coverage, but that is not a claim that the retained-data check has passed.
 - Turn VoiceOver on in the file viewer for a minute: move through lines, select and copy text, use Find and Go to Line, and open a linked file.
-- Resolve the four decisions in NEXT-RELEASE.md: chat shortcuts while typing in tabs, the Changes icon, the narrow-layout threshold/window size, and saved-side navigation and lifetime.
+- The owner delegated the four decisions. NEXT-RELEASE.md records the chosen shortcut, Changes-window and saved-side behaviours and their regression tests.
 - Review [0.1.117 release notes](../releases/0.1.117.html), including partial fork loading and older apps' interpretation of the new cost-reset field.
 
 ## Packaging and website
