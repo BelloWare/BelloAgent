@@ -229,6 +229,7 @@ extension WorkspaceModel {
                 let task = Task { [self] in
                     try Task.checkCancellation()
                     try await withConnectionOpen(item, lease: lease, host: host) {
+                        try await reconcileJournal(item.id, host: host, profile: profile)
                         let initial = try await host.request("session.open", sessionID: item.id, params: params)
                         // Previewing a fresh chat allocates a native journal too. Persist
                         // its path before an idle unload, even when no message is sent.

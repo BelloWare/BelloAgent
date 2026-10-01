@@ -311,7 +311,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     var connectionSwitches: [String: (token: UUID, task: Task<Void, Never>)] = [:]
     var connectionGenerations: [String: UInt64] = [:]
     /// Test seam: each step of a connection change as it happens, awaited
-    /// ("closed", "metadata"), so a fixture can hold the change there.
+    /// ("closed", "rebound", "metadata"), so a fixture can hold the change there.
     var connectionSwitchSteps: ((String) async throws -> Void)?
     var deletingProfiles: Set<String> = []
     var profileDeletionGenerations: [String: UInt64] = [:]

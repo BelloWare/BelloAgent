@@ -682,6 +682,13 @@ struct ChatRecord: Codable, Sendable, Identifiable, Hashable {
     var costLimit: CostLimit?
     /// True when this chat sends no webhook when it finishes; nil follows Settings.
     var webhookOff: Bool?
+    /// When the chat's connection last changed (`WorkspaceConnectionSwitch.swift`):
+    /// a copy read before then does not take the change back (`ChatRecordMerge.swift`).
+    var connectionRevision: Int64?
+    /// True while the chat's journal may still be bound to another connection
+    /// than the one this record names, after a switch that did not finish:
+    /// the chat's next open binds it here first.
+    var journalRebind: Bool?
     var isPinned: Bool { pinnedAt != nil }
     var isArchived: Bool { archivedAt != nil }
     /// What a new chat is called until its first message names it.
@@ -715,6 +722,13 @@ struct ChatRecord: Codable, Sendable, Identifiable, Hashable {
         let trimmed = title.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }.joined(separator: " ")
         guard !trimmed.isEmpty else { throw HostError.failure("Enter a title for this chat.") }
         return String(trimmed.prefix(120))
+    }
+    /// The connection `other` names, with the model choices made against it.
+    mutating func applyConnection(from other: ChatRecord) {
+        profileID = other.profileID; model = other.model; thinkingLevel = other.thinkingLevel
+        contextWindow = other.contextWindow; maxOutputTokens = other.maxOutputTokens
+        modelOutputLimit = other.modelOutputLimit; outputBudgetVersion = other.outputBudgetVersion
+        connectionRevision = other.connectionRevision; journalRebind = other.journalRebind
     }
     mutating func applyOrganization(from other: ChatRecord) {
         pinnedAt = other.pinnedAt; archivedAt = other.archivedAt; topicID = other.topicID; manualSidebarOrder = other.manualSidebarOrder

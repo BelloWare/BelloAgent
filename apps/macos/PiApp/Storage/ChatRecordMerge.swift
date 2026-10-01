@@ -15,6 +15,9 @@ extension ChatRecord {
     ///   topic move with a higher `organizationRevision`) takes that
     ///   organization back instead of undoing it: path, model and turn
     ///   updates can finish after a rename.
+    /// - A copy older than the chat's last connection change (a higher
+    ///   `connectionRevision`) takes that connection, its model choices and
+    ///   whether the journal is still to move back instead of undoing them.
     /// - A copy with no sidebar order or parent keeps the ones held.
     /// - A copy with no title claim keeps the claim of the title request
     ///   still running, unless the write releases it on purpose
@@ -25,6 +28,7 @@ extension ChatRecord {
     func merged(over previous: ChatRecord, releasingTitleClaim: Bool = false) -> ChatRecord {
         var chat = self
         if (previous.organizationRevision ?? 0) > (chat.organizationRevision ?? 0) { chat.applyOrganization(from: previous) }
+        if (previous.connectionRevision ?? 0) > (chat.connectionRevision ?? 0) { chat.applyConnection(from: previous) }
         if chat.sidebarOrder == nil { chat.sidebarOrder = previous.sidebarOrder }
         if chat.parentSessionID == nil { chat.parentSessionID = previous.parentSessionID }
         if chat.titleTaskSessionID == nil, !releasingTitleClaim { chat.titleTaskSessionID = previous.titleTaskSessionID }

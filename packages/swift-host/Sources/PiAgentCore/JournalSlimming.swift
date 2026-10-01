@@ -60,12 +60,20 @@ enum JournalSlimming {
         let directory = url.deletingLastPathComponent()
         removeLeftovers(in: directory)
         var outcome = Outcome()
-        guard let binding = try nativeBinding(url) else { outcome.reason = "not-native"; return outcome }
+        guard var binding = try nativeBinding(url) else { outcome.reason = "not-native"; return outcome }
         // The session's own lock, as an open takes it: a session open in any
         // process holds it, and none can open while this does.
         let original: SessionJournal
         do { original = try SessionJournal(url: url, id: id, cwd: directory, binding: binding, create: false) }
         catch let error as AgentError where error.code == "session_locked" { outcome.reason = "locked"; return outcome }
+        catch let error as AgentError where error.code == "legacy_session" {
+            // A chat moved to another connection is bound to the last one it
+            // moved to, which only reading the whole journal finds.
+            guard let current = try SessionJournal.currentBinding(url: url, id: id), current != binding else { throw error }
+            binding = current
+            do { original = try SessionJournal(url: url, id: id, cwd: directory, binding: binding, create: false) }
+            catch let error as AgentError where error.code == "session_locked" { outcome.reason = "locked"; return outcome }
+        }
         return try withExtendedLifetime(original) { try slim(original, url: url, id: id, binding: binding, minimumSaving: minimumSaving, discard: discard, tamper: tamper) }
     }
 
