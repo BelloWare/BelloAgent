@@ -59,6 +59,7 @@ final class ReplyFileLinkTests: XCTestCase {
 
     @MainActor func testOnlyCodeSpansBecomeFileLinksAndClickRevalidatesThem() async throws {
         let (surface, window) = MarkdownTextSurfaceTests.surface("Use `a.swift:2`; a.swift:2 in prose. `missing.swift`.")
+        window.isReleasedWhenClosed = false
         defer { window.contentView = nil; window.close() }
         var requests: [String] = [], opened: ReplyFileLocation?
         let trust = Trust()
