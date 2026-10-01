@@ -35,7 +35,7 @@ enum FileProjectState: Equatable {
     private var watcher: FileWatch?
     private var shown = false
     private var followTask: Task<Void, Never>?
-    private var following: FileDocument?
+    private var following: FileView.FileDocument?
     private var madePreview: FilePreview?
     var previewKind: String? { FilePreview.kind(for: url) }
     var preview: FilePreview {
@@ -78,8 +78,8 @@ enum FileProjectState: Equatable {
         followTask = Task { [weak self] in
             guard await old.hasChanged(), let self, !Task.isCancelled, self.shown, self.readable, self.followToken == token else { return }
             self.following?.close()
-            var options = FileDocument.Options(); options.requiresResolvedPath = true
-            let fresh = FileDocument(url: self.url, options: options)
+            var options = FileView.FileDocument.Options(); options.requiresResolvedPath = true
+            let fresh = FileView.FileDocument(url: self.url, options: options)
             self.following = fresh
             fresh.onStatusChange = { [weak self, weak fresh] status in
                 guard let self, let fresh, self.following === fresh, self.followToken == token else { return }
@@ -146,7 +146,7 @@ enum FileProjectState: Equatable {
     var document: FileView.FileDocument? {
         guard readable, previewKind == nil else { return nil }
         if let madeDocument { return madeDocument }
-        var options = FileDocument.Options(); options.requiresResolvedPath = true
+        var options = FileView.FileDocument.Options(); options.requiresResolvedPath = true
         let document = FileView.FileDocument(url: url, options: options)
         document.onStatusChange = { [weak self, weak document] status in
             guard let self, let document, self.madeDocument === document else { return }

@@ -22,7 +22,7 @@ import ImageIO
         if let madePDFView { return madePDFView }
         let view = PDFView(frame: .zero)
         view.autoScales = true; view.displayMode = .singlePageContinuous
-        view.backgroundColor = .piContent
+        view.backgroundColor = .piSurfaceSunken
         madePDFView = view
         return view
     }
