@@ -2,7 +2,9 @@
 
 All new development remains local on `dev/next` under the owner's 2026-10-01 instruction. No new feature commits have been pushed. The four earlier Quick Open commits were already upstream before that instruction. Published history and `main` are unchanged.
 
-The implementation checklist is updated in [NEXT-RELEASE.md](../NEXT-RELEASE.md). Validation is now running on this Mac after the owner delegated the remaining decisions. The focused helper run passed 47 tests (one skipped), and CheckNextTests passed 4 tests. Native compilation, the full gate, gallery, signing and publication remain pending. A checked implementation item does not mean its validation passed.
+The implementation checklist is updated in [NEXT-RELEASE.md](../NEXT-RELEASE.md). Validation is now running on this Mac after the owner delegated the remaining decisions. The focused helper run passed 47 tests (one skipped), and CheckNextTests passed 4 tests. Native compilation passed. The first full gate at `ad8cdac` passed 580 helper tests (6 skipped), the views package and wire/script suites, and rendered 172 gallery images. Five native cases failed: a delayed word-selection regression, image pixel dimensions, reply-link fixture teardown, a view-equality inventory and workspace-sheet cleanup. Corrections are being checked before the final gate, Release soak, signing and publication. A checked implementation item does not mean its validation passed.
+
+The narrow Changes checklist item is validated: GitPanelWidthTests passed 3 tests and ChangesTabFrameTests passed 7 tests, including all three window sizes. The required file, preview, reply-link and Quick Open scenes were reviewed in light and dark; no layout corrections were needed. First-run logs and images are preserved under `~/Library/Caches/BelloAgentNext/verify-logs-first-0.1.117` and `gallery-first-0.1.117`.
 
 ## Prepare the project
 
