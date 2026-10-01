@@ -98,8 +98,9 @@ final class FileTextViewTests: XCTestCase {
         var lineCount: Int { whole.lineCount }
         let generation = 0
         func utf16Length(ofLine index: Int) -> Int { whole.utf16Length(ofLine: index) }
-        /// A line that comes by itself once it is asked for, on the next turn
-        /// of the run loop: while a press is held, say; and what happens next.
+        /// A line that comes once asked for in the press's tracking loop,
+        /// before its synthetic drag and release. Synthetic NSEvents do not
+        /// hold the physical mouse button across a periodic-event timeout.
         var comesWhenAsked: Int?
         var afterComing: (() -> Void)?
         func text(ofLine index: Int, range: Range<Int>) -> String? {
@@ -107,7 +108,9 @@ final class FileTextViewTests: XCTestCase {
                 asked.insert(index)
                 if comesWhenAsked == index {
                     comesWhenAsked = nil
-                    DispatchQueue.main.async { MainActor.assumeIsolated { self.release(index...index); self.afterComing?() } }
+                    RunLoop.main.perform(inModes: [.eventTracking]) {
+                        MainActor.assumeIsolated { self.release(index...index); self.afterComing?() }
+                    }
                 }
                 return nil
             }
