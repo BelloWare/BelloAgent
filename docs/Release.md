@@ -23,8 +23,11 @@ The release gate is one command, run alone on the machine:
 the Debug app, runs the whole native suite in its two lanes (the serial lane
 alone, then the parallel lane in `PI_TEST_WORKERS` clones of the test host,
 8 by default; see "Test lanes" in [Swift-Test-Handoff.md](Swift-Test-Handoff.md)),
-then runs the screenshot gallery with the helper, wire and script tests
-alongside it. Every check runs even after a failure, so one pass reports them
+then runs StreamingCostTests alone in its own helper-test process before the
+screenshot gallery and the remaining helper, wire and script tests run
+alongside one another. The isolated class measures process-wide heap and CPU;
+the same bounds apply, and it is excluded only from the second helper invocation.
+Every check runs even after a failure, so one pass reports them
 all; logs go to `$PI_BUILD_ROOT/verify-logs`. A release that touches
 compaction, turns or requests also runs the opt-in live test,
 `scripts/live-compaction-e2e.py`, against the owner's gateway (see "Live

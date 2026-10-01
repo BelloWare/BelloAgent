@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 # The release gate in one command: the helper bundle, the Debug build, the
-# whole native suite in its two lanes, then the screenshot gallery alongside
-# the helper, wire and script tests.
+# whole native suite in its two lanes, isolated helper cost measurements, then
+# the screenshot gallery alongside the remaining helper, wire and script tests.
 #
 # The native suite runs in two lanes (scripts/test-lanes.py; the rule is in
 # docs/Swift-Test-Handoff.md, "Test lanes"). The serial lane runs alone: the
 # classes that hold wall-clock timings in Debug, or need the window focus, the
 # standard defaults or a pasteboard that every test host shares. Then the
 # parallel lane runs everything else in $PI_TEST_WORKERS clones of the test
-# host (8 unless set). The gallery and the helper checks assert no timings and
-# their gateways bind ephemeral ports, so they share the machine, which hides
+# host (8 unless set). StreamingCostTests measures process-wide heap and CPU
+# in its own process before the gallery. The remaining helper checks and the
+# gallery bind ephemeral ports, so they share the machine, which hides
 # the helper checks' three minutes behind the gallery. A failing check does
 # not stop the later ones, so one pass reports every failure; the exit status
 # is non-zero if anything failed. Run it alone: nothing else should build or
@@ -87,13 +88,22 @@ stamp suite "$(summary suite-parallel)"; failures suite-parallel
 rm -rf "$DD"/Logs/Test/*.xcresult
 stamp suite "both lanes in $((SECONDS - suite_began)) s"
 
+case " $failed " in
+  *" helper-build "*) ;;
+  *)
+    stamp helper-cost "streaming heap and CPU measurements, alone"
+    check helper-cost swift test --package-path packages/swift-host --scratch-path "$SWIFT_TESTS" --skip-build --filter StreamingCostTests
+    stamp helper-cost "$(summary helper-cost)"; failures helper-cost
+    ;;
+esac
+
 stamp gallery "gallery, with the helper checks alongside"
 PI_APP_UI_SCREENSHOT_ROOT="$GALLERY" TEST_RUNNER_PI_APP_UI_SCREENSHOT_ROOT="$GALLERY" \
   xcodebuild test-without-building "${XCODE[@]}" -only-testing:PiAppTests/UIScreenshotTests > "$LOGS/gallery.log" 2>&1 &
 gallery=$!
 case " $failed " in
   *" helper-build "*) ;;
-  *) check helper swift test --package-path packages/swift-host --scratch-path "$SWIFT_TESTS" --skip-build ;;
+  *) check helper swift test --package-path packages/swift-host --scratch-path "$SWIFT_TESTS" --skip-build --skip StreamingCostTests ;;
 esac
 case " $failed " in
   *" views-build "*) ;;
