@@ -45,7 +45,24 @@ The canonical Bello Agent feed is `https://belloware.com/assets/bello_agent.appc
 The legacy `pi_app.appcast.xml` feed remains byte-identical so existing Pi App
 installations receive the same update.
 
-**Bello Agent 0.1.116/build 120 is publicly released** at
+**Bello Agent 0.1.117/build 121 is publicly released** at
+[belloware.com](https://belloware.com/bello-agent.html), with source at
+[Git tag v0.1.117](https://github.com/BelloWare/BelloAgent/tree/v0.1.117) and website commit
+`a109c15f8e77d3d41226d358875f9916e444fcae`. The signed/notarized DMG is **12,268,767 bytes (11.70 MiB)**;
+SHA-256 `c7222bf7ffeadf0c1bc4427ca6dcf5f595aa0d8de5df01efaddf06cff90d973a`. The public product page,
+identical update feeds and downloaded hash/Ed25519 verification passed at
+**2026-10-01 06:38:03 UTC**. Quick Open, native file tabs with syntax colours and live previews,
+Changes tabs and diff-line file opening, saved-side navigation and faster fork/history work
+are included. The full gate at `76bfb27` passed both native lanes, 580 helper tests,
+the 110-test views package, wire/script checks and 172 gallery captures; optimized
+ChangesTabFrameTests passed 7/7 and synthetic compaction passed 3/3. The owner
+authorized release accepting six graphics/font-cache pauses over 250 ms in the
+hour-long soak and deferring the manual VoiceOver and real-gateway checks. These
+are recorded limitations, not passing results. Installation/update rehearsals
+remain skipped under the standing owner policy.
+See the [0.1.117 validation record](validation/Bello-Agent-0.1.117-2026-10-01.md).
+
+**Bello Agent 0.1.116/build 120 is a historical verified release** at
 [belloware.com](https://belloware.com/bello-agent.html), with source at
 [Git tag v0.1.116](https://github.com/BelloWare/BelloAgent/tree/v0.1.116) and website commit
 `6d4fa0d7ee7f024c5b315324a6393d26024340b6`. The signed/notarized DMG is **11,508,181 bytes (10.98 MiB)**;

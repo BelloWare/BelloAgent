@@ -1,6 +1,6 @@
 # Bello Agent 0.1.117 — file tabs, Quick Open, Changes tabs and faster forks
 
-Status: signed, notarized candidate approved for publication; public verification pending. Marketing version 0.1.117, build 121. The owner authorized release with the documented graphics/font-cache soak limitation accepted and the manual VoiceOver and real-gateway checks deferred. The previous public release is 0.1.116/build 120. Starting `main`: `3ba18fe5767bfdf244a1bb89961f0232f1988ecb`.
+Status: **publicly released and verified** at [belloware.com](https://belloware.com/bello-agent.html), marketing version 0.1.117, build 121. Public verification completed at **2026-10-01 06:38:03 UTC**. Tagged source: **`3fdb62b561a32755ccecad16a02302dab0d891dc`**, `v0.1.117`. Website: **`a109c15f8e77d3d41226d358875f9916e444fcae`**. The owner authorized release with the documented graphics/font-cache soak limitation accepted and the manual VoiceOver and real-gateway checks deferred. Previous public release: 0.1.116/build 120. Starting `main`: `3ba18fe5767bfdf244a1bb89961f0232f1988ecb`.
 
 ## Owner release authorization
 
@@ -18,7 +18,7 @@ The release notes are in `releases/0.1.117.html`. Product-page copy introduces Q
 
 ## Validation
 
-Toolchain: macOS 14.8 on Apple Silicon, Xcode 16.1 and XcodeGen 2.44.1. Checks use the committed local ref in a separate worktree at `~/Library/Caches/BelloAgentNext/worktree`; products and evidence live under `~/Library/Caches/BelloAgentNext/build`. No development changes have been pushed under the owner's instruction to keep them local until release.
+Toolchain: macOS 14.8 on Apple Silicon, Xcode 16.1 and XcodeGen 2.44.1. Checks used the committed local ref in a separate worktree at `~/Library/Caches/BelloAgentNext/worktree`; products and evidence live under `~/Library/Caches/BelloAgentNext/build`. Development stayed local until release; source and final validation documentation are now pushed to `main` and `dev/next` under the owner's publication instruction.
 
 - Final full gate at `76bfb27`, **all checks passed in 18 min 20 s**. Native serial: **327 executed, 17 skipped, zero failures**. Native parallel: **1,632 passed, 18 skipped, zero failures**. Isolated StreamingCostTests: **5 passed**; remaining helper suite: **575 executed, 6 skipped, zero failures**. Views package: **110 executed, 3 skipped, zero failures**. Wire 34, concurrent wire 4, acceptance 2 and Python 72 passed. Gallery: **172 images, zero failures**. Isolated accumulation heap growth was 41,472 bytes, below the original 65,536-byte bound. Final logs and captures are retained in `verify-logs-final-0.1.117` and `gallery-final-0.1.117` beneath the cache root.
 - Third full gate at `397c300b7884acbf23a1aad378979f6b6f77651f`, 18 min 21 s: native serial lane **327 executed, 17 skipped, zero failures**; native parallel lane **1,632 passed, 18 skipped, zero failures**. Views package **110 executed, 3 skipped, zero failures**; wire 34, concurrent wire 4, acceptance 2, Python 70; gallery **172 images, zero failures**. Helper **580 executed, 6 skipped, one failure**, described below and resolved in the final gate.
@@ -55,8 +55,18 @@ Packaged from **`6218b86fc7c3184d2532728a5b524b2626d5ab4f`**. Its diff from the 
 
 Artifacts: `~/Library/Caches/BelloAgentNext/build/releases/0.1.117/`. Logs: `~/Library/Caches/BelloAgentNext-package-0.1.117.log` and `build/release.YgIk64/{build,notary-app,notary-dmg}.log`; offline smoke evidence: `build/release.YgIk64/host-proof.json`. Preserve this candidate directory unchanged. A product fix requires a fresh candidate scratch root and repeated affected validation.
 
-### Remaining publication work
+### Source, website and public verification
 
-Source publication, website publication and public verification remain pending. Fresh fetches confirmed upstream source `main` remains at the starting commit and the website is clean and synchronized at `6d4fa0d7ee7f024c5b315324a6393d26024340b6` (0.1.116). The owner's release instruction now authorizes source/site pushes and the `v0.1.117` tag.
+The approved source was fast-forwarded from the starting `main` to **`3fdb62b561a32755ccecad16a02302dab0d891dc`**, then pushed atomically to both `main` and `dev/next`. This tagged release differs from the packaged `6218b86` only in validation documentation. No published history was rewritten. The annotated tag `v0.1.117` points to this source; the later final validation-record commit is pushed on both branches.
+
+`scripts/publish-release.sh 0.1.117` passed its signed-app/archive/feed and website preflight checks, then committed and pushed website **`a109c15f8e77d3d41226d358875f9916e444fcae`** ("Publish Bello Agent 0.1.117 update"). The commit updates the product page, sitemap, both feeds and installer. Existing homepage/icon/redirect inputs remained current; earlier installers remain available for rollback. Publication log: `~/Library/Caches/BelloAgentNext-publish-0.1.117.log`.
+
+Public verification passed at **2026-10-01 06:38:03 UTC**:
+
+- The canonical and legacy public feeds exactly match the intended local feed and each other.
+- The downloaded **12,268,767-byte** installer has SHA-256 **`c7222bf7ffeadf0c1bc4427ca6dcf5f595aa0d8de5df01efaddf06cff90d973a`** and a valid Sparkle Ed25519 signature.
+- The public product page exactly matches the committed HTML, including version, size, download URL and Quick Open/file/Changes copy.
+
+The first public verification attempt still received 0.1.116 while deployment caught up. The second passed; preserve both logs at `~/Library/Caches/BelloAgentNext-public-0.1.117-{first,second}.log` and the downloaded feeds/installer under `build/public-0.1.117-second`. The public product page was saved as `~/Library/Caches/BelloAgentNext-public-page-0.1.117.html`. Git push success alone was not treated as deployment verification.
 
 Installation and Sparkle update/relaunch rehearsals are excluded by the owner's standing instruction. Keep the source/site commit identities, notarization IDs, installer size and SHA-256, public Ed25519 result and equality of both public feeds here when performed.
