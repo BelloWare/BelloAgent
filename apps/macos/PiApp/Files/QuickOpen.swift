@@ -95,12 +95,15 @@ import FileFinder
     var presentationWindow: NSWindow? { isOpen ? previousWindow : nil }
 
     init(limits: FileListingLimits = FileListingLimits(),
-         refreshListing: @escaping @Sendable (FileFinder) async -> (FileFinderIndex?, String?) = { finder in
-             let fresh = await finder.refreshed()
-             return (fresh, await finder.failure)
-         }) {
+         refreshListing: @escaping @Sendable (FileFinder) async -> (FileFinderIndex?, String?) = QuickOpen.refreshedListing) {
         listingLimits = limits
         self.refreshListing = refreshListing
+    }
+
+    nonisolated private static func refreshedListing(_ finder: FileFinder) async -> (FileFinderIndex?, String?) {
+        let fresh = await finder.refreshed()
+        let failure = await finder.failure
+        return (fresh, failure)
     }
 
     // MARK: Showing and closing

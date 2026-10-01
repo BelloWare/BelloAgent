@@ -24,7 +24,7 @@ Current owner instruction (2026-10-01): keep new development commits local until
 - Changes narrow-pane layout: merged from `wip/git-stop`, **unfinished** (see below).
 - The build and test target compile at this commit; the unfinished items' tests are not yet all passing.
 
-The implementation work below is committed locally. The first focused helper run passed 47 tests (one skipped), including edit/history/versions and copied-fork compatibility. Native compilation exposed an ambiguous SwiftUI/FileView type and an unavailable preview palette name; both are corrected. Native build/tests are being rerun. [Mac validation handoff](docs/Next-Release-Validation.md) lists the local-ref checks, gallery, Release testability, soak, and publication steps.
+The implementation work below is committed locally. The first focused helper run passed 47 tests (one skipped), including edit/history/versions and copied-fork compatibility. Native compilation exposed an ambiguous SwiftUI/FileView type and an unavailable preview palette name; both are corrected. Quick Open now uses an explicit nonisolated async refresh function to make the finder actor hops clear to the compiler. Native build/tests are being rerun. [Mac validation handoff](docs/Next-Release-Validation.md) lists the local-ref checks, gallery, Release testability, soak, and publication steps.
 
 ## Left for 0.1.117
 - [x] **Quick Open app side** — fix Codex's 8 findings, each with a test (Files/QuickOpen.swift, QuickOpenPanel.swift, Workspaces/WorkspaceQuickOpen.swift, Application/PiApp.swift, WindowPresentation.swift). Implementation complete; Mac build, QuickOpenTests, WindowPresentationTests, TabHostTests and gallery validation pending:
