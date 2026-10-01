@@ -52,7 +52,7 @@ final class ApplicationLifecycle: NSObject, NSApplicationDelegate {
             do {
                 // Sides that were never saved end with the app; what was typed
                 // into them is kept in their parents' drafts.
-                await model.moveUnsavedSideDraftsToParents()
+                try await model.moveUnsavedSideDraftsToParents()
                 try await model.flushDrafts()
                 guard await model.flushReadStates(), await model.flushProjectSidebarState(), await model.flushTopicChanges() else { throw StoreError.unavailable }
                 // Which chat to reopen goes last: flushing the drafts can turn

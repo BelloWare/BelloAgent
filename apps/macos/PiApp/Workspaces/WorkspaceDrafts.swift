@@ -75,23 +75,12 @@ extension WorkspaceModel {
     }
     /// Quit and update end every side that was never saved, and a side's
     /// draft is never written under its own id (the side-draft policy). Its
-    /// unsent text goes where losing the host puts it (`discardLostSides`):
-    /// into the parent's composer, which the flush after this saves.
-    func moveUnsavedSideDraftsToParents() async {
-        for info in sides.values where info.pending || !info.kept {
-            guard let side = displays[info.id] else { continue }
-            let text = side.draft.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty else { continue }
-            side.draft = ""
-            if let parent = displays[info.parentID], parent.selectionMetadataLoaded || pendingChatIDs.contains(parent.id) {
-                parent.draft += (parent.draft.isEmpty ? "" : "\n\n") + text; parent.directCommand = false
-            } else if let store {
-                // The parent's own draft never loaded here: add to the saved one.
-                var saved = (try? await store.get(DraftRecord.self, kind: "draft", id: info.parentID)) ?? DraftRecord(id: info.parentID, text: "")
-                saved.text += (saved.text.isEmpty ? "" : "\n\n") + text
-                try? await store.put(saved, kind: "draft", id: info.parentID)
-            }
-        }
+    /// whole unsent draft goes to its parent (`moveSideDraft`): the parent's
+    /// composer, which the flush after this saves, or its saved draft. A
+    /// failure is thrown with the side's draft left as it was, so quit and
+    /// update stop and say so instead of losing it.
+    func moveUnsavedSideDraftsToParents() async throws {
+        for info in sides.values where info.pending || !info.kept { try await moveSideDraft(info) }
     }
     func anchorChanged(_ view: SessionDisplay) {
         // A reader back at the newest row, or reading within the window's

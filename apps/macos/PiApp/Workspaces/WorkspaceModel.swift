@@ -310,6 +310,9 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// many times each chat has moved, so an open begun before is known stale.
     var connectionSwitches: [String: (token: UUID, task: Task<Void, Never>)] = [:]
     var connectionGenerations: [String: UInt64] = [:]
+    /// Owned by `WorkspaceSides.swift`: a side's draft on its way to its
+    /// parent's saved draft, which every other move of it waits for.
+    var sideDraftTransfers: [String: (token: UUID, task: Task<Void, Never>)] = [:]
     /// Test seam: each step of a connection change as it happens, awaited
     /// ("closed", "marked", "rebound", "metadata"), so a fixture can hold the change there.
     var connectionSwitchSteps: ((String) async throws -> Void)?
