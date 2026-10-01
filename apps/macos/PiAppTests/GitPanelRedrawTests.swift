@@ -20,6 +20,13 @@ final class GitPanelRedrawTests: GitPanelTestCase {
         window.contentView?.layoutSubtreeIfNeeded(); window.displayIfNeeded()
     }
 
+    /// Let layout and its deferred updates finish over a real interval.
+    /// A fixed number of passes can finish before their work under load.
+    @MainActor private func settle(_ window: NSWindow) async throws {
+        let clock = ContinuousClock(), until = clock.now.advanced(by: .milliseconds(150))
+        repeat { try await draw(window) } while clock.now < until
+    }
+
     /// A repository with a dozen changed files and four commits.
     private func fixture(_ name: String) throws -> URL {
         let root = try repository(name)
@@ -112,15 +119,18 @@ final class GitPanelRedrawTests: GitPanelTestCase {
         let controller = GitController(roots: [root.path])
         let window = host(GitPanelView(controller: controller), width: 1280, height: 820)
         defer { window.contentView = nil; window.close() }
-        try await eventually("the first read") { controller.status.entries.count == 12 && !controller.diff.isEmpty && !controller.diffLoading }
-        for _ in 0..<4 { try await draw(window) }
+        try await eventually("the complete first read") {
+            controller.status.entries.count == 12 && !controller.diff.isEmpty && !controller.diffLoading &&
+                controller.commits.count == 4 && !controller.loading
+        }
+        try await settle(window)
         RedrawCounter.recording = true
         defer { RedrawCounter.recording = false; RedrawCounter.reset() }
         func drawn(widths: [CGFloat]) async throws -> [String: Int] {
             RedrawCounter.reset()
             for width in widths {
                 window.setContentSize(NSSize(width: width, height: 820))
-                for _ in 0..<3 { try await draw(window) }
+                try await settle(window)
             }
             return RedrawCounter.counts
         }
