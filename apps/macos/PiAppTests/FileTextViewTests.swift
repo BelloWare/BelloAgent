@@ -790,12 +790,16 @@ final class FileTextViewTests: XCTestCase {
         let spot = point(fixture, line: 1, column: 6, inset: 2)
         let still = try mouse(.leftMouseDragged, at: spot, in: text, clicks: 2), up = try mouse(.leftMouseUp, at: spot, in: text, clicks: 2)
         source.comesWhenAsked = 1
+        var whenItCame: (start: FileTextPosition, end: FileTextPosition)?
         source.afterComing = {
+            whenItCame = text.selectedRange
             source.evict(1...1)
             NSApp.postEvent(still, atStart: false); NSApp.postEvent(up, atStart: false)
         }
         while NSApp.nextEvent(matching: .any, until: .now, inMode: .default, dequeue: true) != nil {}
         text.mouseDown(with: try mouse(.leftMouseDown, at: spot, in: text, clicks: 2))
+        XCTAssertEqual(whenItCame?.start, at(1, 4), "The word was taken before the fixture evicted its text")
+        XCTAssertEqual(whenItCame?.end, at(1, 12))
         XCTAssertEqual(text.selectedRange.start, at(1, 4))
         XCTAssertEqual(text.selectedRange.end, at(1, 12), "the word, not shrunk to the click")
     }
