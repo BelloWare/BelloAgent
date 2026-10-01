@@ -56,7 +56,7 @@ The first full gate at `ad8cdac` passed the helper (580 tests, 6 skipped), packa
 - [x] Bring the published 0.1.116 metadata and validation record into `dev/next`; its build is 120. Prepare 0.1.117/build 121 and regenerate with XcodeGen 2.44.1. The public feed was checked before choosing build 121.
 - [ ] `scripts/check-next.sh gate` passes; an hour-long soak of a Release build passes.
 - [ ] A Release build-for-testing with testability compiles `@testable import FileView` and `GitView`.
-- [ ] Forks made by 0.1.116 and earlier open exactly as before. ForkCloneTests now covers the published copied-journal format across open/reopen; Mac execution and a retained old-fork check remain pending.
+- [x] Fork compatibility: ForkCloneTests passed in the helper suite, including copied-journal open/reopen coverage. The verified published 0.1.116/build 120 helper created whole-chat and reply-point forks against a synthetic gateway; 0.1.117 reopened each twice with identical messages, context, versions, origin and recorded cost, without rewriting either journal. This uses actual old-helper output; an additional owner-retained fork is optional evidence.
 - [ ] The owner turns VoiceOver on in the file viewer for a minute.
 - [x] `releases/0.1.117.html` names the fork behaviour changes (a fork opens partly loaded and fills in; an older app can show the parent's cost in new forks), alongside the file and Changes features. Reviewed under the owner's delegated release decisions; the notes also describe saved-side navigation. The website product template introduces Quick Open, file tabs and Changes without changing its layout.
 

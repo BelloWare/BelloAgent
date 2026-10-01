@@ -8,6 +8,10 @@ The narrow Changes checklist item is validated: GitPanelWidthTests passed 3 test
 
 The corrected native checks passed: FileTabTests/ReplyFileLinkTests/TranscriptViewEqualityTests (19 combined), FileTextViewTests (42), PiSheetWindowTests (10) and MarkdownStreamingCorrectnessTests (12). The sheet class also passed the parallel diagnostic lane. A timing failure in that lane placed the median-based markdown tests in the serial lane; the original bounds passed there. These focused checks precede the final full gate.
 
+The second gate at `deedae6` passed all 327 serial tests, the helper/package/wire/script checks and the 172-image gallery. Its parallel lane passed 1,631 tests and failed one Changes resize-redraw test. Commit `0965b98` makes that fixture await the complete initial Git refresh and settle layout by elapsed time; GitPanelRedrawTests then passed all 3 tests. Second-run logs and images are preserved in `verify-logs-second-0.1.117` and `gallery-second-0.1.117` under the same cache directory.
+
+Old-helper interoperability passed on 2026-10-01. The downloaded published 0.1.116 DMG matched SHA-256 `d2a8337a2642d8427798061a1792d9c515ce739298f5527147b4222812a9ecbb`; its app metadata was 0.1.116/build 120 and its deep strict code-signature check passed. Only the helper was extracted from a read-only mount. It created whole-chat and reply-point forks after an edited synthetic conversation, then added a billed fixture follow-up to each. The candidate helper reopened each twice: messages (9 and 6 rows), context, origin, version groups, the whole-chat historical edit page and $0.0123 fixture cost remained identical. Each journal remained byte-identical. Runtime incarnation UUIDs were excluded from history-page comparison because they change on every open. The runner, log and JSON report are retained in `~/Library/Caches/BelloAgentNext/compat-0.1.116/`. The published app was never installed or launched.
+
 ## Prepare the project
 
 Stay on `dev/next` in the source checkout. XcodeGen must include the new source and test files before the release gate, which refuses an uncommitted generated-project difference. Generate with XcodeGen 2.44.1, inspect the resulting project diff, and commit only the generated project:
@@ -93,7 +97,7 @@ Keep the checked SHA, toolchain versions, pass/fail logs and soak report. If sou
 
 ## Owner checks and decisions
 
-- Open a retained fork made by 0.1.116 or earlier and compare its transcript, context, versions, origin and cost. ForkCloneTests adds generated copied-format coverage, but that is not a claim that the retained-data check has passed.
+- Old-helper interoperability and ForkCloneTests passed as recorded above. A retained owner fork can provide additional coverage; the release checklist did not require owner data specifically.
 - Turn VoiceOver on in the file viewer for a minute: move through lines, select and copy text, use Find and Go to Line, and open a linked file.
 - The owner delegated the four decisions. NEXT-RELEASE.md records the chosen shortcut, Changes-window and saved-side behaviours and their regression tests.
 - Review [0.1.117 release notes](../releases/0.1.117.html), including partial fork loading and older apps' interpretation of the new cost-reset field.
