@@ -141,6 +141,41 @@ final class NativeTranscriptScrollTests: XCTestCase {
         }
     }
 
+    /// A reader a little way above the end, whose viewport then grows past
+    /// it: AppKit moves them onto the end inside SwiftUI's layout of the pane,
+    /// and the Back to bottom pill goes. The page must not publish that inside
+    /// the view update ("Publishing changes from within view updates").
+    @MainActor func testAViewportGrowingOntoTheEndHidesThePillWithoutPublishingInsideLayout() async throws {
+        let rows: [TranscriptMessage] = (0..<40).map { index in
+            TranscriptMessage(id: "m\(index)", role: index % 2 == 0 ? "user" : "assistant", text: "Row \(index): a paragraph of text that takes a line or two.",
+                              at: Double(index) * 1000, turn: "m\(index - index % 2)")
+        }
+        let pane = try ConversationPaneTests.Pane(messages: rows, height: 560)
+        defer { pane.close() }
+        pane.session.historyState = .ready
+        await pane.settle(40)
+        let scroll = try XCTUnwrap(ConversationPaneTests.views(TranscriptSurfaceMarker.self, in: pane.hosted).first?.enclosingScrollView)
+        let page = try XCTUnwrap(pane.transcript), document = try XCTUnwrap(scroll.documentView)
+        // The reader scrolls up 160 points.
+        let end = document.frame.height - scroll.contentView.bounds.height
+        page.readerWillNavigate(upward: true)
+        scroll.contentView.setBoundsOrigin(NSPoint(x: 0, y: end - 160)); scroll.reflectScrolledClipView(scroll.contentView)
+        NotificationCenter.default.post(name: NSScrollView.didLiveScrollNotification, object: scroll)
+        NotificationCenter.default.post(name: NSScrollView.didEndLiveScrollNotification, object: scroll)
+        await pane.settle(10)
+        XCTAssertFalse(page.atBottom, "The reader is away from the end")
+        XCTAssertFalse(page.followsBottom)
+        let logged = try await standardError {
+            var frame = pane.window.frame
+            frame.size.height += 240; frame.origin.y -= 240
+            pane.window.setFrame(frame, display: false)
+            await pane.settle(10)
+        }
+        FileHandle.standardError.write(Data(logged.utf8))
+        XCTAssertTrue(page.atBottom, "The grown viewport reaches the end: the pill goes")
+        XCTAssertFalse(logged.contains("Publishing changes from within view updates"), "The page published inside a view update")
+    }
+
     /// An idle chat whose last turn is taller than the viewport opens at the question that started it, not at the bottom.
     @MainActor func testAnIdleChatOpensAtTheLastQuestionWhenTheLastTurnIsTall() async throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("native-open-" + UUID().uuidString)
