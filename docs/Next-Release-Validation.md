@@ -6,6 +6,8 @@ The implementation checklist is updated in [NEXT-RELEASE.md](../NEXT-RELEASE.md)
 
 The narrow Changes checklist item is validated: GitPanelWidthTests passed 3 tests and ChangesTabFrameTests passed 7 tests, including all three window sizes. The required file, preview, reply-link and Quick Open scenes were reviewed in light and dark; no layout corrections were needed. First-run logs and images are preserved under `~/Library/Caches/BelloAgentNext/verify-logs-first-0.1.117` and `gallery-first-0.1.117`.
 
+The corrected native checks passed: FileTabTests/ReplyFileLinkTests/TranscriptViewEqualityTests (19 combined), FileTextViewTests (42), PiSheetWindowTests (10) and MarkdownStreamingCorrectnessTests (12). The sheet class also passed the parallel diagnostic lane. A timing failure in that lane placed the median-based markdown tests in the serial lane; the original bounds passed there. These focused checks precede the final full gate.
+
 ## Prepare the project
 
 Stay on `dev/next` in the source checkout. XcodeGen must include the new source and test files before the release gate, which refuses an uncommitted generated-project difference. Generate with XcodeGen 2.44.1, inspect the resulting project diff, and commit only the generated project:
@@ -98,7 +100,7 @@ Keep the checked SHA, toolchain versions, pass/fail logs and soak report. If sou
 
 ## Packaging and website
 
-Once the checks and owner decisions are complete, prepare `project.yml` for 0.1.117 with a build newer than the currently published build (0.1.116 used 120), set its release message, regenerate the project, and commit on `dev/next`. Incorporate the release into `main` only as the release step, preserving all commit identities. The owner's instruction permits pushes at that point.
+`project.yml` and the regenerated project are prepared and committed for 0.1.117/build 121 (the public 0.1.116 feed used 120). Once the remaining checks are complete, package this committed candidate. Incorporate the release into `main` only as the release step, preserving all commit identities. The owner's instruction permits pushes at that point.
 
 Follow [docs/Release.md](Release.md) for the exact signing/notarization/stapling, monotonic-build validation and publication sequence. `scripts/publish-release.sh 0.1.117` updates the sibling `../belloware.com` repository's product page, homepage, sitemap, icon, DMG and identical `bello_agent.appcast.xml` / `pi_app.appcast.xml` feeds, then commits and pushes its configured upstream. The canonical domain is **belloware.com**.
 
