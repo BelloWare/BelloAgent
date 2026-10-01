@@ -25,6 +25,8 @@ struct GitPanelView: View {
     /// The project the panel shows, named in its header.
     let project: String?
     let openFile: ((String, Int) -> Void)?
+    /// Optional layout observation for tests; no row geometry is read in the app.
+    let observeFileRow: (@MainActor (String, CGRect) -> Void)?
     /// Wide enough for the list beside the diff; below this the list goes
     /// above it (`GitPanelSplit`). Set only when the panel's width crosses
     /// it, so resizing within one layout draws no part again.
@@ -32,8 +34,8 @@ struct GitPanelView: View {
     nonisolated static let wideWidth: CGFloat = 900
 
     init(controller: GitController, place: GitPanelPlace = GitPanelPlace(), questions: PiQuestion = PiQuestion(), project: String? = nil,
-         openFile: ((String, Int) -> Void)? = nil) {
-        self.controller = controller; self.project = project; self.openFile = openFile
+         openFile: ((String, Int) -> Void)? = nil, observeFileRow: (@MainActor (String, CGRect) -> Void)? = nil) {
+        self.controller = controller; self.project = project; self.openFile = openFile; self.observeFileRow = observeFileRow
         _place = State(initialValue: place)
         _questions = StateObject(wrappedValue: questions)
     }
@@ -81,7 +83,7 @@ struct GitPanelView: View {
     @ViewBuilder private var sidebar: some View {
         if controller.panel == .changes {
             VStack(spacing: 0) {
-                GitChangesList(controller: controller, inputs: GitChangesList.Inputs(controller), discard: discard).equatable()
+                GitChangesList(controller: controller, inputs: GitChangesList.Inputs(controller), discard: discard, observeFileRow: observeFileRow).equatable()
                 Rectangle().fill(Color.piHairline).frame(height: 1)
                 GitCommitBox(controller: controller, inputs: GitCommitBox.Inputs(controller), discard: discard).equatable()
             }
@@ -403,6 +405,7 @@ private struct GitChangesList: View, Equatable {
     let controller: GitController
     let inputs: Inputs
     let discard: @MainActor ([GitStatusEntry]) -> Void
+    var observeFileRow: (@MainActor (String, CGRect) -> Void)? = nil
     nonisolated static func == (a: Self, b: Self) -> Bool { MainActor.assumeIsolated { samePart((a.controller, a.inputs), (b.controller, b.inputs)) } }
 
     var body: some View {
@@ -427,7 +430,7 @@ private struct GitChangesList: View, Equatable {
     private func row(_ entry: GitStatusEntry, staged: Bool) -> some View {
         GitFileRow(controller: controller, entry: entry, staged: staged,
                    selected: inputs.selection == GitController.Selection(path: entry.path, staged: staged),
-                   checked: inputs.checked.contains(entry.path), discard: discard).equatable()
+                   checked: inputs.checked.contains(entry.path), discard: discard, observeFileRow: observeFileRow).equatable()
     }
 
     private func section(_ title: String, paths: Set<String>, action: (String, () -> Void)) -> some View {
@@ -452,6 +455,7 @@ private struct GitFileRow: View, Equatable {
     let selected: Bool
     let checked: Bool
     let discard: @MainActor ([GitStatusEntry]) -> Void
+    var observeFileRow: (@MainActor (String, CGRect) -> Void)? = nil
     nonisolated static func == (a: Self, b: Self) -> Bool {
         MainActor.assumeIsolated { a.controller === b.controller && a.entry == b.entry && a.staged == b.staged && a.selected == b.selected && a.checked == b.checked }
     }
@@ -490,6 +494,13 @@ private struct GitFileRow: View, Equatable {
             Button("Copy Path") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(entry.path, forType: .string) }
         }
         .accessibilityIdentifier("git-file-" + entry.path)
+        .background {
+            if let observeFileRow {
+                Color.clear.onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) {
+                    observeFileRow(entry.path, $0)
+                }
+            }
+        }
     }
 
     static func badgeColor(_ badge: String) -> Color {
