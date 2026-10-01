@@ -1,12 +1,23 @@
 import XCTest
 @testable import PiAgentCore
 
-/// A gate a test opens: what waits on it goes on then. It counts who came.
+/// A gate a test opens: what waits on it goes on then, or when its task is
+/// cancelled. It counts who came, and who left cancelled.
 private actor Gate {
     private var open = false
-    private(set) var entered = 0
-    func wait() async { entered += 1; while !open { try? await Task.sleep(nanoseconds: 2_000_000) } }
+    private(set) var entered = 0, cancelled = 0
+    func wait() async {
+        entered += 1
+        while !open { if Task.isCancelled { cancelled += 1; return }; try? await Task.sleep(nanoseconds: 2_000_000) }
+    }
     func release() { open = true }
+}
+/// Where each replay of a chat's journal started reading.
+private final class Starts: @unchecked Sendable {
+    private let lock = NSLock()
+    private var noted: [UInt64] = []
+    var bytes: [UInt64] { lock.withLock { noted } }
+    func note(_ at: UInt64) { lock.withLock { noted.append(at) } }
 }
 /// Whether a piece of work is done yet.
 private actor Done {
@@ -158,9 +169,14 @@ final class HistoryFillTests: XCTestCase {
 
     func testEditWaitsOffActorAndRejectsAConversationChangedWhileLoading() async throws {
         let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
-        let path = try await source(chat), gate = Gate()
+        let path = try await source(chat), gate = Gate(), replays = Gate(), starts = Starts()
+        await replays.release()
         let session = try chat.session(chatID, client: ScriptClient([answer("answer during the load")]), resume: path)
-        await session.holdHistoryFill { stage in if stage == "full" { await gate.wait() } }
+        await session.holdHistoryFill { stage in
+            if stage == "full" { await gate.wait() }
+            if stage == "replay" { await replays.wait() }
+        }
+        await session.noteHistoryReads { starts.note($0) }
         let edit = Task { try await session.edit(fromMessageID: "u2b", input: Submission(commandID: "edit-again", turnID: "edit-again", text: "replacement")) }
         try await eventually { await gate.entered == 1 }
         // A send and its reply finish while the edit's worker is held. Its
@@ -173,6 +189,14 @@ final class HistoryFillTests: XCTestCase {
         XCTAssertTrue(visible.contains("during-load"))
         XCTAssertFalse(visible.contains("edit-again"))
         XCTAssertEqual(loads, 2, "a write while preparing requires a new snapshot")
+        let replayed = await replays.entered, from = starts.bytes
+        XCTAssertEqual(replayed, 1, "the second try goes on from the first's replay")
+        // The journal read from its start once, then each try from where
+        // that replay ended.
+        XCTAssertEqual(from.count, 3, "\(from)")
+        XCTAssertEqual(from.first, 0)
+        XCTAssertGreaterThan(from.last ?? 0, 0)
+        XCTAssertEqual(Set(from.dropFirst()).count, 1, "the second try goes on where the first replay ended: \(from)")
         await session.close()
     }
 
@@ -453,22 +477,96 @@ final class HistoryFillTests: XCTestCase {
     func testAnIndexMadeBeforeTheChatChangedIsMadeAgain() async throws {
         let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
         let path = try await source(chat)
-        let gate = Gate(), client = ScriptClient([answer("an answer meanwhile")])
+        let gate = Gate(), replays = Gate(), starts = Starts(), client = ScriptClient([answer("an answer meanwhile")])
+        await replays.release()
         let session = try chat.session(chatID, client: client, resume: path)
-        await session.holdHistoryFill { stage in if stage == "index" { await gate.wait() } }
+        await session.holdHistoryFill { stage in
+            if stage == "index" { await gate.wait() }
+            if stage == "replay" { await replays.wait() }
+        }
+        await session.noteHistoryReads { starts.note($0) }
         let first = try await session.historyWindow(["version": 2])
         let page = Task { try await session.historyWindow(["version": 2, "cursor": first["older"]]) }
         try await eventually { await gate.entered == 1 }
         try await send(session, "m2", "meanwhile")
         await gate.release()
         _ = try await page.value
-        let made = await gate.entered
+        let made = await gate.entered, replayed = await replays.entered
         XCTAssertEqual(made, 2, "made again after the send")
+        XCTAssertEqual(replayed, 1, "made again from the first replay, taken on")
+        let from = starts.bytes, grown = await session.journalSizeForTesting
+        XCTAssertEqual(from.count, 3, "\(from)")
+        XCTAssertEqual(from.first, 0)
+        XCTAssertGreaterThan(from.last ?? 0, 0)
+        XCTAssertEqual(Set(from.dropFirst()).count, 1, "the second try goes on where the first replay ended: \(from)")
+        XCTAssertLessThan(from.last ?? 0, try XCTUnwrap(grown), "the send wrote after it")
         let held = try await self.held(session)
         await session.close()
         let read = try await whole(chat, chatID, path)
         XCTAssertEqual(held.links, read.links, "the send's links too")
         XCTAssertEqual(held.pages, read.pages)
+    }
+
+    /// A load of every row that a streamed token overtook, with nothing
+    /// written, is made again from the replay it took to the journal's end:
+    /// the journal is replayed once, and the versions are a full load's.
+    func testAFullLoadOvertakenWithNothingWrittenGoesOnFromItsReplay() async throws {
+        let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
+        let path = try await source(chat), gate = Gate(), replays = Gate(), starts = Starts()
+        await replays.release()
+        let session = try chat.session(chatID, resume: path)
+        await session.holdHistoryFill { stage in
+            if stage == "full" { await gate.wait() }
+            if stage == "replay" { await replays.wait() }
+        }
+        await session.noteHistoryReads { starts.note($0) }
+        let versions = Task { try await session.messageVersions(["messageId": "u2b"]) }
+        try await eventually { await gate.entered == 1 }
+        await session.streamedForTesting()
+        await gate.release()
+        let listed = try await versions.value
+        XCTAssertEqual(listed["count"].int, 2)
+        let loads = await gate.entered, replayed = await replays.entered, from = starts.bytes, size = await session.journalSizeForTesting
+        XCTAssertEqual(loads, 2, "made again after the token")
+        XCTAssertEqual(replayed, 1, "from the one replay")
+        XCTAssertEqual(from, [0, try XCTUnwrap(size), try XCTUnwrap(size)])
+        let partial = await session.partialHistory
+        XCTAssertFalse(partial)
+        await session.close()
+    }
+
+    /// A close or an unload while older rows, or every row, load stops the
+    /// load and its worker off the actor, and the commands waiting on it, one
+    /// that started it and one that joined it, fail with `session_closed`
+    /// rather than answer from a chat that is gone.
+    func testACloseOrUnloadStopsALoadAndTheCommandsWaitingOnIt() async throws {
+        let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
+        let path = try await source(chat)
+        for (stage, unload) in [("index", false), ("index", true), ("full", false), ("full", true), ("replay", true)] {
+            let what = "\(unload ? "unload" : "close") during \(stage)"
+            let gate = Gate(), session = try chat.session(chatID, resume: path)
+            await session.holdHistoryFill { if $0 == stage { await gate.wait() } }
+            let first = try await session.historyWindow(["version": 2])
+            func code(_ work: @escaping @Sendable () async throws -> JSON) -> Task<String?, Never> {
+                Task { do { _ = try await work(); return nil } catch let error as AgentError { return error.code } catch { return "\(error)" } }
+            }
+            let started = stage == "full" ? code { try await session.messageVersions(["messageId": "u2b"]) }
+                                          : code { try await session.historyWindow(["version": 2, "cursor": first["older"]]) }
+            try await eventually { await gate.entered == 1 }
+            let joined = stage == "full" ? code { try await session.versionPage(["messageId": "u2"]) }
+                                         : code { try await session.contentSearch(["query": "question"]) }
+            try await eventually { await session.historyLoadJoins == 1 }
+            if unload { let unloaded = await session.unloadIfIdle(); XCTAssertTrue(unloaded, what) } else { await session.close() }
+            try await eventually(timeout: .seconds(10)) { await gate.cancelled == 1 }
+            let startedCode = await started.value, joinedCode = await joined.value
+            XCTAssertEqual(startedCode, "session_closed", what)
+            XCTAssertEqual(joinedCode, "session_closed", what)
+            let index = await session.olderIndex, partial = await session.partialHistory, entered = await gate.entered
+            XCTAssertNil(index, what)
+            XCTAssertTrue(partial, what)
+            XCTAssertEqual(entered, 1, "\(what): no try after the close")
+            await gate.release()
+        }
     }
 
     /// Reads that come while the older rows load wait for that load: one

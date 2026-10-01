@@ -116,6 +116,30 @@ final class Handoff<Value>: @unchecked Sendable {
     func take() -> Value? { let taken = value; value = nil; return taken }
 }
 
+/// The journal file a replay reads, as the system and its checks know it:
+/// a replay goes on only over the file it read.
+struct JournalSource: Sendable, Equatable {
+    let device: UInt64, inode: UInt64
+    let header: JournalCheckpoint.Check, marker: JournalCheckpoint.Check?
+    init?(_ journal: SessionJournal) {
+        guard let identity = journal.fileIdentity, let header = journal.headerCheck else { return nil }
+        device = identity.device; inode = identity.inode; self.header = header; marker = journal.markerCheck
+    }
+}
+
+/// A replay of a journal's first `covered` bytes, for a load to take on to
+/// the journal's end: it goes to the worker in a box it empties, so the
+/// actor holds no reference to it after.
+struct ReplayResume: Sendable {
+    let replay: Handoff<JournalReplayConsumer>
+    let source: JournalSource, covered: UInt64
+    init(_ replay: consuming JournalReplayConsumer, source: JournalSource) {
+        covered = replay.r.coveredBytes; self.replay = Handoff(replay); self.source = source
+    }
+    /// Whether it can be taken on to the end of `journal` as it is now.
+    func reads(_ journal: SessionJournal) -> Bool { JournalSource(journal) == source && covered <= journal.size }
+}
+
 /// Anything large (a whole history, a replay of every row) handed to another
 /// thread to be let go of there: letting go of every row takes a while, and
 /// the actor has others waiting on it. The caller hands it over (`consume`),
@@ -159,24 +183,34 @@ extension AgentSession {
     /// is already running. Replay and row construction stay off the actor;
     /// a changed journal or live row requires a fresh snapshot before adoption.
     func loadFullHistory() async throws {
-        guard !closed else { throw AgentError("session_closed", "The conversation is closed") }
+        try throwIfClosed()
         guard partialHistory else { return }
-        if let pending = fullHistoryLoad { return try await pending.value }
+        if let pending = fullHistoryLoad { historyLoadJoins += 1; return try await closedWins(pending) }
         let load = Task { try await self.loadFullHistoryOnce() }
         fullHistoryLoad = load
         defer { fullHistoryLoad = nil; adoptHistoryFillIfIdle() }
-        try await load.value
+        try await closedWins(load)
+    }
+
+    /// Waits for a load; a close or an unload meanwhile ends the wait with
+    /// `session_closed`, whatever the load ended with.
+    private func closedWins(_ load: Task<Void, Error>) async throws {
+        do { try await load.value } catch { try throwIfClosed(); throw error }
+        try throwIfClosed()
     }
 
     private func loadFullHistoryOnce() async throws {
+        // A try the chat overtook leaves its replay for the next one.
+        var resume: ReplayResume?
+        defer { Discarded.release(resume?.replay.take()) }
         for _ in 0..<8 {
-            guard !closed else { throw AgentError("session_closed", "The conversation is closed") }
+            try throwIfClosed()
             guard partialHistory else { return }
             if let fill = historyFill, let preparation = fill.preparation, let snapshot = fill.preparationSnapshot {
                 let made = await preparation.value
-                guard !closed else { Discarded.release(consume made); throw AgentError("session_closed", "The conversation is closed") }
+                guard !closed else { Discarded.release(consume made); try throwIfClosed(); return }
                 guard partialHistory else { Discarded.release(consume made); return }
-                guard journal?.size == snapshot.size, displayGeneration == snapshot.generation else {
+                guard journal?.size == snapshot.size, fill.reads(journal), displayGeneration == snapshot.generation else {
                     // Retire the preparation through its ordinary completion
                     // path; the replay remains available for the next snapshot.
                     if historyFill?.token == fill.token {
@@ -192,36 +226,53 @@ extension AgentSession {
                     return
                 }
             }
-            let replay = Handoff(try await wholeJournalReplay())
-            guard !closed else { Discarded.release(replay.take()); throw AgentError("session_closed", "The conversation is closed") }
-            guard partialHistory, let journal, let identity = journal.fileIdentity, let header = journal.headerCheck else {
-                Discarded.release(replay.take()); return
-            }
-            let size = journal.size, generation = displayGeneration, url = journal.url, marker = journal.markerCheck, id = self.id
-            let live = history, liveTasks = recentTaskPresentations, hold = historyFillHold
-            let made = await Task.detached(priority: .userInitiated) { () -> Result<(FullHistory, JournalReplayConsumer), Error> in
+            let start = try await resumedReplay(&resume), replay = start.replay, source = start.source
+            guard !closed else { Discarded.release(replay.take()); try throwIfClosed(); return }
+            guard partialHistory, let journal else { Discarded.release(replay.take()); return }
+            // A replay of another file than the journal's now: a fresh one.
+            guard start.reads(journal) else { Discarded.release(replay.take()); continue }
+            let size = journal.size, generation = displayGeneration, url = journal.url, id = self.id
+            let live = history, liveTasks = recentTaskPresentations, hold = historyFillHold, reads = historyReads
+            let made = await Self.offActor(priority: .userInitiated) { () -> Result<(FullHistory, JournalReplayConsumer), Error> in
                 if let hold { await hold("full") }
                 return Result {
                     guard let start = replay.take() else { throw AgentError("history_changed", "The replay was already taken") }
-                    let whole = try Self.replayPrefix(url: url, identity: identity, through: size, id: id, header: header, marker: marker, from: start)
+                    let whole = try Self.replayPrefix(url: url, source: source, through: size, id: id, from: start, reads: reads)
                     try Task.checkCancellation()
                     let full = Self.fullHistory(try whole.finished(), live: live, liveTasks: liveTasks)
                     try Task.checkCancellation()
                     return (full, whole)
                 }
-            }.value
-            guard !closed else { Discarded.release(consume made); throw AgentError("session_closed", "The conversation is closed") }
+            }
+            guard !closed else { Discarded.release(consume made); try throwIfClosed(); return }
             guard partialHistory else { Discarded.release(consume made); return }
-            guard self.journal?.size == size, displayGeneration == generation else { Discarded.release(consume made); continue }
+            let current = self.journal.map { $0.size == size && JournalSource($0) == source } == true && displayGeneration == generation
             switch consume made {
-            case .failure(let error): throw error
+            case .failure(let error):
+                if current { throw error }
             case let .success((full, replay)):
-                commitFullHistory(full, through: size); durable = replay
-                event("history.loaded")
-                return
+                if current {
+                    commitFullHistory(full, through: size); durable = replay
+                    event("history.loaded")
+                    return
+                }
+                // The next try goes on from this replay.
+                Discarded.release(consume full)
+                resume = ReplayResume(replay, source: source)
             }
         }
         throw AgentError("history_changed", "The conversation kept changing while its history loaded. Try again.")
+    }
+
+    /// The replay a load's try starts from: the last try's, taken on from
+    /// where it stopped, while the journal is still the file it read; else
+    /// the whole journal's (`wholeJournalReplay`).
+    func resumedReplay(_ resume: inout ReplayResume?) async throws -> ReplayResume {
+        if let carried = resume.take() {
+            if let journal, carried.reads(journal) { return carried }
+            Discarded.release(carried.replay.take())
+        }
+        return try await wholeJournalReplay()
     }
 
     /// A row this chat did not load, from its record, as a replay leaves it.
@@ -239,65 +290,81 @@ extension AgentSession {
     /// again). A replay that does not end in the rows this chat holds loads
     /// every row instead, as before, also off the actor.
     func loadOlderRows() async throws {
+        try throwIfClosed()
         // One load at a time: reads that come meanwhile wait for it.
-        if let pending = olderRowsLoad { return try await pending.value }
+        if let pending = olderRowsLoad { historyLoadJoins += 1; return try await closedWins(pending) }
         let load = Task { try await self.loadOlderRowsOnce() }
         olderRowsLoad = load
         defer { olderRowsLoad = nil }
-        try await load.value
+        try await closedWins(load)
     }
     private func loadOlderRowsOnce() async throws {
+        // A try the chat overtook leaves its replay for the next one.
+        var resume: ReplayResume?
+        defer { Discarded.release(resume?.replay.take()) }
         for _ in 0..<8 {
-            guard partialHistory, olderIndex == nil, !closed, journal != nil else { return }
-            // The replay goes to the worker in a box it empties: the actor
-            // holds no reference to it after.
-            let replay = Handoff(try await wholeJournalReplay())
-            guard partialHistory, olderIndex == nil, !closed, let journal, let identity = journal.fileIdentity, let header = journal.headerCheck else {
-                Discarded.release(replay.take()); return
-            }
-            let size = journal.size, generation = displayGeneration, url = journal.url, marker = journal.markerCheck, id = self.id
+            try throwIfClosed()
+            guard partialHistory, olderIndex == nil, journal != nil else { return }
+            let start = try await resumedReplay(&resume), replay = start.replay, source = start.source
+            guard !closed else { Discarded.release(replay.take()); try throwIfClosed(); return }
+            guard partialHistory, olderIndex == nil, let journal else { Discarded.release(replay.take()); return }
+            // A replay of another file than the journal's now: a fresh one.
+            guard start.reads(journal) else { Discarded.release(replay.take()); continue }
+            let size = journal.size, generation = displayGeneration, url = journal.url, id = self.id
             let loadedVisible = visible.map(\.id), loadedHistory = Set(history.map(\.id)), historyCount = history.count, older = olderRows
-            let live = history, liveTasks = recentTaskPresentations, hold = historyFillHold
-            let made = await Task.detached(priority: .userInitiated) { () -> Result<OlderRowsMade, Error> in
+            let live = history, liveTasks = recentTaskPresentations, hold = historyFillHold, reads = historyReads
+            let made = await Self.offActor(priority: .userInitiated) { () -> Result<OlderRowsMade, Error> in
                 if let hold { await hold("index") }
                 return Result {
                     guard let start = replay.take() else { throw AgentError("history_changed", "The replay was already taken") }
-                    let whole = try Self.replayPrefix(url: url, identity: identity, through: size, id: id, header: header, marker: marker, from: start)
+                    let whole = try Self.replayPrefix(url: url, source: source, through: size, id: id, from: start, reads: reads)
+                    try Task.checkCancellation()
                     let replayed = try whole.finished()
+                    try Task.checkCancellation()
                     if let index = try Self.olderRows(replayed, url: url, loadedVisible: loadedVisible, loadedHistory: loadedHistory, historyCount: historyCount, older: older) {
-                        return .index(index, replayed.pendingRequestLinks, replayed.recentTaskPresentations, Set(replayed.visible.map(\.id)))
+                        return .index(index, replayed.pendingRequestLinks, replayed.recentTaskPresentations, Set(replayed.visible.map(\.id)), whole)
                     }
+                    try Task.checkCancellation()
                     return .whole(Self.fullHistory(replayed, live: live, liveTasks: liveTasks), whole)
                 }
-            }.value
-            guard partialHistory, olderIndex == nil, !closed, self.journal?.size == size else { Discarded.release(consume made); continue }
+            }
+            guard !closed else { Discarded.release(consume made); try throwIfClosed(); return }
+            guard partialHistory, olderIndex == nil else { Discarded.release(consume made); return }
+            let current = self.journal.map { $0.size == size && JournalSource($0) == source } == true
             switch consume made {
-            case .failure(let error): throw error
-            case let .success(.index(index, links, tasks, shown)):
+            case .failure(let error):
+                if current { throw error }
+            case let .success(.index(index, links, tasks, shown, whole)):
                 // The index names where the rows before the ones held are:
                 // it holds while those rows and the journal are as they were,
                 // whatever is streamed meanwhile.
-                guard visible.count == loadedVisible.count, history.count == historyCount,
-                      visible.first?.id == loadedVisible.first, visible.last?.id == loadedVisible.last else {
-                    Discarded.release(consume index); Discarded.release(consume links); Discarded.release(consume shown); continue
+                if current, visible.count == loadedVisible.count, history.count == historyCount,
+                   visible.first?.id == loadedVisible.first, visible.last?.id == loadedVisible.last {
+                    olderIndex = index
+                    // What loading every row brings with it, as a full load does.
+                    pendingRequestLinks = links
+                    recentTaskPresentations = mergedTasks(tasks, shown: shown)
+                    Discarded.release(consume shown); Discarded.release(consume whole)
+                    return
                 }
-                olderIndex = index
-                // What loading every row brings with it, as a full load does.
-                pendingRequestLinks = links
-                recentTaskPresentations = mergedTasks(tasks, shown: shown)
-                Discarded.release(consume shown)
+                Discarded.release(consume index); Discarded.release(consume links); Discarded.release(consume shown)
+                resume = ReplayResume(whole, source: source)
             case let .success(.whole(full, replay)):
                 // Every row, with the live versions of those held: only if none changed.
-                guard displayGeneration == generation else { Discarded.release(consume full); Discarded.release(consume replay); continue }
-                commitFullHistory(full, through: size); durable = replay
+                if current, displayGeneration == generation {
+                    commitFullHistory(full, through: size); durable = replay
+                    return
+                }
+                Discarded.release(consume full)
+                resume = ReplayResume(replay, source: source)
             }
-            return
         }
         throw AgentError("history_changed", "The conversation kept changing while its older rows loaded. Try again.")
     }
-    /// What `loadOlderRows` makes off the actor.
+    /// What `loadOlderRows` makes off the actor, with the replay it took to
+    /// the journal's end, for a next try if the chat overtook this one.
     enum OlderRowsMade: Sendable {
-        case index(OlderRows, [String: [String]], [TaskPresentationRecord], Set<String>)
+        case index(OlderRows, [String: [String]], [TaskPresentationRecord], Set<String>, JournalReplayConsumer)
         case whole(FullHistory, JournalReplayConsumer)
     }
 
@@ -324,7 +391,9 @@ extension AgentSession {
         index.shown = shown
         for message in unloaded where index.positions[message.id] == nil { add(message) }
         let descriptor = file.fileDescriptor
+        try Task.checkCancellation()
         let same = inParallel(checked.count) { storedRow(checked[$0].span, descriptor: descriptor) == checked[$0].message }
+        try Task.checkCancellation()
         for (row, same) in zip(checked, same) where same != true { index.kept[row.message.id] = row.message }
         let tools = ToolHistoryIndex(replayed.history)
         for message in unloaded where message.role == "assistant" {

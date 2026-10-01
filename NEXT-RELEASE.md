@@ -39,7 +39,7 @@ Source: `docs/reviews/BelloAgent-0.1.117-deep-review.md`.
 ## Workstream 4 — smoothness and loose ends
 - [ ] **Soak pauses**: 264–539 ms graphics/font-cache waits (0.1.117 soak, seed `1790822043708`; a 122 s replay reproduces one at 431 ms). Profile, then reduce text drawn at once. Target: hour-long soak passes.
 - [ ] **Last SwiftUI publish-during-update warning** (edit-a-question flow; HistoryEditTests.testEditingAQuestionScrolledUpToGoesToTheNewTurn).
-- [ ] **Helper loose ends**: cancel a chat's older-rows load on close/unload; guard unload while a command awaits the load; resume retries instead of replaying from the start.
+- [x] **Helper loose ends**: cancel a chat's older-rows load on close/unload; guard unload while a command awaits the load; resume retries instead of replaying from the start.
 - [ ] **The unexplained HostDispatchTests trap**: Thread Sanitizer run of fill/older-rows/dispatch tests; a backtrace diagnostic in the gate.
 
 ## Workstream 5 — refactors, no visible change (after 1–4 merge)

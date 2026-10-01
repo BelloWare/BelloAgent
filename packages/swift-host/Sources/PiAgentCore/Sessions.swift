@@ -242,6 +242,11 @@ public actor AgentSession {
     /// before each stage ("replay", "prepare", "index", "full").
     var historyFillHold: (@Sendable (String) async -> Void)?
     func holdHistoryFill(_ hold: (@Sendable (String) async -> Void)?) { historyFillHold = hold }
+    /// Test seams: where each replay of the journal starts reading, and how
+    /// many reads joined a load already under way.
+    var historyReads: (@Sendable (UInt64) -> Void)?
+    func noteHistoryReads(_ reads: (@Sendable (UInt64) -> Void)?) { historyReads = reads }
+    var historyLoadJoins = 0
     /// Test seams: records written behind the chat's back, and its size.
     func appendForTesting(_ records: [JSON]) throws { for record in records { try journal?.append(record) } }
     var journalSizeForTesting: UInt64? { journal?.size }
@@ -388,6 +393,6 @@ public actor AgentSession {
     /// Stops the run and pauses the queue. `stopCount` lets work that awaited
     /// a run winding down tell that the chat was stopped again meanwhile.
     public func stop() { stopCount &+= 1; queuePaused=true; runTask?.cancel(); if runTask != nil { state = .stopping } else if state != .error { state = .paused }; event("state") }
-    public func unloadIfIdle() -> Bool { guard isIdle, !ephemeral else { return false }; cancelHistoryFill(); closed=true; journal=nil; return true }
-    public func close() async { cancelHistoryFill(); closed=true; stop(); await runTask?.value; journal=nil }
+    public func unloadIfIdle() -> Bool { guard isIdle, !ephemeral else { return false }; cancelHistoryLoads(); closed=true; journal=nil; return true }
+    public func close() async { cancelHistoryLoads(); closed=true; stop(); await runTask?.value; journal=nil }
 }
