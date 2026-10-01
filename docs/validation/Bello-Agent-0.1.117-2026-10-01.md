@@ -1,6 +1,10 @@
 # Bello Agent 0.1.117 — file tabs, Quick Open, Changes tabs and faster forks
 
-Status: signed, notarized local candidate on `dev/next`; not published. Marketing version 0.1.117, build 121. Publication awaits the soak requirement, owner VoiceOver exercise and real-gateway test or explicit owner deferrals. The previous public release is 0.1.116/build 120. Starting `main`: `3ba18fe5767bfdf244a1bb89961f0232f1988ecb`.
+Status: signed, notarized candidate approved for publication; public verification pending. Marketing version 0.1.117, build 121. The owner authorized release with the documented graphics/font-cache soak limitation accepted and the manual VoiceOver and real-gateway checks deferred. The previous public release is 0.1.116/build 120. Starting `main`: `3ba18fe5767bfdf244a1bb89961f0232f1988ecb`.
+
+## Owner release authorization
+
+On 2026-10-01, after receiving the candidate, failed-soak and pending VoiceOver/real-gateway summary, the owner instructed: "push to main, and belloware.com, lets just release it". Proceed with the already validated signed candidate, preserve the failed soak as a known limitation, and record both unperformed owner checks as deferred. This supersedes the earlier keep-local instruction for release publication. No test result or threshold is changed by this decision.
 
 ## Scope
 
@@ -27,8 +31,8 @@ Toolchain: macOS 14.8 on Apple Silicon, Xcode 16.1 and XcodeGen 2.44.1. Checks u
 - Live compaction rehearsal in **synthetic mode passed 3 of 3 scenarios** on the Release helper, including mid-run recall and refusing a history too large for one summary before sending any request. Fixture-reported cost was $0.8336 against its $5 cap; it is not billed cost. Reports are under `build/live-e2e/20261001T023249Z/`. The owner's real gateway is not configured through `PI_LIVE_BASE_URL`, `PI_LIVE_API_KEY` and `PI_LIVE_MODEL`; no real-gateway result is claimed.
 - The one-hour Release soak at `76bfb27` ran **3,606 s**, ending at **2026-10-01 03:34:10 UTC**, seed **1790822043708**. It **failed** the unchanged 250 ms main-thread pause check: six pauses of **539, 416, 317, 282, 281 and 264 ms**. Captured stacks show Core Animation/window-server synchronization, CoreGraphics font-cache locks and RenderBox/IOGPU allocation. There were **190 launches**, **zero idle-row jumps**, **zero slow/empty-sidebar launches** and **zero quit failures**; sidebar median/max was **272/489 ms**. Actions included 2,523 selects, 581 rapid switches, 187 short sends and 50 long sends. Footprint went from 504 to 942 MB (2.32 MB per launch); eight recent closed models remained weakly visible, no hosted views, and 190 windows, consistent with the fixture's already documented test-runner window retention. No new product leak is inferred from those numbers. Log: `~/Library/Caches/BelloAgentNext-soak.log`; original and symbolicated reports: `build/soak-0.1.117{,-symbolicated}.txt`.
 - A **122 s replay** of the same seed at the same source **failed** with one **431 ms** pause at **32.2 s**, cycle 2 step 8, long streamed reply. That reproduces the first run's early 539 ms pause at 32.6 s. Its stack waits for a window-server graphics fence during a Core Animation commit. Five launches had zero row jumps, slow launches or quit failures. Log: `~/Library/Caches/BelloAgentNext-soak-replay-120.log`; report: `build/soak-0.1.117-replay-120.txt`. WindowServer showed about 65% CPU in a snapshot after the replay; a later snapshot showed 5.9%. This is evidence of variable desktop load, not proof of its cause. No app/test thresholds or rendering code have been changed to dismiss either failure.
-- The [0.1.115 record](Bello-Agent-0.1.115-2026-09-30.md) documents 20 pauses above 250 ms in its final hour, in the same graphics/font-cache paths, while its other soak assertions passed. The owner has been asked about a quiet-desktop rerun and whether 0.1.117 must resolve this known limitation or may ship with it recorded. The current passing-soak checklist remains open until a pass or explicit change to that requirement.
-- Native accessibility-interface coverage passed in FileTextViewTests. The owner's one-minute VoiceOver exercise remains pending.
+- The [0.1.115 record](Bello-Agent-0.1.115-2026-09-30.md) documents 20 pauses above 250 ms in its final hour, in the same graphics/font-cache paths, while its other soak assertions passed. The owner accepted this known limitation for 0.1.117 when authorizing publication; investigation remains follow-up work. The two failed runs above remain failed.
+- Native accessibility-interface coverage passed in FileTextViewTests. The owner deferred the manual one-minute VoiceOver exercise and real-gateway compaction check when authorizing publication; neither is claimed to have run.
 
 ### Compatibility with the published helper
 
@@ -53,6 +57,6 @@ Artifacts: `~/Library/Caches/BelloAgentNext/build/releases/0.1.117/`. Logs: `~/L
 
 ### Remaining publication work
 
-Source publication, website publication and public verification remain pending. This local candidate does not constitute acceptance of the failed soak. Fresh fetches confirmed upstream source `main` remains at the starting commit and the website is clean and synchronized at `6d4fa0d7ee7f024c5b315324a6393d26024340b6` (0.1.116). Development commits remain local on `dev/next`. No `v0.1.117` tag exists yet.
+Source publication, website publication and public verification remain pending. Fresh fetches confirmed upstream source `main` remains at the starting commit and the website is clean and synchronized at `6d4fa0d7ee7f024c5b315324a6393d26024340b6` (0.1.116). The owner's release instruction now authorizes source/site pushes and the `v0.1.117` tag.
 
 Installation and Sparkle update/relaunch rehearsals are excluded by the owner's standing instruction. Keep the source/site commit identities, notarization IDs, installer size and SHA-256, public Ed25519 result and equality of both public feeds here when performed.
