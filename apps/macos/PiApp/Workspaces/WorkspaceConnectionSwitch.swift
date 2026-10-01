@@ -76,10 +76,30 @@ extension WorkspaceModel {
             // the journal is bound there.
             if let path = updated.path {
                 guard let workspace = workspace(for: updated.workspaceID) else { throw HostError.failure("This chat's project is unavailable.") }
+                // Replies whose reasoning only the connection left can be sent
+                // go to the new one as their text and tool calls. The reader
+                // is asked each time that would happen; otherwise the switch
+                // is silent.
+                if let current = profiles.first(where: { $0.id == updated.profileID }) {
+                    let checked = try await host(for: workspace).request("session.rebind", sessionID: chatID, params: [
+                        "path": .string(path), "profile": target.wire, "previousProfile": current.wire, "check": .bool(true)]).object ?? [:]
+                    if checked["needsConfirmation"]?.bool == true {
+                        switch await questions.confirm(Self.reasoningLeftBehind(from: current.name, to: target.name), about: chatID) {
+                        case .yes: break
+                        case .no: return
+                        case .busy: error = PiQuestion.busyNotice; return
+                        }
+                        // The answer took a while: the chat must still be where
+                        // it was asked about, and both connections still saved.
+                        guard !isShutDown, let again = record(chatID), again.profileID == updated.profileID, again.path == path,
+                              profiles.contains(where: { $0.id == profileID }) else { error = "This chat or its connections changed while you were asked. Choose again."; return }
+                    }
+                }
                 var marked = updated
                 marked.journalRebind = true; marked.connectionRevision = nextConnectionRevision(after: updated)
                 if persisted { try await store.put(marked, kind: "chat", id: chatID) }
                 adoptConnection(of: marked)
+                try await connectionSwitchSteps?("marked")
                 do {
                     let host = try await host(for: workspace)
                     _ = try await host.request("session.rebind", sessionID: chatID, params: ["path": .string(path), "profile": target.wire])
@@ -144,5 +164,12 @@ extension WorkspaceModel {
         // which changes nothing then.
         if !pendingChatIDs.contains(chatID) { try? await store?.put(settled, kind: "chat", id: chatID) }
         adoptConnection(of: settled)
+    }
+    /// Asked before a chat moves to a connection that cannot be sent the
+    /// provider-only reasoning some of its replies hold.
+    static func reasoningLeftBehind(from: String, to: String) -> ChatQuestion {
+        ChatQuestion(title: "Earlier reasoning from \(from) can't be sent to \(to). Switch anyway?",
+                     detail: "Replies written on \(from) go to \(to) as their text and tool calls. The chat keeps everything it has.",
+                     action: "Switch")
     }
 }

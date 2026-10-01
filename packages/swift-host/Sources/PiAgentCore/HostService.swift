@@ -358,10 +358,15 @@ public actor NativeHostService {
             let url=canonical(try required(params["path"],"journal path"))
             guard within(url,canonical(directory.path)), url.pathExtension == "jsonl" else { throw AgentError("session_scope", "Only this workspace's own journals move to another connection") }
             let target=try Profile(params["profile"])
+            // With the connection it is on, a check first: how many replies
+            // hold reasoning only that connection can be sent, which the app
+            // asks about before it moves the chat; nothing is written.
+            // A connection that cannot be used any more (an older API) replays nothing.
+            let previous=params["previousProfile"].isNull ? nil : try? Profile(params["previousProfile"]), check=params["check"].flag == true
             if let slim=slimming[id] { _=await slim.result }
             return try await withRuntimeGate {
                 guard sessions[id] == nil, slimming[id] == nil else { throw AgentError("session_busy", "Close this chat before moving it to another connection") }
-                return try await Task.detached(priority:.userInitiated) { try Self.rebind(url:url, id:id, directory:directory, to:target) }.value
+                return try await Task.detached(priority:.userInitiated) { try Self.rebind(url:url, id:id, directory:directory, to:target, from:previous, check:check) }.value
             }
         case "session.portable.preview", "session.import.inspect": return try portable(params)
         case "session.recover": return try recoverCopy(params)
@@ -556,9 +561,17 @@ public actor NativeHostService {
     /// The journal at `url` bound to `target`'s connection, with the
     /// binding it had before; its metadata file names the move too, so the
     /// next open still resumes from it.
-    private static func rebind(url: URL, id: String, directory: URL, to target: Profile) throws -> JSON {
+    private static func rebind(url: URL, id: String, directory: URL, to target: Profile, from previous: Profile?, check: Bool) throws -> JSON {
         let journal=try SessionJournal(url:url,id:id,cwd:directory,binding:nil,create:false,checkpoint:JournalCheckpoint.read(for:url))
         let before=journal.binding ?? .null
+        if check {
+            var replies=0
+            if let previous, previous.id != target.id {
+                let context=try AgentSession.replay(journal,url:url,id:id,binding:before,spendTracked:false,resume:true).context
+                replies=context.filter { ProviderClient.replaysReasoning($0, profile: previous) }.count
+            }
+            return ["needsConfirmation":JSON(replies > 0),"replies":JSON(replies),"rebinds":JSON(before != target.binding)]
+        }
         try journal.rebind(to:target.binding)
         if before != target.binding, var stored=journal.resumedFrom { stored.rebinds=journal.rebinds.map(\.check); try? stored.write(for:url) }
         return ["rebound":JSON(before != target.binding)]

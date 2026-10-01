@@ -200,4 +200,73 @@ final class ConnectionSwitchTests: XCTestCase {
         do { _ = try SessionJournal(url: url, id: chatID, cwd: chat.root, binding: nil, create: false); XCTFail("a move from a binding the journal was not on") }
         catch let error as AgentError { XCTAssertEqual(error.code, "session_damaged") }
     }
+
+    // MARK: Reasoning only the connection left can be sent
+
+    /// A connection that replays native reasoning on a fixed route.
+    private func pinned(_ id: String = "test") throws -> Profile {
+        var raw = try fixtureProfile().raw; raw["id"] = JSON(id)
+        raw["routing"] = ["replayPolicy": "pinned", "expectedModel": "fixture-model", "replayContract": "synthetic fixed route"]
+        return try Profile(raw)
+    }
+    /// A reply with reasoning only `profile` sends back, as its gateway reported it.
+    private func reasoningReply(on profile: Profile, text: String = "Observed") throws -> ChatMessage {
+        var reply = ChatMessage(role: "assistant", content: [textBlock(text)])
+        reply.providerItems = [["type": "reasoning", "id": "rs-a", "encrypted_content": "opaque-original", "summary": []],
+                               ["type": "message", "id": "msg-a", "content": [["type": "output_text", "text": JSON(text)]]]]
+        reply.providerBinding = try ProviderClient.replayBinding(profile)
+        reply.providerIdentity = ["status": "reported", "effectiveModel": "fixture-model"]
+        return reply
+    }
+
+    /// A reply written on another saved connection goes portably, whatever
+    /// this one's policy, as a reply of another model does; within one
+    /// connection the fixed-route rules are as they were.
+    func testAReplyFromAnotherConnectionGoesPortably() throws {
+        let first = try pinned(), reply = try reasoningReply(on: first)
+        XCTAssertEqual(try ProviderClient.replayItems(reply, profile: first)?.count, 2, "its own connection sends its reasoning")
+        XCTAssertTrue(ProviderClient.replaysReasoning(reply, profile: first))
+        let second = try pinned("second")
+        XCTAssertNil(try ProviderClient.replayItems(reply, profile: second))
+        XCTAssertFalse(ProviderClient.replaysReasoning(reply, profile: second))
+        var askRaw = try fixtureProfile().raw; askRaw["id"] = "asking"
+        XCTAssertNil(try ProviderClient.replayItems(reply, profile: Profile(askRaw)), "an asking policy has nothing to ask about another connection's reply")
+        var revised = first.raw; revised["revision"] = "2"
+        XCTAssertThrowsError(try ProviderClient.replayItems(reply, profile: Profile(revised)), "a changed route of the same connection still refuses")
+        let user = ChatMessage(role: "user", content: [textBlock("Look")])
+        let body = try ProviderClient.requestBody(profile: second, messages: [user, reply], instructions: "Policy", tools: [], sessionID: "s", cacheSessionID: "s")
+        XCTAssertFalse(body["input"].list.contains { $0["type"].text == "reasoning" }, "the reasoning stays where it was written")
+        XCTAssertTrue(body["input"].list.contains { $0["type"].text == "message" && $0["role"].text == "assistant" }, "the reply goes as its text")
+    }
+
+    /// The check before a move counts the replies whose reasoning only the
+    /// connection left sends, and writes nothing.
+    func testTheCheckCountsRepliesOnlyTheConnectionLeftCanSend() async throws {
+        let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
+        let first = try pinned(), second = try second()
+        let replies = [ModelReply(message: try reasoningReply(on: first), usage: ["input": 100, "output": 5], terminal: ModelTerminalOutcome(status: "completed")), answer("plain")]
+        let session = try chat.session(chatID, first, replies: replies)
+        try await send(session, "u1", "question one")
+        try await send(session, "u2", "question two")
+        let sessionPath = await session.path
+        let path = try XCTUnwrap(sessionPath), url = URL(fileURLWithPath: path)
+        await session.close()
+        let bytes = try Data(contentsOf: url)
+        let host = try await host(chat)
+        func check(from previous: Profile, to target: Profile) async throws -> JSON {
+            try await host.command("session.rebind", sessionID: chatID, params: ["path": JSON(path), "profile": target.raw, "previousProfile": previous.raw, "check": true])
+        }
+        let asked = try await check(from: first, to: second)
+        XCTAssertEqual(asked["needsConfirmation"].flag, true); XCTAssertEqual(asked["replies"].int, 1); XCTAssertEqual(asked["rebinds"].flag, true)
+        var portable = first.raw; portable["routing"] = ["replayPolicy": "portable"]
+        let silent = try await check(from: try Profile(portable), to: second)
+        XCTAssertEqual(silent["needsConfirmation"].flag, false, "a connection that sends replies portably loses nothing")
+        let same = try await check(from: first, to: first)
+        XCTAssertEqual(same["replies"].int, 0); XCTAssertEqual(same["rebinds"].flag, false)
+        var retired = first.raw; retired["api"] = "anthropic-messages"
+        let older = try await host.command("session.rebind", sessionID: chatID, params: ["path": JSON(path), "profile": second.raw, "previousProfile": retired, "check": true])
+        XCTAssertEqual(older["needsConfirmation"].flag, false, "a connection on an API no longer used replays nothing")
+        XCTAssertEqual(try Data(contentsOf: url), bytes, "a check writes nothing")
+        await host.shutdown()
+    }
 }

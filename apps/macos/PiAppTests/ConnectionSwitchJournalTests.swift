@@ -80,6 +80,8 @@ final class ConnectionSwitchJournalTests: XCTestCase {
         let setup = try await setup(), model = try await launch(setup)
         let chat = try await answeredChat(model, setup)
         let path = try XCTUnwrap(chat.path)
+        // Its replies hold no reasoning only the first connection sends: no question.
+        model.questions.answer = { question in XCTFail("Asked “\(question.title)” with nothing to lose"); return false }
         await model.setConnection(setup.second.id, for: chat.id)
         XCTAssertNil(model.error)
         XCTAssertEqual(model.record(chat.id)?.profileID, setup.second.id)
@@ -129,7 +131,7 @@ final class ConnectionSwitchJournalTests: XCTestCase {
         let setup = try await setup(), model = try await launch(setup)
         let chat = try await answeredChat(model, setup)
         let journal = URL(fileURLWithPath: try XCTUnwrap(chat.path)), aside = journal.appendingPathExtension("aside")
-        model.connectionSwitchSteps = { step in if step == "closed" { try FileManager.default.moveItem(at: journal, to: aside) } }
+        model.connectionSwitchSteps = { step in if step == "marked" { try FileManager.default.moveItem(at: journal, to: aside) } }
         await model.setConnection(setup.second.id, for: chat.id)
         model.connectionSwitchSteps = nil
         XCTAssertNotNil(model.error)
@@ -141,6 +143,24 @@ final class ConnectionSwitchJournalTests: XCTestCase {
         XCTAssertNil(model.record(chat.id)?.journalRebind)
         let saved = try await stored(model, chat.id)
         XCTAssertEqual(saved?.profileID, chat.profileID); XCTAssertNil(saved?.journalRebind)
+    }
+
+    /// The journal cannot be read when the switch looks at it: nothing
+    /// changes, and nothing is marked.
+    @MainActor func testAJournalThatCannotBeReadStopsTheSwitchBeforeAnythingChanges() async throws {
+        let setup = try await setup(), model = try await launch(setup)
+        let chat = try await answeredChat(model, setup)
+        let journal = URL(fileURLWithPath: try XCTUnwrap(chat.path)), aside = journal.appendingPathExtension("aside")
+        model.connectionSwitchSteps = { step in if step == "closed" { try FileManager.default.moveItem(at: journal, to: aside) } }
+        await model.setConnection(setup.second.id, for: chat.id)
+        model.connectionSwitchSteps = nil
+        XCTAssertNotNil(model.error)
+        try FileManager.default.moveItem(at: aside, to: journal)
+        XCTAssertEqual(model.record(chat.id)?.profileID, chat.profileID); XCTAssertNil(model.record(chat.id)?.journalRebind)
+        let saved = try await stored(model, chat.id)
+        XCTAssertEqual(saved?.profileID, chat.profileID); XCTAssertNil(saved?.journalRebind)
+        model.error = nil
+        try await ask(model, chat.id, "Still here")
     }
 
     /// The journal moved but the answer was lost: the chat stays on its
@@ -158,5 +178,54 @@ final class ConnectionSwitchJournalTests: XCTestCase {
         XCTAssertEqual(saved?.profileID, chat.profileID); XCTAssertNil(saved?.journalRebind)
         model.error = nil
         try await ask(model, chat.id, "Still on the first")
+    }
+
+    /// The first connection replays native reasoning on a fixed route, and a
+    /// reply of the chat holds some: the reader is asked. No keeps the chat
+    /// where it is, journal untouched; yes moves it, and that reply goes to
+    /// the second gateway, which refuses opaque reasoning, as its text.
+    @MainActor func testAMoveThatLeavesReasoningBehindIsAskedAboutEachTime() async throws {
+        let setup = try await setup()
+        let routing = #"{"routing":{"replayPolicy":"pinned","expectedModel":"ui-fixture","replayContract":"synthetic fixed route"}}"#
+        let saved = try await setup.workspace.vault.load()
+        _ = try await setup.workspace.vault.update(expectedRevision: saved.revision) { configuration in
+            if let index = configuration.profiles.firstIndex(where: { $0.profile.id == setup.workspace.profile.id }) { configuration.profiles[index].profile.advancedJSON = routing }
+        }
+        let model = try await launch(setup)
+        let chat = try await answeredChat(model, setup)
+        let path = try XCTUnwrap(chat.path), url = URL(fileURLWithPath: path)
+        // The gateway's reply as one with reasoning would be recorded: its
+        // reasoning item, and the model the gateway reported.
+        try await model.hosts[chat.workspaceID]?.shutdownAndWait()
+        try await eventually("The helper's exit was never seen") { !model.opened.contains(chat.id) }
+        var lines = try String(contentsOf: url, encoding: .utf8).split(separator: "\n").map(String.init)
+        let index = try XCTUnwrap(lines.lastIndex { $0.contains(#""role":"assistant""#) && $0.contains(#""type":"message""#) })
+        var record = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(lines[index].utf8)) as? [String: Any])
+        var message = try XCTUnwrap(record["message"] as? [String: Any])
+        let items = try XCTUnwrap(message["nativeProviderItems"] as? [Any])
+        message["nativeProviderItems"] = [["type": "reasoning", "id": "rs-fixture", "encrypted_content": "opaque", "summary": [Any]()]] + items
+        message["nativeProviderIdentity"] = ["status": "reported", "effectiveModel": "ui-fixture"]
+        record["message"] = message
+        lines[index] = String(decoding: try JSONSerialization.data(withJSONObject: record, options: [.sortedKeys, .withoutEscapingSlashes]), as: UTF8.self)
+        try (lines.joined(separator: "\n") + "\n").write(to: url, atomically: true, encoding: .utf8)
+        JournalCheckpoint.remove(for: url)
+        let bytes = try Data(contentsOf: url)
+
+        var asked: [ChatQuestion] = []
+        model.questions.answer = { asked.append($0); return false }
+        await model.setConnection(setup.second.id, for: chat.id)
+        XCTAssertNil(model.error)
+        XCTAssertEqual(asked, [WorkspaceModel.reasoningLeftBehind(from: "Fixture", to: "Second")])
+        XCTAssertEqual(asked.first?.title, "Earlier reasoning from Fixture can't be sent to Second. Switch anyway?")
+        XCTAssertEqual(model.record(chat.id)?.profileID, chat.profileID); XCTAssertNil(model.record(chat.id)?.journalRebind)
+        XCTAssertEqual(try Data(contentsOf: url), bytes, "No leaves the journal as it was")
+
+        model.questions.answer = { asked.append($0); return true }
+        await model.setConnection(setup.second.id, for: chat.id)
+        XCTAssertNil(model.error)
+        XCTAssertEqual(asked.count, 2, "asked each time")
+        XCTAssertEqual(model.record(chat.id)?.profileID, setup.second.id)
+        XCTAssertEqual(try Data(contentsOf: url).prefix(bytes.count), bytes, "the journal keeps everything it had")
+        try await ask(model, chat.id, "On the second gateway")
     }
 }
