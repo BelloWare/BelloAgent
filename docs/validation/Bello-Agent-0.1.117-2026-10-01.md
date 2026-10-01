@@ -1,6 +1,6 @@
 # Bello Agent 0.1.117 — file tabs, Quick Open, Changes tabs and faster forks
 
-Status: local candidate on `dev/next`; not published. Marketing version 0.1.117, build 121. The previous public release is 0.1.116/build 120. Starting `main`: `3ba18fe5767bfdf244a1bb89961f0232f1988ecb`.
+Status: signed, notarized local candidate on `dev/next`; not published. Marketing version 0.1.117, build 121. Publication awaits the soak requirement, owner VoiceOver exercise and real-gateway test or explicit owner deferrals. The previous public release is 0.1.116/build 120. Starting `main`: `3ba18fe5767bfdf244a1bb89961f0232f1988ecb`.
 
 ## Scope
 
@@ -17,7 +17,7 @@ The release notes are in `releases/0.1.117.html`. Product-page copy introduces Q
 Toolchain: macOS 14.8 on Apple Silicon, Xcode 16.1 and XcodeGen 2.44.1. Checks use the committed local ref in a separate worktree at `~/Library/Caches/BelloAgentNext/worktree`; products and evidence live under `~/Library/Caches/BelloAgentNext/build`. No development changes have been pushed under the owner's instruction to keep them local until release.
 
 - Final full gate at `76bfb27`, **all checks passed in 18 min 20 s**. Native serial: **327 executed, 17 skipped, zero failures**. Native parallel: **1,632 passed, 18 skipped, zero failures**. Isolated StreamingCostTests: **5 passed**; remaining helper suite: **575 executed, 6 skipped, zero failures**. Views package: **110 executed, 3 skipped, zero failures**. Wire 34, concurrent wire 4, acceptance 2 and Python 72 passed. Gallery: **172 images, zero failures**. Isolated accumulation heap growth was 41,472 bytes, below the original 65,536-byte bound. Final logs and captures are retained in `verify-logs-final-0.1.117` and `gallery-final-0.1.117` beneath the cache root.
-- Third full gate at `397c300b7884acbf23a1aad378979f6b6f77651f`, 18 min 21 s: native serial lane **327 executed, 17 skipped, zero failures**; native parallel lane **1,632 passed, 18 skipped, zero failures**. Views package **110 executed, 3 skipped, zero failures**; wire 34, concurrent wire 4, acceptance 2, Python 70; gallery **172 images, zero failures**. Helper **580 executed, 6 skipped, one failure**, described below. A final gate with isolated streaming-cost measurements remains pending.
+- Third full gate at `397c300b7884acbf23a1aad378979f6b6f77651f`, 18 min 21 s: native serial lane **327 executed, 17 skipped, zero failures**; native parallel lane **1,632 passed, 18 skipped, zero failures**. Views package **110 executed, 3 skipped, zero failures**; wire 34, concurrent wire 4, acceptance 2, Python 70; gallery **172 images, zero failures**. Helper **580 executed, 6 skipped, one failure**, described below and resolved in the final gate.
 - Focused native corrections passed: QuickOpenTests 16, GitPanelWidthTests 3, ChangesTabFrameTests 7, FileTextViewTests 42, FileTabTests/ReplyFileLinkTests/TranscriptViewEqualityTests 19 combined, PiSheetWindowTests 10, MarkdownStreamingCorrectnessTests 12, and GitPanelRedrawTests 3. The final native lanes cover all of these.
 - First gate at `ad8cdac` found preview pixel doubling, a Swift-owned window over-release during teardown, a stale view-equality inventory, delayed synthetic selection delivery and a sheet cleanup failure. The preview now keeps its decoded bitmap directly; the other corrections repair test ownership, expectations and delivery. The sheet class subsequently passed alone and in both parallel runs.
 - The second gate at `deedae6` passed its serial lane but exposed one resize-redraw fixture measuring before the complete initial Git refresh. Commit `0965b98` waits for that refresh and settles layout over elapsed time. All redraw checks then passed alone and in the final parallel lane. Median-based markdown timing checks now explicitly use the serial lane; their original bounds remain unchanged.
@@ -38,6 +38,21 @@ That helper created whole-chat and reply-point forks after an edited synthetic c
 
 ## Publication
 
-Signing, notarization, artifact/feed validation, source publication, website publication and public verification remain pending. A local signed candidate may be prepared for the owner's remaining checks; it does not constitute approval of the failed soak or a published release. Fetches confirmed upstream source `main` remains at the starting commit and the website is clean and synchronized at `6d4fa0d7ee7f024c5b315324a6393d26024340b6` (0.1.116). Development commits remain local on `dev/next`. No `v0.1.117` tag exists yet.
+### Local candidate
+
+Packaged from **`6218b86fc7c3184d2532728a5b524b2626d5ab4f`**. Its diff from the gated `76bfb27` contains validation documentation only. The normal `scripts/release.sh` flow completed successfully on 2026-10-01: optimized native/helper build, stripped binaries with retained dSYMs, Developer ID signing, packaged-helper offline smoke, app/DMG notarization and stapling, Gatekeeper validation, signed appcast generation and Ed25519 verification. The smoke checked six packaged catalog models and the native helper protocol without model calls or credentials.
+
+- App notarization: **`f486bf24-b963-4132-9601-bafc67f4fcc1`**, Accepted.
+- DMG notarization: **`9d188970-f380-4f61-95b2-4492e61d12ef`**, Accepted.
+- Installer: **12,268,767 bytes (11.70 MiB)**, below the 20 MiB target.
+- SHA-256: **`c7222bf7ffeadf0c1bc4427ca6dcf5f595aa0d8de5df01efaddf06cff90d973a`**.
+- `validate-release.py --previous-build 120` passed: candidate build 121, canonical download URL, archive Ed25519 signature, signed/notarized app, DMG staple and Gatekeeper checks.
+- Both local feeds are byte-identical. Website staging `--check-only` passed. Seven proposed site files and their exact text diff are retained in `build/site-preview-0.1.117`; the rendered product page's version, size and new file/Changes copy were reviewed locally. The feature paragraph fits its existing card without overflow. The temporary browser tab/server were closed after review.
+
+Artifacts: `~/Library/Caches/BelloAgentNext/build/releases/0.1.117/`. Logs: `~/Library/Caches/BelloAgentNext-package-0.1.117.log` and `build/release.YgIk64/{build,notary-app,notary-dmg}.log`; offline smoke evidence: `build/release.YgIk64/host-proof.json`. Preserve this candidate directory unchanged. A product fix requires a fresh candidate scratch root and repeated affected validation.
+
+### Remaining publication work
+
+Source publication, website publication and public verification remain pending. This local candidate does not constitute acceptance of the failed soak. Fresh fetches confirmed upstream source `main` remains at the starting commit and the website is clean and synchronized at `6d4fa0d7ee7f024c5b315324a6393d26024340b6` (0.1.116). Development commits remain local on `dev/next`. No `v0.1.117` tag exists yet.
 
 Installation and Sparkle update/relaunch rehearsals are excluded by the owner's standing instruction. Keep the source/site commit identities, notarization IDs, installer size and SHA-256, public Ed25519 result and equality of both public feeds here when performed.
