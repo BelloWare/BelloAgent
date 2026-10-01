@@ -61,4 +61,4 @@ The implementation work below is now committed locally. No new code has been bui
 ## Open decisions for the owner
 - ⌘↩, ⌘. and ⌘F ignored while typing in a tab's text box (e.g. a commit message)?
 - [x] Owner delegated the choices on 2026-10-01: Changes uses the comparison arrows icon; new Changes windows open at 1040×720. Keep the 900 pt stacking threshold, ordinary file windows at 820×640 and restored window frames. TabHostTests and ChangesTabTests cover the choice; gallery validation pending.
-- Sides: may Next/Previous Chat step onto a saved side; what happens to open sides when their chat is deleted or switched?
+- [x] Owner delegated the choice: Next/Previous Chat includes saved sides in sidebar order and focuses them beside their parent. Switching chats retains open sides and their work/drafts. Deleting a parent still requires closing its side first; saved children survive independently. SessionOrganizationTests covers navigation, retained work and the deletion guard.

@@ -120,10 +120,11 @@ extension WorkspaceModel {
     func selectAdjacentChat(_ offset: Int) {
         guard page == .chats else { return }
         let order = sidebarChatOrder; guard !order.isEmpty else { return }
-        let index = order.firstIndex(of: selectedID ?? "").map { max(0, min(order.count - 1, $0 + offset)) } ?? (offset > 0 ? 0 : order.count - 1)
+        let current = focusedSessionID.flatMap { order.contains($0) ? $0 : nil } ?? selectedID
+        let index = order.firstIndex(of: current ?? "").map { max(0, min(order.count - 1, $0 + offset)) } ?? (offset > 0 ? 0 : order.count - 1)
         let target = order[index]
-        guard target != selectedID else { return }
-        Task { await select(target) }
+        guard target != current else { return }
+        Task { await openFromSidebar(target) }
     }
 
     /// Archive filters retained history; archive actions separately request a
