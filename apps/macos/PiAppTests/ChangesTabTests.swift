@@ -222,12 +222,18 @@ final class ChangesTabTests: GitPanelTestCase {
         XCTAssertEqual(model.displays["changes-tab-chat"]?.draft, "The chat's draft", "Nothing sent from behind the tab")
         model.searchFocusedConversation(in: window)
         XCTAssertFalse(model.showConversationContent, "Nor the chat's search opened over it")
+        let chat = try XCTUnwrap(model.displays["changes-tab-chat"])
+        chat.state = "running"
+        model.stopFocused(in: window)
+        XCTAssertEqual(chat.state, "running", "The tab's text must not stop the chat behind it")
 
         let composer = try XCTUnwrap(descendants(ComposerTextView.self, in: try XCTUnwrap(window.contentView)).first, "The chat's composer")
         XCTAssertTrue(window.makeFirstResponder(composer))
         XCTAssertFalse(WorkspaceModel.typingInATab(in: window), "In the composer, ⌘↩ is the chat's")
         model.searchFocusedConversation(in: window)
         XCTAssertTrue(model.showConversationContent, "and ⌘F opens the chat's search")
+        model.stopFocused(in: window)
+        XCTAssertEqual(chat.runState, .interrupted, "In the composer the stop key reaches the running chat")
         model.showConversationContent = false
     }
 }

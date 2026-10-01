@@ -3,7 +3,7 @@
 **All work for the next release goes on one branch: `dev/next`.** Other `dev/*` and `wip/*` branches are history; everything from them that belongs to 0.1.117 is merged here. `main` holds released versions only and is updated by the release process (docs/Release.md).
 
 ## How work flows
-Current owner instruction (2026-10-01): keep new development commits local until release. The earlier Quick Open findings 1–4 were already pushed; preserve them. Code execution remains on the owner's Mac.
+Current owner instruction (2026-10-01): keep new development commits local until release. The earlier Quick Open findings 1–4 were already pushed; preserve them. The owner has delegated the remaining choices and authorized continuing through release. This workspace is on the owner's Mac with Xcode 16.1 and XcodeGen 2.44.1; native validation is now running here.
 
 1. A coding agent works directly on `dev/next`: small local commits until release, with a final `Check:` paragraph in each commit message naming the tests and helper/gallery needs.
 2. The owner's Mac checks these local commits with `PI_NEXT_REF=dev/next scripts/check-next.sh` (build), `PI_NEXT_REF=dev/next scripts/check-next.sh test <Class> …` (named test classes), `PI_NEXT_REF=dev/next scripts/check-next.sh helper` (helper and package suites, wire scripts) or `PI_NEXT_REF=dev/next scripts/check-next.sh gate` (the full release gate). The script fixes the chosen commit for the whole run in its separate check worktree. Without `PI_NEXT_REF`, it still fetches and checks `origin/dev/next`.
@@ -24,7 +24,7 @@ Current owner instruction (2026-10-01): keep new development commits local until
 - Changes narrow-pane layout: merged from `wip/git-stop`, **unfinished** (see below).
 - The build and test target compile at this commit; the unfinished items' tests are not yet all passing.
 
-The implementation work below is now committed locally. No new code has been built or tested by this coding agent. [Mac validation handoff](docs/Next-Release-Validation.md) lists the exact local-ref checks, generated-project preparation, gallery, Release testability, soak, and publication steps. The open owner decisions remain unresolved.
+The implementation work below is committed locally. The first focused helper run passed 47 tests (one skipped), including edit/history/versions and copied-fork compatibility. Native validation remains pending. [Mac validation handoff](docs/Next-Release-Validation.md) lists the local-ref checks, gallery, Release testability, soak, and publication steps.
 
 ## Left for 0.1.117
 - [x] **Quick Open app side** — fix Codex's 8 findings, each with a test (Files/QuickOpen.swift, QuickOpenPanel.swift, Workspaces/WorkspaceQuickOpen.swift, Application/PiApp.swift, WindowPresentation.swift). Implementation complete; Mac build, QuickOpenTests, WindowPresentationTests, TabHostTests and gallery validation pending:
@@ -58,7 +58,7 @@ The implementation work below is now committed locally. No new code has been bui
 - [ ] The owner turns VoiceOver on in the file viewer for a minute.
 - [x] `releases/0.1.117.html` names the fork behaviour changes (a fork opens partly loaded and fills in; an older app can show the parent's cost in new forks), alongside the file and Changes features. Owner review pending before publication.
 
-## Open decisions for the owner
-- ⌘↩, ⌘. and ⌘F ignored while typing in a tab's text box (e.g. a commit message)?
+## Decisions delegated by the owner (2026-10-01)
+- [x] Keep ⌘↩, ⌘. and chat ⌘F inactive while typing in editable tab text. Tab-specific shortcuts take precedence. ChangesTabTests covers send, search and stop in the commit field and the composer.
 - [x] Owner delegated the choices on 2026-10-01: Changes uses the comparison arrows icon; new Changes windows open at 1040×720. Keep the 900 pt stacking threshold, ordinary file windows at 820×640 and restored window frames. TabHostTests and ChangesTabTests cover the choice; gallery validation pending.
 - [x] Owner delegated the choice: Next/Previous Chat includes saved sides in sidebar order and focuses them beside their parent. Switching chats retains open sides and their work/drafts. Deleting a parent still requires closing its side first; saved children survive independently. SessionOrganizationTests covers navigation, retained work and the deletion guard.
