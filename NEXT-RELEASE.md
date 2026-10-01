@@ -20,7 +20,7 @@
 
 ## Workstream 1 — data safety and connections (review findings 1–5)
 Source: `docs/reviews/BelloAgent-0.1.117-deep-review.md`.
-- [ ] **Literal Git paths** (finding 1): discard, delete untracked, stage, unstage, commit (both forms, incl. pathspec-file) use literal pathspecs; diff/history audited. Tests: `[`, `*`, `?`, leading `:` names; unselected files untouched; renames; long lists.
+- [x] **Literal Git paths** (finding 1): discard, delete untracked, stage, unstage, commit (both forms, incl. pathspec-file) use literal pathspecs; diff/history audited. Tests: `[`, `*`, `?`, leading `:` names; unselected files untouched; renames; long lists.
 - [ ] **Serialized connection switch** (finding 2): per-chat gate over close/rebind/metadata vs open, send, prewarm and automatic context; opens tied to a binding generation and revalidated after awaits. Test the review's reverse interleaving, two quick switches, cancellation, failed writes.
 - [ ] **Journal rebind on switch** (finding 5): rebind the journal to the new connection before committing the switch; a failed rebind leaves the old connection working. Two synthetic gateways; send and reopen on B; checkpoint and full-replay journals.
 - [ ] **Confirm when reasoning can't carry over** (owner decision: ask each time): before switching, the helper checks the context against B. If replies hold provider-only reasoning that only A can use, ask "Earlier reasoning from A can't be sent to B. Switch anyway?" — on confirm those replies go to B portably (text and tool calls), as per-turn model changes already do; the original journal keeps everything. Otherwise switch silently.
