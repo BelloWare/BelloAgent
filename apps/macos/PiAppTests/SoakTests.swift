@@ -452,10 +452,26 @@ final class SoakTests: XCTestCase, SerialTestLane {
         for stall in stalls.sorted(by: { $0.duration > $1.duration }) {
             say(String(format: "SOAK stall %.0f ms at %.1f s during “%@” (%ld stacks)", stall.duration * 1_000, stall.at, stall.label, stall.stacks.count))
             // The frames the stacks share first, then where the first one was.
-            for address in SoakStallWatchdog.summary(of: stall.stacks).prefix(14) {
+            for address in SoakStallWatchdog.summary(of: stall.stacks).prefix(48) {
                 let text = frames[address] ?? SoakStallWatchdog.describe(address)
                 frames[address] = text
                 say("SOAK     " + text)
+            }
+            // The other threads that were doing something: not parked in a
+            // work queue or a run loop's wait.
+            let busy = stall.others.filter { stack in
+                let top = stack.prefix(8).map { SoakStallWatchdog.describe($0) }.joined(separator: " ")
+                let parked = top.contains("__workq_kernreturn") || top.contains("__CFRunLoopServiceMachPort")
+                return !parked
+            }
+            say("SOAK   other threads: \(stall.others.count), \(busy.count) not idle")
+            for stack in busy.prefix(12) {
+                say("SOAK   thread")
+                for address in stack.prefix(12) {
+                    let text = frames[address] ?? SoakStallWatchdog.describe(address)
+                    frames[address] = text
+                    say("SOAK       " + text)
+                }
             }
         }
         say("SOAK jumps of an idle chat's rows: \(log.jumps.count)")
@@ -480,7 +496,7 @@ final class SoakTests: XCTestCase, SerialTestLane {
         if !log.quitFailures.isEmpty { say("SOAK quit failed in cycles \(log.quitFailures)") }
         // Every frame again, with its image and load address, for atos.
         lines.append("## frames")
-        for stall in stalls { for stack in stall.stacks { for address in stack { lines.append(SoakStallWatchdog.imageLine(address)) } } }
+        for stall in stalls { for stack in stall.stacks + stall.others { for address in stack { lines.append(SoakStallWatchdog.imageLine(address)) } } }
         let path = testEnvironment("PI_SOAK_REPORT") ?? root.deletingLastPathComponent().appendingPathComponent("soak-report-\(seed).txt").path
         try? lines.joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8)
         print("SOAK report: " + path)
@@ -508,7 +524,12 @@ private struct SoakRandom: RandomNumberGenerator {
 /// allocator's lock. (`MainThreadWatchdog` is the other kind: it notices a
 /// window frozen for seconds and ends the run.)
 private final class SoakStallWatchdog: @unchecked Sendable {
-    struct Stall: Sendable { var at: Double; var duration: Double; var label: String; var stacks: [[UInt]] }
+    struct Stall: Sendable {
+        var at: Double; var duration: Double; var label: String; var stacks: [[UInt]]
+        /// Every other thread's stack, once, as the stall began: what the main
+        /// thread waits on (a lock another thread holds) shows there.
+        var others: [[UInt]] = []
+    }
     private let lock = NSLock()
     private var current = "setup"
     private var stalls: [Stall] = []
@@ -519,6 +540,8 @@ private final class SoakStallWatchdog: @unchecked Sendable {
     private let stackLow: UInt, stackHigh: UInt
     private static let depth = 192
     private let buffer = UnsafeMutablePointer<UInt>.allocate(capacity: SoakStallWatchdog.depth)
+    private static let otherThreads = 96, otherDepth = 48
+    private let othersBuffer = UnsafeMutablePointer<UInt>.allocate(capacity: SoakStallWatchdog.otherThreads * SoakStallWatchdog.otherDepth)
     /// Pointer authentication bits above the 47 a user address uses.
     private static let addressMask: UInt = (1 << 47) - 1
 
@@ -528,7 +551,7 @@ private final class SoakStallWatchdog: @unchecked Sendable {
         let top = UInt(bitPattern: pthread_get_stackaddr_np(pthread_self()))
         stackHigh = top; stackLow = top - UInt(pthread_get_stacksize_np(pthread_self()))
     }
-    deinit { buffer.deallocate() }
+    deinit { buffer.deallocate(); othersBuffer.deallocate() }
 
     func start() {
         let thread = Thread { [self] in run() }
@@ -544,20 +567,20 @@ private final class SoakStallWatchdog: @unchecked Sendable {
             let answered = DispatchSemaphore(value: 0)
             let sent = ProcessInfo.processInfo.systemUptime
             DispatchQueue.main.async { answered.signal() }
-            var stacks: [[UInt]] = []
+            var stacks: [[UInt]] = [], others: [[UInt]] = []
             var label: String?
             var stopped = false
             while answered.wait(timeout: .now() + .milliseconds(50)) == .timedOut {
                 if !lock.withLock({ running }) { stopped = true; break }
                 if ProcessInfo.processInfo.systemUptime - sent > threshold {
-                    if label == nil { label = lock.withLock { current } }
+                    if label == nil { label = lock.withLock { current }; others = captureOtherStacks() }
                     if stacks.count < 60 { stacks.append(captureMainStack()) }
                 }
             }
             if stopped { break }
             let latency = ProcessInfo.processInfo.systemUptime - sent
             if latency > threshold {
-                let stall = Stall(at: sent - started, duration: latency, label: label ?? lock.withLock { current }, stacks: stacks)
+                let stall = Stall(at: sent - started, duration: latency, label: label ?? lock.withLock { current }, stacks: stacks, others: others)
                 lock.withLock { stalls.append(stall) }
             }
             Thread.sleep(forTimeInterval: 0.016)
@@ -565,28 +588,61 @@ private final class SoakStallWatchdog: @unchecked Sendable {
     }
 
     private func captureMainStack() -> [UInt] {
-        guard thread_suspend(mainThread) == KERN_SUCCESS else { return [] }
+        let count = Self.walk(mainThread, low: stackLow, high: stackHigh, into: buffer, depth: Self.depth)
+        return Array(UnsafeBufferPointer(start: buffer, count: count))
+    }
+
+    /// Every thread's stack but the main thread's and this one's, each walked
+    /// while that thread alone is suspended.
+    private func captureOtherStacks() -> [[UInt]] {
+        var list: thread_act_array_t?
+        var listed: mach_msg_type_number_t = 0
+        let task = task_self_trap()
+        guard task_threads(task, &list, &listed) == KERN_SUCCESS, let list else { return [] }
+        let me = mach_thread_self()
+        var walked: [(at: Int, count: Int)] = []
+        for index in 0..<Int(listed) where list[index] != me && list[index] != mainThread && walked.count < Self.otherThreads {
+            let thread = list[index]
+            guard let pthread = pthread_from_mach_thread_np(thread) else { continue }
+            // A thread that has just exited answers ESRCH for its stack.
+            let high = UInt(bitPattern: pthread_get_stackaddr_np(pthread)), size = UInt(pthread_get_stacksize_np(pthread))
+            guard high > 0x10000, size > 0, size < high else { continue }
+            let low = high - size
+            let at = walked.count * Self.otherDepth
+            walked.append((at, Self.walk(thread, low: low, high: high, into: othersBuffer + at, depth: Self.otherDepth)))
+        }
+        for index in 0..<Int(listed) { mach_port_deallocate(task, list[index]) }
+        mach_port_deallocate(task, me)
+        vm_deallocate(task, vm_address_t(UInt(bitPattern: list)), vm_size_t(Int(listed) * MemoryLayout<thread_act_t>.stride))
+        return walked.map { Array(UnsafeBufferPointer(start: othersBuffer + $0.at, count: $0.count)) }
+    }
+
+    /// Suspends `thread`, reads its registers, walks its frame pointers within
+    /// its stack into `out`, and resumes it. Nothing is allocated or locked
+    /// meanwhile: the thread may hold the allocator's lock.
+    private static func walk(_ thread: thread_act_t, low: UInt, high: UInt, into out: UnsafeMutablePointer<UInt>, depth: Int) -> Int {
+        guard thread_suspend(thread) == KERN_SUCCESS else { return 0 }
         var count = 0
         var state = arm_thread_state64_t()
         var stateCount = mach_msg_type_number_t(MemoryLayout<arm_thread_state64_t>.size / MemoryLayout<natural_t>.size)
         let result = withUnsafeMutablePointer(to: &state) { pointer in
-            pointer.withMemoryRebound(to: natural_t.self, capacity: Int(stateCount)) { thread_get_state(mainThread, ARM_THREAD_STATE64, $0, &stateCount) }
+            pointer.withMemoryRebound(to: natural_t.self, capacity: Int(stateCount)) { thread_get_state(thread, ARM_THREAD_STATE64, $0, &stateCount) }
         }
         if result == KERN_SUCCESS {
-            buffer[count] = UInt(state.__pc) & Self.addressMask; count += 1
-            buffer[count] = UInt(state.__lr) & Self.addressMask; count += 1
+            out[count] = UInt(state.__pc) & addressMask; count += 1
+            out[count] = UInt(state.__lr) & addressMask; count += 1
             var frame = UInt(state.__fp)
-            while count < Self.depth, frame >= stackLow, frame + 16 <= stackHigh, frame % 8 == 0 {
+            while count < depth, frame >= low, frame + 16 <= high, frame % 8 == 0 {
                 let words = UnsafePointer<UInt>(bitPattern: frame)!
-                let next = words[0], returnAddress = words[1] & Self.addressMask
+                let next = words[0], returnAddress = words[1] & addressMask
                 guard returnAddress != 0 else { break }
-                buffer[count] = returnAddress; count += 1
+                out[count] = returnAddress; count += 1
                 guard next > frame else { break }
                 frame = next
             }
         }
-        thread_resume(mainThread)
-        return Array(UnsafeBufferPointer(start: buffer, count: count))
+        thread_resume(thread)
+        return count
     }
 
     /// The frames of a stall's stacks, most shared first: a stall spent in

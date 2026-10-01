@@ -24,6 +24,25 @@ extension FocusedValues {
     /// ⌘. used to reach the chat behind them through the fallback model.
     private var conversationCommands: Bool { focusedModel != nil && commandModel.conversationCommandsEnabled }
     @NSApplicationDelegateAdaptor(ApplicationLifecycle.self) private var lifecycle
+    init() {
+        // AppKit draws a large view's content (over 768×768 pixels: the
+        // transcript's long Markdown text) asynchronously: Core Animation
+        // rasterizes its glyphs on four or five threads of its own. SwiftUI
+        // rasterizes its text's glyphs on the main thread, and every glyph
+        // takes the process's one font-cache lock, so the main thread waited
+        // on those threads, up to 620 ms, as a long reply began streaming
+        // (8 of 9 replays of the soak's seed 1790822043708). AppKit reads
+        // this undocumented default once, before the first view draws; off,
+        // it draws those views on the main thread like any other, and none
+        // of 9 replays paused. What is drawn differs only in antialiasing
+        // (under 16 of 255 for 99.8% of the pixels that differ). It goes in
+        // the registration domain, so a default the reader sets still wins.
+        // `PI_APP_ASYNC_DRAWING=1` keeps AppKit's way, for comparing the two
+        // (WindowCaptureParityTests, scripts/compare-captures.py).
+        let environment = ProcessInfo.processInfo.environment
+        let asynchronous = (environment["PI_APP_ASYNC_DRAWING"] ?? environment["TEST_RUNNER_PI_APP_ASYNC_DRAWING"]) == "1"
+        UserDefaults.standard.register(defaults: ["NSViewCanUseGPUAcceleration": asynchronous])
+    }
     var body: some Scene {
         // One window: the menu bar item and the Dock reopen this window rather
         // than adding a second view of the same conversations.
