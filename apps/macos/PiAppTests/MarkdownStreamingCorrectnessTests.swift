@@ -8,7 +8,9 @@ import XCTest
 /// is compared with `TranscriptMarkdown.parse` of that same prefix: the two
 /// may differ in the one block that is still open, and nowhere else. The last
 /// token leaves blocks identical to the parse of the whole reply.
-final class MarkdownStreamingCorrectnessTests: XCTestCase {
+// Token timings reach assertions through median dictionaries and tuples,
+// which the lane detector cannot follow. Measure with the machine alone.
+final class MarkdownStreamingCorrectnessTests: XCTestCase, SerialTestLane {
 
     static let corpus: [(name: String, source: String)] = [
         ("headings and prose", """
