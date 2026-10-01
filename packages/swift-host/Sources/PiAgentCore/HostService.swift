@@ -323,6 +323,12 @@ public actor NativeHostService {
             // The snapshot is taken once the gate is free again.
             let session: AgentSession = try await withRuntimeGate {
                 if let existing=sessions[id] {
+                    // A chat moved to another connection is opened there, never
+                    // answered by its session on the old one, which the app
+                    // closes before the move.
+                    if let requested=params["profile"]["id"].text, let loaded=profiles[id]?.0.id, requested != loaded {
+                        throw AgentError("session_conflict", "This chat is open on another connection. Close it before opening it on this one.")
+                    }
                     if let costLimit { await existing.setCostLimit(costLimit) }
                     return existing
                 }

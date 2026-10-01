@@ -12,6 +12,7 @@ extension WorkspaceModel {
         if item.imported { return "Imported history has no connection to change." }
         if item.connectionTest == true || item.workspaceID == WorkspaceRecord.scratchID { return "Connection tests keep the connection they tested." }
         if item.isBackgroundTask { return "Background tasks keep their connection." }
+        if connectionSwitches[chatID] != nil { return "Wait for this chat's connection change to finish." }
         if side(chatID) != nil || item.parentSessionID != nil { return "Side conversations keep their parent's connection." }
         if isSessionOpening(chatID) { return "Wait for this chat's connection to finish opening." }
         if let view = displays[chatID], view.hasWork || view.loading { return "Wait for this chat to finish its current work first." }
@@ -41,11 +42,27 @@ extension WorkspaceModel {
         // awaits drained used to make the pill do nothing at all.
         if let blocker = connectionSwitchBlocker(for: chatID) { error = blocker; return }
         guard var updated = record(chatID), updated.profileID != profileID else { return }
+        // From here on the chat is the change's: an open, a send, a prewarm
+        // or an automatic context waits for it, then opens wherever the chat
+        // is, and one leased before it is stale (`requireConnection`). Without
+        // this, an open that read the chat on the old connection while the
+        // record was being written opened the old session after the switch.
+        let (released, release) = AsyncStream<Never>.makeStream()
+        let token = UUID()
+        connectionSwitches[chatID] = (token, Task { for await _ in released {} })
+        connectionGenerations[chatID, default: 0] &+= 1
+        defer {
+            release.finish()
+            if connectionSwitches[chatID]?.token == token { connectionSwitches.removeValue(forKey: chatID) }
+        }
         do {
+            // A close sent when the chat's display was let go of lands first.
+            if let closing = sessionClosings[chatID] { await closing.task.value }
             if opened.contains(chatID) {
                 guard let host = hosts[updated.workspaceID], host.isReady else { throw HostError.failure("Wait for this project's host to recover before changing the connection.") }
                 _ = try await host.request("session.close", sessionID: chatID); opened.remove(chatID)
             }
+            try await connectionSwitchSteps?("closed")
             updated.profileID = profileID
             // Only an actually-read catalog is evidence that a model is gone.
             // A blank or failed listing keeps the chat's choice.
@@ -57,6 +74,7 @@ extension WorkspaceModel {
             // one here left an empty "New chat" in the sidebar at every launch
             // once the chat was abandoned. Its first send writes it, with this
             // connection, from memory.
+            try await connectionSwitchSteps?("metadata")
             if !pendingChatIDs.contains(chatID) { try await store.put(updated, kind: "chat", id: chatID) }
             if let index = chats.firstIndex(where: { $0.id == chatID }) {
                 chats[index].profileID = updated.profileID

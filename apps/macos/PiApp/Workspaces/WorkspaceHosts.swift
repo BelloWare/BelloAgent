@@ -158,8 +158,17 @@ extension WorkspaceModel {
     }
     func open(_ item: ChatRecord, automaticContext: Bool = false) async throws -> HostSupervisor {
         // A close sent when the chat's display was let go of lands first, so
-        // this open is not answered by the session being unloaded.
-        if let closing = sessionClosings[item.id] { await closing.task.value }
+        // this open is not answered by the session being unloaded; so does a
+        // move to another connection, so it is not opened on the old one.
+        while true {
+            if let closing = sessionClosings[item.id] { await closing.task.value }
+            else if let change = connectionSwitches[item.id] { await change.task.value }
+            else { break }
+        }
+        // A caller that read the chat before it moved may already have
+        // written something naming the old connection (a fork's or a side's
+        // record): it is refused, and opens again from the chat as it is.
+        if let current = record(item.id), current.profileID != item.profileID { throw connectionChanged }
         try Task.checkCancellation()
         guard !isShutDown else { throw CancellationError() }
         if automaticContext { try requireAutomaticContext(item.id) }
