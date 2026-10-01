@@ -195,9 +195,13 @@ import FileFinder
                 guard let self, self.focusToken == token, !self.isOpen,
                       let tab, tab.container?.activeTab === tab else { return }
                 if let view = tab.focusView, let window = view.window {
-                    guard window.isKeyWindow, !view.isHiddenOrHasHiddenAncestor else { return }
-                    window.makeFirstResponder(view)
-                    return
+                    // Setting a window's first responder does not activate it.
+                    // A visible window can receive its chosen file's focus
+                    // before macOS has completed making that window key.
+                    guard window.isVisible else { return }
+                    // The pane can still be hidden in the SwiftUI update that
+                    // removes Quick Open. Wait for the shown tab to attach visibly.
+                    if !view.isHiddenOrHasHiddenAncestor, window.makeFirstResponder(view) { return }
                 }
                 do { try await Task.sleep(for: .milliseconds(16)) }
                 catch { return }
