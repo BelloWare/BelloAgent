@@ -85,8 +85,12 @@ final class FileTabTests: XCTestCase {
         let preview = tab.preview
         preview.load()
         try await eventually("the image preview") { preview.image != nil }
-        let representation = try XCTUnwrap(preview.image?.representations.first)
+        let representation = try XCTUnwrap(preview.image?.representations.first as? NSBitmapImageRep)
         XCTAssertLessThanOrEqual(representation.pixelsWide, 2_048)
+        XCTAssertLessThanOrEqual(representation.pixelsHigh, 2_048)
+        let decoded = try XCTUnwrap(representation.cgImage)
+        XCTAssertEqual(decoded.width, representation.pixelsWide)
+        XCTAssertEqual(decoded.height, representation.pixelsHigh)
         XCTAssertNil(tab.document, "an image is not read as text")
         trusted = false; tab.projectsChanged()
         XCTAssertNil(preview.image)

@@ -70,7 +70,14 @@ import ImageIO
                     view.document = loaded.document
                     if let index, let page = loaded.document.page(at: min(index, max(0, loaded.document.pageCount - 1))) { view.go(to: page) }
                 }
-            case .image(let loaded): self.image = NSImage(cgImage: loaded.image, size: .zero); self.pdf = nil; self.error = nil
+            case .image(let loaded):
+                // Keep the decoded pixels as the representation. NSImage's
+                // CGImage initializer can create a display-scale snapshot
+                // whose pixel dimensions exceed the thumbnail limit.
+                let bitmap = NSBitmapImageRep(cgImage: loaded.image)
+                let image = NSImage(size: bitmap.size)
+                image.addRepresentation(bitmap)
+                self.image = image; self.pdf = nil; self.error = nil
             case .failed(let reason): self.error = reason
             case .unchanged: return
             }
