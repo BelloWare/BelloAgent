@@ -56,7 +56,7 @@ The implementation work below is committed locally. The first focused helper run
 - [ ] A Release build-for-testing with testability compiles `@testable import FileView` and `GitView`.
 - [ ] Forks made by 0.1.116 and earlier open exactly as before. ForkCloneTests now covers the published copied-journal format across open/reopen; Mac execution and a retained old-fork check remain pending.
 - [ ] The owner turns VoiceOver on in the file viewer for a minute.
-- [x] `releases/0.1.117.html` names the fork behaviour changes (a fork opens partly loaded and fills in; an older app can show the parent's cost in new forks), alongside the file and Changes features. Owner review pending before publication.
+- [x] `releases/0.1.117.html` names the fork behaviour changes (a fork opens partly loaded and fills in; an older app can show the parent's cost in new forks), alongside the file and Changes features. Reviewed under the owner's delegated release decisions; the notes also describe saved-side navigation. The website product template introduces Quick Open, file tabs and Changes without changing its layout.
 
 ## Decisions delegated by the owner (2026-10-01)
 - [x] Keep ⌘↩, ⌘. and chat ⌘F inactive while typing in editable tab text. Tab-specific shortcuts take precedence. ChangesTabTests covers send, search and stop in the commit field and the composer.
