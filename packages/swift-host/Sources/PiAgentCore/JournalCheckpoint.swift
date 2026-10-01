@@ -61,6 +61,9 @@ struct JournalCheckpoint: Codable, Equatable, Sendable {
     /// What only the helper reads (spend, recovery and compaction state,
     /// fork or side origin, presentation ordinal), as JSON text.
     var helper: String
+    /// Every move of the chat to another connection in the journal, in
+    /// order (`SessionJournal.rebind`); nil when there is none.
+    var rebinds: [Check]?
 
     /// Where the replay resumes: just past the record the checkpoint follows.
     var start: UInt64 { last.offset + UInt64(last.length) + 1 }

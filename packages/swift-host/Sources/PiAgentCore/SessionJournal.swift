@@ -51,11 +51,21 @@ final class SessionJournal {
     private(set) var resumedFrom: JournalCheckpoint?
     /// The session header and the native marker as written, for a checkpoint.
     private(set) var headerCheck: JournalCheckpoint.Check?, markerCheck: JournalCheckpoint.Check?
+    /// The binding the marker names, and each move to another connection
+    /// after it, in order (`rebind`): the journal is bound to the last.
+    private(set) var markerBinding: JSON?
+    private(set) var rebinds: [Rebind] = []
+    struct Rebind: Equatable { var check: JournalCheckpoint.Check; var binding: JSON }
+    /// The binding every record from here on is written under.
+    var binding: JSON? { rebinds.last?.binding ?? markerBinding }
     /// Where the last append went, and its bytes, for a checkpoint.
     private(set) var lastAppend: (offset: UInt64, length: Int)?
     private(set) var lastAppendLine: Data?
-    init(url: URL, id: String, cwd: URL, binding: JSON, create: Bool, checkpoint: JournalCheckpoint? = nil, beforeAppend: @escaping @Sendable (JSON) throws -> Void = { _ in }, beforeSynchronize: @escaping @Sendable () throws -> Void = {}) throws {
+    /// `binding`: the connection the journal must be bound to, or nil to open
+    /// it bound to whichever it is (a new journal needs one).
+    init(url: URL, id: String, cwd: URL, binding: JSON?, create: Bool, checkpoint: JournalCheckpoint? = nil, beforeAppend: @escaping @Sendable (JSON) throws -> Void = { _ in }, beforeSynchronize: @escaping @Sendable () throws -> Void = {}) throws {
         self.url=url; self.beforeAppend=beforeAppend; self.beforeSynchronize=beforeSynchronize
+        guard !create || binding != nil else { throw AgentError("invalid_params", "A new journal needs a binding") }
         try FileManager.default.createDirectory(at:url.deletingLastPathComponent(),withIntermediateDirectories:true,attributes:[.posixPermissions:0o700])
         lockFD=open(url.path + ".lock",O_CREAT|O_RDWR|O_NOFOLLOW|O_CLOEXEC,0o600)
         guard lockFD >= 0 else { throw AgentError("session_lock", "Cannot create session writer lock") }
@@ -70,31 +80,48 @@ final class SessionJournal {
             }
             if !create, let checkpoint, let resumed=Self.resume(url:url,id:id,binding:binding,from:checkpoint) {
                 tail=resumed.last; bytes=resumed.size; resumedFrom=checkpoint; headerCheck=checkpoint.header; markerCheck=checkpoint.marker
+                markerBinding=resumed.bindings.marker; rebinds=resumed.bindings.rebinds
             } else {
                 let scanned=try Self.chain(url:url,id:id,binding:binding,requireMarker:!create)
                 tail=scanned.last; bytes=scanned.size; headerCheck=scanned.header; markerCheck=scanned.marker
+                markerBinding=scanned.bindings.marker; rebinds=scanned.bindings.rebinds
             }
             handle=try FileHandle(forWritingTo:url); try handle.seekToEnd()
         } catch { _=flock(lockFD,LOCK_UN); _=close(lockFD); throw error }
         if create {
-            try append(["type":"custom","customType":JSON(JournalRecordKind.marker),"data":["binding":binding,"version":1]])
+            try append(["type":"custom","customType":JSON(JournalRecordKind.marker),"data":["binding":binding ?? .null,"version":1]])
             if let span=lastAppend, let line=lastAppendLine { markerCheck=JournalCheckpoint.Check(offset:span.offset,length:span.length,sha256:JournalCheckpoint.digest(line)) }
+            markerBinding=binding
         }
     }
     /// A journal a clone made (`clone(to:id:cwd:through:)`): its file written,
     /// locked and open, its header, marker and last record known.
     private init(cloned url: URL, lockFD: Int32, handle: FileHandle, tail: String, bytes: UInt64,
-                 header: JournalCheckpoint.Check, marker: JournalCheckpoint.Check?) {
+                 header: JournalCheckpoint.Check, marker: JournalCheckpoint.Check?, markerBinding: JSON?, rebinds: [Rebind]) {
         self.url=url; self.lockFD=lockFD; self.handle=handle; self.tail=tail; self.bytes=bytes
         self.beforeAppend={ _ in }; self.beforeSynchronize={}
-        headerCheck=header; markerCheck=marker; unsynced=true
+        headerCheck=header; markerCheck=marker; self.markerBinding=markerBinding; self.rebinds=rebinds; unsynced=true
+    }
+    /// The bindings a journal names, as a walk over it meets them: the
+    /// marker's, then each move to another connection, which must say it
+    /// moved from the binding in force.
+    struct Bindings {
+        var marker: JSON?
+        var rebinds: [Rebind] = []
+        var current: JSON? { rebinds.last?.binding ?? marker }
+        mutating func meet(_ record: JSON, line: Data, at offset: UInt64) throws {
+            guard record["data"]["previous"] == current ?? .null, record["data"]["binding"].isObject else {
+                throw AgentError("session_damaged", "A connection change in this journal does not follow the binding before it")
+            }
+            rebinds.append(Rebind(check: .init(offset: offset, length: line.count, sha256: JournalCheckpoint.digest(line)), binding: record["data"]["binding"]))
+        }
     }
     /// The whole journal checked as one unbroken chain, as every open did
     /// before checkpoints. The chain needs each record's id, parent and kind,
     /// which a scan reads without building the record; the replay parses what
     /// it uses. A line the scan cannot read plainly is parsed in full.
-    private static func chain(url: URL, id: String, binding: JSON, requireMarker: Bool) throws
-        -> (last: String?, size: UInt64, header: JournalCheckpoint.Check, marker: JournalCheckpoint.Check?) {
+    private static func chain(url: URL, id: String, binding: JSON?, requireMarker: Bool) throws
+        -> (last: String?, size: UInt64, header: JournalCheckpoint.Check, marker: JournalCheckpoint.Check?, bindings: Bindings) {
         let reader=try JournalRecordReader(url)
         // Empty lines are tolerated, as the JSONL reader always has.
         var headerStart: UInt64=0, headerLine=Data()
@@ -103,7 +130,7 @@ final class SessionJournal {
               header["type"].text == "session", header["version"].int == 3, header["id"].text == id else { throw AgentError("session_identity", "Session header does not match its identity") }
         let headerCheck=JournalCheckpoint.Check(offset:headerStart,length:headerLine.count,sha256:JournalCheckpoint.digest(headerLine))
         var branch=JournalChainCheck()
-        var marker: JSON?, markerCheck: JournalCheckpoint.Check?
+        var marker: JSON?, markerCheck: JournalCheckpoint.Check?, bindings=Bindings()
         while true {
             let start=reader.completeBytes
             guard let line=try reader.nextLine() else { break }
@@ -120,38 +147,53 @@ final class SessionJournal {
             if marker == nil, fields.customType == JournalRecordKind.marker {
                 marker=try item ?? JSON.parse(line)
                 markerCheck=JournalCheckpoint.Check(offset:start,length:line.count,sha256:JournalCheckpoint.digest(line))
+                bindings.marker=marker?["data"]["binding"]
+            } else if fields.customType == JournalRecordKind.rebind, marker != nil {
+                try bindings.meet(item ?? JSON.parse(line), line: line, at: start)
             }
         }
         if requireMarker {
-            guard let marker, marker["data"]["binding"] == binding else { throw AgentError("legacy_session", "This is not a compatible native session. Original Pi history remains read-only; use an explicit portable handoff.") }
+            guard marker != nil, binding == nil || bindings.current == binding else { throw AgentError("legacy_session", "This is not a compatible native session. Original Pi history remains read-only; use an explicit portable handoff.") }
         }
-        return (branch.last, reader.size, headerCheck, markerCheck)
+        return (branch.last, reader.size, headerCheck, markerCheck, bindings)
     }
     /// The chain from a checkpoint on, when the records the checkpoint relies
     /// on are still exactly as it recorded them and nothing after it rewrites
     /// the model context (an edit or a fork boundary, which only a full replay
     /// applies). nil means: check and replay the whole journal.
-    private static func resume(url: URL, id: String, binding: JSON, from checkpoint: JournalCheckpoint) -> (last: String?, size: UInt64)? {
+    private static func resume(url: URL, id: String, binding: JSON?, from checkpoint: JournalCheckpoint) -> (last: String?, size: UInt64, bindings: Bindings)? {
         guard checkpoint.sessionID == id, let file=try? FileHandle(forReadingFrom:url) else { return nil }
         defer { try? file.close() }
         guard let headerLine=JournalCheckpoint.verified(checkpoint.header,in:file), let header=try? JSON.parse(headerLine),
               header["type"].text == "session", header["version"].int == 3, header["id"].text == id,
               let markerLine=JournalCheckpoint.verified(checkpoint.marker,in:file), let marker=try? JSON.parse(markerLine),
-              marker["customType"].text == JournalRecordKind.marker, marker["data"]["binding"] == binding,
+              marker["customType"].text == JournalRecordKind.marker,
               let lastLine=JournalCheckpoint.verified(checkpoint.last,in:file), let last=try? JSON.parse(lastLine),
               last["id"].text == checkpoint.lastID, let reader=try? JournalRecordReader(url,startingAt:checkpoint.start) else { return nil }
+        // The connection changes the checkpoint names, each still as written;
+        // one it does not name, met below, means reading the whole journal.
+        var bindings=Bindings(marker: marker["data"]["binding"])
+        for check in checkpoint.rebinds ?? [] {
+            guard check.offset > checkpoint.marker.offset, let line=JournalCheckpoint.verified(check,in:file), let record=try? JSON.parse(line),
+                  record["customType"].text == JournalRecordKind.rebind, (try? bindings.meet(record, line: line, at: check.offset)) != nil else { return nil }
+        }
+        guard binding == nil || bindings.current == binding else { return nil }
+        let named=Set((checkpoint.rebinds ?? []).map(\.offset))
         var branch=JournalChainCheck(after: checkpoint.lastID)
         do {
-            while let line=try reader.nextLine() {
+            while true {
+                let start=reader.completeBytes
+                guard let line=try reader.nextLine() else { break }
                 if line.isEmpty { continue }
                 let fields: JournalLineScan.Fields
                 if let scanned=JournalLineScan.stateTail(line) ?? JournalLineScan.fields(line), scanned.id != nil { fields=scanned }
                 else { let parsed=try JSON.parse(line); fields = .init(id:parsed["id"].text,parentID:parsed["parentId"].text,customType:parsed["customType"].text,type:parsed["type"].text) }
                 let rid=try identity(.string(fields.id ?? ""))
-                guard branch.extend(rid, parent: fields.parentID), fields.type != "branch", fields.customType != JournalRecordKind.context else { return nil }
+                guard branch.extend(rid, parent: fields.parentID), fields.type != "branch", fields.customType != JournalRecordKind.context,
+                      fields.customType != JournalRecordKind.rebind || named.contains(start) else { return nil }
             }
         } catch { return nil }
-        return (branch.last, reader.size)
+        return (branch.last, reader.size, bindings)
     }
     /// `flush` false leaves the record written but not yet forced to stable
     /// storage. The bytes are in the file either way — another reader, a fork
@@ -222,7 +264,27 @@ final class SessionJournal {
     func checkWhole(id: String, binding: JSON) throws {
         let scanned=try Self.chain(url:url,id:id,binding:binding,requireMarker:true)
         tail=scanned.last; bytes=scanned.size; headerCheck=scanned.header; markerCheck=scanned.marker; resumedFrom=nil
+        markerBinding=scanned.bindings.marker; rebinds=scanned.bindings.rebinds
     }
+    /// The binding a native journal is bound to now, read from the file
+    /// without opening it for writing; nil for one that is not native.
+    static func currentBinding(url: URL, id: String) throws -> JSON? {
+        let scanned=try chain(url:url,id:id,binding:nil,requireMarker:false)
+        return scanned.marker == nil ? nil : scanned.bindings.current
+    }
+    /// Binds the journal to another connection: a record saying so, after
+    /// every record written under the binding before, which all stay.
+    func rebind(to binding: JSON, flush: Bool = true) throws {
+        guard let current=self.binding else { throw AgentError("legacy_session", "Only a native chat can move to another connection") }
+        // Already bound there, perhaps by a move whose answer was lost: what
+        // says so is forced to disk before the caller is told so.
+        guard current != binding else { if flush { unsynced = true; try synchronize() }; return }
+        try append(["type":"custom","customType":JSON(JournalRecordKind.rebind),"data":["binding":binding,"previous":current]],flush:flush)
+        guard let span=lastAppend, let line=lastAppendLine else { throw AgentError("session_damaged", "The connection change was not written as expected") }
+        rebinds.append(Rebind(check: .init(offset: span.offset, length: span.length, sha256: JournalCheckpoint.digest(line)), binding: binding))
+    }
+    /// The binding in force `bytes` into the journal.
+    func binding(at bytes: UInt64) -> JSON? { rebinds.last { $0.check.offset < bytes }?.binding ?? markerBinding }
     deinit { try? synchronize(); try? handle.close(); _=flock(lockFD,LOCK_UN); _=close(lockFD) }
 }
 
@@ -282,7 +344,8 @@ extension SessionJournal {
         // A new file's creation date, as a copy has.
         try? FileManager.default.setAttributes([.creationDate: Date()], ofItemAtPath: url.path)
         return SessionJournal(cloned: url, lockFD: lock, handle: file, tail: lastID, bytes: keep,
-                              header: .init(offset: headerCheck.offset, length: headerCheck.length, sha256: JournalCheckpoint.digest(line)), marker: markerCheck)
+                              header: .init(offset: headerCheck.offset, length: headerCheck.length, sha256: JournalCheckpoint.digest(line)), marker: markerCheck,
+                              markerBinding: markerBinding, rebinds: rebinds.filter { $0.check.offset < keep })
     }
 
     /// Removes what a fork that did not finish (the app quit or crashed

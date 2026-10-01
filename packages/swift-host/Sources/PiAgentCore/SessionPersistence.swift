@@ -80,11 +80,16 @@ extension AgentSession {
         guard let clone=journal.clone(to: temporary, id: newID, cwd: cwd, through: through) else { return nil }
         do {
             replay.retarget(id: newID, header: clone.headerCheck)
-            func write(_ value: JSON) throws {
-                try clone.append(value, flush: false)
+            replay.retarget(rebinds: clone.rebinds.map(\.check))
+            func written() throws {
                 guard let span=clone.lastAppend, let line=clone.lastAppendLine else { throw AgentError("session_damaged", "The fork's journal was not written as expected") }
                 try replay.consume(line, at: span.offset)
             }
+            func write(_ value: JSON) throws { try clone.append(value, flush: false); try written() }
+            // A fork from a reply written before the chat moved to its
+            // connection ends where the journal was bound to the old one: it
+            // moves to the chat's, as the chat did.
+            if clone.binding != profile.binding { try clone.rebind(to: profile.binding, flush: false); try written() }
             try write(["type":"custom","customType":JSON(JournalRecordKind.forkOrigin),"data":origin])
             var fresh = SessionSpend().record; fresh["source"] = "fork"; fresh[SessionSpend.resetKey] = true
             try write(["type":"custom","customType":JSON(SessionSpend.recordType),"data":fresh])
@@ -258,7 +263,9 @@ extension AgentSession {
             func replayWritten() throws { if let span=prepared.lastAppend, let line=prepared.lastAppendLine { try consumer.consume(line,at:span.offset) } }
             try replayWritten()
             // A fork is a chat of its own: it starts with no spend of its own.
-            let left: Set<String> = [JournalRecordKind.marker, JournalRecordKind.state, JournalRecordKind.sideOrigin, JournalRecordKind.forkOrigin, JournalRecordKind.contextRecovery, SessionSpend.recordType]
+            // A copy's marker is the chat's binding now: the moves that led
+            // there are the chat's history, not the fork's.
+            let left: Set<String> = [JournalRecordKind.marker, JournalRecordKind.state, JournalRecordKind.sideOrigin, JournalRecordKind.forkOrigin, JournalRecordKind.contextRecovery, SessionSpend.recordType, JournalRecordKind.rebind]
             let reader=try journal.recordReader(); var index=0
             func copied(from lineStart: UInt64, length: Int) { if hydrating, let span=prepared.lastAppend { sourcePlaces[span.offset]=(lineStart, length) } }
             while true {
@@ -358,7 +365,9 @@ extension AgentSession {
         return end
     }
     func savedState(active: Bool? = nil) throws -> JSON {
-        let value: JSON = ["active":JSON(active ?? (runTask != nil)),"queue":.array(queue.map(\.savedValue)),"steering":.array(steering.map(\.savedValue)),"commands":.array(Array(commands.suffix(128))),"queuePaused":JSON(queuePaused),"steeringMode":JSON(steeringMode),"followUpMode":JSON(followUpMode),"runStatus":JSON(runStatus.rawValue),"errorMessage":errorMessage.map { JSON($0) } ?? .null,"errorCode":errorCode.map { JSON($0) } ?? .null,"timing":["modelMs":cumulativeModelMs.map { JSON($0) } ?? .null,"toolMs":cumulativeToolMs.map { JSON($0) } ?? .null]]
+        var value: JSON = ["active":JSON(active ?? (runTask != nil)),"queue":.array(queue.map(\.savedValue)),"steering":.array(steering.map(\.savedValue)),"commands":.array(Array(commands.suffix(128))),"queuePaused":JSON(queuePaused),"steeringMode":JSON(steeringMode),"followUpMode":JSON(followUpMode),"runStatus":JSON(runStatus.rawValue),"errorMessage":errorMessage.map { JSON($0) } ?? .null,"errorCode":errorCode.map { JSON($0) } ?? .null,"timing":["modelMs":cumulativeModelMs.map { JSON($0) } ?? .null,"toolMs":cumulativeToolMs.map { JSON($0) } ?? .null]]
+        // The message being delivered counts with the lanes it goes back to.
+        if let delivering { value["delivering"] = ["lane": JSON(delivering.lane), "submission": delivering.submission.savedValue] }
         guard (try value.data()).count <= 8*1024*1024 else { throw AgentError("queue_limit", "Queued content exceeds 8 MiB") }
         var saved = value
         if let activeTaskPresentation { saved["taskPresentation"] = try JSON.parse(JSONEncoder().encode(activeTaskPresentation)) }

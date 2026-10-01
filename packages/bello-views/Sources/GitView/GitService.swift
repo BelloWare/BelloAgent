@@ -281,6 +281,11 @@ public actor GitService {
         if !current.isEmpty { batches.append(current) }
         return batches
     }
+    /// Git reads every path after `--` as a pattern: "[id].txt" also names
+    /// "i.txt", "*.md" every Markdown file, and a leading ":" is magic. Each
+    /// path is marked literal on its own, at the command line: the global
+    /// `--literal-pathspecs` would reach a commit's hooks and their patterns.
+    static func literal(_ paths: [String]) -> [String] { paths.map { ":(literal)" + $0 } }
     /// A NUL-separated pathspec file for the commands that cannot be split.
     static func writePathspec(_ paths: [String]) throws -> URL {
         let url = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true).appendingPathComponent("pi-pathspec-" + UUID().uuidString)
@@ -291,7 +296,7 @@ public actor GitService {
     }
     /// Runs one git command per batch of paths, stopping at the first failure.
     private func runBatched(_ prefix: [String], paths: [String], in root: String, _ what: String) async throws {
-        for batch in Self.batches(of: paths, prefix: prefix) {
+        for batch in Self.batches(of: Self.literal(paths), prefix: prefix) {
             _ = try require(await run(prefix + batch, in: root), what)
         }
     }
@@ -373,7 +378,7 @@ public actor GitService {
         // One path's history follows renames, so a file keeps its story.
         let path = path ?? filter.path
         if path != nil { arguments.append("--follow") }
-        if let path { arguments += ["--", path] }
+        if let path { arguments += ["--"] + Self.literal([path]) }
         let output = try await run(arguments, in: root)
         if output.status != 0 {
             let detail = output.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -383,7 +388,7 @@ public actor GitService {
         var commits = Self.parseLog(output.text)
         // A hex filter is also tried as a hash prefix, on the first page only.
         if skip == 0, text.count >= 4, text.count <= 40, text.allSatisfy(\.isHexDigit), !commits.contains(where: { $0.hash.hasPrefix(text.lowercased()) }) {
-            let byHash = try await run(["log", "--format=%H%x00%h%x00%an%x00%aI%x00%s%x00%P%x00%D%x1e", "-n", "1", text + "^{commit}", "--"] + (path.map { [$0] } ?? []), in: root)
+            let byHash = try await run(["log", "--format=%H%x00%h%x00%an%x00%aI%x00%s%x00%P%x00%D%x1e", "-n", "1", text + "^{commit}", "--"] + Self.literal(path.map { [$0] } ?? []), in: root)
             if byHash.status == 0, let match = Self.parseLog(byHash.text).first {
                 var show = filter.allBranches
                 if !show { show = (try? await run(["merge-base", "--is-ancestor", match.hash, "HEAD"], in: root))?.status == 0 }
@@ -453,7 +458,7 @@ public actor GitService {
     /// The patch of one commit, or of one path inside it, already parsed.
     func commitDiffFiles(in root: String, commit: GitCommit, path: String? = nil) async throws -> [GitDiffFile] {
         var arguments = ["show", "--format=", "--no-ext-diff", "-U3", "--find-renames", "-m", "--first-parent", commit.hash]
-        if let path { arguments += ["--", path] }
+        if let path { arguments += ["--"] + Self.literal([path]) }
         return try await detached(arguments, in: root, timeout: 20) { output in
             guard output.status == 0 else {
                 let detail = output.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -472,7 +477,7 @@ public actor GitService {
         else {
             arguments = ["diff", "--no-ext-diff", "-U3", "--find-renames"]
             if staged { arguments.append("--cached") }
-            if !paths.isEmpty { arguments += ["--"] + paths }
+            if !paths.isEmpty { arguments += ["--"] + Self.literal(paths) }
         }
         let allowed: Int32 = untracked ? 1 : 0
         return try await detached(arguments, in: root, timeout: 20) { output in
@@ -591,7 +596,7 @@ public actor GitService {
     }
     func unstage(_ paths: [String], in root: String) async throws {
         guard !paths.isEmpty else { return }
-        for batch in Self.batches(of: paths, prefix: ["restore", "--staged", "--"]) {
+        for batch in Self.batches(of: Self.literal(paths), prefix: ["restore", "--staged", "--"]) {
             let output = try await run(["restore", "--staged", "--"] + batch, in: root)
             if output.status != 0 { _ = try require(await run(["reset", "-q", "HEAD", "--"] + batch, in: root), "Unstaging") }
         }
@@ -613,11 +618,12 @@ public actor GitService {
             try await stage(staging ?? paths, in: root)
             // One commit cannot be split, so a path list too long for argv is
             // handed to git in a file instead.
-            if Self.batches(of: paths, prefix: arguments + ["--only", "--"]).count > 1, let file = try? Self.writePathspec(paths) {
+            let pathspecs = Self.literal(paths)
+            if Self.batches(of: pathspecs, prefix: arguments + ["--only", "--"]).count > 1, let file = try? Self.writePathspec(pathspecs) {
                 pathspecFile = file
                 arguments += ["--only", "--pathspec-from-file=" + file.path, "--pathspec-file-nul"]
             } else {
-                arguments += ["--only", "--"] + paths
+                arguments += ["--only", "--"] + pathspecs
             }
         }
         let committed = try await run(arguments, in: root)

@@ -27,6 +27,22 @@ final class ChatRecordMergeTests: XCTestCase {
         XCTAssertEqual(current.merged(over: held).title, "Chat")
     }
 
+    func testACopyOlderThanTheChatsConnectionChangeTakesItBack() {
+        var held = chat(); held.connectionRevision = 9; held.profileID = "second"; held.model = "second-model"
+        held.thinkingLevel = "high"; held.contextWindow = 64_000; held.maxOutputTokens = 4_000; held.modelOutputLimit = 8_000
+        held.journalRebind = true
+        var stale = chat(); stale.connectionRevision = 8; stale.path = "/journal.jsonl"; stale.title = "Titled"
+        let written = stale.merged(over: held)
+        XCTAssertEqual(written.path, "/journal.jsonl"); XCTAssertEqual(written.title, "Titled", "The copy's own update is written")
+        XCTAssertEqual(written.profileID, "second"); XCTAssertEqual(written.model, "second-model"); XCTAssertEqual(written.thinkingLevel, "high")
+        XCTAssertEqual(written.contextWindow, 64_000); XCTAssertEqual(written.maxOutputTokens, 4_000); XCTAssertEqual(written.modelOutputLimit, 8_000)
+        XCTAssertEqual(written.journalRebind, true, "A journal still to move stays marked")
+        XCTAssertEqual(written.connectionRevision, 9)
+        // A copy as new as the change, or newer, is the change.
+        var current = chat(); current.connectionRevision = 10
+        XCTAssertEqual(current.merged(over: held).profileID, "profile"); XCTAssertNil(current.merged(over: held).journalRebind)
+    }
+
     func testACopyWithNoSidebarOrderOrParentKeepsTheOnesHeld() {
         var held = chat(); held.sidebarOrder = 42; held.parentSessionID = "parent"
         var copy = chat(); copy.sidebarOrder = nil; copy.parentSessionID = nil

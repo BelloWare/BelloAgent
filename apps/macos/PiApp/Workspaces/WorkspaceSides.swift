@@ -131,8 +131,12 @@ extension WorkspaceModel {
                 // closed nor kept, and while it exists the app refuses to quit
                 // and blocks every update. The saved side-keep intent still
                 // lets a side the host did publish be recovered on restart.
-                sides.removeValue(forKey: parentID); displays.removeValue(forKey: id)
-                if let original = displays[parentID] { original.draft += (original.draft.isEmpty ? "" : "\n\n") + question; original.directCommand = false; draftChanged(original) }
+                // Only this side: a lost host may already have put another
+                // in its place holding what was typed here.
+                let replaced = sides[parentID].map { $0.id != id } ?? false
+                if !replaced { sides.removeValue(forKey: parentID) }
+                displays.removeValue(forKey: id)
+                if !replaced, let original = displays[parentID] { original.draft += (original.draft.isEmpty ? "" : "\n\n") + question; original.directCommand = false; draftChanged(original) }
                 self.error = error.localizedDescription; updateHostActivity(workspaceID: parent.workspaceID)
             }
         }
@@ -193,14 +197,109 @@ extension WorkspaceModel {
         if selectedID == parentID { focusedSessionID = id }
         updateHostActivity(workspaceID: info.workspaceID); refresh(id)
     }
-    /// Drops a side that never sent a message, moving its unsent text into the parent composer.
-    func discardPendingSide(_ info: SideRecord) {
-        guard info.pending else { return }
-        let draft = displays[info.id]?.draft.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    /// Drops a side that never sent a message, moving its whole unsent draft
+    /// (text, images and skills) into the parent (`moveSideDraft`). The side
+    /// goes only once the parent holds the draft; if the parent's saved draft
+    /// cannot be read or written, the side stays as it was. True when gone.
+    @discardableResult
+    func discardPendingSide(_ info: SideRecord) async -> Bool {
+        guard info.pending, sides[info.parentID]?.id == info.id else { return sides[info.parentID]?.id != info.id }
+        if discardPendingSideNow(info) { return true }
+        let view = displays[info.id]
+        view?.loading = true
+        do { try await moveSideDraft(info) }
+        catch {
+            view?.loading = false
+            self.error = "The side's draft could not be moved to its chat, so the side stays open. \(error.localizedDescription)"
+            return false
+        }
+        view?.loading = false
+        if sides[info.parentID]?.id == info.id { removePendingSide(info) }
+        return true
+    }
+    /// The same, at once, when nothing has to be read first: true when done.
+    func discardPendingSideNow(_ info: SideRecord) -> Bool {
+        guard info.pending, sides[info.parentID]?.id == info.id else { return sides[info.parentID]?.id != info.id }
+        // A draft on its way to the parent's saved draft is not done yet.
+        guard sideDraftTransfers[info.id] == nil, moveSideDraftHere(info) else { return false }
+        removePendingSide(info); return true
+    }
+    private func removePendingSide(_ info: SideRecord) {
         sides.removeValue(forKey: info.parentID); displays.removeValue(forKey: info.id)
         if focusedSessionID == info.id { focusedSessionID = info.parentID }
-        if !draft.isEmpty, let parent = displays[info.parentID] { parent.draft += (parent.draft.isEmpty ? "" : "\n\n") + draft; parent.directCommand = false; draftChanged(parent) }
         focusComposer(info.parentID)
+    }
+    /// The one way an unsaved side's draft reaches its parent (closing or
+    /// replacing it, quit, update, a lost host): its text after the parent's,
+    /// its images and skills after the parent's (`DraftRecord.merging`). Into
+    /// the parent's draft as loaded here (`absorb`); else into its saved
+    /// draft, read first: one that cannot be read is never taken for empty.
+    /// The side's composer is emptied as the draft leaves and given back if
+    /// it cannot arrive; what is typed meanwhile follows on the next pass,
+    /// until nothing is left.
+    func moveSideDraft(_ info: SideRecord, from shown: SessionDisplay? = nil) async throws {
+        guard let side = shown ?? displays[info.id] else { return }
+        while true {
+            // One move of a side's draft at a time: another waits, then sees
+            // what that one left in the side (all of it, if it failed).
+            while let running = sideDraftTransfers[info.id] { await running.task.value }
+            if moveSideDraftHere(info, from: side) { return }
+            guard let store else { throw StoreError.unavailable }
+            let moving = Self.unsentDraft(of: side, to: info.parentID)
+            side.draft = ""; side.attachments = []; side.skills = []
+            let (done, finish) = AsyncStream<Never>.makeStream(), token = UUID()
+            sideDraftTransfers[info.id] = (token, Task { for await _ in done {} })
+            defer { finish.finish(); if sideDraftTransfers[info.id]?.token == token { sideDraftTransfers.removeValue(forKey: info.id) } }
+            do {
+                let saved = try await store.get(DraftRecord.self, kind: "draft", id: info.parentID) ?? DraftRecord(id: info.parentID, text: "")
+                // The parent's draft may have loaded meanwhile: it takes the
+                // draft itself, and the saved one follows from it.
+                if let parent = displays[info.parentID], parent.selectionMetadataLoaded || pendingChatIDs.contains(parent.id) { absorb(moving, into: parent); continue }
+                let merged = saved.receiving(moving)
+                try await store.put(merged, kind: "draft", id: info.parentID)
+                // Or loaded the copy from before this write: given the draft
+                // too, unless what it loaded already holds all of it.
+                if let parent = displays[info.parentID], parent.selectionMetadataLoaded, !Self.parked(in: parent).holds(merged.displaced) { absorb(moving, into: parent) }
+            } catch {
+                let back = moving.merging(Self.unsentDraft(of: side, to: info.parentID))
+                side.draft = back.text; side.attachments = back.attachments ?? []; side.skills = back.skills ?? []
+                throw error
+            }
+        }
+    }
+    /// The draft `parent` keeps outside any edit under way.
+    private static func parked(in parent: SessionDisplay) -> DraftRecord {
+        if parent.queueEditingID != nil, let before = parent.draftBeforeQueueEdit { return before }
+        if parent.editingMessageID != nil, let before = parent.draftBeforeEdit { return before }
+        return DraftRecord(id: parent.id, text: parent.draft, attachments: parent.attachments, skills: parent.skills)
+    }
+    /// `moveSideDraft` without suspending: true when there is nothing (left)
+    /// to move or the parent's loaded draft took it; false when only its
+    /// saved draft can.
+    func moveSideDraftHere(_ info: SideRecord, from shown: SessionDisplay? = nil) -> Bool {
+        guard let side = shown ?? displays[info.id] else { return true }
+        let moving = Self.unsentDraft(of: side, to: info.parentID)
+        guard !moving.isBlank else { return true }
+        guard let parent = displays[info.parentID], parent.selectionMetadataLoaded || pendingChatIDs.contains(parent.id) else { return false }
+        absorb(moving, into: parent)
+        side.draft = ""; side.attachments = []; side.skills = []
+        return true
+    }
+    /// `moving` added to the draft `parent` saves: the one a queued or an
+    /// earlier message's edit displaced, while it is being edited, so ending
+    /// the edit brings it back with the side's; else the composer's.
+    private func absorb(_ moving: DraftRecord, into parent: SessionDisplay) {
+        if parent.queueEditingID != nil, let before = parent.draftBeforeQueueEdit { parent.draftBeforeQueueEdit = before.merging(moving) }
+        else if parent.editingMessageID != nil, let before = parent.draftBeforeEdit { parent.draftBeforeEdit = before.merging(moving) }
+        else {
+            let merged = Self.parked(in: parent).merging(moving)
+            parent.draft = merged.text; parent.attachments = merged.attachments ?? []; parent.skills = merged.skills ?? []
+            parent.directCommand = false
+        }
+        draftChanged(parent)
+    }
+    static func unsentDraft(of side: SessionDisplay, to parentID: String) -> DraftRecord {
+        DraftRecord(id: parentID, text: side.draft.trimmingCharacters(in: .whitespacesAndNewlines), attachments: side.attachments, skills: side.skills)
     }
     /// Shows a saved child chat in the side pane of its parent, replacing the
     /// side shown there. The replaced side keeps its display and any running
@@ -208,7 +307,7 @@ extension WorkspaceModel {
     func showSide(_ id: String, revealInSidebar: Bool = true) async {
         guard !installPreparing, let child = chats.first(where: { $0.id == id }), let parentID = child.parentSessionID, record(parentID) != nil, !child.imported else { return }
         if let shown = sides[parentID], shown.id == id { await selectSide(id, revealInSidebar: revealInSidebar); return }
-        if let shown = sides[parentID], shown.pending { discardPendingSide(shown) }
+        if let shown = sides[parentID], shown.pending, !(await discardPendingSide(shown)) { return }
         if let shown = sides[parentID], !shown.kept || shown.keeping { error = "Wait for the current side to finish opening before switching."; return }
         if revealInSidebar { quietSidebarReveal = [] }
         // This side is the one asked for, not the one the parent last showed.
@@ -377,7 +476,7 @@ extension WorkspaceModel {
     }
     func closeSide(_ id: String) {
         guard let info = side(id), let view = displays[id], !view.loading, !info.keeping else { return }
-        if info.pending { discardPendingSide(info); return }
+        if info.pending { if !discardPendingSideNow(info) { Task { await discardPendingSide(info) } }; return }
         view.loading = true
         Task { defer {
             view.loading = false
@@ -463,13 +562,29 @@ extension WorkspaceModel {
     func discardLostSides(workspaceID: String) {
         // A draft side has nothing on the helper to lose: it stays, with its text.
         for info in sides.values.filter({ $0.workspaceID == workspaceID && !$0.kept && !$0.pending }) {
-            let draft = displays[info.id]?.draft.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let view = displays[info.id]
+            let typed = view.map { !Self.unsentDraft(of: $0, to: info.parentID).isBlank } ?? false
             sides.removeValue(forKey: info.parentID); displays.removeValue(forKey: info.id); opened.remove(info.id)
             forgetReadState(info.id)
+            // The side is gone, but nothing the user typed into it is: the
+            // draft moves as a closed side's does, from the display kept here.
+            // A parent whose draft is not loaded here cannot take it now: the
+            // draft stays on screen as a new draft side of that parent, which
+            // closing, quitting or updating moves as any draft side's.
+            var parked = false
+            if let view, typed, !moveSideDraftHere(info, from: view) {
+                parked = true
+                var draftSide = info
+                draftSide.id = UUID().uuidString; draftSide.pending = true; draftSide.kept = false; draftSide.keeping = false
+                draftSide.keepRequested = false; draftSide.boundary = [:]
+                let shown = SessionDisplay(id: draftSide.id)
+                shown.historyState = .empty; shown.selectionMetadataLoaded = true
+                shown.draft = view.draft; shown.attachments = view.attachments; shown.skills = view.skills
+                sides[info.parentID] = draftSide; displays[draftSide.id] = shown
+            }
             guard let parent = displays[info.parentID] else { continue }
-            // The side is gone, but nothing the user typed into it is.
-            if !draft.isEmpty { parent.draft += (parent.draft.isEmpty ? "" : "\n\n") + draft; parent.directCommand = false; draftChanged(parent) }
-            parent.notice = draft.isEmpty ? "The host stopped. Its unkept side was discarded; no request was replayed."
+            parent.notice = !typed ? "The host stopped. Its unkept side was discarded; no request was replayed."
+                : parked ? "The host stopped. Its unkept side was discarded; its unsent draft waits in a new side."
                 : "The host stopped. Its unkept side was discarded and its unsent draft was moved into this composer."
         }
         Task { await reconcileSideKeeps() }

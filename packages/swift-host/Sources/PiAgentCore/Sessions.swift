@@ -162,6 +162,10 @@ public actor AgentSession {
     var steeringMode="one-at-a-time", followUpMode="one-at-a-time"
     var closed=false
     var activeSubmission: Submission?
+    /// The pending message taken from its lane for delivery, until its user
+    /// record is in the journal: the saved state keeps it meanwhile, so a
+    /// crash while it is checked brings it back (`SessionQueue.swift`).
+    var delivering: (lane: String, submission: Submission)?
     var appliedSnapshot: ResourceSnapshot?
     var preparedContext: ContextPreview?
     var currentAttemptIDs: [String] = []
@@ -304,6 +308,12 @@ public actor AgentSession {
             }
             queue=try JSONDecoder().decode([Submission].self,from:saved["queue"].data())
             steering=try JSONDecoder().decode([Submission].self,from:saved["steering"].data())
+            // A message that was being delivered goes back to the head of its
+            // lane; one whose user record was written is dropped below.
+            if !saved["delivering"].isNull {
+                let held=try JSONDecoder().decode(Submission.self,from:saved["delivering"]["submission"].data())
+                if saved["delivering"]["lane"].text == "steering" { steering.insert(held,at:0) } else { queue.insert(held,at:0) }
+            }
             commands=saved["commands"].list; journaledCommands=commands; let hasQueued = !queue.isEmpty; let hasSteering = !steering.isEmpty; queuePaused = hasQueued || hasSteering || saved["active"].flag == true || saved["queuePaused"].flag == true
             steeringMode=saved["steeringMode"].text ?? "one-at-a-time"; followUpMode=saved["followUpMode"].text ?? "one-at-a-time"
             if !saved["timing"].isNull {

@@ -20,12 +20,12 @@
 
 ## Workstream 1 — data safety and connections (review findings 1–5)
 Source: `docs/reviews/BelloAgent-0.1.117-deep-review.md`.
-- [ ] **Literal Git paths** (finding 1): discard, delete untracked, stage, unstage, commit (both forms, incl. pathspec-file) use literal pathspecs; diff/history audited. Tests: `[`, `*`, `?`, leading `:` names; unselected files untouched; renames; long lists.
-- [ ] **Serialized connection switch** (finding 2): per-chat gate over close/rebind/metadata vs open, send, prewarm and automatic context; opens tied to a binding generation and revalidated after awaits. Test the review's reverse interleaving, two quick switches, cancellation, failed writes.
-- [ ] **Journal rebind on switch** (finding 5): rebind the journal to the new connection before committing the switch; a failed rebind leaves the old connection working. Two synthetic gateways; send and reopen on B; checkpoint and full-replay journals.
-- [ ] **Confirm when reasoning can't carry over** (owner decision: ask each time): before switching, the helper checks the context against B. If replies hold provider-only reasoning that only A can use, ask "Earlier reasoning from A can't be sent to B. Switch anyway?" — on confirm those replies go to B portably (text and tool calls), as per-turn model changes already do; the original journal keeps everything. Otherwise switch silently.
-- [ ] **Durable in-flight queue delivery** (finding 3): a claimed follow-up/steering item stays persisted until its user record is appended; recovery restores undelivered work paused without duplicates. Crash-snapshot test, both lanes, one-at-a-time and all modes.
-- [ ] **Whole pending-side draft** (finding 4): close, replace, quit and update move text, images and skills to the parent through one merge path; storage failures keep everything recoverable.
+- [x] **Literal Git paths** (finding 1): discard, delete untracked, stage, unstage, commit (both forms, incl. pathspec-file) use literal pathspecs; diff/history audited. Tests: `[`, `*`, `?`, leading `:` names; unselected files untouched; renames; long lists.
+- [x] **Serialized connection switch** (finding 2): per-chat gate over close/rebind/metadata vs open, send, prewarm and automatic context; opens tied to a binding generation and revalidated after awaits. Test the review's reverse interleaving, two quick switches, cancellation, failed writes.
+- [x] **Journal rebind on switch** (finding 5): rebind the journal to the new connection before committing the switch; a failed rebind leaves the old connection working. Two synthetic gateways; send and reopen on B; checkpoint and full-replay journals.
+- [x] **Confirm when reasoning can't carry over** (owner decision: ask each time): before switching, the helper checks the context against B. If replies hold provider-only reasoning that only A can use, ask "Earlier reasoning from A can't be sent to B. Switch anyway?" — on confirm those replies go to B portably (text and tool calls), as per-turn model changes already do; the original journal keeps everything. Otherwise switch silently.
+- [x] **Durable in-flight queue delivery** (finding 3): a claimed follow-up/steering item stays persisted until its user record is appended; recovery restores undelivered work paused without duplicates. Crash-snapshot test, both lanes, one-at-a-time and all modes.
+- [x] **Whole pending-side draft** (finding 4): close, replace, quit and update move text, images and skills to the parent through one merge path; storage failures keep everything recoverable.
 
 ## Workstream 2 — content and rendering correctness (findings 7–10)
 - [ ] **Nested code fence identities** (7): collision-free leaf identity; Copy, display and accessibility match; streaming selection stable.

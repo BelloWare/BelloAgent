@@ -103,6 +103,13 @@ extension ProviderClient {
         ["profile":profile.binding,"profileId":JSON(profile.id),"configurationRevision":profile.raw["revision"],
          "contractSHA256":JSON(try RoutingContract(profile.raw["routing"]).fingerprint)]
     }
+    /// Whether `profile` sends `message`'s provider-only reasoning back as
+    /// it was received: a reply that only that connection can use so.
+    static func replaysReasoning(_ message: ChatMessage, profile: Profile) -> Bool {
+        guard message.role == "assistant", let items=(try? replayItems(message, profile: profile)) ?? nil else { return false }
+        let portableTypes: Set<String> = profile.api == "openai-responses" ? ["message","function_call"] : ["text","tool_use"]
+        return items.contains { !portableTypes.contains($0["type"].text ?? "") }
+    }
     static func replayItems(_ message: ChatMessage, profile: Profile) throws -> [JSON]? {
         guard let items=message.providerItems else { return nil }
         let contract=try RoutingContract(profile.raw["routing"])
@@ -110,6 +117,10 @@ extension ProviderClient {
         let portableTypes: Set<String> = profile.api == "openai-responses" ? ["message","function_call"] : ["text","tool_use"]
         let opaque=items.contains { !portableTypes.contains($0["type"].text ?? "") }
         guard opaque else { return items }
+        // A reply written on another saved connection, before the chat moved
+        // here (`SessionJournal.rebind`), goes portably, as a reply of another
+        // model does: its reasoning is that connection's, kept, not sent.
+        if let recorded=message.providerBinding?["profileId"].text, recorded != profile.id { return nil }
         guard contract.policy == "pinned" else { throw AgentError("opaque_replay_policy", "History contains provider-specific reasoning. Choose portable history or configure a compatible fixed gateway route in Settings before continuing. Original history is retained.") }
         let identity=message.providerIdentity ?? .null
         let binding=try replayBinding(profile)

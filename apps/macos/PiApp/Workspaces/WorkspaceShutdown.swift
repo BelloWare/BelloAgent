@@ -15,7 +15,7 @@ extension WorkspaceModel {
             // The host also checks authoritative lane state after all accepted
             // preflight commands finish. Native status can lag an acknowledgement.
             for host in hosts.values where host.isReady { _ = try await host.request("workspace.quiesce") }
-            await moveUnsavedSideDraftsToParents()
+            try await moveUnsavedSideDraftsToParents()
             try await flushDrafts()
             for host in hosts.values { try await host.shutdownAndWait() }
             guard await flushProjectSidebarState() else { throw HostError.failure("Project preferences could not be saved in time. Retry the update after storage becomes available.") }
