@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// The Settings sheet and window, in four sections down the left since
@@ -33,13 +34,13 @@ struct ProfileSettings: View {
         Binding(get: { controller.draft.profile.catalogUrl ?? "" }, set: { controller.draft.profile.catalogUrl = $0.isEmpty ? nil : $0 })
     }
     private var isSaved: Bool { controller.isSaved }
-    /// The Test Connection button asked once; the footer explains the request until Send or Cancel.
-    @State private var confirmingTest = false
+    private var confirmingTest: Bool { controller.confirmingTest }
 
     var body: some View {
-        PiSheet("Settings", subtitle: "Your connections, keys, headers, MCP servers and preferences. Everything here is kept in your macOS Keychain and only this signed app can read it.", symbol: "gearshape", windowChrome: windowChrome) {
+        PiSheet("Settings", subtitle: "Your connections, keys, headers, MCP servers and preferences. Everything here is kept in your macOS Keychain and only this signed app can read it.", symbol: "gearshape", windowChrome: windowChrome, cancelDisabled: controller.busy,
+                onCancel: { Task { if await controller.requestClose() { dismiss() } } }) {
             HStack(spacing: 0) {
-                SettingsSectionList(selection: $model.settingsSection)
+                SettingsSectionList(selection: $model.settingsSection, edited: controller.editedSections)
                 Rectangle().fill(Color.piHairline).frame(width: 1)
                 ScrollView {
                     // Only the open section is built, and lazily: the code
@@ -56,13 +57,19 @@ struct ProfileSettings: View {
                     // A save writes the tabs it captured when it started. Leaving
                     // the sheet live meant a tab switch mid-save lost what was typed
                     // after it, and Reload vault cleared `busy` under the save.
-                    .disabled(controller.busy)
+                    // Nor while the app is quitting or updating: its last save of
+                    // preferences has already been decided.
+                    .disabled(controller.busy || model.installPreparing)
                 }
                 // Each section opens at its top.
                 .id(model.settingsSection)
             }
         } actions: {
-            Button("Cancel") { dismiss() }.disabled(controller.busy)
+            // Cancel is the explicit way out without saving: every unsaved edit
+            // goes, and Settings opens next time on what the vault holds.
+            Button("Cancel") { controller.discardAll(); dismiss() }.disabled(controller.busy)
+                .help("Close Settings and discard every unsaved change")
+                .accessibilityIdentifier("settings-cancel")
         } footer: {
             HStack(spacing: PiSpacing.sm) {
                 if onConnections && isSaved && controller.confirmingDelete {
@@ -80,8 +87,8 @@ struct ProfileSettings: View {
                         .font(PiFont.caption).foregroundStyle(Color.piInkSecondary).lineLimit(3).fixedSize(horizontal: false, vertical: true)
                         .accessibilityIdentifier("settings-test-connection-question")
                     Spacer(minLength: PiSpacing.md)
-                    Button("Cancel") { withAnimation(PiMotion.quick) { confirmingTest = false } }.buttonStyle(.piSecondaryCompact).fixedSize()
-                    Button { confirmingTest = false; Task { if await controller.save(thenTest: true) { dismiss() } } } label: { Label("Send Test Request", systemImage: "bolt.horizontal") }.buttonStyle(.piPrimary).fixedSize()
+                    Button("Cancel") { withAnimation(PiMotion.quick) { controller.confirmingTest = false } }.buttonStyle(.piSecondaryCompact).fixedSize()
+                    Button { controller.confirmingTest = false; Task { if await controller.save(thenTest: true) { dismiss() } } } label: { Label("Send Test Request", systemImage: "bolt.horizontal") }.buttonStyle(.piPrimary).fixedSize()
                         .accessibilityIdentifier("settings-confirm-test-connection")
                 } else {
                     // Deleting, discarding and testing act on the connection
@@ -100,23 +107,28 @@ struct ProfileSettings: View {
                             .accessibilityIdentifier("settings-discard-connection")
                     }
                     if onConnections {
-                        Button { withAnimation(PiMotion.base) { confirmingTest = true } } label: { Label("Test Connection…", systemImage: "bolt.horizontal") }.fixedSize()
+                        Button { withAnimation(PiMotion.base) { controller.confirmingTest = true } } label: { Label("Test Connection…", systemImage: "bolt.horizontal") }.fixedSize()
                             .disabled(!model.configurationLoaded || !controller.supportedAPI || controller.draft.profile.baseUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                             .help("Saves this configuration, then sends one test request in a saved chat outside any project.")
                     }
                     PiStatusLine(text: controller.message, tone: controller.messageTone).lineLimit(2)
                     Spacer(minLength: PiSpacing.md)
-                    Button("Save") { Task { if await controller.save() { dismiss() } } }.buttonStyle(.piPrimary).fixedSize().disabled(!model.configurationLoaded)
-                        .help("Saves every tab with edits and the preferences, then closes Settings.")
+                    if controller.isDirty {
+                        PiBadge(text: "Unsaved changes", tone: .warning).fixedSize()
+                            .accessibilityIdentifier("settings-unsaved")
+                    }
+                    Button("Save All") { Task { if await controller.save() { dismiss() } } }.buttonStyle(.piPrimary).fixedSize().disabled(!model.configurationLoaded)
+                        .help("Saves every connection tab with edits and the preferences, then closes Settings.")
                         .accessibilityIdentifier("settings-save")
                 }
             }
-            .disabled(controller.busy)
+            .disabled(controller.busy || model.installPreparing)
             .piAnimation(PiMotion.base, value: controller.confirmingDelete)
             .piAnimation(PiMotion.base, value: confirmingTest)
-            .onChange(of: controller.draft.profile.id) { _, _ in confirmingTest = false }
-            .onChange(of: model.settingsSection) { _, _ in confirmingTest = false; controller.confirmingDelete = false }
+            .onChange(of: controller.draft.profile.id) { _, _ in controller.confirmingTest = false }
+            .onChange(of: model.settingsSection) { _, _ in controller.confirmingTest = false; controller.confirmingDelete = false }
         }
+        .background(HostingWindowReader { controller.presentationWindow = $0 })
         .task { await controller.load(discardingDrafts: false) }
     }
 
@@ -140,8 +152,8 @@ struct ProfileSettings: View {
                     .accessibilityIdentifier("settings-new-connection")
             }
             Spacer(minLength: 0)
-            PiIconButton(symbol: "arrow.clockwise", label: "Reload vault", size: 26) { Task { await controller.load(discardingDrafts: true) } }
-                .help("Reload the configuration vault and drop unsaved edits")
+            PiIconButton(symbol: "arrow.clockwise", label: "Reload vault", size: 26) { Task { await controller.requestReload() } }
+                .help("Reload the configuration vault. Asks first when that would drop unsaved edits.")
         }
         PiSettingsGroup(title: isSaved ? "Connection" : "New connection",
                         footer: "Leave the key and headers empty to keep the saved values. The selected alias remains the requested model; a gateway's reported route may change between requests.") {
@@ -313,6 +325,8 @@ enum SettingsSection: String, CaseIterable, Identifiable, Sendable {
 /// One row per section, the open one highlighted.
 private struct SettingsSectionList: View {
     @Binding var selection: SettingsSection
+    /// Sections holding unsaved edits, marked with a dot.
+    var edited: Set<SettingsSection> = []
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             ForEach(SettingsSection.allCases) { section in
@@ -320,10 +334,17 @@ private struct SettingsSectionList: View {
                     HStack(spacing: 8) {
                         Image(systemName: section.symbol).font(.system(size: 12, weight: .medium))
                             .foregroundStyle(selection == section ? Color.piAccent : Color.piInkSecondary).frame(width: 18)
+                            // Unsaved edits mark the icon, so the title keeps its room.
+                            .overlay(alignment: .topTrailing) {
+                                if edited.contains(section) {
+                                    Circle().fill(Color.piWarning).frame(width: 6, height: 6).offset(x: 2, y: -2).accessibilityHidden(true)
+                                }
+                            }
                         Text(section.title).font(PiFont.body).foregroundStyle(Color.piInk).lineLimit(1)
                     }
                 }
                 .accessibilityIdentifier("settings-section-" + section.rawValue)
+                .accessibilityValue(edited.contains(section) ? "Unsaved changes" : "")
                 .accessibilityAddTraits(selection == section ? .isSelected : [])
             }
             Spacer(minLength: 0)
@@ -425,5 +446,17 @@ private struct CatalogModelMenu: View {
         .help(controller.supportedAPI ? "Search every model from the bundled Bello catalog or this connection's custom catalog." : "Choose Use Responses above to list models.")
         .accessibilityLabel(miniSelection ? "Mini model: \(draft.profile.miniModelId ?? "Catalog default")" : "Choose connection model")
         .accessibilityIdentifier(miniSelection ? "settings-mini-model-menu" : "settings-model-menu")
+    }
+}
+
+/// Hands the window this view is in to `found`, as it moves between windows.
+@MainActor struct HostingWindowReader: NSViewRepresentable {
+    let found: (NSWindow?) -> Void
+    func makeNSView(context: Context) -> ReaderView { let view = ReaderView(); view.found = found; return view }
+    func updateNSView(_ view: ReaderView, context: Context) { view.found = found }
+    @MainActor final class ReaderView: NSView {
+        var found: ((NSWindow?) -> Void)?
+        override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); found?(window) }
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
     }
 }

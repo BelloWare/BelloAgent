@@ -18,6 +18,9 @@ struct PiSheet<Content: View, Actions: View, Footer: View>: View {
     /// being saved, a project being removed — holds Escape back until the write
     /// finishes. Everything else leaves on Escape.
     var cancelDisabled = false
+    /// What Escape does instead of closing: a sheet with unsaved edits asks
+    /// first. Nil closes.
+    var onCancel: (@MainActor () -> Void)? = nil
     @ViewBuilder var content: Content
     @ViewBuilder var actions: Actions
     @ViewBuilder var footer: Footer
@@ -25,10 +28,11 @@ struct PiSheet<Content: View, Actions: View, Footer: View>: View {
     @Environment(\.piReduceMotion) private var reduceMotion
     @PiDismiss private var dismiss
     init(_ title: String, subtitle: String? = nil, symbol: String? = nil, width: CGFloat? = nil, height: CGFloat? = nil, minWidth: CGFloat? = nil, minHeight: CGFloat? = nil, windowChrome: Bool = false, cancelDisabled: Bool = false,
+         onCancel: (@MainActor () -> Void)? = nil,
          @ViewBuilder content: () -> Content, @ViewBuilder actions: () -> Actions = { EmptyView() }, @ViewBuilder footer: () -> Footer = { EmptyView() }) {
         self.title = title; self.subtitle = subtitle; self.symbol = symbol; self.width = width; self.height = height
         self.minWidth = minWidth; self.minHeight = minHeight; self.windowChrome = windowChrome
-        self.cancelDisabled = cancelDisabled
+        self.cancelDisabled = cancelDisabled; self.onCancel = onCancel
         self.content = content(); self.actions = actions(); self.footer = footer()
     }
     var body: some View {
@@ -84,7 +88,7 @@ struct PiSheet<Content: View, Actions: View, Footer: View>: View {
     /// A window presenting this same chrome keeps the system's own behaviour.
     @ViewBuilder private var escapeKey: some View {
         if !windowChrome {
-            Button("Close") { dismiss() }
+            Button("Close") { if let onCancel { onCancel() } else { dismiss() } }
                 .keyboardShortcut(.cancelAction)
                 .disabled(cancelDisabled)
                 .frame(width: 0, height: 0).opacity(0)

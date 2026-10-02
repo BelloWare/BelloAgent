@@ -186,6 +186,15 @@ final class UIScreenshotTests: XCTestCase {
             try await model.traces.close()
             return
         }
+        // Only Settings with unsaved edits, several terminals and the
+        // questions before ending a shell or removing MCP servers (26*).
+        if testEnvironment("PI_APP_UI_GALLERY_UI_ONLY") == "1" {
+            try await captureSettingsTerminalMCPScenes(model: model, window: window, gallery: gallery, appearances: appearances, workspace: workspace)
+            XCTAssertNil(model.error, model.error ?? "")
+            for host in model.hosts.values { try await host.shutdownAndWait() }
+            try await model.traces.close()
+            return
+        }
         // Only the sidebar with the archive switch on.
         if testEnvironment("PI_APP_UI_GALLERY_ARCHIVE_ONLY") == "1" {
             let topic = try await model.createTopic(in: workspace.id, title: "Payments")
@@ -395,6 +404,7 @@ final class UIScreenshotTests: XCTestCase {
         try await captureTabScenes(model: model, window: window, gallery: gallery, appearances: appearances,
                                    parentID: main.id, projectRoot: folder)
         try await captureTableWindowScene(gallery: gallery, appearances: appearances)
+        try await captureSettingsTerminalMCPScenes(model: model, window: window, gallery: gallery, appearances: appearances, workspace: workspace)
         // First-launch onboarding, rendered from an empty vault in its own window.
         let freshVault = ConfigurationVault(storage: MemoryVaultStorage())
         let fresh = WorkspaceModel(stateRoot: folder.appendingPathComponent("onboarding-state"), vault: freshVault)
@@ -1333,6 +1343,69 @@ final class UIScreenshotTests: XCTestCase {
         try await settle(1.6)
         try capture(settings, to: gallery.appendingPathComponent(name + ".png"))
         settings.close(); try await settle(0.6)
+    }
+
+    /// 26 · At the smallest window, 920×600: Settings with unsaved edits and
+    /// the question closing it asks (26a), a project's several terminals
+    /// (26b) and the questions before restarting or closing a live shell
+    /// (26c, 26d), and the question before removing a project's MCP servers
+    /// (26e). Every question is answered Cancel or Keep Editing.
+    @MainActor private func captureSettingsTerminalMCPScenes(model: WorkspaceModel, window: NSWindow, gallery: URL,
+                                                            appearances: [(String, NSAppearance.Name)], workspace: WorkspaceRecord) async throws {
+        let size = window.frame.size
+        window.setContentSize(NSSize(width: 920, height: 600)); window.center(); try await settle(1.0)
+        defer { window.setContentSize(size); window.center() }
+        /// Waits for `host` to wear a question, photographs it, then answers it.
+        func question(on host: @escaping () -> NSWindow?, _ name: String, answer: NSApplication.ModalResponse) async throws {
+            try await until(name + " asked") { host()?.attachedSheet != nil }
+            do {
+                // Answered however the picture goes, so no question is left up.
+                defer { if let parent = host(), let alert = parent.attachedSheet { parent.endSheet(alert, returnCode: answer) } }
+                try await settle(0.8)
+                try capture(window, to: gallery.appendingPathComponent(name + ".png"))
+            }
+            try await settle(0.5)
+        }
+        let registry = TerminalRegistry.shared
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(0.6)
+            // 26 · Settings with a renamed connection and a changed preference.
+            model.settingsSection = .connections; model.showProfiles = true; try await settle(2.2)
+            let editor = model.settingsSheetEditor()
+            editor.draft.profile.name = "Team router · renamed"; editor.preferences.playsCompletionSound.toggle()
+            try await settle(0.6)
+            try capture(window, to: gallery.appendingPathComponent("26-settings-unsaved-\(name).png"))
+            // 26a · Escape with those edits: Save All, Discard Changes or Keep Editing.
+            let closing = Task { await editor.requestClose() }
+            try await question(on: { editor.presentationWindow }, "26a-settings-close-question-\(name)", answer: .alertThirdButtonReturn)
+            _ = await closing.value
+            editor.discardAll(); model.showProfiles = false; try await settle(0.8)
+            // 26b · Three terminals in the project, one named.
+            if !model.terminalVisible { model.toggleTerminal() }
+            try await settle(1.0)
+            let first = try XCTUnwrap(registry.selected(for: workspace.id), "the terminal opened")
+            let second = registry.create(for: workspace), third = registry.create(for: workspace)
+            registry.rename(second.id, in: workspace.id, to: "Dev server")
+            registry.select(second.id, in: workspace.id)
+            try await until("the shells started") { [first, second, third].allSatisfy(\.process.running) }
+            try await settle(1.0)
+            try capture(window, to: gallery.appendingPathComponent("26b-terminals-\(name).png"))
+            // 26c, 26d · Restart and Close of the live "Dev server": asked, then cancelled.
+            for (ending, scene) in [(TerminalRegistry.Ending.restart, "26c-terminal-restart-question"), (.close, "26d-terminal-close-question")] {
+                let asking = Task { await registry.requestEnding(ending, second.id, generation: second.generation, in: workspace, over: window) }
+                try await question(on: { window }, "\(scene)-\(name)", answer: .alertSecondButtonReturn)
+                _ = await asking.value
+            }
+            XCTAssertTrue(registry.selected(for: workspace.id) === second && second.process.running, "Cancel left the shell alone")
+            for extra in [second, third] { registry.close(extra.id, in: workspace.id, generation: extra.generation) }
+            model.toggleTerminal(); try await settle(0.8)
+            // 26e · Remove All MCP Servers…: asked, then cancelled.
+            let removing = Task { await model.confirmAndRemoveAllMCPServers() }
+            try await question(on: { window }, "26e-mcp-remove-question-\(name)", answer: .alertSecondButtonReturn)
+            let removal = await removing.value
+            XCTAssertNil(removal, "Cancel removed nothing")
+            XCTAssertGreaterThan(model.mcpServerCount(workspace.id), 0)
+        }
     }
 
     @MainActor private func sheet(_ window: NSWindow, name: String, into gallery: URL, open: () -> Void, close: () -> Void) async throws {

@@ -129,7 +129,7 @@ struct WorkspaceView: View {
         .focusedSceneValue(\.workspaceCommandModel, model)
         // Every sheet in a sheet window of the app's own, let go of whole once
         // closed (`piSheetWindow`).
-        .piSheetWindow(isPresented: $model.showProfiles) { ProfileSettings(model: model).frame(width: 880, height: 780) }
+        .piSheetWindow(isPresented: $model.showProfiles) { ProfileSettings(model: model, controller: model.settingsSheetEditor(), windowChrome: false).frame(width: 880, height: 780) }
         .piSheetWindow(isPresented: $model.showConversationContent) { if let id = model.contentSessionID { ConversationContentView(model: model, sessionID: id) } }
         .piSheetWindow(isPresented: $model.showResources) { ResourceInspector(model: model) }
         .piSheetWindow(isPresented: $model.showWorkspaceManager) { WorkspaceManagerView(model: model) }

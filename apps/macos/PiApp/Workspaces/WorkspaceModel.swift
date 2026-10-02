@@ -289,6 +289,18 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
         }
     }
     var hosts: [String: HostSupervisor] = [:]
+    /// Every Settings editor alive: the sheet's and the Settings window's. Quit
+    /// asks about the unsaved edits of each.
+    let settingsEditors = NSHashTable<ConnectionSettingsController>.weakObjects()
+    /// The Settings sheet's editor. It outlives one showing of the sheet, so a
+    /// sheet closed by anything but Cancel, Save or Discard keeps its edits.
+    private(set) var sheetSettingsEditor: ConnectionSettingsController?
+    func settingsSheetEditor() -> ConnectionSettingsController {
+        if let sheetSettingsEditor { return sheetSettingsEditor }
+        let editor = ConnectionSettingsController(model: self); sheetSettingsEditor = editor; return editor
+    }
+    /// A project's MCP servers are being removed: its question is up or the vault is being written.
+    @Published var mcpRemovalInProgress = false
     /// Owned by `WorkspaceHosts.swift` (and cancelled by `WorkspaceShutdown`):
     /// one in-flight helper start per project, so two chats opening at once
     /// share it instead of starting two helpers.

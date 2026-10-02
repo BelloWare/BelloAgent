@@ -1270,6 +1270,15 @@ the pane, a Swift file shown at the lines it was opened at), `24a-tabs-side-*`
 (the side shown in their place) and `24b-tabs-window-*` (the file popped out
 into a window of its own). The full gallery renders them after the sides panel.
 
+`PI_APP_UI_GALLERY_UI_ONLY=1` (with `TEST_RUNNER_` beside it) renders only the
+0.1.119 Settings, terminal and MCP scenes, at the 920×600 minimum window:
+`26-settings-unsaved-*` (Settings with a renamed connection and a changed
+preference), `26a-settings-close-question-*` (Save All / Discard Changes / Keep
+Editing), `26b-terminals-*` (three terminals, one named), `26c-` and
+`26d-terminal-{restart,close}-question-*`, and `26e-mcp-remove-question-*`.
+Every question is answered Cancel or Keep Editing. The full gallery renders them
+after the table window.
+
 `PI_APP_UI_GALLERY_COST_ONLY=1` (with `TEST_RUNNER_` beside it) renders only the
 cost-limit scenes after the first turn: `18-cost-limit-*` (the stop notice; the
 limited chat's Session Inspector Overview, with its spend against the limit and
