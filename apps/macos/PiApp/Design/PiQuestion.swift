@@ -183,6 +183,22 @@ struct ChatQuestion: Equatable, Sendable {
         }
     }
 
+    /// The awaited form of a one-line text question, on `window`'s sheet:
+    /// what was entered, or nil for Cancel or when a question is already up.
+    func enterText(_ title: String, detail: String = "", value: String, action: String, over window: NSWindow? = nil) async -> String? {
+        if let enterText { return enterText(title, value) }
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = detail
+        let field = NSTextField(string: value)
+        field.frame = NSRect(x: 0, y: 0, width: 320, height: 24)
+        alert.accessoryView = field
+        alert.addButton(withTitle: action)
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        return await ask(alert, over: window) == .alertFirstButtonReturn ? field.stringValue : nil
+    }
+
     // MARK: Choosing files
 
     /// Where to write a file, or nil when the reader cancelled or a question

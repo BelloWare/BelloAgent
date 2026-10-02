@@ -128,7 +128,7 @@ struct ProfileSettings: View {
             .onChange(of: controller.draft.profile.id) { _, _ in controller.confirmingTest = false }
             .onChange(of: model.settingsSection) { _, _ in controller.confirmingTest = false; controller.confirmingDelete = false }
         }
-        .background(SettingsWindowReader { controller.presentationWindow = $0 })
+        .background(HostingWindowReader { controller.presentationWindow = $0 })
         .task { await controller.load(discardingDrafts: false) }
     }
 
@@ -450,7 +450,7 @@ private struct CatalogModelMenu: View {
 }
 
 /// Hands the window this view is in to `found`, as it moves between windows.
-@MainActor struct SettingsWindowReader: NSViewRepresentable {
+@MainActor struct HostingWindowReader: NSViewRepresentable {
     let found: (NSWindow?) -> Void
     func makeNSView(context: Context) -> ReaderView { let view = ReaderView(); view.found = found; return view }
     func updateNSView(_ view: ReaderView, context: Context) { view.found = found }

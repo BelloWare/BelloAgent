@@ -31,7 +31,7 @@
 
 ## Workstream UI — Settings, terminals, MCP (`dev/ws-ui`)
 - [x] **D3** Settings: Save All, Cancel discards, dirty close offers Save / Discard / Keep Editing; guarded Reload; honest partial saves.
-- [ ] **D5** Multiple terminals per project: create, switch, rename, close; confirm restart/close of a live shell (Cancel default).
+- [x] **D5** Multiple terminals per project: create, switch, rename, close; confirm restart/close of a live shell (Cancel default).
 - [x] **D7** "Remove All MCP Servers…" with an honest confirmation and result.
 
 ## After the workstreams merge

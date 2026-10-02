@@ -29,6 +29,8 @@ struct PiTabs<Tag: Hashable>: View {
                         }
                         .contentShape(Capsule())
                 }.buttonStyle(.plain).piPointer()
+                // A scrolling tab row can bring the chosen tab into view.
+                .id(item.0)
             }
         }
         .padding(3)
