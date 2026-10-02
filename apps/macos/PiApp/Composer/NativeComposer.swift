@@ -29,6 +29,8 @@ struct NativeComposer: NSViewRepresentable {
     var skillPressed: (SkillChip, ComposerSkillToken) -> Void = { _, _ in }
     var skillHovered: (SkillChip, ComposerSkillToken, Bool) -> Void = { _, _, _ in }
     var describeSkill: (SkillChip) -> SkillDetail? = { _ in nil }
+    /// False holds the text still: no typing, paste or drop changes it.
+    var editable = true
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeNSView(context: Context) -> ComposerScrollView {
         let scroll = ComposerScrollView(); scroll.hasVerticalScroller = true; scroll.borderType = .noBorder
@@ -97,7 +99,10 @@ struct NativeComposer: NSViewRepresentable {
         }
         guard let editor = scroll.documentView as? ComposerTextView else { return }
         editor.sessionID = sessionID
+        // The model's own text always applies; only the reader's typing is held.
+        if !editor.isEditable { editor.isEditable = true }
         context.coordinator.applyModelText(text,to:editor)
+        if editor.isEditable != editable { editor.isEditable = editable }
         editor.skillStrip.display = skillDisplay; editor.skillTokens = skills
     }
     @MainActor final class Coordinator: NSObject, NSTextViewDelegate {

@@ -139,3 +139,23 @@ final class MetadataDurabilityTests: XCTestCase {
         catch { XCTAssertEqual(error as? StoreError, .unavailable) }
     }
 }
+
+extension MetadataDurabilityTests {
+    /// A queued rewrite beside a large draft set aside for it, too large to
+    /// save together: the write fails (and says so) rather than dropping the
+    /// rewrite, and the record saved before stays as it was.
+    func testAnOversizedQueuedRewriteFailsWithoutReplacingTheSavedRecord() async throws {
+        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
+        let store = MetadataStore(url: root.appendingPathComponent("desktop.sqlite"))
+        var small = DraftRecord(id: "chat", text: "draft")
+        small.queuedEdit = QueuedEditDraft(editID: "e", turnID: "q", rewrite: "first rewrite", original: "o")
+        try await store.put(small, kind: "draft", id: "chat")
+        var large = DraftRecord(id: "chat", text: String(repeating: "d", count: 270_000))
+        large.queuedEdit = QueuedEditDraft(editID: "e", turnID: "q", rewrite: String(repeating: "r", count: 270_000), original: "o")
+        do { try await store.put(large, kind: "draft", id: "chat"); XCTFail("too large to save together") }
+        catch { XCTAssertEqual(error as? StoreError, .invalidRecord) }
+        let saved = try await store.get(DraftRecord.self, kind: "draft", id: "chat")
+        XCTAssertEqual(saved?.queuedEdit?.rewrite, "first rewrite", "the record saved before is not replaced")
+        await store.close()
+    }
+}

@@ -20,7 +20,9 @@ extension AgentSession {
         // typed, with the same words as a run stopped there, also when earlier
         // messages wait: nothing can run until the limit is raised. One sent
         // while a run is going waits in the queue, which pauses if the run stops.
-        if !steer, runTask == nil { try enforceCostLimit() }
+        // While a queued message is being edited, a new one joins the held
+        // queue; the limit is checked when it is delivered.
+        if !steer, runTask == nil, queueEdit == nil { try enforceCostLimit() }
     }
     /// Stop (or a failure) left messages waiting: a new one joins them, after
     /// them, and nothing is sent until Resume.
@@ -31,11 +33,14 @@ extension AgentSession {
         if steer { steering.append(input) } else { queue.append(input) }; commandState(input,"queued")
         do { try persistState() } catch { if steer { steering.removeLast() } else { queue.removeLast() }; commands.removeAll{$0["turnId"].text == input.turnID}; throw error }
         event(steer ? "steering.queued" : "queue.changed")
-        let queued=runTask != nil || paused
-        if runTask == nil, !paused { queuePaused=false; launch() }
-        return ["accepted":true,"turnId":JSON(input.turnID),"queued":JSON(queued),"queueCount":JSON(queue.count),"delivery":JSON(steer ? "after-current-model-tool-turn" : paused ? "after-resume" : queued ? "after-run-would-stop" : "start")]
+        let held = queueEdit != nil
+        let queued=runTask != nil || paused || held
+        if runTask == nil, !paused, !held { queuePaused=false; launch() }
+        return ["accepted":true,"turnId":JSON(input.turnID),"queued":JSON(queued),"queueCount":JSON(queue.count),"delivery":JSON(held ? "after-edit" : steer ? "after-current-model-tool-turn" : paused ? "after-resume" : queued ? "after-run-would-stop" : "start")]
     }
     public func removeQueued(_ turnID: String) throws {
+        // The message being edited goes with its hold, in one step.
+        if let hold=queueEdit, hold.turnID == turnID { _ = try removeQueueEdit(editID:hold.editID); return }
         guard let item=(queue+steering).first(where:{$0.turnID == turnID}) else { throw AgentError("queue_missing", "Queued message is no longer pending") }
         let oldQ=queue, oldS=steering, oldState=state, oldPaused=queuePaused; queue.removeAll{$0.turnID == turnID}; steering.removeAll{$0.turnID == turnID}; commandState(item,"removed")
         if runTask == nil && queue.isEmpty && steering.isEmpty { if state != .error { state = .idle }; queuePaused=false }
@@ -44,6 +49,7 @@ extension AgentSession {
     /// Reorders the pending follow-ups; every pending turn id must appear exactly once.
     public func reorderQueue(_ turnIDs: [String]) throws {
         guard turnIDs.count == queue.count, Set(turnIDs).count == turnIDs.count, Set(turnIDs) == Set(queue.map(\.turnID)) else { throw AgentError("queue_order", "The new order must list every pending follow-up exactly once") }
+        guard queueEdit == nil else { throw Self.editHeldError }
         let byID=Dictionary(uniqueKeysWithValues: queue.map { ($0.turnID,$0) })
         let old=queue; queue=turnIDs.compactMap { byID[$0] }
         do { try persistState() } catch { queue=old; throw error }; event("queue.changed")
@@ -58,6 +64,7 @@ extension AgentSession {
     }
     /// Replaces the text of a pending follow-up or steering message before it is delivered.
     public func updateQueued(_ turnID: String, text: String) throws {
+        guard queueEdit == nil else { throw Self.editHeldError }
         let steer: Bool, index: Int
         if let found=queue.firstIndex(where:{$0.turnID == turnID}) { steer=false; index=found }
         else if let found=steering.firstIndex(where:{$0.turnID == turnID}) { steer=true; index=found }
@@ -74,6 +81,7 @@ extension AgentSession {
     public func steerQueued(_ turnID: String) throws {
         guard let index=queue.firstIndex(where:{$0.turnID == turnID}) else { throw AgentError("queue_missing", "Queued message is no longer pending") }
         guard runTask != nil else { throw AgentError("not_running", "Steering requires an active run; the message stays queued") }
+        guard queueEdit == nil else { throw Self.editHeldError }
         let item=queue[index], oldQ=queue, oldS=steering
         queue.remove(at:index); steering.append(item)
         do { try persistState() } catch { queue=oldQ; steering=oldS; throw error }; event("steering.queued")
@@ -87,6 +95,7 @@ extension AgentSession {
     }
     public func resumeQueue() throws {
         guard runTask == nil else { throw AgentError("session_busy", "Run already active") }
+        guard queueEdit == nil else { throw Self.editHeldError }
         queuePaused=false; try persistState()
         if !queue.isEmpty || !steering.isEmpty { launch(); return }
         if errorCode == Self.costLimitCode, !costLimitReached {
@@ -141,8 +150,13 @@ extension AgentSession {
         if delivering?.submission.turnID == submission.turnID { delivering=nil }
         taskRootID=message.taskRootID; boundary=context; currentTurnID=submission.turnID; activeSubmission=submission; retrySubmission=nil; commandState(submission,"delivered"); try persistState(active:true); event("message_end")
     }
+    static var editHeldError: AgentError { AgentError("queue_edit_active", "Finish or cancel the queued edit first") }
+    /// Delivers the steering due at this boundary; whether any was delivered.
+    /// Every claim checks for a queued edit first, after any wait: once an
+    /// edit holds the chat's pending input, nothing more of the batch goes.
     func drainSteering() async throws -> Bool {
-        if steering.isEmpty { return false }
+        if steering.isEmpty || queueEdit != nil { return false }
+        var delivered=false
         let count=steeringMode == "all" ? steering.count : 1
         let selected=Set(steering.prefix(count).map(\.turnID))
         // A delivery failure (revoked skill, moved attachment) must not destroy
@@ -153,36 +167,38 @@ extension AgentSession {
         for _ in 0..<count {
             // Delivery awaits resource validation. Pending entries may be removed,
             // edited or moved while suspended; new entries belong to the next batch.
-            guard let index=steering.firstIndex(where: { selected.contains($0.turnID) }) else { break }
+            guard queueEdit == nil, let index=steering.firstIndex(where: { selected.contains($0.turnID) }) else { break }
             let next=steering.remove(at:index); delivering=("steering", next)
             // Steering joins the task that is running. With none running (a
             // resume that found only steering pending), the first message
             // starts one, with its live indicator, turn clock and receipt.
             let starts = activeTaskPresentation == nil && !titleTask
-            do { try await deliver(next,lane:"steering",newTask:starts) }
+            do { try await deliver(next,lane:"steering",newTask:starts); delivered=true }
             catch {
                 delivering=nil
                 if !hasDelivered(next) { steering.insert(next,at:0) }
                 commandState(next,"failed"); throw error
             }
         }
-        return true
+        return delivered
     }
+    /// Starts the follow-ups due when the run would stop; whether any started.
     func startFollowUp() async throws -> Bool {
-        if queue.isEmpty { return false }
+        if queue.isEmpty || queueEdit != nil { return false }
+        var delivered=false
         let count=followUpMode == "all" ? queue.count : 1
         let selected=Set(queue.prefix(count).map(\.turnID))
-        for position in 0..<count {
-            guard let index=queue.firstIndex(where: { selected.contains($0.turnID) }) else { break }
+        for _ in 0..<count {
+            guard queueEdit == nil, let index=queue.firstIndex(where: { selected.contains($0.turnID) }) else { break }
             let next=queue.remove(at:index); delivering=("follow-up", next)
-            do { try await deliver(next,newTask:position == 0) }
+            do { try await deliver(next,newTask:!delivered); delivered=true }
             catch {
                 delivering=nil
                 if !hasDelivered(next) { queue.insert(next,at:0) }
                 commandState(next,"failed"); throw error
             }
         }
-        return true
+        return delivered
     }
     func hasDelivered(_ submission: Submission) -> Bool {
         history.contains { $0.role == "user" && $0.id == submission.turnID }

@@ -53,6 +53,8 @@ final class ConversationPaneTests: XCTestCase {
         var chat: ChatRecord
         let window: NSWindow
         let hosted: NSHostingView<ConversationPane>
+        /// Answers the queued-edit commands as the helper does.
+        let edits = FakeQueueEdits()
         private let root: URL
 
         init(messages: [TranscriptMessage] = [], width: CGFloat = 900, height: CGFloat = 700, imageModel: Bool = false) throws {
@@ -64,6 +66,7 @@ final class ConversationPaneTests: XCTestCase {
             session.messages = messages
             model.displays[chat.id] = session; model.selectedID = chat.id; model.selected = session
             model.focusedSessionID = chat.id
+            model.queueEditOperation = edits.handler(session)
             window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: height),
                               styleMask: [.titled, .resizable], backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false
@@ -120,6 +123,83 @@ final class ConversationPaneTests: XCTestCase {
                                             text: Self.paragraph + "Row \(index).", turn: "m\(index - index % 2)")
             message.at = Double(index) * 1000
             return message
+        }
+    }
+}
+
+
+/// The helper's queued-edit hold, for panes without a helper: Begin takes
+/// the hold and returns the row's text, Save writes it into the row, Cancel
+/// and Remove let go; each answer can be held back or replaced by a failure.
+@MainActor final class FakeQueueEdits {
+    struct Hold { let editID: String, turnID: String }
+    private(set) var hold: Hold?
+    private(set) var calls: [(method: String, params: [String: WireValue])] = []
+    private(set) var outcomes: [String: String] = [:]
+    private(set) var savedDigests: [String: String] = [:]
+    var revision = 0
+    /// Held back until opened, per method.
+    var gates: [String: AsyncGate] = [:]
+    /// Thrown once, per method, instead of answering.
+    var failures: [String: Error] = [:]
+    /// How many status questions go unanswered, one by one.
+    var unansweredStatuses = 0
+    /// Done, then answered with no reply, once, per method: a lost answer.
+    var lostReplies: Set<String> = []
+    /// Whole texts for rows whose snapshot text is a preview.
+    var wholeTexts: [String: String] = [:]
+    func count(_ method: String) -> Int { calls.filter { $0.method == method }.count }
+    func handler(_ session: SessionDisplay) -> (String, String, [String: WireValue]) async throws -> [String: WireValue] {
+        { [weak self, weak session] method, _, params in
+            guard let self, let session else { throw HostError.failure("gone") }
+            return try await self.answer(method, params, session)
+        }
+    }
+    private func answer(_ method: String, _ params: [String: WireValue], _ session: SessionDisplay) async throws -> [String: WireValue] {
+        calls.append((method, params))
+        if let gate = gates[method] { await gate.wait() }
+        if let failure = failures.removeValue(forKey: method) { throw failure }
+        if method == "queue.edit.status", unansweredStatuses > 0 { unansweredStatuses -= 1; throw HostError.failure("No answer") }
+        let reply = try perform(method, params, session)
+        if lostReplies.remove(method) != nil { throw HostError.failure("The helper's answer was lost.") }
+        return reply
+    }
+    private func perform(_ method: String, _ params: [String: WireValue], _ session: SessionDisplay) throws -> [String: WireValue] {
+        let editID = params["editId"]?.string ?? ""
+        switch method {
+        case "queue.edit.begin":
+            let turnID = params["turnId"]?.string ?? ""
+            if let hold, hold.editID != editID { throw HostError.rejected("queue_edit_busy", "Another queued message is being edited") }
+            if let outcome = outcomes[editID] { throw HostError.rejected("queue_edit_" + outcome, "resolved") }
+            guard let row = session.queue.first(where: { $0["turnId"]?.string == turnID }) else { throw HostError.rejected("queue_missing", "gone") }
+            if hold == nil { revision += 1 }
+            hold = Hold(editID: editID, turnID: turnID)
+            var text = row["text"]?.string ?? ""
+            if row["kind"]?.string == "steering", text.hasPrefix("[Steering] ") { text = String(text.dropFirst("[Steering] ".count)) }
+            return ["editId": .string(editID), "turnId": .string(turnID), "text": .string(wholeTexts[turnID] ?? text), "revision": .number(Double(revision))]
+        case "queue.edit.save", "queue.edit.cancel", "queue.edit.remove":
+            let outcome = method == "queue.edit.save" ? "saved" : method == "queue.edit.cancel" ? "cancelled" : "removed"
+            if let done = outcomes[editID] { if done == outcome { return ["accepted": .bool(true), "revision": .number(Double(revision))] }; throw HostError.rejected("queue_edit_" + done, "resolved") }
+            guard let hold, hold.editID == editID else {
+                // A Cancel for an edit never granted is remembered, as the helper does.
+                if outcome == "cancelled" { outcomes[editID] = "cancelled"; revision += 1; return ["accepted": .bool(true), "outcome": .string("cancelled"), "revision": .number(Double(revision))] }
+                throw HostError.rejected("queue_edit_missing", "That queued edit is no longer open")
+            }
+            if outcome == "saved", let text = params["text"]?.string, let index = session.queue.firstIndex(where: { $0["turnId"]?.string == hold.turnID }) {
+                session.queue[index]["text"] = .string(text); savedDigests[editID] = WorkspaceModel.textDigest(text)
+            }
+            if outcome == "removed" { session.queue.removeAll { $0["turnId"]?.string == hold.turnID } }
+            self.hold = nil; outcomes[editID] = outcome; revision += 1
+            return ["accepted": .bool(true), "outcome": .string(outcome), "turnId": .string(hold.turnID), "revision": .number(Double(revision))]
+        case "queue.edit.status":
+            if let hold, hold.editID == editID {
+                let text = session.queue.first { $0["turnId"]?.string == hold.turnID }?["text"]?.string ?? ""
+                return ["state": .string("active"), "editId": .string(editID), "turnId": .string(hold.turnID), "text": .string(text), "revision": .number(Double(revision))]
+            }
+            var status: [String: WireValue] = ["state": .string(outcomes[editID] ?? "unknown"), "editId": .string(editID), "revision": .number(Double(revision))]
+            if let digest = savedDigests[editID] { status["textDigest"] = .string(digest) }
+            return status
+        default: throw HostError.rejected("unknown", method)
         }
     }
 }

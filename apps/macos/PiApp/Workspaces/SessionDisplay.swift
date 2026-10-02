@@ -164,7 +164,7 @@ struct TranscriptVersionView: Equatable, Sendable {
             // Only a paused queue holds it: an idle helper that has queued a
             // message it has not dispatched yet is about to run it, and taking
             // the row out for that one snapshot made it vanish and come back.
-            return ["failed", "cancelled", "removed"].contains(receipt) || (!loading && !busy && queuePaused && queued.contains(row.id))
+            return ["failed", "cancelled", "removed"].contains(receipt) || (!loading && !busy && (queuePaused || queueEditHold != nil) && queued.contains(row.id))
         }
         guard !settled.isEmpty else { return false }
         sendingRows.removeAll { row in settled.contains { $0.id == row.id } }
@@ -412,12 +412,55 @@ struct TranscriptVersionView: Equatable, Sendable {
     var activity: [String: WireValue] = [:] { didSet { if activity != oldValue { activityChanges.send() } } }
     var activityObservedAt: Double = 0
     @Published var queue: [[String: WireValue]] = [] {
-        didSet { if let editing = queueEditingID, !queue.contains(where: { $0["turnId"]?.string == editing }) { queueEditLeft() } }
+        // A message the helper holds for its edit can't be sent; a row gone
+        // from a snapshot (a lost helper, a restart) doesn't end the edit,
+        // which only the helper's answer to Save or Cancel does.
+        didSet { if let editing = queueEditingID, queueEditID == nil, !queue.contains(where: { $0["turnId"]?.string == editing }) { queueEditLeft() } }
     }
     /// The queued message being rewritten in this chat's composer. It belongs
     /// to the chat, not to the queue panel, which is rebuilt for each chat and
     /// leaves the page when the queue empties.
     @Published var queueEditingID: String?
+    /// The helper's identity for that edit: while it is open the helper
+    /// holds every pending message in the chat (handoff D2).
+    var queueEditID: String?
+    /// A Save or Cancel sent and not yet answered: the editor stays, and
+    /// another press does nothing until the helper says how it ended.
+    @Published var queueEditResolving = false
+    /// The message being rewritten keeps images or skills, so its text may be empty.
+    var queueEditKeepsInput = false
+    /// A Save, Cancel or Remove sent and not answered, and the text a Save
+    /// sent: kept in the saved draft until the helper's answer is known.
+    var queueEditPendingOperation: String?
+    var queueEditSentDigest: String?
+    /// An edit being cancelled by its identity (one this composer doesn't
+    /// hold): it can't be resumed until that Cancel is settled.
+    @Published var queueEditCancelling: String?
+    /// A Begin sent and not yet answered, by its edit identity.
+    var queueEditBeginning: String?
+    /// The helper's hold on this chat's pending input, as its snapshots
+    /// report it, newest revision first: shown in every view of the chat,
+    /// also one this composer does not own (after a restart, say).
+    @Published var queueEditHold: QueueEditHold?
+    /// The queue panel shows only its header. Presentation only: the queue
+    /// goes on, or waits, exactly as it would.
+    @Published var queueCollapsed = false
+    var queueEditHoldRevision = -1
+    /// A rewrite saved with the draft whose edit has not been reconciled
+    /// with the helper yet; kept in the saved draft until it is.
+    var unreconciledQueuedEdit: QueuedEditDraft?
+    func observeQueueEdit(_ snapshot: [String: WireValue]) {
+        guard let revision = snapshot["queueEditRevision"]?.number.map(Int.init) else { return }
+        adoptQueueEditHold(QueueEditHold(snapshot["queueEdit"]?.object), revision: revision)
+    }
+    /// A report of the hold older than one already taken is ignored, so a
+    /// snapshot read before a Save's answer can't bring the hold back.
+    @discardableResult func adoptQueueEditHold(_ hold: QueueEditHold?, revision: Int) -> Bool {
+        guard revision >= queueEditHoldRevision else { return false }
+        queueEditHoldRevision = revision
+        if queueEditHold != hold { queueEditHold = hold }
+        return true
+    }
     /// The queued message's text as it was when the composer took it.
     var queueEditOriginal = ""
     /// The composer's draft, set aside while it holds the queued message: it
@@ -548,7 +591,18 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// snapshot that first carries it is adopted (`adoptOwnBranch`).
     var pendingBranch: PendingBranch?
     var savedDraft: DraftRecord {
-        if queueEditingID != nil, let draftBeforeQueueEdit { return draftBeforeQueueEdit }
+        if queueEditingID != nil, var saved = draftBeforeQueueEdit {
+            if let editID = queueEditID, let turnID = queueEditingID {
+                var record = QueuedEditDraft(editID: editID, turnID: turnID, rewrite: draft, original: queueEditOriginal, pending: queueEditPendingOperation)
+                record.sentDigest = queueEditSentDigest
+                saved.queuedEdit = record
+            }
+            return saved
+        }
+        if let unreconciledQueuedEdit {
+            var saved = DraftRecord(id: id, text: draft, attachments: attachments, skills: skills); saved.queuedEdit = unreconciledQueuedEdit
+            return saved
+        }
         let edit = editingMessageID.map { MessageEditDraft(messageID: $0, originalText: draftBeforeEdit?.text ?? "", originalAttachments: draftBeforeEdit?.attachments, originalSkills: draftBeforeEdit?.skills, sourceTimeline: editSourceTimeline, sourceTextDigest: editSourceTextDigest, inputReviewRequired: editInputReviewRequired) }
         return DraftRecord(id: id, text: draft, attachments: attachments, skills: skills, edit: edit)
     }

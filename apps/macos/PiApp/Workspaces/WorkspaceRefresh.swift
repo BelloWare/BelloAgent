@@ -207,6 +207,7 @@ extension WorkspaceModel {
         if wasBusy, view.runState == .error { markRunFailed(sessionID: id) }
         view.observeRetry(result)
         let queued = result["queue"]?.array?.compactMap(\.object) ?? []
+        view.observeQueueEdit(result)
         let queue = view.panelQueue(queued); if view.queue != queue { view.queue = queue }
         view.queueCount = Int(result["queueCount"]?.number ?? 0)
         let now = ProcessInfo.processInfo.systemUptime

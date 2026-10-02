@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import SQLite3
 
@@ -749,6 +750,10 @@ struct DraftRecord: Codable, Sendable {
     var id: String; var text: String; var attachments: [AttachmentRecord]?; var skills: [SkillChip]?
     /// An edit remains an edit after a restart, and its displaced draft remains recoverable.
     var edit: MessageEditDraft?
+    /// A queued message being rewritten when this was saved: the rewrite
+    /// typed so far, which a reopen reconciles with the helper's hold. The
+    /// record's own text, images and skills are the draft set aside for it.
+    var queuedEdit: QueuedEditDraft?
     /// Nothing typed: no text but spaces, no image, no skill.
     var isBlank: Bool { text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (attachments ?? []).isEmpty && (skills ?? []).isEmpty }
     /// `other` added to this draft: its text after this one's, a blank line
@@ -787,6 +792,28 @@ struct DraftRecord: Codable, Sendable {
         merged.skills = chips.isEmpty && skills == nil ? nil : chips
         return merged
     }
+}
+struct QueuedEditDraft: Codable, Sendable, Equatable {
+    var editID: String
+    var turnID: String
+    /// The rewrite as last saved, and the digest of the message as it was
+    /// when the edit began (the helper holds the message itself).
+    var rewrite: String
+    var originalDigest: String
+    /// A Begin that got no answer: there is no rewrite yet, only the edit to ask after.
+    var beginOnly: Bool? = nil
+    /// A Save, Cancel or Remove sent and not yet answered, and the digest of
+    /// the text a Save sent: a reopen asks after it, and only it may be retried.
+    var pending: String? = nil
+    var sentDigest: String? = nil
+    init(editID: String, turnID: String, rewrite: String, original: String, beginOnly: Bool? = nil, pending: String? = nil, sent: String? = nil) {
+        self.editID = editID; self.turnID = turnID; self.rewrite = rewrite
+        originalDigest = QueuedEditDraft.digest(original.trimmingCharacters(in: .whitespacesAndNewlines))
+        self.beginOnly = beginOnly; self.pending = pending; sentDigest = sent.map(QueuedEditDraft.digest)
+    }
+    static func digest(_ text: String) -> String { SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined() }
+    /// Whether `text` is the message as it was when the edit began.
+    func isOriginal(_ text: String) -> Bool { Self.digest(text.trimmingCharacters(in: .whitespacesAndNewlines)) == originalDigest }
 }
 struct MessageEditDraft: Codable, Sendable {
     var messageID: String

@@ -25,8 +25,8 @@
 - [ ] **D8** Git Blame in the file viewer, with clicks opening the real commit-versus-parent diff at the line in Changes → History.
 
 ## Workstream Queue — queue and input (`dev/ws-queue`)
-- [ ] **D2** Editing a queued message holds all pending input in that chat; durable, atomic acquire/save/cancel/remove with edit identity; restart reconciliation.
-- [ ] **D4** Bounded, scrolling, collapsible queue panel; steering vs follow-up headings with truthful timing; full text and captured model/effort on demand.
+- [x] **D2** Editing a queued message holds all pending input in that chat; durable, atomic acquire/save/cancel/remove with edit identity; restart reconciliation.
+- [x] **D4** Bounded, scrolling, collapsible queue panel; steering vs follow-up headings with truthful timing; full text and captured model/effort on demand.
 - [ ] **A2** Image-only messages valid on every submission path for models that take images.
 
 ## Workstream UI — Settings, terminals, MCP (`dev/ws-ui`)

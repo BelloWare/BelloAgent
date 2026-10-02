@@ -326,6 +326,9 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     let questions = PiQuestion()
     /// Test injection for the helper's `queue.read`; production leaves it nil.
     var queueReadOperation: ((String, String) async throws -> [String: WireValue])?
+    /// Test injection for the helper's `queue.edit.*` commands (method,
+    /// session, params); production leaves it nil.
+    var queueEditOperation: ((String, String, [String: WireValue]) async throws -> [String: WireValue])?
     /// Test seam: each step of a send as it happens (`WorkspaceRun.swift`),
     /// so a fixture can time where Return's milliseconds go. Nil in the app.
     var sendSteps: ((String) -> Void)?

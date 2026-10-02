@@ -226,6 +226,11 @@ final class SessionJournal {
         tail=id; bytes += UInt64(data.count); unsynced=true; appends += 1
         if flush { try synchronize() }
     }
+    /// Forces the whole file to stable storage, also the bytes a reopen found:
+    /// a write whose sync failed before a restart is on disk only after this.
+    func confirmDurable() throws {
+        unsynced=true; try synchronize()
+    }
     /// Forces everything appended so far to stable storage.
     func synchronize() throws {
         guard !poisoned else { throw AgentError("session_damaged","A journal synchronization failed; recover a copy before continuing") }

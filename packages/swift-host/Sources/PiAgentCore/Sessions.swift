@@ -9,6 +9,9 @@ public struct Submission: Codable, Sendable {
     /// What the turn's model takes ("text", "image") when the app's model
     /// catalog says more than the connection does; nil keeps the connection's.
     public var input: [String]? = nil
+    /// Advances when a queued edit saves new text, so a reader can tell a
+    /// rewrite past the preview from the text it had. Absent before one.
+    public var textRevision: Int? = nil
     public init(commandID: String, turnID: String, text: String, attachments: [JSON] = [], skills: [FrozenSkill] = [], model: String? = nil, thinkingLevel: String? = nil, contextWindow: Int? = nil, maxOutputTokens: Int? = nil, modelOutputLimit: Int? = nil, input: [String]? = nil) { self.commandID=commandID; self.turnID=turnID; self.text=text; self.attachments=attachments; self.skills=skills; self.model=model; self.thinkingLevel=thinkingLevel; self.contextWindow=contextWindow; self.maxOutputTokens=maxOutputTokens; self.modelOutputLimit=modelOutputLimit; self.input=input }
     /// The whole submission, as the durable queue record keeps it.
     var savedValue: JSON { (try? JSON.parse(JSONEncoder().encode(self))) ?? [:] }
@@ -20,6 +23,7 @@ public struct Submission: Codable, Sendable {
         var value: JSON = ["turnId":JSON(turnID),"commandId":JSON(commandID),"text":JSON(kept),
                            "textBytes":JSON(text.utf8.count),"textTruncated":JSON(kept.utf8.count < text.utf8.count)]
         if let model { value["model"]=JSON(model) }; if let thinkingLevel { value["thinkingLevel"]=JSON(thinkingLevel) }
+        if let textRevision { value["textRevision"]=JSON(textRevision) }
         if let contextWindow { value["contextWindow"]=JSON(contextWindow) }; if let maxOutputTokens { value["maxOutputTokens"]=JSON(maxOutputTokens) }; if let modelOutputLimit { value["modelOutputLimit"]=JSON(modelOutputLimit) }
         return value
     }
@@ -166,6 +170,19 @@ public actor AgentSession {
     /// record is in the journal: the saved state keeps it meanwhile, so a
     /// crash while it is checked brings it back (`SessionQueue.swift`).
     var delivering: (lane: String, submission: Submission)?
+    /// The queued message being rewritten, which holds every pending
+    /// message in the chat, and how recent edits ended (SessionQueueEdit.swift).
+    var queueEdit: QueueEditHold?
+    var queueEditOutcomes: [QueueEditOutcome] = []
+    var queueEditSequence = 0
+    /// Advances with every change to the hold, so a reader can tell an
+    /// older report of it from a newer one.
+    var queueEditRevision = 0
+    /// Begins asked before this revision can't be told apart from edits
+    /// already resolved and forgotten.
+    var queueEditForgottenRevision = 0
+    /// Set once the journal a reopen read has been forced to disk.
+    var queueEditJournalConfirmed = false
     var appliedSnapshot: ResourceSnapshot?
     var preparedContext: ContextPreview?
     var currentAttemptIDs: [String] = []
@@ -321,6 +338,11 @@ public actor AgentSession {
             }
             commands=saved["commands"].list; journaledCommands=commands; let hasQueued = !queue.isEmpty; let hasSteering = !steering.isEmpty; queuePaused = hasQueued || hasSteering || saved["active"].flag == true || saved["queuePaused"].flag == true
             steeringMode=saved["steeringMode"].text ?? "one-at-a-time"; followUpMode=saved["followUpMode"].text ?? "one-at-a-time"
+            // Absent fields: no edit open, none remembered.
+            queueEdit = saved["queueEdit"].isNull ? nil : try JSONDecoder().decode(QueueEditHold.self,from:saved["queueEdit"].data())
+            queueEditOutcomes = saved["queueEditOutcomes"].isNull ? [] : try JSONDecoder().decode([QueueEditOutcome].self,from:saved["queueEditOutcomes"].data())
+            queueEditSequence = saved["queueEditSequence"].int ?? 0; queueEditRevision = saved["queueEditRevision"].int ?? 0
+            queueEditForgottenRevision = saved["queueEditForgottenRevision"].int ?? 0
             if !saved["timing"].isNull {
                 cumulativeModelMs=ObservedDuration.valid(saved["timing"]["modelMs"].double)
                 cumulativeToolMs=ObservedDuration.valid(saved["timing"]["toolMs"].double)
@@ -352,6 +374,8 @@ public actor AgentSession {
         // Journal append may succeed just before the queue-state append crashes.
         // A durably delivered user identity must never be delivered a second time.
         queue.removeAll { deliveredIDs.contains($0.turnID) }; steering.removeAll { deliveredIDs.contains($0.turnID) }
+        // A hold on a message that is no longer pending holds nothing.
+        if let hold=queueEdit, !(queue+steering).contains(where: { $0.turnID == hold.turnID }) { queueEdit=nil }
         toolHistory=ToolHistoryIndex(history)
         taskRootID=context.last(where: { $0.role == "user" })?.taskRootID
         boundary=context; state=runStatus == .failed ? .error : queuePaused ? .paused : .idle

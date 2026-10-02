@@ -510,6 +510,9 @@ final class UIScreenshotTests: XCTestCase {
                 XCTFail("The queued follow-up never opened in the composer (notice “\(session.notice)”)")
             }
             model.cancelQueuedEdit(sessionID: mainID)
+            // The editor closes when the helper confirms the cancel.
+            let cancelled = Date().addingTimeInterval(5)
+            while Date() < cancelled, session.queueEditingID != nil { try await settle(0.1) }
             session.draft = ""
             try await settle(0.4)
         } else {
