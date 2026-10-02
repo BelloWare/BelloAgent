@@ -1,4 +1,5 @@
 import AppKit
+import GitView
 
 // A project's changes and history, in a tab beside the chats (`ChangesTab`):
 // opened from ⇧⌘G, the composer, a project's header and the sidebar.
@@ -11,6 +12,35 @@ extension WorkspaceModel {
         if page != .chats { page = .chats }
         let tab = openFile(url, lines: (line - 1)...(line - 1))
         quickOpen.focusAfterOpening(tab)
+    }
+    /// Opens the change a blamed line came from: the project's Changes, on
+    /// the folder holding that repository, at the commit, its file under the
+    /// name it had there, and the line. The file's tab stays as it is, to
+    /// come back to. Only from a file still readable in its project.
+    func showHistoricalChange(from tab: FileTab, target: GitHistoryTarget, repository: String, while still: @escaping @MainActor () -> Bool = { true }) {
+        guard tab.readable, let projectID = tab.projectID, let project = changesProject(projectID) else {
+            error = "Open the file from a project to see its history."; return
+        }
+        let top = URL(fileURLWithPath: repository).resolvingSymlinksInPath().path
+        // The project's folder this repository is in, or that is in it.
+        guard let folder = project.roots.first(where: { root in
+            let resolved = URL(fileURLWithPath: root).resolvingSymlinksInPath().path
+            return resolved == top || resolved.hasPrefix(top + "/") || top.hasPrefix(resolved + "/")
+        }) else {
+            error = "This file's repository is not one of \(project.name)'s folders."; return
+        }
+        guard let changes = showChanges(in: projectID) else { return }
+        changes.cameFrom(tab)
+        let controller = changes.controller
+        if controller.root != folder { controller.root = folder }
+        // The file must stay readable in its project, and the project
+        // trusted, until the change is shown: asked again after every wait.
+        changes.navigate { [weak tab] in
+            await controller.revealHistory(target, in: repository) {
+                guard let tab else { return false }
+                return still() && tab.readable && tab.container != nil && FileTab.resolveProject(projectID).isTrusted
+            }
+        }
     }
     /// Opens a project's changes and history in a tab of the pane beside the
     /// chats, or shows the tab they are open in, wherever it is. The chats

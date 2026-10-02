@@ -4,6 +4,7 @@ import AppKit
 import PDFKit
 @testable import PiApp
 @testable import GitView
+import FileView
 
 // Opt-in screenshot gallery for the native shell. It reuses the synthetic
 // loopback gateway from the interactive acceptance harness, sends real
@@ -190,6 +191,15 @@ final class UIScreenshotTests: XCTestCase {
         // questions before ending a shell or removing MCP servers (26*).
         if testEnvironment("PI_APP_UI_GALLERY_UI_ONLY") == "1" {
             try await captureSettingsTerminalMCPScenes(model: model, window: window, gallery: gallery, appearances: appearances, workspace: workspace)
+            XCTAssertNil(model.error, model.error ?? "")
+            for host in model.hosts.values { try await host.shutdownAndWait() }
+            try await model.traces.close()
+            return
+        }
+        // Only the Changes window and its Git scenes (10b–10e).
+        if testEnvironment("PI_APP_UI_GALLERY_GIT_ONLY") == "1" {
+            try await captureChangesWindowScene(model: model, gallery: gallery, appearances: appearances, workspaceID: workspace.id)
+            try await captureBlameScenes(model: model, window: window, gallery: gallery, appearances: appearances, workspaceID: workspace.id, folder: folder)
             XCTAssertNil(model.error, model.error ?? "")
             for host in model.hosts.values { try await host.shutdownAndWait() }
             try await model.traces.close()
@@ -383,6 +393,7 @@ final class UIScreenshotTests: XCTestCase {
             try await settle(0.8)
         }
         try await captureChangesWindowScene(model: model, gallery: gallery, appearances: appearances, workspaceID: workspace.id)
+        try await captureBlameScenes(model: model, window: window, gallery: gallery, appearances: appearances, workspaceID: workspace.id, folder: folder)
         // The Session Inspector of the main chat, with both routes it used.
         try await captureInspectorScenes(model: model, session: session, window: window, gallery: gallery, appearances: appearances)
         try await renderReviewScenes(model: model, window: window, gallery: gallery, appearances: appearances,
@@ -657,6 +668,38 @@ final class UIScreenshotTests: XCTestCase {
         NSApp.appearance = nil
     }
 
+    /// 24c · A file with its blame shown beside the line numbers and its bar
+    /// on the selected line; 24d · Show Change from it: Changes on History at
+    /// the commit that wrote the line, the line selected in its diff, Back
+    /// above. At the smallest window. Closed afterwards.
+    @MainActor private func captureBlameScenes(model: WorkspaceModel, window: NSWindow, gallery: URL, appearances: [(String, NSAppearance.Name)],
+                                               workspaceID: String, folder: URL) async throws {
+        let frame = window.frame
+        window.setContentSize(NSSize(width: 920, height: 600)); try await settle(0.8)
+        let tab = model.openFile(folder.appendingPathComponent("PaymentClient.swift"), project: workspaceID)
+        try await settle(1.5)
+        tab.blame.show()
+        let deadline = ProcessInfo.processInfo.systemUptime + 20
+        while tab.blame.blame == nil, ProcessInfo.processInfo.systemUptime < deadline { try await settle(0.2) }
+        XCTAssertNotNil(tab.blame.blame, "blamed: \(tab.blame.state)")
+        let text = try XCTUnwrap(tab.focusView as? FileTextView)
+        text.select(from: FileTextPosition(line: 1, column: 4), to: FileTextPosition(line: 1, column: 4))
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(0.8)
+            try capture(window, to: gallery.appendingPathComponent("24c-file-blame-\(name).png"))
+        }
+        tab.blame.openChange(ofLine: 1)
+        try await settle(2.5)
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(0.8)
+            try capture(window, to: gallery.appendingPathComponent("24d-changes-from-blame-\(name).png"))
+        }
+        if let changes = model.tabs.tab(kind: ChangesTab.kind, key: workspaceID) { model.tabs.close(changes) }
+        tab.blame.hide(); model.tabs.close(tab)
+        window.setFrame(frame, display: true); try await settle(0.8)
+        NSApp.appearance = nil
+    }
+
     /// 10b · Changes popped out into a window of its own, the size the sheet
     /// it replaced had. Closed afterwards, so the scenes after it are as before.
     @MainActor private func captureChangesWindowScene(model: WorkspaceModel, gallery: URL, appearances: [(String, NSAppearance.Name)],
@@ -675,6 +718,26 @@ final class UIScreenshotTests: XCTestCase {
             try capture(tabWindow, to: gallery.appendingPathComponent("10c-changes-window-narrow-\(name).png"))
             tabWindow.setFrame(NSRect(x: 120, y: 120, width: 1180, height: 780), display: true)
         }
+        // 10d · The commit box at the smallest window: every file unticked,
+        // so Commit Checked Files is not armed and says why. 10e · Staged
+        // Changes chosen, one file staged and a message, amending. Going back,
+        // the scope changes and the file is unstaged in one turn: that once
+        // looped AppKit's constraint passes until it trapped.
+        let git = try XCTUnwrap((changes as? ChangesTab)?.controller)
+        let staged = git.unstaged.first { !$0.untracked }?.path
+        tabWindow.setContentSize(NSSize(width: 920, height: 600)); try await settle(1.0)
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance)
+            git.checked = []; git.commitScope = .checkedFiles; git.commitMessage = ""; try await settle(1.0)
+            try capture(tabWindow, to: gallery.appendingPathComponent("10d-changes-commit-unticked-\(name).png"))
+            if let staged { await git.stage([staged]) }
+            git.commitScope = .stagedChanges; git.commitMessage = "Retry with backoff"; git.amend = true; try await settle(1.0)
+            try capture(tabWindow, to: gallery.appendingPathComponent("10e-changes-commit-staged-amend-\(name).png"))
+            git.amend = false; git.commitMessage = ""; git.commitScope = .checkedFiles
+            if let staged { await git.unstage([staged]) }
+            try await settle(1.0)
+        }
+        tabWindow.setFrame(NSRect(x: 120, y: 120, width: 1180, height: 780), display: true)
         model.tabs.close(changes)
         try await settle(0.6)
         XCTAssertTrue(model.tabs.windows.isEmpty)

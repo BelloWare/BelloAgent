@@ -258,4 +258,121 @@ final class FileFindTests: XCTestCase {
         XCTAssertEqual(find.count, 3_000)
         XCTAssertNotNil(find.current)
     }
+
+    // MARK: A file read again
+
+    /// A text whose `fetch` answers wait until let go: a reload's check of
+    /// the match it kept, held in flight.
+    @MainActor final class HeldSource: FileTextSource {
+        let lines: FileTextLines
+        var held: [() -> Void] = []
+        init(_ text: String) { lines = FileTextLines(text) }
+        var lineCount: Int { lines.lineCount }
+        func utf16Length(ofLine index: Int) -> Int { lines.utf16Length(ofLine: index) }
+        func text(ofLine index: Int, range: Range<Int>) -> String? { lines.text(ofLine: index, range: range) }
+        func utf16Start(ofLine index: Int) -> Int { lines.utf16Start(ofLine: index) }
+        func line(atUTF16 offset: Int) -> Int { lines.line(atUTF16: offset) }
+        var utf16Length: Int { lines.utf16Length }
+        var longestLine: Int { lines.longestLine }
+        var generation: Int { lines.generation }
+        func showScreen(lines: ClosedRange<Int>, columns: Range<Int>) {}
+        func holding<T>(_ body: () -> T) -> (T, FileTextHold?) { (body(), nil) }
+        func textAtHand(from start: FileTextPosition, to end: FileTextPosition) -> String? { lines.textAtHand(from: start, to: end) }
+        /// Answers nil, as a file changed or gone again would.
+        var unreadable = false
+        func fetch(from start: FileTextPosition, to end: FileTextPosition, completion: @escaping @MainActor (String?) -> Void) {
+            let text = lines.textAtHand(from: start, to: end)
+            held.append { [unowned self] in completion(self.unreadable ? nil : text) }
+        }
+        var arrival: ((ClosedRange<Int>) -> Void)?
+        var isReading: Bool { true }
+        var isIndexing: Bool { false }
+        func search(_ matcher: FileMatcher) -> FileSearch { lines.search(matcher) }
+        func letGo() { let waiting = held; held = []; for answer in waiting { answer() } }
+    }
+
+    /// Read again with the match still there: the same match shown, without
+    /// moving the selection or scrolling; read again twice before the first
+    /// check came back: the match is still the one checked for.
+    @MainActor func testAMatchStillThereAfterReloadsStaysTheOneShown() async throws {
+        let text = lines(400) { $0 == 120 ? "the needle here" : ($0 == 300 ? "needles and a needle" : "hay \($0)") }
+        let scroll = shown(FileTextLines(text))
+        let view = scroll.textView
+        view.select(from: FileTextPosition(line: 100, column: 0), to: FileTextPosition(line: 100, column: 0))
+        let find = FileFind(view: view)
+        find.set(query: "needle", matchCase: false)
+        try await eventually("shown") { find.current != nil && !find.isFinding }
+        let shownMatch = try XCTUnwrap(find.current)
+        let origin = scroll.contentView.bounds.origin
+        // The first reload's check held; a second reload comes meanwhile.
+        let held = HeldSource(text)
+        view.show(held, name: "find.txt", preservingPosition: true); find.textChanged()
+        XCTAssertNil(find.current)
+        try await eventually("the check asked for") { !held.held.isEmpty }
+        view.show(FileTextLines(text), name: "find.txt", preservingPosition: true); find.textChanged()
+        try await eventually("kept through both") { find.current?.start == shownMatch.start && !find.isFinding }
+        XCTAssertEqual(find.current?.columns, shownMatch.columns)
+        held.letGo()
+        XCTAssertEqual(view.selectedRange.start, shownMatch.start, "the selection as it was")
+        XCTAssertEqual(scroll.contentView.bounds.origin.y, origin.y, accuracy: 1, "nothing scrolled")
+        find.next()
+        try await eventually("Next from it") { find.current?.line == 300 }
+    }
+
+    /// A query that overlaps itself: where its matches fall depends on the
+    /// text before them on the line. "xxaba" read again as "ababa" keeps
+    /// "aba" at 2..<5 as text, but the match is at 0..<3: none is shown.
+    @MainActor func testAKeptMatchIsCheckedWhereMatchingWouldPutIt() async throws {
+        let scroll = shown(FileTextLines(lines(3) { $0 == 1 ? "xxaba" : "zzz" }))
+        let view = scroll.textView
+        view.select(from: FileTextPosition(line: 1, column: 0), to: FileTextPosition(line: 1, column: 0))
+        let find = FileFind(view: view)
+        find.set(query: "aba", matchCase: false)
+        try await eventually("shown") { find.current?.columns == 2..<5 && !find.isFinding }
+        view.show(FileTextLines(lines(3) { $0 == 1 ? "ababa" : "zzz" }), name: "find.txt", preservingPosition: true)
+        find.textChanged()
+        try await eventually("checked") { !find.isFinding }
+        XCTAssertNil(find.current, "no match where there is none now")
+        try await eventually("counted") { find.count == 1 && !find.isCounting }
+    }
+
+    /// A shorter text: the reader's place is the clamped one, and a new query
+    /// searches from there, not from a line that is gone.
+    @MainActor func testANewQueryAfterAShorterReloadSearchesFromTheReaderNow() async throws {
+        let scroll = shown(FileTextLines(lines(400) { $0 == 380 ? "needle" : "hay \($0)" }))
+        let view = scroll.textView
+        view.select(from: FileTextPosition(line: 370, column: 0), to: FileTextPosition(line: 370, column: 0))
+        let find = FileFind(view: view)
+        find.set(query: "needle", matchCase: false)
+        try await eventually("shown") { find.current?.line == 380 && !find.isFinding }
+        view.show(FileTextLines(lines(100) { [10, 99].contains($0) ? "zebra" : "hay \($0)" }), name: "find.txt", preservingPosition: true)
+        find.textChanged()
+        try await eventually("checked") { !find.isFinding }
+        XCTAssertEqual(view.selectedRange.start.line, 99, "the view clamped the selection")
+        find.set(query: "zebra", matchCase: false)
+        try await eventually("found") { find.current != nil && !find.isFinding }
+        XCTAssertEqual(find.current?.line, 99, "from the reader's place now, not wrapped from a line that is gone")
+    }
+
+    /// The first reload's check answered "unreadable" (the file changed
+    /// again) before the next text is in: the match is still the one to
+    /// check for, and the next text keeps it shown.
+    @MainActor func testAnUnansweredCheckKeepsTheMatchForTheNextText() async throws {
+        let text = lines(400) { $0 == 120 ? "the needle here" : "hay \($0)" }
+        let scroll = shown(FileTextLines(text))
+        let view = scroll.textView
+        view.select(from: FileTextPosition(line: 100, column: 0), to: FileTextPosition(line: 100, column: 0))
+        let find = FileFind(view: view)
+        find.set(query: "needle", matchCase: false)
+        try await eventually("shown") { find.current != nil && !find.isFinding }
+        let shownMatch = try XCTUnwrap(find.current)
+        let held = HeldSource(text); held.unreadable = true
+        view.show(held, name: "find.txt", preservingPosition: true); find.textChanged()
+        try await eventually("the check asked for") { !held.held.isEmpty }
+        held.letGo()
+        try await eventually("the check over, unanswered") { !find.isFinding }
+        XCTAssertNil(find.current)
+        view.show(FileTextLines(text), name: "find.txt", preservingPosition: true); find.textChanged()
+        try await eventually("shown again in the next text") { find.current?.start == shownMatch.start && !find.isFinding }
+    }
 }

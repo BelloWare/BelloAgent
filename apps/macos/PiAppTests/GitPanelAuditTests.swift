@@ -343,6 +343,54 @@ final class GitPanelAuditTests: GitPanelTestCase {
         XCTAssertEqual(controller.status.entries.map(\.path), ["tracked.txt"])
         try await eventually("read the new diff") { controller.diff.first?.added == 1 }
     }
+
+    // MARK: Commit scope
+
+    /// The commit box says which content its action takes, and the action's
+    /// name agrees with it: an unticked list does not quietly arm a commit of
+    /// the index, and amend keeps the scope in its name.
+    @MainActor func testTheCommitBoxNamesItsScopeAndOnlyArmsWhatItSays() async throws {
+        let root = try repository("git-scope"); addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        try start(root)
+        try "a\n".write(to: root.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        try "b\n".write(to: root.appendingPathComponent("b.txt"), atomically: true, encoding: .utf8)
+        try git(["add", "."], in: root); try git(["commit", "-q", "-m", "Seed"], in: root)
+        try "a2\n".write(to: root.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        try "b2\n".write(to: root.appendingPathComponent("b.txt"), atomically: true, encoding: .utf8)
+        try git(["add", "a.txt"], in: root)
+        let controller = GitController(roots: [root.path]); defer { controller.letGo() }
+        try await eventually("the first read") { controller.status.entries.count == 2 && controller.statusRead && !controller.loading }
+        func shown() -> GitCommitBox.Presentation { GitCommitBox.presentation(GitCommitBox.Inputs(controller)) }
+
+        XCTAssertEqual(shown().title, "Commit Checked Files")
+        XCTAssertFalse(shown().commitEnabled, "no message yet")
+        XCTAssertTrue(shown().hint.hasSuffix("write a message to commit"), shown().hint)
+        controller.commitMessage = "Message"
+        XCTAssertTrue(shown().commitEnabled); XCTAssertTrue(shown().rewordEnabled)
+        XCTAssertEqual(shown().hint, "2 of 2 files · their whole working-tree state")
+
+        controller.checked = []
+        XCTAssertEqual(shown().title, "Commit Checked Files", "unticking every file does not change the action")
+        XCTAssertFalse(shown().commitEnabled, "and arms nothing")
+        XCTAssertTrue(shown().hint.hasPrefix("Tick the files to commit"), shown().hint)
+        XCTAssertTrue(shown().rewordEnabled, "Reword needs no files")
+
+        controller.commitScope = .stagedChanges
+        XCTAssertEqual(shown().title, "Commit Staged Changes")
+        XCTAssertTrue(shown().commitEnabled)
+        XCTAssertEqual(shown().hint, "1 staged file · exactly as staged; unstaged edits stay")
+        controller.amend = true
+        XCTAssertEqual(shown().title, "Amend with Staged Changes")
+        controller.commitScope = .checkedFiles
+        XCTAssertEqual(shown().title, "Amend with Checked Files")
+        XCTAssertFalse(shown().commitEnabled, "still nothing ticked")
+        controller.amend = false
+
+        await controller.unstage(["a.txt"])
+        controller.commitScope = .stagedChanges
+        XCTAssertFalse(shown().commitEnabled, "nothing staged, nothing armed")
+        XCTAssertTrue(shown().hint.hasPrefix("Nothing is staged"), shown().hint)
+    }
 }
 
 /// A rename, a copy and a deletion, staged, committed and discarded: each
@@ -564,7 +612,7 @@ final class GitRenameTests: GitPanelTestCase {
         XCTAssertEqual(try porcelain(root), ["AD new.txt"], "and the row is as it was")
         XCTAssertEqual(controller.commitMessage, "Nothing really", "the message waits for another try")
         do {
-            _ = try await GitService().commit(message: "Nothing really", in: root.path, paths: ["new.txt"], staging: [])
+            _ = try await GitService().commit(message: "Nothing really", in: root.path, content: .files(paths: ["new.txt"], staging: []))
             XCTFail("a commit that changes nothing is refused")
         } catch { XCTAssertEqual(error.localizedDescription, "Nothing to commit: the chosen files on disk match HEAD.") }
     }

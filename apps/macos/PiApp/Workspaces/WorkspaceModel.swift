@@ -400,6 +400,8 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
         FileTab.resolveProject = { [weak self] id in self?.fileProjectState(id) ?? .removed }
         ChangesTab.resolveProject = { [weak self] id in self?.changesProject(id) }
         ChangesTab.openLocation = { [weak self] url, line in self?.openChangesFile(url, at: line) }
+        FileBlame.openChange = { [weak self] tab, target, repository, still in self?.showHistoricalChange(from: tab, target: target, repository: repository, while: still) }
+        ChangesTab.activate = { [weak self] tab in self?.tabs.activate(tab) }
     }
     /// Opens the desktop database off the main actor and reports the one state
     /// the rest of the app checks synchronously: there is no storage at all.

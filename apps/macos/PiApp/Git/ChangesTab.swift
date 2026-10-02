@@ -26,6 +26,27 @@ import GitView
     /// once it was removed. Set once by the app.
     static var resolveProject: (String) -> (name: String, roots: [String])? = { _ in nil }
     static var openLocation: (URL, Int) -> Void = { _, _ in }
+    /// Brings a tab to the front: set once by the app.
+    static var activate: (HostedTab) -> Void = { _ in }
+    /// The file whose blame opened a change here, to go back to: held
+    /// weakly, and offered only while its tab is still open.
+    private(set) weak var returnTab: FileTab?
+    @Published private(set) var returnName: String?
+    func cameFrom(_ tab: FileTab) { returnTab = tab; returnName = tab.title }
+    /// Back to that file's tab, as it was: its place, its selection, its
+    /// find bar and keys.
+    func goBack() {
+        guard let tab = returnTab, tab.container != nil else { returnTab = nil; returnName = nil; return }
+        Self.activate(tab)
+    }
+    var canGoBack: Bool { returnTab?.container != nil }
+    /// The navigation to a blamed line under way: one at a time, cancelled
+    /// by the next and when the tab closes.
+    private var navigation: Task<Void, Never>?
+    func navigate(_ work: @escaping @MainActor () async -> Bool) {
+        navigation?.cancel()
+        navigation = Task { @MainActor in _ = await work() }
+    }
 
     func openFile(path: String, line: Int) {
         guard !removed, line > 0, let root = controller.repositoryRoot else { return }
@@ -81,7 +102,14 @@ import GitView
             if let madeController, madeController.isShown { madeController.setShown(true) }
         }
     }
+    /// Hidden after it was shown: a navigation still on its way stops (the
+    /// first wait, for a tab just brought forward, is the controller's).
+    override func didHide() {
+        super.didHide()
+        navigation?.cancel(); navigation = nil
+    }
     override func willClose() {
+        navigation?.cancel(); navigation = nil
         place.cancelQuestion()
         madeController?.letGo()
     }
@@ -104,8 +132,22 @@ struct ChangesTabContent: View {
             .background(Color.piContent)
             .accessibilityElement(children: .combine)
         } else {
-            GitPanelView(controller: tab.controller, place: tab.place, questions: tab.questions, project: tab.name,
-                         openFile: { [weak tab] path, line in tab?.openFile(path: path, line: line) })
+            VStack(spacing: 0) {
+                if let name = tab.returnName, tab.canGoBack {
+                    HStack(spacing: PiSpacing.sm) {
+                        Button { tab.goBack() } label: { Label("Back to \(name)", systemImage: "chevron.left") }
+                            .buttonStyle(.piSecondaryCompact).fixedSize()
+                            .accessibilityIdentifier("changes-back-to-file")
+                        Text("Opened from its blame").font(PiFont.micro).foregroundStyle(Color.piInkTertiary)
+                            .lineLimit(1).truncationMode(.tail).layoutPriority(-1)
+                        Spacer()
+                    }
+                    .padding(.horizontal, PiSpacing.md).padding(.vertical, 6)
+                    .overlay(alignment: .bottom) { Rectangle().fill(Color.piHairline).frame(height: 1) }
+                }
+                GitPanelView(controller: tab.controller, place: tab.place, questions: tab.questions, project: tab.name,
+                             openFile: { [weak tab] path, line in tab?.openFile(path: path, line: line) })
+            }
         }
     }
 }
