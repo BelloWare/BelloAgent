@@ -30,8 +30,7 @@ struct WebhookSettingsGroup: View {
                         .accessibilityIdentifier("settings-webhook-url")
                 }
                 PiRow(label: "Method") {
-                    PiDropdown(selection: $settings.method, items: WebhookSettings.methods.map { ($0, $0) }, compact: true)
-                        .accessibilityLabel("Webhook method")
+                    PiDropdown(selection: $settings.method, items: WebhookSettings.methods.map { ($0, $0) }, compact: true, accessibilityName: "Webhook method")
                 }
                 WebhookEditorRow(label: "Headers JSON", detail: "Optional, for example {\"Authorization\": \"Bearer …\"}. Values may use placeholders.",
                                  text: $settings.headers, height: 52)

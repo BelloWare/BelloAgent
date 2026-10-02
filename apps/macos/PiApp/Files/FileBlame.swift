@@ -165,6 +165,11 @@ import GitView
         guard let commit else { return FileLineAnnotation(text: "Not committed", detail: "Not committed yet", actionable: false) }
         return FileLineAnnotation(text: "\(commit.shortHash) \(commit.author)", detail: Self.detail(commit), actionable: canOpen(commit))
     }
+    /// What the bar's spoken line leaves out, for VoiceOver: the full commit
+    /// ID, the author's address and the time of day they wrote it.
+    static func spokenDetail(_ commit: GitBlameCommit) -> String {
+        "Full commit ID \(commit.hash). Author address \(commit.email). Author time \(commit.date.formatted(date: .omitted, time: .shortened))."
+    }
     static func detail(_ commit: GitBlameCommit) -> String {
         "\(commit.shortHash) · \(commit.author) <\(commit.email)> · \(commit.date.formatted(date: .abbreviated, time: .shortened))\n\(commit.summary)"
     }
@@ -229,7 +234,10 @@ struct FileBlameBar: View {
                     let summary = "Line \(blame.line + 1) · \(commit.shortHash) · \(commit.author) · \(commit.date.formatted(date: .abbreviated, time: .omitted)) · \(commit.summary)"
                     Text(summary).font(PiFont.caption).foregroundStyle(Color.piInkSecondary).lineLimit(1).truncationMode(.tail)
                         .help(FileBlame.detail(commit))
-                        .accessibilityLabel(summary)
+                        // Read as words, not "dot": the line, the commit and
+                        // who made it, and the whole message on request.
+                        .accessibilityLabel("Line \(blame.line + 1), commit \(commit.shortHash), by \(commit.author), \(commit.date.formatted(date: .abbreviated, time: .omitted)): \(commit.summary)")
+                        .accessibilityHint(FileBlame.spokenDetail(commit))
                         .accessibilityIdentifier("file-blame-line")
                     if commit.historyMissing {
                         Text("Earlier history isn't in this clone").font(PiFont.micro).foregroundStyle(Color.piInkTertiary)
@@ -239,7 +247,7 @@ struct FileBlameBar: View {
                         .disabled(!blame.canOpen(commit))
                         .help(blame.tab?.projectID == nil ? "Open the file from a project to see its history." : "Open this commit's change to \(entry.path), at line \(entry.line), in Changes.")
                         .accessibilityIdentifier("file-blame-show-change")
-                    PiIconButton(symbol: "doc.on.doc", label: "Copy Commit ID", size: 24) {
+                    PiIconButton(symbol: "doc.on.doc", label: "Copy Commit ID", size: 24, spokenLabel: "Copy commit ID \(commit.shortHash)") {
                         NSPasteboard.general.clearContents(); NSPasteboard.general.setString(commit.hash, forType: .string)
                     }
                 } else {

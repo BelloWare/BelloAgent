@@ -125,6 +125,8 @@ struct ComposerInput: View {
                             .piAnimation(PiMotion.quick, value: canSend)
                             .piAnimation(PiMotion.quick, value: sendPulse)
                     }.buttonStyle(.plain).piPointer().disabled(!canSend).help(queueEditing ? "Save Queued Message" : editing ? model.editBlocker(session) ?? "Resend Edited Message" : queues ? "Queue Follow-up" : "Send")
+                    // Named for what it does, not its symbol ("Up", "Add List").
+                    .accessibilityLabel(queueEditing ? "Save Queued Message" : editing ? "Resend Edited Message" : queues ? "Queue Follow-up" : "Send")
                     if session.busy {
                         Button { model.stop(sessionID: session.id) } label: {
                             Image(systemName: "stop.fill").font(.system(size: 12, weight: .bold))

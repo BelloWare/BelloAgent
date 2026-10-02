@@ -196,7 +196,7 @@ struct ResourceInspector: View {
                 PiSettingsGroup(title: "Discovery", footer: "Default discovery includes user and project .agents/skills. No scripts or downloads run during discovery. Arbitrary Pi extensions are not loaded.") {
                     PiRow(label: "Codex home", detail: "Absolute path") { PiTextField(placeholder: "/Users/you/.codex", text: $home, mono: true) }
                     PiRow(label: "Fallback basenames", detail: "Comma separated; blank uses config.toml") { PiTextField(placeholder: "AGENTS.md, CLAUDE.md", text: $fallbacks, mono: true) }
-                    PiRow(label: "Override instruction byte budget", last: !overrideBudget) { Toggle("", isOn: $overrideBudget).labelsHidden() }
+                    PiRow(label: "Override instruction byte budget", last: !overrideBudget) { Toggle("", isOn: $overrideBudget).labelsHidden().accessibilityLabel("Override instruction byte budget") }
                     if overrideBudget { PiRow(label: "Combined source byte limit", detail: "0–262144", last: true) { PiNumberField(placeholder: "Bytes", value: $byteLimit) } }
                 }
                 ForEach(["extraSkillPaths", "piSkillPaths", "piInstructionPaths"], id: \.self) { key in
@@ -356,7 +356,7 @@ private struct NativeMCPInspector: View {
                 }
             }
             HStack(spacing: PiSpacing.sm) {
-                PiDropdown(selection: $server, items: [("", "Choose a server")] + servers.map { ($0, $0) }, placeholder: "Choose a server", icon: "server.rack")
+                PiDropdown(selection: $server, items: [("", "Choose a server")] + servers.map { ($0, $0) }, placeholder: "Choose a server", icon: "server.rack", accessibilityName: "MCP server")
                 Button { perform { try await loadTools() } } label: { Label("List Tools", systemImage: "list.bullet") }.disabled(busy || server.isEmpty)
                 Spacer()
             }

@@ -234,7 +234,7 @@ private struct GitPanelToolbar: View, Equatable {
                 if inputs.roots.count > 1 {
                     PiDropdown(selection: Binding(get: { controller.root ?? "" }, set: { controller.root = $0 }),
                                items: inputs.roots.map { ($0, ($0 as NSString).lastPathComponent) }, icon: "folder", compact: true,
-                               maxLabelWidth: wide ? nil : Self.narrowLabelWidth)
+                               maxLabelWidth: wide ? nil : Self.narrowLabelWidth, accessibilityName: "Repository")
                     .help(wide ? "" : inputs.displayRoot)
                 } else {
                     Label(inputs.displayRoot, systemImage: "folder").font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
@@ -569,10 +569,8 @@ struct GitCommitBox: View, Equatable {
                 .padding(PiSpacing.sm).piInset()
                 .accessibilityIdentifier("git-commit-message")
             PiTabs(selection: Binding(get: { controller.commitScope }, set: { controller.commitScope = $0 }),
-                   items: [(GitCommitScope.checkedFiles, "Checked files"), (.stagedChanges, "Staged changes")])
-                .accessibilityElement(children: .contain)
-                .accessibilityLabel("Commit scope")
-                .accessibilityValue(inputs.scope == .checkedFiles ? "Checked files" : "Staged changes")
+                   items: [(GitCommitScope.checkedFiles, "Checked files"), (.stagedChanges, "Staged changes")],
+                   accessibilityName: "Commit scope")
                 .accessibilityIdentifier("git-commit-scope")
                 // No glide: the switch changes the box's height (its hint and
                 // title) while a write may change the list above it in the

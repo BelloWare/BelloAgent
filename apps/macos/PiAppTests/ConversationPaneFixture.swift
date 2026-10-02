@@ -55,7 +55,8 @@ final class ConversationPaneTests: XCTestCase {
         let hosted: NSHostingView<ConversationPane>
         /// Answers the queued-edit commands as the helper does.
         let edits = FakeQueueEdits()
-        private let root: URL
+        /// The pane's scratch root: its model's state and the project.
+        let root: URL
 
         init(messages: [TranscriptMessage] = [], width: CGFloat = 900, height: CGFloat = 700, imageModel: Bool = false) throws {
             let scratch = scratchBase()

@@ -229,7 +229,7 @@ struct PiStatPopoverPill<Content: View>: View {
 
     var body: some View {
         PiStatPillFace(symbol: symbol, label: label, highlighted: hovering || presenter.isShown, warningTail: warningTail)
-            .accessibilityHidden(true)
+            .accessibilityElement(children: .ignore).accessibilityHidden(true)
             .overlay {
                 PiPopoverTrigger(label: accessibility ?? label, identifier: identifier, help: help.isEmpty ? label : help,
                                  onHover: { hovering = $0 },

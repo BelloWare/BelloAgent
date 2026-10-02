@@ -115,7 +115,10 @@ struct OnboardingView: View {
                                         if let text = item?.description, !text.isEmpty { Text(text).font(PiFont.caption).foregroundStyle(Color.piInkSecondary).lineLimit(2) }
                                     }
                                     Spacer()
-                                    if setup.profile.modelId == id { Image(systemName: "checkmark").font(.system(size: 11, weight: .bold)).foregroundStyle(Color.piAccent) }
+                                    if setup.profile.modelId == id {
+                                        // The row says it is selected; the tick would only repeat it.
+                                        Image(systemName: "checkmark").font(.system(size: 11, weight: .bold)).foregroundStyle(Color.piAccent).accessibilityHidden(true)
+                                    }
                                 }
                             }
                         }
@@ -126,8 +129,8 @@ struct OnboardingView: View {
             }
             field("Model or router alias") { PiTextField(placeholder: "gpt-5.1 or claude-router", text: $setup.profile.modelId, icon: "cpu", mono: true) }
             HStack(spacing: PiSpacing.md) {
-                field("Context capacity") { PiNumberField(placeholder: "Tokens", value: $setup.profile.contextWindow, width: 130) }
-                field("Output budget") { PiNumberField(placeholder: "Tokens", value: $setup.profile.maxOutputTokens, width: 130) }
+                field("Context capacity") { PiNumberField(placeholder: "Tokens", value: $setup.profile.contextWindow, width: 130).accessibilityLabel("Context capacity, tokens") }
+                field("Output budget") { PiNumberField(placeholder: "Tokens", value: $setup.profile.maxOutputTokens, width: 130).accessibilityLabel("Output budget, tokens") }
                 Spacer()
             }
             Text("The output budget only sizes the reserve the context estimate keeps for a reply; it is never sent as a limit. Model output ceiling: " + (setup.profile.modelOutputLimit.map { "\($0.formatted()) tokens, sent with every request." } ?? "not supplied, so requests carry no output limit."))

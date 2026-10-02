@@ -336,7 +336,7 @@ struct ConversationPane: View {
             }
             Text("A portable context draft starts a separate chat from its text; the imported file stays untouched.").font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
             HStack(spacing: PiSpacing.sm) {
-                PiDropdown(selection: $model.profileChoice, items: [("", "Choose Responses connection")] + model.requestProfiles.map { ($0.id, $0.name) }, placeholder: "Choose Responses connection", icon: "antenna.radiowaves.left.and.right")
+                PiDropdown(selection: $model.profileChoice, items: [("", "Choose Responses connection")] + model.requestProfiles.map { ($0.id, $0.name) }, placeholder: "Choose Responses connection", icon: "antenna.radiowaves.left.and.right", accessibilityName: "Responses connection")
                 Button("Portable Context Draft…", action: model.portableHandoff).buttonStyle(.piPrimary)
                 Spacer()
             }

@@ -205,9 +205,9 @@ struct ProfileSettings: View {
             PiRow(label: "Mini model", detail: "Writes chat titles and the webhook's parameters. Catalog default uses the first active model marked Mini; without one, titles keep the first message and a webhook goes out without its parameters.") {
                 CatalogModelMenu(model: model, controller: controller, miniSelection: true)
             }
-            PiRow(label: "Configured context capacity") { PiNumberField(placeholder: "Tokens", value: $controller.draft.profile.contextWindow) }
+            PiRow(label: "Configured context capacity") { PiNumberField(placeholder: "Tokens", value: $controller.draft.profile.contextWindow).accessibilityLabel("Configured context capacity, tokens") }
             PiRow(label: "Output budget", detail: "Room the context estimate sets aside for a reply, so a chat compacts before a reply would no longer fit. It is never sent as a limit: replies run to the model's own output ceiling.") {
-                PiNumberField(placeholder: "Tokens", value: $controller.draft.profile.maxOutputTokens)
+                PiNumberField(placeholder: "Tokens", value: $controller.draft.profile.maxOutputTokens).accessibilityLabel("Output budget, tokens")
             }
             PiRow(label: "Model output ceiling", detail: "The catalog's limit for the chosen model, sent with every request as its output limit.", last: true) {
                 Text(controller.draft.profile.modelOutputLimit.map { "\($0.formatted()) tokens" } ?? "Not supplied by the model catalog; requests carry no output limit")
@@ -216,19 +216,19 @@ struct ProfileSettings: View {
         }
         PiSettingsGroup(title: "Reasoning continuation", footer: "Portable history supports changing router models. It sends visible text and tool calls/results; original signed/encrypted reasoning stays in history. Preserving native state requires a compatible route guaranteed by your gateway.") {
             PiRow(label: "Policy", last: controller.draft.replayPolicy != "pinned") {
-                PiDropdown(selection: $controller.draft.replayPolicy, items: [("portable", "Portable text and tool history"), ("pinned", "Preserve native state on a fixed route"), ("ask", "Ask before replaying native state")], compact: true)
+                PiDropdown(selection: $controller.draft.replayPolicy, items: [("portable", "Portable text and tool history"), ("pinned", "Preserve native state on a fixed route"), ("ask", "Ask before replaying native state")], compact: true, accessibilityName: "Reasoning continuation policy")
             }
             if controller.draft.replayPolicy == "pinned" {
-                PiRow(label: "Expected reported model") { PiTextField(placeholder: "model id", text: $controller.draft.expectedModel, mono: true) }
-                PiRow(label: "Fixed-route compatibility contract", last: true) { PiTextField(placeholder: "reference", text: $controller.draft.replayContract) }
+                PiRow(label: "Expected reported model") { PiTextField(placeholder: "model id", text: $controller.draft.expectedModel, mono: true).accessibilityLabel("Expected reported model") }
+                PiRow(label: "Fixed-route compatibility contract", last: true) { PiTextField(placeholder: "reference", text: $controller.draft.replayContract).accessibilityLabel("Fixed-route compatibility contract") }
             }
         }
         PiSettingsGroup(title: "Gateway model and cache metadata contract", footer: "The response model is recorded automatically. Only configure headers documented for your deployment. An opaque deployment ID or route group is not an actual model name. Use a header reporting true/false or hit/miss; a cache key alone is not evidence of a hit.") {
-            PiRow(label: "Deployment/version contract reference") { PiTextField(placeholder: "reference", text: $controller.draft.metadataReference) }
-            PiRow(label: "Actual model header") { PiTextField(placeholder: "optional", text: $controller.draft.modelHeader, mono: true) }
-            PiRow(label: "Deployment ID header") { PiTextField(placeholder: "optional", text: $controller.draft.deploymentHeader, mono: true) }
-            PiRow(label: "Route group header") { PiTextField(placeholder: "optional", text: $controller.draft.groupHeader, mono: true) }
-            PiRow(label: "Cache hit/miss header", last: true) { PiTextField(placeholder: "optional", text: $controller.draft.cacheHeader, mono: true) }
+            PiRow(label: "Deployment/version contract reference") { PiTextField(placeholder: "reference", text: $controller.draft.metadataReference).accessibilityLabel("Deployment/version contract reference") }
+            PiRow(label: "Actual model header") { PiTextField(placeholder: "optional", text: $controller.draft.modelHeader, mono: true).accessibilityLabel("Actual model header") }
+            PiRow(label: "Deployment ID header") { PiTextField(placeholder: "optional", text: $controller.draft.deploymentHeader, mono: true).accessibilityLabel("Deployment ID header") }
+            PiRow(label: "Route group header") { PiTextField(placeholder: "optional", text: $controller.draft.groupHeader, mono: true).accessibilityLabel("Route group header") }
+            PiRow(label: "Cache hit/miss header", last: true) { PiTextField(placeholder: "optional", text: $controller.draft.cacheHeader, mono: true).accessibilityLabel("Cache hit/miss header") }
         }
         PiSettingsGroup(title: "Gateway routing", footer: "Off sends disable_fallbacks with every request, so a failing route returns its error and the report shows the requested model unanswered. On lets LiteLLM answer from its configured fallback models.") {
             PiRow(label: "Allow fallback models", last: true) { Toggle("", isOn: $controller.draft.allowFallbacks).labelsHidden().accessibilityLabel("Allow fallback models") }
@@ -240,19 +240,18 @@ struct ProfileSettings: View {
     /// The request log's capture, the dashboard and what a chat may spend.
     @ViewBuilder private var usageAndCapture: some View {
         PiSettingsGroup(title: "Capture and dashboard", footer: "Request and response bodies are saved locally for 30 days by default, within the payload quota; past a limited quota the oldest bodies are deleted to make room, and Unlimited keeps every body until its retention ends. Headers are included with authentication values masked. Bodies are unencrypted; known credentials in request bodies are hashed. Per-session overrides are separate.") {
-            PiRow(label: "Default future body capture") { PiDropdown(selection: $controller.preferences.capture.defaultMode, items: [("off", "Off"), ("memory", "Session memory"), ("persist", "Persist locally")], compact: true) }
-            PiRow(label: "Body retention") { PiStepper(label: "\(controller.preferences.capture.retentionDays) days", value: $controller.preferences.capture.retentionDays, range: 1...365) }
+            PiRow(label: "Default future body capture") { PiDropdown(selection: $controller.preferences.capture.defaultMode, items: [("off", "Off"), ("memory", "Session memory"), ("persist", "Persist locally")], compact: true, accessibilityName: "Default future body capture") }
+            PiRow(label: "Body retention") { PiStepper(name: "Body retention", unit: "days", value: $controller.preferences.capture.retentionDays, range: 1...365) }
             PiRow(label: "Payload quota") {
                 HStack(spacing: 8) {
-                    PiDropdown(selection: $controller.preferences.capture.quotaUnlimited, items: [(false, "Limit"), (true, "Unlimited")], compact: true)
-                        .accessibilityLabel("Payload quota")
+                    PiDropdown(selection: $controller.preferences.capture.quotaUnlimited, items: [(false, "Limit"), (true, "Unlimited")], compact: true, accessibilityName: "Payload quota mode")
                     if !controller.preferences.capture.quotaUnlimited {
-                        PiStepper64(label: "\(quotaMiB.wrappedValue) MiB", value: quotaMiB, range: 1...10_240)
+                        PiStepper64(name: "Payload quota", unit: "MiB", value: quotaMiB, range: 1...10_240)
                     }
                 }
             }
-            PiRow(label: "Metric retention") { PiStepper(label: "\(controller.preferences.dashboard.metricRetentionDays) days", value: $controller.preferences.dashboard.metricRetentionDays, range: 1...3650) }
-            PiRow(label: "Dashboard window", last: true) { PiStepper(label: "\(controller.preferences.dashboard.windowHours) hours", value: $controller.preferences.dashboard.windowHours, range: 1...8760) }
+            PiRow(label: "Metric retention") { PiStepper(name: "Metric retention", unit: "days", value: $controller.preferences.dashboard.metricRetentionDays, range: 1...3650) }
+            PiRow(label: "Dashboard window", last: true) { PiStepper(name: "Dashboard window", unit: "hours", value: $controller.preferences.dashboard.windowHours, range: 1...8760) }
         }
         PiSettingsGroup(title: "Spending", footer: CostLimitText.explanation + " A chat can have its own limit: open its token usage figure under the composer, or Session info.") {
             PiRow(label: "Cost limit per chat", detail: controller.preferences.defaultChatCostLimit.usd == nil
@@ -269,8 +268,8 @@ struct ProfileSettings: View {
         PiSettingsGroup(title: "Transcript", footer: "Compact is how a finished turn reads by default: its tool calls and thoughts fold behind one line above the answer, and one click on that line shows the whole turn again. Nothing is discarded either way, and a turn still running always reads in full.") {
             PiRow(label: "Finished turns", detail: TranscriptDisplayMode.compact.detail, last: true) {
                 PiDropdown(selection: $controller.preferences.transcriptDisplay,
-                           items: TranscriptDisplayMode.allCases.map { ($0, $0.label) }, compact: true)
-                    .accessibilityLabel("Transcript display for finished turns")
+                           items: TranscriptDisplayMode.allCases.map { ($0, $0.label) }, compact: true,
+                           accessibilityName: "Transcript display for finished turns")
                     .accessibilityIdentifier("settings-transcript-display")
             }
         }
@@ -291,11 +290,11 @@ struct ProfileSettings: View {
     /// The helpers' runtime and app updates.
     @ViewBuilder private var app: some View {
         PiSettingsGroup(title: "Runtime", footer: "PATH applies to newly started helpers. Provider credentials are never inherited by shell tools.") {
-            PiRow(label: "Idle helper grace") { PiStepper(label: "\(controller.preferences.runtime.idleGraceSeconds) seconds", value: $controller.preferences.runtime.idleGraceSeconds, range: 10...600, step: 10) }
+            PiRow(label: "Idle helper grace") { PiStepper(name: "Idle helper grace", unit: "seconds", value: $controller.preferences.runtime.idleGraceSeconds, range: 10...600, step: 10) }
             PiRow(label: "Tools PATH", last: true) { PiTextField(placeholder: "/usr/bin:/bin", text: $controller.preferences.runtime.toolsPATH, mono: true) }
         }
         PiSettingsGroup(title: "Updates") {
-            PiRow(label: "Check for app updates automatically", last: true) { Toggle("", isOn: $controller.preferences.automaticUpdateChecks).labelsHidden() }
+            PiRow(label: "Check for app updates automatically", last: true) { Toggle("", isOn: $controller.preferences.automaticUpdateChecks).labelsHidden().accessibilityLabel("Check for app updates automatically") }
         }
     }
 }
