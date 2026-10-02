@@ -164,7 +164,7 @@ struct SessionStatsPills: View, Equatable {
         // rather than cutting a figure in half.
         PiFlow(spacing: PiSpacing.xs, rowSpacing: 3, reportsUsedWidth: true) {
             if !compact, stats.steps > 0 {
-                PiStatButton(symbol: "gauge.with.dots.needle.67percent", label: stats.gaugeLabel,
+                PiStatButton(symbol: "gauge.with.dots.needle.67percent", label: stats.gaugeLabel, scope: ObjectIdentifier(footer),
                              accessibility: "Session statistics: " + stats.gaugeLabel, identifier: "session-stats-time",
                              help: SettledThroughput.explanation + " Opens the Session Inspector.") { open(.overview) }
             }
@@ -184,7 +184,7 @@ struct SessionStatsPills: View, Equatable {
     }
 
     private func usagePill(_ stats: SessionStatsPresentation, face: (label: String, warningTail: String?)) -> some View {
-        PiStatButton(symbol: "cylinder.split.1x2", label: face.label, warningTail: face.warningTail,
+        PiStatButton(symbol: "cylinder.split.1x2", label: face.label, warningTail: face.warningTail, scope: ObjectIdentifier(footer),
                      accessibility: "Token usage: " + stats.usageLabel, identifier: "session-stats-usage",
                      help: "Gateway-reported usage and cost for this session's retained requests, and its cost limit. Uncached and cached input make up the input; reasoning is part of the output. Opens the Session Inspector.") { open(.overview) }
     }
@@ -213,7 +213,7 @@ struct SessionStatsPills: View, Equatable {
             ForEach(slot.labels, id: \.self) { held in
                 PiStatPillFace(symbol: "square.stack.3d.up", ring: .some(meter.fraction), label: held).hidden()
             }
-            PiStatButton(symbol: "square.stack.3d.up", ring: .some(meter.fraction), label: label, truncates: figure == nil,
+            PiStatButton(symbol: "square.stack.3d.up", ring: .some(meter.fraction), label: label, truncates: figure == nil, scope: ObjectIdentifier(footer),
                          accessibility: reading.map { "\($0)% of context used" } ?? meter.detailLabel,
                          identifier: "session-stats-context", help: meter.detailLabel + " Opens the next request in the Session Inspector.") { open(.nextRequest) }
         }
@@ -263,13 +263,15 @@ struct PiStatButton: View {
     var warningTail: String? = nil
     /// Words that may end in "…" (`PiStatPillFace.truncates`).
     var truncates = false
+    /// What the figures are of (`PiStatPillFace.scope`).
+    var scope: AnyHashable? = nil
     var accessibility: String? = nil
     var identifier: String? = nil
     var help: String = ""
     let action: () -> Void
     @State private var hovering = false
     var body: some View {
-        PiStatPillFace(symbol: symbol, ring: ring, label: label, highlighted: hovering, warningTail: warningTail, truncates: truncates)
+        PiStatPillFace(symbol: symbol, ring: ring, label: label, highlighted: hovering, warningTail: warningTail, truncates: truncates, scope: scope)
             .accessibilityHidden(true)
             .overlay {
                 PiPopoverTrigger(label: accessibility ?? label, identifier: identifier, help: help.isEmpty ? label : help,

@@ -199,6 +199,8 @@ final class SoakTests: XCTestCase, SerialTestLane {
         var random = SoakRandom(seed: seed)
         print("SOAK seed \(seed), \(Int(seconds)) s, stall limit \(Int(stallLimit * 1_000)) ms, launch limit \(Int(launchLimit * 1_000)) ms")
 
+        let drawReport = testEnvironment("PI_SOAK_DRAW_REPORT") != nil, switchesOnly = testEnvironment("PI_SOAK_SWITCHES") != nil
+        RedrawCounter.recording = drawReport
         let setup = try await setup()
         let watchdog = SoakStallWatchdog(threshold: stallLimit)
         watchdog.start()
@@ -254,6 +256,10 @@ final class SoakTests: XCTestCase, SerialTestLane {
             }
             func observe(_ label: String, for duration: Double) async throws {
                 watchdog.label(label)
+                if drawReport {
+                    SoakDrawLedger.begin(launched.window, adding: true)
+                    SoakDrawLedger.phase = ["switch", "select", "send", "helper", "wait", "idle", "launch"].first { label.contains($0) } ?? "other"
+                }
                 // The chat shown is read at every sample: a click selects in a
                 // task of its own, so the chat changes during the window.
                 var chat = "", helperAtStart = false
@@ -312,7 +318,8 @@ final class SoakTests: XCTestCase, SerialTestLane {
             let steps = Int.random(in: 20...40, using: &random)
             for step in 1...steps {
                 let pause = Double.random(in: 0...0.6, using: &random)
-                let roll = Double.random(in: 0..<1, using: &random)
+                // `PI_SOAK_SWITCHES` aims a run at selecting and switching chats.
+                let roll = Double.random(in: 0..<1, using: &random) * (switchesOnly ? 0.55 : 1)
                 let target = chatIDs.randomElement(using: &random)!
                 let name = "chat \((chatIDs.firstIndex(of: target) ?? 0) + 1)"
                 let prefix = "cycle \(cycle) step \(step)"
@@ -369,7 +376,12 @@ final class SoakTests: XCTestCase, SerialTestLane {
             log.footprints.append((cycle, Double(Self.footprint()) / 1_048_576))
         }
 
-        report(log, stalls: watchdog.recorded, seed: seed, seconds: Self.now - started, stallLimit: stallLimit, launchLimit: launchLimit, root: setup.root)
+        if drawReport {
+            SoakDrawLedger.end()
+            for line in SoakDrawLedger.report() { print(line) }
+            print("SOAK redraws: " + RedrawCounter.counts.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value)" }.joined(separator: ", "))
+        }
+        report(log, stalls: watchdog.recorded, slowAnswers: watchdog.slowAnswers, seed: seed, seconds: Self.now - started, stallLimit: stallLimit, launchLimit: launchLimit, root: setup.root)
         let slow = log.launches.filter { ($0.seconds ?? .infinity) > launchLimit }
         XCTAssertTrue(watchdog.recorded.isEmpty, "The main thread paused over \(Int(stallLimit * 1_000)) ms \(watchdog.recorded.count) times (see the SOAK lines)")
         XCTAssertTrue(log.jumps.isEmpty, "Rows of an idle chat moved \(log.jumps.count) times (see the SOAK lines)")
@@ -437,7 +449,7 @@ final class SoakTests: XCTestCase, SerialTestLane {
         return status == 0 ? info.ri_phys_footprint : 0
     }
 
-    @MainActor private func report(_ log: Log, stalls: [SoakStallWatchdog.Stall], seed: UInt64, seconds: Double, stallLimit: Double, launchLimit: Double, root: URL) {
+    @MainActor private func report(_ log: Log, stalls: [SoakStallWatchdog.Stall], slowAnswers: [Double], seed: UInt64, seconds: Double, stallLimit: Double, launchLimit: Double, root: URL) {
         var lines: [String] = []
         func say(_ line: String) { lines.append(line); print(line) }
         let launchTimes = log.launches.compactMap(\.seconds).sorted()
@@ -448,6 +460,9 @@ final class SoakTests: XCTestCase, SerialTestLane {
                    log.launches.filter { ($0.seconds ?? 0) > launchLimit }.count, launchLimit * 1_000,
                    log.launches.filter { $0.seconds == nil }.count, actions))
         say("SOAK stalls over \(Int(stallLimit * 1_000)) ms: \(stalls.count)")
+        let slow = slowAnswers.sorted()
+        say("SOAK main thread answers over 100 / 150 / 200 ms: \(slow.count) / \(slow.filter { $0 > 0.15 }.count) / \(slow.filter { $0 > 0.2 }.count); longest "
+            + slow.suffix(5).reversed().map { String(format: "%.0f", $0 * 1_000) }.joined(separator: ", ") + " ms")
         var frames: [UInt: String] = [:]
         for stall in stalls.sorted(by: { $0.duration > $1.duration }) {
             say(String(format: "SOAK stall %.0f ms at %.1f s during “%@” (%ld stacks)", stall.duration * 1_000, stall.at, stall.label, stall.stacks.count))
@@ -561,6 +576,9 @@ private final class SoakStallWatchdog: @unchecked Sendable {
     func stop() { lock.withLock { running = false } }
     func label(_ value: String) { lock.withLock { current = value } }
     var recorded: [Stall] { lock.withLock { stalls } }
+    /// Every answer later than 100 ms, stalls or not: how close a run came.
+    private var slow: [Double] = []
+    var slowAnswers: [Double] { lock.withLock { slow } }
 
     private func run() {
         while lock.withLock({ running }) {
@@ -579,6 +597,7 @@ private final class SoakStallWatchdog: @unchecked Sendable {
             }
             if stopped { break }
             let latency = ProcessInfo.processInfo.systemUptime - sent
+            if latency > 0.1 { lock.withLock { slow.append(latency) } }
             if latency > threshold {
                 let stall = Stall(at: sent - started, duration: latency, label: label ?? lock.withLock { current }, stacks: stacks, others: others)
                 lock.withLock { stalls.append(stall) }
