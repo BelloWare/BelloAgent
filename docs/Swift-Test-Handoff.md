@@ -98,6 +98,34 @@ first 100 of its 400 identical rows (`PI_PERF_SCROLL_SAMPLE_ROWS`, 0 for the
 whole page). Fixtures that page past both resident caps lower them through
 `TranscriptPaging.residentCaps`.
 
+## Markdown correctness, timing and diagnostic benchmark
+
+`MarkdownStreamingCorrectnessTests` keeps the nine deterministic semantic
+checks in the parallel lane. `MarkdownStreamingTimingTests` holds the two
+performance tests in the serial lane in both Debug and Release, preserving
+canonical output, read-count, byte-bound, relative-growth, native-view and
+Release-budget assertions. The corpus and fixture builders live in the
+test-free `MarkdownStreamingTestSupport` enum; no test method is inherited.
+The three classes and support stay in `MarkdownStreamingCorrectnessTests.swift`.
+
+`MarkdownStreamingBenchmarkTests.testWhatReParsingTheTailCosts` only prints
+measurements. It remains discoverable but skips before any workload unless
+`PI_PERF_MARKDOWN_TAIL=1`; it is also classified serial so an opted-in suite
+run measures it alone. To run just this diagnostic against the build in
+`$DD`, with `X` set as above:
+
+```sh
+PI_PERF_MARKDOWN_TAIL=1 TEST_RUNNER_PI_PERF_MARKDOWN_TAIL=1 \
+  xcodebuild test-without-building "${X[@]}" -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/MarkdownStreamingBenchmarkTests/testWhatReParsingTheTailCosts
+```
+
+Keep compilation and other performance runs idle while measuring. Default
+runs retain 11 asserted tests and report the one diagnostic test as skipped.
+Check both configurations with `python3 scripts/test-lanes.py list` and
+`python3 scripts/test-lanes.py --configuration Release list` after changing
+the class boundaries.
+
 ## Live end-to-end (opt-in)
 
 `scripts/live-compaction-e2e.py` runs the release helper against a real
