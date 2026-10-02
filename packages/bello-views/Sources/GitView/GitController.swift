@@ -71,6 +71,10 @@ import AppKit
     private var checkedByReader = false
     private var applyingChecked = false
     private func applyChecked(_ value: Set<String>) { guard value != checked else { return }; applyingChecked = true; checked = value; applyingChecked = false }
+    /// What Commit takes: the checked files, or the index as staged. Chosen by
+    /// the reader and never switched by the checked set: unticking every file
+    /// is not consent to commit the index.
+    @Published public var commitScope: GitCommitScope = .checkedFiles
     @Published public var amend = false { didSet { if amend, commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { Task { await prefillHeadMessage() } } } }
     @Published public private(set) var branches: [String] = []
     @Published public private(set) var stashes: [GitStashEntry] = []
@@ -201,7 +205,7 @@ import AppKit
         commits = []; historyExhausted = false; branches = []; stashes = []
         commitCache = [:]; commitCacheOrder = []
         applyChecked([]); checkedByReader = false
-        commitMessage = ""; amend = false; lastCommit = nil; notice = ""
+        commitMessage = ""; amend = false; commitScope = .checkedFiles; lastCommit = nil; notice = ""
         selectedDiffStale = false; panel = .changes
         splitDiff = false; wholeDiffShown = nil; commitFilesShown = GitController.commitFilesStep
         logFilter = GitLogFilter()
@@ -441,11 +445,15 @@ import AppKit
     }
 
     private func prefillHeadMessage() async {
-        guard let repositoryRoot, let message = try? await service.headMessage(in: repositoryRoot) else { return }
-        if amend, commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { commitMessage = message }
+        guard let root = repositoryRoot, let message = try? await service.headMessage(in: root) else { return }
+        // Only into the same repository's still-empty field, still amending.
+        if amend, repositoryRoot == root, !closed, commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { commitMessage = message }
     }
 
+    /// Runs one write. A second write asked for while one runs is refused, not
+    /// queued: a double click commits once.
     private func perform(_ what: String, _ work: () async throws -> Void) async {
+        guard !busy else { return }
         busy = true; notice = ""
         defer { busy = false; drainMissedChange() }
         var failure: String?
@@ -473,22 +481,61 @@ import AppKit
         let held = allPaths.subtracting(entries.map(\.path))
         await perform("Discard") { try await service.discard(entries, in: root, held: held) }
     }
-    /// Commits the checked files (their working-tree state), or the staged index when nothing is checked.
-    /// A ticked rename is committed as one, under both of its names.
+    /// Commits in the chosen scope.
+    public func commitInScope() async {
+        switch commitScope {
+        case .checkedFiles: await commitChecked()
+        case .stagedChanges: await commitStaged()
+        }
+    }
+    /// Commits the checked files: their whole working-tree state, not only
+    /// their staged hunks. Nothing checked commits nothing; the index is
+    /// Commit Staged Changes' to commit. A ticked rename is committed as one,
+    /// under both of its names.
     public func commitChecked() async {
-        guard let root = repositoryRoot else { return }
+        guard let root = repositoryRoot, !busy else { return }
         let rows = status.entries.filter { checked.contains($0.path) }
         let paths = GitService.paths(rows.map(\.path), renames: rows, for: .commit, held: allPaths.subtracting(checked))
+        guard !paths.isEmpty else { notice = "Tick the files to commit."; return }
         // Only a file git has never seen is staged first, so the commit can
         // name it; the commit takes everything else from disk itself. Staged
         // first, a file added or renamed into the index and deleted from disk
         // since was in neither the index nor HEAD any more, and naming it
         // failed the whole commit.
         let staging = rows.filter(\.untracked).map(\.path)
-        await perform("Commit") {
-            lastCommit = try await service.commit(message: commitMessage, in: root, paths: paths, staging: staging, amend: amend)
-            commitMessage = ""; amend = false
+        await commit(content: .files(paths: paths, staging: staging))
+    }
+    /// Commits the index as staged; unstaged edits stay where they are.
+    public func commitStaged() async {
+        guard repositoryRoot != nil, !busy else { return }
+        guard !staged.isEmpty else { notice = "Nothing to commit: nothing is staged."; return }
+        await commit(content: .staged)
+    }
+    private func commit(content: GitCommitContent) async {
+        guard let root = repositoryRoot else { return }
+        let message = commitMessage, amending = amend
+        await perform(amending ? "Amend" : "Commit") {
+            lastCommit = try await service.commit(message: message, in: root, content: content, amend: amending)
+            clearDraft(message, in: root)
         }
+    }
+    /// Changes the last commit's message only: its files stay as they are,
+    /// and staged and unstaged work is left exactly as it was. Refused when
+    /// HEAD is no longer the commit this panel last read.
+    public func rewordLastCommit() async {
+        guard let root = repositoryRoot, !busy else { return }
+        guard let head = status.head else { notice = "There is no commit to reword yet."; return }
+        let message = commitMessage
+        await perform("Reword") {
+            lastCommit = try await service.reword(message: message, in: root, expectedHead: head)
+            clearDraft(message, in: root)
+        }
+    }
+    /// After a write, clears the message it used, unless the reader has typed
+    /// another since or the panel moved to another repository.
+    private func clearDraft(_ message: String, in root: String) {
+        guard repositoryRoot == root, commitMessage == message else { return }
+        commitMessage = ""; amend = false
     }
 
     /// Reads the selected file's diff, stopping the read the previous selection
@@ -607,27 +654,17 @@ import AppKit
 
     /// Stages the rows at these paths; a rename is staged under both names.
     public func stage(_ paths: [String]) async {
-        guard let repositoryRoot else { return }
+        guard let root = repositoryRoot else { return }
         let paths = GitService.paths(paths, renames: status.entries, for: .stage)
-        var failure: String?
-        do { try await service.stage(paths, in: repositoryRoot) } catch is CancellationError { } catch { failure = error.localizedDescription }
-        await refresh(reporting: failure)
+        await perform("Stage") { try await service.stage(paths, in: root) }
     }
     /// Unstages the rows at these paths; a rename is unstaged whole, not by half.
     public func unstage(_ paths: [String]) async {
-        guard let repositoryRoot else { return }
+        guard let root = repositoryRoot else { return }
         let paths = GitService.paths(paths, renames: status.entries, for: .unstage)
-        var failure: String?
-        do { try await service.unstage(paths, in: repositoryRoot) } catch is CancellationError { } catch { failure = error.localizedDescription }
-        await refresh(reporting: failure)
-    }
-    public func commit() async {
-        guard let repositoryRoot else { return }
-        var failure: String?
-        do {
-            lastCommit = try await service.commit(message: commitMessage, in: repositoryRoot)
-            commitMessage = ""
-        } catch is CancellationError { } catch { failure = error.localizedDescription }
-        await refresh(reporting: failure)
+        await perform("Unstage") { try await service.unstage(paths, in: root) }
     }
 }
+
+/// Which content a commit takes; see `GitController.commitScope`.
+public enum GitCommitScope: Sendable, Hashable { case checkedFiles, stagedChanges }

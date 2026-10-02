@@ -508,13 +508,16 @@ private struct GitFileRow: View, Equatable {
     }
 }
 
-/// The commit message, amend, discard all, and Commit.
-private struct GitCommitBox: View, Equatable {
+/// The commit message, what the commit takes (the checked files or the staged
+/// index, always said, never inferred), amend, discard all, Reword Last
+/// Commit and the commit itself.
+struct GitCommitBox: View, Equatable {
     struct Inputs: Equatable {
-        var message: String, amend: Bool, checkedCount: Int, stagedEmpty: Bool, entries: Int, loading: Bool, busy: Bool
+        var message: String, amend: Bool, scope: GitCommitScope, checkedCount: Int, stagedCount: Int, entries: Int, hasHead: Bool, loading: Bool, busy: Bool
         @MainActor init(_ controller: GitController) {
-            message = controller.commitMessage; amend = controller.amend; checkedCount = controller.checkedCount
-            stagedEmpty = controller.staged.isEmpty; entries = controller.status.entries.count; loading = controller.loading; busy = controller.busy
+            message = controller.commitMessage; amend = controller.amend; scope = controller.commitScope; checkedCount = controller.checkedCount
+            stagedCount = controller.staged.count; entries = controller.status.entries.count; hasHead = controller.status.head != nil
+            loading = controller.loading; busy = controller.busy
         }
     }
     let controller: GitController
@@ -522,49 +525,92 @@ private struct GitCommitBox: View, Equatable {
     let discard: @MainActor ([GitStatusEntry]) -> Void
     nonisolated static func == (a: Self, b: Self) -> Bool { MainActor.assumeIsolated { samePart((a.controller, a.inputs), (b.controller, b.inputs)) } }
 
+    /// What the box shows and allows for these inputs: the action's name,
+    /// whether it and Reword are armed, and the line saying what the active
+    /// scope takes. Kept apart from the drawing so it can be checked whole.
+    struct Presentation: Equatable {
+        var title: String, commitEnabled: Bool, rewordEnabled: Bool, hint: String
+    }
+    static func presentation(_ inputs: Inputs) -> Presentation {
+        let message = inputs.message.trimmingCharacters(in: .whitespacesAndNewlines)
+        let content = inputs.scope == .checkedFiles ? inputs.checkedCount > 0 : inputs.stagedCount > 0
+        let idle = !inputs.loading && !inputs.busy
+        let title = switch (inputs.scope, inputs.amend) {
+        case (.checkedFiles, false): "Commit Checked Files"
+        case (.checkedFiles, true): "Amend with Checked Files"
+        case (.stagedChanges, false): "Commit Staged Changes"
+        case (.stagedChanges, true): "Amend with Staged Changes"
+        }
+        let hint: String
+        switch inputs.scope {
+        case .checkedFiles where !content:
+            hint = "Tick the files to commit. Their whole working-tree state is committed, not only staged hunks."
+        case .stagedChanges where !content:
+            hint = "Nothing is staged. Stage changes, or commit checked files instead."
+        case _ where inputs.amend && !inputs.hasHead:
+            hint = "There is no commit to amend yet."
+        default:
+            let what = inputs.scope == .checkedFiles
+                ? "\(inputs.checkedCount) of \(inputs.entries) files · their whole working-tree state"
+                : "\(inputs.stagedCount) staged \(inputs.stagedCount == 1 ? "file" : "files") · exactly as staged; unstaged edits stay"
+            hint = message.isEmpty ? what + " · write a message to commit" : what
+        }
+        return Presentation(title: title, commitEnabled: content && !message.isEmpty && idle && (!inputs.amend || inputs.hasHead),
+                            rewordEnabled: inputs.hasHead && !message.isEmpty && idle, hint: hint)
+    }
+
     var body: some View {
         let _ = RedrawCounter.note("GitCommitBox")
-        let checkedCount = inputs.checkedCount
-        let message = inputs.message.trimmingCharacters(in: .whitespacesAndNewlines)
-        let nothing = checkedCount == 0 && inputs.stagedEmpty && !inputs.amend
+        let shown = Self.presentation(inputs)
         let controller = controller
         VStack(alignment: .leading, spacing: PiSpacing.sm) {
             TextField(inputs.amend ? "Amended commit message" : "Commit message", text: Binding(get: { controller.commitMessage }, set: { controller.commitMessage = $0 }), axis: .vertical)
                 .textFieldStyle(.plain).font(PiFont.body).lineLimit(2...5)
                 .padding(PiSpacing.sm).piInset()
                 .accessibilityIdentifier("git-commit-message")
+            PiTabs(selection: Binding(get: { controller.commitScope }, set: { controller.commitScope = $0 }),
+                   items: [(GitCommitScope.checkedFiles, "Checked files"), (.stagedChanges, "Staged changes")])
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("Commit scope")
+                .accessibilityValue(inputs.scope == .checkedFiles ? "Checked files" : "Staged changes")
+                .accessibilityIdentifier("git-commit-scope")
+                // No glide: the switch changes the box's height (its hint and
+                // title) while a write may change the list above it in the
+                // same turn, and the animated resize of the hosting view never
+                // settled — AppKit trapped on endless constraint passes
+                // (gallery scene 10e). It looks the same, it only does not move.
+                .transaction { $0.disablesAnimations = true; $0.animation = nil }
             HStack(spacing: PiSpacing.sm) {
                 gitCheckbox(on: inputs.amend, label: "Amend the last commit") { controller.amend.toggle() }.accessibilityIdentifier("git-amend")
                 Text("Amend").font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
-                    .help("Fold the checked files into the last commit and reword it.")
+                    .help("Add this commit's content to the last commit and replace its message.")
                 Spacer()
+                // Beside Amend, apart from the commit: a message-only change,
+                // not one more way to commit content.
+                Button("Reword Last Commit") { Task { await controller.rewordLastCommit() } }
+                    .buttonStyle(.plain).font(PiFont.micro).foregroundStyle(shown.rewordEnabled ? Color.piAccent : Color.piInkTertiary).piPointer()
+                    .lineLimit(1).fixedSize()
+                    .disabled(!shown.rewordEnabled)
+                    .help("Change the last commit's message only. Its files, and your staged and unstaged changes, stay as they are.")
+                    .accessibilityIdentifier("git-reword")
                 if inputs.entries > 0 {
                     Button("Discard All…") { discard(controller.status.entries) }.buttonStyle(.plain).font(PiFont.micro).foregroundStyle(Color.piDanger).piPointer()
+                        .lineLimit(1).fixedSize()
                         .accessibilityIdentifier("git-discard-all")
                 }
             }
+            // Says what the active action takes, and what it still needs.
+            Text(shown.hint)
+                .font(PiFont.micro).foregroundStyle(Color.piInkTertiary).lineLimit(3).fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("git-commit-hint")
             HStack(spacing: PiSpacing.sm) {
-                // A disabled Commit used to say only how many files were
-                // ticked; the reader was left to guess that the empty message
-                // was what stopped it. The line now names the missing step.
-                Text(hint(checkedCount: checkedCount, message: message, nothing: nothing))
-                    .font(PiFont.micro).foregroundStyle(Color.piInkTertiary).lineLimit(2).fixedSize(horizontal: false, vertical: true)
                 Spacer()
-                Button { Task { await controller.commitChecked() } } label: { Label(inputs.amend ? "Amend" : "Commit", systemImage: "checkmark.circle") }
+                Button { Task { await controller.commitInScope() } } label: { Label(shown.title, systemImage: "checkmark.circle") }
                     .buttonStyle(.piPrimaryCompact).fixedSize()
-                    .disabled(nothing || message.isEmpty || inputs.loading || inputs.busy)
+                    .disabled(!shown.commitEnabled)
                     .accessibilityIdentifier("git-commit")
             }
         }.padding(PiSpacing.md)
-    }
-
-    /// What the commit box is waiting for, in the order the reader has to
-    /// supply it: something to commit, then a message.
-    private func hint(checkedCount: Int, message: String, nothing: Bool) -> String {
-        if nothing { return inputs.amend ? "Reword the last commit" : "Tick the files to commit" }
-        let what = checkedCount > 0 ? "\(checkedCount) of \(inputs.entries) files"
-            : inputs.amend ? "Reword only" : "Staged index"
-        return message.isEmpty ? what + " · write a message to commit" : what
     }
 }
 

@@ -186,6 +186,14 @@ final class UIScreenshotTests: XCTestCase {
             try await model.traces.close()
             return
         }
+        // Only the Changes window and its Git scenes (10b–10e).
+        if testEnvironment("PI_APP_UI_GALLERY_GIT_ONLY") == "1" {
+            try await captureChangesWindowScene(model: model, gallery: gallery, appearances: appearances, workspaceID: workspace.id)
+            XCTAssertNil(model.error, model.error ?? "")
+            for host in model.hosts.values { try await host.shutdownAndWait() }
+            try await model.traces.close()
+            return
+        }
         // Only the sidebar with the archive switch on.
         if testEnvironment("PI_APP_UI_GALLERY_ARCHIVE_ONLY") == "1" {
             let topic = try await model.createTopic(in: workspace.id, title: "Payments")
@@ -662,6 +670,26 @@ final class UIScreenshotTests: XCTestCase {
             try capture(tabWindow, to: gallery.appendingPathComponent("10c-changes-window-narrow-\(name).png"))
             tabWindow.setFrame(NSRect(x: 120, y: 120, width: 1180, height: 780), display: true)
         }
+        // 10d · The commit box at the smallest window: every file unticked,
+        // so Commit Checked Files is not armed and says why. 10e · Staged
+        // Changes chosen, one file staged and a message, amending. Going back,
+        // the scope changes and the file is unstaged in one turn: that once
+        // looped AppKit's constraint passes until it trapped.
+        let git = try XCTUnwrap((changes as? ChangesTab)?.controller)
+        let staged = git.unstaged.first { !$0.untracked }?.path
+        tabWindow.setContentSize(NSSize(width: 920, height: 600)); try await settle(1.0)
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance)
+            git.checked = []; git.commitScope = .checkedFiles; git.commitMessage = ""; try await settle(1.0)
+            try capture(tabWindow, to: gallery.appendingPathComponent("10d-changes-commit-unticked-\(name).png"))
+            if let staged { await git.stage([staged]) }
+            git.commitScope = .stagedChanges; git.commitMessage = "Retry with backoff"; git.amend = true; try await settle(1.0)
+            try capture(tabWindow, to: gallery.appendingPathComponent("10e-changes-commit-staged-amend-\(name).png"))
+            git.amend = false; git.commitMessage = ""; git.commitScope = .checkedFiles
+            if let staged { await git.unstage([staged]) }
+            try await settle(1.0)
+        }
+        tabWindow.setFrame(NSRect(x: 120, y: 120, width: 1180, height: 780), display: true)
         model.tabs.close(changes)
         try await settle(0.6)
         XCTAssertTrue(model.tabs.windows.isEmpty)

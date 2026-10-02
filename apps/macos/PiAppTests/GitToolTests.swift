@@ -60,7 +60,7 @@ final class GitToolTests: XCTestCase {
         status = try await service.status(in: root.path)
         XCTAssertEqual(status.stagedCount, 0)
         try await service.stage(["notes.txt", "new file.md"], in: root.path)
-        let short = try await service.commit(message: "Revise notes\n\nSecond paragraph.", in: root.path)
+        let short = try await service.commit(message: "Revise notes\n\nSecond paragraph.", in: root.path, content: .staged)
         XCTAssertEqual(short.count, 7)
         status = try await service.status(in: root.path)
         XCTAssertTrue(status.entries.isEmpty)
@@ -82,7 +82,7 @@ final class GitToolTests: XCTestCase {
         XCTAssertEqual(oneFile.map(\.path), ["notes.txt"]); XCTAssertEqual(oneFile.first?.added, 2)
         let paged = try await service.log(in: root.path, limit: 1, skip: 1)
         XCTAssertEqual(paged.map(\.subject), ["Initial notes"])
-        do { _ = try await service.commit(message: "  ", in: root.path); XCTFail("An empty message is refused") } catch {}
+        do { _ = try await service.commit(message: "  ", in: root.path, content: .staged); XCTFail("An empty message is refused") } catch {}
     }
 
     func testBranchesStashAmendDiscardAndFilteredHistory() async throws {
@@ -148,11 +148,11 @@ final class GitToolTests: XCTestCase {
         // Commit only the checked file (a.txt) while c.txt stays untracked; then amend with c.txt and a new message.
         let headMessage = try await service.headMessage(in: root.path)
         XCTAssertEqual(headMessage, "First commit")
-        _ = try await service.commit(message: "Change a", in: root.path, paths: ["a.txt"])
+        _ = try await service.commit(message: "Change a", in: root.path, content: .files(paths: ["a.txt"], staging: []))
         status = try await service.status(in: root.path)
         XCTAssertEqual(status.entries.map(\.path), ["c.txt"]); XCTAssertEqual(status.entries.first?.untracked, true)
         let before = try await service.log(in: root.path)
-        _ = try await service.commit(message: "Change a and add c", in: root.path, paths: ["c.txt"], amend: true)
+        _ = try await service.commit(message: "Change a and add c", in: root.path, content: .files(paths: ["c.txt"], staging: ["c.txt"]), amend: true)
         let after = try await service.log(in: root.path)
         XCTAssertEqual(after.map(\.subject), ["Change a and add c", "First commit"])
         XCTAssertEqual(after.count, before.count, "Amend rewrites HEAD instead of adding a commit")
