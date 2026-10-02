@@ -480,3 +480,61 @@ final class SendImmediacyTests: XCTestCase {
         await bench.close()
     }
 }
+
+extension SendImmediacyTests {
+    /// A message of images alone is a message (handoff A2): Return sends it
+    /// with no text and nothing made up, its row says what it is, and an
+    /// empty draft still sends nothing.
+    @MainActor func testAnImageOnlyMessageSendsWithoutText() async throws {
+        let chat = try await ScriptedSendChat()
+        var closed = false
+        defer { if !closed { Task { await chat.close() } } }
+        let image = AttachmentRecord(id: "image-1", path: "/tmp/fixture-image.png", sha256: "00", bytes: 10, mimeType: "image/png")
+        XCTAssertFalse(chat.session.hasSubmittableInput)
+        chat.key("\r", keyCode: 36)
+        await chat.settle(4)
+        XCTAssertTrue(chat.frames("turn.submit").isEmpty, "an empty draft sends nothing")
+        chat.type("   ")
+        chat.key("\r", keyCode: 36)
+        await chat.settle(4)
+        XCTAssertTrue(chat.frames("turn.submit").isEmpty, "nor does one of spaces")
+        chat.session.draft = ""
+        chat.session.attachments = [image]
+        XCTAssertTrue(chat.session.hasSubmittableInput)
+        await chat.settle(4)
+        chat.key("\r", keyCode: 36)
+        await chat.until("The image never reached the helper") { chat.frames("turn.submit").count == 1 }
+        let frame = try XCTUnwrap(chat.frames("turn.submit").first)
+        XCTAssertEqual(frame["params"]?.object?["text"]?.string, "", "no text is made up for it")
+        XCTAssertEqual(frame["params"]?.object?["attachments"]?.array?.count, 1)
+        XCTAssertEqual(chat.session.sendingRows.first?.text, "Image", "the row drawn at once says what it is")
+        closed = true
+        await chat.close()
+    }
+
+    /// Steering takes an image alone too, on the same rule.
+    @MainActor func testAnImageOnlySteerIsSent() async throws {
+        let chat = try await ScriptedSendChat()
+        var closed = false
+        defer { if !closed { Task { await chat.close() } } }
+        chat.session.state = "running"
+        chat.session.attachments = [AttachmentRecord(id: "image-2", path: "/tmp/fixture-image.png", sha256: "00", bytes: 10, mimeType: "image/png")]
+        await chat.settle(4)
+        chat.model.submitComposer(intent: .steer, sessionID: chat.chat.id)
+        await chat.until("The steer never reached the helper") { chat.frames("turn.steer").count == 1 }
+        XCTAssertEqual(chat.frames("turn.steer").first?["params"]?.object?["text"]?.string, "")
+        chat.session.state = "idle"
+        closed = true
+        await chat.close()
+    }
+
+    /// A user row whose message was images alone reads as them, from the
+    /// helper's row and from the journal, so it is never an empty bubble.
+    @MainActor func testAnImageOnlyRowReadsAsItsImages() throws {
+        XCTAssertEqual(TranscriptMessage.imageOnlyText(1), "Image")
+        XCTAssertEqual(TranscriptMessage.imageOnlyText(3), "3 images")
+        let journal: [String: WireValue] = ["role": .string("user"), "content": .array([.object(["type": .string("image"), "mimeType": .string("image/png"), "data": .string("AA==")])])]
+        let row = TranscriptMessage.project(id: "u", message: journal)
+        XCTAssertEqual(row.text, "Image")
+    }
+}

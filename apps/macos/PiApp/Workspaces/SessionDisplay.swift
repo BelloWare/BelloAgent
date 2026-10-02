@@ -590,6 +590,10 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// The branch this reader's edit is making (`sendEdit`), until the
     /// snapshot that first carries it is adopted (`adoptOwnBranch`).
     var pendingBranch: PendingBranch?
+    /// The one rule every send path shares (handoff A2): text, a skill or
+    /// an image makes a message; a draft of none of them is empty. Whether
+    /// the model takes images is checked where the message goes out.
+    var hasSubmittableInput: Bool { draft.contains { !$0.isWhitespace } || !skills.isEmpty || !attachments.isEmpty }
     var savedDraft: DraftRecord {
         if queueEditingID != nil, var saved = draftBeforeQueueEdit {
             if let editID = queueEditID, let turnID = queueEditingID {

@@ -171,6 +171,7 @@ public struct ChatMessage: Codable, Equatable, Sendable {
         if let taskExecutionID { value["taskExecutionID"] = JSON(taskExecutionID) }
         if let modelMs { value["modelMs"] = JSON(modelMs) }
         if role == "user", let skills = displaySkills { value["skills"] = skills }
+        if role == "user" { let images = content.filter { $0["type"].text == "image" }.count; if images > 0 { value["imageCount"] = JSON(images) } }
         if role == "assistant", let reply = replyRecord { value["reply"] = reply }
         return value
     }

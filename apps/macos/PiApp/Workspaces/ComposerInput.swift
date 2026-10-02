@@ -39,7 +39,7 @@ struct ComposerInput: View {
     /// trimming a long draft would copy it on every keystroke.
     private var canSend: Bool {
         // A queued rewrite may be empty when the message keeps images or skills.
-        let hasInput = draft.text.contains { !$0.isWhitespace } || !session.skills.isEmpty || (queueEditing && session.queueEditKeepsInput)
+        let hasInput = draft.text.contains { !$0.isWhitespace } || !session.skills.isEmpty || !session.attachments.isEmpty || (queueEditing && session.queueEditKeepsInput)
         return session.draftReady && !(!hasInput || session.loading || model.installPreparing || (editing && model.editBlocker(session) != nil) || session.queueEditResolving)
     }
     private var queues: Bool { !editing && !queueEditing && (session.busy || !session.queue.isEmpty || !session.sendingRows.isEmpty) }

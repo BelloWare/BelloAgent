@@ -14,7 +14,19 @@ extension AgentSession {
         guard !input.text.isEmpty || !input.skills.isEmpty || !input.attachments.isEmpty else { throw AgentError("empty_message", "Enter a message or select a skill") }
         guard input.text.utf8.count <= 262144, queue.count + steering.count + (delivering == nil ? 0 : 1) < 64 else { throw AgentError("queue_limit", "Message or queue limit exceeded") }
         guard !commands.contains(where:{$0["turnId"].text == input.turnID}), !history.contains(where:{$0.id == input.turnID}) else { throw AgentError("duplicate_turn", "Turn identity already accepted; no duplicate submission was made") }
-        _ = try profile.overriding(input)
+        let turn = try profile.overriding(input)
+        // Images are refused where the message is typed, before it is
+        // accepted: a model that takes none, or a file gone or changed.
+        if !input.attachments.isEmpty {
+            guard turn.raw["input"].list.contains("image") else { throw AgentError("unsupported_image", "Selected model does not declare image support") }
+            // Read, checked against its digest and signature, and converted as
+            // delivery will: an image that can't be sent is refused now, not
+            // replaced by a message about it once the draft has gone.
+            let blocks = try loadImages(input.attachments)
+            guard blocks.filter({ $0["type"].text == "image" }).count == input.attachments.count else {
+                throw AgentError("attachment_unreadable", "An image could not be prepared for the model; select another")
+            }
+        }
         if steer, runTask == nil { throw AgentError("not_running", "Steering requires an active run; send a normal message") }
         // A message sent to a chat at its cost limit is refused where it was
         // typed, with the same words as a run stopped there, also when earlier
@@ -137,7 +149,8 @@ extension AgentSession {
         let images=try loadImages(submission.attachments)
         guard images.isEmpty || turn.raw["input"].list.contains("image") else { throw AgentError("unsupported_image", "Selected model does not declare image support") }
         let expanded=Self.userMessageText(submission.text,skills:submission.skills,turnID:submission.turnID)
-        var message=ChatMessage(role:"user",content:[textBlock(expanded)]+images); message.displayText=submission.text; message.id=submission.turnID; message.turn=submission.turnID
+        // An image-only message is its images: no text part, empty or invented.
+        var message=ChatMessage(role:"user",content:(expanded.isEmpty && !images.isEmpty ? [] : [textBlock(expanded)])+images); message.displayText=submission.text; message.id=submission.turnID; message.turn=submission.turnID
         message.contextNote=pendingContextNote()
         message.userInput = ["version":1,"attachments":.array(submission.attachments.map { $0.removing(["data"]) }),"skills":.array(submission.skills.map(\.recorded))]
         message.taskRootID=newTask ? submission.turnID : taskRootID
