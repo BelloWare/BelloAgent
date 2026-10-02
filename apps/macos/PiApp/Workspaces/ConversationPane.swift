@@ -136,7 +136,9 @@ struct ConversationPane: View {
                         if !Task.isCancelled { coverDue = true }
                     }
                 }
-            if !session.queue.isEmpty { queuePanel.transition(PiMotion.arrival(from: .bottom)) }
+            // An open detail keeps the panel, its anchor, until it is closed:
+            // the last message leaving says so rather than vanishing.
+            if !session.queue.isEmpty || session.queueDetailID != nil { queuePanel.transition(PiMotion.arrival(from: .bottom)) }
             if model.terminalVisible, side == nil, let workspace = model.workspace(for: chat.workspaceID), !workspace.isScratch {
                 TerminalPanel(model: model, workspace: workspace).transition(PiMotion.arrival(from: .bottom))
             }

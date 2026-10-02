@@ -94,4 +94,31 @@ extension ConversationPaneTests {
         try await waitFor("The stale reorder was never refused") { pane.session.notice.contains("changed while you were dragging") }
         XCTAssertEqual(QueuedMessage.from(pane.session.queue).map(\.id), before, "nothing moved")
     }
+
+    /// The detail opened from its row: it shows the whole message; when the
+    /// message leaves the queue while it is open, it says so, and nothing is
+    /// edited or sent.
+    @MainActor func testTheDetailOpenWhileItsMessageLeaves() async throws {
+        let pane = try Pane(width: 1000, height: 700); defer { pane.close() }
+        pane.session.state = "running"
+        pane.session.queue = [["turnId": .string("a"), "kind": .string("follow-up"), "text": .string("The whole message"), "thinkingLevel": .string("high")],
+                              ["turnId": .string("b"), "kind": .string("follow-up"), "text": .string("Another")]]
+        await pane.settle(12)
+        pane.session.queueDetailID = "a"
+        try await waitFor("The detail never opened") { NSApp.windows.contains { String(describing: Swift.type(of: $0)).contains("Popover") && $0.isVisible } }
+        try await waitFor("The detail never showed its message") { pane.session.queueDetailShowing == "The whole message" }
+        pane.session.queue.removeAll { $0["turnId"]?.string == "a" }
+        try await waitFor("The detail never said the message left") { pane.session.queueDetailShowing == QueuedMessageDetail.goneText }
+        XCTAssertTrue(pane.edits.calls.isEmpty, "nothing was edited or held")
+        XCTAssertEqual(pane.session.draft, "")
+        // The last message leaving while its detail is open: still says so.
+        pane.session.queueDetailID = "b"
+        try await waitFor("The second detail never showed its message") { pane.session.queueDetailShowing == "Another" }
+        pane.session.queue = []
+        try await waitFor("The detail of the last message never said it left") { pane.session.queueDetailShowing == QueuedMessageDetail.goneText }
+        XCTAssertTrue(NSApp.windows.contains { String(describing: Swift.type(of: $0)).contains("Popover") && $0.isVisible }, "the detail stays open")
+        pane.session.queueDetailID = nil
+        try await waitFor("The detail never closed") { !NSApp.windows.contains { String(describing: Swift.type(of: $0)).contains("Popover") && $0.isVisible } }
+        XCTAssertNil(pane.session.queueDetailShowing)
+    }
 }
