@@ -18,8 +18,8 @@ extension AgentSession {
         let capturedHead = journal?.head
         try await loadFullHistory()
         guard !closed, isIdle, journal?.head == capturedHead else { throw AgentError("edit_changed", "The conversation changed while preparing the edit. Select the message again.") }
-        try validate(input,steer:false)
         guard try input.savedValue.data().count < 8 * 1024 * 1024 else { throw AgentError("queue_limit", "Queued content exceeds 8 MiB") }
+        try validate(input,steer:false)
         try await resources.validate(input.skills, tools: await tools.capabilityIDs(readOnly: readOnly))
         guard isIdle, journal?.head == capturedHead else { throw AgentError("edit_changed", "The conversation changed while preparing the edit. Select the message again.") }
         try validate(input,steer:false)

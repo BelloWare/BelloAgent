@@ -117,10 +117,11 @@ extension AgentSession {
             if compactOnly { try await compactContext();if let activeSubmission { commandState(activeSubmission,"completed") } }
             else {
                 // Deliver the next eligible input before sizing the pending request.
+                var startedFollowUp=false
                 if steering.isEmpty, !retrying {
                     // A follow-up that cannot be answered stays queued, paused.
-                    if !queue.isEmpty { try enforceCostLimit() }
-                    _ = try await startFollowUp()
+                    if !queue.isEmpty, queueEdit == nil { try enforceCostLimit() }
+                    startedFollowUp=try await startFollowUp()
                 }
                 let retryFirstRequest=retrying
                 retrying=false
@@ -139,6 +140,10 @@ extension AgentSession {
                     try enforceCostLimit()
                     let drained=resumingFailedRequest ? false : try await drainSteering()
                     if drained { overflowRecoveryAttempted=false }
+                    // A run started for pending input that delivered none (a
+                    // queued edit took the hold first, or the message left)
+                    // settles without asking the model about the old context.
+                    if rounds == 1, !retryFirstRequest, !startedFollowUp, !drained { break }
                     let resourceSnapshot: ResourceSnapshot
                     if let appliedSnapshot { resourceSnapshot=appliedSnapshot }
                     else { resourceSnapshot=try await resources.resolve(); appliedSnapshot=resourceSnapshot }
@@ -247,7 +252,7 @@ extension AgentSession {
                     boundary=context; runStatus = .running; try persistState(active:true); event("turn_end")
                     // Pi 0.85.1: steering is consumed after a COMPLETE tool batch.
                     // Follow-ups are consulted only when the agent would stop.
-                    if !steering.isEmpty { continue }
+                    if !steering.isEmpty, queueEdit == nil { continue }
                     // Pi continues after any tool batch, also one it failed because the
                     // reply stopped at its output limit, so the model can re-issue the calls.
                     if !reply.calls.isEmpty { continue }
@@ -258,7 +263,7 @@ extension AgentSession {
                     // Compaction runs only before another pending model request.
                     try finishPresentedTask(outputLimited ? "output-limited" : "completed")
                     if let activeSubmission { commandState(activeSubmission,"completed") }; self.activeSubmission=nil
-                    if !queue.isEmpty { try enforceCostLimit() }
+                    if !queue.isEmpty, queueEdit == nil { try enforceCostLimit() }
                     if try await startFollowUp() { overflowRecoveryAttempted=false; continue }
                     break
                 }
@@ -292,7 +297,7 @@ extension AgentSession {
         // Recheck after the final await and hand off atomically, or those
         // accepted messages can sit idle forever. Failed/stopped work stays
         // paused and still requires an explicit Resume.
-        if !closed, !queuePaused, state == .idle, !queue.isEmpty || !steering.isEmpty { launch() }
+        if !closed, !queuePaused, queueEdit == nil, state == .idle, !queue.isEmpty || !steering.isEmpty { launch() }
         // A background load of older rows waits for the chat to be idle.
         adoptHistoryFillIfIdle()
         if keepRequested && ephemeral && isIdle { do { _ = try keepNow() } catch { errorMessage="Could not keep side; in-memory content is intact"; event("side.keep-failed") } }

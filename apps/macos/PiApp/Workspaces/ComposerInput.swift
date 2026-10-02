@@ -37,7 +37,11 @@ struct ComposerInput: View {
     private var queueEditing: Bool { session.queueEditingID != nil }
     /// A draft of any size is checked for its first non-whitespace character;
     /// trimming a long draft would copy it on every keystroke.
-    private var canSend: Bool { session.draftReady && !((!draft.text.contains { !$0.isWhitespace } && session.skills.isEmpty) || session.loading || model.installPreparing || (editing && model.editBlocker(session) != nil)) }
+    private var canSend: Bool {
+        // A queued rewrite may be empty when the message keeps images or skills.
+        let hasInput = draft.text.contains { !$0.isWhitespace } || !session.skills.isEmpty || !session.attachments.isEmpty || (queueEditing && session.queueEditKeepsInput)
+        return session.draftReady && !(!hasInput || session.loading || model.installPreparing || (editing && model.editBlocker(session) != nil) || session.queueEditResolving)
+    }
     private var queues: Bool { !editing && !queueEditing && (session.busy || !session.queue.isEmpty || !session.sendingRows.isEmpty) }
     @State private var sendPulse = false
     private func submit(intent: ComposerSubmissionIntent = .followUp) {
@@ -54,7 +58,7 @@ struct ComposerInput: View {
                 if session.editPreparing && !editing { Text("Loading the complete original input…").font(PiFont.caption).padding(8) }
                 if editing { EditingBanner(session: session, blocker: model.editBlocker(session)) { model.cancelEdit(sessionID: session.id) }.transition(AnyTransition.move(edge: .top).combined(with: .opacity)) }
                 if let queued = session.queueEditingID {
-                    QueueEditBanner(steering: QueuedMessage.from(session.queue).first { $0.id == queued }?.steering ?? false) { model.cancelQueuedEdit(sessionID: session.id) }
+                    QueueEditBanner(steering: QueuedMessage.from(session.queue).first { $0.id == queued }?.steering ?? false, resolving: session.queueEditResolving) { model.cancelQueuedEdit(sessionID: session.id) }
                         .transition(AnyTransition.move(edge: .top).combined(with: .opacity))
                 }
                 if !session.attachments.isEmpty { chips.padding(.horizontal, PiSpacing.md).padding(.top, PiSpacing.md).transition(.opacity) }
@@ -73,9 +77,11 @@ struct ComposerInput: View {
                     skillHovered: { chip, token, inside in
                         SkillPopovers.shared.hoverComposer(inside, chip: chip, anchor: token, session: session, reduceMotion: reduceMotion)
                     },
-                    describeSkill: { chip in .composer(chip, catalog: session.skillCatalog) })
+                    describeSkill: { chip in .composer(chip, catalog: session.skillCatalog) }, editable: !session.queueEditResolving)
                     // Its height is its own (`ComposerScrollView`), in step with the text.
-                    .id(session.id).disabled(!session.draftReady).fixedSize(horizontal: false, vertical: true)
+                    // While the helper answers a queued Save or Cancel, the
+                    // rewrite holds still: nothing typed then could be lost.
+                    .id(session.id).disabled(!session.draftReady || session.queueEditResolving).fixedSize(horizontal: false, vertical: true)
                     // The pane is kept across chats, so a switch hands this
                     // bar another chat's draft. That is not typing: saving it
                     // wrote the unchanged draft back on every click.

@@ -271,6 +271,8 @@ struct TerminalPanel: View {
         static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
     }
     static let minimumHeight: CGFloat = 120
+    /// The panel's title bar above the terminal itself.
+    static let chromeHeight: CGFloat = 32
     static let maximumHeight: CGFloat = 700
     static func clampHeight(_ value: CGFloat) -> CGFloat {
         guard value.isFinite else { return 240 }

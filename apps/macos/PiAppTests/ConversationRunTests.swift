@@ -341,11 +341,11 @@ extension ConversationPaneTests {
         live.session.draft = "unsent thought"
         let first = try XCTUnwrap(QueuedMessage.from(live.session.queue).first)
         live.model.editQueued(first.id, sessionID: live.chat.id)
-        XCTAssertEqual(live.session.queueEditingID, first.id)
+        await live.waitUntil("The edit never opened") { live.session.queueEditingID == first.id }
         XCTAssertEqual(live.session.draft, "Follow-up 0")
         live.session.draft = "Follow-up 0, rewritten"
         live.model.submitComposer(intent: .followUp, sessionID: live.chat.id)
-        XCTAssertNil(live.session.queueEditingID)
+        await live.waitUntil("The helper never confirmed the save") { live.session.queueEditingID == nil }
         XCTAssertEqual(live.session.draft, "unsent thought", "The set-aside draft comes back")
         await live.waitUntil("The helper never took the rewrite") {
             QueuedMessage.from(live.session.queue).map(\.text) == ["Follow-up 0, rewritten", "Follow-up 1"]

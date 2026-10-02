@@ -246,7 +246,10 @@ extension WorkspaceModel {
             if moveSideDraftHere(info, from: side) { return }
             guard let store else { throw StoreError.unavailable }
             let moving = Self.unsentDraft(of: side, to: info.parentID)
-            side.draft = ""; side.attachments = []; side.skills = []
+            // Each part goes back to its own place if the move fails.
+            let composerBefore = DraftRecord(id: side.id, text: side.draft, attachments: side.attachments, skills: side.skills)
+            let parkedBefore = side.queueEditingID != nil ? side.draftBeforeQueueEdit : nil
+            Self.consumeUnsentDraft(of: side)
             let (done, finish) = AsyncStream<Never>.makeStream(), token = UUID()
             sideDraftTransfers[info.id] = (token, Task { for await _ in done {} })
             defer { finish.finish(); if sideDraftTransfers[info.id]?.token == token { sideDraftTransfers.removeValue(forKey: info.id) } }
@@ -261,8 +264,12 @@ extension WorkspaceModel {
                 // too, unless what it loaded already holds all of it.
                 if let parent = displays[info.parentID], parent.selectionMetadataLoaded, !Self.parked(in: parent).holds(merged.displaced) { absorb(moving, into: parent) }
             } catch {
-                let back = moving.merging(Self.unsentDraft(of: side, to: info.parentID))
-                side.draft = back.text; side.attachments = back.attachments ?? []; side.skills = back.skills ?? []
+                // Back where each part was, with what was added meanwhile after it.
+                let composer = composerBefore.merging(DraftRecord(id: side.id, text: side.draft, attachments: side.attachments, skills: side.skills))
+                side.draft = composer.text; side.attachments = composer.attachments ?? []; side.skills = composer.skills ?? []
+                if let parkedBefore, side.queueEditingID != nil {
+                    side.draftBeforeQueueEdit = parkedBefore.merging(side.draftBeforeQueueEdit ?? DraftRecord(id: side.id, text: ""))
+                }
                 throw error
             }
         }
@@ -282,8 +289,14 @@ extension WorkspaceModel {
         guard !moving.isBlank else { return true }
         guard let parent = displays[info.parentID], parent.selectionMetadataLoaded || pendingChatIDs.contains(parent.id) else { return false }
         absorb(moving, into: parent)
-        side.draft = ""; side.attachments = []; side.skills = []
+        Self.consumeUnsentDraft(of: side)
         return true
+    }
+    /// Empties what `unsentDraft` took: the composer and, while a queued
+    /// message was being rewritten, the draft set aside for it.
+    static func consumeUnsentDraft(of side: SessionDisplay) {
+        side.draft = ""; side.attachments = []; side.skills = []
+        if side.queueEditingID != nil, let before = side.draftBeforeQueueEdit { side.draftBeforeQueueEdit = DraftRecord(id: before.id, text: "") }
     }
     /// `moving` added to the draft `parent` saves: the one a queued or an
     /// earlier message's edit displaced, while it is being edited, so ending
@@ -299,7 +312,17 @@ extension WorkspaceModel {
         draftChanged(parent)
     }
     static func unsentDraft(of side: SessionDisplay, to parentID: String) -> DraftRecord {
-        DraftRecord(id: parentID, text: side.draft.trimmingCharacters(in: .whitespacesAndNewlines), attachments: side.attachments, skills: side.skills)
+        let composer = DraftRecord(id: parentID, text: side.draft.trimmingCharacters(in: .whitespacesAndNewlines), attachments: side.attachments, skills: side.skills)
+        // Rewriting a queued message, the composer holds the rewrite and the
+        // side's own draft is set aside: both go, the rewrite after the
+        // draft unless it is the message unchanged.
+        guard side.queueEditingID != nil, let before = side.draftBeforeQueueEdit else { return composer }
+        var parked = DraftRecord(id: parentID, text: before.text.trimmingCharacters(in: .whitespacesAndNewlines), attachments: before.attachments, skills: before.skills)
+        let rewrite = composer.text
+        if !rewrite.isEmpty, rewrite != side.queueEditOriginal.trimmingCharacters(in: .whitespacesAndNewlines) {
+            parked = parked.merging(DraftRecord(id: parentID, text: rewrite))
+        }
+        return parked
     }
     /// Shows a saved child chat in the side pane of its parent, replacing the
     /// side shown there. The replaced side keeps its display and any running
@@ -347,7 +370,7 @@ extension WorkspaceModel {
                 guard current() else { return }
                 if !view.selectionMetadataLoaded {
                     if let draft = metadata?.draft, view.draft == oldDraft.text && view.attachments == (oldDraft.attachments ?? []) && view.skills == (oldDraft.skills ?? []),
-                       view.draft.isEmpty && view.attachments.isEmpty && view.skills.isEmpty && view.editingMessageID == nil && view.queueEditingID == nil { view.restoreDraft(draft) }
+                       view.draft.isEmpty && view.attachments.isEmpty && view.skills.isEmpty && view.editingMessageID == nil && view.queueEditingID == nil { view.restoreDraft(draft); if let queued = draft.queuedEdit { Task { await self.reconcileQueuedEdit(view, queued) } } }
                     if view.scrollAnchor == nil { view.scrollAnchor = metadata?.anchor }
                     view.selectionMetadataLoaded = true
                 }
@@ -579,7 +602,8 @@ extension WorkspaceModel {
                 draftSide.keepRequested = false; draftSide.boundary = [:]
                 let shown = SessionDisplay(id: draftSide.id)
                 shown.historyState = .empty; shown.selectionMetadataLoaded = true
-                shown.draft = view.draft; shown.attachments = view.attachments; shown.skills = view.skills
+                let unsent = Self.unsentDraft(of: view, to: info.parentID)
+                shown.draft = unsent.text; shown.attachments = unsent.attachments ?? []; shown.skills = unsent.skills ?? []
                 sides[info.parentID] = draftSide; displays[draftSide.id] = shown
             }
             guard let parent = displays[info.parentID] else { continue }

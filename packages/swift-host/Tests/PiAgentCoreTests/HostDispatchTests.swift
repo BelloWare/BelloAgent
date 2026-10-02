@@ -39,7 +39,7 @@ final class HostDispatchTests: XCTestCase {
         (4, ["turn.stop", "session.status", "session.edit.prepare", "session.snapshot", "context.info", "context.preview", "context.preview.read", "context.preview.clear",
              "session.history", "session.message.read", "session.tool.input", "session.content.search", "session.content.page", "session.event-page", "session.events",
              "session.versions", "session.version.page", "session.fork", "side.open", "side.keep", "side.close"]),
-        (5, ["turn.submit", "turn.steer", "turn.edit", "queue.remove", "queue.reorder", "queue.read", "queue.update", "queue.steer", "queue.resume", "turn.retry",
+        (5, ["turn.submit", "turn.steer", "turn.edit", "queue.remove", "queue.reorder", "queue.read", "queue.update", "queue.steer", "queue.resume", "turn.retry", "queue.edit.begin", "queue.edit.save", "queue.edit.cancel", "queue.edit.remove", "queue.edit.status",
              "queue.configure", "context.compact", "mcp.invoke", "session.configure", "session.close"]),
     ]
     /// Commands that refuse a quiesced workspace themselves, at an earlier stage.
@@ -118,7 +118,7 @@ final class HostDispatchTests: XCTestCase {
         XCTAssertEqual(readOnly, ["display.result.read", "clock.sync", "runtime.info", "resources.inspect", "resources.skill.read",
                                   "session.content.search", "session.content.page", "session.content.anything",
                                   "session.status", "session.snapshot", "session.history", "session.versions", "session.version.page", "session.message.read",
-                                  "session.edit.prepare", "session.tool.input", "queue.read", "session.events", "session.event-page", "context.info",
+                                  "session.edit.prepare", "session.tool.input", "queue.read", "queue.edit.status", "session.events", "session.event-page", "context.info",
                                   "context.preview", "context.preview.read", "context.preview.clear", "mcp.list", "mcp.describe", "debug.list", "debug.body",
                                   "debug.attempt", "debug.raw-events", "session.portable.preview", "session.import.inspect"])
     }
