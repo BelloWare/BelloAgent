@@ -695,26 +695,54 @@ actor PayloadArchive {
         nextReconciliation = deadline <= time ? time + 1 : deadline
         didReconcile()
     }
+    /// Rows one maintenance query reads at most, and the most one has read.
+    static let maintenanceBatch = 512
+    private(set) var largestMaintenanceBatch = 0
+    /// Unreferenced chunks go a batch at a time in key order: a batch's files
+    /// first, then its rows, so a pass that fails part-way leaves rows whose
+    /// files may be gone, and the next pass finishes them. No query reads more
+    /// than a batch, however large the archive.
     private func collectGarbage(scanOrphans: Bool = false) throws {
         let db = try ready()
-        for row in try db.rows("SELECT scope,id FROM chunks WHERE NOT EXISTS (SELECT 1 FROM refs WHERE refs.scope=chunks.scope AND refs.chunk=chunks.id)") {
-            guard let scope = row["scope"]?.string, let id = row["id"]?.string, scope.count == 64, id.count == 64, scope.allSatisfy(\.isHexDigit), id.allSatisfy(\.isHexDigit) else { throw CaptureFailure.corrupt }
-            let file = try root.appendingPathComponent("chunks/" + archiveText(row, "scope") + "/" + archiveText(row, "id"))
-            if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
+        defer { chunkTotals = nil }
+        let orphan = "NOT EXISTS (SELECT 1 FROM refs WHERE refs.scope=chunks.scope AND refs.chunk=chunks.id)"
+        var after: (scope: String, id: String) = ("", "")
+        while true {
+            let batch = try db.rows("SELECT scope,id FROM chunks WHERE (scope,id)>(?,?) AND \(orphan) ORDER BY scope,id LIMIT ?",
+                                    [.text(after.scope), .text(after.id), .integer(Int64(Self.maintenanceBatch))])
+            largestMaintenanceBatch = max(largestMaintenanceBatch, batch.count)
+            guard let last = batch.last else { break }
+            for row in batch {
+                guard let scope = row["scope"]?.string, let id = row["id"]?.string, Self.isChunkName(scope), Self.isChunkName(id) else { throw CaptureFailure.corrupt }
+                let file = root.appendingPathComponent("chunks/" + scope + "/" + id)
+                if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
+            }
+            let end = (scope: try archiveText(last, "scope"), id: try archiveText(last, "id"))
+            try db.execute("DELETE FROM chunks WHERE (scope,id)>(?,?) AND (scope,id)<=(?,?) AND \(orphan)",
+                           [.text(after.scope), .text(after.id), .text(end.scope), .text(end.id)])
+            after = end
+            if batch.count < Self.maintenanceBatch { break }
         }
-        try db.execute("DELETE FROM chunks WHERE NOT EXISTS (SELECT 1 FROM refs WHERE refs.scope=chunks.scope AND refs.chunk=chunks.id)")
-        chunkTotals = nil
         guard scanOrphans else { return }
-        let valid = Set(try db.rows("SELECT scope,id FROM chunks").map { try archiveText($0, "scope") + "/" + archiveText($0, "id") })
+        // A file is kept only at `chunks/<scope>/<id>` of a chunk the archive
+        // knows, looked up one by one rather than held as a set of them all.
         let folder = root.appendingPathComponent("chunks", isDirectory: true)
         if FileManager.default.fileExists(atPath: folder.path) { guard (try folder.resourceValues(forKeys: [.isSymbolicLinkKey])).isSymbolicLink != true else { throw CaptureFailure.corrupt } }
         guard let enumerator = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey]) else { return }
+        let base = folder.standardizedFileURL.pathComponents
         for case let file as URL in enumerator {
             let info = try file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
             if info.isSymbolicLink == true { throw CaptureFailure.corrupt }
-            if info.isRegularFile == true, !valid.contains(file.deletingLastPathComponent().lastPathComponent + "/" + file.lastPathComponent) { try FileManager.default.removeItem(at: file) }
+            guard info.isRegularFile == true else { continue }
+            let path = file.standardizedFileURL.pathComponents
+            var known = false
+            if path.count == base.count + 2, Array(path.prefix(base.count)) == base {
+                known = !(try db.rows("SELECT 1 AS present FROM chunks WHERE scope=? AND id=?", [.text(path[base.count]), .text(path[base.count + 1])]).isEmpty)
+            }
+            if !known { try FileManager.default.removeItem(at: file) }
         }
     }
+    private static func isChunkName(_ name: String) -> Bool { name.count == 64 && name.allSatisfy(\.isHexDigit) }
     func exportRetained(sessionID: String, attemptID: String, destination: URL) async throws -> URL {
         let metadata = try metadata(attempt: attemptID)
         guard metadata["sessionId"]?.string == sessionID, metadata["outcome"]?.string != "running", !leases.contains(attemptID) else { throw CaptureFailure.busy }
