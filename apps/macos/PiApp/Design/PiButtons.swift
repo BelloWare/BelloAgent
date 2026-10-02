@@ -145,6 +145,9 @@ struct PiIconButton: View {
     var tone: PiTone = .neutral
     var size: CGFloat = 28
     var filled = false
+    /// What VoiceOver says, when the tooltip alone would not say which
+    /// thing it acts on ("Remove" in every queue row); the label when nil.
+    var spokenLabel: String? = nil
     var action: () -> Void
     @Environment(\.isEnabled) private var enabled
     @State private var hovering = false
@@ -162,6 +165,6 @@ struct PiIconButton: View {
         .opacity(enabled ? 1 : 0.35)
         .onHover { hovering = $0 }
         .help(label)
-        .accessibilityLabel(label)
+        .accessibilityLabel(spokenLabel ?? label)
     }
 }

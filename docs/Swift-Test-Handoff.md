@@ -126,6 +126,28 @@ Check both configurations with `python3 scripts/test-lanes.py list` and
 `python3 scripts/test-lanes.py --configuration Release list` after changing
 the class boundaries.
 
+## Accessibility tree
+
+`PiControlAccessibilityTests` and `AppControlAccessibilityTests` read what
+VoiceOver is given, through the accessibility client API (`AXUIElement`)
+against the test host's own process (`AXClient`, `AXNode`).
+
+- SwiftUI builds its elements only while assistive access is on:
+  `HostedAccessibility.begin()` sets the application's
+  `AXEnhancedUserInterface` for one test and `end(restoring:)` puts back
+  what it was, so the class stays in the parallel lane.
+- Asked of its own process the client API answers in place, on the calling
+  thread. Ask it on the main thread: from a background thread it runs
+  SwiftUI off the main thread and the host crashes.
+- Prefer it to walking `accessibilityChildren()` in process: that walk lists
+  an AppKit button inside SwiftUI by its cell, without the name VoiceOver
+  hears, and does not reach a `List`'s rows.
+- A static text is read by its value (`AXNode.spoken`). A hidden SwiftUI
+  view can leave an empty `AXUnknown`, which VoiceOver skips.
+
+These tests prove the names, values, selected and enabled states VoiceOver is
+given; they do not replace a VoiceOver pass, which stays with the owner.
+
 ## Live end-to-end (opt-in)
 
 `scripts/live-compaction-e2e.py` runs the release helper against a real

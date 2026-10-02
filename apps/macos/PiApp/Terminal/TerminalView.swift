@@ -513,7 +513,10 @@ import SwiftUI
 
     override func isAccessibilityElement() -> Bool { true }
     override func accessibilityRole() -> NSAccessibility.Role? { .textArea }
-    override func accessibilityLabel() -> String? { "Terminal" }
+    /// Which terminal this is ("Terminal 2", or the reader's own name), so
+    /// VoiceOver can tell a project's terminals apart.
+    var accessibilityName = "Terminal" { didSet { NSAccessibility.post(element: self, notification: .titleChanged) } }
+    override func accessibilityLabel() -> String? { accessibilityName }
     override func accessibilityValue() -> Any? { emulator.screenText }
 }
 

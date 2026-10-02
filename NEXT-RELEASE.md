@@ -35,7 +35,7 @@
 - [x] **D7** "Remove All MCP Servers…" with an honest confirmation and result.
 
 ## After the workstreams merge
-- [ ] **A1** Contextual accessibility in shared Pi controls and the new queue, terminal, Git-scope and blame controls (AX-tree assertions).
+- [x] **A1** Contextual accessibility in shared Pi controls and the new queue, terminal, Git-scope and blame controls (AX-tree assertions).
 
 ## Refactors — not in this release
 Left to a separate agent (owner, 2026-10-02): composer @Observable pilot; AgentSession property groups; shutdown task ownership; narrower chat-change invalidation; shared journal-format module; remaining poll-counting waits.

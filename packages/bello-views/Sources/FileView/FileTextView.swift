@@ -1422,7 +1422,13 @@ public struct FileLineAnnotation: Equatable {
     weak var textView: FileTextView?
     /// Each line's annotation, by line (from 0); nil for none. Setting it
     /// shows the column; nil hides it.
-    public var annotations: ((Int) -> FileLineAnnotation?)? { didSet { textChanged() } }
+    public var annotations: ((Int) -> FileLineAnnotation?)? {
+        didSet {
+            textChanged()
+            // Says what the column holds once it holds more than numbers.
+            setAccessibilityLabel(annotations == nil ? "Line numbers" : "Line numbers and annotations")
+        }
+    }
     /// Told the line of an actionable annotation clicked.
     public var annotationClicked: ((Int) -> Void)?
     public static let annotationWidth: CGFloat = 176

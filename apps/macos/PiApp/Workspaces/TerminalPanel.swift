@@ -19,7 +19,7 @@ import AppKit
     /// gave the terminal is kept apart, in `customName`, and wins.
     @Published var shellTitle = ""
     /// The reader's own name for the terminal; nil for "Terminal N".
-    @Published fileprivate(set) var customName: String?
+    @Published fileprivate(set) var customName: String? { didSet { view.accessibilityName = displayName } }
     @Published var exited = false
     @Published var failure: String?
     let directory: String
@@ -29,6 +29,7 @@ import AppKit
         self.workspaceID = workspaceID; self.directory = directory
         self.id = id; self.number = number; self.customName = customName; self.generation = generation
         view = TerminalView(emulator: emulator)
+        view.accessibilityName = displayName
         emulator.onOutput = { [weak self] data in self?.process.write(data) }
         emulator.onTitleChange = { [weak self] title in self?.shellTitle = title }
         // `cat` on a binary file writes thousands of BEL bytes. Ringing once per
@@ -340,8 +341,8 @@ struct TerminalPanel: View {
                     // so the buttons after them always stay in reach.
                     ScrollView(.horizontal, showsIndicators: false) {
                         PiTabs(selection: Binding(get: { session?.id ?? UUID() }, set: { registry.select($0, in: workspace.id) }),
-                               items: sessions.map { ($0.id, $0.displayName) })
-                            .accessibilityLabel("Terminals in \((workspace.path as NSString).lastPathComponent)")
+                               items: sessions.map { ($0.id, $0.displayName) },
+                               accessibilityName: "Terminals in \((workspace.path as NSString).lastPathComponent)")
                             .background(GeometryReader { Color.clear.preference(key: TabsWidth.self, value: $0.size.width) })
                     }
                     .frame(width: min(max(tabsWidth, 1), tabsRoom))
@@ -375,13 +376,14 @@ struct TerminalPanel: View {
                     // The terminal as it is when clicked: a click that waited
                     // behind a restart doesn't act on the new shell.
                     let id = session.id, generation = session.generation
-                    PiIconButton(symbol: "pencil", label: "Rename terminal", size: 22) {
+                    let name = session.displayName
+                    PiIconButton(symbol: "pencil", label: "Rename terminal", size: 22, spokenLabel: "Rename " + name) {
                         Task { await registry.requestRename(id, generation: generation, in: workspace.id, over: window) }
                     }.help("Give this terminal a name of your own")
-                    PiIconButton(symbol: "arrow.clockwise", label: "Restart terminal", size: 22) {
+                    PiIconButton(symbol: "arrow.clockwise", label: "Restart terminal", size: 22, spokenLabel: "Restart " + name) {
                         Task { await registry.requestEnding(.restart, id, generation: generation, in: workspace, over: window) }
                     }.help("Starts a new shell in this terminal. Its scrollback is removed. Asks first while the shell is running.")
-                    PiIconButton(symbol: "trash", label: "Close terminal", size: 22) {
+                    PiIconButton(symbol: "trash", label: "Close terminal", size: 22, spokenLabel: "Close " + name) {
                         Task { await registry.requestEnding(.close, id, generation: generation, in: workspace, over: window) }
                     }.help("Ends this terminal's shell and removes its output. Asks first while the shell is running.")
                 }

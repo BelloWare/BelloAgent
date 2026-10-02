@@ -204,7 +204,8 @@ struct PiMenuControl<Face: View>: View {
     var body: some View {
         face(hovering && enabled)
             .opacity(enabled ? 1 : 0.35)
-            .accessibilityHidden(true)
+            // The press target over it is the control; the face is drawing.
+            .accessibilityElement(children: .ignore).accessibilityHidden(true)
             .overlay {
                 PiMenuTrigger(label: label, identifier: identifier, help: help.isEmpty ? label : help,
                               onHover: { inside in if hovering != inside { hovering = inside } }, entries: entries)

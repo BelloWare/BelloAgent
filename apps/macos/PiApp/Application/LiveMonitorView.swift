@@ -83,7 +83,7 @@ extension Color {
     }
     private var scope: some View {
         HStack(spacing: 12) {
-            PiDropdown(selection: $project, items: [(nil as String?, "All projects")] + projects.map { (Optional($0.id), $0.title) }, compact: true)
+            PiDropdown(selection: $project, items: [(nil as String?, "All projects")] + projects.map { (Optional($0.id), $0.title) }, compact: true, accessibilityName: "Project")
                 .accessibilityIdentifier("monitor-project")
             Spacer(minLength: 0)
             let generating = rows.filter { $0.phase == "model" || $0.phase == "compacting" }.count

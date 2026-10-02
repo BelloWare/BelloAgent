@@ -176,6 +176,8 @@ struct QueuePanel: View {
         let editing = session.queueEditingID == item.id
         // Held by an edit this composer does not own: one a restart left.
         let heldElsewhere = !editing && session.queueEditHold?.turnID == item.id
+        // Which message a row's buttons act on, for VoiceOver.
+        let spoken = item.steering ? "steering message" : "follow-up \(index ?? 0)"
         HStack(spacing: PiSpacing.sm) {
             if item.steering {
                 Image(systemName: "arrow.turn.up.right").font(.system(size: 10, weight: .semibold)).foregroundStyle(Color.piAccent).frame(width: 14)
@@ -186,7 +188,8 @@ struct QueuePanel: View {
             }
             Text(item.title).lineLimit(1).font(PiFont.body).foregroundStyle(editing ? Color.piInkTertiary : Color.piInk)
             Spacer()
-            PiIconButton(symbol: "info.circle", label: "Show the whole message and its model choices", size: 22) { detail = item.id }
+            PiIconButton(symbol: "info.circle", label: "Show the whole message and its model choices", size: 22,
+                         spokenLabel: "Show the whole " + spoken + " and its model choices") { detail = item.id }
                 .popover(isPresented: Binding(get: { detail == item.id }, set: { if !$0, detail == item.id { detail = nil } }), arrowEdge: .top) {
                     QueuedMessageDetail(model: model, session: session, turnID: item.id)
                 }
@@ -203,18 +206,19 @@ struct QueuePanel: View {
                     .accessibilityIdentifier("queue-cancel-edit-" + item.id)
             } else {
                 if !item.steering && session.busy && session.queueEditHold == nil {
-                    PiIconButton(symbol: "arrow.turn.up.right", label: "Steer the current run with this message", size: 22) {
+                    PiIconButton(symbol: "arrow.turn.up.right", label: "Steer the current run with this message", size: 22,
+                                 spokenLabel: "Steer the current run with " + spoken) {
                         model.action("queue.steer", params: ["turnId": .string(item.id)], sessionID: session.id)
                     }.help("Deliver after the current tool batch instead of after the run")
                 }
                 if session.queueEditPreparing == item.id {
                     PiSpinner(controlSize: .mini).frame(width: 22).help("Pausing the queue and reading the whole message")
                 } else {
-                    PiIconButton(symbol: "pencil", label: "Edit queued message", size: 22) { model.editQueued(item.id, sessionID: session.id) }
+                    PiIconButton(symbol: "pencil", label: "Edit queued message", size: 22, spokenLabel: "Edit " + spoken) { model.editQueued(item.id, sessionID: session.id) }
                         .disabled(session.queueEditHold != nil)
                 }
             }
-            PiIconButton(symbol: "xmark", label: "Remove", size: 22) {
+            PiIconButton(symbol: "xmark", label: "Remove", size: 22, spokenLabel: "Remove " + spoken) {
                 // The message being rewritten goes with its hold, in one step.
                 if editing { model.removeQueuedEdit(sessionID: session.id) }
                 else { model.action("queue.remove", params: ["turnId": .string(item.id)], sessionID: session.id) }
@@ -222,7 +226,9 @@ struct QueuePanel: View {
         }
         .frame(minHeight: 26)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel((item.steering ? "Steering message: " : "Follow-up \(index ?? 0): ") + item.title)
+        // The message's text is its own element in the row; the group only
+        // says which message it is.
+        .accessibilityLabel(item.steering ? "Steering message" : "Follow-up \(index ?? 0)")
         .accessibilityIdentifier("queue-item-" + item.id)
     }
 }
