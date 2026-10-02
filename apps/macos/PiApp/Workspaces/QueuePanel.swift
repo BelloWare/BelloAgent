@@ -94,6 +94,11 @@ struct QueuePanel: View {
     /// reading space, and the composer, Stop and Resume stay where they are.
     /// The rest of the queue scrolls.
     static let visibleRows: CGFloat = 3.5
+    /// The follow-ups' order after a drag of `source` to `destination`, as
+    /// the list showed them when the drag began.
+    static func reordered(_ ids: [String], moving source: IndexSet, to destination: Int) -> [String] {
+        var order = ids; order.move(fromOffsets: source, toOffset: destination); return order
+    }
     static func listHeight(rows: Int, sections: Int = 1, room: CGFloat = .infinity) -> CGFloat {
         let content = CGFloat(rows) * rowHeight + CGFloat(sections) * sectionHeaderHeight
         let cap = visibleRows * rowHeight + CGFloat(sections) * sectionHeaderHeight
@@ -147,9 +152,7 @@ struct QueuePanel: View {
                             row(item, index: index + 1).queueRowInsets()
                         }
                         .onMove(perform: session.queueEditHold != nil ? nil : { source, destination in
-                            var order = followUps.map(\.id)
-                            order.move(fromOffsets: source, toOffset: destination)
-                            model.action("queue.reorder", params: ["turnIds": .array(order.map(WireValue.string))], sessionID: session.id)
+                            model.reorderQueued(Self.reordered(followUps.map(\.id), moving: source, to: destination), sessionID: session.id)
                         })
                     }
                 }
@@ -330,6 +333,17 @@ struct QueueEditHold: Equatable {
 }
 
 extension WorkspaceModel {
+    /// Puts the follow-ups in `order`. A queue that changed during the drag
+    /// (a message removed or delivered) is refused by the helper; nothing
+    /// moves, and the chat says so.
+    func reorderQueued(_ order: [String], sessionID: String) {
+        guard let view = displays[sessionID] else { return }
+        Task {
+            do { _ = try await queueEditRequest("queue.reorder", sessionID: sessionID, params: ["turnIds": .array(order.map(WireValue.string))]) }
+            catch HostError.rejected("queue_order", _) { view.notice = "The queue changed while you were dragging, so nothing was moved. Drag again." }
+            catch { view.notice = "The queue was not reordered. " + error.localizedDescription }
+        }
+    }
     /// One `queue.edit.*` command to the chat's helper.
     func queueEditRequest(_ method: String, sessionID: String, params: [String: WireValue]) async throws -> [String: WireValue] {
         if let queueEditOperation { return try await queueEditOperation(method, sessionID, params) }
