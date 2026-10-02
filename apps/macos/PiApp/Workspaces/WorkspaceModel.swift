@@ -289,6 +289,8 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
         }
     }
     var hosts: [String: HostSupervisor] = [:]
+    /// A project's MCP servers are being removed: its question is up or the vault is being written.
+    @Published var mcpRemovalInProgress = false
     /// Owned by `WorkspaceHosts.swift` (and cancelled by `WorkspaceShutdown`):
     /// one in-flight helper start per project, so two chats opening at once
     /// share it instead of starting two helpers.

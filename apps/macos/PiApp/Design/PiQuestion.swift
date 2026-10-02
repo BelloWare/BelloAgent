@@ -134,9 +134,12 @@ struct ChatQuestion: Equatable, Sendable {
     }
 
     /// A two-button question. True when the reader chose to go ahead.
+    /// `cancelIsDefault` makes Return choose Cancel, for an action that
+    /// destroys something the reader can't get back.
     func confirm(_ title: String, _ detail: String, action: String = "Continue", cancel: String = "Cancel",
-                 destructive: Bool = false, over window: NSWindow? = nil) async -> Bool {
-        await ask(Self.alert(title: title, detail: detail, action: action, cancel: cancel, destructive: destructive),
+                 destructive: Bool = false, cancelIsDefault: Bool = false, over window: NSWindow? = nil) async -> Bool {
+        await ask(Self.alert(title: title, detail: detail, action: action, cancel: cancel, destructive: destructive,
+                             cancelIsDefault: cancelIsDefault),
                   over: window) == .alertFirstButtonReturn
     }
 
@@ -257,14 +260,29 @@ struct ChatQuestion: Equatable, Sendable {
     /// The shape every two-button question takes: the action first, Cancel
     /// second, and a destructive action marked as one.
     static func alert(title: String, detail: String, action: String, cancel: String,
-                      destructive: Bool, warn: Bool = true) -> NSAlert {
+                      destructive: Bool, warn: Bool = true, cancelIsDefault: Bool = false) -> NSAlert {
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = detail
         if destructive && warn { alert.alertStyle = .warning }
         let confirmButton = alert.addButton(withTitle: action)
         if destructive { confirmButton.hasDestructiveAction = true }
-        alert.addButton(withTitle: cancel)
+        let cancelButton = alert.addButton(withTitle: cancel)
+        if cancelIsDefault {
+            // Return and Escape press Cancel; the action needs a click. Cancel
+            // takes Return as the default button, which costs it Escape, so an
+            // invisible button beside it passes Escape on. It goes in after
+            // layout, so the question takes the room it always did.
+            confirmButton.keyEquivalent = ""
+            cancelButton.keyEquivalent = "\r"
+            let escape = NSButton(frame: .zero)
+            escape.keyEquivalent = "\u{1b}"
+            escape.target = cancelButton; escape.action = #selector(NSButton.performClick(_:))
+            escape.isBordered = false; escape.title = ""
+            escape.setAccessibilityElement(false)
+            alert.layout()
+            alert.window.contentView?.addSubview(escape)
+        }
         return alert
     }
 }

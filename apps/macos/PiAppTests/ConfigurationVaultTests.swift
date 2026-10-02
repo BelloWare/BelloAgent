@@ -5,12 +5,16 @@ final class MemoryVaultStorage: VaultStorage, @unchecked Sendable {
     private let lock = NSLock()
     private var bytes: Data?
     private var error: VaultError?
+    /// Fails every write from now on, leaving reads alone.
+    var writeError: VaultError? { get { lock.lock(); defer { lock.unlock() }; return failWrites } set { lock.lock(); failWrites = newValue; lock.unlock() } }
+    private var failWrites: VaultError?
     private(set) var writes = 0
     init(_ bytes: Data? = nil, error: VaultError? = nil) { self.bytes = bytes; self.error = error }
     func read() throws -> Data? { lock.lock(); defer { lock.unlock() }; if let error { throw error }; return bytes }
     func replace(expected: Data?, with replacement: Data) throws {
         lock.lock(); defer { lock.unlock() }
         if let error { throw error }
+        if let failWrites { throw failWrites }
         guard bytes == expected else { throw VaultError.conflict }
         bytes = replacement; writes += 1
     }

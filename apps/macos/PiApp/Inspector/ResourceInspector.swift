@@ -325,6 +325,8 @@ private struct NativeMCPInspector: View {
     @State private var configuration = "{\"servers\":{}}"
     @State private var editingConfiguration = false
     @State private var configurationRevision: Int64 = 0
+    /// The project whose configuration the editor holds, fixed when editing began.
+    @State private var configurationProject: String?
     @State private var busy = false
     @State private var unknown = false
 
@@ -333,7 +335,10 @@ private struct NativeMCPInspector: View {
             HStack(spacing: PiSpacing.sm) {
                 Button { editConfiguration() } label: { Label("Edit Vault Configuration…", systemImage: "key") }.disabled(busy)
                 Button { perform { try await refreshServers() } } label: { Label("Refresh Servers", systemImage: "arrow.clockwise") }.disabled(busy)
-                Button { disconnect() } label: { Label("Disconnect All", systemImage: "bolt.slash") }.buttonStyle(.piGhost).disabled(busy)
+                Button { removeAll() } label: { Label("Remove All MCP Servers…", systemImage: "trash") }
+                    .buttonStyle(.piGhost)
+                    .disabled(busy || model.mcpRemovalInProgress || model.selectedWorkspaceID.map { model.mcpServerCount($0) == 0 } ?? true)
+                    .accessibilityHint("Deletes this project's saved MCP server configuration after asking")
                 Spacer()
                 if busy { PiSpinner(controlSize: .small) }
             }
@@ -425,20 +430,29 @@ private struct NativeMCPInspector: View {
     private func editConfiguration() {
         guard let id = model.selectedWorkspaceID else { return }
         configuration = (model.configuration.mcp[id] ?? .object(["servers": .object([:])])).pretty
-        configurationRevision = model.configuration.revision; editingConfiguration = true
+        configurationRevision = model.configuration.revision; configurationProject = id; editingConfiguration = true
     }
     private func saveConfiguration() {
+        guard let project = configurationProject else { return }
+        let draft = configuration, revision = configurationRevision
         confirmThen("Trust these MCP servers?",
                     "Saving this configuration can authorize programs and authenticated endpoints with your account's permissions. Review the JSON first. Only explicit server credentials are sent to that server.",
                     action: "Save in Vault and Connect") {
-            try await model.saveMCPConfiguration(parse(configuration), expectedRevision: configurationRevision)
-            editingConfiguration = false; configuration = "{\"servers\":{}}"; try await refreshServers()
+            try await model.saveMCPConfiguration(parse(draft), expectedRevision: revision, workspaceID: project)
+            editingConfiguration = false; configuration = "{\"servers\":{}}"; configurationProject = nil
+            if model.selectedWorkspaceID == project { try await refreshServers() }
         }
     }
-    private func disconnect() {
-        perform {
-            try await model.saveMCPConfiguration(.object(["servers": .object([:])]), expectedRevision: model.configuration.revision)
-            try await refreshServers(); tools = []; result = ""
+    /// Asks, then removes the selected project's saved servers. The list is
+    /// cleared here rather than refreshed: refreshing would start a helper.
+    private func removeAll() {
+        guard !busy, let project = model.selectedWorkspaceID else { return }
+        busy = true
+        Task {
+            defer { busy = false }
+            guard let outcome = await model.confirmAndRemoveAllMCPServers() else { return }
+            notice = outcome
+            if model.selectedWorkspaceID == project, model.mcpServerCount(project) == 0 { servers = []; server = ""; tools = []; result = "" }
         }
     }
     private func invoke() {
