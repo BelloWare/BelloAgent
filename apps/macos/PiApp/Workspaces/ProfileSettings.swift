@@ -37,7 +37,7 @@ struct ProfileSettings: View {
     private var confirmingTest: Bool { controller.confirmingTest }
 
     var body: some View {
-        PiSheet("Settings", subtitle: "Your connections, keys, headers, MCP servers and preferences. Everything here is kept in your macOS Keychain and only this signed app can read it.", symbol: "gearshape", windowChrome: windowChrome, cancelDisabled: controller.busy,
+        PiSheet("Settings", subtitle: "Your connections, keys, headers, MCP servers and preferences. Everything here is kept in your macOS Keychain and only this signed app can read it.", symbol: "gearshape", windowChrome: windowChrome, cancelDisabled: controller.saving,
                 onCancel: { Task { if await controller.requestClose() { dismiss() } } }) {
             HStack(spacing: 0) {
                 SettingsSectionList(selection: $model.settingsSection, edited: controller.editedSections)
@@ -67,7 +67,7 @@ struct ProfileSettings: View {
         } actions: {
             // Cancel is the explicit way out without saving: every unsaved edit
             // goes, and Settings opens next time on what the vault holds.
-            Button("Cancel") { controller.discardAll(); dismiss() }.disabled(controller.busy)
+            Button("Cancel") { controller.discardAll(); dismiss() }.disabled(controller.saving)
                 .help("Close Settings and discard every unsaved change")
                 .accessibilityIdentifier("settings-cancel")
         } footer: {

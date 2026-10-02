@@ -8,10 +8,10 @@ import XCTest
 @MainActor final class SettingsCloseNativeTests: XCTestCase, SerialTestLane {
     private var asked: [NSAlert] = []
 
-    private func model() async throws -> WorkspaceModel {
+    private func model(storage: MemoryVaultStorage = MemoryVaultStorage()) async throws -> WorkspaceModel {
         let root = scratchRoot("settings-close")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let vault = ConfigurationVault(storage: MemoryVaultStorage())
+        let vault = ConfigurationVault(storage: storage)
         var profile = ProfileRecord(); profile.name = "Team"; profile.baseUrl = "http://127.0.0.1:1"; profile.modelId = "team-model"
         profile.contextWindow = 16000; profile.maxOutputTokens = 2048
         let connection = VaultProfile(profile: profile, apiKey: "sk-saved")
@@ -133,6 +133,42 @@ import XCTest
         model.showProfiles = true
         try await eventually("Settings opened again") { window.attachedSheet != nil }
         XCTAssertEqual(model.settingsSheetEditor().draft.profile.name, "Team")
+    }
+
+    /// A reload in progress holds a read, not a write: Escape still closes
+    /// the sheet (0.1.119's gate: a slow load swallowed Escape).
+    func testEscapeWhileSettingsReloadsClosesTheSheet() async throws {
+        let storage = MemoryVaultStorage()
+        let model = try await model(storage: storage)
+        let (window, sheet, editor) = try await sheet(model)
+        let gate = DispatchSemaphore(value: 0); storage.readGate = gate
+        addTeardownBlock { gate.signal() }
+        answer(.alertThirdButtonReturn)
+        Task { await editor.requestReload() }
+        try await eventually("the reload is under way") { editor.busy }
+        try escape(sheet)
+        try await eventually("the sheet closed") { window.attachedSheet == nil && !model.showProfiles }
+        XCTAssertTrue(asked.isEmpty)
+        gate.signal()
+        try await eventually("the reload finished") { !editor.busy }
+    }
+
+    /// The same for the Settings window's close button.
+    func testTheCloseButtonWhileSettingsReloadsClosesTheWindow() async throws {
+        let storage = MemoryVaultStorage()
+        let (window, recorder, controller) = try await settingsWindow(try await model(storage: storage))
+        let gate = DispatchSemaphore(value: 0); storage.readGate = gate
+        addTeardownBlock { gate.signal() }
+        answer(.alertThirdButtonReturn)
+        Task { await controller.requestReload() }
+        try await eventually("the reload is under way") { controller.busy }
+        window.performClose(nil)
+        XCTAssertFalse(window.isVisible); XCTAssertTrue(asked.isEmpty); XCTAssertEqual(recorder.closed, 1)
+        // Nor does a reload hold up quitting.
+        let mayQuit = await controller.resolveForQuit()
+        XCTAssertTrue(mayQuit); XCTAssertTrue(asked.isEmpty)
+        gate.signal()
+        try await eventually("the reload finished") { !controller.busy }
     }
 
     func testEscapeOnACleanSheetClosesWithoutAsking() async throws {

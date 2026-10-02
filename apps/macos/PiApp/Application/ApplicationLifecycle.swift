@@ -24,7 +24,7 @@ final class ApplicationLifecycle: NSObject, NSApplicationDelegate {
         // unsaved edits are saved or discarded on purpose, never dropped by
         // the windows closing.
         let editors = model.settingsEditors.allObjects
-        if editors.contains(where: \.busy) {
+        if editors.contains(where: \.saving) {
             model.error = "Settings are still being saved. Quit again once the save finishes."
             return .terminateCancel
         }
@@ -70,7 +70,7 @@ final class ApplicationLifecycle: NSObject, NSApplicationDelegate {
     private func beginShutdown(_ sender: NSApplication, model: WorkspaceModel) {
         // Settings edited while the stop-and-quit question was up are asked
         // about first, as at the start of any quit.
-        if model.settingsEditors.allObjects.contains(where: { $0.busy || $0.isDirty }) {
+        if model.settingsEditors.allObjects.contains(where: { $0.saving || $0.isDirty }) {
             answer(sender, false)
             DispatchQueue.main.async { [weak self] in self?.retryTermination() }
             return

@@ -61,7 +61,7 @@ struct SettingsWindowContent: View {
         func windowShouldClose(_ sender: NSWindow) -> Bool {
             if approved === sender { approved = nil; return previous?.windowShouldClose?(sender) ?? true }
             // Clean and idle: close as before, without a turn of the run loop.
-            if !controller.busy, !controller.deciding, !controller.isDirty { return previous?.windowShouldClose?(sender) ?? true }
+            if !controller.saving, !controller.deciding, !controller.isDirty { return previous?.windowShouldClose?(sender) ?? true }
             // AppKit is inside its close decision: refuse now, ask on a sheet,
             // and close again once the reader has chosen.
             Task { @MainActor [weak self, weak sender] in

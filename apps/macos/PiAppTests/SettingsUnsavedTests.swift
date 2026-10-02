@@ -123,12 +123,12 @@ import XCTest
     func testASaveUnderWayKeepsSettingsOpenWithoutAsking() async throws {
         let (_, _, controller) = try await fixture()
         controller.draft.profile.name = "Renamed"
-        controller.busy = true
+        controller.busy = true; controller.saving = true
         answer(discard)
         let closed = await controller.requestClose()
         XCTAssertFalse(closed); XCTAssertTrue(asked.isEmpty)
         XCTAssertEqual(controller.message, "Wait for the save to finish.")
-        controller.busy = false
+        controller.busy = false; controller.saving = false
     }
 
     /// A second Escape or close while the question is up asks nothing more.
@@ -334,12 +334,12 @@ import XCTest
     /// Clean but still saving: the quit is refused, not run under the write.
     func testQuitDuringASaveIsRefused() async throws {
         let (model, _, controller) = try await fixture()
-        controller.busy = true
+        controller.busy = true; controller.saving = true
         let (lifecycle, _, retries) = lifecycle(model)
         answer(discard)
         XCTAssertEqual(lifecycle.applicationShouldTerminate(NSApplication.shared), .terminateCancel)
         XCTAssertTrue(asked.isEmpty); XCTAssertEqual(retries(), 0)
         XCTAssertNotNil(model.error)
-        controller.busy = false
+        controller.busy = false; controller.saving = false
     }
 }

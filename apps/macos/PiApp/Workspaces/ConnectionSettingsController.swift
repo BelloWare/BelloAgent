@@ -59,6 +59,9 @@ import SwiftUI
     @Published var message = ""
     @Published var messageTone: PiTone = .neutral
     @Published var busy = false
+    /// A write to the vault under way (a save or a delete). Loading is busy
+    /// but not saving: there is nothing to wait for before closing.
+    @Published var saving = false
     @Published var confirmingDelete = false
     /// The Test Connection button asked once; the footer explains the request until Send or Cancel.
     @Published var confirmingTest = false
@@ -243,7 +246,7 @@ import SwiftUI
         guard !busy else { return .failed }
         // Quitting or updating: the last decision about Settings was made.
         guard !model.installPreparing else { message = Self.closingNotice; messageTone = .danger; return .failed }
-        busy = true; defer { busy = false }
+        busy = true; saving = true; defer { busy = false; saving = false }
         stash()
         let currentID = draft.profile.id
         let queue = drafts.values.filter { $0.edited && $0.profile.id != currentID }.sorted { $0.profile.id < $1.profile.id } + [draft]
@@ -326,13 +329,13 @@ import SwiftUI
     /// Whether Settings may close now. Clean closes; unsaved edits ask first;
     /// a save under way keeps it open until it finishes.
     func requestClose() async -> Bool {
-        guard !busy else { message = "Wait for the save to finish."; messageTone = .danger; return false }
+        guard !saving else { message = "Wait for the save to finish."; messageTone = .danger; return false }
         guard !deciding else { return false }
         guard isDirty else { return true }
         deciding = true; defer { deciding = false }
         let choice = await askAboutUnsavedChanges(quitting: false)
         // Something else may have started while the question was up.
-        guard !busy else { return false }
+        guard !saving else { return false }
         switch choice {
         case .save: return await saveAll() == .saved
         case .discard: discardAll(); return true
@@ -342,11 +345,11 @@ import SwiftUI
     /// Whether the app may go on quitting. Unsaved edits ask first; a save
     /// that didn't finish keeps the app open with the reason showing.
     func resolveForQuit() async -> Bool {
-        guard !busy, !deciding else { return false }
+        guard !saving, !deciding else { return false }
         guard isDirty else { return true }
         deciding = true; defer { deciding = false }
         let choice = await askAboutUnsavedChanges(quitting: true)
-        guard !busy else { return false }
+        guard !saving else { return false }
         switch choice {
         case .save: return await saveAll() != .failed
         case .discard: discardAll(); return true
@@ -403,7 +406,7 @@ import SwiftUI
         guard !model.installPreparing else { message = Self.closingNotice; messageTone = .danger; return }
         let id = draft.profile.id, name = draft.name
         confirmingDelete = false
-        busy = true; defer { busy = false }
+        busy = true; saving = true; defer { busy = false; saving = false }
         do {
             try await model.deleteProfile(id)
             drafts[id] = nil
