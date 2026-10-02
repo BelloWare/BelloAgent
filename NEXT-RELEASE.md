@@ -42,7 +42,10 @@ Source: `docs/reviews/BelloAgent-0.1.117-deep-review.md`.
 - [x] **Helper loose ends**: cancel a chat's older-rows load on close/unload; guard unload while a command awaits the load; resume retries instead of replaying from the start.
 - [x] **The unexplained HostDispatchTests trap**: Thread Sanitizer run of fill/older-rows/dispatch tests; a backtrace diagnostic in the gate.
 
-## Workstream 5 — refactors, no visible change (after 1–4 merge)
+## Workstream 5 — refactors: NOT in 0.1.118
+The owner moved these out of 0.1.118 (2026-10-02); another agent takes them
+up separately after this release. Don't start them on this branch.
+
 - [ ] Composer state in its own @Observable owner (pilot).
 - [ ] AgentSession's ~104 properties in groups, receipts first.
 - [ ] Closed chats released at shutdown (task ownership), not ~2 minutes later.
@@ -55,4 +58,6 @@ Source: `docs/reviews/BelloAgent-0.1.117-deep-review.md`.
 - [ ] Hour-long soak of a Release build passes, no exceptions.
 - [ ] Every review finding's acceptance test from the review exists and passes.
 - [ ] Owner checks: a minute with VoiceOver in the file viewer; one compaction against a real gateway.
-- [ ] Release notes, including the new switch confirmation.
+- [ ] Release notes, including the new switch confirmation, usage figures
+      appearing at once on a chat switch, and that a chat moved to another
+      connection can't be opened by builds before 0.1.118.
