@@ -192,7 +192,7 @@ public actor GitService {
             let writer = stdin.fileHandleForWriting
             DispatchQueue.global(qos: .userInitiated).async { try? writer.write(contentsOf: input); try? writer.close() }
         }
-        let outputLimit = arguments.contains("diff") || arguments.contains("show") ? patchOutputLimit : ordinaryOutputLimit
+        let outputLimit = arguments.contains("diff") || arguments.contains("show") || arguments.contains("blame") ? patchOutputLimit : ordinaryOutputLimit
         let fds = [out.fileDescriptor, err.fileDescriptor]
         for fd in fds { _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK) }
         var streams = [Data(), Data()], eof = [false, false]
@@ -335,7 +335,7 @@ public actor GitService {
     }
 
     /// The repository's top level, or nil when the folder is not inside one.
-    func repositoryRoot(of folder: String) async -> String? {
+    public func repositoryRoot(of folder: String) async -> String? {
         guard let output = try? await run(["rev-parse", "--show-toplevel"], in: folder), output.status == 0 else { return nil }
         let top = output.text.trimmingCharacters(in: .whitespacesAndNewlines)
         return top.isEmpty ? nil : top
@@ -433,8 +433,8 @@ public actor GitService {
     /// The message, the changed paths and their line counts. Both reads are
     /// cheap and run together: neither asks git to produce any patch text.
     func commitDetail(in root: String, commit: GitCommit) async throws -> GitCommitDetail {
-        async let named = run(["show", "--format=%B", "--name-status", "-z", "--find-renames", "-m", "--first-parent", commit.hash], in: root)
-        async let counted = run(["show", "--format=", "--numstat", "-z", "--find-renames", "-m", "--first-parent", commit.hash], in: root)
+        async let named = run(["-c", "log.showRoot=true", "show", "--format=%B", "--name-status", "-z", "--find-renames", "-m", "--first-parent", commit.hash], in: root)
+        async let counted = run(["-c", "log.showRoot=true", "show", "--format=", "--numstat", "-z", "--find-renames", "-m", "--first-parent", commit.hash], in: root)
         let names = try require(await named, "Reading the commit")
         let numbers = try? require(await counted, "Reading the commit stats")
         let (message, files) = Self.parseMessageAndNameStatus(names.stdout)
@@ -477,9 +477,14 @@ public actor GitService {
     }
 
     /// The patch of one commit, or of one path inside it, already parsed.
-    func commitDiffFiles(in root: String, commit: GitCommit, path: String? = nil) async throws -> [GitDiffFile] {
-        var arguments = ["show", "--format=", "--no-ext-diff", "-U3", "--find-renames", "-m", "--first-parent", commit.hash]
-        if let path { arguments += ["--"] + Self.literal([path]) }
+    /// A commit's patch, against its first parent (the empty tree for the
+    /// first commit, whatever log.showRoot says), all of it or one file's. A
+    /// file the commit renamed is read under both its names (`renamedFrom`):
+    /// under the new one alone, git has nothing to match it with and shows the
+    /// whole file as added.
+    func commitDiffFiles(in root: String, commit: GitCommit, path: String? = nil, renamedFrom: String? = nil) async throws -> [GitDiffFile] {
+        var arguments = ["-c", "log.showRoot=true", "show", "--format=", "--no-ext-diff", "--no-textconv", "-U3", "--find-renames", "-m", "--first-parent", commit.hash]
+        if let path { arguments += ["--"] + Self.literal([renamedFrom, path].compactMap { $0 }) }
         return try await detached(arguments, in: root, timeout: 20) { output in
             guard output.status == 0 else {
                 let detail = output.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -797,6 +802,66 @@ public actor GitService {
         _ = try? await run(["hook", "run", "--ignore-missing", "post-commit"], in: root, timeout: 120, environment: ["GIT_EDITOR": ":"])
         try? await runPostRewrite(in: root, old: head, new: created)
         return String(created.prefix(7))
+    }
+
+    /// The most lines, and bytes, a file may have to be blamed whole.
+    public static let blameLineLimit = 100_000
+    public static let blameByteLimit = 16 << 20
+
+    /// Who last changed each line of a file, as it is in `contents` — the
+    /// bytes a viewer shows, given to git rather than read again from disk,
+    /// so the lines blamed are exactly the lines shown. `path` is the file's
+    /// path from the repository's top. Lines not committed carry no commit;
+    /// a commit whose earlier history is not in this clone (a shallow edge)
+    /// is marked so. Untracked files, files too long, and output not read
+    /// whole are said, never attributed in part.
+    public func blame(path: String, contents: Data, in root: String) async throws -> GitBlame {
+        guard contents.count <= Self.blameByteLimit else {
+            throw GitFailure(message: "Too large to annotate: blame covers files of up to \(Self.blameByteLimit >> 20) MB.")
+        }
+        guard let lines = GitBlameText.lineCount(of: contents) else {
+            throw GitFailure(message: "Its line endings are ones Git counts differently, so its lines can't be matched to Git's.")
+        }
+        guard lines <= Self.blameLineLimit else {
+            throw GitFailure(message: "Too long to annotate: blame covers files of up to \(Self.blameLineLimit.formatted()) lines.")
+        }
+        // blame takes one file, not a pathspec: after "--" its name is read
+        // as written, patterns and magic included. --root: a first commit is
+        // a commit like any other, not a boundary.
+        let arguments = ["blame", "--porcelain", "--root", "--no-textconv", "--contents", "-", "--", path]
+        var blame = try await detached(arguments, in: root, timeout: 60, input: contents) { output in
+            guard output.status == 0 else {
+                let detail = output.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+                if detail.contains("no such path") || detail.contains("not in HEAD") || detail.contains("does not have a commit") {
+                    throw GitFailure(message: "Not committed yet: this file has no history to annotate.")
+                }
+                throw GitFailure(message: detail.isEmpty ? "Reading who changed each line failed." : detail)
+            }
+            // A filter that turns the file into other lines (a clean filter,
+            // an encoding) leaves Git's lines unmatched to the ones shown.
+            let parsed: (blame: GitBlame, text: [Data])
+            do { parsed = try GitBlameParser.parseWithText(output.stdout, expectedLines: lines) }
+            catch { throw GitFailure(message: "Git's blame could not be matched line for line to the file shown, so nothing is shown.") }
+            guard GitBlameText.matches(contents, parsed.text) else {
+                throw GitFailure(message: "Git turns this file into other lines (a filter or an encoding), so its blame can't be matched to the lines shown.")
+            }
+            return parsed.blame
+        }
+        // A shallow clone's edge: its commits have parents git does not have.
+        let shallowFile = try? require(await run(["rev-parse", "--path-format=absolute", "--git-path", "shallow"], in: root), "Reading the repository").text
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let shallowFile, let edge = try? String(contentsOfFile: shallowFile, encoding: .utf8) {
+            blame = blame.marking(historyMissing: Set(edge.split(whereSeparator: \.isNewline).map(String.init)))
+        }
+        return blame
+    }
+
+    /// One commit by its full id, for a commit not in the history read.
+    func commit(_ hash: String, in root: String) async throws -> GitCommit? {
+        guard hash.count == 40, hash.allSatisfy(\.isHexDigit) else { return nil }
+        let output = try await run(["log", "--format=%H%x00%h%x00%an%x00%aI%x00%s%x00%P%x00%D%x1e", "-n", "1", hash, "--"], in: root)
+        guard output.status == 0 else { return nil }
+        return Self.parseLog(output.text).first
     }
 
     /// The branch HEAD is on (its full ref name), or nil when detached.

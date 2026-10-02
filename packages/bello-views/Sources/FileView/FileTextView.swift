@@ -744,7 +744,11 @@ public struct FileTextStyle {
         ruler?.needsDisplay = true
         announce(.selectedTextChanged)
         find?.selectionChanged()
+        selectionDidChange?()
     }
+    /// Told when the selection moves, by the keys, the pointer or a reveal:
+    /// for what a host shows of the selected line.
+    public var selectionDidChange: (() -> Void)?
     private func clamp(_ position: FileTextPosition) -> FileTextPosition {
         let line = max(0, min(position.line, source.lineCount - 1))
         return FileTextPosition(line: line, column: max(0, min(position.column, source.utf16Length(ofLine: line))))
@@ -1399,11 +1403,31 @@ extension FileTextView: NSMenuItemValidation {
     }
 }
 
+/// What a host puts beside a line's number (its blame): a short text, and
+/// the detail its tooltip shows. `actionable` lines can be clicked.
+public struct FileLineAnnotation: Equatable {
+    public var text: String
+    public var detail: String
+    public var actionable: Bool
+    public init(text: String, detail: String, actionable: Bool) { self.text = text; self.detail = detail; self.actionable = actionable }
+}
+
 /// The line numbers beside the text, in the scroll view's vertical ruler, so
 /// they stay put when the text scrolls sideways and move with it up and down.
-/// A click on a number selects that line; a drag, the lines it crosses.
-@MainActor public final class FileLineNumberRuler: NSRulerView {
+/// A click on a number selects that line; a drag, the lines it crosses. A
+/// host may put an annotation column before the numbers (`annotations`):
+/// drawn for the lines on screen only, and a click there is the host's, never
+/// a selection.
+@MainActor public final class FileLineNumberRuler: NSRulerView, NSViewToolTipOwner {
     weak var textView: FileTextView?
+    /// Each line's annotation, by line (from 0); nil for none. Setting it
+    /// shows the column; nil hides it.
+    public var annotations: ((Int) -> FileLineAnnotation?)? { didSet { textChanged() } }
+    /// Told the line of an actionable annotation clicked.
+    public var annotationClicked: ((Int) -> Void)?
+    public static let annotationWidth: CGFloat = 176
+    private var annotationColumn: CGFloat { annotations == nil ? 0 : Self.annotationWidth }
+    private var tipTag: NSView.ToolTipTag?
 
     init(textView: FileTextView, scrollView: NSScrollView) {
         self.textView = textView
@@ -1423,9 +1447,22 @@ extension FileTextView: NSMenuItemValidation {
     /// Wide enough for the last line's number, and room either side.
     func textChanged() {
         let digits = CGFloat(String(textView?.source.lineCount ?? 1).count)
-        let thickness = (max(2, digits) * (textView?.metrics.digitWidth ?? 7) + 12 + 8).rounded(.up)
+        let thickness = (max(2, digits) * (textView?.metrics.digitWidth ?? 7) + 12 + 8 + annotationColumn).rounded(.up)
         if ruleThickness != thickness { ruleThickness = thickness }
+        updateTip()
         needsDisplay = true
+    }
+    public override func setFrameSize(_ newSize: NSSize) { super.setFrameSize(newSize); updateTip() }
+    /// One tooltip area over the annotation column, its text asked for where
+    /// the pointer rests.
+    private func updateTip() {
+        if let tipTag { removeToolTip(tipTag); self.tipTag = nil }
+        guard annotations != nil else { return }
+        tipTag = addToolTip(NSRect(x: 0, y: 0, width: annotationColumn, height: bounds.height), owner: self, userData: nil)
+    }
+    public func view(_ view: NSView, stringForToolTip tag: NSView.ToolTipTag, point: NSPoint, userData data: UnsafeMutableRawPointer?) -> String {
+        guard let textView, let annotations else { return "" }
+        return annotations(textView.line(at: textView.convert(point, from: self).y))?.detail ?? ""
     }
     public override var requiredThickness: CGFloat { ruleThickness }
 
@@ -1457,11 +1494,39 @@ extension FileTextView: NSMenuItemValidation {
             context.textPosition = .zero
             CTLineDraw(line, context)
             context.restoreGState()
+            if let annotation = annotations?(index) { drawAnnotation(annotation, at: y, emphasized: emphasized, in: context, textView: textView) }
         }
+    }
+    /// An annotation, cut to its column with an ellipsis.
+    private func drawAnnotation(_ annotation: FileLineAnnotation, at y: CGFloat, emphasized: Bool, in context: CGContext, textView: FileTextView) {
+        let attributed = NSAttributedString(string: annotation.text, attributes: [
+            .font: textView.metrics.numbersFont,
+            NSAttributedString.Key(kCTForegroundColorFromContextAttributeName as String): true,
+        ])
+        let full = CTLineCreateWithAttributedString(attributed)
+        let room = Double(annotationColumn - 16)
+        let ellipsis = CTLineCreateWithAttributedString(NSAttributedString(string: "…", attributes: [
+            .font: textView.metrics.numbersFont, NSAttributedString.Key(kCTForegroundColorFromContextAttributeName as String): true]))
+        let line = CTLineCreateTruncatedLine(full, room, .end, ellipsis) ?? full
+        context.saveGState()
+        context.setFillColor((emphasized ? textView.style.strongLineNumber : textView.style.lineNumber).cgColor)
+        context.translateBy(x: 8, y: y + textView.metrics.baseline)
+        context.scaleBy(x: 1, y: -1)
+        context.textPosition = .zero
+        CTLineDraw(line, context)
+        context.restoreGState()
     }
 
     public override func mouseDown(with event: NSEvent) {
         guard let textView, let window else { return }
+        // The annotation column is the host's: a click there opens what the
+        // annotation names, and selects nothing.
+        let point = convert(event.locationInWindow, from: nil)
+        if let annotations, point.x < annotationColumn {
+            let line = textView.line(at: textView.convert(event.locationInWindow, from: nil).y)
+            if annotations(line)?.actionable == true { annotationClicked?(line) }
+            return
+        }
         window.makeFirstResponder(textView)
         func line(_ event: NSEvent) -> Int { textView.line(at: textView.convert(event.locationInWindow, from: nil).y) }
         let first = line(event)

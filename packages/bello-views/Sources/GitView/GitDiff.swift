@@ -81,8 +81,8 @@ public enum GitDiffParser {
                 if line.hasPrefix("--- ") { oldPath = strip(String(line.dropFirst(4))); continue }
                 if line.hasPrefix("+++ ") { newPath = strip(String(line.dropFirst(4))); continue }
                 if line.hasPrefix("Binary files") || line.hasPrefix("GIT binary patch") { binary = true; notes.append("Binary file changed."); continue }
-                if line.hasPrefix("rename from ") { oldPath = String(line.dropFirst("rename from ".count)); continue }
-                if line.hasPrefix("rename to ") { newPath = String(line.dropFirst("rename to ".count)); continue }
+                if line.hasPrefix("rename from ") { oldPath = GitQuoting.unquoted(String(line.dropFirst("rename from ".count))); continue }
+                if line.hasPrefix("rename to ") { newPath = GitQuoting.unquoted(String(line.dropFirst("rename to ".count))); continue }
                 if line.hasPrefix("new file mode") { notes.append("New file."); continue }
                 if line.hasPrefix("deleted file mode") { notes.append("File deleted."); continue }
                 if line.hasPrefix("old mode") || line.hasPrefix("new mode") { notes.append(line); continue }
@@ -115,13 +115,22 @@ public enum GitDiffParser {
     }
 
     private static func strip(_ path: String) -> String {
-        let trimmed = path.split(separator: "\t").first.map(String.init) ?? path
+        // A quoted name keeps its tabs; an unquoted one may be followed by a
+        // tab and a timestamp.
+        let trimmed = path.first == "\"" ? (GitQuoting.leading(path[...])?.name ?? path) : (path.split(separator: "\t").first.map(String.init) ?? path)
         if trimmed == "/dev/null" { return trimmed }
         if trimmed.hasPrefix("a/") || trimmed.hasPrefix("b/") { return String(trimmed.dropFirst(2)) }
         return trimmed
     }
     /// "a/x b/y" with paths that may contain spaces: split at " b/" after "a/".
     private static func splitPaths(_ spec: String) -> (String, String)? {
+        // Either name may be quoted: "a/x\ty" "b/x\ty".
+        if spec.first == "\"" || spec.contains(" \"b/") {
+            guard let (old, rest) = GitQuoting.leading(spec[...], upTo: spec.contains(" \"b/") ? " \"b/" : " b/"), rest.first == " " else { return nil }
+            guard let (new, _) = GitQuoting.leading(rest.dropFirst()) else { return nil }
+            guard old.hasPrefix("a/"), new.hasPrefix("b/") else { return nil }
+            return (String(old.dropFirst(2)), String(new.dropFirst(2)))
+        }
         guard spec.hasPrefix("a/"), let range = spec.range(of: " b/") else { return nil }
         return (String(spec[spec.index(spec.startIndex, offsetBy: 2)..<range.lowerBound]), String(spec[range.upperBound...]))
     }

@@ -726,7 +726,9 @@ private struct GitPanelDetail: View, Equatable {
         var panel: GitController.Panel, selection: GitController.Selection?, diff: GitDiffArray, diffLoading: Bool
         var commit: String?, detailFiles: Int, detailFile: String?, filesShown: Int
         var detailDiff: GitDiffArray, detailFileDiff: GitDiffArray, commitLoading: Bool, deferred: Bool
+        var reveal: GitHistoryReveal?, revealNote: String?
         @MainActor init(_ controller: GitController) {
+            reveal = controller.revealTarget; revealNote = controller.revealNote
             panel = controller.panel; selection = controller.selection; diff = GitDiffArray(controller.diff); diffLoading = controller.diffLoading
             commit = controller.detail?.commit.hash; detailFiles = controller.detail?.files.count ?? 0
             detailFile = controller.detailFile; filesShown = controller.commitFilesShown
@@ -775,12 +777,21 @@ private struct GitPanelDetail: View, Equatable {
                 // when both were one SwiftUI stack.
                 let file = inputs.detailFile, loading = inputs.commitLoading
                 let files = file == nil ? inputs.detailDiff.files : inputs.detailFileDiff.files
-                let lead = AnyView(commitHeader(detail).foregroundStyle(Color.piInk).buttonStyle(.piSecondary).toggleStyle(.piSwitch))
-                let leadKey = CommitHeaderKey(commit: detail.commit.hash, files: detail.files.count, selected: file, shown: inputs.filesShown)
+                let note = inputs.revealNote
+                let lead = AnyView(commitHeader(detail, note: note).foregroundStyle(Color.piInk).buttonStyle(.piSecondary).toggleStyle(.piSwitch))
+                let leadKey = CommitHeaderKey(commit: detail.commit.hash, files: detail.files.count, selected: file, shown: inputs.filesShown, note: note)
+                let identity = GitController.diffIdentity(commit: detail.commit.hash, file: file)
+                // The line a blame click asked for, once its commit and file
+                // are the ones shown.
+                let reveal = inputs.reveal.flatMap { asked -> GitDiffReveal? in
+                    guard asked.target.commit == detail.commit.hash, asked.target.path == file else { return nil }
+                    return GitDiffReveal(identity: identity, path: asked.target.path, line: asked.target.line, token: asked.token)
+                }
                 GitDiffPane(presentation: controller.presentation) { split, expanded in
                     DiffView(files: files, title: file, subtitle: file == nil ? nil : "In \(detail.commit.shortHash)",
-                             identity: GitController.diffIdentity(commit: detail.commit.hash, file: file), loading: loading, embedded: true,
-                             lead: lead, leadKey: leadKey, split: split, expanded: expanded, openFile: openFile)
+                             identity: identity, loading: loading, embedded: true,
+                             lead: lead, leadKey: leadKey, split: split, expanded: expanded, openFile: openFile,
+                             reveal: reveal, revealed: { controller.revealed($0, $1) })
                 }
             }
         } else if inputs.commitLoading {
@@ -792,7 +803,7 @@ private struct GitPanelDetail: View, Equatable {
 
     /// A commit's subject, author, date and hash, the rest of its message,
     /// what it changed, and its files as chips.
-    private func commitHeader(_ detail: GitCommitDetail) -> some View {
+    private func commitHeader(_ detail: GitCommitDetail, note: String? = nil) -> some View {
         let controller = controller
         return VStack(alignment: .leading, spacing: 4) {
             Text(detail.commit.subject).font(PiFont.title(17)).foregroundStyle(Color.piInk)
@@ -801,6 +812,14 @@ private struct GitPanelDetail: View, Equatable {
             if detail.message.contains("\n") {
                 Text(detail.message.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).dropFirst().joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines))
                     .font(PiFont.body).foregroundStyle(Color.piInkSecondary).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            }
+            // A merge says what it is compared with even when that shows nothing.
+            if detail.commit.parents.count > 1 && detail.files.isEmpty {
+                PiBadge(text: "Merge · first parent", tone: .info, icon: "arrow.triangle.merge")
+            }
+            if let note {
+                Label(note, systemImage: "info.circle").font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
+                    .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("git-reveal-note")
             }
             if !detail.files.isEmpty {
                 HStack(spacing: 8) {
@@ -814,7 +833,7 @@ private struct GitPanelDetail: View, Equatable {
         }.padding(.horizontal, PiSpacing.lg).padding(.top, PiSpacing.lg)
     }
     /// What the commit header's height depends on, besides the width.
-    private struct CommitHeaderKey: Hashable { let commit: String, files: Int, selected: String?, shown: Int }
+    private struct CommitHeaderKey: Hashable { let commit: String, files: Int, selected: String?, shown: Int, note: String? }
 
     private func placeholder(_ text: String) -> some View {
         Text(text).font(PiFont.caption).foregroundStyle(Color.piInkSecondary).frame(maxWidth: .infinity, maxHeight: .infinity)

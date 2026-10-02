@@ -16,6 +16,7 @@ enum FileProjectState: Equatable {
     case trusted(name: String, root: String)
     case untrusted(name: String)
     case removed
+    var isTrusted: Bool { if case .trusted = self { return true }; return false }
 }
 
 @MainActor final class FileTab: HostedTab {
@@ -55,8 +56,15 @@ enum FileProjectState: Equatable {
         shown = true
         startWatching()
         followChange()
+        blame.resume()
     }
-    override func didHide() { shown = false; stopWatching() }
+    override func didHide() { shown = false; stopWatching(); blame.suspend() }
+    /// Who changed each line, while it is shown (`FileBlame`).
+    let blame = FileBlame()
+    var isShownNow: Bool { shown }
+    var scrollIfMade: FileTextScrollView? { madeScroll }
+    /// The document if one is open, without opening one.
+    var documentIfMade: FileView.FileDocument? { madeDocument }
     private func startWatching() {
         guard shown, readable else { return }
         if watcher == nil { watcher = FileWatch(url: url) { [weak self] in self?.followChange() } }
@@ -100,6 +108,8 @@ enum FileProjectState: Equatable {
                         self.status = status; self.fellBack = fresh.fellBack; self.updateSymbol()
                     }
                     self.status = status; self.fellBack = fresh.fellBack; self.updateSymbol()
+                    // After the status: blame reads only text said to be ready.
+                    self.blame.documentChanged()
                     old.close()
                 case .failed:
                     // Gone or unreadable: the bar stays, its search stops
@@ -108,6 +118,7 @@ enum FileProjectState: Equatable {
                     self.following = nil; fresh.close()
                     self.finder?.close(); self.finder = nil
                     self.status = status; self.updateSymbol(); self.findChanged()
+                    self.blame.documentChanged()
                 default: break
                 }
             }
@@ -124,6 +135,7 @@ enum FileProjectState: Equatable {
         self.url = file; self.projectID = projectID; self.target = lines
         project = FileTab.resolveProject(projectID)
         super.init(key: key, title: file.lastPathComponent, symbol: FileTab.symbol(for: file))
+        blame.tab = self
         updateHelp()
     }
 
@@ -160,6 +172,7 @@ enum FileProjectState: Equatable {
             self.fellBack = document.fellBack
             self.status = status
             self.updateSymbol()
+            if status != .indexing { self.blame.documentChanged() }
         }
         madeDocument = document
         return document
@@ -206,6 +219,7 @@ enum FileProjectState: Equatable {
             // what was known of the file: read again from the start if it
             // may be read again.
             finder?.close(); finder = nil; bar = .none
+            blame.hide()
             madeDocument?.close(); madeDocument = nil
             madeScroll = nil; syntax = nil
             madePreview?.close(); madePreview = nil
@@ -215,6 +229,7 @@ enum FileProjectState: Equatable {
         updateHelp(); updateSymbol()
     }
     override func willClose() {
+        blame.hide()
         shown = false; stopWatching(); watcher = nil
         finder?.close(); finder = nil
         madeDocument?.close()
@@ -380,6 +395,7 @@ struct FileTabContent: View {
                 case .goToLine: FileGoToLineBar(tab: tab)
                 case .none: EmptyView()
                 }
+                FileBlameBarSlot(blame: tab.blame)
             }
             if let reason = tab.missingReason {
                 FileTabNotice(symbol: "questionmark.folder", title: "Missing", detail: reason, url: tab.url)
@@ -477,6 +493,9 @@ private struct FileTabHeader: View {
             path
             status
             Spacer(minLength: PiSpacing.sm)
+            if tab.readable, tab.previewKind == nil {
+                FileBlameToggle(blame: tab.blame)
+            }
             PiIconButton(symbol: "arrow.up.forward.app", label: "Open in \(Self.appName(for: tab.url))", size: 26) {
                 NSWorkspace.shared.open(tab.url)
             }

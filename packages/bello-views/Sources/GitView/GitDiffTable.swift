@@ -147,6 +147,24 @@ struct GitDiffTextPoint: Comparable {
     static func < (a: Self, b: Self) -> Bool { a.row != b.row ? a.row < b.row : a.index < b.index }
 }
 
+/// A line to bring into view in a diff and select: line `line` (from 1) of
+/// `path` on the diff's new side, in the diff named `identity`. `token`
+/// changes each time it is asked for, so the same line can be asked again.
+public struct GitDiffReveal: Equatable {
+    public let identity: String
+    public let path: String
+    public let line: Int
+    public let token: Int
+    public init(identity: String, path: String, line: Int, token: Int) {
+        self.identity = identity; self.path = path; self.line = line; self.token = token
+    }
+}
+/// What became of a line asked for: shown and selected; in the diff but past
+/// the rows shown until the whole diff is; or not among the lines the diff
+/// adds (a line the change left as it was, against the parent it is compared
+/// with — at most context around a change).
+public enum GitDiffRevealOutcome: Equatable, Sendable { case shown, pastShownRows, pastReadLines, notInDiff }
+
 public struct GitDiffTable: NSViewRepresentable {
     let files: [GitDiffFile]
     let split: Bool
@@ -168,12 +186,17 @@ public struct GitDiffTable: NSViewRepresentable {
     var colors: GitDiffColors = .system
     /// The context menu; nil for the default one.
     var menu: GitDiffMenuBuilder? = nil
+    /// A line to bring into view once its diff is shown, and who is told
+    /// what became of it.
+    var reveal: GitDiffReveal? = nil
+    var revealed: ((GitDiffReveal, GitDiffRevealOutcome) -> Void)? = nil
 
     public init(files: [GitDiffFile], split: Bool, wrap: Bool, showAll: Bool, identity: String, top: AnyView, topKey: AnyHashable,
-                topHeightKey: AnyHashable? = nil, loading: Bool = false, more: AnyView?, colors: GitDiffColors = .system, menu: GitDiffMenuBuilder? = nil) {
+                topHeightKey: AnyHashable? = nil, loading: Bool = false, more: AnyView?, colors: GitDiffColors = .system, menu: GitDiffMenuBuilder? = nil,
+                reveal: GitDiffReveal? = nil, revealed: ((GitDiffReveal, GitDiffRevealOutcome) -> Void)? = nil) {
         self.files = files; self.split = split; self.wrap = wrap; self.showAll = showAll; self.identity = identity
         self.top = top; self.topKey = topKey; self.topHeightKey = topHeightKey; self.loading = loading; self.more = more
-        self.colors = colors; self.menu = menu
+        self.colors = colors; self.menu = menu; self.reveal = reveal; self.revealed = revealed
     }
 
     public func makeCoordinator() -> Coordinator { Coordinator() }
@@ -219,7 +242,8 @@ public struct GitDiffTable: NSViewRepresentable {
 
     private var state: Coordinator.State {
         Coordinator.State(files: files, split: split, wrap: wrap, showAll: showAll, identity: identity, top: top, topKey: topKey,
-                          topHeightKey: topHeightKey ?? topKey, loading: loading, more: more, colors: colors, menu: menu)
+                          topHeightKey: topHeightKey ?? topKey, loading: loading, more: more, colors: colors, menu: menu,
+                          reveal: reveal, revealed: revealed)
     }
 
     // MARK: - Coordinator
@@ -238,7 +262,16 @@ public struct GitDiffTable: NSViewRepresentable {
             var more: AnyView?
             var colors: GitDiffColors
             var menu: GitDiffMenuBuilder?
+            var reveal: GitDiffReveal?
+            var revealed: ((GitDiffReveal, GitDiffRevealOutcome) -> Void)?
         }
+        /// The last line asked for that has been dealt with, and whether the
+        /// whole diff was shown then: one past the rows shown is asked again
+        /// once it is.
+        private var revealedKey: (token: Int, showAll: Bool)?
+        /// The selection a reveal made, while it is still the reader's: a
+        /// switch between unified and split selects the same line again.
+        private var revealSelection: (anchor: GitDiffTextPoint, focus: GitDiffTextPoint)?
         weak var table: GitDiffTableView?
         private(set) var files: [GitDiffFile] = []
         private var identity = ""
@@ -327,6 +360,13 @@ public struct GitDiffTable: NSViewRepresentable {
             // be built again under the new name and then replaced.
             let waiting = freshDiff && next.loading && Self.same(files, next.files) && !rows.isEmpty
             let rebuild = !waiting && (!sameFiles || split != next.split || showAll != next.showAll || (next.more != nil) != hasMore || rows.isEmpty)
+            // The line a reveal selected, still selected, in another layout:
+            // asked for again there, rather than left on a row that now holds
+            // something else.
+            if rebuild, sameFiles, split != next.split, let made = revealSelection, made.anchor == anchor, made.focus == focus {
+                anchor = nil; focus = nil; revealedKey = nil
+            }
+            if !sameFiles { revealSelection = nil }
             if !sameFiles || showAll != next.showAll || (next.more != nil) != hasMore { built = [:] }
             if !sameFiles, anchor != nil { anchor = nil; focus = nil; redrawVisible() }
             let moreChanged = newDiff || (next.more != nil) != hasMore
@@ -366,6 +406,51 @@ public struct GitDiffTable: NSViewRepresentable {
             } else if heading {
                 table.noteHeightOfRows(withIndexesChanged: IndexSet(integer: 0))
             }
+            revealIfReady(next)
+        }
+
+        /// Brings the line asked for into view and selects it, once its diff
+        /// is the one shown and read whole; says what became of it, once.
+        private func revealIfReady(_ next: State) {
+            guard let reveal = next.reveal, !next.loading, reveal.identity == identity, let table else { return }
+            if let done = revealedKey, done.token == reveal.token, done.showAll == showAll || showAll == false { return }
+            revealedKey = (reveal.token, showAll)
+            func names(_ file: GitDiffFile) -> Bool { file.path == reveal.path || file.newPath == reveal.path || file.oldPath == reveal.path }
+            let found = rows.indices.first { index in
+                let row = rows[index]
+                switch row.kind {
+                // The line as the change added it: a context line around
+                // the change is not the line the commit wrote.
+                case .line:
+                    let line = line(row)
+                    return line.kind == .added && line.newNumber == reveal.line && names(file(row))
+                case .split: return pair(row).right.map { $0.kind == .added && $0.newNumber == reveal.line } == true && names(file(row))
+                default: return false
+                }
+            }
+            guard let index = found else {
+                let inDiff = files.contains { file in
+                    names(file) && file.hunks.contains { $0.lines.contains { $0.kind == .added && $0.newNumber == reveal.line } }
+                }
+                // The patch was cut where the parser stops: the line may be
+                // in the part not read, so it is not said to be absent.
+                let cut = files.contains { $0.notes.contains { $0.hasPrefix("Diff truncated") } }
+                next.revealed?(reveal, inDiff ? .pastShownRows : cut ? .pastReadLines : .notInDiff)
+                return
+            }
+            let side: GitDiffSide = rows[index].kind == .split ? .right : .whole
+            let length = (selectable(index, side: side) as NSString?)?.length ?? 0
+            select(from: GitDiffTextPoint(row: index, index: 0), to: GitDiffTextPoint(row: index, index: length), side: side)
+            revealSelection = (GitDiffTextPoint(row: index, index: 0), GitDiffTextPoint(row: index, index: length))
+            // In the middle of the view, where the eye goes, rather than at
+            // its edge.
+            if let clip = table.enclosingScrollView?.contentView {
+                let rect = table.rect(ofRow: index)
+                let y = max(0, min(rect.midY - clip.bounds.height / 2, table.bounds.height - clip.bounds.height))
+                clip.scroll(to: NSPoint(x: clip.bounds.minX, y: y))
+                table.enclosingScrollView?.reflectScrolledClipView(clip)
+            }
+            next.revealed?(reveal, .shown)
         }
 
         /// Two diffs are the same when they are the same array: the controller

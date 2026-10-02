@@ -4,6 +4,7 @@ import AppKit
 import PDFKit
 @testable import PiApp
 @testable import GitView
+import FileView
 
 // Opt-in screenshot gallery for the native shell. It reuses the synthetic
 // loopback gateway from the interactive acceptance harness, sends real
@@ -189,6 +190,7 @@ final class UIScreenshotTests: XCTestCase {
         // Only the Changes window and its Git scenes (10b–10e).
         if testEnvironment("PI_APP_UI_GALLERY_GIT_ONLY") == "1" {
             try await captureChangesWindowScene(model: model, gallery: gallery, appearances: appearances, workspaceID: workspace.id)
+            try await captureBlameScenes(model: model, window: window, gallery: gallery, appearances: appearances, workspaceID: workspace.id, folder: folder)
             XCTAssertNil(model.error, model.error ?? "")
             for host in model.hosts.values { try await host.shutdownAndWait() }
             try await model.traces.close()
@@ -382,6 +384,7 @@ final class UIScreenshotTests: XCTestCase {
             try await settle(0.8)
         }
         try await captureChangesWindowScene(model: model, gallery: gallery, appearances: appearances, workspaceID: workspace.id)
+        try await captureBlameScenes(model: model, window: window, gallery: gallery, appearances: appearances, workspaceID: workspace.id, folder: folder)
         // The Session Inspector of the main chat, with both routes it used.
         try await captureInspectorScenes(model: model, session: session, window: window, gallery: gallery, appearances: appearances)
         try await renderReviewScenes(model: model, window: window, gallery: gallery, appearances: appearances,
@@ -649,6 +652,38 @@ final class UIScreenshotTests: XCTestCase {
             model.setSidesPanelPinned(false); model.sidesPanelReveal.hide(); try await settle(0.8)
         }
         working.state = "idle"
+        NSApp.appearance = nil
+    }
+
+    /// 24c · A file with its blame shown beside the line numbers and its bar
+    /// on the selected line; 24d · Show Change from it: Changes on History at
+    /// the commit that wrote the line, the line selected in its diff, Back
+    /// above. At the smallest window. Closed afterwards.
+    @MainActor private func captureBlameScenes(model: WorkspaceModel, window: NSWindow, gallery: URL, appearances: [(String, NSAppearance.Name)],
+                                               workspaceID: String, folder: URL) async throws {
+        let frame = window.frame
+        window.setContentSize(NSSize(width: 920, height: 600)); try await settle(0.8)
+        let tab = model.openFile(folder.appendingPathComponent("PaymentClient.swift"), project: workspaceID)
+        try await settle(1.5)
+        tab.blame.show()
+        let deadline = ProcessInfo.processInfo.systemUptime + 20
+        while tab.blame.blame == nil, ProcessInfo.processInfo.systemUptime < deadline { try await settle(0.2) }
+        XCTAssertNotNil(tab.blame.blame, "blamed: \(tab.blame.state)")
+        let text = try XCTUnwrap(tab.focusView as? FileTextView)
+        text.select(from: FileTextPosition(line: 1, column: 4), to: FileTextPosition(line: 1, column: 4))
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(0.8)
+            try capture(window, to: gallery.appendingPathComponent("24c-file-blame-\(name).png"))
+        }
+        tab.blame.openChange(ofLine: 1)
+        try await settle(2.5)
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(0.8)
+            try capture(window, to: gallery.appendingPathComponent("24d-changes-from-blame-\(name).png"))
+        }
+        if let changes = model.tabs.tab(kind: ChangesTab.kind, key: workspaceID) { model.tabs.close(changes) }
+        tab.blame.hide(); model.tabs.close(tab)
+        window.setFrame(frame, display: true); try await settle(0.8)
         NSApp.appearance = nil
     }
 

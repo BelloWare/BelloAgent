@@ -17,6 +17,9 @@ import CoreServices
     /// file rather than a directory: a linked worktree or a submodule keeps
     /// its HEAD, refs and index somewhere else entirely.
     let gitDirectory: String?
+    /// Where a linked worktree's branches live: the main repository's git
+    /// directory, named by its `commondir` file.
+    let commonDirectory: String?
     private let interval: TimeInterval
     private let onChange: () -> Void
     private let handle: GitWatchStream
@@ -47,10 +50,14 @@ import CoreServices
     /// `DerivedData`) changes nothing the panel shows, and used to refresh it
     /// every second for as long as it ran.
     nonisolated let ignored = GitIgnoredPaths()
-    init(root: String, interval: TimeInterval = 1, onChange: @escaping () -> Void) {
+    /// Only where HEAD is and what is staged: saves in the working tree are
+    /// not told.
+    let stateOnly: Bool
+    init(root: String, interval: TimeInterval = 1, stateOnly: Bool = false, onChange: @escaping () -> Void) {
         let resolved = URL(fileURLWithPath: root, isDirectory: true).resolvingSymlinksInPath().path
-        self.root = resolved
+        self.root = resolved; self.stateOnly = stateOnly
         self.gitDirectory = Self.gitDirectory(under: resolved)
+        self.commonDirectory = gitDirectory.flatMap(Self.commonDirectory(of:))
         self.interval = interval
         self.onChange = onChange
         self.handle = GitWatchStream(root: resolved)
@@ -73,15 +80,23 @@ import CoreServices
         return resolved == root || resolved.hasPrefix(root + "/") ? nil : resolved
     }
 
+    nonisolated static func commonDirectory(of gitDirectory: String) -> String? {
+        guard let text = try? String(contentsOfFile: gitDirectory + "/commondir", encoding: .utf8) else { return nil }
+        let named = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !named.isEmpty else { return nil }
+        let absolute = named.hasPrefix("/") ? named : gitDirectory + "/" + named
+        return URL(fileURLWithPath: absolute, isDirectory: true).standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
     func start() {
         guard !handle.isRunning else { return }
-        let root = root, gitDirectory = gitDirectory, ignored = ignored, generation = UUID()
+        let root = root, gitDirectory = gitDirectory, commonDirectory = commonDirectory, ignored = ignored, stateOnly = stateOnly, generation = UUID()
         self.generation = generation
         let bridge = GitWatchBridge { @Sendable [weak self] paths, flags in
             // The folder this stream is on stopped being the project's folder:
             // it was renamed, moved or deleted under the panel.
             let moved = flags.contains { $0 & FSEventStreamEventFlags(kFSEventStreamEventFlagRootChanged) != 0 }
-            guard moved || paths.contains(where: { Self.isInteresting($0, under: root, gitDirectory: gitDirectory) && !ignored.covers($0) }) else { return }
+            guard moved || paths.contains(where: { Self.isInteresting($0, under: root, gitDirectory: gitDirectory, commonDirectory: commonDirectory, stateOnly: stateOnly) && !ignored.covers($0) }) else { return }
             Task { @MainActor [weak self] in
                 guard let self, self.generation == generation, self.handle.isRunning else { return }
                 if moved { self.rootChanged() } else { self.changed() }
@@ -90,7 +105,7 @@ import CoreServices
         self.bridge = bridge
         var context = gitWatchContext(bridge)
         let flags = UInt32(kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagWatchRoot)
-        let watched = [root] + (gitDirectory.map { [$0] } ?? [])
+        let watched = [root] + [gitDirectory, commonDirectory].compactMap { $0 }
         guard let created = FSEventStreamCreate(kCFAllocatorDefault, gitWatchCallback, &context, watched as CFArray,
                                                 FSEventStreamEventId(kFSEventStreamEventIdSinceNow), Self.latency, flags) else {
             self.bridge = nil
@@ -151,24 +166,31 @@ import CoreServices
     /// True for a path the panel would show: anything in the working tree, and
     /// inside `.git` only what says where HEAD is and what is staged. A stage
     /// writes `index.lock` and a dozen object files; none of those are it.
-    nonisolated static func isInteresting(_ path: String, under root: String, gitDirectory: String? = nil) -> Bool {
+    nonisolated static func isInteresting(_ path: String, under root: String, gitDirectory: String? = nil, commonDirectory: String? = nil, stateOnly: Bool = false) -> Bool {
+        // One spelling of each: FSEvents keeps "/private" where the resolved
+        // root does not.
+        let path = GitIgnoredPaths.comparable(path), root = GitIgnoredPaths.comparable(root), gitDirectory = gitDirectory.map(GitIgnoredPaths.comparable)
         // A linked worktree keeps its git state outside the tree; the same few
-        // names matter there as inside a `.git` directory.
+        // names matter there as inside a `.git` directory. Its own directory
+        // first: it sits inside the common one.
         if let gitDirectory, path == gitDirectory || path.hasPrefix(gitDirectory + "/") {
             return isGitState(path.dropFirst(gitDirectory.count).drop(while: { $0 == "/" }))
         }
-        guard path.hasPrefix(root) else { return true }
+        if let common = commonDirectory.map(GitIgnoredPaths.comparable), path == common || path.hasPrefix(common + "/") {
+            return isGitState(path.dropFirst(common.count).drop(while: { $0 == "/" }))
+        }
+        guard path.hasPrefix(root) else { return !stateOnly }
         let relative = path.dropFirst(root.count).drop(while: { $0 == "/" })
         var parts = relative.split(separator: "/", omittingEmptySubsequences: true)
         guard let first = parts.first else { return false }
-        guard first == ".git" else { return true }
+        guard first == ".git" else { return !stateOnly }
         parts.removeFirst()
         return isGitState(parts.joined(separator: "/")[...])
     }
     /// True for the few names that say where HEAD is and what is staged.
     private nonisolated static func isGitState(_ relative: Substring) -> Bool {
         guard let first = relative.split(separator: "/", omittingEmptySubsequences: true).first else { return false }
-        return ["HEAD", "index", "refs", "packed-refs", "MERGE_HEAD", "ORIG_HEAD", "REBASE_HEAD"].contains(String(first))
+        return ["HEAD", "index", "refs", "packed-refs", "MERGE_HEAD", "ORIG_HEAD", "REBASE_HEAD", "shallow"].contains(String(first))
     }
 }
 
@@ -277,4 +299,18 @@ final class GitIgnoredPaths: @unchecked Sendable {
     /// One spelling of a path: `resolvingSymlinksInPath` drops a leading
     /// "/private" (the root reads "/var/…") while FSEvents keeps it.
     static func comparable(_ path: String) -> String { path.hasPrefix("/private/") ? String(path.dropFirst("/private".count)) : path }
+}
+
+/// Told when a repository's HEAD, refs or index change — a commit, a
+/// checkout, a stage — and not when files in its working tree are saved: for
+/// a view that shows what git says of a file (its blame) and must follow a
+/// commit of it even when the file itself did not change.
+@MainActor public final class GitStateWatch {
+    private let watcher: GitWorkingTreeWatcher
+    public init(root: String, onChange: @escaping @MainActor () -> Void) {
+        watcher = GitWorkingTreeWatcher(root: root, interval: 0.5, stateOnly: true, onChange: onChange)
+    }
+    public func start() { watcher.start() }
+    public func stop() { watcher.stop() }
+    public var isWatching: Bool { watcher.isWatching }
 }

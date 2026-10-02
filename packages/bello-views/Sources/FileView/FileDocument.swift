@@ -229,6 +229,25 @@ struct FileLengths: Sendable {
 
     /// Check both the open inode and its path away from the UI actor, so a
     /// host can follow atomic replacements as well as in-place edits.
+    /// The file's bytes as this document read them, whole, for a tool that
+    /// needs exactly the text shown (git blame): read through the document's
+    /// own descriptor, never by opening its path again, and only while the
+    /// file is unchanged since it was read. Nil when it changed, is longer
+    /// than `limit`, is not text, or has not been read through.
+    public func snapshot(limit: Int) async -> Data? {
+        guard status == .ready, let bytes, let identity, identity.size <= Int64(limit) else { return nil }
+        return await Task.detached(priority: .userInitiated) { () -> Data? in
+            guard let data = try? bytes.read(at: 0, count: Int(identity.size)), Int64(data.count) == identity.size,
+                  bytes.unchanged(since: identity) else { return nil }
+            return data
+        }.value
+    }
+    /// Whether the file is still the one read, through its descriptor and at
+    /// its path: two `stat`s, cheap enough to ask on the main thread.
+    public var isUnchanged: Bool {
+        guard let bytes, let identity else { return false }
+        return bytes.unchanged(since: identity)
+    }
     public func hasChanged() async -> Bool {
         guard let bytes, let identity else { return true }
         return await Task.detached(priority: .utility) { !bytes.unchanged(since: identity) }.value
