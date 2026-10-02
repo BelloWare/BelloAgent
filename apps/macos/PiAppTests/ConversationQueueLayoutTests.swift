@@ -121,4 +121,60 @@ extension ConversationPaneTests {
         try await waitFor("The detail never closed") { !NSApp.windows.contains { String(describing: Swift.type(of: $0)).contains("Popover") && $0.isVisible } }
         XCTAssertNil(pane.session.queueDetailShowing)
     }
+
+    /// An image still being read when the reader moves to another chat goes
+    /// to the chat it was chosen in, not the one now shown.
+    @MainActor func testALateImageGoesToTheChatItWasChosenIn() async throws {
+        let pane = try Pane(width: 900, height: 700, imageModel: true); defer { pane.close() }
+        let other = SessionDisplay(id: "other"); pane.model.displays[other.id] = other
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("late-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: file) }
+        let image = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 8, pixelsHigh: 8, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        try XCTUnwrap(image.representation(using: .png, properties: [:])).write(to: file)
+        pane.model.attachImageFiles([file], sessionID: pane.session.id)
+        // The reader moves on before the image is read.
+        pane.model.selectedID = other.id; pane.model.selected = other; pane.model.focusedSessionID = other.id
+        try await waitFor("The image never arrived") { pane.session.attachments.count == 1 }
+        XCTAssertTrue(other.attachments.isEmpty, "the chat now shown does not get it")
+        XCTAssertNil(pane.model.error)
+    }
+}
+
+extension SendImmediacyTests {
+    /// An earlier message edited to images alone is resent as them, with no
+    /// text made up.
+    @MainActor func testAHistoricalEditWithOnlyImages() async throws {
+        let chat = try await ScriptedSendChat(messages: [TranscriptMessage(id: "u0", role: "user", text: "Earlier question", at: 1000, turn: "u0"),
+                                                        TranscriptMessage(id: "a0", role: "assistant", text: "Earlier answer", at: 2000, turn: "u0")])
+        var closed = false
+        defer { if !closed { Task { await chat.close() } } }
+        chat.session.editingMessageID = "u0"; chat.session.draftBeforeEdit = DraftRecord(id: chat.chat.id, text: "")
+        chat.session.draft = ""
+        chat.session.attachments = [AttachmentRecord(id: "img", path: "/tmp/fixture-image.png", sha256: "00", bytes: 10, mimeType: "image/png")]
+        await chat.settle(4)
+        chat.model.sendEdit(sessionID: chat.chat.id)
+        await chat.until("The edit never reached the helper") { chat.frames(WorkspaceModel.editTurnMethod).count == 1 }
+        let params = try XCTUnwrap(chat.frames(WorkspaceModel.editTurnMethod).first?["params"]?.object)
+        XCTAssertEqual(params["text"]?.string, "", "no text is made up")
+        XCTAssertEqual(params["attachments"]?.array?.count, 1)
+        closed = true
+        await chat.close()
+    }
+
+    /// A side's composer sends an image alone, on the same rule as its chat.
+    @MainActor func testASideSendsAnImageOnlyMessage() async throws {
+        let chat = try await ScriptedSendChat()
+        var closed = false
+        defer { if !closed { Task { await chat.close() } } }
+        chat.model.sides["parent"] = SideRecord(id: chat.chat.id, parentID: "parent", workspaceID: chat.chat.workspaceID, profileID: chat.chat.profileID, title: "Side", kept: true)
+        XCTAssertNotNil(chat.model.side(chat.chat.id))
+        chat.session.attachments = [AttachmentRecord(id: "img", path: "/tmp/fixture-image.png", sha256: "00", bytes: 10, mimeType: "image/png")]
+        await chat.settle(4)
+        chat.key("\r", keyCode: 36)
+        await chat.until("The side's image never reached the helper") { chat.frames("turn.submit").count == 1 }
+        XCTAssertEqual(chat.frames("turn.submit").first?["params"]?.object?["text"]?.string, "")
+        XCTAssertEqual(chat.session.sendingRows.first?.text, "Image")
+        closed = true
+        await chat.close()
+    }
 }
