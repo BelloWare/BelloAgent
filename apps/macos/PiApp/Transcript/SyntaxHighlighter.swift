@@ -16,56 +16,107 @@ enum SyntaxHighlighter {
         let kind: TokenKind
     }
 
-    /// The lexical state at a line boundary, independent of any UI. File
-    /// viewers keep these checkpoints and colour only the lines requested.
+    /// The lexical state at a line boundary, or wherever a chunked advance
+    /// stopped, independent of any UI. File viewers keep these checkpoints
+    /// and colour only the lines requested.
     struct State: Equatable, Sendable {
         var commentDepth = 0
         var delimiter: String?
         var multiline = false
         var raw = false
         var previousWord = ""
+        /// Inside a line comment that a chunk ended before its line did.
+        var lineComment = false
+        /// Inside a word longer than any keyword that a chunk ended in: the
+        /// rest of it is skipped, and it names nothing.
+        var longWord = false
     }
+    /// A word longer than this is no keyword or declaration, so a chunked
+    /// advance need not hold it whole.
+    static let longestWord = 32
 
     static func resume(_ code: String, language: Language, state initial: State, collect: Bool = true) -> (tokens: [Token], state: State) {
-        let grammar = grammar(language), scalars = Array(code.unicodeScalars)
-        var state = initial, index = 0, tokens: [Token] = []
+        let run = lex(Array(code.unicodeScalars), from: 0, language: language, state: initial, collect: collect, final: true)
+        return (run.tokens, run.state)
+    }
+
+    /// Lexes `scalars[from...]`; the scalars before `from` are only looked
+    /// back at. Not final, it stops (`stop`) where a decision would need a
+    /// scalar past the end — a delimiter, an escape or a word that may go
+    /// on — so that lexing on from `stop` with what follows, in the state
+    /// returned, gives the state lexing everything at once gives.
+    static func lex(_ scalars: [Unicode.Scalar], from: Int, language: Language, state initial: State, collect: Bool,
+                    final: Bool) -> (tokens: [Token], state: State, stop: Int) {
+        let grammar = grammar(language), count = scalars.count
+        var state = initial, index = from, tokens: [Token] = []
         func matches(_ text: String, _ at: Int) -> Bool {
-            let needle = Array(text.unicodeScalars)
-            return at + needle.count <= scalars.count && scalars[at..<(at + needle.count)].elementsEqual(needle)
+            var position = at
+            for scalar in text.unicodeScalars {
+                guard position < count, scalars[position] == scalar else { return false }
+                position += 1
+            }
+            return true
         }
+        /// Whether deciding at `at` needs `width` scalars that have not come yet.
+        func short(_ width: Int, _ at: Int) -> Bool { !final && at + width > count }
         func word(_ scalar: Unicode.Scalar) -> Bool { CharacterSet.alphanumerics.contains(scalar) || scalar == "_" || scalar == "$" }
         func emit(_ start: Int, _ end: Int, _ kind: TokenKind) { if collect && end > start { tokens.append(Token(range: start..<end, kind: kind)) } }
-        while index < scalars.count {
+        /// The rest of a block comment; false when the chunk ended first.
+        func blockComment() -> Bool {
+            while index < count {
+                if short(2, index) { return false }
+                if language == .swift, matches("/*", index) { state.commentDepth += 1; index += 2 }
+                else if matches("*/", index) { state.commentDepth -= 1; index += 2; if state.commentDepth == 0 { return true } }
+                else { index += 1 }
+            }
+            return true
+        }
+        /// The rest of a string; false when the chunk ended first.
+        func string(escapes: Bool) -> Bool {
+            guard let delimiter = state.delimiter else { return true }
+            let width = max(2, delimiter.unicodeScalars.count)
+            while index < count {
+                if short(width, index) { return false }
+                if matches(delimiter, index) { index += delimiter.unicodeScalars.count; state.delimiter = nil; return true }
+                if escapes, scalars[index] == "\\" { index = min(count, index + 2); continue }
+                if !state.multiline, scalars[index] == "\n" { state.delimiter = nil; return true }
+                index += 1
+            }
+            return true
+        }
+        while index < count {
             let start = index
+            if state.lineComment {
+                while index < count, scalars[index] != "\n" { index += 1 }
+                emit(start, index, .comment)
+                if index == count, !final { break }
+                state.lineComment = false; state.previousWord = ""; continue
+            }
+            if state.longWord {
+                while index < count, word(scalars[index]) { index += 1 }
+                if index == count, !final { break }
+                state.longWord = false; state.previousWord = ""; continue
+            }
             if state.commentDepth > 0 {
-                while index < scalars.count {
-                    if language == .swift, matches("/*", index) { state.commentDepth += 1; index += 2 }
-                    else if matches("*/", index) { state.commentDepth -= 1; index += 2; if state.commentDepth == 0 { break } }
-                    else { index += 1 }
-                }
-                emit(start, index, .comment); continue
+                let done = blockComment()
+                emit(start, index, .comment); if !done { break }; continue
             }
-            if let delimiter = state.delimiter {
-                while index < scalars.count {
-                    if matches(delimiter, index) { index += delimiter.unicodeScalars.count; state.delimiter = nil; break }
-                    if !state.raw, scalars[index] == "\\" { index = min(scalars.count, index + 2); continue }
-                    if !state.multiline, scalars[index] == "\n" { state.delimiter = nil; break }
-                    index += 1
-                }
-                emit(start, index, .string); continue
+            if state.delimiter != nil {
+                let done = string(escapes: !state.raw)
+                emit(start, index, .string); if !done { break }; continue
             }
+            // A marker or a delimiter is at most three scalars.
+            if short(3, index) { break }
             if let marker = grammar.lineComment.first(where: { matches($0, index) }), !(marker == "#" && language == .bash && index > 0 && scalars[index - 1] == "$") {
-                while index < scalars.count, scalars[index] != "\n" { index += 1 }
-                emit(start, index, .comment); state.previousWord = ""; continue
+                while index < count, scalars[index] != "\n" { index += 1 }
+                emit(start, index, .comment); state.previousWord = ""
+                if index == count, !final { state.lineComment = true; break }
+                continue
             }
             if grammar.blockComment != nil, matches("/*", index) {
                 state.commentDepth = 1; index += 2
-                while index < scalars.count {
-                    if language == .swift, matches("/*", index) { state.commentDepth += 1; index += 2 }
-                    else if matches("*/", index) { state.commentDepth -= 1; index += 2; if state.commentDepth == 0 { break } }
-                    else { index += 1 }
-                }
-                emit(start, index, .comment); state.previousWord = ""; continue
+                let done = blockComment()
+                emit(start, index, .comment); state.previousWord = ""; if !done { break }; continue
             }
             if grammar.quotes.contains(Character(scalars[index])) {
                 let quote = String(scalars[index])
@@ -73,27 +124,59 @@ enum SyntaxHighlighter {
                 let delimiter = String(repeating: quote, count: triple ? 3 : 1)
                 state.delimiter = delimiter; state.multiline = triple || quote == "`" || language == .bash
                 index += delimiter.unicodeScalars.count
-                while index < scalars.count {
-                    if matches(delimiter, index) { index += delimiter.unicodeScalars.count; state.delimiter = nil; break }
-                    if scalars[index] == "\\" { index = min(scalars.count, index + 2); continue }
-                    if !state.multiline, scalars[index] == "\n" { state.delimiter = nil; break }
-                    index += 1
-                }
-                emit(start, index, .string); state.previousWord = ""; continue
+                let done = string(escapes: true)
+                emit(start, index, .string); state.previousWord = ""; if !done { break }; continue
             }
             if word(scalars[index]) {
                 index += 1
-                while index < scalars.count, word(scalars[index]) { index += 1 }
+                while index < count, word(scalars[index]) { index += 1 }
+                if index == count, !final {
+                    // The word may go on in the next chunk: held back while it
+                    // could still be a keyword, skipped once it cannot.
+                    if index - start <= longestWord { index = start; break }
+                    state.longWord = true; state.previousWord = ""; break
+                }
                 let value = String(String.UnicodeScalarView(scalars[start..<index]))
                 if CharacterSet.decimalDigits.contains(scalars[start]) { emit(start, index, .number) }
                 else if grammar.keywords.contains(value) || grammar.literals.contains(value) { emit(start, index, .keyword) }
                 else if grammar.declarations.contains(state.previousWord) { emit(start, index, .title) }
-                state.previousWord = value; continue
+                // Only a declaration keyword is ever looked back at.
+                state.previousWord = index - start > longestWord ? "" : value; continue
             }
             if !scalars[index].properties.isWhitespace { state.previousWord = "" }
             index += 1
         }
-        return (tokens, state)
+        return (tokens, state, index)
+    }
+
+    /// Lexical state carried through text that arrives a chunk at a time,
+    /// however the chunks cut it: the state after each line is the state
+    /// `resume` gives the whole text. Only the few scalars a decision
+    /// waits on are held between chunks.
+    struct Advance {
+        let language: Language
+        private(set) var state: State
+        private var held: [Unicode.Scalar] = []
+        private var before: Unicode.Scalar?
+        /// The most scalars one lex was given: the chunk and what was held.
+        private(set) var largestInput = 0
+        init(language: Language, state: State) { self.language = language; self.state = state }
+        /// Lexes `text`; `endsLine` when a line break ends it, after which
+        /// `state` is the state at the next line's start.
+        mutating func feed(_ text: String, endsLine: Bool) {
+            var scalars: [Unicode.Scalar] = []
+            scalars.reserveCapacity(held.count + text.unicodeScalars.count + 2)
+            if let before { scalars.append(before) }
+            let from = scalars.count
+            scalars += held; scalars += text.unicodeScalars
+            if endsLine { scalars.append("\n") }
+            largestInput = max(largestInput, scalars.count - from)
+            let run = SyntaxHighlighter.lex(scalars, from: from, language: language, state: state, collect: false, final: endsLine)
+            state = run.state
+            if endsLine { held = []; before = nil; return }
+            held = Array(scalars[run.stop...])
+            if run.stop > from { before = scalars[run.stop - 1] }
+        }
     }
 
     /// The language for a fence label, honouring the short aliases people type.

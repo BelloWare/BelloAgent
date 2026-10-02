@@ -230,7 +230,7 @@ enum MarkdownTextLayout {
             let mark = MarkdownQuoteMark(bars: nested.quoteBars)
             var result: [MarkdownTextParagraph] = []
             for (index, child) in inner.enumerated() {
-                var id = identity; id.component = 1_000 + index
+                var id = identity; id.path.append(.quoteChild(index))
                 var parts = paragraphs(child, identity: id, context: nested, gap: index == 0 ? gap : MarkdownTextLayout.innerGap, headingIndex: nil)
                 for part in parts.indices where parts[part].marks[.piQuote] == nil { parts[part].marks[.piQuote] = mark }
                 result += parts
@@ -390,7 +390,7 @@ enum MarkdownTextLayout {
         inner.listDepth += 1
         var parts: [MarkdownTextParagraph] = []
         for (blockIndex, block) in item.enumerated() {
-            var id = identity; id.component = identity.component &* 131 &+ 10_007 &+ blockIndex
+            var id = identity; id.path.append(.itemBlock(blockIndex))
             parts += paragraphs(block, identity: id, context: inner, gap: blockIndex == 0 ? gap : MarkdownTextLayout.innerGap, headingIndex: nil)
         }
         let markerText = NSMutableAttributedString(string: "\t" + marker + "\t", attributes: [
@@ -423,7 +423,7 @@ enum MarkdownTextLayout {
         let column = markerColumn(ordered: ordered, start: start, count: items.count, style: context.style)
         var result: [MarkdownTextParagraph] = []
         for (index, item) in items.enumerated() {
-            var id = identity; id.component = identity.component &* 131 &+ 20_011 &+ index
+            var id = identity; id.path.append(.listItem(index))
             var parts = listItem(item, number: start + index, ordered: ordered, column: column, identity: id, context: context,
                                  gap: index == 0 ? gap : MarkdownTextLayout.listItemGap)
             // Between two items a copy puts one line break, not a blank line.

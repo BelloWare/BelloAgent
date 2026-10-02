@@ -7,6 +7,16 @@ struct MarkdownBlockIdentity: Hashable {
     /// Which segment of a long list this is: a list is drawn a few items to
     /// a host, and each of those hosts is a block of its own.
     var segment = 0
+    /// Where a nested block sits within its top-level block: the child it is
+    /// at each level, outermost first; empty for the top-level block. No two
+    /// leaves of a block share one, and a leaf keeps its own while it grows.
+    var path: [MarkdownChildStep] = []
+}
+
+/// One level of a nested block's place: which child of a quote, item of a
+/// list, or block of a list item it is.
+enum MarkdownChildStep: Hashable {
+    case quoteChild(Int), listItem(Int), itemBlock(Int)
 }
 
 struct StreamingMarkdownRecord {
@@ -81,6 +91,9 @@ final class StreamingMarkdownState {
     /// bytes those readings parsed: what a token on a long list costs.
     private(set) var entryReadCount = 0
     private(set) var entryBytesRead = 0
+    /// Prior records the canonical readings looked at to keep identities, in
+    /// all: what settling a reply costs, which grows with its blocks, not their square.
+    private(set) var matchVisits = 0
 
     func update(_ next: String, style: MarkdownStyle, streaming: Bool, identity: String = "") -> [StreamingMarkdownRecord] {
         guard !next.hasSameUTF8(as: source) || self.style != style || streaming != wasStreaming || identity != messageID else {
@@ -106,18 +119,7 @@ final class StreamingMarkdownState {
         } else {
             openTail = nil
             let canonical = Self.canonical(next, at: 0, generation: generation, style: style)
-            // A fence's first source run may start inside its opening line in
-            // Foundation. Retain the streaming leaf when canonical source
-            // positions differ only by the opening syntax, without matching
-            // unrelated blocks by a hash of growing text.
-            var used = Set<MarkdownBlockIdentity>()
-            records = canonical.map { value in
-                let prior = records.first { !used.contains($0.id) &&
-                    ($0.id.sourceOffset == value.id.sourceOffset || ($0.range.contains(value.id.sourceOffset) && Self.sameContainer($0.block, value.block))) }
-                var id = prior?.id ?? value.id
-                while !used.insert(id).inserted { id.component += 1 }
-                return StreamingMarkdownRecord(id: id, range: value.range, block: value.block, provisional: false)
-            }
+            records = Self.matched(canonical, prior: records, visits: &matchVisits)
             settled.removeAll(keepingCapacity: false)
             settledRecordCount = 0
             cuts = .init()
@@ -151,6 +153,60 @@ final class StreamingMarkdownState {
         records += settling
         settledRecordCount = records.count
         records += tail
+    }
+
+    /// The canonical reading, each block under the identity of the prior
+    /// record it continues: the first prior record, in order, whose identity
+    /// is not yet given out, that starts where the block does, or that holds
+    /// its start and is the same kind of container. (A fence's first source
+    /// run may start inside its opening line in Foundation; this keeps the
+    /// streaming leaf when positions differ only by the opening syntax,
+    /// without matching unrelated blocks by a hash of growing text.)
+    ///
+    /// The first such record is the earlier of two: the first unused one
+    /// starting there, from an index by offset, and the one prior range that
+    /// holds the start, from a cursor. That needs the prior ranges in order
+    /// and apart, and the blocks in order, as a reply's are; anything else is
+    /// matched by walking the prior records for each block.
+    static func matched(_ canonical: [StreamingMarkdownRecord], prior: [StreamingMarkdownRecord], visits: inout Int) -> [StreamingMarkdownRecord] {
+        var used = Set<MarkdownBlockIdentity>()
+        func eligible(_ index: Int) -> Bool { !used.contains(prior[index].id) }
+        func record(_ value: StreamingMarkdownRecord, _ index: Int?) -> StreamingMarkdownRecord {
+            var id = index.map { prior[$0].id } ?? value.id
+            while !used.insert(id).inserted { id.component += 1 }
+            return StreamingMarkdownRecord(id: id, range: value.range, block: value.block, provisional: false)
+        }
+        let ordered = zip(prior, prior.dropFirst()).allSatisfy { $0.range.upperBound <= $1.range.lowerBound }
+            && zip(canonical, canonical.dropFirst()).allSatisfy { $0.id.sourceOffset <= $1.id.sourceOffset }
+        guard ordered else {
+            return canonical.map { value in
+                let start = value.id.sourceOffset
+                let index = prior.indices.first { index in
+                    visits += 1
+                    return eligible(index) && (prior[index].id.sourceOffset == start || (prior[index].range.contains(start) && sameContainer(prior[index].block, value.block)))
+                }
+                return record(value, index)
+            }
+        }
+        var byOffset: [Int: [Int]] = [:], unusedFrom: [Int: Int] = [:], cursor = 0
+        for index in prior.indices { byOffset[prior[index].id.sourceOffset, default: []].append(index) }
+        return canonical.map { value in
+            let start = value.id.sourceOffset
+            var starting: Int?
+            if let indices = byOffset[start] {
+                var at = unusedFrom[start, default: 0]
+                while at < indices.count { visits += 1; if eligible(indices[at]) { break }; at += 1 }
+                unusedFrom[start] = at
+                starting = at < indices.count ? indices[at] : nil
+            }
+            while cursor < prior.count, prior[cursor].range.upperBound <= start { visits += 1; cursor += 1 }
+            var holding: Int?
+            if cursor < prior.count {
+                visits += 1
+                if prior[cursor].range.contains(start), eligible(cursor), sameContainer(prior[cursor].block, value.block) { holding = cursor }
+            }
+            return record(value, [starting, holding].compactMap { $0 }.min())
+        }
     }
 
     static func preview(_ source: String, style: MarkdownStyle) -> [StreamingMarkdownRecord] {

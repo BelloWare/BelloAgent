@@ -28,13 +28,13 @@ Source: `docs/reviews/BelloAgent-0.1.117-deep-review.md`.
 - [x] **Whole pending-side draft** (finding 4): close, replace, quit and update move text, images and skills to the parent through one merge path; storage failures keep everything recoverable.
 
 ## Workstream 2 — content and rendering correctness (findings 7–10)
-- [ ] **Nested code fence identities** (7): collision-free leaf identity; Copy, display and accessibility match; streaming selection stable.
-- [ ] **Linear terminal Markdown matching** (9): ordered cursor; candidate-visit test proves linear growth; identity rules unchanged.
-- [ ] **Bounded syntax-state reads** (8): chunked lexer advance, shared state across lines, cancellation; read-size test with a 64 MiB first line.
-- [ ] **Empty MCP SSE priming events** (10): ignored; loopback fixture with arbitrary chunk splits, no duplicate tool calls.
+- [x] **Nested code fence identities** (7): collision-free leaf identity; Copy, display and accessibility match; streaming selection stable.
+- [x] **Linear terminal Markdown matching** (9): ordered cursor; candidate-visit test proves linear growth; identity rules unchanged.
+- [x] **Bounded syntax-state reads** (8): chunked lexer advance, shared state across lines, cancellation; read-size test with a 64 MiB first line.
+- [x] **Empty MCP SSE priming events** (10): ignored; loopback fixture with arbitrary chunk splits, no duplicate tool calls.
 
 ## Workstream 3 — capture cleanup (finding 6)
-- [ ] Batched/keyset garbage collection and streaming orphan checks; >100,001 chunks; failure mid-batch recovers; bounded memory.
+- [x] Batched/keyset garbage collection and streaming orphan checks; >100,001 chunks; failure mid-batch recovers; bounded memory.
 
 ## Workstream 4 — smoothness and loose ends
 - [x] **Soak pauses**: 264–539 ms graphics/font-cache waits (0.1.117 soak, seed `1790822043708`; a 122 s replay reproduces one at 431 ms). Profile, then reduce text drawn at once. Target: hour-long soak passes.
