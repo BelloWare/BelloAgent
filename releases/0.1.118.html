@@ -1,0 +1,22 @@
+<h2>Bello Agent 0.1.118</h2>
+<h3>Changed</h3>
+<ul>
+<li><b>Switching a chat's connection asks when reasoning would be left behind.</b> If earlier replies hold reasoning that only the current connection can read back, the app asks: “Earlier reasoning from A can't be sent to B. Switch anyway?” No leaves the chat exactly as it was. Yes switches it, and those replies go to the new connection as their text and tool calls. The chat's history keeps everything either way, and a switch with nothing to lose doesn't ask.</li>
+<li><b>A switched chat keeps working on its new connection.</b> Its saved history now moves with it, so the next message, reopen or fork uses the new connection. If the move fails, the chat stays on the old connection and keeps working there. <b>A chat moved to another connection can't be opened by Bello Agent 0.1.117 or earlier.</b></li>
+<li><b>Usage figures show at once when you switch chats.</b> The footer's token and cost figures no longer roll from the previous chat's numbers; a figure that changes within a chat still rolls.</li>
+<li><b>Smoother long replies and chat switches.</b> The pauses of a quarter to half a second, seen as a long reply started streaming or when switching chats, are gone in the hour-long stress test.</li>
+</ul>
+<h3>Fixed</h3>
+<ul>
+<li><b>Changes acts only on the files you select.</b> Discarding, deleting, staging, unstaging or committing a file whose name holds <code>[</code>, <code>*</code>, <code>?</code> or a leading <code>:</code> could reach other files whose names matched it as a pattern. Names are now taken literally.</li>
+<li>Switching a chat's connection while it was opening could leave it using the old connection. A switch and an open of the same chat now wait for each other, and a message typed during a switch is kept as a draft.</li>
+<li>A queued follow-up or steering message being delivered at the moment of a crash could be lost. It now comes back after reopening, paused, and is never sent twice.</li>
+<li>Closing, replacing or quitting with an unsent side conversation now keeps its whole draft, images and skills included, in the parent chat's draft. If that can't be saved, the side stays open and quit or update stops instead of losing it.</li>
+<li>Nested code blocks, such as a code block in a quote inside another quote, now each show and copy their own code.</li>
+<li>Very long replies finish streaming faster: matching the finished reply to what was shown takes linear time.</li>
+<li>Opening a file with a very long first line no longer reads that line again for each line coloured after it.</li>
+<li>MCP servers that open each response with an empty event (Streamable HTTP, 2025-11-25) now work.</li>
+<li>Clearing a chat with more than 100,000 captured request chunks no longer leaves every later capture cleanup failing.</li>
+<li>Closing or unloading a chat stops loading its older messages, and a retried load continues where it stopped instead of starting over.</li>
+<li>Editing a question while scrolled up no longer triggers a SwiftUI update warning.</li>
+</ul>

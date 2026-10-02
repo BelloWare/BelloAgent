@@ -54,10 +54,10 @@ up separately after this release. Don't start them on this branch.
 - [ ] The remaining ~84 poll-counting test waits moved to `eventually`.
 
 ## Before release
-- [ ] Full gate passes (`scripts/check-next.sh gate`).
-- [ ] Hour-long soak of a Release build passes, no exceptions.
-- [ ] Every review finding's acceptance test from the review exists and passes.
-- [ ] Owner checks: a minute with VoiceOver in the file viewer; one compaction against a real gateway.
-- [ ] Release notes, including the new switch confirmation, usage figures
+- [x] Full gate passes (`scripts/verify-release.sh` at 215b971, 21 min 1 s).
+- [x] Hour-long soak of a Release build passes, no exceptions (seed 1790903251581, 0 stalls, longest 245 ms).
+- [x] Every review finding's acceptance test from the review exists and passes.
+- [ ] Owner checks (deferred by the owner, 2026-10-02): a minute with VoiceOver in the file viewer; one compaction against a real gateway.
+- [x] Release notes (`releases/0.1.118.html`), including the new switch confirmation, usage figures
       appearing at once on a chat switch, and that a chat moved to another
       connection can't be opened by builds before 0.1.118.
