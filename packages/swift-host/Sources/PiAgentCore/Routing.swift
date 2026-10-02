@@ -101,7 +101,7 @@ struct RoutingIdentity: Sendable {
 extension ProviderClient {
     static func replayBinding(_ profile: Profile) throws -> JSON {
         ["profile":profile.binding,"profileId":JSON(profile.id),"configurationRevision":profile.raw["revision"],
-         "contractSHA256":JSON(try RoutingContract(profile.raw["routing"]).fingerprint)]
+         "contractSHA256":JSON(profile.routing.fingerprint)]
     }
     /// Whether `profile` sends `message`'s provider-only reasoning back as
     /// it was received: a reply that only that connection can use so.
@@ -112,7 +112,7 @@ extension ProviderClient {
     }
     static func replayItems(_ message: ChatMessage, profile: Profile) throws -> [JSON]? {
         guard let items=message.providerItems else { return nil }
-        let contract=try RoutingContract(profile.raw["routing"])
+        let contract=profile.routing
         if contract.policy == "portable" { return nil }
         let portableTypes: Set<String> = profile.api == "openai-responses" ? ["message","function_call"] : ["text","tool_use"]
         let opaque=items.contains { !portableTypes.contains($0["type"].text ?? "") }

@@ -37,100 +37,67 @@ public struct ProviderClient: ModelClient {
     public static func requestBody(profile p:Profile, messages:[ChatMessage], instructions:String, tools:[ToolDefinition], sessionID:String, cacheSessionID:String? = nil, promptCaching:Bool = true, compaction:Bool = false) throws -> JSON {
         let history=messages.filter(\.replayEligible)
         var body:JSON=["model":JSON(p.model),"stream":true]
-        if p.api=="openai-responses" {
-            body["store"]=false
-            // Ours: LiteLLM correlates Responses requests through body metadata as well as
-            // the x-session-id header; both carry the same native session identity.
-            body["metadata"]=["session_id":JSON(Self.correlationValue(sessionID))]
-            // Ours: LiteLLM would otherwise answer a failing route from a fallback model;
-            // the app wants the requested model or a visible error.
-            if p.raw["compat"]["allowFallbacks"].flag != true { body["disable_fallbacks"]=true }
-            // Pi routes a session's requests to one prompt cache by its id.
-            if promptCaching { body["prompt_cache_key"]=JSON(Self.promptCacheKey(cacheSessionID ?? sessionID)) }
-            // The cap on the wire is the model's own ceiling clipped to the room
-            // the input leaves (or a bounded task's explicit cap), never the
-            // output budget. Responses rejects a cap below 16, so pi sends at least 16.
-            if let cap=p.wireOutputLimit { body["max_output_tokens"]=JSON(max(cap,Self.minimumOutputTokens)) }
-            body["input"] = .array(try responsesInput(history,instructions:instructions,profile:p))
-            if !tools.isEmpty {
-                // Pi sends `strict` only to a gateway declaring strict-mode support.
-                body["tools"] = .array(tools.map { tool in
-                    var value:JSON=["type":"function","name":JSON(tool.name),"description":JSON(tool.description),"parameters":tool.schema]
-                    if p.raw["compat"]["supportsStrictMode"].flag == true { value["strict"]=false };return value
-                })
-            }
-            if p.raw["reasoning"].flag==true {
-                let map=p.raw["thinkingLevelMap"], level=p.raw["thinkingLevel"].text ?? "default"
-                // Ours: the model-default level leaves effort unspecified.
-                if level == "default" { body["include"]=["reasoning.encrypted_content"] }
-                else {
-                    let effective=level == "off" ? "off" : PiProviderRules.clampThinkingLevel(level,map:map)
-                    if effective != "off" {
-                        body["reasoning"]=["effort":JSON(map[effective].text ?? effective),"summary":"auto"]
-                        body["include"]=["reasoning.encrypted_content"]
-                    } else if !(map.map["off"].map { $0.isNull } ?? false) {
-                        body["reasoning"]=["effort":JSON(map["off"].text ?? "none")]
-                    }
-                }
-            }
-            let owned = body
-            for (key,value) in p.raw["samplingParams"].map { body[key]=value }
-            if compaction {
-                // A summary uses the normal prefix, but generic options cannot
-                // substitute history/models/tools or enable another execution path.
-                for key in ["input","model","tools","instructions","store","stream"] {
-                    guard body[key] == owned[key] else { throw AgentError("compaction_incompatible", "Compaction cannot override the normal request's \(key) through sampling parameters.") }
-                }
-                guard body["tool_choice"].isNull || body["tool_choice"].text == "none",
-                      body["truncation"].isNull || body["truncation"].text == "disabled",
-                      body["context_management"].isNull, body["previous_response_id"].isNull,
-                      body["max_tokens"].isNull, body["max_completion_tokens"].isNull,
-                      body["conversation"].isNull, body["background"].isNull || body["background"].flag == false,
-                      body["metadata"]["session_id"] == owned["metadata"]["session_id"],
-                      body["response_format"].isNull || body["response_format"]["type"].text == "text",
-                      body["text"]["format"]["type"].isNull || body["text"]["format"]["type"].text == "text" else {
-                    throw AgentError("compaction_incompatible", "Compaction requires text output, intact history and tool_choice none. Remove conflicting execution, truncation or format options.")
-                }
-                body["tool_choice"] = "none"
-                body["truncation"] = "disabled"
-                body = body.removing(["max_output_tokens"])
-                if let cap = p.wireOutputLimit { body["max_output_tokens"] = JSON(cap) }
-                guard p.wireOutputLimit.map({ $0 >= Self.minimumOutputTokens && $0 == p.maxOutput }) ?? true else {
-                    throw AgentError("compact_budget", "The summary's output cap must match its local reserve and the route's supported minimum.")
-                }
-            }
-        } else {
-            let sampling=p.raw["samplingParams"].map
-            for key in ["temperature","top_p"] { if let value=sampling[key] { body[key]=value } }
-            let messagesCap=p.outputCap ?? p.modelOutputLimit ?? p.maxOutput
-            body["max_tokens"]=JSON(messagesCap);body["system"]=JSON(instructions)
-            body["messages"] = .array(try history.compactMap { message -> JSON? in
-                if message.role=="toolResult" { return ["role":"user","content":[["type":"tool_result","tool_use_id":JSON(message.toolCallId ?? ""),"content":JSON(message.text),"is_error":JSON(message.isError)]]] }
-                var blocks: [JSON]
-                if message.role=="assistant",let items=try replayItems(message,profile:p) { blocks=items }
-                else { blocks=message.content.compactMap { block in
-                    if block["type"].text=="text" { return block }
-                    if block["type"].text=="toolCall", message.role == "assistant" { return ["type":"tool_use","id":block["id"],"name":block["name"],"input":block["arguments"]] }
-                    if block["type"].text=="image" { return ["type":"image","source":["type":"base64","media_type":block["mimeType"],"data":block["data"]]] }
-                    return nil
-                } }
-                if message.role != "assistant", let note=message.contextNote { blocks.insert(textBlock(note.text),at:0) }
-                guard !blocks.isEmpty else { return nil }
-                return ["role":JSON(message.role=="assistant" ? "assistant":"user"),"content":.array(blocks)]
+        // Profile validates that new requests use Responses; legacy Messages
+        // decoding and history replay remain in their compatibility readers.
+        body["store"]=false
+        // Ours: LiteLLM correlates Responses requests through body metadata as well as
+        // the x-session-id header; both carry the same native session identity.
+        body["metadata"]=["session_id":JSON(Self.correlationValue(sessionID))]
+        // Ours: LiteLLM would otherwise answer a failing route from a fallback model;
+        // the app wants the requested model or a visible error.
+        if p.raw["compat"]["allowFallbacks"].flag != true { body["disable_fallbacks"]=true }
+        // Pi routes a session's requests to one prompt cache by its id.
+        if promptCaching { body["prompt_cache_key"]=JSON(Self.promptCacheKey(cacheSessionID ?? sessionID)) }
+        // The cap on the wire is the model's own ceiling clipped to the room
+        // the input leaves (or a bounded task's explicit cap), never the
+        // output budget. Responses rejects a cap below 16, so pi sends at least 16.
+        if let cap=p.wireOutputLimit { body["max_output_tokens"]=JSON(max(cap,Self.minimumOutputTokens)) }
+        body["input"] = .array(try responsesInput(history,instructions:instructions,profile:p))
+        if !tools.isEmpty {
+            // Pi sends `strict` only to a gateway declaring strict-mode support.
+            body["tools"] = .array(tools.map { tool in
+                var value:JSON=["type":"function","name":JSON(tool.name),"description":JSON(tool.description),"parameters":tool.schema]
+                if p.raw["compat"]["supportsStrictMode"].flag == true { value["strict"]=false };return value
             })
-            if !tools.isEmpty { body["tools"] = .array(tools.map{["name":JSON($0.name),"description":JSON($0.description),"input_schema":$0.schema]}) }
-            if p.raw["reasoning"].flag==true, let level=p.raw["thinkingLevel"].text,level != "default" {
-                if level=="off" { body["thinking"]=["type":"disabled"] }
-                else if p.raw["compat"]["forceAdaptiveThinking"].flag==true {
-                    body["thinking"]=["type":"adaptive"]
-                    body["output_config"]=["effort":p.raw["thinkingLevelMap"][level].text.map { JSON($0) } ?? JSON(level)]
-                    body=body.removing(["temperature","top_p"])
-                } else {
-                    guard messagesCap>1024 else { throw AgentError("thinking_budget","Messages thinking requires max output greater than 1024") }
-                    let budgets=["minimal":1024,"low":2048,"medium":4096,"high":8192,"xhigh":16384,"max":32768]
-                    body["thinking"]=["type":"enabled","budget_tokens":JSON(min(messagesCap-1,budgets[level] ?? 4096))]
-                    body=body.removing(["temperature","top_p"])
+        }
+        if p.raw["reasoning"].flag==true {
+            let map=p.raw["thinkingLevelMap"], level=p.raw["thinkingLevel"].text ?? "default"
+            // Ours: the model-default level leaves effort unspecified.
+            if level == "default" { body["include"]=["reasoning.encrypted_content"] }
+            else {
+                let effective=level == "off" ? "off" : PiProviderRules.clampThinkingLevel(level,map:map)
+                if effective != "off" {
+                    body["reasoning"]=["effort":JSON(map[effective].text ?? effective),"summary":"auto"]
+                    body["include"]=["reasoning.encrypted_content"]
+                } else if !(map.map["off"].map { $0.isNull } ?? false) {
+                    body["reasoning"]=["effort":JSON(map["off"].text ?? "none")]
                 }
+            }
+        }
+        let owned = body
+        for (key,value) in p.raw["samplingParams"].map { body[key]=value }
+        if compaction {
+            // A summary uses the normal prefix, but generic options cannot
+            // substitute history/models/tools or enable another execution path.
+            for key in ["input","model","tools","instructions","store","stream"] {
+                guard body[key] == owned[key] else { throw AgentError("compaction_incompatible", "Compaction cannot override the normal request's \(key) through sampling parameters.") }
+            }
+            guard body["tool_choice"].isNull || body["tool_choice"].text == "none",
+                  body["truncation"].isNull || body["truncation"].text == "disabled",
+                  body["context_management"].isNull, body["previous_response_id"].isNull,
+                  body["max_tokens"].isNull, body["max_completion_tokens"].isNull,
+                  body["conversation"].isNull, body["background"].isNull || body["background"].flag == false,
+                  body["metadata"]["session_id"] == owned["metadata"]["session_id"],
+                  body["response_format"].isNull || body["response_format"]["type"].text == "text",
+                  body["text"]["format"]["type"].isNull || body["text"]["format"]["type"].text == "text" else {
+                throw AgentError("compaction_incompatible", "Compaction requires text output, intact history and tool_choice none. Remove conflicting execution, truncation or format options.")
+            }
+            body["tool_choice"] = "none"
+            body["truncation"] = "disabled"
+            body = body.removing(["max_output_tokens"])
+            if let cap = p.wireOutputLimit { body["max_output_tokens"] = JSON(cap) }
+            guard p.wireOutputLimit.map({ $0 >= Self.minimumOutputTokens && $0 == p.maxOutput }) ?? true else {
+                throw AgentError("compact_budget", "The summary's output cap must match its local reserve and the route's supported minimum.")
             }
         }
         return body
@@ -160,11 +127,8 @@ public struct ProviderClient: ModelClient {
         // x-client-request-id, naming the same cache as prompt_cache_key.
         request.setValue(Self.correlationValue(cacheSessionID),forHTTPHeaderField:"session_id")
         request.setValue(Self.correlationValue(cacheSessionID),forHTTPHeaderField:"x-client-request-id")
-        // LiteLLM authenticates both API routes with the configured proxy key.
-        // The Messages route also accepts x-api-key for its native protocol.
+        // LiteLLM authenticates Responses requests with the configured proxy key.
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        if profile.api == "anthropic-messages" { request.setValue(apiKey, forHTTPHeaderField: "x-api-key") }
-        if profile.api=="anthropic-messages" { request.setValue("2023-06-01",forHTTPHeaderField:"anthropic-version") }
         for (name,value) in profile.raw["headers"].map {
             guard !Self.transportOwnedHeaders.contains(name.lowercased()) else { throw AgentError("invalid_header","Transport-owned header cannot be overridden") }
             request.setValue(value.text,forHTTPHeaderField:name)
