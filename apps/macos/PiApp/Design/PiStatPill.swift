@@ -34,6 +34,12 @@ struct PiStatPillFace: View {
     /// (a `PiFlowFillsRow` item at the end of a full row). A figure is never
     /// cut: false, the reading always takes its whole width.
     var truncates = false
+    /// What the figures are of, such as one chat's metrics. A figure that
+    /// changes rolls to its new value; figures of another scope replace the
+    /// old ones at once. Rolling a whole pill from one chat's figures to
+    /// another's, on every switch, drew it again on the CPU for some twenty
+    /// frames, the main thread's largest drawing cost in a switch.
+    var scope: AnyHashable? = nil
 
     private var reading: Text {
         guard let warningTail else { return Text(label) }
@@ -48,6 +54,7 @@ struct PiStatPillFace: View {
             }.frame(width: 16, height: 16)
             reading.font(PiFont.caption).monospacedDigit().lineLimit(1).truncationMode(.tail).fixedSize(horizontal: !truncates, vertical: true)
                 .contentTransition(.numericText()).piAnimation(PiMotion.base, value: label + (warningTail ?? ""))
+                .id(scope).transition(.identity)
         }
         .foregroundStyle(Color.piInkSecondary)
         .padding(.horizontal, 7).padding(.vertical, 3)
