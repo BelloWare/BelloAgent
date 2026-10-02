@@ -682,6 +682,13 @@ struct ChatRecord: Codable, Sendable, Identifiable, Hashable {
     var costLimit: CostLimit?
     /// True when this chat sends no webhook when it finishes; nil follows Settings.
     var webhookOff: Bool?
+    /// When the chat's connection last changed (`WorkspaceConnectionSwitch.swift`):
+    /// a copy read before then does not take the change back (`ChatRecordMerge.swift`).
+    var connectionRevision: Int64?
+    /// True while the chat's journal may still be bound to another connection
+    /// than the one this record names, after a switch that did not finish:
+    /// the chat's next open binds it here first.
+    var journalRebind: Bool?
     var isPinned: Bool { pinnedAt != nil }
     var isArchived: Bool { archivedAt != nil }
     /// What a new chat is called until its first message names it.
@@ -716,6 +723,13 @@ struct ChatRecord: Codable, Sendable, Identifiable, Hashable {
         guard !trimmed.isEmpty else { throw HostError.failure("Enter a title for this chat.") }
         return String(trimmed.prefix(120))
     }
+    /// The connection `other` names, with the model choices made against it.
+    mutating func applyConnection(from other: ChatRecord) {
+        profileID = other.profileID; model = other.model; thinkingLevel = other.thinkingLevel
+        contextWindow = other.contextWindow; maxOutputTokens = other.maxOutputTokens
+        modelOutputLimit = other.modelOutputLimit; outputBudgetVersion = other.outputBudgetVersion
+        connectionRevision = other.connectionRevision; journalRebind = other.journalRebind
+    }
     mutating func applyOrganization(from other: ChatRecord) {
         pinnedAt = other.pinnedAt; archivedAt = other.archivedAt; topicID = other.topicID; manualSidebarOrder = other.manualSidebarOrder
         titleWasEdited = other.titleWasEdited; titleWasGenerated = other.titleWasGenerated; organizationRevision = other.organizationRevision
@@ -735,6 +749,44 @@ struct DraftRecord: Codable, Sendable {
     var id: String; var text: String; var attachments: [AttachmentRecord]?; var skills: [SkillChip]?
     /// An edit remains an edit after a restart, and its displaced draft remains recoverable.
     var edit: MessageEditDraft?
+    /// Nothing typed: no text but spaces, no image, no skill.
+    var isBlank: Bool { text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (attachments ?? []).isEmpty && (skills ?? []).isEmpty }
+    /// `other` added to this draft: its text after this one's, a blank line
+    /// between, its images and skills after these, one already here not
+    /// added twice. Nothing is dropped at the submission limits: a composer
+    /// past them is the reader's to trim, which Send says.
+    /// The draft as the reader left it outside an edit: the one an earlier
+    /// message's edit displaced, while it is edited, else this one.
+    var displaced: DraftRecord {
+        guard let edit else { return self }
+        return DraftRecord(id: id, text: edit.originalText, attachments: edit.originalAttachments, skills: edit.originalSkills)
+    }
+    /// `other` added to the draft the reader left: into the one an edit
+    /// displaced while there is an edit, which ending it brings back.
+    func receiving(_ other: DraftRecord) -> DraftRecord {
+        guard var edit else { return merging(other) }
+        let merged = displaced.merging(other)
+        edit.originalText = merged.text; edit.originalAttachments = merged.attachments; edit.originalSkills = merged.skills
+        var record = self; record.edit = edit; return record
+    }
+    /// Whether this holds all of `other`: its text from the start, and every
+    /// image and skill it has.
+    func holds(_ other: DraftRecord) -> Bool {
+        text.hasPrefix(other.text) && (other.attachments ?? []).allSatisfy { image in (attachments ?? []).contains { $0.id == image.id } }
+            && (other.skills ?? []).allSatisfy { chip in (skills ?? []).contains { $0.id == chip.id } }
+    }
+    func merging(_ other: DraftRecord) -> DraftRecord {
+        var merged = self
+        let added = other.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !added.isEmpty { merged.text += (text.isEmpty ? "" : "\n\n") + added }
+        var images = attachments ?? []
+        for image in other.attachments ?? [] where !images.contains(where: { $0.id == image.id }) { images.append(image) }
+        var chips = skills ?? []
+        for chip in other.skills ?? [] where !chips.contains(where: { $0.id == chip.id }) { chips.append(chip) }
+        merged.attachments = images.isEmpty && attachments == nil ? nil : images
+        merged.skills = chips.isEmpty && skills == nil ? nil : chips
+        return merged
+    }
 }
 struct MessageEditDraft: Codable, Sendable {
     var messageID: String

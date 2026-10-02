@@ -323,6 +323,12 @@ public actor NativeHostService {
             // The snapshot is taken once the gate is free again.
             let session: AgentSession = try await withRuntimeGate {
                 if let existing=sessions[id] {
+                    // A chat moved to another connection is opened there, never
+                    // answered by its session on the old one, which the app
+                    // closes before the move.
+                    if let requested=params["profile"]["id"].text, let loaded=profiles[id]?.0.id, requested != loaded {
+                        throw AgentError("session_conflict", "This chat is open on another connection. Close it before opening it on this one.")
+                    }
                     if let costLimit { await existing.setCostLimit(costLimit) }
                     return existing
                 }
@@ -343,6 +349,25 @@ public actor NativeHostService {
                 return session
             }
             return withMode(await session.snapshot())
+        case "session.rebind":
+            // A saved chat moved to another connection: its journal is bound
+            // to the new one before the app says the chat is there, so the
+            // chat opens wherever its record names (`SessionJournal.rebind`).
+            guard !quiesced else { throw AgentError("quiesced", "Workspace is quiesced for update") }
+            let id=try identity(sessionID.map { JSON($0) } ?? params["sessionId"])
+            let url=canonical(try required(params["path"],"journal path"))
+            guard within(url,canonical(directory.path)), url.pathExtension == "jsonl" else { throw AgentError("session_scope", "Only this workspace's own journals move to another connection") }
+            let target=try Profile(params["profile"])
+            // With the connection it is on, a check first: how many replies
+            // hold reasoning only that connection can be sent, which the app
+            // asks about before it moves the chat; nothing is written.
+            // A connection that cannot be used any more (an older API) replays nothing.
+            let previous=params["previousProfile"].isNull ? nil : try? Profile(params["previousProfile"]), check=params["check"].flag == true
+            if let slim=slimming[id] { _=await slim.result }
+            return try await withRuntimeGate {
+                guard sessions[id] == nil, slimming[id] == nil else { throw AgentError("session_busy", "Close this chat before moving it to another connection") }
+                return try await Task.detached(priority:.userInitiated) { try Self.rebind(url:url, id:id, directory:directory, to:target, from:previous, check:check) }.value
+            }
         case "session.portable.preview", "session.import.inspect": return try portable(params)
         case "session.recover": return try recoverCopy(params)
         case "journal.slim":
@@ -533,6 +558,24 @@ public actor NativeHostService {
     /// checked to be one intact native branch, to a new journal under a new
     /// session id in the same project, and leaves the original untouched.
     /// Anything wrong before the last record is still refused.
+    /// The journal at `url` bound to `target`'s connection, with the
+    /// binding it had before; its metadata file names the move too, so the
+    /// next open still resumes from it.
+    private static func rebind(url: URL, id: String, directory: URL, to target: Profile, from previous: Profile?, check: Bool) throws -> JSON {
+        let journal=try SessionJournal(url:url,id:id,cwd:directory,binding:nil,create:false,checkpoint:JournalCheckpoint.read(for:url))
+        let before=journal.binding ?? .null
+        if check {
+            var replies=0
+            if let previous, previous.id != target.id {
+                let context=try AgentSession.replay(journal,url:url,id:id,binding:before,spendTracked:false,resume:true).context
+                replies=context.filter { ProviderClient.replaysReasoning($0, profile: previous) }.count
+            }
+            return ["needsConfirmation":JSON(replies > 0),"replies":JSON(replies),"rebinds":JSON(before != target.binding)]
+        }
+        try journal.rebind(to:target.binding)
+        if before != target.binding, var stored=journal.resumedFrom { stored.rebinds=journal.rebinds.map(\.check); try? stored.write(for:url) }
+        return ["rebound":JSON(before != target.binding)]
+    }
     private func recoverCopy(_ params:JSON) throws -> JSON {
         guard let directory else { throw AgentError("workspace_closed","Open the project before recovering a chat") }
         let sessions=canonical(directory.path), source=canonical(try required(params["path"],"session path"))

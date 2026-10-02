@@ -27,4 +27,7 @@ enum JournalRecordKind {
     static let compactionFailure = "pi-app.compaction-failure.v1"
     /// The chat's spend (`SessionSpend`).
     static let cost = "pi-app.cost.v1"
+    /// The chat moved to another connection: from here on the journal is
+    /// bound to `binding`, in place of `previous` (`SessionJournal.rebind`).
+    static let rebind = "pi-app.native.rebind.v1"
 }

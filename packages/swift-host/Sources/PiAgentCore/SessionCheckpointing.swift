@@ -13,7 +13,8 @@ extension AgentSession {
                            last lastLine: Data, at lastOffset: UInt64, lastID: String,
                            visible: [ChatMessage], context: [ChatMessage], spans: [String: JournalCheckpoint.Row],
                            state: (line: Data, offset: UInt64, key: String)?, assistantMessageCount: Int, latestAssistantMessageID: String?,
-                           versions: MessageVersionLedger, tasks: [TaskPresentationRecord], helper: JSON) -> JournalCheckpoint? {
+                           versions: MessageVersionLedger, tasks: [TaskPresentationRecord], helper: JSON,
+                           rebinds: [JournalCheckpoint.Check] = []) -> JournalCheckpoint? {
         guard let header, let marker, !context.isEmpty else { return nil }
         // The rows shown from the context's first one on: the context is
         // mostly the latest rows, so look for it from the end.
@@ -32,7 +33,7 @@ extension AgentSession {
                                  rows: rows, rowsBefore: first, context: context.map(\.id), lineage: visible.last(where: { $0.kind == "branch" })?.id,
                                  state: stateCheck, stateKey: state?.key,
                                  assistantMessageCount: assistantMessageCount, latestAssistantMessageID: latestAssistantMessageID,
-                                 versions: versions, tasks: tasks, helper: helper.encoded())
+                                 versions: versions, tasks: tasks, helper: helper.encoded(), rebinds: rebinds.isEmpty ? nil : rebinds)
     }
 
     /// What a checkpoint carries for the session besides its rows and
@@ -222,7 +223,8 @@ extension AgentSession {
         let state = liveStateSource.map { (line: $0.line, offset: $0.offset, key: $0.key) }
         guard var checkpoint = Self.checkpoint(sessionID: id, header: journal.headerCheck, marker: journal.markerCheck, last: last.line, at: last.offset, lastID: last.id,
                                                visible: visible, context: context, spans: rowSpans, state: state, assistantMessageCount: assistantMessageCount,
-                                               latestAssistantMessageID: latestAssistantMessageID, versions: versions.ledger, tasks: recentTaskPresentations, helper: helper) else { return }
+                                               latestAssistantMessageID: latestAssistantMessageID, versions: versions.ledger, tasks: recentTaskPresentations, helper: helper,
+                                               rebinds: journal.rebinds.map(\.check)) else { return }
         // Rows a chat opened from its metadata file never loaded still count.
         checkpoint.rowsBefore += olderRows
         if checkpoint.lineage == nil { checkpoint.lineage = checkpointLineage }

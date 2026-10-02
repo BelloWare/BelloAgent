@@ -50,6 +50,100 @@ final class QueueEditingTests: XCTestCase {
         await session.close()
     }
 
+    /// A message taken from the queue for delivery stays in the saved state
+    /// until its user record is written: a crash while it is validated (here,
+    /// while another queued message is removed, which saves the queue) leaves
+    /// a journal that brings it back, once, paused, with nothing sent.
+    func testAFollowUpBeingDeliveredSurvivesACrashOneAtATime() async throws { try await checkCrashDuringDelivery(steer: false, mode: "one-at-a-time") }
+    func testAFollowUpBeingDeliveredSurvivesACrashAll() async throws { try await checkCrashDuringDelivery(steer: false, mode: "all") }
+    func testASteerBeingDeliveredSurvivesACrashOneAtATime() async throws { try await checkCrashDuringDelivery(steer: true, mode: "one-at-a-time") }
+    func testASteerBeingDeliveredSurvivesACrashAll() async throws { try await checkCrashDuringDelivery(steer: true, mode: "all") }
+
+    private func checkCrashDuringDelivery(steer: Bool, mode: String) async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let tools = HeldQueueDeliveryTools(), client = ScriptClient([answer("first reply"), answer("delivered reply"), answer("more")], holdFirst: true)
+        func open(_ directory: URL, resume: String? = nil, client: ScriptClient, tools: any ToolExecuting) throws -> AgentSession {
+            try AgentSession(id: "queue", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: directory, readOnly: true, resources: Resources(cwd: root, home: root),
+                             client: client, tools: tools, traces: TraceStore(), resumePath: resume, autoCompaction: false)
+        }
+        let session = try open(root.appendingPathComponent("state"), client: client, tools: tools)
+        try await session.configureQueue(["steeringMode": JSON(mode), "followUpMode": JSON(mode)])
+        _ = try await session.submit(Submission(commandID: "first", turnID: "first", text: "First"), steer: false)
+        try await eventually { await client.count == 1 }
+        _ = try await session.submit(Submission(commandID: "claimed", turnID: "claimed", text: "Deliver this"), steer: steer)
+        _ = try await session.submit(Submission(commandID: "removed", turnID: "removed", text: "Remove this"), steer: steer)
+        await client.release()
+        try await eventually { await tools.waiting }
+        try await session.removeQueued("removed")
+        // The journal as a crash now would leave it.
+        let sessionPath = await session.path
+        let source = URL(fileURLWithPath: try XCTUnwrap(sessionPath))
+        let crashed = root.appendingPathComponent("crashed"), copy = crashed.appendingPathComponent(source.lastPathComponent)
+        try FileManager.default.createDirectory(at: crashed, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: source, to: copy)
+        await tools.release()
+        try await eventually { !(await session.isRunning) }
+        await session.close()
+
+        let idle = ScriptClient([])
+        let recovered = try open(crashed, resume: copy.path, client: idle, tools: RecordingTools())
+        let snapshot = await recovered.snapshot(), history = await recovered.history
+        XCTAssertEqual(snapshot["state"].text, "paused", "undelivered work comes back paused")
+        let pending = (await recovered.queue) + (await recovered.steering)
+        XCTAssertEqual(pending.map(\.turnID), ["claimed"], "the message being delivered, once; the removed one stays removed")
+        XCTAssertEqual(pending.first?.text, "Deliver this")
+        let steering = await recovered.steering
+        XCTAssertEqual(steering.count, steer ? 1 : 0)
+        XCTAssertFalse(history.contains { $0.id == "claimed" })
+        let requests = await idle.count
+        XCTAssertEqual(requests, 0, "nothing is sent on reopening")
+        await recovered.close()
+
+        // Delivered, it is the conversation's, and only there.
+        let reopened = try open(root.appendingPathComponent("state"), resume: source.path, client: ScriptClient([]), tools: RecordingTools())
+        let after = await reopened.history, left = (await reopened.queue) + (await reopened.steering)
+        XCTAssertEqual(after.filter { $0.id == "claimed" }.count, 1)
+        XCTAssertTrue(left.isEmpty)
+        await reopened.close()
+    }
+
+    /// The message being delivered counts toward the queue's limits, so what
+    /// was accepted while it was held still fits when a crash puts it back.
+    func testWorkAcceptedDuringADeliveryStillResumesAfterACrash() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let tools = HeldQueueDeliveryTools(), client = ScriptClient([answer("first reply")] + (0..<40).map { answer("reply \($0)") }, holdFirst: true)
+        let session = try AgentSession(id: "queue", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true,
+                                       resources: Resources(cwd: root, home: root), client: client, tools: tools, traces: TraceStore(), autoCompaction: false)
+        let large = String(repeating: "x", count: 250_000)
+        _ = try await session.submit(Submission(commandID: "first", turnID: "first", text: "First"), steer: false)
+        try await eventually { await client.count == 1 }
+        _ = try await session.submit(Submission(commandID: "claimed", turnID: "claimed", text: large), steer: false)
+        await client.release()
+        try await eventually { await tools.waiting }
+        var accepted = 0
+        do { while accepted < 64 { _ = try await session.submit(Submission(commandID: "m\(accepted)", turnID: "m\(accepted)", text: large), steer: false); accepted += 1 } }
+        catch let error as AgentError { XCTAssertEqual(error.code, "queue_limit") }
+        let sessionPath = await session.path
+        let source = URL(fileURLWithPath: try XCTUnwrap(sessionPath))
+        let crashed = root.appendingPathComponent("crashed"), copy = crashed.appendingPathComponent(source.lastPathComponent)
+        try FileManager.default.createDirectory(at: crashed, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: source, to: copy)
+        await session.stop(); await tools.release()
+        try await eventually { !(await session.isRunning) }
+        await session.close()
+
+        let recovered = try AgentSession(id: "queue", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: crashed, readOnly: true,
+                                         resources: Resources(cwd: root, home: root), client: ScriptClient((0..<40).map { answer("again \($0)") }), tools: RecordingTools(),
+                                         traces: TraceStore(), resumePath: copy.path, autoCompaction: false)
+        let pending = await recovered.queue
+        XCTAssertEqual(pending.count, accepted + 1)
+        XCTAssertEqual(pending.first?.turnID, "claimed")
+        try await recovered.resumeQueue()
+        await recovered.stop()
+        try await eventually { !(await recovered.isRunning) }
+        await recovered.close()
+    }
+
     func testQueuedFollowUpsReorderRewriteAndSteerWhileRunning() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let client = ScriptClient([answer("one"), answer("two"), answer("three"), answer("four")], holdFirst: true)

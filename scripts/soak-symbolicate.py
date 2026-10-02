@@ -34,6 +34,7 @@ def main():
         # named its exported symbols in the report already.
         if path.startswith(("/usr/lib/", "/System/")):
             continue
+        if dsym_root:
             found = glob.glob(os.path.join(dsym_root, "**", os.path.basename(path) + ".app.dSYM"), recursive=True) + \
                     glob.glob(os.path.join(dsym_root, "**", os.path.basename(path) + ".dSYM"), recursive=True)
             if found:

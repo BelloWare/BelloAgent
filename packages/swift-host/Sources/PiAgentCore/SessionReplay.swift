@@ -67,6 +67,9 @@ struct JournalReplayConsumer {
     // shown rows it did not load, when the checkpoint says (`older`).
     private enum Older { case none, marker(String), unknown }
     private var older = Older.none
+    // The chat's moves to another connection so far, which every checkpoint
+    // names: they change nothing a replay builds, but an open checks them.
+    private var rebinds: [JournalCheckpoint.Check] = []
 
     /// `header` and `marker` are the journal's, as a checkpoint names them;
     /// `spendTracked` is what a journal with no cost record counts as.
@@ -77,7 +80,7 @@ struct JournalReplayConsumer {
     /// Starts from the metadata file's checkpoint: the rows it names, then
     /// only the records after it. Rows shown before them load when asked for.
     mutating func resume(from checkpoint: JournalCheckpoint, loaded: (rows: [ChatMessage], context: [ChatMessage], state: JSON?, stateLine: Data?)) {
-        r.resumed=true; r.resumedFrom=checkpoint; r.coveredBytes=checkpoint.start
+        r.resumed=true; r.resumedFrom=checkpoint; r.coveredBytes=checkpoint.start; rebinds=checkpoint.rebinds ?? []
         // The checkpoint's lineage is the newest marker among all its shown
         // rows. One not among the rows it names is among those not loaded, and
         // the newest there; one among them leaves the newest before it unknown.
@@ -110,6 +113,16 @@ struct JournalReplayConsumer {
             return
         }
         let item=try JSON.parse(line)
+        if item["customType"].text == JournalRecordKind.rebind {
+            // Named already when the checkpoint resumed from lists it.
+            if !rebinds.contains(where: { $0.offset == lineStart }) {
+                rebinds.append(.init(offset: lineStart, length: line.count, sha256: JournalCheckpoint.digest(line)))
+            }
+            // A checkpoint taken before it names it too: the next open
+            // resumes there and checks it rather than reading everything.
+            r.captured?.rebinds = rebinds
+            return
+        }
         if item["customType"].text == SessionSpend.recordType {
             if item["data"][SessionSpend.resetKey].flag == true { r.spend = SessionSpend() }
             r.spend.add(record: item["data"]); r.spendTracked = true; return
@@ -194,7 +207,8 @@ struct JournalReplayConsumer {
                                                      contextRecovery:r.contextRecovery,compactionState:r.compactionState,parentInfo:r.parentInfo,presentationOrdinal:ordinalMax)
             r.captured=AgentSession.checkpoint(sessionID:id,header:header,marker:marker,last:line,at:lineStart,lastID:try identity(item["id"]),
                                                visible:r.visible,context:r.context,spans:r.rowSpans,state:stateSource,assistantMessageCount:r.assistantMessageCount,
-                                               latestAssistantMessageID:r.latestAssistantMessageID,versions:r.versions.ledger,tasks:r.recentTaskPresentations,helper:helper)
+                                               latestAssistantMessageID:r.latestAssistantMessageID,versions:r.versions.ledger,tasks:r.recentTaskPresentations,helper:helper,
+                                               rebinds:rebinds)
             capturedReceipts = (receiptsBase, receiptChanges)
             // Resumed, the rows it did not load come before the rows it holds:
             // they count, and their newest marker is the lineage when none
@@ -217,6 +231,12 @@ struct JournalReplayConsumer {
     /// the same places, in the journal of session `id`, whose header is
     /// `header`. The checkpoints it takes from here on are the clone's.
     mutating func retarget(id: String, header: JournalCheckpoint.Check?) { self.id = id; self.header = header }
+    /// The connection changes a cloned journal kept (`SessionJournal.clone`):
+    /// those before where the clone ends.
+    mutating func retarget(rebinds: [JournalCheckpoint.Check]) {
+        self.rebinds = rebinds
+        if r.captured != nil { r.captured?.rebinds = rebinds.isEmpty ? nil : rebinds }
+    }
 
     /// Starts past the bytes the reader has already read (the session header),
     /// for a replay that has consumed nothing yet.

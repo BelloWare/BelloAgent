@@ -144,10 +144,16 @@ final class TranscriptNativeScrollView: NSScrollView {
         super.layout()
         (documentView as? TranscriptNativeDocument)?.layoutRows(width: contentSize.width)
     }
+    /// Inside `setFrameSize`, where AppKit moves the clip view: SwiftUI's
+    /// layout resizes this view while it updates a view, where the page must
+    /// not publish (`TranscriptPage.announceChange`).
+    private(set) var resizing = false
     override func setFrameSize(_ newSize: NSSize) {
         // NSScrollView adjusts its origin before publishing the new clip size.
         // Claim that movement before AppKit can report it as a reader scroll.
         if frame.size != newSize { (documentView as? TranscriptNativeDocument)?.viewportWillResize() }
+        let outer = resizing
+        resizing = true; defer { resizing = outer }
         super.setFrameSize(newSize)
     }
     /// A page following its newest row stays on it when the viewport changes

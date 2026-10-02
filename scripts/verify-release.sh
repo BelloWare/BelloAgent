@@ -34,6 +34,24 @@ WORKERS="${PI_TEST_WORKERS:-8}"
 rm -rf "$LOGS" "$GALLERY"; mkdir -p "$LOGS" "$GALLERY"
 failed=""
 began=$SECONDS
+# A test process that traps leaves a trace. Swift's backtracer writes the
+# crashing thread's stack, and every other thread's, into the check's log:
+# it reads the process, which xctest, where the helper's tests run, allows
+# (the app's test host is not given it: an unsigned Debug app does not).
+# And the crash reports the system writes for the test processes during the
+# gate, a few seconds after each crash, are copied into $LOGS/crashes.
+export SWIFT_BACKTRACE="enable=yes,interactive=no,threads=all"
+REPORTS="$HOME/Library/Logs/DiagnosticReports"
+touch "$LOGS/.began"
+crash_reports() {
+  local found
+  found=$(find "$REPORTS" -maxdepth 1 -newer "$LOGS/.began" \( -name 'xctest*.ips' -o -name 'Bello Agent*.ips' \
+    -o -name 'PiNativeHostPackageTests*.ips' -o -name 'pi-native-host*.ips' \) 2>/dev/null)
+  [ -n "$found" ] || return 0
+  mkdir -p "$LOGS/crashes"
+  while IFS= read -r report; do cp -p "$report" "$LOGS/crashes/"; done <<< "$found"
+  stamp crashes "$(grep -c . <<< "$found") crash report(s) from the test processes, copied to $LOGS/crashes"
+}
 
 stamp() { printf '%s %-10s %s\n' "$(date +%H:%M:%S)" "$1" "$2"; }
 check() { # check NAME COMMAND...: output goes to $LOGS/NAME.log
@@ -121,6 +139,8 @@ for name in helper wire concurrent acceptance python; do
   [ -f "$LOGS/$name.log" ] && stamp "$name" "$(summary $name)"
 done
 failures helper
+# A report is written a few seconds after its crash.
+sleep 10; crash_reports
 
 elapsed=$((SECONDS - began))
 took="$((elapsed / 60)) min $((elapsed % 60)) s"

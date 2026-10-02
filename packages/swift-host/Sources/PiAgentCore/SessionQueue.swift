@@ -12,7 +12,7 @@ extension AgentSession {
     func validate(_ input: Submission, steer: Bool) throws {
         guard !closed else { throw AgentError("session_closed","Session runtime is unloaded") }
         guard !input.text.isEmpty || !input.skills.isEmpty || !input.attachments.isEmpty else { throw AgentError("empty_message", "Enter a message or select a skill") }
-        guard input.text.utf8.count <= 262144, queue.count + steering.count < 64 else { throw AgentError("queue_limit", "Message or queue limit exceeded") }
+        guard input.text.utf8.count <= 262144, queue.count + steering.count + (delivering == nil ? 0 : 1) < 64 else { throw AgentError("queue_limit", "Message or queue limit exceeded") }
         guard !commands.contains(where:{$0["turnId"].text == input.turnID}), !history.contains(where:{$0.id == input.turnID}) else { throw AgentError("duplicate_turn", "Turn identity already accepted; no duplicate submission was made") }
         _ = try profile.overriding(input)
         if steer, runTask == nil { throw AgentError("not_running", "Steering requires an active run; send a normal message") }
@@ -136,7 +136,10 @@ extension AgentSession {
         message.inputLane=lane
         var overrides: JSON=[:]; if let model=submission.model { overrides["modelOverride"]=JSON(model) }; if let level=submission.thinkingLevel { overrides["thinkingLevel"]=JSON(level) }
         if let capacity=submission.contextWindow { overrides["contextWindow"]=JSON(capacity) }; if let output=submission.maxOutputTokens { overrides["maxOutputTokens"]=JSON(output) }; if let limit=submission.modelOutputLimit { overrides["modelOutputLimit"]=JSON(limit) }
-        try append(message,record:overrides); taskRootID=message.taskRootID; boundary=context; currentTurnID=submission.turnID; activeSubmission=submission; retrySubmission=nil; commandState(submission,"delivered"); try persistState(active:true); event("message_end")
+        try append(message,record:overrides)
+        // The conversation holds it now; the saved state no longer needs to.
+        if delivering?.submission.turnID == submission.turnID { delivering=nil }
+        taskRootID=message.taskRootID; boundary=context; currentTurnID=submission.turnID; activeSubmission=submission; retrySubmission=nil; commandState(submission,"delivered"); try persistState(active:true); event("message_end")
     }
     func drainSteering() async throws -> Bool {
         if steering.isEmpty { return false }
@@ -151,13 +154,14 @@ extension AgentSession {
             // Delivery awaits resource validation. Pending entries may be removed,
             // edited or moved while suspended; new entries belong to the next batch.
             guard let index=steering.firstIndex(where: { selected.contains($0.turnID) }) else { break }
-            let next=steering.remove(at:index)
+            let next=steering.remove(at:index); delivering=("steering", next)
             // Steering joins the task that is running. With none running (a
             // resume that found only steering pending), the first message
             // starts one, with its live indicator, turn clock and receipt.
             let starts = activeTaskPresentation == nil && !titleTask
             do { try await deliver(next,lane:"steering",newTask:starts) }
             catch {
+                delivering=nil
                 if !hasDelivered(next) { steering.insert(next,at:0) }
                 commandState(next,"failed"); throw error
             }
@@ -170,9 +174,10 @@ extension AgentSession {
         let selected=Set(queue.prefix(count).map(\.turnID))
         for position in 0..<count {
             guard let index=queue.firstIndex(where: { selected.contains($0.turnID) }) else { break }
-            let next=queue.remove(at:index)
+            let next=queue.remove(at:index); delivering=("follow-up", next)
             do { try await deliver(next,newTask:position == 0) }
             catch {
+                delivering=nil
                 if !hasDelivered(next) { queue.insert(next,at:0) }
                 commandState(next,"failed"); throw error
             }

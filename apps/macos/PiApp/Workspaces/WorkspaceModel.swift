@@ -305,6 +305,17 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// open, so the last one out cleans up.
     var sessionOpenCallers: [String: Int] = [:]
     var opened: Set<String> = []
+    /// Owned by `WorkspaceConnectionSwitch.swift`: a chat's move to another
+    /// connection under way, which every open of the chat waits for, and how
+    /// many times each chat has moved, so an open begun before is known stale.
+    var connectionSwitches: [String: (token: UUID, task: Task<Void, Never>)] = [:]
+    var connectionGenerations: [String: UInt64] = [:]
+    /// Owned by `WorkspaceSides.swift`: a side's draft on its way to its
+    /// parent's saved draft, which every other move of it waits for.
+    var sideDraftTransfers: [String: (token: UUID, task: Task<Void, Never>)] = [:]
+    /// Test seam: each step of a connection change as it happens, awaited
+    /// ("closed", "marked", "rebound", "metadata"), so a fixture can hold the change there.
+    var connectionSwitchSteps: ((String) async throws -> Void)?
     var deletingProfiles: Set<String> = []
     var profileDeletionGenerations: [String: UInt64] = [:]
     var automaticContextTask: AutomaticContextTask?

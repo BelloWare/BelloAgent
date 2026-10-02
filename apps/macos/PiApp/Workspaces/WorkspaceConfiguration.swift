@@ -2,15 +2,24 @@ import AppKit
 import os
 
 extension WorkspaceModel {
+    /// What an open or a send relies on: the connection, as long as it is
+    /// not deleted, and the chat still on it, as long as it has not been
+    /// moved to another (`connectionGenerations`).
     struct ConnectionLease {
         let profileID: String
         let deletionGeneration: UInt64
+        let chatID: String
+        let chatGeneration: UInt64
     }
     var connectionUnavailable: HostError {
         .rejected("connection_unavailable", "This chat's connection is unavailable. Restore it in Settings before continuing.")
     }
+    var connectionChanged: HostError {
+        .rejected("connection_changed", "This chat's connection changed while this was starting. Try again.")
+    }
     func connectionLease(for item: ChatRecord) throws -> ConnectionLease {
-        let lease = ConnectionLease(profileID: item.profileID, deletionGeneration: profileDeletionGenerations[item.profileID, default: 0])
+        let lease = ConnectionLease(profileID: item.profileID, deletionGeneration: profileDeletionGenerations[item.profileID, default: 0],
+                                    chatID: item.id, chatGeneration: connectionGenerations[item.id, default: 0])
         try requireConnection(lease)
         return lease
     }
@@ -18,6 +27,9 @@ extension WorkspaceModel {
         guard !deletingProfiles.contains(lease.profileID),
               profileDeletionGenerations[lease.profileID, default: 0] == lease.deletionGeneration,
               profiles.contains(where: { $0.id == lease.profileID }) else { throw connectionUnavailable }
+        // A chat moving to another connection, or moved since, is not on this one.
+        guard connectionSwitches[lease.chatID] == nil, connectionGenerations[lease.chatID, default: 0] == lease.chatGeneration,
+              record(lease.chatID).map({ $0.profileID == lease.profileID }) ?? true else { throw connectionChanged }
     }
     /// An open may acknowledge after deletion has already inspected the loaded
     /// sessions. Keep it tracked until its late runtime is actually closed.
@@ -28,7 +40,7 @@ extension WorkspaceModel {
             try await operation()
             try requireConnection(lease)
         } catch {
-            if case nil = try? requireConnection(lease) {
+            do { try requireConnection(lease) } catch let gone {
                 if host.isReady {
                     opened.insert(item.id)
                     do {
@@ -43,7 +55,7 @@ extension WorkspaceModel {
                         if !host.isReady, hosts[item.workspaceID] === host { opened.remove(item.id) }
                     }
                 } else if hosts[item.workspaceID] === host { opened.remove(item.id) }
-                throw connectionUnavailable
+                throw gone
             }
             throw error
         }

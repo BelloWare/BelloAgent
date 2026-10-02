@@ -65,6 +65,46 @@ server = http.server.HTTPServer(('127.0.0.1', 0), MCP)
 server.serve_forever()
 """#
 
+    /// Streamable HTTP over SSE, as a 2025-11-25 server sends it: each stream
+    /// opens with a priming event (an id and empty data), then heartbeats and
+    /// other data-less events, then the response, written a few bytes at a
+    /// time. argv[2] is "all" to prime every request or "call" for tools/call.
+    static let primingServer = #"""
+import http.server, json, pathlib, random, sys, time
+state, scope = pathlib.Path(sys.argv[1]), sys.argv[2]; counter = [0]
+class MCP(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *args): pass
+    def do_POST(self):
+        request = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+        method = request.get('method')
+        with (state / 'http.txt').open('a') as f: f.write('%s\n' % method)
+        if 'id' not in request:
+            self.send_response(202); self.send_header('Content-Length', '0'); self.end_headers(); return
+        mode = ''
+        if method == 'initialize':
+            result = {'protocolVersion': '2025-11-25', 'capabilities': {'tools': {}}}
+        elif method == 'tools/list':
+            result = {'tools': [{'name': 'echo', 'inputSchema': {'type': 'object'}}]}
+        else:
+            mode = request['params']['arguments'].get('mode', '')
+            with (state / 'calls.txt').open('a') as f: f.write(mode + '\n')
+            result = {'content': [{'type': 'text', 'text': 'échø ✓ ' + mode}], 'isError': False}
+        counter[0] += 1; n = counter[0]
+        body = ''
+        if scope == 'all' or method == 'tools/call':
+            body += 'id: prime-%d\r\ndata:\r\n\r\n: heartbeat\n\nretry: 1000\n\ndata:   \n\ndata:\ndata:\n\n' % n
+        if mode == 'notify': body += 'data: %s\n\n' % json.dumps({'jsonrpc': '2.0', 'method': 'notifications/message', 'params': {'level': 'info', 'data': 'working'}})
+        if mode == 'malformed': body += 'data: {"jsonrpc": "2.0", "id"\n\n'
+        elif mode != 'eof': body += 'id: reply-%d\nevent: message\ndata: %s\n\n' % (n, json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}, ensure_ascii=False))
+        self.send_response(200); self.send_header('Content-Type', 'text/event-stream'); self.end_headers()
+        data, pieces, at = body.encode(), random.Random(n), 0
+        while at < len(data):
+            size = pieces.randint(1, 7); self.wfile.write(data[at:at + size]); self.wfile.flush(); at += size; time.sleep(0.0005)
+server = http.server.HTTPServer(('127.0.0.1', 0), MCP)
+(state / 'ready.tmp').write_text(json.dumps({'port': server.server_address[1]})); (state / 'ready.tmp').replace(state / 'ready.json')
+server.serve_forever()
+"""#
+
     private func lines(_ root: URL, _ name: String) -> [String] {
         ((try? String(contentsOf: root.appendingPathComponent(name), encoding: .utf8)) ?? "").split(separator: "\n").map(String.init)
     }
@@ -148,5 +188,52 @@ server.serve_forever()
         do { _ = try await invoke(manager, "status-500"); XCTFail("HTTP 500 reaches the caller") } catch {}
         XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path), "a server failure may have run the tool")
         await manager.close()
+    }
+
+    /// Finding 10: a priming event is not a message. Every call answers once,
+    /// whatever byte boundaries the stream arrives in, and a stream that ends
+    /// after priming, or carries malformed data, is never replayed.
+    func testPrimedSSEStreamsAnswerEachCallOnceAndNeverReplay() async throws {
+        for scope in ["call", "all"] {
+            let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+            let script = root.appendingPathComponent("mcp_priming_fixture.py"); try Data(Self.primingServer.utf8).write(to: script)
+            let gateway = try await PythonGateway.start(script: script, root: root, arguments: [scope]); defer { gateway.stop() }
+            let marker = root.appendingPathComponent("unknown.json"), manager = MCPManager(cwd: root, outcomeMarker: marker)
+            try await manager.configure(["servers": ["fixture": ["url": JSON("\(gateway.base)/mcp")]]])
+            let modes = (1...6).map { "ok-\($0)" } + ["notify"]
+            for mode in modes {
+                let answer = try await invoke(manager, mode)
+                XCTAssertEqual(answer["content"].list.first?["text"].text, "échø ✓ \(mode)", "\(scope): \(mode)")
+            }
+            XCTAssertEqual(lines(root, "calls.txt"), modes, "\(scope): each call reached the server exactly once")
+            XCTAssertEqual(lines(root, "http.txt").filter { $0 == "initialize" }.count, 1, "\(scope): one connection served every call")
+            XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path), "\(scope): answered calls leave no unknown outcome")
+            let listed = try await manager.perform(["action": "list"]); XCTAssertEqual(listed["outcomeUnknown"].flag, false)
+            for (mode, code) in [("malformed", "invalid_json"), ("eof", "mcp_incomplete")] {
+                do { _ = try await invoke(manager, mode); XCTFail("\(scope): \(mode) answered") }
+                catch let error as AgentError { XCTAssertEqual(error.code, code, error.message) }
+                XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path), "\(scope): \(mode) may have run")
+                try await manager.acknowledgeUnknown()
+            }
+            XCTAssertEqual(lines(root, "calls.txt"), modes + ["malformed", "eof"], "\(scope): a failed call is never replayed")
+            await manager.close()
+        }
+    }
+
+    /// The same stream split at every byte boundary, and fed a byte at a
+    /// time, carries exactly the one response.
+    func testAPrimedStreamYieldsOneMessageAtEveryByteBoundary() throws {
+        let stream = Data(("id: prime\r\ndata:\r\n\r\n: heartbeat\n\nretry: 1000\n\ndata:   \n\ndata:\ndata:\n\n"
+            + "id: reply\nevent: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":\"7\",\"result\":{\"text\":\"échø ✓\"}}\n\n").utf8)
+        func messages(_ parts: [Data]) throws -> [JSON] {
+            var parser = SSEParser(); return try parts.flatMap { try parser.feed($0) }.compactMap { try HTTPMCP.message($0) }
+        }
+        for split in 0...stream.count {
+            let found = try messages([stream.prefix(split), stream.dropFirst(split)].map { Data($0) })
+            XCTAssertEqual(found.count, 1, "split at \(split)"); XCTAssertEqual(found.first?["result"]["text"].text, "échø ✓", "split at \(split)")
+        }
+        XCTAssertEqual(try messages(stream.map { Data([$0]) }).map { $0["id"].text }, ["7"])
+        var parser = SSEParser()
+        XCTAssertThrowsError(try parser.feed(Data("data: {\"jsonrpc\"\n\n".utf8)).forEach { _ = try HTTPMCP.message($0) }, "malformed data is still an error")
     }
 }

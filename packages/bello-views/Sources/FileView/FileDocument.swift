@@ -203,8 +203,10 @@ struct FileLengths: Sendable {
     /// Searches waiting for more of the text to be found.
     private var searchWaiters: [Int: CheckedContinuation<Void, Never>] = [:]
     private var searchWaiterTickets = 0
-    /// Test seam: reads started for copies and accessibility.
+    /// Test seams: reads started for copies, accessibility and colouring,
+    /// and the most bytes one of them read.
     private(set) var fetchReads = 0
+    private(set) var largestFetchRead = 0
     private var fetching = 0
     #if DEBUG
     /// Test seam: every page read, once each however often.
@@ -1000,6 +1002,33 @@ struct FileLengths: Sendable {
         return parts.joined(separator: "\n")
     }
 
+    /// Whether a line is whole: false only for the last line while the
+    /// reading pass is still in it.
+    public func isLineFinal(_ line: Int) -> Bool { complete || line < lengths.count }
+
+    /// Where a bounded read from `start` ends: after whole lines while their
+    /// text fits in `units` UTF-16 units (one short line at least), and in a
+    /// long line at the furthest of its character marks that fits (the next
+    /// one at least), so a read never ends inside a character. Short lines
+    /// are under 64 KiB, so the read is bounded either way.
+    public func readEnd(from start: FileTextPosition, units: Int) -> FileTextPosition {
+        var line = max(0, start.line), column = max(0, start.column), used = 0
+        while true {
+            let length = utf16Length(ofLine: line)
+            if let long = longLine(line), length - column > units - used {
+                let limit = column + max(1, units - used)
+                var at = Self.mark(before: limit, in: long)
+                if Int(Self.mark(at, of: long).utf16) <= column { at += 1 }
+                return FileTextPosition(line: line, column: at <= long.marks.count ? min(length, Int(Self.mark(at, of: long).utf16)) : length)
+            }
+            used += length - column + 1
+            guard line + 1 < lineCount, used < units else { return FileTextPosition(line: line, column: length) }
+            let next = utf16Length(ofLine: line + 1)
+            if longLine(line + 1) == nil, used + next > units { return FileTextPosition(line: line, column: length) }
+            line += 1; column = 0
+        }
+    }
+
     /// The text between two positions, read off the main thread whatever its
     /// size, lines joined by "\n". A long line at either end is read from its
     /// mark nearest the position, not from its start or to its end.
@@ -1052,7 +1081,7 @@ struct FileLengths: Sendable {
                 guard let self else { completion(nil); return }
                 self.fetching -= 1
                 guard version == self.version else { completion(nil); return }
-                self.bytesRead += counted
+                self.bytesRead += counted; self.largestFetchRead = max(self.largestFetchRead, counted)
                 completion(copied)
             }
         }

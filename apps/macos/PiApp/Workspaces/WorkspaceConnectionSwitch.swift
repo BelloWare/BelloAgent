@@ -12,6 +12,7 @@ extension WorkspaceModel {
         if item.imported { return "Imported history has no connection to change." }
         if item.connectionTest == true || item.workspaceID == WorkspaceRecord.scratchID { return "Connection tests keep the connection they tested." }
         if item.isBackgroundTask { return "Background tasks keep their connection." }
+        if connectionSwitches[chatID] != nil { return "Wait for this chat's connection change to finish." }
         if side(chatID) != nil || item.parentSessionID != nil { return "Side conversations keep their parent's connection." }
         if isSessionOpening(chatID) { return "Wait for this chat's connection to finish opening." }
         if let view = displays[chatID], view.hasWork || view.loading { return "Wait for this chat to finish its current work first." }
@@ -41,29 +42,94 @@ extension WorkspaceModel {
         // awaits drained used to make the pill do nothing at all.
         if let blocker = connectionSwitchBlocker(for: chatID) { error = blocker; return }
         guard var updated = record(chatID), updated.profileID != profileID else { return }
+        // From here on the chat is the change's: an open, a send, a prewarm
+        // or an automatic context waits for it, then opens wherever the chat
+        // is, and one leased before it is stale (`requireConnection`). Without
+        // this, an open that read the chat on the old connection while the
+        // record was being written opened the old session after the switch.
+        let (released, release) = AsyncStream<Never>.makeStream()
+        let token = UUID()
+        connectionSwitches[chatID] = (token, Task { for await _ in released {} })
+        connectionGenerations[chatID, default: 0] &+= 1
+        defer {
+            release.finish()
+            if connectionSwitches[chatID]?.token == token { connectionSwitches.removeValue(forKey: chatID) }
+        }
         do {
+            // A close sent when the chat's display was let go of lands first.
+            if let closing = sessionClosings[chatID] { await closing.task.value }
             if opened.contains(chatID) {
                 guard let host = hosts[updated.workspaceID], host.isReady else { throw HostError.failure("Wait for this project's host to recover before changing the connection.") }
                 _ = try await host.request("session.close", sessionID: chatID); opened.remove(chatID)
             }
-            updated.profileID = profileID
+            try await connectionSwitchSteps?("closed")
+            // A chat never sent has no record yet (`materializeChat`): writing
+            // one here left an empty "New chat" in the sidebar at every launch
+            // once the chat was abandoned. Its first send writes it, with this
+            // connection, from memory.
+            let persisted = !pendingChatIDs.contains(chatID)
+            // A chat with a journal moves it first: bound to the old
+            // connection, it would not open on the new one. The record says
+            // the journal may move before it moves, so a crash or a lost
+            // answer in between is put right by the next open
+            // (`reconcileJournal`), and names the new connection only once
+            // the journal is bound there.
+            if let path = updated.path {
+                guard let workspace = workspace(for: updated.workspaceID) else { throw HostError.failure("This chat's project is unavailable.") }
+                // Replies whose reasoning only the connection left can be sent
+                // go to the new one as their text and tool calls. The reader
+                // is asked each time that would happen; otherwise the switch
+                // is silent.
+                if let current = profiles.first(where: { $0.id == updated.profileID }) {
+                    let checked = try await host(for: workspace).request("session.rebind", sessionID: chatID, params: [
+                        "path": .string(path), "profile": target.wire, "previousProfile": current.wire, "check": .bool(true)]).object ?? [:]
+                    if checked["needsConfirmation"]?.bool == true {
+                        switch await questions.confirm(Self.reasoningLeftBehind(from: current.name, to: target.name), about: chatID) {
+                        case .yes: break
+                        case .no: return
+                        case .busy: error = PiQuestion.busyNotice; return
+                        }
+                        // The answer took a while: the chat must still be where
+                        // it was asked about, and both connections still saved.
+                        guard !isShutDown, let again = record(chatID), again.profileID == updated.profileID, again.path == path,
+                              profiles.contains(where: { $0.id == profileID }) else { error = "This chat or its connections changed while you were asked. Choose again."; return }
+                    }
+                }
+                var marked = updated
+                marked.journalRebind = true; marked.connectionRevision = nextConnectionRevision(after: updated)
+                if persisted { try await store.put(marked, kind: "chat", id: chatID) }
+                adoptConnection(of: marked)
+                try await connectionSwitchSteps?("marked")
+                do {
+                    let host = try await host(for: workspace)
+                    _ = try await host.request("session.rebind", sessionID: chatID, params: ["path": .string(path), "profile": target.wire])
+                    try await connectionSwitchSteps?("rebound")
+                } catch {
+                    // Even a refusal may come after the move was written. The
+                    // chat stays on its connection: its journal is bound back
+                    // there, and the mark goes only once it is; otherwise the
+                    // next open settles it.
+                    if let current = profiles.first(where: { $0.id == updated.profileID }), let host = hosts[updated.workspaceID], host.isReady,
+                       (try? await host.request("session.rebind", sessionID: chatID, params: ["path": .string(path), "profile": current.wire])) != nil {
+                        var unmarked = marked
+                        unmarked.journalRebind = nil; unmarked.connectionRevision = nextConnectionRevision(after: marked)
+                        if persisted { try? await store.put(unmarked, kind: "chat", id: chatID) }
+                        adoptConnection(of: unmarked)
+                    }
+                    throw error
+                }
+                updated = marked
+            }
+            updated.profileID = profileID; updated.journalRebind = nil; updated.connectionRevision = nextConnectionRevision(after: updated)
             // Only an actually-read catalog is evidence that a model is gone.
             // A blank or failed listing keeps the chat's choice.
             let catalog = catalogEntry(for: target)
             let known = catalog.error == nil && !catalog.descriptors.isEmpty
             let listed = updated.model.flatMap { alias in !known || catalog.descriptor(for: alias) != nil ? alias : nil }
             applyModelChoice(listed, to: &updated, profile: target)
-            // A chat never sent has no record yet (`materializeChat`): writing
-            // one here left an empty "New chat" in the sidebar at every launch
-            // once the chat was abandoned. Its first send writes it, with this
-            // connection, from memory.
-            if !pendingChatIDs.contains(chatID) { try await store.put(updated, kind: "chat", id: chatID) }
-            if let index = chats.firstIndex(where: { $0.id == chatID }) {
-                chats[index].profileID = updated.profileID
-                chats[index].model = updated.model; chats[index].thinkingLevel = updated.thinkingLevel
-                chats[index].contextWindow = updated.contextWindow; chats[index].maxOutputTokens = updated.maxOutputTokens
-                chats[index].modelOutputLimit = updated.modelOutputLimit; chats[index].outputBudgetVersion = updated.outputBudgetVersion
-            }
+            try await connectionSwitchSteps?("metadata")
+            if persisted { try await store.put(updated, kind: "chat", id: chatID) }
+            adoptConnection(of: updated)
             if selectedID == chatID { profileChoice = profileID }
             if let view = displays[chatID] {
                 // The footer's context and metrics described the old endpoint.
@@ -72,5 +138,38 @@ extension WorkspaceModel {
             }
             if selectedID == chatID { scheduleAutomaticContext(chatID) }
         } catch { self.error = error.localizedDescription }
+    }
+
+    /// A connection revision after the chat's last (`ChatRecord.connectionRevision`).
+    func nextConnectionRevision(after record: ChatRecord) -> Int64 {
+        max((record.connectionRevision ?? 0) + 1, Int64(Date().timeIntervalSince1970 * 1_000_000))
+    }
+    /// The connection `record` names, taken by the chat in memory.
+    func adoptConnection(of record: ChatRecord) {
+        guard let index = chats.firstIndex(where: { $0.id == record.id }) else { return }
+        chats[index].applyConnection(from: record)
+    }
+    /// Binds the journal of a chat whose last switch did not finish to the
+    /// connection its record names, before the chat opens: the record wins,
+    /// whichever side of the move the journal was left on. Called from the
+    /// chat's one shared open, so no other caller has its session loaded.
+    func reconcileJournal(_ chatID: String, host: HostSupervisor, profile: ProfileRecord) async throws {
+        guard let current = record(chatID), current.journalRebind == true, current.profileID == profile.id else { return }
+        if let path = current.path {
+            _ = try await host.request("session.rebind", sessionID: chatID, params: ["path": .string(path), "profile": profile.wire])
+        }
+        var settled = current
+        settled.journalRebind = nil; settled.connectionRevision = nextConnectionRevision(after: current)
+        // Left marked when the write fails: the next open binds it again,
+        // which changes nothing then.
+        if !pendingChatIDs.contains(chatID) { try? await store?.put(settled, kind: "chat", id: chatID) }
+        adoptConnection(of: settled)
+    }
+    /// Asked before a chat moves to a connection that cannot be sent the
+    /// provider-only reasoning some of its replies hold.
+    static func reasoningLeftBehind(from: String, to: String) -> ChatQuestion {
+        ChatQuestion(title: "Earlier reasoning from \(from) can't be sent to \(to). Switch anyway?",
+                     detail: "Replies written on \(from) go to \(to) as their text and tool calls. The chat keeps everything it has.",
+                     action: "Switch")
     }
 }

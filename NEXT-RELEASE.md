@@ -1,72 +1,63 @@
-# Next release: 0.1.117 (released)
+# Next release: 0.1.118
 
-**0.1.117/build 121 is released.** Source is on `main`, tagged `v0.1.117`; website commit `a109c15` publishes the signed/notarized installer and identical update feeds at [belloware.com](https://belloware.com/bello-agent.html). Public installer hash/Ed25519, feed equality and exact product-page verification passed at **2026-10-01 06:38:03 UTC**. The owner accepted the documented soak limitation and deferred the manual VoiceOver and real-gateway checks. The next version has not been assigned.
+**Not released.** 0.1.117 (build 121) is the latest release; its record is in `docs/validation/` and in this file's git history.
 
-**All work for the next release goes on one branch: `dev/next`.** Other `dev/*` and `wip/*` branches are history; everything from them that belongs to 0.1.117 is merged here. `main` holds released versions only and is updated by the release process (docs/Release.md).
+**All work for 0.1.118 goes on `dev/next`.** Workstream branches (`dev/ws1-…` etc.) are merged here by the integrator. `main` holds released versions only (docs/Release.md).
 
-## How work flows
-Current owner instruction (2026-10-01): development commits were kept local until release. The owner then instructed: "push to main, and belloware.com, lets just release it", after receiving the failed-soak and pending owner-check summary. Source and website publication completed under that authorization, accepting the documented graphics/font-cache pause limitation and deferring the manual VoiceOver and real-gateway checks. All existing commit identities are preserved. Native validation used the owner's Mac with Xcode 16.1 and XcodeGen 2.44.1.
+**Release rule (owner, 2026-10-01): release only when every item below is done** — all five workstreams, the full gate, and an hour-long soak that passes with no exceptions.
 
-1. A coding agent works directly on `dev/next`: small local commits until release, with a final `Check:` paragraph in each commit message naming the tests and helper/gallery needs.
-2. The owner's Mac checks these local commits with `PI_NEXT_REF=dev/next scripts/check-next.sh` (build), `PI_NEXT_REF=dev/next scripts/check-next.sh test <Class> …` (named test classes), `PI_NEXT_REF=dev/next scripts/check-next.sh helper` (helper and package suites, wire scripts) or `PI_NEXT_REF=dev/next scripts/check-next.sh gate` (the full release gate). The script fixes the chosen commit for the whole run in its separate check worktree. Without `PI_NEXT_REF`, it still fetches and checks `origin/dev/next`.
-3. Normally the gate and an hour-long soak pass before `dev/next` is released. For 0.1.117, the owner explicitly authorized release with the documented soak limitation and deferred owner checks. Keep their actual results in the validation record; do not describe the failed soak as passing.
+## How work is done
+- The integrator implements with parallel workstream agents, each in its own worktree and build folder, each with its own Codex session (gpt-6.1-sol, xhigh, read-only) that plans every step and reviews every diff before commit.
+- Every fix gets a test that fails without it (mutation-checked). UI stays unchanged except where an item says otherwise.
+- Checks: `scripts/check-next.sh` (build, `test <Class>…`, `helper`, `gate`).
 
 ## Rules for code on this branch
 - Native only (AppKit/SwiftUI), the app's Pi components, no stock controls.
 - The helper follows pi 0.85.1 exactly; wire format changes must be optional fields.
-- Tests for every fix and feature; no timing waits that count polls (use `eventually` in PiAppTests/TestSeams.swift).
-- Keep the `packages/bello-views` package (FileView, FileFinder, GitView) free of app types; macOS 13.
-- Update this file's checklist when an item is done.
+- No timing waits that count polls (use `eventually` in PiAppTests/TestSeams.swift).
+- Keep `packages/bello-views` (FileView, FileFinder, GitView) free of app types; macOS 13.
+- Tick items here in the commit that finishes them.
 
-## Baseline at takeover (2026-10-01)
-- Fork speed-up: a fork of a 300 MB chat is ready to type in about 0.3 s (was 10–37 s); history loads in the background. Done.
-- File viewer: engine, tabs beside the chat and in their own windows, find and go to line, file links from tool rows. Done.
-- Changes as a tab beside the chat or in its own window, replacing the sheet. Done.
-- Quick Open (⌘P): merged from `wip/viewer-stop`, **unfinished** (see below).
-- Changes narrow-pane layout: merged from `wip/git-stop`, **unfinished** (see below).
-- The build and test target compile at this commit; the unfinished items' tests are not yet all passing.
+## Workstream 1 — data safety and connections (review findings 1–5)
+Source: `docs/reviews/BelloAgent-0.1.117-deep-review.md`.
+- [x] **Literal Git paths** (finding 1): discard, delete untracked, stage, unstage, commit (both forms, incl. pathspec-file) use literal pathspecs; diff/history audited. Tests: `[`, `*`, `?`, leading `:` names; unselected files untouched; renames; long lists.
+- [x] **Serialized connection switch** (finding 2): per-chat gate over close/rebind/metadata vs open, send, prewarm and automatic context; opens tied to a binding generation and revalidated after awaits. Test the review's reverse interleaving, two quick switches, cancellation, failed writes.
+- [x] **Journal rebind on switch** (finding 5): rebind the journal to the new connection before committing the switch; a failed rebind leaves the old connection working. Two synthetic gateways; send and reopen on B; checkpoint and full-replay journals.
+- [x] **Confirm when reasoning can't carry over** (owner decision: ask each time): before switching, the helper checks the context against B. If replies hold provider-only reasoning that only A can use, ask "Earlier reasoning from A can't be sent to B. Switch anyway?" — on confirm those replies go to B portably (text and tool calls), as per-turn model changes already do; the original journal keeps everything. Otherwise switch silently.
+- [x] **Durable in-flight queue delivery** (finding 3): a claimed follow-up/steering item stays persisted until its user record is appended; recovery restores undelivered work paused without duplicates. Crash-snapshot test, both lanes, one-at-a-time and all modes.
+- [x] **Whole pending-side draft** (finding 4): close, replace, quit and update move text, images and skills to the parent through one merge path; storage failures keep everything recoverable.
 
-The implementation work below is committed and published on `main` and `dev/next`. Native builds compile all new files. Focused checks passed: QuickOpenTests (16), GitPanelWidthTests (3), ChangesTabFrameTests (7), FileTextViewTests (42), FileTabTests/ReplyFileLinkTests/TranscriptViewEqualityTests (19), PiSheetWindowTests (10) and MarkdownStreamingCorrectnessTests (12). CheckNextTests passed 4 tests; focused helper history/edit/version/fork checks passed 47 (one skipped).
+## Workstream 2 — content and rendering correctness (findings 7–10)
+- [x] **Nested code fence identities** (7): collision-free leaf identity; Copy, display and accessibility match; streaming selection stable.
+- [x] **Linear terminal Markdown matching** (9): ordered cursor; candidate-visit test proves linear growth; identity rules unchanged.
+- [x] **Bounded syntax-state reads** (8): chunked lexer advance, shared state across lines, cancellation; read-size test with a 64 MiB first line.
+- [x] **Empty MCP SSE priming events** (10): ignored; loopback fixture with arbitrary chunk splits, no duplicate tool calls.
 
-The final full gate at `76bfb27` passed: native serial 327 executed (17 skipped), native parallel 1,632 passed (18 skipped), helper 580 executed (6 skipped), views package 110 executed (3 skipped), wire 34, concurrent wire 4, acceptance 2 and Python 72. All checks reported zero failures, including the isolated StreamingCostTests process. The gallery rendered 172 images. The Release build-for-testing compiled testable FileView/GitView modules; all 7 optimized ChangesTabFrameTests and all 3 synthetic compaction scenarios passed. The hour-long Release soak failed on six graphics/font-cache pauses above 250 ms; its 190 launches had no idle-row jumps, slow launches or quit failures. A two-minute replay reproduced the early pause. The threshold remains unchanged; the owner accepted this previously documented limitation when authorizing release on 2026-10-01. Earlier failed runs and their corrections are recorded in [the validation record](docs/validation/Bello-Agent-0.1.117-2026-10-01.md). [Mac validation handoff](docs/Next-Release-Validation.md) lists the commands and publication steps.
+## Workstream 3 — capture cleanup (finding 6)
+- [x] Batched/keyset garbage collection and streaming orphan checks; >100,001 chunks; failure mid-batch recovers; bounded memory.
 
-## Left for 0.1.117
-- [x] **Quick Open app side** — fix Codex's 8 findings, each with a test (Files/QuickOpen.swift, QuickOpenPanel.swift, Workspaces/WorkspaceQuickOpen.swift, Application/PiApp.swift, WindowPresentation.swift). Validated in the final full gate: Mac build, QuickOpenTests, WindowPresentationTests, TabHostTests and gallery; Quick Open scenes reviewed in both themes:
-  1. [x] a symlink in a trusted project pointing into an untrusted one opens as trusted: open without `project:` so the resolved path decides;
-  2. [x] Return before the new query's results opens the previous choice: keep a pending open until results for the current query arrive;
-  3. [x] a file and its symlink alias share a row id: dedupe by id;
-  4. [x] ⌘P in a pop-out tab window shows the list in the main window: use the window it was pressed in;
-  5. [x] opening from a text field saves the field editor, not the field: save the delegate control and its selection;
-  6. [x] the delayed focus task can steal focus later: tie it to a token bumped by each show/open; wait for the active pane to become visible within the deadline. Setting its visible window's responder works before key-window activation and does not bring that window forward;
-  7. [x] a failed refresh still reads as ready: surface `finder.failure` and say the list is as last read;
-  8. [x] a truncated listing says only "no match": say how many files were searched. The file-limit fixture now uses flat files so the separate folder-queue bound does not end the walk first.
-- [x] **Changes narrow-pane layout** — GitPanelWidthTests: the list offset check is too strict (moves 12.5 pt as rows re-measure; compare the first visible row), and the Commit button isn't found in the accessibility tree (assert with the commit field instead). Then run ChangesTabFrameTests at 1280×820, 580×800 and 820×640, add a gallery scene for a narrow window, and review.
-  - [x] Compare the first visible file row and assert the full commit field; add `10c-changes-window-narrow` in both gallery themes. Layout waits use `eventually` with measured geometry, without counting redraw polls. An optional test observer reads actual row geometry because SwiftUI's virtual rows are absent from this Mac's in-process accessibility tree. The observer is inactive in normal app views.
-  - [x] Mac validation: GitPanelWidthTests (3 tests) and ChangesTabFrameTests (7 tests) passed, including 1280×820, 580×800 and 820×640. Reviewed `10c-changes-window-narrow` in light and dark; commit field, list, diff and toolbar fit. Both classes also passed the first full native gate.
-- [x] **Diff line → file**: a diff line's Pi context menu opens its current file in a tab at that line; split rows use the side under the pointer and empty sides have no action. Validated in the final full gate: GitDiffTableTests, ChangesTabTests and Changes gallery.
-- [x] **Tab speed fix**: `TabContentHost.sizeThatFits` returns `proposal.replacingUnspecifiedDimensions()` (Tabs/TabWindows.swift); a SwiftUI layout probe covers full and partial proposals. Validated in the final full gate: TabHostTests, ChangesTabFrameTests and tab gallery.
-- [x] **Links in reply text**: visible code-formatted paths resolve through a bounded actor cache and open existing files in trusted projects (at `:N`); clicks recheck trust, symlink targets respect the closest project, and plain prose has no marker. Opening explicitly runs on the UI actor; view equality tracks whether the resolver and opening action exist. The stored-property inventory regression now includes both actions. The reply-link fixture owns its window through close, preventing an AppKit over-release in test teardown. Validated in the final full gate: ReplyFileLinkTests, ChatFileLinkTests, TranscriptActionsForwardingTests and reply gallery; reply links reviewed in both themes.
-- [x] **Syntax colours** in the viewer: SyntaxHighlighter exposes resumable comment/string/declaration states; a reader actor shares 128-line checkpoints, and the app supplies colour ranges only for drawn pieces. Validated in the final full gate: FileSyntaxTests, FileTextViewTests, FileTabTests and file-view gallery; syntax scenes reviewed in both themes.
-- [x] **Live follow and previews**: vnode watches follow writes, atomic replacements, deletion and recreation; a background replacement reading swaps into the kept text view with scroll/selection preserved. PDFKit keeps its PDF view and images decode to a maximum 2048-pixel thumbnail off the UI actor. The decoded bitmap is kept directly so a Retina snapshot cannot double its pixel dimensions; FileTabTests checks both the representation and its CGImage. Replacement symlinks are refused so their target needs a fresh open and trust check. Hidden/untrusted/closed tabs stop watching. Validated in the final full gate: FileTabTests, FileDocumentTests, FileTextViewTests, FileFindTabTests and preview gallery; previews reviewed in both themes.
-- [x] **Non-blocking edit/versions** in the helper: `prepareEdit`, `edit(fromMessageID:)`, `messageVersions`, and `versionPage` await a shared off-actor replay/preparation, reusing a fork's existing load. Changed snapshots are rebuilt and edits recheck the journal after waiting. Validated in the final helper suite: HistoryFillTests, HistoricalEditTests, MessageVersionTests and OlderRowsTests.
-- [x] Remove what's left of the old Changes sheet from current code and tests: panel/tab comments and frame-test names now describe tabs; opening checks assert that the workspace has no attached sheet. `showGit`, `gitWorkspaceID`, and `ChangesSheet` are absent from current code. Historical release validation records keep their original test names. Validated in the final native gate: ChangesTabTests and ChangesTabFrameTests.
+## Workstream 4 — smoothness and loose ends
+- [x] **Soak pauses**: 264–539 ms graphics/font-cache waits (0.1.117 soak, seed `1790822043708`; a 122 s replay reproduces one at 431 ms). Profile, then reduce text drawn at once. Target: hour-long soak passes.
+- [x] **Last SwiftUI publish-during-update warning** (edit-a-question flow; HistoryEditTests.testEditingAQuestionScrolledUpToGoesToTheNewTurn).
+- [x] **Helper loose ends**: cancel a chat's older-rows load on close/unload; guard unload while a command awaits the load; resume retries instead of replaying from the start.
+- [x] **The unexplained HostDispatchTests trap**: Thread Sanitizer run of fill/older-rows/dispatch tests; a backtrace diagnostic in the gate.
+
+## Workstream 5 — refactors: NOT in 0.1.118
+The owner moved these out of 0.1.118 (2026-10-02); another agent takes them
+up separately after this release. Don't start them on this branch.
+
+- [ ] Composer state in its own @Observable owner (pilot).
+- [ ] AgentSession's ~104 properties in groups, receipts first.
+- [ ] Closed chats released at shutdown (task ownership), not ~2 minutes later.
+- [ ] Narrower chat-change invalidation, measured with 5,000 records.
+- [ ] A shared journal-format module for app and helper.
+- [ ] The remaining ~84 poll-counting test waits moved to `eventually`.
 
 ## Before release
-- [x] Prepare `docs/Next-Release-Validation.md` with local-commit checks and release gates; execution, actual results and owner exceptions are recorded.
-- [x] Gallery scenes cover PDF/image previews (`24f`, `24g`) and an actual reply path link (`24h`), including opening its file. The final gate rendered 172 images. Reviewed the new scenes in both appearances; narrow Changes, images and reply links were reviewed again after native corrections.
-- [x] The Mac check script can check a local committed ref without fetching or publishing; CheckNextTests covers local/default ref selection and refusal of a dirty check worktree. CheckNextTests passed 4 tests on this Mac.
-- [x] Bring the published 0.1.116 metadata and validation record into `dev/next`; its build is 120. Prepare 0.1.117/build 121 and regenerate with XcodeGen 2.44.1. The public feed was checked before choosing build 121.
-- [x] `scripts/check-next.sh gate` passes: `76bfb27`, all checks passed in 18 min 20 s. StreamingCostTests runs alone with unchanged bounds; VerifyReleaseTests covers ordering and failure handling.
-- [x] Soak requirement resolved by the owner's release authorization, accepting the limitation rather than claiming a pass. The 3,606 s run at `76bfb27`, seed `1790822043708`, failed on six 264–539 ms graphics/font-cache pauses. A 122 s replay reproduced the same early long-reply pause at 431 ms. No threshold or rendering code has been changed to dismiss these failures. This limitation remains follow-up work.
-- [x] A Release build-for-testing with `ENABLE_TESTABILITY=YES` compiles `@testable import FileView` and `GitView`; all 7 optimized ChangesTabFrameTests passed at the gated source.
-- [x] Fork compatibility: ForkCloneTests passed in the helper suite, including copied-journal open/reopen coverage. The verified published 0.1.116/build 120 helper created whole-chat and reply-point forks against a synthetic gateway; 0.1.117 reopened each twice with identical messages, context, versions, origin and recorded cost, without rewriting either journal. This uses actual old-helper output; an additional owner-retained fork is optional evidence.
-- [x] The owner deferred the one-minute file-viewer VoiceOver exercise when authorizing release on 2026-10-01. Native accessibility-interface tests passed; no manual VoiceOver result is claimed.
-- [x] `releases/0.1.117.html` names the fork behaviour changes (a fork opens partly loaded and fills in; an older app can show the parent's cost in new forks), alongside the file and Changes features. Reviewed under the owner's delegated release decisions; the notes also describe saved-side navigation. The website product template introduces Quick Open, file tabs and Changes without changing its layout.
-- [x] Prepare and publish the signed/notarized 0.1.117/build 121 candidate. App and DMG notarization, stapling, Gatekeeper and Ed25519/feed validation passed; the installer is 12,268,767 bytes (11.70 MiB). `validate-release.py --previous-build 120` and website staging preflight passed. Artifacts are under `~/Library/Caches/BelloAgentNext/build/releases/0.1.117`; website commit `a109c15` publishes the same bytes.
-- [x] The owner deferred the real-gateway compaction check when authorizing release on 2026-10-01. Synthetic scenarios passed 3/3; no real-gateway result is claimed and no production vault credentials were retrieved.
-- [x] Incorporate the approved release into `main`, push source and `v0.1.117`, publish the website, and verify the downloaded public archive and both feeds. Tagged source: `3fdb62b561a32755ccecad16a02302dab0d891dc`; website: `a109c15f8e77d3d41226d358875f9916e444fcae`. Public verification passed at 2026-10-01 06:38:03 UTC; final validation documentation is pushed on both source branches.
-
-## Decisions delegated by the owner (2026-10-01)
-- [x] Keep ⌘↩, ⌘. and chat ⌘F inactive while typing in editable tab text. Tab-specific shortcuts take precedence. ChangesTabTests covers send, search and stop in the commit field and the composer.
-- [x] Owner delegated the choices on 2026-10-01: Changes uses the comparison arrows icon; new Changes windows open at 1040×720. Keep the 900 pt stacking threshold, ordinary file windows at 820×640 and restored window frames. TabHostTests, ChangesTabTests and the gallery passed; both themes reviewed.
-- [x] Owner delegated the choice: Next/Previous Chat includes saved sides in sidebar order and focuses them beside their parent. Switching chats retains open sides and their work/drafts. Deleting a parent still requires closing its side first; saved children survive independently. SessionOrganizationTests covers navigation, retained work and the deletion guard.
+- [ ] Full gate passes (`scripts/check-next.sh gate`).
+- [ ] Hour-long soak of a Release build passes, no exceptions.
+- [ ] Every review finding's acceptance test from the review exists and passes.
+- [ ] Owner checks: a minute with VoiceOver in the file viewer; one compaction against a real gateway.
+- [ ] Release notes, including the new switch confirmation, usage figures
+      appearing at once on a chat switch, and that a chat moved to another
+      connection can't be opened by builds before 0.1.118.

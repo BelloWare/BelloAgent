@@ -239,6 +239,122 @@ final class SideTests: XCTestCase {
         XCTAssertEqual(f.parentView.draft, "A question for the side", "Its text goes back to the parent, as for any draft side")
     }
 
+    // MARK: A draft side's whole draft goes to its parent
+
+    private static let image = AttachmentRecord(id: "side-image", path: "/tmp/side.png", sha256: "00", bytes: 3, mimeType: "image/png")
+    private static let parentImage = AttachmentRecord(id: "parent-image", path: "/tmp/parent.png", sha256: "01", bytes: 3, mimeType: "image/png")
+    private static let skill = SkillChip(id: "release", name: "release", path: "/skills/release", contentHash: "c", metadataHash: "m")
+    private static let other = SkillChip(id: "review", name: "review", path: "/skills/review", contentHash: "c", metadataHash: "m")
+
+    /// A draft side with text, an image and skills.
+    @MainActor private func draftSide(_ f: ScriptedSide, text: String, images: [AttachmentRecord], skills: [SkillChip]) throws -> SideRecord {
+        f.model.openSide(parentID: f.parent.id)
+        let info = try XCTUnwrap(f.model.sides[f.parent.id]); XCTAssertTrue(info.pending)
+        let side = try XCTUnwrap(f.model.displays[info.id])
+        side.draft = text; side.attachments = images; side.skills = skills
+        return info
+    }
+
+    /// Closed, a draft side gives its parent its text, its images and its
+    /// skills, after what the parent holds; a chip both hold is there once.
+    @MainActor func testClosingADraftSideMovesItsTextImagesAndSkills() async throws {
+        let f = try await scriptedSide()
+        f.parentView.draft = "Parent text"; f.parentView.attachments = [Self.parentImage]; f.parentView.skills = [Self.skill]
+        let info = try draftSide(f, text: "  Side text ", images: [Self.image], skills: [Self.skill, Self.other])
+        f.model.closeSide(info.id)
+        XCTAssertNil(f.model.sides[f.parent.id], "It closes")
+        XCTAssertEqual(f.parentView.draft, "Parent text\n\nSide text")
+        XCTAssertEqual(f.parentView.attachments.map(\.id), ["parent-image", "side-image"])
+        XCTAssertEqual(f.parentView.skills.map(\.id), ["release", "review"])
+    }
+
+    /// A draft with only a skill, or only an image, is a draft too.
+    @MainActor func testADraftSideWithOnlyASkillOrAnImageKeepsIt() async throws {
+        let f = try await scriptedSide()
+        var info = try draftSide(f, text: "", images: [], skills: [Self.other])
+        f.model.closeSide(info.id)
+        XCTAssertNil(f.model.sides[f.parent.id])
+        XCTAssertEqual(f.parentView.skills.map(\.id), ["review"]); XCTAssertEqual(f.parentView.draft, "")
+        info = try draftSide(f, text: "", images: [Self.image], skills: [])
+        try await f.model.moveUnsavedSideDraftsToParents()
+        XCTAssertEqual(f.parentView.attachments.map(\.id), ["side-image"], "quit and update move it too")
+        XCTAssertTrue(f.model.displays[info.id]?.attachments.isEmpty ?? true)
+    }
+
+    /// A parent whose draft never loaded here gets the side's draft added to
+    /// its saved one; when that cannot be read, nothing is taken for empty:
+    /// the side stays with its draft, and quitting says so.
+    @MainActor func testADraftSideWhoseParentDraftIsSavedMergesThereOrStays() async throws {
+        let f = try await scriptedSide()
+        f.parentView.selectionMetadataLoaded = false
+        try await f.model.store?.put(DraftRecord(id: f.parent.id, text: "Saved parent text", attachments: [Self.parentImage], skills: nil), kind: "draft", id: f.parent.id)
+        let info = try draftSide(f, text: "Side text", images: [Self.image], skills: [Self.skill])
+        f.model.closeSide(info.id)
+        try await eventually("The side never closed") { f.model.sides[f.parent.id] == nil }
+        let saved = try await f.model.store?.get(DraftRecord.self, kind: "draft", id: f.parent.id)
+        XCTAssertEqual(saved?.text, "Saved parent text\n\nSide text")
+        XCTAssertEqual(saved?.attachments?.map(\.id), ["parent-image", "side-image"]); XCTAssertEqual(saved?.skills?.map(\.id), ["release"])
+
+        let kept = try draftSide(f, text: "Kept text", images: [Self.image], skills: [Self.skill])
+        await f.model.store?.close()
+        let closed = await f.model.discardPendingSide(kept)
+        XCTAssertFalse(closed)
+        XCTAssertNotNil(f.model.sides[f.parent.id], "the side stays")
+        XCTAssertEqual(f.model.displays[kept.id]?.draft, "Kept text"); XCTAssertEqual(f.model.displays[kept.id]?.attachments.count, 1)
+        XCTAssertEqual(f.model.displays[kept.id]?.skills.count, 1)
+        do { try await f.model.moveUnsavedSideDraftsToParents(); XCTFail("Quit must stop rather than lose the draft") } catch {}
+        XCTAssertEqual(f.model.displays[kept.id]?.draft, "Kept text")
+    }
+
+    /// While the parent is rewriting a queued or an earlier message, the
+    /// side's draft joins the draft that edit displaced, which ending the
+    /// edit brings back.
+    @MainActor func testADraftSideJoinsTheDraftAnEditDisplaced() async throws {
+        let f = try await scriptedSide()
+        f.parentView.queueEditingID = "queued"; f.parentView.draft = "Rewritten queued text"
+        f.parentView.draftBeforeQueueEdit = DraftRecord(id: f.parent.id, text: "Parent draft", attachments: nil, skills: nil)
+        let info = try draftSide(f, text: "Side text", images: [Self.image], skills: [Self.skill])
+        f.model.closeSide(info.id)
+        XCTAssertNil(f.model.sides[f.parent.id])
+        XCTAssertEqual(f.parentView.draft, "Rewritten queued text", "the edit is left as it is")
+        XCTAssertEqual(f.parentView.draftBeforeQueueEdit?.text, "Parent draft\n\nSide text")
+        XCTAssertEqual(f.parentView.draftBeforeQueueEdit?.attachments?.map(\.id), ["side-image"])
+        XCTAssertEqual(f.parentView.savedDraft.skills?.map(\.id), ["release"], "and it is what the parent saves")
+    }
+
+    /// A saved parent draft that is an earlier message's edit gets the side's
+    /// draft in the draft that edit displaced; the edit is left as it is.
+    @MainActor func testASavedParentEditKeepsTheSideDraftInWhatItDisplaced() async throws {
+        let f = try await scriptedSide()
+        f.parentView.selectionMetadataLoaded = false
+        let edit = MessageEditDraft(messageID: "earlier", originalText: "Parent draft", originalAttachments: nil, originalSkills: nil)
+        try await f.model.store?.put(DraftRecord(id: f.parent.id, text: "Edited message", attachments: nil, skills: nil, edit: edit), kind: "draft", id: f.parent.id)
+        let info = try draftSide(f, text: "Side text", images: [Self.image], skills: [Self.skill])
+        let closed = await f.model.discardPendingSide(info)
+        XCTAssertTrue(closed)
+        let saved = try await f.model.store?.get(DraftRecord.self, kind: "draft", id: f.parent.id)
+        XCTAssertEqual(saved?.text, "Edited message")
+        XCTAssertEqual(saved?.edit?.originalText, "Parent draft\n\nSide text")
+        XCTAssertEqual(saved?.edit?.originalAttachments?.map(\.id), ["side-image"]); XCTAssertEqual(saved?.edit?.originalSkills?.map(\.id), ["release"])
+    }
+
+    /// A lost host ends an unkept side; with the parent's draft not loaded
+    /// here, its unsent draft waits in a new draft side of that parent.
+    @MainActor func testALostSidesDraftWaitsInADraftSideWhenTheParentCannotTakeIt() async throws {
+        let f = try await scriptedSide()
+        let info = try draftSide(f, text: "", images: [], skills: [])
+        f.model.sides[f.parent.id]?.pending = false
+        let side = try XCTUnwrap(f.model.displays[info.id])
+        side.draft = "Typed in the lost side"; side.attachments = [Self.image]; side.skills = [Self.skill]
+        f.parentView.selectionMetadataLoaded = false
+        f.model.discardLostSides(workspaceID: f.parent.workspaceID)
+        let waiting = try XCTUnwrap(f.model.sides[f.parent.id])
+        XCTAssertTrue(waiting.pending); XCTAssertNotEqual(waiting.id, info.id)
+        let shown = try XCTUnwrap(f.model.displays[waiting.id])
+        XCTAssertEqual(shown.draft, "Typed in the lost side"); XCTAssertEqual(shown.attachments.map(\.id), ["side-image"]); XCTAssertEqual(shown.skills.map(\.id), ["release"])
+        XCTAssertEqual(f.parentView.notice, "The host stopped. Its unkept side was discarded; its unsent draft waits in a new side.")
+    }
+
     /// The side's first message is one submission. Creating the side used to
     /// clear the busy flag the send had set while the message itself was
     /// still on its way, so Send worked again and submitted it twice.

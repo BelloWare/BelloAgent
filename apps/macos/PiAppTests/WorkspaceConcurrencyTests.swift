@@ -205,6 +205,113 @@ final class WorkspaceConcurrencyTests: XCTestCase {
         XCTAssertEqual(model.displays[chat.id]?.draft, "Unsent draft for \(chat.id)")
     }
 
+    /// A second connection the chat can move to and still open its journal
+    /// on: the same endpoint and model, another saved connection.
+    @MainActor private func secondConnection(_ model: WorkspaceModel, id: String = "second-connection") async throws -> ProfileRecord {
+        var next = ProfileRecord(); next.id = id; next.baseUrl = "http://127.0.0.1:9/v1"; next.modelId = "router"
+        try await model.saveProfile(next, key: "synthetic-\(id)-key")
+        return next
+    }
+    /// Holds a connection change at `step` until `release` is finished.
+    @MainActor private func hold(_ model: WorkspaceModel, at step: String, entered: XCTestExpectation) -> AsyncStream<Never>.Continuation {
+        let (held, release) = AsyncStream<Never>.makeStream()
+        var reached = false
+        model.connectionSwitchSteps = { name in
+            guard name == step, !reached else { return }
+            reached = true; entered.fulfill()
+            for await _ in held {}
+        }
+        return release
+    }
+
+    /// The review's order: the switch has closed the session and is writing
+    /// the chat's record when an open that read the chat on the old
+    /// connection starts. It waits, and is refused; no session on the old
+    /// connection is left for a later open to reuse, and an open of the chat
+    /// as it is now opens it on the new one.
+    @MainActor func testAnOpenThatReadTheOldConnectionWaitsForTheSwitchAndOpensTheNewOne() async throws {
+        let model = try await fixture(count: 1)
+        let chat = try XCTUnwrap(model.chats.first), next = try await secondConnection(model)
+        _ = try await model.open(chat)
+        let stale = try XCTUnwrap(model.record(chat.id))
+        XCTAssertNotNil(stale.path)
+        let entered = expectation(description: "The switch is writing the chat's record")
+        let release = hold(model, at: "metadata", entered: entered)
+        let switching = Task { await model.setConnection(next.id, for: chat.id) }
+        await fulfillment(of: [entered], timeout: 5)
+        XCTAssertFalse(model.opened.contains(chat.id))
+        let opening = Task { try await model.open(stale) }
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertFalse(model.isSessionOpening(chat.id), "An open waits for the switch before it starts")
+        XCTAssertFalse(model.opened.contains(chat.id))
+        release.finish()
+        await switching.value
+        XCTAssertNil(model.error)
+        XCTAssertEqual(model.record(chat.id)?.profileID, next.id)
+        do { _ = try await opening.value; XCTFail("An open of the chat as it was before the switch is refused") }
+        catch { XCTAssertEqual(error.localizedDescription, model.connectionChanged.localizedDescription) }
+        XCTAssertFalse(model.opened.contains(chat.id))
+        let host = try await model.open(try XCTUnwrap(model.record(chat.id)))
+        let snapshot = try await host.request("session.snapshot", sessionID: chat.id).object ?? [:]
+        XCTAssertEqual(snapshot["profileId"], .string(next.id))
+    }
+
+    /// A send while the chat is moving is refused where it was typed, with
+    /// its draft kept; a second switch waits for the first to finish.
+    @MainActor func testASendAndASecondSwitchDuringASwitchAreRefused() async throws {
+        let model = try await fixture(count: 1)
+        let chat = try XCTUnwrap(model.chats.first), next = try await secondConnection(model)
+        let third = try await secondConnection(model, id: "third-connection")
+        _ = try await model.open(chat)
+        let entered = expectation(description: "The switch has closed the session")
+        let release = hold(model, at: "closed", entered: entered)
+        let switching = Task { await model.setConnection(next.id, for: chat.id) }
+        await fulfillment(of: [entered], timeout: 5)
+        model.send(sessionID: chat.id)
+        try await eventually("The refused send settles") { model.displays[chat.id]?.loading == false && model.displays[chat.id]?.sendFailure != nil }
+        XCTAssertEqual(model.displays[chat.id]?.sendFailure, model.connectionChanged.localizedDescription)
+        XCTAssertEqual(model.displays[chat.id]?.draft, "Unsent draft for \(chat.id)")
+        await model.setConnection(third.id, for: chat.id)
+        XCTAssertEqual(model.error, "Wait for this chat's connection change to finish.")
+        release.finish()
+        await switching.value
+        XCTAssertEqual(model.record(chat.id)?.profileID, next.id)
+        let stored = try await model.store?.get(ChatRecord.self, kind: "chat", id: chat.id)
+        XCTAssertEqual(stored?.profileID, next.id)
+    }
+
+    /// A switch whose record cannot be written leaves the chat on its
+    /// connection, and an open waiting for it opens the chat there.
+    @MainActor func testAFailedSwitchLeavesTheChatOpenableOnItsConnection() async throws {
+        let model = try await fixture(count: 1)
+        let chat = try XCTUnwrap(model.chats.first), next = try await secondConnection(model)
+        _ = try await model.open(chat)
+        let entered = expectation(description: "The switch is writing the chat's record")
+        let (held, release) = AsyncStream<Never>.makeStream()
+        model.connectionSwitchSteps = { name in
+            guard name == "metadata" else { return }
+            entered.fulfill(); for await _ in held {}
+            throw StoreError.unavailable
+        }
+        let opened = try XCTUnwrap(model.record(chat.id))
+        let switching = Task { await model.setConnection(next.id, for: chat.id) }
+        await fulfillment(of: [entered], timeout: 5)
+        let opening = Task { try await model.open(opened) }
+        let cancelled = Task { try await model.open(opened) }
+        for _ in 0..<20 { await Task.yield() }
+        cancelled.cancel()
+        release.finish()
+        await switching.value
+        XCTAssertEqual(model.error, StoreError.unavailable.localizedDescription)
+        XCTAssertEqual(model.record(chat.id)?.profileID, chat.profileID)
+        do { _ = try await cancelled.value; XCTFail("A cancelled open does not go on once the switch ends") }
+        catch { XCTAssertTrue(error is CancellationError) }
+        let host = try await opening.value
+        let snapshot = try await host.request("session.snapshot", sessionID: chat.id).object ?? [:]
+        XCTAssertEqual(snapshot["profileId"], .string(chat.profileID))
+        XCTAssertTrue(model.opened.contains(chat.id))
+    }
+
     @MainActor func testTwentyBackgroundAccountingBurstsUpdateTotalsWithoutRewritingHiddenTranscripts() async throws {
         let model = try await fixture(count: 20)
         model.selectedID = nil; model.selected = nil
