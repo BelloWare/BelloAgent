@@ -190,7 +190,8 @@ import XCTest
     /// Opt-in picture of Settings with unsaved edits, light and dark, for
     /// looking at: `PI_APP_SETTINGS_SNAPSHOT=<folder>`.
     func testSnapshotOfUnsavedSettings() async throws {
-        let folder = try XCTUnwrap(testEnvironment("PI_APP_SETTINGS_SNAPSHOT").map { URL(fileURLWithPath: $0) }, "Set PI_APP_SETTINGS_SNAPSHOT to take the picture")
+        guard let path = testEnvironment("PI_APP_SETTINGS_SNAPSHOT") else { throw XCTSkip("Set PI_APP_SETTINGS_SNAPSHOT to take the picture") }
+        let folder = URL(fileURLWithPath: path)
         let model = try await model()
         let (_, sheet, editor) = try await sheet(model)
         editor.draft.profile.name = "Team renamed"; editor.preferences.playsCompletionSound.toggle()
