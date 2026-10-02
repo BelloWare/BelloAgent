@@ -445,6 +445,9 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// The queue panel shows only its header. Presentation only: the queue
     /// goes on, or waits, exactly as it would.
     @Published var queueCollapsed = false
+    /// The waiting message whose detail is open, and what that detail shows.
+    @Published var queueDetailID: String? { didSet { if queueDetailID == nil { queueDetailShowing = nil } } }
+    var queueDetailShowing: String?
     var queueEditHoldRevision = -1
     /// A rewrite saved with the draft whose edit has not been reconciled
     /// with the helper yet; kept in the saved draft until it is.

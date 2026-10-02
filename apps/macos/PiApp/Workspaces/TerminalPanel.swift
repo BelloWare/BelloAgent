@@ -271,8 +271,8 @@ struct TerminalPanel: View {
         static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
     }
     static let minimumHeight: CGFloat = 120
-    /// The panel's title bar above the terminal itself.
-    static let chromeHeight: CGFloat = 32
+    /// The panel's resize handle and title bar above the terminal itself.
+    static let chromeHeight: CGFloat = 42
     static let maximumHeight: CGFloat = 700
     static func clampHeight(_ value: CGFloat) -> CGFloat {
         guard value.isFinite else { return 240 }
@@ -300,7 +300,10 @@ struct TerminalPanel: View {
                            })
             header.padding(.horizontal, PiSpacing.md).padding(.vertical, 5).background(Color.piWindow)
             if let session {
-                TerminalHost(session: session).frame(height: height)
+                // Its height, unless the pane can't fit it: then less, down to
+                // its minimum, never pushing the window taller. The height it
+                // was dragged to is kept for when there is room again.
+                TerminalHost(session: session).frame(minHeight: min(height, Self.minimumHeight), idealHeight: height, maxHeight: height)
             } else {
                 ZStack {
                     Color.piTerminalSurface
@@ -309,7 +312,7 @@ struct TerminalPanel: View {
                         Button { registry.create(for: workspace) } label: { Label("New Terminal", systemImage: "plus") }
                             .buttonStyle(.piSecondaryCompact)
                     }
-                }.frame(height: height)
+                }.frame(minHeight: min(height, Self.minimumHeight), idealHeight: height, maxHeight: height)
             }
         }
         .background(HostingWindowReader { window = $0 })

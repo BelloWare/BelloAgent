@@ -191,6 +191,15 @@ final class ConversationPaneTests: XCTestCase {
             if outcome == "removed" { session.queue.removeAll { $0["turnId"]?.string == hold.turnID } }
             self.hold = nil; outcomes[editID] = outcome; revision += 1
             return ["accepted": .bool(true), "outcome": .string(outcome), "turnId": .string(hold.turnID), "revision": .number(Double(revision))]
+        case "queue.reorder":
+            let order = params["turnIds"]?.array?.compactMap(\.string) ?? []
+            let followUps = session.queue.filter { $0["kind"]?.string != "steering" }
+            guard Set(order) == Set(followUps.compactMap { $0["turnId"]?.string }), order.count == followUps.count else {
+                throw HostError.rejected("queue_order", "The new order must list every pending follow-up exactly once")
+            }
+            let byID = Dictionary(uniqueKeysWithValues: followUps.compactMap { row in row["turnId"]?.string.map { ($0, row) } })
+            session.queue = session.queue.filter { $0["kind"]?.string == "steering" } + order.compactMap { byID[$0] }
+            return ["accepted": .bool(true)]
         case "queue.edit.status":
             if let hold, hold.editID == editID {
                 let text = session.queue.first { $0["turnId"]?.string == hold.turnID }?["text"]?.string ?? ""

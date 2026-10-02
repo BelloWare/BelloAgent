@@ -81,7 +81,6 @@ struct QueuePanel: View {
     @ObservedObject var session: SessionDisplay
     /// The height the list may take (`QueuePanel.room`).
     var room: CGFloat = .infinity
-    @State private var detail: String?
     private var items: [QueuedMessage] { QueuedMessage.from(session.queue) }
     private var followUps: [QueuedMessage] { items.filter { !$0.steering } }
     private var steering: [QueuedMessage] { items.filter(\.steering) }
@@ -94,6 +93,11 @@ struct QueuePanel: View {
     /// reading space, and the composer, Stop and Resume stay where they are.
     /// The rest of the queue scrolls.
     static let visibleRows: CGFloat = 3.5
+    /// The follow-ups' order after a drag of `source` to `destination`, as
+    /// the list showed them when the drag began.
+    static func reordered(_ ids: [String], moving source: IndexSet, to destination: Int) -> [String] {
+        var order = ids; order.move(fromOffsets: source, toOffset: destination); return order
+    }
     static func listHeight(rows: Int, sections: Int = 1, room: CGFloat = .infinity) -> CGFloat {
         let content = CGFloat(rows) * rowHeight + CGFloat(sections) * sectionHeaderHeight
         let cap = visibleRows * rowHeight + CGFloat(sections) * sectionHeaderHeight
@@ -102,8 +106,9 @@ struct QueuePanel: View {
     }
     /// The reading space the transcript keeps before the queue takes more.
     static let transcriptReserve: CGFloat = 150
-    /// The panel's own chrome around its list: header, padding and border.
-    static let chrome: CGFloat = 56
+    /// The panel's own chrome around its list (header, padding and border)
+    /// and the space below it.
+    static let chrome: CGFloat = 58 + PiSpacing.sm
     /// The height the list may take in a pane of `pane` points with a
     /// composer `composer` tall and a terminal `terminal` tall open below it,
     /// leaving the transcript its reserve and the footer its line.
@@ -146,9 +151,7 @@ struct QueuePanel: View {
                             row(item, index: index + 1).queueRowInsets()
                         }
                         .onMove(perform: session.queueEditHold != nil ? nil : { source, destination in
-                            var order = followUps.map(\.id)
-                            order.move(fromOffsets: source, toOffset: destination)
-                            model.action("queue.reorder", params: ["turnIds": .array(order.map(WireValue.string))], sessionID: session.id)
+                            model.reorderQueued(Self.reordered(followUps.map(\.id), moving: source, to: destination), sessionID: session.id)
                         })
                     }
                 }
@@ -165,6 +168,13 @@ struct QueuePanel: View {
         .padding(PiSpacing.md)
         .background(Color.piSurfaceSunken, in: RoundedRectangle(cornerRadius: PiRadius.md, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: PiRadius.md, style: .continuous).stroke(Color.piHairline, lineWidth: 1))
+        // On the panel, not the row: a message that leaves while its detail
+        // is open takes no popover with it; the detail says it left. Closing
+        // is written after the update that asked for it.
+        .popover(isPresented: Binding(get: { session.queueDetailID != nil },
+                                      set: { open in if !open { DispatchQueue.main.async { session.queueDetailID = nil } } }), arrowEdge: .top) {
+            QueuedMessageDetail(model: model, session: session, turnID: session.queueDetailID ?? "")
+        }
         .piAnimation(PiMotion.quick, value: session.queueCollapsed)
     }
     private func sectionHeader(_ title: String) -> some View {
@@ -186,10 +196,7 @@ struct QueuePanel: View {
             }
             Text(item.title).lineLimit(1).font(PiFont.body).foregroundStyle(editing ? Color.piInkTertiary : Color.piInk)
             Spacer()
-            PiIconButton(symbol: "info.circle", label: "Show the whole message and its model choices", size: 22) { detail = item.id }
-                .popover(isPresented: Binding(get: { detail == item.id }, set: { if !$0, detail == item.id { detail = nil } }), arrowEdge: .top) {
-                    QueuedMessageDetail(model: model, session: session, turnID: item.id)
-                }
+            PiIconButton(symbol: "info.circle", label: "Show the whole message and its model choices", size: 22) { session.queueDetailID = item.id }
                 .accessibilityIdentifier("queue-detail-" + item.id)
             if editing {
                 Label("Editing in the composer", systemImage: "pencil.line").font(PiFont.caption).foregroundStyle(Color.piAccent)
@@ -241,6 +248,7 @@ struct QueuedMessageDetail: View {
     let turnID: String
     @State private var whole: String?
     @State private var readFailed = false
+    static let goneText = "This message is no longer waiting."
     var body: some View {
         let item = QueuedMessage.from(session.queue).first { $0.id == turnID }
         VStack(alignment: .leading, spacing: PiSpacing.sm) {
@@ -259,11 +267,17 @@ struct QueuedMessageDetail: View {
                 if let window = item.contextWindow { detailRow("Context", "\(window.formatted()) tokens") }
                 if let output = item.maxOutputTokens { detailRow("Output budget", "\(output.formatted()) tokens") }
             } else {
-                Text("This message is no longer waiting.").font(PiFont.body).foregroundStyle(Color.piInkSecondary)
+                Text(Self.goneText).font(PiFont.body).foregroundStyle(Color.piInkSecondary)
                     .accessibilityIdentifier("queue-detail-gone")
             }
         }
         .padding(PiSpacing.md).frame(width: 340)
+        // What the detail shows, for the chat to read back (tests, and the
+        // row's own label): the message, or that it is no longer waiting.
+        .onChange(of: item.map { whole ?? $0.text } ?? Self.goneText, initial: true) { _, shown in
+            if session.queueDetailShowing != shown { session.queueDetailShowing = shown }
+        }
+        .onDisappear { session.queueDetailShowing = nil }
         // Keyed by what the row now says: a rewrite saved while the detail
         // is open reads the message again, and an older read is dropped.
         .task(id: item.map(\.contentKey)) {
@@ -329,6 +343,17 @@ struct QueueEditHold: Equatable {
 }
 
 extension WorkspaceModel {
+    /// Puts the follow-ups in `order`. A queue that changed during the drag
+    /// (a message removed or delivered) is refused by the helper; nothing
+    /// moves, and the chat says so.
+    func reorderQueued(_ order: [String], sessionID: String) {
+        guard let view = displays[sessionID] else { return }
+        Task {
+            do { _ = try await queueEditRequest("queue.reorder", sessionID: sessionID, params: ["turnIds": .array(order.map(WireValue.string))]) }
+            catch HostError.rejected("queue_order", _) { view.notice = "The queue changed while you were dragging, so nothing was moved. Drag again." }
+            catch { view.notice = "The queue was not reordered. " + error.localizedDescription }
+        }
+    }
     /// One `queue.edit.*` command to the chat's helper.
     func queueEditRequest(_ method: String, sessionID: String, params: [String: WireValue]) async throws -> [String: WireValue] {
         if let queueEditOperation { return try await queueEditOperation(method, sessionID, params) }

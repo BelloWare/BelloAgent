@@ -36,6 +36,11 @@ struct ConversationPane: View {
     /// reading space.
     @State private var paneHeight: CGFloat = 0
     @State private var composerHeight: CGFloat = 0
+    /// A terminal shows below this chat.
+    private var terminalOpen: Bool {
+        model.terminalVisible && side == nil && model.workspace(for: chat.workspaceID).map { !$0.isScratch } == true
+    }
+
     @AppStorage("terminalHeight") private var terminalHeight: Double = 240
     static let coverDelay = Duration.milliseconds(150)
     /// Whether the loading cover stands over the transcript. A revisit of a
@@ -131,7 +136,9 @@ struct ConversationPane: View {
                         if !Task.isCancelled { coverDue = true }
                     }
                 }
-            if !session.queue.isEmpty { queuePanel.transition(PiMotion.arrival(from: .bottom)) }
+            // An open detail keeps the panel, its anchor, until it is closed:
+            // the last message leaving says so rather than vanishing.
+            if !session.queue.isEmpty || session.queueDetailID != nil { queuePanel.transition(PiMotion.arrival(from: .bottom)) }
             if model.terminalVisible, side == nil, let workspace = model.workspace(for: chat.workspaceID), !workspace.isScratch {
                 TerminalPanel(model: model, workspace: workspace).transition(PiMotion.arrival(from: .bottom))
             }
@@ -166,7 +173,7 @@ struct ConversationPane: View {
                         Button("Open source chat") { Task { await model.select(source) } }.buttonStyle(.piSecondaryCompact)
                     }
                 }.padding(PiSpacing.md)
-            } else if chat.isArchived { archivedFooter } else if session.damagedTail { damagedFooter } else if chat.imported { importedFooter } else { ComposerInput(model: model, session: session, paneWidth: paneWidth).onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerHeight = $0 } }
+            } else if chat.isArchived { archivedFooter } else if session.damagedTail { damagedFooter } else if chat.imported { importedFooter } else { ComposerInput(model: model, session: session, paneWidth: paneWidth, maximumFieldHeight: terminalOpen ? ComposerScrollView.besideTerminalHeight : ComposerScrollView.maximumHeight).onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerHeight = $0 } }
             // A side conversation repeats the whole status bar of the chat it
             // was opened from. In half a window that is two of everything; it
             // keeps the two figures that are its own.
@@ -285,7 +292,7 @@ struct ConversationPane: View {
         // only the room the pane has after the composer, an open terminal and
         // the transcript's reading space.
         QueuePanel(model: model, session: session,
-                   room: QueuePanel.room(pane: paneHeight, composer: composerHeight, terminal: model.terminalVisible && side == nil ? TerminalPanel.clampHeight(terminalHeight) + TerminalPanel.chromeHeight : 0))
+                   room: QueuePanel.room(pane: paneHeight, composer: composerHeight, terminal: terminalOpen ? TerminalPanel.minimumHeight + TerminalPanel.chromeHeight : 0))
             .id(session.id)
             .padding(.horizontal, PiSpacing.lg).padding(.bottom, PiSpacing.sm)
     }

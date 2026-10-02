@@ -9,25 +9,29 @@ import AppKit
 /// `PI_APP_QUEUE_GALLERY` set to a folder, each is also written there as a
 /// PNG to look at.
 final class QueuePanelGalleryTests: XCTestCase {
-    private struct Scene { let name: String; let count: Int; var collapsed = false; var editing = false; var heldElsewhere = false }
+    private struct Scene { let name: String; let count: Int; var collapsed = false; var editing = false; var heldElsewhere = false; var terminal = false; var width: CGFloat = 920; var tallDraft = false }
 
     @MainActor func testQueuePanelScenes() async throws {
         let folder = ProcessInfo.processInfo.environment["PI_APP_QUEUE_GALLERY"].map(URL.init(fileURLWithPath:))
         if let folder { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
         let scenes = [Scene(name: "queue-1", count: 1), Scene(name: "queue-5", count: 5), Scene(name: "queue-20", count: 20),
                       Scene(name: "queue-64-limit", count: 64), Scene(name: "queue-20-collapsed", count: 20, collapsed: true),
-                      Scene(name: "queue-5-editing", count: 5, editing: true), Scene(name: "queue-5-held-after-restart", count: 5, heldElsewhere: true)]
+                      Scene(name: "queue-5-editing", count: 5, editing: true), Scene(name: "queue-5-held-after-restart", count: 5, heldElsewhere: true),
+                      Scene(name: "queue-20-terminal-tall-draft", count: 20, terminal: true, tallDraft: true),
+                      Scene(name: "queue-5-split-terminal", count: 5, terminal: true, width: 460)]
         for scene in scenes {
             for (suffix, appearance) in [("light", NSAppearance.Name.aqua), ("dark", NSAppearance.Name.darkAqua)] {
-                let pane = try ConversationPaneTests.Pane(width: 920, height: 600)
-                defer { pane.close() }
+                let pane = try ConversationPaneTests.Pane(width: scene.width, height: 600)
+                defer { pane.close(); if scene.terminal { TerminalRegistry.shared.shutdown() } }
+                pane.model.terminalVisible = scene.terminal
                 pane.window.appearance = NSAppearance(named: appearance)
-                pane.session.state = scene.editing || scene.heldElsewhere ? "idle" : "running"
+                pane.session.state = scene.editing || scene.heldElsewhere || scene.terminal ? "idle" : "running"
+                if scene.terminal { pane.session.queuePaused = true }
                 pane.session.queue = (0..<scene.count).map { index in
                     ["turnId": .string("q\(index)"), "kind": .string(index % 4 == 1 ? "steering" : "follow-up"),
                      "text": .string(index % 4 == 1 ? "Check the failing test before the next edit" : "Follow-up \(index): summarise what changed and why")]
                 }
-                pane.session.draft = "A thought still being typed."
+                pane.session.draft = scene.tallDraft ? (0..<20).map { "Line \($0) of a long draft" }.joined(separator: "\n") : "A thought still being typed."
                 await pane.settle(16)
                 if scene.editing {
                     pane.model.editQueued("q2", sessionID: pane.session.id)
@@ -39,7 +43,7 @@ final class QueuePanelGalleryTests: XCTestCase {
                 }
                 pane.session.queueCollapsed = scene.collapsed
                 await pane.settle(40)
-                XCTAssertEqual(pane.window.frame.height, pane.window.frameRect(forContentRect: NSRect(x: 0, y: 0, width: 920, height: 600)).height, accuracy: 0.5,
+                XCTAssertEqual(pane.window.frame.height, pane.window.frameRect(forContentRect: NSRect(x: 0, y: 0, width: scene.width, height: 600)).height, accuracy: 0.5,
                                "\(scene.name): the window keeps its size")
                 if pane.window.frame.height > 700 {
                     func dump(_ v: NSView, _ depth: Int) { if v.frame.height > 650 && depth < 40 { FileHandle.standardError.write("GROW \(depth) \(type(of: v)) \(v.frame)\n".data(using: .utf8)!) }; for c in v.subviews { dump(c, depth + 1) } }
