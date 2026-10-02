@@ -4,6 +4,7 @@ import AppKit
 import PDFKit
 @testable import PiApp
 @testable import GitView
+import FileView
 
 // Opt-in screenshot gallery for the native shell. It reuses the synthetic
 // loopback gateway from the interactive acceptance harness, sends real
@@ -181,6 +182,24 @@ final class UIScreenshotTests: XCTestCase {
         if testEnvironment("PI_APP_UI_GALLERY_TABS_ONLY") == "1" {
             try await captureTabScenes(model: model, window: window, gallery: gallery, appearances: appearances,
                                        parentID: main.id, projectRoot: folder)
+            XCTAssertNil(model.error, model.error ?? "")
+            for host in model.hosts.values { try await host.shutdownAndWait() }
+            try await model.traces.close()
+            return
+        }
+        // Only Settings with unsaved edits, several terminals and the
+        // questions before ending a shell or removing MCP servers (26*).
+        if testEnvironment("PI_APP_UI_GALLERY_UI_ONLY") == "1" {
+            try await captureSettingsTerminalMCPScenes(model: model, window: window, gallery: gallery, appearances: appearances, workspace: workspace)
+            XCTAssertNil(model.error, model.error ?? "")
+            for host in model.hosts.values { try await host.shutdownAndWait() }
+            try await model.traces.close()
+            return
+        }
+        // Only the Changes window and its Git scenes (10b–10e).
+        if testEnvironment("PI_APP_UI_GALLERY_GIT_ONLY") == "1" {
+            try await captureChangesWindowScene(model: model, gallery: gallery, appearances: appearances, workspaceID: workspace.id)
+            try await captureBlameScenes(model: model, window: window, gallery: gallery, appearances: appearances, workspaceID: workspace.id, folder: folder)
             XCTAssertNil(model.error, model.error ?? "")
             for host in model.hosts.values { try await host.shutdownAndWait() }
             try await model.traces.close()
@@ -374,6 +393,7 @@ final class UIScreenshotTests: XCTestCase {
             try await settle(0.8)
         }
         try await captureChangesWindowScene(model: model, gallery: gallery, appearances: appearances, workspaceID: workspace.id)
+        try await captureBlameScenes(model: model, window: window, gallery: gallery, appearances: appearances, workspaceID: workspace.id, folder: folder)
         // The Session Inspector of the main chat, with both routes it used.
         try await captureInspectorScenes(model: model, session: session, window: window, gallery: gallery, appearances: appearances)
         try await renderReviewScenes(model: model, window: window, gallery: gallery, appearances: appearances,
@@ -395,6 +415,7 @@ final class UIScreenshotTests: XCTestCase {
         try await captureTabScenes(model: model, window: window, gallery: gallery, appearances: appearances,
                                    parentID: main.id, projectRoot: folder)
         try await captureTableWindowScene(gallery: gallery, appearances: appearances)
+        try await captureSettingsTerminalMCPScenes(model: model, window: window, gallery: gallery, appearances: appearances, workspace: workspace)
         // First-launch onboarding, rendered from an empty vault in its own window.
         let freshVault = ConfigurationVault(storage: MemoryVaultStorage())
         let fresh = WorkspaceModel(stateRoot: folder.appendingPathComponent("onboarding-state"), vault: freshVault)
@@ -510,6 +531,9 @@ final class UIScreenshotTests: XCTestCase {
                 XCTFail("The queued follow-up never opened in the composer (notice “\(session.notice)”)")
             }
             model.cancelQueuedEdit(sessionID: mainID)
+            // The editor closes when the helper confirms the cancel.
+            let cancelled = Date().addingTimeInterval(5)
+            while Date() < cancelled, session.queueEditingID != nil { try await settle(0.1) }
             session.draft = ""
             try await settle(0.4)
         } else {
@@ -644,6 +668,38 @@ final class UIScreenshotTests: XCTestCase {
         NSApp.appearance = nil
     }
 
+    /// 24c · A file with its blame shown beside the line numbers and its bar
+    /// on the selected line; 24d · Show Change from it: Changes on History at
+    /// the commit that wrote the line, the line selected in its diff, Back
+    /// above. At the smallest window. Closed afterwards.
+    @MainActor private func captureBlameScenes(model: WorkspaceModel, window: NSWindow, gallery: URL, appearances: [(String, NSAppearance.Name)],
+                                               workspaceID: String, folder: URL) async throws {
+        let frame = window.frame
+        window.setContentSize(NSSize(width: 920, height: 600)); try await settle(0.8)
+        let tab = model.openFile(folder.appendingPathComponent("PaymentClient.swift"), project: workspaceID)
+        try await settle(1.5)
+        tab.blame.show()
+        let deadline = ProcessInfo.processInfo.systemUptime + 20
+        while tab.blame.blame == nil, ProcessInfo.processInfo.systemUptime < deadline { try await settle(0.2) }
+        XCTAssertNotNil(tab.blame.blame, "blamed: \(tab.blame.state)")
+        let text = try XCTUnwrap(tab.focusView as? FileTextView)
+        text.select(from: FileTextPosition(line: 1, column: 4), to: FileTextPosition(line: 1, column: 4))
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(0.8)
+            try capture(window, to: gallery.appendingPathComponent("24c-file-blame-\(name).png"))
+        }
+        tab.blame.openChange(ofLine: 1)
+        try await settle(2.5)
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(0.8)
+            try capture(window, to: gallery.appendingPathComponent("24d-changes-from-blame-\(name).png"))
+        }
+        if let changes = model.tabs.tab(kind: ChangesTab.kind, key: workspaceID) { model.tabs.close(changes) }
+        tab.blame.hide(); model.tabs.close(tab)
+        window.setFrame(frame, display: true); try await settle(0.8)
+        NSApp.appearance = nil
+    }
+
     /// 10b · Changes popped out into a window of its own, the size the sheet
     /// it replaced had. Closed afterwards, so the scenes after it are as before.
     @MainActor private func captureChangesWindowScene(model: WorkspaceModel, gallery: URL, appearances: [(String, NSAppearance.Name)],
@@ -662,6 +718,26 @@ final class UIScreenshotTests: XCTestCase {
             try capture(tabWindow, to: gallery.appendingPathComponent("10c-changes-window-narrow-\(name).png"))
             tabWindow.setFrame(NSRect(x: 120, y: 120, width: 1180, height: 780), display: true)
         }
+        // 10d · The commit box at the smallest window: every file unticked,
+        // so Commit Checked Files is not armed and says why. 10e · Staged
+        // Changes chosen, one file staged and a message, amending. Going back,
+        // the scope changes and the file is unstaged in one turn: that once
+        // looped AppKit's constraint passes until it trapped.
+        let git = try XCTUnwrap((changes as? ChangesTab)?.controller)
+        let staged = git.unstaged.first { !$0.untracked }?.path
+        tabWindow.setContentSize(NSSize(width: 920, height: 600)); try await settle(1.0)
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance)
+            git.checked = []; git.commitScope = .checkedFiles; git.commitMessage = ""; try await settle(1.0)
+            try capture(tabWindow, to: gallery.appendingPathComponent("10d-changes-commit-unticked-\(name).png"))
+            if let staged { await git.stage([staged]) }
+            git.commitScope = .stagedChanges; git.commitMessage = "Retry with backoff"; git.amend = true; try await settle(1.0)
+            try capture(tabWindow, to: gallery.appendingPathComponent("10e-changes-commit-staged-amend-\(name).png"))
+            git.amend = false; git.commitMessage = ""; git.commitScope = .checkedFiles
+            if let staged { await git.unstage([staged]) }
+            try await settle(1.0)
+        }
+        tabWindow.setFrame(NSRect(x: 120, y: 120, width: 1180, height: 780), display: true)
         model.tabs.close(changes)
         try await settle(0.6)
         XCTAssertTrue(model.tabs.windows.isEmpty)
@@ -1333,6 +1409,69 @@ final class UIScreenshotTests: XCTestCase {
         try await settle(1.6)
         try capture(settings, to: gallery.appendingPathComponent(name + ".png"))
         settings.close(); try await settle(0.6)
+    }
+
+    /// 26 · At the smallest window, 920×600: Settings with unsaved edits and
+    /// the question closing it asks (26a), a project's several terminals
+    /// (26b) and the questions before restarting or closing a live shell
+    /// (26c, 26d), and the question before removing a project's MCP servers
+    /// (26e). Every question is answered Cancel or Keep Editing.
+    @MainActor private func captureSettingsTerminalMCPScenes(model: WorkspaceModel, window: NSWindow, gallery: URL,
+                                                            appearances: [(String, NSAppearance.Name)], workspace: WorkspaceRecord) async throws {
+        let size = window.frame.size
+        window.setContentSize(NSSize(width: 920, height: 600)); window.center(); try await settle(1.0)
+        defer { window.setContentSize(size); window.center() }
+        /// Waits for `host` to wear a question, photographs it, then answers it.
+        func question(on host: @escaping () -> NSWindow?, _ name: String, answer: NSApplication.ModalResponse) async throws {
+            try await until(name + " asked") { host()?.attachedSheet != nil }
+            do {
+                // Answered however the picture goes, so no question is left up.
+                defer { if let parent = host(), let alert = parent.attachedSheet { parent.endSheet(alert, returnCode: answer) } }
+                try await settle(0.8)
+                try capture(window, to: gallery.appendingPathComponent(name + ".png"))
+            }
+            try await settle(0.5)
+        }
+        let registry = TerminalRegistry.shared
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(0.6)
+            // 26 · Settings with a renamed connection and a changed preference.
+            model.settingsSection = .connections; model.showProfiles = true; try await settle(2.2)
+            let editor = model.settingsSheetEditor()
+            editor.draft.profile.name = "Team router · renamed"; editor.preferences.playsCompletionSound.toggle()
+            try await settle(0.6)
+            try capture(window, to: gallery.appendingPathComponent("26-settings-unsaved-\(name).png"))
+            // 26a · Escape with those edits: Save All, Discard Changes or Keep Editing.
+            let closing = Task { await editor.requestClose() }
+            try await question(on: { editor.presentationWindow }, "26a-settings-close-question-\(name)", answer: .alertThirdButtonReturn)
+            _ = await closing.value
+            editor.discardAll(); model.showProfiles = false; try await settle(0.8)
+            // 26b · Three terminals in the project, one named.
+            if !model.terminalVisible { model.toggleTerminal() }
+            try await settle(1.0)
+            let first = try XCTUnwrap(registry.selected(for: workspace.id), "the terminal opened")
+            let second = registry.create(for: workspace), third = registry.create(for: workspace)
+            registry.rename(second.id, in: workspace.id, to: "Dev server")
+            registry.select(second.id, in: workspace.id)
+            try await until("the shells started") { [first, second, third].allSatisfy(\.process.running) }
+            try await settle(1.0)
+            try capture(window, to: gallery.appendingPathComponent("26b-terminals-\(name).png"))
+            // 26c, 26d · Restart and Close of the live "Dev server": asked, then cancelled.
+            for (ending, scene) in [(TerminalRegistry.Ending.restart, "26c-terminal-restart-question"), (.close, "26d-terminal-close-question")] {
+                let asking = Task { await registry.requestEnding(ending, second.id, generation: second.generation, in: workspace, over: window) }
+                try await question(on: { window }, "\(scene)-\(name)", answer: .alertSecondButtonReturn)
+                _ = await asking.value
+            }
+            XCTAssertTrue(registry.selected(for: workspace.id) === second && second.process.running, "Cancel left the shell alone")
+            for extra in [second, third] { registry.close(extra.id, in: workspace.id, generation: extra.generation) }
+            model.toggleTerminal(); try await settle(0.8)
+            // 26e · Remove All MCP Servers…: asked, then cancelled.
+            let removing = Task { await model.confirmAndRemoveAllMCPServers() }
+            try await question(on: { window }, "26e-mcp-remove-question-\(name)", answer: .alertSecondButtonReturn)
+            let removal = await removing.value
+            XCTAssertNil(removal, "Cancel removed nothing")
+            XCTAssertGreaterThan(model.mcpServerCount(workspace.id), 0)
+        }
     }
 
     @MainActor private func sheet(_ window: NSWindow, name: String, into gallery: URL, open: () -> Void, close: () -> Void) async throws {

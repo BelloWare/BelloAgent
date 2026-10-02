@@ -67,7 +67,7 @@ final class GitLiteralPathTests: XCTestCase {
     func testCommitTakesOnlyTheChosenFiles() async throws {
         let service = GitService()
         for name in Self.tricky + Self.bystanders { try write(name, "two\n") }
-        _ = try await service.commit(message: "Tricky only", in: root.path, paths: Self.tricky)
+        _ = try await service.commit(message: "Tricky only", in: root.path, content: .files(paths: Self.tricky, staging: Self.tricky))
         XCTAssertEqual(try committed(), Set(Self.tricky))
         XCTAssertEqual(try modified(), Set(Self.bystanders))
         XCTAssertTrue(try staged().isEmpty)
@@ -82,7 +82,7 @@ final class GitLiteralPathTests: XCTestCase {
         for name in Self.tricky + Self.bystanders { try write(name, "two\n") }
         let paths = many + Self.tricky
         XCTAssertGreaterThan(GitService.batches(of: GitService.literal(paths), prefix: ["commit", "-q", "-m", "Many", "--only", "--"]).count, 1)
-        _ = try await service.commit(message: "Many", in: root.path, paths: paths, staging: many)
+        _ = try await service.commit(message: "Many", in: root.path, content: .files(paths: paths, staging: many))
         let names = try git(["show", "--name-only", "-z", "--format=", "HEAD"]).split(separator: "\0").map(String.init)
         XCTAssertEqual(Set(names), Set(paths))
         XCTAssertEqual(try modified(), Set(Self.bystanders))
@@ -96,7 +96,7 @@ final class GitLiteralPathTests: XCTestCase {
         try "#!/bin/sh\ngit diff --cached --name-only -- '*.md' > .git/hook-out\n".write(to: hook, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: hook.path)
         try write("a.md", "two\n")
-        _ = try await service.commit(message: "Markdown", in: root.path, paths: ["a.md"])
+        _ = try await service.commit(message: "Markdown", in: root.path, content: .files(paths: ["a.md"], staging: ["a.md"]))
         XCTAssertEqual(read(".git/hook-out"), "a.md\n")
     }
 

@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// The Settings sheet and window, in four sections down the left since
@@ -33,13 +34,13 @@ struct ProfileSettings: View {
         Binding(get: { controller.draft.profile.catalogUrl ?? "" }, set: { controller.draft.profile.catalogUrl = $0.isEmpty ? nil : $0 })
     }
     private var isSaved: Bool { controller.isSaved }
-    /// The Test Connection button asked once; the footer explains the request until Send or Cancel.
-    @State private var confirmingTest = false
+    private var confirmingTest: Bool { controller.confirmingTest }
 
     var body: some View {
-        PiSheet("Settings", subtitle: "Your connections, keys, headers, MCP servers and preferences. Everything here is kept in your macOS Keychain and only this signed app can read it.", symbol: "gearshape", windowChrome: windowChrome) {
+        PiSheet("Settings", subtitle: "Your connections, keys, headers, MCP servers and preferences. Everything here is kept in your macOS Keychain and only this signed app can read it.", symbol: "gearshape", windowChrome: windowChrome, cancelDisabled: controller.saving,
+                onCancel: { Task { if await controller.requestClose() { dismiss() } } }) {
             HStack(spacing: 0) {
-                SettingsSectionList(selection: $model.settingsSection)
+                SettingsSectionList(selection: $model.settingsSection, edited: controller.editedSections)
                 Rectangle().fill(Color.piHairline).frame(width: 1)
                 ScrollView {
                     // Only the open section is built, and lazily: the code
@@ -56,13 +57,19 @@ struct ProfileSettings: View {
                     // A save writes the tabs it captured when it started. Leaving
                     // the sheet live meant a tab switch mid-save lost what was typed
                     // after it, and Reload vault cleared `busy` under the save.
-                    .disabled(controller.busy)
+                    // Nor while the app is quitting or updating: its last save of
+                    // preferences has already been decided.
+                    .disabled(controller.busy || model.installPreparing)
                 }
                 // Each section opens at its top.
                 .id(model.settingsSection)
             }
         } actions: {
-            Button("Cancel") { dismiss() }.disabled(controller.busy)
+            // Cancel is the explicit way out without saving: every unsaved edit
+            // goes, and Settings opens next time on what the vault holds.
+            Button("Cancel") { controller.discardAll(); dismiss() }.disabled(controller.saving)
+                .help("Close Settings and discard every unsaved change")
+                .accessibilityIdentifier("settings-cancel")
         } footer: {
             HStack(spacing: PiSpacing.sm) {
                 if onConnections && isSaved && controller.confirmingDelete {
@@ -80,8 +87,8 @@ struct ProfileSettings: View {
                         .font(PiFont.caption).foregroundStyle(Color.piInkSecondary).lineLimit(3).fixedSize(horizontal: false, vertical: true)
                         .accessibilityIdentifier("settings-test-connection-question")
                     Spacer(minLength: PiSpacing.md)
-                    Button("Cancel") { withAnimation(PiMotion.quick) { confirmingTest = false } }.buttonStyle(.piSecondaryCompact).fixedSize()
-                    Button { confirmingTest = false; Task { if await controller.save(thenTest: true) { dismiss() } } } label: { Label("Send Test Request", systemImage: "bolt.horizontal") }.buttonStyle(.piPrimary).fixedSize()
+                    Button("Cancel") { withAnimation(PiMotion.quick) { controller.confirmingTest = false } }.buttonStyle(.piSecondaryCompact).fixedSize()
+                    Button { controller.confirmingTest = false; Task { if await controller.save(thenTest: true) { dismiss() } } } label: { Label("Send Test Request", systemImage: "bolt.horizontal") }.buttonStyle(.piPrimary).fixedSize()
                         .accessibilityIdentifier("settings-confirm-test-connection")
                 } else {
                     // Deleting, discarding and testing act on the connection
@@ -100,23 +107,28 @@ struct ProfileSettings: View {
                             .accessibilityIdentifier("settings-discard-connection")
                     }
                     if onConnections {
-                        Button { withAnimation(PiMotion.base) { confirmingTest = true } } label: { Label("Test Connection…", systemImage: "bolt.horizontal") }.fixedSize()
+                        Button { withAnimation(PiMotion.base) { controller.confirmingTest = true } } label: { Label("Test Connection…", systemImage: "bolt.horizontal") }.fixedSize()
                             .disabled(!model.configurationLoaded || !controller.supportedAPI || controller.draft.profile.baseUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                             .help("Saves this configuration, then sends one test request in a saved chat outside any project.")
                     }
                     PiStatusLine(text: controller.message, tone: controller.messageTone).lineLimit(2)
                     Spacer(minLength: PiSpacing.md)
-                    Button("Save") { Task { if await controller.save() { dismiss() } } }.buttonStyle(.piPrimary).fixedSize().disabled(!model.configurationLoaded)
-                        .help("Saves every tab with edits and the preferences, then closes Settings.")
+                    if controller.isDirty {
+                        PiBadge(text: "Unsaved changes", tone: .warning).fixedSize()
+                            .accessibilityIdentifier("settings-unsaved")
+                    }
+                    Button("Save All") { Task { if await controller.save() { dismiss() } } }.buttonStyle(.piPrimary).fixedSize().disabled(!model.configurationLoaded)
+                        .help("Saves every connection tab with edits and the preferences, then closes Settings.")
                         .accessibilityIdentifier("settings-save")
                 }
             }
-            .disabled(controller.busy)
+            .disabled(controller.busy || model.installPreparing)
             .piAnimation(PiMotion.base, value: controller.confirmingDelete)
             .piAnimation(PiMotion.base, value: confirmingTest)
-            .onChange(of: controller.draft.profile.id) { _, _ in confirmingTest = false }
-            .onChange(of: model.settingsSection) { _, _ in confirmingTest = false; controller.confirmingDelete = false }
+            .onChange(of: controller.draft.profile.id) { _, _ in controller.confirmingTest = false }
+            .onChange(of: model.settingsSection) { _, _ in controller.confirmingTest = false; controller.confirmingDelete = false }
         }
+        .background(HostingWindowReader { controller.presentationWindow = $0 })
         .task { await controller.load(discardingDrafts: false) }
     }
 
@@ -140,8 +152,8 @@ struct ProfileSettings: View {
                     .accessibilityIdentifier("settings-new-connection")
             }
             Spacer(minLength: 0)
-            PiIconButton(symbol: "arrow.clockwise", label: "Reload vault", size: 26) { Task { await controller.load(discardingDrafts: true) } }
-                .help("Reload the configuration vault and drop unsaved edits")
+            PiIconButton(symbol: "arrow.clockwise", label: "Reload vault", size: 26) { Task { await controller.requestReload() } }
+                .help("Reload the configuration vault. Asks first when that would drop unsaved edits.")
         }
         PiSettingsGroup(title: isSaved ? "Connection" : "New connection",
                         footer: "Leave the key and headers empty to keep the saved values. The selected alias remains the requested model; a gateway's reported route may change between requests.") {
@@ -193,9 +205,9 @@ struct ProfileSettings: View {
             PiRow(label: "Mini model", detail: "Writes chat titles and the webhook's parameters. Catalog default uses the first active model marked Mini; without one, titles keep the first message and a webhook goes out without its parameters.") {
                 CatalogModelMenu(model: model, controller: controller, miniSelection: true)
             }
-            PiRow(label: "Configured context capacity") { PiNumberField(placeholder: "Tokens", value: $controller.draft.profile.contextWindow) }
+            PiRow(label: "Configured context capacity") { PiNumberField(placeholder: "Tokens", value: $controller.draft.profile.contextWindow).accessibilityLabel("Configured context capacity, tokens") }
             PiRow(label: "Output budget", detail: "Room the context estimate sets aside for a reply, so a chat compacts before a reply would no longer fit. It is never sent as a limit: replies run to the model's own output ceiling.") {
-                PiNumberField(placeholder: "Tokens", value: $controller.draft.profile.maxOutputTokens)
+                PiNumberField(placeholder: "Tokens", value: $controller.draft.profile.maxOutputTokens).accessibilityLabel("Output budget, tokens")
             }
             PiRow(label: "Model output ceiling", detail: "The catalog's limit for the chosen model, sent with every request as its output limit.", last: true) {
                 Text(controller.draft.profile.modelOutputLimit.map { "\($0.formatted()) tokens" } ?? "Not supplied by the model catalog; requests carry no output limit")
@@ -204,19 +216,19 @@ struct ProfileSettings: View {
         }
         PiSettingsGroup(title: "Reasoning continuation", footer: "Portable history supports changing router models. It sends visible text and tool calls/results; original signed/encrypted reasoning stays in history. Preserving native state requires a compatible route guaranteed by your gateway.") {
             PiRow(label: "Policy", last: controller.draft.replayPolicy != "pinned") {
-                PiDropdown(selection: $controller.draft.replayPolicy, items: [("portable", "Portable text and tool history"), ("pinned", "Preserve native state on a fixed route"), ("ask", "Ask before replaying native state")], compact: true)
+                PiDropdown(selection: $controller.draft.replayPolicy, items: [("portable", "Portable text and tool history"), ("pinned", "Preserve native state on a fixed route"), ("ask", "Ask before replaying native state")], compact: true, accessibilityName: "Reasoning continuation policy")
             }
             if controller.draft.replayPolicy == "pinned" {
-                PiRow(label: "Expected reported model") { PiTextField(placeholder: "model id", text: $controller.draft.expectedModel, mono: true) }
-                PiRow(label: "Fixed-route compatibility contract", last: true) { PiTextField(placeholder: "reference", text: $controller.draft.replayContract) }
+                PiRow(label: "Expected reported model") { PiTextField(placeholder: "model id", text: $controller.draft.expectedModel, mono: true).accessibilityLabel("Expected reported model") }
+                PiRow(label: "Fixed-route compatibility contract", last: true) { PiTextField(placeholder: "reference", text: $controller.draft.replayContract).accessibilityLabel("Fixed-route compatibility contract") }
             }
         }
         PiSettingsGroup(title: "Gateway model and cache metadata contract", footer: "The response model is recorded automatically. Only configure headers documented for your deployment. An opaque deployment ID or route group is not an actual model name. Use a header reporting true/false or hit/miss; a cache key alone is not evidence of a hit.") {
-            PiRow(label: "Deployment/version contract reference") { PiTextField(placeholder: "reference", text: $controller.draft.metadataReference) }
-            PiRow(label: "Actual model header") { PiTextField(placeholder: "optional", text: $controller.draft.modelHeader, mono: true) }
-            PiRow(label: "Deployment ID header") { PiTextField(placeholder: "optional", text: $controller.draft.deploymentHeader, mono: true) }
-            PiRow(label: "Route group header") { PiTextField(placeholder: "optional", text: $controller.draft.groupHeader, mono: true) }
-            PiRow(label: "Cache hit/miss header", last: true) { PiTextField(placeholder: "optional", text: $controller.draft.cacheHeader, mono: true) }
+            PiRow(label: "Deployment/version contract reference") { PiTextField(placeholder: "reference", text: $controller.draft.metadataReference).accessibilityLabel("Deployment/version contract reference") }
+            PiRow(label: "Actual model header") { PiTextField(placeholder: "optional", text: $controller.draft.modelHeader, mono: true).accessibilityLabel("Actual model header") }
+            PiRow(label: "Deployment ID header") { PiTextField(placeholder: "optional", text: $controller.draft.deploymentHeader, mono: true).accessibilityLabel("Deployment ID header") }
+            PiRow(label: "Route group header") { PiTextField(placeholder: "optional", text: $controller.draft.groupHeader, mono: true).accessibilityLabel("Route group header") }
+            PiRow(label: "Cache hit/miss header", last: true) { PiTextField(placeholder: "optional", text: $controller.draft.cacheHeader, mono: true).accessibilityLabel("Cache hit/miss header") }
         }
         PiSettingsGroup(title: "Gateway routing", footer: "Off sends disable_fallbacks with every request, so a failing route returns its error and the report shows the requested model unanswered. On lets LiteLLM answer from its configured fallback models.") {
             PiRow(label: "Allow fallback models", last: true) { Toggle("", isOn: $controller.draft.allowFallbacks).labelsHidden().accessibilityLabel("Allow fallback models") }
@@ -228,19 +240,18 @@ struct ProfileSettings: View {
     /// The request log's capture, the dashboard and what a chat may spend.
     @ViewBuilder private var usageAndCapture: some View {
         PiSettingsGroup(title: "Capture and dashboard", footer: "Request and response bodies are saved locally for 30 days by default, within the payload quota; past a limited quota the oldest bodies are deleted to make room, and Unlimited keeps every body until its retention ends. Headers are included with authentication values masked. Bodies are unencrypted; known credentials in request bodies are hashed. Per-session overrides are separate.") {
-            PiRow(label: "Default future body capture") { PiDropdown(selection: $controller.preferences.capture.defaultMode, items: [("off", "Off"), ("memory", "Session memory"), ("persist", "Persist locally")], compact: true) }
-            PiRow(label: "Body retention") { PiStepper(label: "\(controller.preferences.capture.retentionDays) days", value: $controller.preferences.capture.retentionDays, range: 1...365) }
+            PiRow(label: "Default future body capture") { PiDropdown(selection: $controller.preferences.capture.defaultMode, items: [("off", "Off"), ("memory", "Session memory"), ("persist", "Persist locally")], compact: true, accessibilityName: "Default future body capture") }
+            PiRow(label: "Body retention") { PiStepper(name: "Body retention", unit: "days", value: $controller.preferences.capture.retentionDays, range: 1...365) }
             PiRow(label: "Payload quota") {
                 HStack(spacing: 8) {
-                    PiDropdown(selection: $controller.preferences.capture.quotaUnlimited, items: [(false, "Limit"), (true, "Unlimited")], compact: true)
-                        .accessibilityLabel("Payload quota")
+                    PiDropdown(selection: $controller.preferences.capture.quotaUnlimited, items: [(false, "Limit"), (true, "Unlimited")], compact: true, accessibilityName: "Payload quota mode")
                     if !controller.preferences.capture.quotaUnlimited {
-                        PiStepper64(label: "\(quotaMiB.wrappedValue) MiB", value: quotaMiB, range: 1...10_240)
+                        PiStepper64(name: "Payload quota", unit: "MiB", value: quotaMiB, range: 1...10_240)
                     }
                 }
             }
-            PiRow(label: "Metric retention") { PiStepper(label: "\(controller.preferences.dashboard.metricRetentionDays) days", value: $controller.preferences.dashboard.metricRetentionDays, range: 1...3650) }
-            PiRow(label: "Dashboard window", last: true) { PiStepper(label: "\(controller.preferences.dashboard.windowHours) hours", value: $controller.preferences.dashboard.windowHours, range: 1...8760) }
+            PiRow(label: "Metric retention") { PiStepper(name: "Metric retention", unit: "days", value: $controller.preferences.dashboard.metricRetentionDays, range: 1...3650) }
+            PiRow(label: "Dashboard window", last: true) { PiStepper(name: "Dashboard window", unit: "hours", value: $controller.preferences.dashboard.windowHours, range: 1...8760) }
         }
         PiSettingsGroup(title: "Spending", footer: CostLimitText.explanation + " A chat can have its own limit: open its token usage figure under the composer, or Session info.") {
             PiRow(label: "Cost limit per chat", detail: controller.preferences.defaultChatCostLimit.usd == nil
@@ -257,8 +268,8 @@ struct ProfileSettings: View {
         PiSettingsGroup(title: "Transcript", footer: "Compact is how a finished turn reads by default: its tool calls and thoughts fold behind one line above the answer, and one click on that line shows the whole turn again. Nothing is discarded either way, and a turn still running always reads in full.") {
             PiRow(label: "Finished turns", detail: TranscriptDisplayMode.compact.detail, last: true) {
                 PiDropdown(selection: $controller.preferences.transcriptDisplay,
-                           items: TranscriptDisplayMode.allCases.map { ($0, $0.label) }, compact: true)
-                    .accessibilityLabel("Transcript display for finished turns")
+                           items: TranscriptDisplayMode.allCases.map { ($0, $0.label) }, compact: true,
+                           accessibilityName: "Transcript display for finished turns")
                     .accessibilityIdentifier("settings-transcript-display")
             }
         }
@@ -279,11 +290,11 @@ struct ProfileSettings: View {
     /// The helpers' runtime and app updates.
     @ViewBuilder private var app: some View {
         PiSettingsGroup(title: "Runtime", footer: "PATH applies to newly started helpers. Provider credentials are never inherited by shell tools.") {
-            PiRow(label: "Idle helper grace") { PiStepper(label: "\(controller.preferences.runtime.idleGraceSeconds) seconds", value: $controller.preferences.runtime.idleGraceSeconds, range: 10...600, step: 10) }
+            PiRow(label: "Idle helper grace") { PiStepper(name: "Idle helper grace", unit: "seconds", value: $controller.preferences.runtime.idleGraceSeconds, range: 10...600, step: 10) }
             PiRow(label: "Tools PATH", last: true) { PiTextField(placeholder: "/usr/bin:/bin", text: $controller.preferences.runtime.toolsPATH, mono: true) }
         }
         PiSettingsGroup(title: "Updates") {
-            PiRow(label: "Check for app updates automatically", last: true) { Toggle("", isOn: $controller.preferences.automaticUpdateChecks).labelsHidden() }
+            PiRow(label: "Check for app updates automatically", last: true) { Toggle("", isOn: $controller.preferences.automaticUpdateChecks).labelsHidden().accessibilityLabel("Check for app updates automatically") }
         }
     }
 }
@@ -313,6 +324,8 @@ enum SettingsSection: String, CaseIterable, Identifiable, Sendable {
 /// One row per section, the open one highlighted.
 private struct SettingsSectionList: View {
     @Binding var selection: SettingsSection
+    /// Sections holding unsaved edits, marked with a dot.
+    var edited: Set<SettingsSection> = []
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             ForEach(SettingsSection.allCases) { section in
@@ -320,10 +333,17 @@ private struct SettingsSectionList: View {
                     HStack(spacing: 8) {
                         Image(systemName: section.symbol).font(.system(size: 12, weight: .medium))
                             .foregroundStyle(selection == section ? Color.piAccent : Color.piInkSecondary).frame(width: 18)
+                            // Unsaved edits mark the icon, so the title keeps its room.
+                            .overlay(alignment: .topTrailing) {
+                                if edited.contains(section) {
+                                    Circle().fill(Color.piWarning).frame(width: 6, height: 6).offset(x: 2, y: -2).accessibilityHidden(true)
+                                }
+                            }
                         Text(section.title).font(PiFont.body).foregroundStyle(Color.piInk).lineLimit(1)
                     }
                 }
                 .accessibilityIdentifier("settings-section-" + section.rawValue)
+                .accessibilityValue(edited.contains(section) ? "Unsaved changes" : "")
                 .accessibilityAddTraits(selection == section ? .isSelected : [])
             }
             Spacer(minLength: 0)
@@ -425,5 +445,17 @@ private struct CatalogModelMenu: View {
         .help(controller.supportedAPI ? "Search every model from the bundled Bello catalog or this connection's custom catalog." : "Choose Use Responses above to list models.")
         .accessibilityLabel(miniSelection ? "Mini model: \(draft.profile.miniModelId ?? "Catalog default")" : "Choose connection model")
         .accessibilityIdentifier(miniSelection ? "settings-mini-model-menu" : "settings-model-menu")
+    }
+}
+
+/// Hands the window this view is in to `found`, as it moves between windows.
+@MainActor struct HostingWindowReader: NSViewRepresentable {
+    let found: (NSWindow?) -> Void
+    func makeNSView(context: Context) -> ReaderView { let view = ReaderView(); view.found = found; return view }
+    func updateNSView(_ view: ReaderView, context: Context) { view.found = found }
+    @MainActor final class ReaderView: NSView {
+        var found: ((NSWindow?) -> Void)?
+        override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); found?(window) }
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
     }
 }

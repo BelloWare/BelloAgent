@@ -5,12 +5,25 @@ final class MemoryVaultStorage: VaultStorage, @unchecked Sendable {
     private let lock = NSLock()
     private var bytes: Data?
     private var error: VaultError?
+    /// Fails every write from now on, leaving reads alone.
+    var writeError: VaultError? { get { lock.lock(); defer { lock.unlock() }; return failWrites } set { lock.lock(); failWrites = newValue; lock.unlock() } }
+    private var failWrites: VaultError?
+    /// Fails every read from now on.
+    var readError: VaultError? { get { lock.lock(); defer { lock.unlock() }; return failReads } set { lock.lock(); failReads = newValue; lock.unlock() } }
+    private var failReads: VaultError?
     private(set) var writes = 0
+    /// Holds every read until signalled, for a load that is still under way.
+    var readGate: DispatchSemaphore? { get { lock.lock(); defer { lock.unlock() }; return gate } set { lock.lock(); gate = newValue; lock.unlock() } }
+    private var gate: DispatchSemaphore?
     init(_ bytes: Data? = nil, error: VaultError? = nil) { self.bytes = bytes; self.error = error }
-    func read() throws -> Data? { lock.lock(); defer { lock.unlock() }; if let error { throw error }; return bytes }
+    func read() throws -> Data? {
+        if let gate = readGate { gate.wait(); gate.signal() }
+        lock.lock(); defer { lock.unlock() }; if let error { throw error }; if let failReads { throw failReads }; return bytes
+    }
     func replace(expected: Data?, with replacement: Data) throws {
         lock.lock(); defer { lock.unlock() }
         if let error { throw error }
+        if let failWrites { throw failWrites }
         guard bytes == expected else { throw VaultError.conflict }
         bytes = replacement; writes += 1
     }

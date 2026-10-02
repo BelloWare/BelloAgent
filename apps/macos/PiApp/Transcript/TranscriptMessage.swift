@@ -51,6 +51,9 @@ struct TranscriptMessage: Codable, Sendable, Identifiable, Equatable {
     /// User rows: the skills the message was sent with, in the order the
     /// model received them ahead of its text. Nil when it used none.
     var skills: [TranscriptSkillUse]? = nil
+    /// What a user row with images and no text reads as. Display only: the
+    /// message the model received is its images, with no text.
+    static func imageOnlyText(_ count: Int) -> String { count == 1 ? "Image" : "\(count) images" }
     /// Assistant rows: what the helper recorded of the request the row came
     /// from. The turn report reads it for a request the request log has no
     /// row for. Nil from helpers before 0.1.88 and for rows it has no record of.
@@ -113,6 +116,10 @@ struct TranscriptMessage: Codable, Sendable, Identifiable, Equatable {
             result.responseTimeline = ResponseTimeline.canonical(parts,sourceID:id)
         }
         if role == "user" { result.skills = TranscriptSkillUse.recorded(message["nativeUserInput"]?.object?["skills"]) }
+        if role == "user", result.text.isEmpty {
+            let images = blocks.filter { $0.object?["type"]?.string == "image" }.count
+            if images > 0 { result.text = Self.imageOnlyText(images) }
+        }
         if role == "assistant" { result.reply = ReplyRecord.journaled(message) }
         return result
     }
@@ -320,6 +327,7 @@ extension TranscriptMessage {
             guard let skills = list.array else { throw Unexpected.shape }
             row.skills = try skills.map(skill)
         }
+        if row.role == "user", row.text.isEmpty, let images = try optionalInt(fields["imageCount"]), images > 0 { row.text = TranscriptMessage.imageOnlyText(images) }
         row.reply = try reply(fields["reply"])
         row.versions = try versionMark(fields["versions"])
         if let list = fields["requestAttemptIDs"], list != .null {

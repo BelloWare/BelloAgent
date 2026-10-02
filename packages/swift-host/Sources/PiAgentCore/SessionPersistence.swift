@@ -368,6 +368,11 @@ extension AgentSession {
         var value: JSON = ["active":JSON(active ?? (runTask != nil)),"queue":.array(queue.map(\.savedValue)),"steering":.array(steering.map(\.savedValue)),"commands":.array(Array(commands.suffix(128))),"queuePaused":JSON(queuePaused),"steeringMode":JSON(steeringMode),"followUpMode":JSON(followUpMode),"runStatus":JSON(runStatus.rawValue),"errorMessage":errorMessage.map { JSON($0) } ?? .null,"errorCode":errorCode.map { JSON($0) } ?? .null,"timing":["modelMs":cumulativeModelMs.map { JSON($0) } ?? .null,"toolMs":cumulativeToolMs.map { JSON($0) } ?? .null]]
         // The message being delivered counts with the lanes it goes back to.
         if let delivering { value["delivering"] = ["lane": JSON(delivering.lane), "submission": delivering.submission.savedValue] }
+        // A queued edit's hold and the outcomes of recent edits; absent when there are none.
+        if let queueEdit { value["queueEdit"] = (try? JSON.parse(JSONEncoder().encode(queueEdit))) ?? .null }
+        if !queueEditOutcomes.isEmpty { value["queueEditOutcomes"] = (try? JSON.parse(JSONEncoder().encode(queueEditOutcomes))) ?? .null }
+        if queueEditRevision > 0 { value["queueEditSequence"]=JSON(queueEditSequence); value["queueEditRevision"]=JSON(queueEditRevision) }
+        if queueEditForgottenRevision > 0 { value["queueEditForgottenRevision"]=JSON(queueEditForgottenRevision) }
         guard (try value.data()).count <= 8*1024*1024 else { throw AgentError("queue_limit", "Queued content exceeds 8 MiB") }
         var saved = value
         if let activeTaskPresentation { saved["taskPresentation"] = try JSON.parse(JSONEncoder().encode(activeTaskPresentation)) }
@@ -379,7 +384,9 @@ extension AgentSession {
     /// each checkpoint between them — are written and flushed together when
     /// the turn settles, so a tool result never waits on an fsync.
     var journalFlushesEachRecord: Bool { runTask == nil }
-    func persistState(active: Bool? = nil) throws {
+    /// `durable` forces the record to disk even during a run: a queued
+    /// edit's hold and its resolution must be on disk before they are answered.
+    func persistState(active: Bool? = nil, durable: Bool = false) throws {
         var value=try savedState(active:active)
         guard let journal else { return }
         // Only the receipts that changed, when they rebuild the whole list
@@ -387,7 +394,7 @@ extension AgentSession {
         let receipts=value["commands"].list
         let changes = wholeCommandsDue || commandChangeRecords >= CommandReceipts.wholeListEvery ? nil : CommandReceipts.changes(from: journaledCommands, to: receipts)
         if let changes { value["commands"] = .array(changes); value[CommandReceipts.deltaKey] = true }
-        do { try journal.append(["type":"custom","customType":JSON(JournalRecordKind.state),"data":value],flush:journalFlushesEachRecord) }
+        do { try journal.append(["type":"custom","customType":JSON(JournalRecordKind.state),"data":value],flush:durable || journalFlushesEachRecord) }
         catch {
             // Written or not, the next record starts the list again.
             wholeCommandsDue=true; journaledCommandsUncertain=true

@@ -96,16 +96,15 @@ extension PiImageTests {
             let client = ScriptClient([answer("A gradient.")])
             let session = try AgentSession(id: id, profile: profile, apiKey: "k", cwd: root, directory: root.appendingPathComponent(id), readOnly: true,
                                            resources: Resources(cwd: root, home: root), client: client, tools: ScreenshotTool(image: data), traces: TraceStore(), autoCompaction: false)
+            defer { Task { await session.close() } }
             _ = try await session.submit(Submission(commandID: "c", turnID: "t", text: "What is this?", attachments: [attachment], input: input), steer: false)
             try await eventually { !(await session.isRunning) }
-            let state = await session.snapshot()
-            await session.close()
-            return (state, client)
+            return (await session.snapshot(), client)
         }
-        let (refused, silent) = try await run("undeclared", input: nil)
-        XCTAssertEqual(refused["state"].text, "error")
-        let unsent = await silent.requests.count
-        XCTAssertEqual(unsent, 0, "Nothing is sent for a model not known to take images")
+        // A model not known to take images refuses the message where it is
+        // typed: nothing is accepted, nothing sent.
+        do { _ = try await run("undeclared", input: nil); XCTFail("refused before it is accepted") }
+        catch let error as AgentError { XCTAssertEqual(error.code, "unsupported_image") }
 
         let (sent, client) = try await run("declared", input: ["text", "image"])
         XCTAssertEqual(sent["state"].text, "idle")
@@ -125,5 +124,40 @@ extension PiImageTests {
             XCTAssertThrowsError(try NativeHostService.turnOverrides(["input": invalid]), "\(invalid)")
         }
         XCTAssertThrowsError(try fixtureProfile().overriding(model: nil, thinkingLevel: nil, input: ["audio"]))
+    }
+
+    /// A message of images alone (handoff A2) reaches the model as its
+    /// images: no text part, empty or made up. One for a model without image
+    /// input is refused, and the message stays queued for the reader.
+    func testAnImageOnlyMessageCarriesOnlyItsImage() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let data = png(width: 40, height: 30), file = root.appendingPathComponent("only.png")
+        try data.write(to: file)
+        let attachment: JSON = ["path": JSON(file.path), "bytes": JSON(data.count), "sha256": JSON(sha256(data)), "mimeType": "image/png"]
+        var raw = try fixtureProfile().raw; raw["input"] = ["text", "image"]
+        let client = ScriptClient([answer("A small image.")])
+        let session = try AgentSession(id: "images", profile: Profile(raw), apiKey: "k", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true,
+                                       resources: Resources(cwd: root, home: root), client: client, tools: RecordingTools(), traces: TraceStore(), autoCompaction: false)
+        _ = try await session.submit(Submission(commandID: "c", turnID: "t", text: "", attachments: [attachment]), steer: false)
+        try await eventually { !(await session.isRunning) }
+        let requests = await client.requests
+        let user = try XCTUnwrap(requests.first?.last { $0.role == "user" })
+        XCTAssertEqual(user.content.map { $0["type"].text }, ["image"], "only the image")
+        let body = try ProviderClient.requestBody(profile: Profile(raw), messages: [user], instructions: "", tools: [], sessionID: "s")
+        let content = try XCTUnwrap(body["input"].list.last?["content"].list)
+        XCTAssertEqual(content.map { $0["type"].text }, ["input_image"], "the request carries the image and no text")
+
+        // Refused where it is typed, before it is accepted: nothing is queued,
+        // and the app keeps the whole draft, image and all.
+        let plain = try AgentSession(id: "text-only", profile: fixtureProfile(), apiKey: "k", cwd: root, directory: root.appendingPathComponent("plain"), readOnly: true,
+                                     resources: Resources(cwd: root, home: root), client: ScriptClient([]), tools: RecordingTools(), traces: TraceStore(), autoCompaction: false)
+        do { _ = try await plain.submit(Submission(commandID: "c2", turnID: "t2", text: "", attachments: [attachment]), steer: false); XCTFail("a model without image input refuses it") }
+        catch let error as AgentError { XCTAssertEqual(error.code, "unsupported_image") }
+        var missing = attachment; missing["path"] = JSON(root.appendingPathComponent("gone.png").path)
+        do { _ = try await session.submit(Submission(commandID: "c3", turnID: "t3", text: "", attachments: [missing]), steer: false); XCTFail("a missing image is refused") }
+        catch let error as AgentError { XCTAssertTrue(["file_unavailable", "attachment_changed"].contains(error.code), error.code) }
+        let pending = await plain.queue
+        XCTAssertTrue(pending.isEmpty)
+        await session.close(); await plain.close()
     }
 }

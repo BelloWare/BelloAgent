@@ -126,6 +126,28 @@ Check both configurations with `python3 scripts/test-lanes.py list` and
 `python3 scripts/test-lanes.py --configuration Release list` after changing
 the class boundaries.
 
+## Accessibility tree
+
+`PiControlAccessibilityTests` and `AppControlAccessibilityTests` read what
+VoiceOver is given, through the accessibility client API (`AXUIElement`)
+against the test host's own process (`AXClient`, `AXNode`).
+
+- SwiftUI builds its elements only while assistive access is on:
+  `HostedAccessibility.begin()` sets the application's
+  `AXEnhancedUserInterface` for one test and `end(restoring:)` puts back
+  what it was, so the class stays in the parallel lane.
+- Asked of its own process the client API answers in place, on the calling
+  thread. Ask it on the main thread: from a background thread it runs
+  SwiftUI off the main thread and the host crashes.
+- Prefer it to walking `accessibilityChildren()` in process: that walk lists
+  an AppKit button inside SwiftUI by its cell, without the name VoiceOver
+  hears, and does not reach a `List`'s rows.
+- A static text is read by its value (`AXNode.spoken`). A hidden SwiftUI
+  view can leave an empty `AXUnknown`, which VoiceOver skips.
+
+These tests prove the names, values, selected and enabled states VoiceOver is
+given; they do not replace a VoiceOver pass, which stays with the owner.
+
 ## Live end-to-end (opt-in)
 
 `scripts/live-compaction-e2e.py` runs the release helper against a real
@@ -1270,6 +1292,15 @@ the pane, a Swift file shown at the lines it was opened at), `24a-tabs-side-*`
 (the side shown in their place) and `24b-tabs-window-*` (the file popped out
 into a window of its own). The full gallery renders them after the sides panel.
 
+`PI_APP_UI_GALLERY_UI_ONLY=1` (with `TEST_RUNNER_` beside it) renders only the
+0.1.119 Settings, terminal and MCP scenes, at the 920×600 minimum window:
+`26-settings-unsaved-*` (Settings with a renamed connection and a changed
+preference), `26a-settings-close-question-*` (Save All / Discard Changes / Keep
+Editing), `26b-terminals-*` (three terminals, one named), `26c-` and
+`26d-terminal-{restart,close}-question-*`, and `26e-mcp-remove-question-*`.
+Every question is answered Cancel or Keep Editing. The full gallery renders them
+after the table window.
+
 `PI_APP_UI_GALLERY_COST_ONLY=1` (with `TEST_RUNNER_` beside it) renders only the
 cost-limit scenes after the first turn: `18-cost-limit-*` (the stop notice; the
 limited chat's Session Inspector Overview, with its spend against the limit and
@@ -1360,3 +1391,31 @@ For comparable rich streaming, set `PI_PERF_DELTA_BYTES=64` and the correspondin
 window suites serially, with compilation and other performance runs idle. Include
 deferred work and workload heartbeats; do not compare only root assignment or
 infer physical display cadence. The 640-block initial sizing remains expensive.
+
+## Minimum window: the queue, the composer and the terminal
+
+At the 920×600 minimum window the transcript keeps about 150 points of reading
+space with the queue panel, a tall draft and an open terminal all on screen:
+
+- The queue's list takes at most 3.5 rows and its headings, less when the
+  pane has no room, down to one reachable row (`QueuePanel.room`).
+- Beside an open terminal the composer field stops growing at 88 points
+  (`ComposerScrollView.besideTerminalHeight`, about three and a half lines);
+  its text scrolls. Without a terminal it grows to 240 points as before.
+- The terminal body gives way down to its 120-point minimum (its frame is
+  flexible between that and the height it was dragged to, which is kept and
+  comes back when there is room). The queue budgets the terminal at that
+  minimum.
+
+`ConversationPaneTests.testATallDraftATerminalAndAQueueLeaveTheTranscriptItsReadingSpace`
+checks this with twenty waiting messages, the terminal at its default and a
+dragged-tall height, and the queue paused.
+
+The limit: while a turn runs, its live card at the bottom of the transcript
+takes about 100 points more. With all of the above at their minimums (footer
+about 36, composer 88 plus its bar, terminal 120 plus its title bar, queue one
+row) that leaves the transcript's scroll area about 50–75 points, and the
+window's minimum content height grows to about 670 points. Keeping 150 points
+there as well would mean hiding or shrinking the run card, or collapsing the
+queue or the terminal automatically, which changes what is on screen beyond
+this budget. The panel can be collapsed by hand.

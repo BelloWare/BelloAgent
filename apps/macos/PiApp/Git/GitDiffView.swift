@@ -35,6 +35,10 @@ struct DiffView: View {
     /// controller, so choosing another file or commit closes the gate again.
     @Binding var expanded: String?
     var openFile: ((String, Int) -> Void)? = nil
+    /// A line to bring into view and select once this diff is shown, and who
+    /// hears what became of it.
+    var reveal: GitDiffReveal? = nil
+    var revealed: ((GitDiffReveal, GitDiffRevealOutcome) -> Void)? = nil
     @State private var wrap = false
     private static let rowLimit = GitDiffMetrics.rowLimit
     private var showAll: Bool { expanded == identity }
@@ -43,7 +47,7 @@ struct DiffView: View {
         GitDiffTable(files: files, split: split, wrap: wrap, showAll: showAll, identity: identity,
                      top: AnyView(top), topKey: TopKey(title: title, subtitle: subtitle, loading: loading, empty: files.isEmpty, embedded: embedded, lead: leadKey),
                      topHeightKey: TopHeightKey(title: title != nil, subtitle: subtitle != nil, note: files.isEmpty && !loading, embedded: embedded, lead: leadKey),
-                     loading: loading, more: more, colors: .pi, menu: GitDiffPiMenu.builder(openFile: openFile))
+                     loading: loading, more: more, colors: .pi, menu: GitDiffPiMenu.builder(openFile: openFile), reveal: reveal, revealed: revealed)
             .background(Color.piContent)
     }
 

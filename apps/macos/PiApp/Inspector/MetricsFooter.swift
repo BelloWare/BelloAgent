@@ -122,7 +122,7 @@ struct MetricsFooter: View {
         return PiBadge(text: room, tone: captureTone, icon: icon).hidden()
             .overlay(alignment: .trailing) {
                 PiBadge(text: text, tone: captureTone, icon: icon)
-                    .accessibilityHidden(true)
+                    .accessibilityElement(children: .ignore).accessibilityHidden(true)
                     .overlay {
                         PiPopoverTrigger(label: "Capture: " + captureTitle + ". Open the Session Inspector", identifier: "capture-badge",
                                          help: "Capture: " + captureTitle + ". Open the Session Inspector: every request, its bodies and the capture settings",

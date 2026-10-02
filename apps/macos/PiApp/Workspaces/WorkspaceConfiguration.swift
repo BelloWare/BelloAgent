@@ -328,13 +328,107 @@ extension WorkspaceModel {
             $0.chatCostLimit = preferences.chatCostLimit; $0.webhook = preferences.webhook
         }
     }
-    func saveMCPConfiguration(_ config: WireValue, expectedRevision: Int64) async throws {
-        guard let id = selectedWorkspaceID, !chats.contains(where: { $0.workspaceID == id && displays[$0.id]?.hasWork == true }),
-              !sides.values.contains(where: { $0.workspaceID == id && !($0.kept) }) else { throw HostError.failure("Stop project work and close or keep sides before changing MCP servers.") }
-        try await updateConfiguration(expectedRevision: expectedRevision) { $0.mcp[id] = config }
-        if let host = hosts[id], host.isReady {
-            do { _ = try await host.request("mcp.configure", params: ["config": config]) }
-            catch { host.shutdown(); throw error }
+    /// Why a project's MCP servers can't change now, or nil when they can.
+    func mcpChangeBlocked(_ id: String) -> String? {
+        // A send counts from the moment its row shows, before it reaches the
+        // helper: it has passed its own checks and won't look at this again.
+        guard !chats.contains(where: { chat in
+                  guard chat.workspaceID == id, let view = displays[chat.id] else { return false }
+                  return view.hasWork || view.loading || !view.sendingRows.isEmpty
+              }),
+              !sides.values.contains(where: { $0.workspaceID == id && !($0.kept) }) else {
+            return "Stop project work and close or keep sides before changing MCP servers."
         }
+        return nil
+    }
+    /// How many MCP servers a project has saved in the vault.
+    func mcpServerCount(_ id: String) -> Int { configuration.mcp[id]?.object?["servers"]?.object?.count ?? 0 }
+    /// What saving a project's MCP servers did to its running helper.
+    enum MCPApplied: Equatable {
+        /// No helper was running, or the running one took the configuration.
+        case applied
+        /// The vault holds the new configuration, but the running helper
+        /// couldn't load it and is being stopped; it starts with it next time.
+        case helperStopping
+    }
+    /// Shown when the vault saved but the helper didn't take it. Fixed copy:
+    /// the helper's own message can quote the configuration it refused.
+    static let mcpHelperStoppingNotice = "The project's helper couldn't load the change and is being stopped. It starts with the saved MCP configuration next time."
+    func saveMCPConfiguration(_ config: WireValue, expectedRevision: Int64, workspaceID: String? = nil) async throws {
+        guard let id = workspaceID ?? selectedWorkspaceID else { throw HostError.failure("Choose a project first.") }
+        try holdProjectForMCPChange(id)
+        defer { workspaceChangesInFlight.remove(id) }
+        try await updateConfiguration(expectedRevision: expectedRevision) { $0.mcp[id] = config }
+        if await applyMCPConfiguration(config, to: id) == .helperStopping {
+            throw HostError.failure("Saved in the vault. " + Self.mcpHelperStoppingNotice)
+        }
+    }
+    /// Marks the project as changing, as folder changes do, so no chat opens
+    /// and no helper starts on it until the change is saved and applied.
+    /// The caller removes the mark.
+    private func holdProjectForMCPChange(_ id: String) throws {
+        guard !workspaceChangesInFlight.contains(id) else { throw HostError.failure("Wait for this project's changes to finish.") }
+        if let reason = mcpChangeBlocked(id) { throw HostError.failure(reason) }
+        workspaceChangesInFlight.insert(id)
+    }
+    /// Hands a saved configuration to the project's running helper, if one is
+    /// running. A failure stops only that same helper connection. A helper
+    /// that replaced it while the request was out started from the vault,
+    /// which already held the change.
+    private func applyMCPConfiguration(_ config: WireValue, to id: String) async -> MCPApplied {
+        guard let host = hosts[id], host.isReady else { return .applied }
+        let connection = host.connectionID
+        do { _ = try await host.request("mcp.configure", params: ["config": config]); return .applied }
+        catch {
+            guard hosts[id] === host, host.connectionID == connection else { return .applied }
+            host.shutdown()
+            return .helperStopping
+        }
+    }
+    enum MCPRemoval: Equatable { case nothingSaved, removed, removedHelperStopping }
+    /// Deletes one project's saved MCP servers, the project captured when the
+    /// reader asked, whatever is selected by the time this runs. The vault
+    /// must still be at `expectedRevision`: servers saved since are not
+    /// removed unseen.
+    func removeAllMCPServers(workspaceID id: String, expectedRevision: Int64) async throws -> MCPRemoval {
+        guard workspaces.contains(where: { $0.id == id }) else { throw HostError.failure("That project is no longer in the sidebar.") }
+        try holdProjectForMCPChange(id)
+        defer { workspaceChangesInFlight.remove(id) }
+        try await ensureConfiguration()
+        let stored = try await vault.load()
+        guard stored.revision == expectedRevision else {
+            throw HostError.failure("The MCP configuration changed while you were asked. Review it and try again.")
+        }
+        guard stored.mcp[id]?.object?["servers"]?.object?.isEmpty == false else { return .nothingSaved }
+        let empty = WireValue.object(["servers": .object([:])])
+        try await updateConfiguration(expectedRevision: expectedRevision) { $0.mcp[id] = empty }
+        return await applyMCPConfiguration(empty, to: id) == .applied ? .removed : .removedHelperStopping
+    }
+    /// The question asked before removing a project's MCP servers.
+    static func mcpRemovalQuestion(path: String, servers: Int) -> (title: String, detail: String) {
+        let name = URL(fileURLWithPath: path).lastPathComponent
+        let count = servers == 1 ? "1 server" : "\(servers) servers"
+        return ("Remove all MCP servers from “\(name)”?",
+                "This deletes the saved MCP configuration of the project at \(path) from the vault: \(count), and any server credentials stored with them. "
+                + "It is not a temporary disconnect. To use these servers again, add them back. The project's running MCP connections close.")
+    }
+    /// Asks, then removes the selected project's MCP servers. Returns what to
+    /// tell the reader, or nil when they cancelled or a question was already up.
+    func confirmAndRemoveAllMCPServers() async -> String? {
+        guard !mcpRemovalInProgress, let id = selectedWorkspaceID, let project = workspaces.first(where: { $0.id == id }) else { return nil }
+        let servers = mcpServerCount(id)
+        guard servers > 0 else { return "This project has no saved MCP servers." }
+        mcpRemovalInProgress = true; defer { mcpRemovalInProgress = false }
+        let revision = configuration.revision, name = URL(fileURLWithPath: project.path).lastPathComponent
+        let question = Self.mcpRemovalQuestion(path: project.path, servers: servers)
+        guard await PiQuestion.shared.confirm(question.title, question.detail, action: "Remove All Servers",
+                                              destructive: true, cancelIsDefault: true) else { return nil }
+        do {
+            switch try await removeAllMCPServers(workspaceID: id, expectedRevision: revision) {
+            case .nothingSaved: return "“\(name)” has no saved MCP servers."
+            case .removed: return "Removed all MCP servers from “\(name)”."
+            case .removedHelperStopping: return "Removed “\(name)”'s saved MCP servers. " + Self.mcpHelperStoppingNotice
+            }
+        } catch { return error.localizedDescription }
     }
 }

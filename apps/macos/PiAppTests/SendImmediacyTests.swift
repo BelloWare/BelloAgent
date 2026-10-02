@@ -298,17 +298,22 @@ final class SendImmediacyTests: XCTestCase {
         }
         let text = "A question at the foot of a long chat"
         var passes = [pass()]
+        // Draws and samples at least six passes, and on until `done` holds:
+        // in the parallel lane's load six passes alone could end before the
+        // page caught up (0.1.119's gate). Every pass still counts toward
+        // the steadiness checked below.
+        func sample(until what: String, _ done: () -> Bool) async throws {
+            for _ in 0..<6 { await Task.yield(); try? await Task.sleep(for: .milliseconds(8)); pane.draw(); passes.append(pass()) }
+            try await eventually(what) { pane.draw(); passes.append(pass()); return done() }
+        }
         pane.session.showSending(TranscriptMessage(id: "turn-1", role: "user", text: text, state: TranscriptMessage.sendingState,
                                                    at: 400_000, turn: "turn-1", taskRootID: "turn-1"))
         pane.model.followSubmittedTurn(pane.session.id, refreshing: false)
-        for _ in 0..<6 { await Task.yield(); try? await Task.sleep(for: .milliseconds(8)); pane.draw(); passes.append(pass()) }
-        XCTAssertEqual(passes.last?.message(text).first?.drawn, true, "The message is drawn at the foot of the chat")
+        try await sample(until: "the message is drawn at the foot of the chat") { passes.last?.message(text).first?.drawn == true }
         // The helper's snapshot: the same message as the helper projects it.
         pane.session.messages.append(TranscriptMessage(id: "turn-1", role: "user", text: text, thinking: "", tools: [], state: "complete", truncated: false,
                                                        at: 400_120, turn: "turn-1", taskRootID: "turn-1", taskExecutionID: "execution-1"))
-        for _ in 0..<6 { await Task.yield(); try? await Task.sleep(for: .milliseconds(8)); pane.draw(); passes.append(pass()) }
-        XCTAssertTrue(pane.session.sendingRows.isEmpty, "The helper's row is the message now")
-        XCTAssertEqual(passes.last?.message(text).first?.state, "complete")
+        try await sample(until: "the helper's row is the message now") { pane.session.sendingRows.isEmpty && passes.last?.message(text).first?.state == "complete" }
         // Its reply arrives under it.
         pane.session.messages.append(TranscriptMessage(id: "reply-1", role: "assistant", text: "An answer that arrives below.", state: "streaming",
                                                        at: 400_500, turn: "turn-1", taskRootID: "turn-1", taskExecutionID: "execution-1"))
@@ -478,5 +483,63 @@ final class SendImmediacyTests: XCTestCase {
         XCTAssertEqual(stored?.title, text, "The name is kept once the helper has the message")
         closed = true
         await bench.close()
+    }
+}
+
+extension SendImmediacyTests {
+    /// A message of images alone is a message (handoff A2): Return sends it
+    /// with no text and nothing made up, its row says what it is, and an
+    /// empty draft still sends nothing.
+    @MainActor func testAnImageOnlyMessageSendsWithoutText() async throws {
+        let chat = try await ScriptedSendChat()
+        var closed = false
+        defer { if !closed { Task { await chat.close() } } }
+        let image = AttachmentRecord(id: "image-1", path: "/tmp/fixture-image.png", sha256: "00", bytes: 10, mimeType: "image/png")
+        XCTAssertFalse(chat.session.hasSubmittableInput)
+        chat.key("\r", keyCode: 36)
+        await chat.settle(4)
+        XCTAssertTrue(chat.frames("turn.submit").isEmpty, "an empty draft sends nothing")
+        chat.type("   ")
+        chat.key("\r", keyCode: 36)
+        await chat.settle(4)
+        XCTAssertTrue(chat.frames("turn.submit").isEmpty, "nor does one of spaces")
+        chat.session.draft = ""
+        chat.session.attachments = [image]
+        XCTAssertTrue(chat.session.hasSubmittableInput)
+        await chat.settle(4)
+        chat.key("\r", keyCode: 36)
+        await chat.until("The image never reached the helper") { chat.frames("turn.submit").count == 1 }
+        let frame = try XCTUnwrap(chat.frames("turn.submit").first)
+        XCTAssertEqual(frame["params"]?.object?["text"]?.string, "", "no text is made up for it")
+        XCTAssertEqual(frame["params"]?.object?["attachments"]?.array?.count, 1)
+        XCTAssertEqual(chat.session.sendingRows.first?.text, "Image", "the row drawn at once says what it is")
+        closed = true
+        await chat.close()
+    }
+
+    /// Steering takes an image alone too, on the same rule.
+    @MainActor func testAnImageOnlySteerIsSent() async throws {
+        let chat = try await ScriptedSendChat()
+        var closed = false
+        defer { if !closed { Task { await chat.close() } } }
+        chat.session.state = "running"
+        chat.session.attachments = [AttachmentRecord(id: "image-2", path: "/tmp/fixture-image.png", sha256: "00", bytes: 10, mimeType: "image/png")]
+        await chat.settle(4)
+        chat.model.submitComposer(intent: .steer, sessionID: chat.chat.id)
+        await chat.until("The steer never reached the helper") { chat.frames("turn.steer").count == 1 }
+        XCTAssertEqual(chat.frames("turn.steer").first?["params"]?.object?["text"]?.string, "")
+        chat.session.state = "idle"
+        closed = true
+        await chat.close()
+    }
+
+    /// A user row whose message was images alone reads as them, from the
+    /// helper's row and from the journal, so it is never an empty bubble.
+    @MainActor func testAnImageOnlyRowReadsAsItsImages() throws {
+        XCTAssertEqual(TranscriptMessage.imageOnlyText(1), "Image")
+        XCTAssertEqual(TranscriptMessage.imageOnlyText(3), "3 images")
+        let journal: [String: WireValue] = ["role": .string("user"), "content": .array([.object(["type": .string("image"), "mimeType": .string("image/png"), "data": .string("AA==")])])]
+        let row = TranscriptMessage.project(id: "u", message: journal)
+        XCTAssertEqual(row.text, "Image")
     }
 }

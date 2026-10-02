@@ -218,7 +218,7 @@ struct SessionUsageButton: View {
     /// as over the pills under the composer.
     var body: some View {
         face
-            .accessibilityHidden(true)
+            .accessibilityElement(children: .ignore).accessibilityHidden(true)
             .overlay {
                 PiPopoverTrigger(label: "Session Inspector: cost, tokens, time and every request",
                                  identifier: costLabel == nil ? "sessionUsageButton" : "sessionUsageCostButton",

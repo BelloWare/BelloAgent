@@ -1,63 +1,48 @@
-# Next release: 0.1.118
+# Next release: 0.1.119
 
-**Released 2026-10-02** as 0.1.118 (build 122, tag `v0.1.118`); record in `docs/validation/Bello-Agent-0.1.118-2026-10-02.md`. The refactors below were moved out of this release and are taken up separately.
+**Not released.** 0.1.118 (build 122, tag `v0.1.118`) is the latest release; its record is `docs/validation/Bello-Agent-0.1.118-2026-10-02.md`.
 
-**All work for 0.1.118 goes on `dev/next`.** Workstream branches (`dev/ws1-…` etc.) are merged here by the integrator. `main` holds released versions only (docs/Release.md).
+**Scope (owner, 2026-10-02):** the approved UI/UX handoff, `docs/reviews/BelloAgent-approved-UI-UX-handoff-2026-10-02.md` (D1–D8, A1, A2). Its requirements and acceptance lists are the contract; read the item's section before working on it. Release when every item below is done.
 
-**Release rule (owner, 2026-10-01): release only when every item below is done** — all five workstreams, the full gate, and an hour-long soak that passes with no exceptions.
+**All work goes on `dev/next`.** Workstream branches (`dev/ws-git`, `dev/ws-queue`, `dev/ws-ui`) are merged here by the integrator. `main` holds released versions only — never push to `main` outside a release.
 
 ## How work is done
-- The integrator implements with parallel workstream agents, each in its own worktree and build folder, each with its own Codex session (gpt-6.1-sol, xhigh, read-only) that plans every step and reviews every diff before commit.
-- Every fix gets a test that fails without it (mutation-checked). UI stays unchanged except where an item says otherwise.
-- Checks: `scripts/check-next.sh` (build, `test <Class>…`, `helper`, `gate`).
+- Parallel workstream agents, each in its own worktree, build folder and Codex session (gpt-6.1-sol, xhigh, read-only) that plans every step and reviews every diff before commit.
+- Every change gets tests that fail without it (mutation-checked), including the failure and interruption paths the handoff lists.
+- Checks: `scripts/check-next.sh` (build, `test <Class>…`, `helper`, `gate`). Serial-lane classes run alone.
 
 ## Rules for code on this branch
 - Native only (AppKit/SwiftUI), the app's Pi components, no stock controls.
-- The helper follows pi 0.85.1 exactly; wire format changes must be optional fields.
+- The helper follows pi 0.85.1 except where the handoff approves otherwise; wire changes are optional fields.
 - No timing waits that count polls (use `eventually` in PiAppTests/TestSeams.swift).
-- Keep `packages/bello-views` (FileView, FileFinder, GitView) free of app types; macOS 13.
+- `packages/bello-views` stays free of app types; macOS 13. App target macOS 14.
+- Motion policy unchanged (always-on app motion).
 - Tick items here in the commit that finishes them.
 
-## Workstream 1 — data safety and connections (review findings 1–5)
-Source: `docs/reviews/BelloAgent-0.1.117-deep-review.md`.
-- [x] **Literal Git paths** (finding 1): discard, delete untracked, stage, unstage, commit (both forms, incl. pathspec-file) use literal pathspecs; diff/history audited. Tests: `[`, `*`, `?`, leading `:` names; unselected files untouched; renames; long lists.
-- [x] **Serialized connection switch** (finding 2): per-chat gate over close/rebind/metadata vs open, send, prewarm and automatic context; opens tied to a binding generation and revalidated after awaits. Test the review's reverse interleaving, two quick switches, cancellation, failed writes.
-- [x] **Journal rebind on switch** (finding 5): rebind the journal to the new connection before committing the switch; a failed rebind leaves the old connection working. Two synthetic gateways; send and reopen on B; checkpoint and full-replay journals.
-- [x] **Confirm when reasoning can't carry over** (owner decision: ask each time): before switching, the helper checks the context against B. If replies hold provider-only reasoning that only A can use, ask "Earlier reasoning from A can't be sent to B. Switch anyway?" — on confirm those replies go to B portably (text and tool calls), as per-turn model changes already do; the original journal keeps everything. Otherwise switch silently.
-- [x] **Durable in-flight queue delivery** (finding 3): a claimed follow-up/steering item stays persisted until its user record is appended; recovery restores undelivered work paused without duplicates. Crash-snapshot test, both lanes, one-at-a-time and all modes.
-- [x] **Whole pending-side draft** (finding 4): close, replace, quit and update move text, images and skills to the parent through one merge path; storage failures keep everything recoverable.
+## Workstream Git — Git and files (`dev/ws-git`)
+- [x] **D1** Commit Checked Files vs Commit Staged Changes, explicit scope; true Reword Last Commit that keeps the tree, index and worktree.
+- [x] **D6** Find and Go to Line survive a live file reload.
+- [x] **D8** Git Blame in the file viewer, with clicks opening the real commit-versus-parent diff at the line in Changes → History.
 
-## Workstream 2 — content and rendering correctness (findings 7–10)
-- [x] **Nested code fence identities** (7): collision-free leaf identity; Copy, display and accessibility match; streaming selection stable.
-- [x] **Linear terminal Markdown matching** (9): ordered cursor; candidate-visit test proves linear growth; identity rules unchanged.
-- [x] **Bounded syntax-state reads** (8): chunked lexer advance, shared state across lines, cancellation; read-size test with a 64 MiB first line.
-- [x] **Empty MCP SSE priming events** (10): ignored; loopback fixture with arbitrary chunk splits, no duplicate tool calls.
+## Workstream Queue — queue and input (`dev/ws-queue`)
+- [x] **D2** Editing a queued message holds all pending input in that chat; durable, atomic acquire/save/cancel/remove with edit identity; restart reconciliation.
+- [x] **D4** Bounded, scrolling, collapsible queue panel; steering vs follow-up headings with truthful timing; full text and captured model/effort on demand.
+- [x] **A2** Image-only messages valid on every submission path for models that take images.
 
-## Workstream 3 — capture cleanup (finding 6)
-- [x] Batched/keyset garbage collection and streaming orphan checks; >100,001 chunks; failure mid-batch recovers; bounded memory.
+## Workstream UI — Settings, terminals, MCP (`dev/ws-ui`)
+- [x] **D3** Settings: Save All, Cancel discards, dirty close offers Save / Discard / Keep Editing; guarded Reload; honest partial saves.
+- [x] **D5** Multiple terminals per project: create, switch, rename, close; confirm restart/close of a live shell (Cancel default).
+- [x] **D7** "Remove All MCP Servers…" with an honest confirmation and result.
 
-## Workstream 4 — smoothness and loose ends
-- [x] **Soak pauses**: 264–539 ms graphics/font-cache waits (0.1.117 soak, seed `1790822043708`; a 122 s replay reproduces one at 431 ms). Profile, then reduce text drawn at once. Target: hour-long soak passes.
-- [x] **Last SwiftUI publish-during-update warning** (edit-a-question flow; HistoryEditTests.testEditingAQuestionScrolledUpToGoesToTheNewTurn).
-- [x] **Helper loose ends**: cancel a chat's older-rows load on close/unload; guard unload while a command awaits the load; resume retries instead of replaying from the start.
-- [x] **The unexplained HostDispatchTests trap**: Thread Sanitizer run of fill/older-rows/dispatch tests; a backtrace diagnostic in the gate.
+## After the workstreams merge
+- [x] **A1** Contextual accessibility in shared Pi controls and the new queue, terminal, Git-scope and blame controls (AX-tree assertions).
 
-## Workstream 5 — refactors: NOT in 0.1.118
-The owner moved these out of 0.1.118 (2026-10-02); another agent takes them
-up separately after this release. Don't start them on this branch.
-
-- [ ] Composer state in its own @Observable owner (pilot).
-- [ ] AgentSession's ~104 properties in groups, receipts first.
-- [ ] Closed chats released at shutdown (task ownership), not ~2 minutes later.
-- [ ] Narrower chat-change invalidation, measured with 5,000 records.
-- [ ] A shared journal-format module for app and helper.
-- [ ] The remaining ~84 poll-counting test waits moved to `eventually`.
+## Refactors — not in this release
+Left to a separate agent (owner, 2026-10-02): composer @Observable pilot; AgentSession property groups; shutdown task ownership; narrower chat-change invalidation; shared journal-format module; remaining poll-counting waits.
 
 ## Before release
-- [x] Full gate passes (`scripts/verify-release.sh` at 215b971, 21 min 1 s).
-- [x] Hour-long soak of a Release build passes, no exceptions (seed 1790903251581, 0 stalls, longest 245 ms).
-- [x] Every review finding's acceptance test from the review exists and passes.
-- [ ] Owner checks (deferred by the owner, 2026-10-02): a minute with VoiceOver in the file viewer; one compaction against a real gateway.
-- [x] Release notes (`releases/0.1.118.html`), including the new switch confirmation, usage figures
-      appearing at once on a chat switch, and that a chat moved to another
-      connection can't be opened by builds before 0.1.118.
+- [x] Full gate passes (`scripts/verify-release.sh` at 163a292f; the one failure, a poll-count test wait, fixed in 2b847707 and its class rerun).
+- [x] Hour-long soak of a Release build passes, no exceptions (seed 1790977596393, 0 stalls, longest 207 ms).
+- [x] Gallery reviewed for the new states (light/dark, minimum window size 920×600).
+- [x] Owner checks deferred by the owner (2026-10-03): VoiceOver across Settings, queue, file viewer, terminals; one compaction against a real gateway.
+- [x] Release notes (`releases/0.1.119.html`).

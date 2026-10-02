@@ -62,6 +62,15 @@ extension WorkspaceModel {
             self.attachImageFiles(urls, sessionID: id)
         }) { displays[id]?.notice = PiQuestion.busyNotice }
     }
+    /// Images inspected for `view`'s draft. A queued message's rewrite takes
+    /// no images: ones that arrive while it is in the composer join the draft
+    /// set aside for it, which they were chosen for.
+    func receiveAttachments(_ items: [AttachmentRecord], into view: SessionDisplay) {
+        if view.queueEditingID != nil, var before = view.draftBeforeQueueEdit {
+            before.attachments = (before.attachments ?? []) + items; view.draftBeforeQueueEdit = before
+        } else { view.attachments.append(contentsOf: items) }
+        draftChanged(view)
+    }
     /// Shared by the file panel, paste and drag-and-drop.
     func attachImageFiles(_ urls: [URL], sessionID: String? = nil) {
         guard let id = sessionID ?? selectedID, let view = displays[id], !urls.isEmpty else { return }
@@ -69,7 +78,7 @@ extension WorkspaceModel {
         Task { do {
             let items = try await Task.detached { try urls.map(AttachmentRecord.inspect) }.value
             guard view.attachments.count + items.count <= 4, (view.attachments + items).reduce(0, { $0 + $1.bytes }) <= 16 * 1024 * 1024 else { throw HostError.failure("A submission supports four images and 16 MiB in total") }
-            view.attachments.append(contentsOf: items); draftChanged(view)
+            receiveAttachments(items, into: view)
         } catch { self.error = error.localizedDescription } }
     }
 }

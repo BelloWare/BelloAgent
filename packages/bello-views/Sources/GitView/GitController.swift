@@ -23,7 +23,16 @@ import AppKit
     }
 
     @Published public var roots: [String] = []
-    @Published public var root: String? { didSet { if root != oldValue { if suspended { needsFullRead = true }; startRefresh() } } }
+    @Published public var root: String? {
+        didSet {
+            guard root != oldValue else { return }
+            // Another folder, perhaps another repository: a commit held for a
+            // reveal in the last one, and a reveal still on its way, go.
+            pinnedCommit = nil; revealTarget = nil; revealTokens += 1
+            if suspended { needsFullRead = true }
+            startRefresh()
+        }
+    }
     @Published public var repositoryRoot: String?
     /// Coming back to Changes brings up to date a diff that a refresh nobody
     /// asked for left unread while it was hidden.
@@ -49,6 +58,10 @@ import AppKit
     @Published public var selectedCommit: GitCommit? {
         didSet {
             guard selectedCommit != oldValue else { return }
+            // Another commit chosen: the one a blame line asked for is no
+            // longer held, and its line no longer the one to show.
+            if selectedCommit?.hash != pinnedCommit { pinnedCommit = nil }
+            if let reveal = revealTarget, selectedCommit?.hash != reveal.target.commit { revealTarget = nil }
             commitReadInterrupted = nil
             changingCommit = true; detailFile = nil; changingCommit = false
             startCommitLoad()
@@ -71,11 +84,68 @@ import AppKit
     private var checkedByReader = false
     private var applyingChecked = false
     private func applyChecked(_ value: Set<String>) { guard value != checked else { return }; applyingChecked = true; checked = value; applyingChecked = false }
+    /// What Commit takes: the checked files, or the index as staged. Chosen by
+    /// the reader and never switched by the checked set: unticking every file
+    /// is not consent to commit the index.
+    @Published public var commitScope: GitCommitScope = .checkedFiles
     @Published public var amend = false { didSet { if amend, commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { Task { await prefillHeadMessage() } } } }
     @Published public private(set) var branches: [String] = []
     @Published public private(set) var stashes: [GitStashEntry] = []
     @Published public var logFilter = GitLogFilter() { didSet { if logFilter != oldValue { startHistoryReload() } } }
-    @Published public var detailFile: String? { didSet { if detailFile != oldValue && !changingCommit { commitReadInterrupted = nil; startCommitLoad() } } }
+    @Published public var detailFile: String? {
+        didSet {
+            if let reveal = revealTarget, !changingCommit, detailFile != reveal.target.path { revealTarget = nil }
+            if detailFile != oldValue && !changingCommit { commitReadInterrupted = nil; startCommitLoad() }
+        }
+    }
+    /// The commit a blame line asked for, held as the selection while it is
+    /// read and through history reads that do not list it (a page not read,
+    /// a filter that leaves it out), until the reader chooses another.
+    private var pinnedCommit: String? { didSet { if pinnedCommit == nil { revealValid = nil } } }
+    /// The asker's standing for the pinned commit, asked again before its
+    /// reads are shown: lapsed, the reveal is dropped and nothing of it shown.
+    private var revealValid: (@MainActor () -> Bool)?
+    private func revealStillValid(_ hash: String) -> Bool {
+        guard hash == pinnedCommit, let valid = revealValid else { return true }
+        if valid() { return true }
+        selectedCommit = nil
+        return false
+    }
+    /// The line a blame click asked to see in its commit's diff, and a token
+    /// told each time it is asked for, so the same line asked for again is
+    /// shown again.
+    @Published public private(set) var revealTarget: GitHistoryReveal? {
+        didSet {
+            if revealTarget?.token != oldValue?.token { revealNote = nil }
+            // The reveal over (another file or commit chosen): the asker's
+            // standing no longer governs what the reader reads.
+            if revealTarget == nil { revealValid = nil }
+        }
+    }
+    /// Why the line asked for is not shown selected in the diff, if it is not.
+    @Published public private(set) var revealNote: String?
+    /// What became of the line asked for, as the diff table says: shown, or
+    /// why not — said, rather than leaving the diff's top on screen as if it
+    /// were the line.
+    public func revealed(_ reveal: GitDiffReveal, _ outcome: GitDiffRevealOutcome) {
+        guard let target = revealTarget, reveal.token == target.token else { return }
+        // Shown, or said why not: the reveal is done, and what is on screen
+        // is the reader's from here.
+        revealValid = nil
+        let parents = selectedCommit?.parents.count ?? 1
+        switch outcome {
+        case .shown: revealNote = nil
+        case .pastShownRows:
+            revealNote = "Line \(target.target.line) is further down than the diff shows at first. Show the whole diff to reach it."
+        case .pastReadLines:
+            revealNote = "Line \(target.target.line) is past the part of this diff that can be read here (it is too long). Open the commit in a terminal or editor to see it."
+        case .notInDiff:
+            revealNote = parents > 1
+                ? "Line \(target.target.line) of \(target.target.path) is not in this merge's diff against its first parent: the merge brought it in from another parent."
+                : "Line \(target.target.line) of \(target.target.path) is not in this commit's diff."
+        }
+    }
+    private var revealTokens = 0
     @Published public private(set) var detailFileDiff: [GitDiffFile] = []
     /// How the diff is laid out and which diff is shown whole, held apart
     /// from the state the panel observes: switching the layout, or opening
@@ -201,7 +271,7 @@ import AppKit
         commits = []; historyExhausted = false; branches = []; stashes = []
         commitCache = [:]; commitCacheOrder = []
         applyChecked([]); checkedByReader = false
-        commitMessage = ""; amend = false; lastCommit = nil; notice = ""
+        commitMessage = ""; amend = false; commitScope = .checkedFiles; lastCommit = nil; notice = ""
         selectedDiffStale = false; panel = .changes
         splitDiff = false; wholeDiffShown = nil; commitFilesShown = GitController.commitFilesStep
         logFilter = GitLogFilter()
@@ -261,6 +331,9 @@ import AppKit
             if !statusRead || needsFullRead || reopened { needsFullRead = false; startRefresh() } else { startQuietRefresh() }
         } else {
             if commitLoading, let commitRead, let hash = selectedCommit?.hash { commitReadInterrupted = (commitRead, hash, detailFile) }
+            // Hidden after being shown: the reader left, and a reveal still on
+            // its way is dropped rather than landing when they come back.
+            revealTokens += 1
             suspended = true
             stop()
         }
@@ -411,7 +484,7 @@ import AppKit
             publish(\.commits, commits); publish(\.historyExhausted, commits.count < limit)
             // A commit pushed off the first page by newer ones is still the
             // commit the reader is reading; only a filter change drops it.
-            if !automatic, let selectedCommit, !commits.contains(where: { $0.hash == selectedCommit.hash }) { self.selectedCommit = nil }
+            if !automatic, let selectedCommit, selectedCommit.hash != pinnedCommit, !commits.contains(where: { $0.hash == selectedCommit.hash }) { self.selectedCommit = nil }
         // A read replaced by a newer one is not something to tell the reader
         // about: typing in the filter cancels one on every keystroke.
         } catch is CancellationError {
@@ -441,11 +514,15 @@ import AppKit
     }
 
     private func prefillHeadMessage() async {
-        guard let repositoryRoot, let message = try? await service.headMessage(in: repositoryRoot) else { return }
-        if amend, commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { commitMessage = message }
+        guard let root = repositoryRoot, let message = try? await service.headMessage(in: root) else { return }
+        // Only into the same repository's still-empty field, still amending.
+        if amend, repositoryRoot == root, !closed, commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { commitMessage = message }
     }
 
+    /// Runs one write. A second write asked for while one runs is refused, not
+    /// queued: a double click commits once.
     private func perform(_ what: String, _ work: () async throws -> Void) async {
+        guard !busy else { return }
         busy = true; notice = ""
         defer { busy = false; drainMissedChange() }
         var failure: String?
@@ -473,22 +550,61 @@ import AppKit
         let held = allPaths.subtracting(entries.map(\.path))
         await perform("Discard") { try await service.discard(entries, in: root, held: held) }
     }
-    /// Commits the checked files (their working-tree state), or the staged index when nothing is checked.
-    /// A ticked rename is committed as one, under both of its names.
+    /// Commits in the chosen scope.
+    public func commitInScope() async {
+        switch commitScope {
+        case .checkedFiles: await commitChecked()
+        case .stagedChanges: await commitStaged()
+        }
+    }
+    /// Commits the checked files: their whole working-tree state, not only
+    /// their staged hunks. Nothing checked commits nothing; the index is
+    /// Commit Staged Changes' to commit. A ticked rename is committed as one,
+    /// under both of its names.
     public func commitChecked() async {
-        guard let root = repositoryRoot else { return }
+        guard let root = repositoryRoot, !busy else { return }
         let rows = status.entries.filter { checked.contains($0.path) }
         let paths = GitService.paths(rows.map(\.path), renames: rows, for: .commit, held: allPaths.subtracting(checked))
+        guard !paths.isEmpty else { notice = "Tick the files to commit."; return }
         // Only a file git has never seen is staged first, so the commit can
         // name it; the commit takes everything else from disk itself. Staged
         // first, a file added or renamed into the index and deleted from disk
         // since was in neither the index nor HEAD any more, and naming it
         // failed the whole commit.
         let staging = rows.filter(\.untracked).map(\.path)
-        await perform("Commit") {
-            lastCommit = try await service.commit(message: commitMessage, in: root, paths: paths, staging: staging, amend: amend)
-            commitMessage = ""; amend = false
+        await commit(content: .files(paths: paths, staging: staging))
+    }
+    /// Commits the index as staged; unstaged edits stay where they are.
+    public func commitStaged() async {
+        guard repositoryRoot != nil, !busy else { return }
+        guard !staged.isEmpty else { notice = "Nothing to commit: nothing is staged."; return }
+        await commit(content: .staged)
+    }
+    private func commit(content: GitCommitContent) async {
+        guard let root = repositoryRoot else { return }
+        let message = commitMessage, amending = amend
+        await perform(amending ? "Amend" : "Commit") {
+            lastCommit = try await service.commit(message: message, in: root, content: content, amend: amending)
+            clearDraft(message, in: root)
         }
+    }
+    /// Changes the last commit's message only: its files stay as they are,
+    /// and staged and unstaged work is left exactly as it was. Refused when
+    /// HEAD is no longer the commit this panel last read.
+    public func rewordLastCommit() async {
+        guard let root = repositoryRoot, !busy else { return }
+        guard let head = status.head else { notice = "There is no commit to reword yet."; return }
+        let message = commitMessage
+        await perform("Reword") {
+            lastCommit = try await service.reword(message: message, in: root, expectedHead: head)
+            clearDraft(message, in: root)
+        }
+    }
+    /// After a write, clears the message it used, unless the reader has typed
+    /// another since or the panel moved to another repository.
+    private func clearDraft(_ message: String, in root: String) {
+        guard repositoryRoot == root, commitMessage == message else { return }
+        commitMessage = ""; amend = false
     }
 
     /// Reads the selected file's diff, stopping the read the previous selection
@@ -548,23 +664,24 @@ import AppKit
                 if needsDetail {
                     let value = try await service.commitDetail(in: repositoryRoot, commit: commit)
                     try Task.checkCancellation()
-                    guard selectedCommit?.hash == commit.hash else { return }
+                    guard selectedCommit?.hash == commit.hash, revealStillValid(commit.hash) else { return }
                     // The file list and message appear before any patch is read.
                     detail = value; summary = value
                     remember(CachedCommit(detail: value), for: commit.hash)
                     detailDiffDeferred = file == nil && value.isLarge
                 }
                 if file != nil || !(summary?.isLarge ?? false) {
-                    let files = try await service.commitDiffFiles(in: repositoryRoot, commit: commit, path: file)
+                    let renamedFrom = file.flatMap { name in summary?.files.first { $0.path == name }?.originalPath }
+                    let files = try await service.commitDiffFiles(in: repositoryRoot, commit: commit, path: file, renamedFrom: renamedFrom)
                     try Task.checkCancellation()
-                    guard selectedCommit?.hash == commit.hash, detailFile == file else { return }
+                    guard selectedCommit?.hash == commit.hash, detailFile == file, revealStillValid(commit.hash) else { return }
                     if let file { detailFileDiff = files; commitCache[commit.hash]?.fileDiffs[file] = files }
                     else { detailDiff = files; commitCache[commit.hash]?.diff = files }
                 }
                 commitLoading = false
             } catch is CancellationError {
             } catch {
-                guard selectedCommit?.hash == commit.hash else { return }
+                guard selectedCommit?.hash == commit.hash, revealStillValid(commit.hash) else { return }
                 notice = error.localizedDescription; commitLoading = false
             }
         }
@@ -588,6 +705,57 @@ import AppKit
         }
     }
 
+    /// Shows the change a blamed line came from: History, its commit (read by
+    /// its id, wherever it is in the history and whatever the filter shows),
+    /// its file under the name it had there, and the line there brought into
+    /// view. A newer ask replaces one still being read. False when the commit
+    /// is not in this repository.
+    /// `repository` is the top of the repository the blame read: the panel
+    /// reads it first if it shows another (its `root` set to the folder
+    /// holding it), and does nothing if it still does not.
+    /// `valid` is asked again after every wait — the asker's own standing
+    /// (the file still readable, its project still trusted) — and a reader
+    /// who chose a commit meanwhile, a hidden or closed panel, a newer ask or
+    /// a cancelled task each end this one with nothing shown.
+    @discardableResult
+    public func revealHistory(_ target: GitHistoryTarget, in repository: String, while valid: @escaping @MainActor () -> Bool = { true }) async -> Bool {
+        revealTokens += 1
+        let token = revealTokens
+        // The reader's choice as it was when asked: one made while this waits
+        // wins over it.
+        let chosen = selectedCommit?.hash, chosenFile = detailFile
+        // A tab brought forward says it is shown a turn later: waited for,
+        // briefly, before a hidden panel counts as one the reader left.
+        let until = ProcessInfo.processInfo.systemUptime + 3
+        while suspended, !closed, token == revealTokens, !Task.isCancelled, ProcessInfo.processInfo.systemUptime < until {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        func stillWanted() -> Bool { token == revealTokens && !closed && !suspended && !Task.isCancelled && valid() && selectedCommit?.hash == chosen && detailFile == chosenFile }
+        // A panel just made, or just pointed at another folder, is still
+        // reading which repository it shows: that read is waited for first.
+        if repositoryRoot != repository, !closed { await refreshTask?.value }
+        if repositoryRoot != repository, !closed { await refresh() }
+        guard stillWanted() else { return false }
+        guard let repositoryRoot, repositoryRoot == repository else {
+            notice = "This file's repository is not the one Changes shows."
+            return false
+        }
+        panel = .history
+        let found = try? await service.commit(target.commit, in: repositoryRoot)
+        guard let commit = found, stillWanted(), self.repositoryRoot == repositoryRoot else {
+            if found == nil, stillWanted() { notice = "That commit is not in this repository's history." }
+            return false
+        }
+        pinnedCommit = commit.hash
+        // Chosen first: choosing it lets go of any earlier reveal and its
+        // standing; this one's is set after, so it is not let go of with them.
+        if selectedCommit?.hash != commit.hash { selectedCommit = commit }
+        revealTarget = GitHistoryReveal(target: target, token: token)
+        revealValid = valid
+        if detailFile != target.path { detailFile = target.path }
+        return true
+    }
+
     /// History of one path, from a file in the changes list or in a commit.
     public func showFileHistory(_ path: String) {
         panel = .history
@@ -607,27 +775,31 @@ import AppKit
 
     /// Stages the rows at these paths; a rename is staged under both names.
     public func stage(_ paths: [String]) async {
-        guard let repositoryRoot else { return }
+        guard let root = repositoryRoot else { return }
         let paths = GitService.paths(paths, renames: status.entries, for: .stage)
-        var failure: String?
-        do { try await service.stage(paths, in: repositoryRoot) } catch is CancellationError { } catch { failure = error.localizedDescription }
-        await refresh(reporting: failure)
+        await perform("Stage") { try await service.stage(paths, in: root) }
     }
     /// Unstages the rows at these paths; a rename is unstaged whole, not by half.
     public func unstage(_ paths: [String]) async {
-        guard let repositoryRoot else { return }
+        guard let root = repositoryRoot else { return }
         let paths = GitService.paths(paths, renames: status.entries, for: .unstage)
-        var failure: String?
-        do { try await service.unstage(paths, in: repositoryRoot) } catch is CancellationError { } catch { failure = error.localizedDescription }
-        await refresh(reporting: failure)
-    }
-    public func commit() async {
-        guard let repositoryRoot else { return }
-        var failure: String?
-        do {
-            lastCommit = try await service.commit(message: commitMessage, in: repositoryRoot)
-            commitMessage = ""
-        } catch is CancellationError { } catch { failure = error.localizedDescription }
-        await refresh(reporting: failure)
+        await perform("Unstage") { try await service.unstage(paths, in: root) }
     }
 }
+
+/// A line in a commit: the commit's full id, the file's path in that commit
+/// and the line's number there (from 1), as a blame names it.
+public struct GitHistoryTarget: Equatable, Sendable {
+    public let commit: String
+    public let path: String
+    public let line: Int
+    public init(commit: String, path: String, line: Int) { self.commit = commit; self.path = path; self.line = line }
+}
+/// A target asked for, and which asking it was.
+public struct GitHistoryReveal: Equatable, Sendable {
+    public let target: GitHistoryTarget
+    public let token: Int
+}
+
+/// Which content a commit takes; see `GitController.commitScope`.
+public enum GitCommitScope: Sendable, Hashable { case checkedFiles, stagedChanges }

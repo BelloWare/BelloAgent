@@ -31,6 +31,17 @@ struct ConversationPane: View {
     /// The loading cover is due: shown once a read has taken longer than a
     /// glance (`coverDelay`), so a quick one never flashes it.
     @State private var coverDue = false
+    /// The pane's height and the composer's, measured: the queue panel's list
+    /// takes only what they and an open terminal leave above the transcript's
+    /// reading space.
+    @State private var paneHeight: CGFloat = 0
+    @State private var composerHeight: CGFloat = 0
+    /// A terminal shows below this chat.
+    private var terminalOpen: Bool {
+        model.terminalVisible && side == nil && model.workspace(for: chat.workspaceID).map { !$0.isScratch } == true
+    }
+
+    @AppStorage("terminalHeight") private var terminalHeight: Double = 240
     static let coverDelay = Duration.milliseconds(150)
     /// Whether the loading cover stands over the transcript. A revisit of a
     /// chat whose rows are already on the page reads its fresh page behind
@@ -125,7 +136,9 @@ struct ConversationPane: View {
                         if !Task.isCancelled { coverDue = true }
                     }
                 }
-            if !session.queue.isEmpty { queuePanel.transition(PiMotion.arrival(from: .bottom)) }
+            // An open detail keeps the panel, its anchor, until it is closed:
+            // the last message leaving says so rather than vanishing.
+            if !session.queue.isEmpty || session.queueDetailID != nil { queuePanel.transition(PiMotion.arrival(from: .bottom)) }
             if model.terminalVisible, side == nil, let workspace = model.workspace(for: chat.workspaceID), !workspace.isScratch {
                 TerminalPanel(model: model, workspace: workspace).transition(PiMotion.arrival(from: .bottom))
             }
@@ -160,7 +173,7 @@ struct ConversationPane: View {
                         Button("Open source chat") { Task { await model.select(source) } }.buttonStyle(.piSecondaryCompact)
                     }
                 }.padding(PiSpacing.md)
-            } else if chat.isArchived { archivedFooter } else if session.damagedTail { damagedFooter } else if chat.imported { importedFooter } else { ComposerInput(model: model, session: session, paneWidth: paneWidth) }
+            } else if chat.isArchived { archivedFooter } else if session.damagedTail { damagedFooter } else if chat.imported { importedFooter } else { ComposerInput(model: model, session: session, paneWidth: paneWidth, maximumFieldHeight: terminalOpen ? ComposerScrollView.besideTerminalHeight : ComposerScrollView.maximumHeight).onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerHeight = $0 } }
             // A side conversation repeats the whole status bar of the chat it
             // was opened from. In half a window that is two of everything; it
             // keeps the two figures that are its own.
@@ -177,6 +190,7 @@ struct ConversationPane: View {
         // selection elsewhere in the window — reaches native layout as a
         // finished geometry, never as a spring frame.
         .piStableLayout()
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { paneHeight = $0 }
         .background(Color.piContent)
         // HSplitView gives each pane its own native hosting surface. Remove
         // that surface's titlebar inset too, not only the outer window inset.
@@ -274,8 +288,11 @@ struct ConversationPane: View {
 
     private var queuePanel: some View {
         // The panel keeps nothing of its own: a message being rewritten is in
-        // this chat's composer. It starts over for each chat.
-        QueuePanel(model: model, session: session)
+        // this chat's composer. It starts over for each chat. Its list takes
+        // only the room the pane has after the composer, an open terminal and
+        // the transcript's reading space.
+        QueuePanel(model: model, session: session,
+                   room: QueuePanel.room(pane: paneHeight, composer: composerHeight, terminal: terminalOpen ? TerminalPanel.minimumHeight + TerminalPanel.chromeHeight : 0))
             .id(session.id)
             .padding(.horizontal, PiSpacing.lg).padding(.bottom, PiSpacing.sm)
     }
@@ -319,7 +336,7 @@ struct ConversationPane: View {
             }
             Text("A portable context draft starts a separate chat from its text; the imported file stays untouched.").font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
             HStack(spacing: PiSpacing.sm) {
-                PiDropdown(selection: $model.profileChoice, items: [("", "Choose Responses connection")] + model.requestProfiles.map { ($0.id, $0.name) }, placeholder: "Choose Responses connection", icon: "antenna.radiowaves.left.and.right")
+                PiDropdown(selection: $model.profileChoice, items: [("", "Choose Responses connection")] + model.requestProfiles.map { ($0.id, $0.name) }, placeholder: "Choose Responses connection", icon: "antenna.radiowaves.left.and.right", accessibilityName: "Responses connection")
                 Button("Portable Context Draft…", action: model.portableHandoff).buttonStyle(.piPrimary)
                 Spacer()
             }

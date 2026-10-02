@@ -289,6 +289,18 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
         }
     }
     var hosts: [String: HostSupervisor] = [:]
+    /// Every Settings editor alive: the sheet's and the Settings window's. Quit
+    /// asks about the unsaved edits of each.
+    let settingsEditors = NSHashTable<ConnectionSettingsController>.weakObjects()
+    /// The Settings sheet's editor. It outlives one showing of the sheet, so a
+    /// sheet closed by anything but Cancel, Save or Discard keeps its edits.
+    private(set) var sheetSettingsEditor: ConnectionSettingsController?
+    func settingsSheetEditor() -> ConnectionSettingsController {
+        if let sheetSettingsEditor { return sheetSettingsEditor }
+        let editor = ConnectionSettingsController(model: self); sheetSettingsEditor = editor; return editor
+    }
+    /// A project's MCP servers are being removed: its question is up or the vault is being written.
+    @Published var mcpRemovalInProgress = false
     /// Owned by `WorkspaceHosts.swift` (and cancelled by `WorkspaceShutdown`):
     /// one in-flight helper start per project, so two chats opening at once
     /// share it instead of starting two helpers.
@@ -326,6 +338,9 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     let questions = PiQuestion()
     /// Test injection for the helper's `queue.read`; production leaves it nil.
     var queueReadOperation: ((String, String) async throws -> [String: WireValue])?
+    /// Test injection for the helper's `queue.edit.*` commands (method,
+    /// session, params); production leaves it nil.
+    var queueEditOperation: ((String, String, [String: WireValue]) async throws -> [String: WireValue])?
     /// Test seam: each step of a send as it happens (`WorkspaceRun.swift`),
     /// so a fixture can time where Return's milliseconds go. Nil in the app.
     var sendSteps: ((String) -> Void)?
@@ -385,6 +400,8 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
         FileTab.resolveProject = { [weak self] id in self?.fileProjectState(id) ?? .removed }
         ChangesTab.resolveProject = { [weak self] id in self?.changesProject(id) }
         ChangesTab.openLocation = { [weak self] url, line in self?.openChangesFile(url, at: line) }
+        FileBlame.openChange = { [weak self] tab, target, repository, still in self?.showHistoricalChange(from: tab, target: target, repository: repository, while: still) }
+        ChangesTab.activate = { [weak self] tab in self?.tabs.activate(tab) }
     }
     /// Opens the desktop database off the main actor and reports the one state
     /// the rest of the app checks synchronously: there is no storage at all.

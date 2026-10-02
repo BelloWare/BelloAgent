@@ -169,7 +169,7 @@ extension AgentSession {
         let phase = activityPhase
         let names=Set(toolStates.values.filter { $0["state"].text=="running" }.compactMap { $0["name"].text }).sorted()
         return ["version":2,"phase":JSON(phase),"model":JSON(turnProfile.model),"modelActive":JSON(modelActive),
-                "pendingFollowUps":JSON(queue.count),"pendingSteering":JSON(steering.count),"queuePaused":JSON(queuePaused),
+                "pendingFollowUps":JSON(queue.count),"pendingSteering":JSON(steering.count),"queuePaused":JSON(queuePaused),"queueEditHeld":JSON(queueEdit != nil),
                 "toolNames":.array(names.prefix(16).map { JSON($0) })]
     }
     public func snapshot(_ params: JSON = [:]) async -> JSON {
@@ -196,7 +196,7 @@ extension AgentSession {
                 if let id = message["id"].text, let at = pendingDisplayObservations.removeValue(forKey: id) { observedAt = min(observedAt ?? at, at) }
             }
         }
-        var value: JSON=["sessionId":JSON(id),"seq":JSON(sequence),"state":JSON(state.rawValue),"runStatus":JSON(runStatus.rawValue),"retry":retryInfo,"settingsPending":JSON(pendingConfiguration != nil),"preflightError":errorMessage.map { JSON($0) } ?? .null,"cost":costSnapshot,"side":parentInfo,"ephemeral":JSON(ephemeral),"keeping":false,"keepRequested":JSON(keepRequested),"keepError":.null,"queue":.array(queue.map { var v=$0.previewValue;v["kind"]="follow-up";return v }+steering.map { var v=$0.previewValue;v["kind"]="steering";v["text"]=JSON("[Steering] "+(v["text"].text ?? ""));return v }),"steering":.array(steering.map(\.previewValue)),"queueCount":JSON(queue.count+steering.count),"queuePaused":JSON(queuePaused),"path":path.map { JSON($0) } ?? .null,"total":JSON(visible.count),"displayRevision":JSON(revision),"profileId":JSON(profile.id),"toolMode":JSON(readOnly ? "read-only" : "editing"),"context":contextInfo(),"turnMetrics":turnMetrics(),"assistantMessageCount":JSON(assistantMessageCount),"latestAssistantMessageId":latestAssistantMessageID.map { JSON($0) } ?? .null,"activity":activitySnapshot()]
+        var value: JSON=["sessionId":JSON(id),"seq":JSON(sequence),"state":JSON(state.rawValue),"runStatus":JSON(runStatus.rawValue),"retry":retryInfo,"settingsPending":JSON(pendingConfiguration != nil),"preflightError":errorMessage.map { JSON($0) } ?? .null,"cost":costSnapshot,"side":parentInfo,"ephemeral":JSON(ephemeral),"keeping":false,"keepRequested":JSON(keepRequested),"keepError":.null,"queue":.array(queue.map { var v=$0.previewValue;v["kind"]="follow-up";return v }+steering.map { var v=$0.previewValue;v["kind"]="steering";v["text"]=JSON("[Steering] "+(v["text"].text ?? ""));return v }),"steering":.array(steering.map(\.previewValue)),"queueCount":JSON(queue.count+steering.count),"queuePaused":JSON(queuePaused),"queueEdit":queueEdit.map { $0.value } ?? .null,"queueEditRevision":JSON(queueEditRevision),"path":path.map { JSON($0) } ?? .null,"total":JSON(visible.count),"displayRevision":JSON(revision),"profileId":JSON(profile.id),"toolMode":JSON(readOnly ? "read-only" : "editing"),"context":contextInfo(),"turnMetrics":turnMetrics(),"assistantMessageCount":JSON(assistantMessageCount),"latestAssistantMessageId":latestAssistantMessageID.map { JSON($0) } ?? .null,"activity":activitySnapshot()]
         // Receipts and the task presentation travel only when they changed
         // since the revision the reader sends back; a reader that sends none
         // (any reader before 0.1.85) gets both every time, as before.

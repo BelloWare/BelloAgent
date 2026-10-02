@@ -90,7 +90,7 @@ public actor NativeHostService {
         if frame["kind"].text == "hello" {
             guard !hello, frame["v"].int == 1, frame["major"].int == 1 else { emit(["v":1,"kind":"incompatible","message":"Unsupported or repeated handshake"]); return }
             hello=true; allowsDisplayTransfers = frame["displayTransfers"].flag == true; unknownToolOutcomes = frame["unknownToolOutcomes"].flag == true
-            emit(["v":1,"kind":"ready","hostEpoch":JSON(epoch),"major":1,"minor":1,"engine":"swift","engineVersion":JSON(HostProtocol.engineVersion),"piBehaviorReference":JSON(HostProtocol.piBehaviorReference),"limits":["frameBytes":JSON(HostProtocol.frameBytes)],"capabilities":["runtime.info","sessions","queued-turns","steering","native-host","mcp","responses","transport-capture","workspace-roots","turn-overrides","turn.edit","session.edit.prepare","native-branch-v2","queue.edit","tool-input","queue.read","tool-outcome-unknown","receipt-revisions","tool-input-appends","session-recover","cost-limit","message-versions","fork-at-message"]]); return
+            emit(["v":1,"kind":"ready","hostEpoch":JSON(epoch),"major":1,"minor":1,"engine":"swift","engineVersion":JSON(HostProtocol.engineVersion),"piBehaviorReference":JSON(HostProtocol.piBehaviorReference),"limits":["frameBytes":JSON(HostProtocol.frameBytes)],"capabilities":["runtime.info","sessions","queued-turns","steering","native-host","mcp","responses","transport-capture","workspace-roots","turn-overrides","turn.edit","session.edit.prepare","native-branch-v2","queue.edit","tool-input","queue.read","tool-outcome-unknown","receipt-revisions","tool-input-appends","session-recover","cost-limit","message-versions","fork-at-message","queue.edit-hold"]]); return
         }
         let id=frame["commandId"].text ?? ""
         guard hello, frame["v"].int == 1, frame["kind"].text == "command", frame["hostEpoch"].text == epoch, !id.isEmpty, id.utf8.count <= 128, let method=frame["method"].text, frame["params"].isNull || frame["params"].isObject else { reply(id,.failure(AgentError("invalid_command", "Invalid command or stale host epoch"))); return }
@@ -206,7 +206,7 @@ public actor NativeHostService {
     /// The read-only commands: a repeat runs one again, where a command that
     /// changes something is answered from the reply it was first sent
     /// (`receive`). Every `session.content.` command reads too.
-    static let readOnlyMethods: Set<String> = ["display.result.read","clock.sync","runtime.info","resources.inspect","resources.skill.read","session.status","session.snapshot","session.history","session.versions","session.version.page","session.message.read","session.edit.prepare","session.tool.input","queue.read","session.events","session.event-page","context.info","context.preview","context.preview.read","context.preview.clear","mcp.list","mcp.describe","debug.list","debug.body","debug.attempt","debug.raw-events","session.portable.preview","session.import.inspect"]
+    static let readOnlyMethods: Set<String> = ["display.result.read","clock.sync","runtime.info","resources.inspect","resources.skill.read","session.status","session.snapshot","session.history","session.versions","session.version.page","session.message.read","session.edit.prepare","session.tool.input","queue.read","queue.edit.status","session.events","session.event-page","context.info","context.preview","context.preview.read","context.preview.clear","mcp.list","mcp.describe","debug.list","debug.body","debug.attempt","debug.raw-events","session.portable.preview","session.import.inspect"]
     static func isReadOnly(_ method: String) -> Bool { readOnlyMethods.contains(method) || method.hasPrefix("session.content.") }
     /// Runs one command. The host checks, in this order, that it is not
     /// closing, that a workspace is open, that the command names a session,
@@ -483,6 +483,11 @@ public actor NativeHostService {
             let order=try params["turnIds"].list.map { try required($0,"turn id") }
             try await session.reorderQueue(order); return ["accepted":true]
         case "queue.read": return try await session.queuedText(required(params["turnId"],"turn id"))
+        case "queue.edit.begin": return try await session.beginQueueEdit(turnID:required(params["turnId"],"turn id"),editID:required(params["editId"],"edit id"),basis:params["basis"].int)
+        case "queue.edit.save": return try await session.saveQueueEdit(editID:required(params["editId"],"edit id"),text:params["text"].text ?? "")
+        case "queue.edit.cancel": return try await session.cancelQueueEdit(editID:required(params["editId"],"edit id"))
+        case "queue.edit.remove": return try await session.removeQueueEdit(editID:required(params["editId"],"edit id"))
+        case "queue.edit.status": return try await session.queueEditStatus(editID:required(params["editId"],"edit id"))
         case "queue.update": try await session.updateQueued(required(params["turnId"],"turn id"),text:params["text"].text ?? ""); return ["accepted":true]
         case "queue.steer": try await session.steerQueued(required(params["turnId"],"turn id")); return ["accepted":true]
         case "queue.resume": try await session.resumeQueue(); return ["accepted":true]

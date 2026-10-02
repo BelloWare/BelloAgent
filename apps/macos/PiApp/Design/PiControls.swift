@@ -7,6 +7,9 @@ import AppKit
 struct PiTabs<Tag: Hashable>: View {
     @Binding var selection: Tag
     let items: [(Tag, String)]
+    /// What the row of tabs chooses ("Commit scope"), for VoiceOver: the row
+    /// is then one named group of tabs, the chosen one marked selected.
+    var accessibilityName: String? = nil
     @Namespace private var glide
     @Environment(\.piReduceMotion) private var reduceMotion
     var body: some View {
@@ -29,15 +32,28 @@ struct PiTabs<Tag: Hashable>: View {
                         }
                         .contentShape(Capsule())
                 }.buttonStyle(.plain).piPointer()
+                .accessibilityAddTraits(selection == item.0 ? .isSelected : [])
+                // A scrolling tab row can bring the chosen tab into view.
+                .id(item.0)
             }
         }
         .padding(3)
         .background(Color.piFillStrong, in: Capsule())
         .animation(PiMotion.honouring(PiMotion.glide, reduceMotion: reduceMotion), value: selection)
+        .modifier(PiAccessibilityGroup(name: accessibilityName))
     }
 }
 
-/// Pill dropdown backed by a system menu.
+/// A named group around controls that stay their own elements; nothing when
+/// there is no name, so an unnamed row reads exactly as before.
+struct PiAccessibilityGroup: ViewModifier {
+    let name: String?
+    func body(content: Content) -> some View {
+        if let name { content.accessibilityElement(children: .contain).accessibilityLabel(name) } else { content }
+    }
+}
+
+/// Pill dropdown: the chosen item, opening the choices in a popover.
 struct PiDropdown<Tag: Hashable>: View {
     @Binding var selection: Tag
     let items: [(Tag, String)]
@@ -47,6 +63,9 @@ struct PiDropdown<Tag: Hashable>: View {
     /// The longest the chosen item's name is shown, cut in the middle; nil
     /// shows it whole.
     var maxLabelWidth: CGFloat? = nil
+    /// What the dropdown chooses, as VoiceOver names it; the placeholder
+    /// when nil. The chosen item is its value, not its name.
+    var accessibilityName: String? = nil
     private var current: String { items.first { $0.0 == selection }?.1 ?? placeholder }
     var body: some View {
         PiChoicePicker(title: placeholder, selection: selection,
@@ -63,6 +82,8 @@ struct PiDropdown<Tag: Hashable>: View {
             .overlay(Capsule().stroke(Color.piHairlineStrong, lineWidth: 1))
             .contentShape(Capsule())
         }
+        .accessibilityLabel(accessibilityName ?? placeholder)
+        .accessibilityValue(current)
         .fixedSize()
     }
 }
@@ -111,7 +132,8 @@ struct PiTextField: View {
     var onSubmit: () -> Void = {}
     var body: some View {
         HStack(spacing: 7) {
-            if let icon { Image(systemName: icon).font(.system(size: 11, weight: .medium)).foregroundStyle(Color.piInkTertiary) }
+            // Decorative: the field's name is the field's alone.
+            if let icon { Image(systemName: icon).font(.system(size: 11, weight: .medium)).foregroundStyle(Color.piInkTertiary).accessibilityHidden(true) }
             Group {
                 if secure { SecureField(placeholder, text: $text).onSubmit(onSubmit) }
                 else { TextField(placeholder, text: $text).onSubmit(onSubmit) }
@@ -139,32 +161,53 @@ struct PiNumberField: View {
     }
 }
 
-/// Minus/plus stepper with the value rendered as text.
+/// Minus/plus stepper with the value rendered as text. VoiceOver names each
+/// button after the setting it changes (`name`), with the value and its
+/// bounds, rather than a bare "Decrease" beside every other stepper's.
 struct PiStepper: View {
-    let label: String
+    let name: String
+    let unit: String
     @Binding var value: Int
     var range: ClosedRange<Int>
     var step = 1
     var body: some View {
-        HStack(spacing: 6) {
-            Text(label).font(PiFont.body).foregroundStyle(Color.piInk).monospacedDigit()
-            Spacer(minLength: 8)
-            PiIconButton(symbol: "minus", label: "Decrease", size: 24, filled: true) { value = max(range.lowerBound, value - step) }.disabled(value <= range.lowerBound)
-            PiIconButton(symbol: "plus", label: "Increase", size: 24, filled: true) { value = min(range.upperBound, value + step) }.disabled(value >= range.upperBound)
-        }
+        PiStepperRow(name: name, unit: unit, value: "\(value)", lower: "\(range.lowerBound)", upper: "\(range.upperBound)", step: "\(step)",
+                     canDecrease: value > range.lowerBound, canIncrease: value < range.upperBound,
+                     decrease: { value = max(range.lowerBound, value - step) },
+                     increase: { value = min(range.upperBound, value + step) })
     }
 }
 struct PiStepper64: View {
-    let label: String
+    let name: String
+    let unit: String
     @Binding var value: Int64
     var range: ClosedRange<Int64>
     var step: Int64 = 1
     var body: some View {
+        PiStepperRow(name: name, unit: unit, value: "\(value)", lower: "\(range.lowerBound)", upper: "\(range.upperBound)", step: "\(step)",
+                     canDecrease: value > range.lowerBound, canIncrease: value < range.upperBound,
+                     decrease: { value = max(range.lowerBound, value - step) },
+                     increase: { value = min(range.upperBound, value + step) })
+    }
+}
+private struct PiStepperRow: View {
+    let name: String, unit: String, value: String, lower: String, upper: String, step: String
+    let canDecrease: Bool, canIncrease: Bool
+    let decrease: () -> Void, increase: () -> Void
+    var body: some View {
+        let shown = value + " " + unit
+        let bounds = "From \(lower) to \(upper) \(unit)" + (step == "1" ? "" : ", in steps of \(step)")
         HStack(spacing: 6) {
-            Text(label).font(PiFont.body).foregroundStyle(Color.piInk).monospacedDigit()
+            // Each button says the value, so the text is not read a second time.
+            Text(shown).font(PiFont.body).foregroundStyle(Color.piInk).monospacedDigit()
+                .accessibilityHidden(true)
             Spacer(minLength: 8)
-            PiIconButton(symbol: "minus", label: "Decrease", size: 24, filled: true) { value = max(range.lowerBound, value - step) }.disabled(value <= range.lowerBound)
-            PiIconButton(symbol: "plus", label: "Increase", size: 24, filled: true) { value = min(range.upperBound, value + step) }.disabled(value >= range.upperBound)
+            PiIconButton(symbol: "minus", label: "Decrease", size: 24, filled: true, spokenLabel: "Decrease " + name, action: decrease)
+                .disabled(!canDecrease)
+                .accessibilityValue(shown).accessibilityHint(bounds)
+            PiIconButton(symbol: "plus", label: "Increase", size: 24, filled: true, spokenLabel: "Increase " + name, action: increase)
+                .disabled(!canIncrease)
+                .accessibilityValue(shown).accessibilityHint(bounds)
         }
     }
 }
@@ -335,6 +378,7 @@ struct PiSelectableRow<Content: View>: View {
                 .contentShape(RoundedRectangle(cornerRadius: PiRadius.sm, style: .continuous))
         }
         .buttonStyle(.plain).modifier(PiPointerModifier(active: providesCursor))
+        .accessibilityAddTraits(selected ? .isSelected : [])
         .simultaneousGesture(TapGesture(count: 2).onEnded { doubleClick?() })
         .onHover { hovering = $0 }
     }

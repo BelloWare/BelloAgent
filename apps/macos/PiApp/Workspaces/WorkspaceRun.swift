@@ -39,7 +39,7 @@ extension WorkspaceModel {
         // submissions already accepted by an asynchronous side flow continue.
         guard sessionID != nil || page == .chats else { return }
         if redirectsToEdit(steer: steer, sessionID: sessionID) { return }
-        guard let id = sessionID ?? focusedSessionID ?? selectedID, let item = record(id), !item.isBackgroundTask, let view = displays[id], (!view.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !view.skills.isEmpty), !view.loading, !installPreparing, side(id)?.keeping != true else { return }
+        guard let id = sessionID ?? focusedSessionID ?? selectedID, let item = record(id), !item.isBackgroundTask, let view = displays[id], view.hasSubmittableInput, !view.loading, !installPreparing, side(id)?.keeping != true else { return }
         // A message goes to the latest version, and the transcript returns to it.
         latestVersion(sessionID: id)
         guard !item.isArchived else { view.notice = Self.archivedNotice; return }
@@ -112,7 +112,7 @@ extension WorkspaceModel {
         if accepted {
             view.draft = ""; view.attachments = []; view.skills = []; view.directCommand = false
             if drawsRow {
-                var row = TranscriptMessage(id: turnID, role: "user", text: text, state: TranscriptMessage.sendingState,
+                var row = TranscriptMessage(id: turnID, role: "user", text: text.isEmpty && !attachments.isEmpty ? TranscriptMessage.imageOnlyText(attachments.count) : text, state: TranscriptMessage.sendingState,
                                             at: Date().timeIntervalSince1970 * 1000, turn: turnID, taskRootID: turnID)
                 // The helper's row names the skills the message used; the row drawn
                 // before it does too, or the pills would appear, and the row grow,
@@ -121,7 +121,7 @@ extension WorkspaceModel {
                 view.showSending(row)
             }
         }
-        let named = drawsRow ? nameAfterFirstMessage(item.id, text: text, skills: skills) : nil
+        let named = drawsRow ? nameAfterFirstMessage(item.id, text: text.isEmpty && skills.isEmpty && !attachments.isEmpty ? TranscriptMessage.imageOnlyText(attachments.count) : text, skills: skills) : nil
         return Submission(item: item, view: view, store: store, steer: steer, text: text, attachments: attachments, skills: skills,
                           directCommand: directCommand, commandID: commandID, turnID: turnID, connection: connection,
                           accepted: accepted, drawsRow: drawsRow, named: named)

@@ -144,6 +144,28 @@ final class QueueEditingTests: XCTestCase {
         await recovered.close()
     }
 
+    /// An order dragged before a follow-up was taken for delivery names a
+    /// message no longer pending: it is refused, and the queue stays as it is.
+    func testAnOrderFromBeforeADeliveryIsRefused() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let tools = HeldQueueDeliveryTools(), client = ScriptClient([answer("one"), answer("two"), answer("three"), answer("four")], holdFirst: true)
+        let session = try AgentSession(id: "queue", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true,
+                                       resources: Resources(cwd: root, home: root), client: client, tools: tools, traces: TraceStore(), autoCompaction: false)
+        _ = try await session.submit(Submission(commandID: "c0", turnID: "first", text: "First"), steer: false)
+        try await eventually { await client.count == 1 }
+        for name in ["a", "b", "c"] { _ = try await session.submit(Submission(commandID: "c-" + name, turnID: name, text: name), steer: false) }
+        let dragged = ["c", "b", "a"]
+        await client.release()
+        try await eventually { await tools.waiting }   // "a" is being delivered
+        do { try await session.reorderQueue(dragged); XCTFail("an order naming a delivered message is refused") }
+        catch let error as AgentError { XCTAssertEqual(error.code, "queue_order") }
+        let queue = await session.queue
+        XCTAssertEqual(queue.map(\.turnID), ["b", "c"], "the queue stays as it was")
+        await session.stop(); await tools.release()
+        try await eventually { !(await session.isRunning) }
+        await session.close()
+    }
+
     func testQueuedFollowUpsReorderRewriteAndSteerWhileRunning() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let client = ScriptClient([answer("one"), answer("two"), answer("three"), answer("four")], holdFirst: true)

@@ -305,7 +305,7 @@ struct ReportPage: View {
     }
 
     private var chartMetricPicker: some View {
-        PiDropdown(selection: $report.chartMetric, items: [(ReportChartMetric.outputRate, "Output tok/s"), (.requests, "Requests"), (.cost, "Cost"), (.latency, "Latency"), (.cacheRatio, "Cache")], compact: true).frame(width: 140)
+        PiDropdown(selection: $report.chartMetric, items: [(ReportChartMetric.outputRate, "Output tok/s"), (.requests, "Requests"), (.cost, "Cost"), (.latency, "Latency"), (.cacheRatio, "Cache")], compact: true, accessibilityName: "Chart metric").frame(width: 140)
     }
 
     private func retainedChart(_ snapshot: DashboardSnapshot) -> some View {

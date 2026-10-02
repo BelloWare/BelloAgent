@@ -1,3 +1,4 @@
+import AppKit
 import CryptoKit
 import Foundation
 import SwiftUI
@@ -58,11 +59,19 @@ import SwiftUI
     @Published var message = ""
     @Published var messageTone: PiTone = .neutral
     @Published var busy = false
+    /// A write to the vault under way (a save or a delete). Loading is busy
+    /// but not saving: there is nothing to wait for before closing.
+    @Published var saving = false
     @Published var confirmingDelete = false
+    /// The Test Connection button asked once; the footer explains the request until Send or Cancel.
+    @Published var confirmingTest = false
+    /// The window this editor is shown in, for its questions.
+    weak var presentationWindow: NSWindow?
 
     init(model: WorkspaceModel) {
         self.model = model
         draft = Draft.loaded(ProfileRecord(), isSaved: false)
+        model.settingsEditors.add(self)
     }
 
     var isSaved: Bool { model.profiles.contains { $0.id == draft.profile.id } }
@@ -93,30 +102,66 @@ import SwiftUI
     /// Everything this sheet edited, reapplied onto whatever the vault holds
     /// now. Carrying the sheet's whole stale copy forward silently reverted a
     /// capture mode, retention or update toggle set from somewhere else.
+    /// One preference this sheet edits: the section that shows it, whether
+    /// two configurations differ in it, and how to carry it from one to the
+    /// other. The unsaved-changes state, the section marks and the conflict
+    /// merge all read this one list.
+    private struct PreferenceField {
+        let section: SettingsSection
+        let differs: (VaultConfiguration, VaultConfiguration) -> Bool
+        let take: (inout VaultConfiguration, VaultConfiguration) -> Void
+    }
+    private static let preferenceFields: [PreferenceField] = [
+        .init(section: .usage, differs: { $0.capture != $1.capture }, take: { $0.capture = $1.capture }),
+        .init(section: .usage, differs: { $0.dashboard != $1.dashboard }, take: { $0.dashboard = $1.dashboard }),
+        .init(section: .usage, differs: { $0.chatCostLimit != $1.chatCostLimit }, take: { $0.chatCostLimit = $1.chatCostLimit }),
+        .init(section: .chats, differs: { $0.transcriptView != $1.transcriptView }, take: { $0.transcriptView = $1.transcriptView }),
+        .init(section: .chats, differs: { $0.completionSoundEnabled != $1.completionSoundEnabled }, take: { $0.completionSoundEnabled = $1.completionSoundEnabled }),
+        .init(section: .chats, differs: { $0.webhook != $1.webhook }, take: { $0.webhook = $1.webhook }),
+        .init(section: .app, differs: { $0.runtime != $1.runtime }, take: { $0.runtime = $1.runtime }),
+        .init(section: .app, differs: { $0.automaticUpdateChecks != $1.automaticUpdateChecks }, take: { $0.automaticUpdateChecks = $1.automaticUpdateChecks }),
+    ]
     static func merging(_ edits: VaultConfiguration, from baseline: VaultConfiguration, onto current: VaultConfiguration) -> VaultConfiguration {
         var merged = current
-        if edits.runtime != baseline.runtime { merged.runtime = edits.runtime }
-        if edits.capture != baseline.capture { merged.capture = edits.capture }
-        if edits.dashboard != baseline.dashboard { merged.dashboard = edits.dashboard }
-        if edits.automaticUpdateChecks != baseline.automaticUpdateChecks { merged.automaticUpdateChecks = edits.automaticUpdateChecks }
-        if edits.completionSoundEnabled != baseline.completionSoundEnabled { merged.completionSoundEnabled = edits.completionSoundEnabled }
-        if edits.transcriptView != baseline.transcriptView { merged.transcriptView = edits.transcriptView }
-        if edits.chatCostLimit != baseline.chatCostLimit { merged.chatCostLimit = edits.chatCostLimit }
-        if edits.webhook != baseline.webhook { merged.webhook = edits.webhook }
+        for field in preferenceFields where field.differs(edits, baseline) { field.take(&merged, edits) }
         return merged
+    }
+    /// The sections holding unsaved edits: Connections for any tab's, the
+    /// others for the preferences they show.
+    var editedSections: Set<SettingsSection> {
+        var sections = Set(Self.preferenceFields.filter { $0.differs(preferences, preferencesBaseline) }.map(\.section))
+        if draft.edited || drafts.values.contains(where: \.edited) { sections.insert(.connections) }
+        return sections
+    }
+    /// Anything typed in Settings that the vault doesn't hold yet.
+    var isDirty: Bool { !editedSections.isEmpty }
+    private var preferencesEdited: Bool { Self.preferenceFields.contains { $0.differs(preferences, preferencesBaseline) } }
+    /// Drops every unsaved edit, on every tab and in every section: Settings
+    /// shows what the vault holds. Nothing is written.
+    func discardAll() {
+        drafts = [:]
+        if let saved = model.profiles.first(where: { $0.id == draft.profile.id }) { draft = Draft.loaded(saved, isSaved: true) }
+        else { draft = model.profiles.first.map { Draft.loaded($0, isSaved: true) } ?? Draft.loaded(ProfileRecord(), isSaved: false) }
+        preferences = preferencesBaseline
+        confirmingDelete = false; confirmingTest = false
+        message = ""; messageTone = .neutral
     }
     /// Reads the vault. Stashed edits survive a load caused by a save; the reload button discards them.
     func load(discardingDrafts: Bool) async {
+        guard !busy else { return }
         busy = true; defer { busy = false }
         do {
             try await model.reloadConfiguration()
-            preferences = model.configuration; preferencesBaseline = model.configuration
-            revision = preferences.revision; loaded = true
-            if discardingDrafts { drafts = [:] }
+            // A load that keeps drafts keeps edited preferences too, on top of
+            // whatever the vault holds now.
+            preferences = discardingDrafts ? model.configuration : Self.merging(preferences, from: preferencesBaseline, onto: model.configuration)
+            preferencesBaseline = model.configuration
+            revision = model.configuration.revision; loaded = true
+            if discardingDrafts { drafts = [:]; confirmingDelete = false; confirmingTest = false }
             let current = draft.profile.id
             if let saved = model.profiles.first(where: { $0.id == current }) {
                 if discardingDrafts || !draft.edited { draft = Draft.loaded(saved, isSaved: true) }
-            } else if drafts[current] == nil || discardingDrafts {
+            } else if discardingDrafts || !draft.edited {
                 draft = model.profiles.first.map { Draft.loaded($0, isSaved: true) } ?? Draft.loaded(ProfileRecord(), isSaved: false)
             }
             message = "Settings loaded. Nothing has been sent to a gateway."; messageTone = .neutral
@@ -182,21 +227,44 @@ import SwiftUI
 
     // MARK: Saving
 
+    /// What a Save All came to.
+    enum SaveOutcome: Equatable {
+        /// Everything saved; Settings may close.
+        case saved
+        /// Everything saved, and the message explains something the reader
+        /// should see first (a route change made a new connection).
+        case savedWithNote
+        /// Not everything saved: the message says what did and what didn't.
+        case failed
+    }
     /// Saves every tab with edits, the current one last, and the preferences.
     /// Returns true when the sheet can close: everything saved and no route
     /// change created a new connection that needs explaining.
-    func save(thenTest: Bool = false) async -> Bool {
-        guard loaded else { message = "Wait for Settings to finish loading before saving."; messageTone = .danger; return false }
-        busy = true; defer { busy = false }
+    func save(thenTest: Bool = false) async -> Bool { await saveAll(thenTest: thenTest) == .saved }
+    func saveAll(thenTest: Bool = false) async -> SaveOutcome {
+        guard loaded else { message = "Wait for Settings to finish loading before saving."; messageTone = .danger; return .failed }
+        guard !busy else { return .failed }
+        // Quitting or updating: the last decision about Settings was made.
+        guard !model.installPreparing else { message = Self.closingNotice; messageTone = .danger; return .failed }
+        busy = true; saving = true; defer { busy = false; saving = false }
         stash()
         let currentID = draft.profile.id
         let queue = drafts.values.filter { $0.edited && $0.profile.id != currentID }.sorted { $0.profile.id < $1.profile.id } + [draft]
         var forkNote: String? = nil
         var savedCurrentID = currentID
+        // What has reached the vault so far, for a report that is honest
+        // about a save that stopped part of the way.
+        var savedNames: [String] = []
+        var preferencesSaved = false
+        let preferencesWereEdited = preferencesEdited
         for item in queue {
             do {
                 let savedID = try await saveOnce(item)
                 drafts[item.profile.id] = nil
+                if item.edited { savedNames.append("“\(item.name)”") }
+                // Every connection's save writes the preferences too.
+                preferences = model.configuration; preferencesBaseline = model.configuration; revision = preferences.revision
+                if preferencesWereEdited { preferencesSaved = true }
                 if savedID != item.profile.id {
                     forkNote = "Saved “\(item.name)” as a new connection because its API route changed. The previous connection stays for its earlier chats; delete it in its tab if you no longer need it."
                 }
@@ -205,24 +273,110 @@ import SwiftUI
                 // Stay on the tab that failed, with its edits and the reason.
                 if item.profile.id != currentID { drafts[currentID] = draft; draft = item }
                 drafts[item.profile.id] = nil
-                message = error.localizedDescription; messageTone = .danger
+                if preferencesSaved { savedNames.append("your preferences") }
+                let saved = savedNames.isEmpty ? "" : "Saved " + Self.list(savedNames) + ". "
+                let report = saved + "“\(item.name)” was not saved: " + error.localizedDescription
+                message = forkNote.map { report + " " + $0 } ?? report; messageTone = .danger
                 // In the window's banner as well as the footer, exactly as a
                 // failed deletion is: a save that did not happen was silent, and
                 // Escape or Cancel closed the sheet over it.
-                model.error = "“\(item.name)” was not saved: " + error.localizedDescription
-                return false
+                model.error = report
+                return .failed
             }
         }
         preferences = model.configuration; preferencesBaseline = model.configuration; revision = preferences.revision
         draft = model.profiles.first(where: { $0.id == savedCurrentID }).map { Draft.loaded($0, isSaved: true) } ?? draft
         if thenTest { model.testConnection(profileID: savedCurrentID, confirmed: true) }
         messageTone = .neutral
-        if let forkNote { message = forkNote; return false }
+        if let forkNote { message = forkNote; return .savedWithNote }
         message = "Saved to your Keychain."
-        return true
+        return .saved
     }
+    static let closingNotice = "Bello Agent is quitting or updating. Nothing more is saved from Settings."
+    private static func list(_ names: [String]) -> String {
+        names.count <= 1 ? names.joined() : names.dropLast().joined(separator: ", ") + " and " + names[names.count - 1]
+    }
+
+    // MARK: Closing with unsaved edits
+
+    /// What the reader chose for edits Settings hasn't saved.
+    enum UnsavedChoice { case save, discard, keep }
+    /// True while a close, reload or quit question of this editor's is up, so
+    /// a second Escape or close doesn't ask again.
+    private(set) var deciding = false
+    /// Asks Save All / Discard Changes / Keep Editing, on this editor's window.
+    private func askAboutUnsavedChanges(quitting: Bool) async -> UnsavedChoice {
+        let alert = NSAlert()
+        alert.messageText = quitting ? "Save your Settings changes before quitting?" : "Save your Settings changes?"
+        alert.informativeText = Self.unsavedSummary(editedSections)
+        let save = alert.addButton(withTitle: "Save All")
+        let discard = alert.addButton(withTitle: "Discard Changes")
+        let keep = alert.addButton(withTitle: "Keep Editing")
+        save.keyEquivalent = "\r"
+        discard.keyEquivalent = "d"; discard.keyEquivalentModifierMask = .command
+        keep.keyEquivalent = "\u{1b}"
+        switch await PiQuestion.shared.ask(alert, over: presentationWindow) {
+        case .alertFirstButtonReturn: return .save
+        case .alertSecondButtonReturn: return .discard
+        default: return .keep
+        }
+    }
+    /// What the question says is unsaved, by section.
+    static func unsavedSummary(_ sections: Set<SettingsSection>) -> String {
+        let names = SettingsSection.allCases.filter(sections.contains).map(\.title)
+        return "Unsaved changes in " + list(names) + ". Discarding them keeps what is saved in your Keychain."
+    }
+    /// Whether Settings may close now. Clean closes; unsaved edits ask first;
+    /// a save under way keeps it open until it finishes.
+    func requestClose() async -> Bool {
+        guard !saving else { message = "Wait for the save to finish."; messageTone = .danger; return false }
+        guard !deciding else { return false }
+        guard isDirty else { return true }
+        deciding = true; defer { deciding = false }
+        let choice = await askAboutUnsavedChanges(quitting: false)
+        // Something else may have started while the question was up.
+        guard !saving else { return false }
+        switch choice {
+        case .save: return await saveAll() == .saved
+        case .discard: discardAll(); return true
+        case .keep: return false
+        }
+    }
+    /// Whether the app may go on quitting. Unsaved edits ask first; a save
+    /// that didn't finish keeps the app open with the reason showing.
+    func resolveForQuit() async -> Bool {
+        guard !saving, !deciding else { return false }
+        guard isDirty else { return true }
+        deciding = true; defer { deciding = false }
+        let choice = await askAboutUnsavedChanges(quitting: true)
+        guard !saving else { return false }
+        switch choice {
+        case .save: return await saveAll() != .failed
+        case .discard: discardAll(); return true
+        case .keep: return false
+        }
+    }
+    /// Reloads the vault, after asking when that would drop unsaved edits.
+    /// Keep Editing writes and drops nothing.
+    func requestReload() async {
+        guard !busy, !deciding else { return }
+        if isDirty {
+            deciding = true
+            let reload = await PiQuestion.shared.confirm("Discard unsaved changes and reload?", Self.unsavedSummary(editedSections),
+                                                         action: "Discard and Reload", cancel: "Keep Editing", destructive: true,
+                                                         cancelIsDefault: true, over: presentationWindow)
+            deciding = false
+            guard reload, !busy else { return }
+        }
+        await load(discardingDrafts: true)
+    }
+
     /// One connection's save against the vault's current revision; a conflict from another save reloads and tries once more.
     private func saveOnce(_ item: Draft) async throws -> String {
+        // This editor's preference edits go onto what the app holds now, so a
+        // save from the other Settings editor since this one loaded stays.
+        preferences = Self.merging(preferences, from: preferencesBaseline, onto: model.configuration)
+        preferencesBaseline = model.configuration
         do {
             return try await item.form.save(to: model, comparedTo: item.baseline, key: item.key, headers: item.headers,
                                             preferences: preferences, expectedRevision: model.configuration.revision)
@@ -248,9 +402,11 @@ import SwiftUI
         return parts.joined(separator: " ")
     }
     func delete() async {
+        guard !busy else { return }
+        guard !model.installPreparing else { message = Self.closingNotice; messageTone = .danger; return }
         let id = draft.profile.id, name = draft.name
         confirmingDelete = false
-        busy = true; defer { busy = false }
+        busy = true; saving = true; defer { busy = false; saving = false }
         do {
             try await model.deleteProfile(id)
             drafts[id] = nil

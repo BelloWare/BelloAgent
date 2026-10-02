@@ -1,0 +1,28 @@
+<h2>Bello Agent 0.1.119</h2>
+<h3>Added</h3>
+<ul>
+<li><b>Git Blame in the file viewer.</b> Show Blame puts each line's commit and author beside it. The selected line's bar gives the date, message and full commit ID, and Show Change opens that commit's diff against its parent in Changes → History, at the line, under the file's name at the time, even for older commits or with a history filter. Back returns to the file as you left it. Uncommitted lines say so, and a line the diff can't place is explained instead of guessed.</li>
+<li><b>Several terminals per project.</b> Create, switch, rename and close terminals as tabs; each keeps its shell and output while you work elsewhere. Restart and Close affect only that terminal and ask first while its shell is running, with Cancel the default. Your name for a terminal stays even when the shell sets a title.</li>
+<li><b>Reword Last Commit.</b> Changes the last commit's message only. Your staged and unstaged work is left exactly as it was, and it refuses during a merge or rebase, or if a hook would change files.</li>
+<li><b>Image-only messages.</b> A message with images and no text can be sent from every path, to models that take images. The model gets just the images; nothing is added on your behalf.</li>
+</ul>
+<h3>Changed</h3>
+<ul>
+<li><b>Commit Checked Files and Commit Staged Changes are separate actions.</b> The scope is always shown, and an empty selection never quietly commits the staged changes instead. Amend keeps its scope in its name.</li>
+<li><b>Editing a queued message pauses that chat's queue.</b> While you edit, no waiting follow-up or steering message is sent; the reply already running carries on. Save and Cancel finish only once they're saved, survive a restart, and never send the old text. A hold left by a restart offers Resume Edit or Cancel Edit.</li>
+<li><b>A tidier queue panel.</b> It stays a few rows tall and scrolls, collapses to a header with the count and state, and keeps steering and follow-up messages under their own headings. Each message's full text and the model and effort it was queued with are a click away.</li>
+<li><b>Settings saves everything at once.</b> Save All saves every edited connection and preference; Cancel discards them. Closing, pressing Escape or quitting with unsaved edits asks: Save All, Discard Changes or Keep Editing. Reload asks before dropping edits, and a partly failed save says exactly what was saved.</li>
+<li><b>"Disconnect All" is now "Remove All MCP Servers…".</b> It asks first, naming the project and saying its saved server configuration and stored credentials will be deleted, and reports honestly if the change saved but the running helper didn't take it.</li>
+<li><b>Find and Go to Line stay open when the file changes on disk.</b> Your query, match-case setting and typed line survive saves and replacements, and the search follows the new text without jumping.</li>
+<li><b>Clearer VoiceOver.</b> Tabs read as selected, steppers name the setting they change with its value and range, menus name what they choose, and buttons say which message, terminal or file they act on. Unnamed switches and fields in Settings now have names, and icons that were read aloud by mistake are quiet.</li>
+</ul>
+<h3>Fixed</h3>
+<ul>
+<li>Removing a queued message while its detail was open could crash the app.</li>
+<li>The Changes panel woke up for every change inside the repository's <code>.git</code> folder.</li>
+<li>File names that Git quotes in diffs, such as names with tabs or quotes, now show correctly.</li>
+</ul>
+<h3>Known limit</h3>
+<ul>
+<li>At the smallest window size, with a terminal open, a tall draft and a reply running, the chat transcript gets very little room and the window grows taller. Collapse the queue or the terminal to get it back.</li>
+</ul>
