@@ -41,8 +41,8 @@
 Left to a separate agent (owner, 2026-10-02): composer @Observable pilot; AgentSession property groups; shutdown task ownership; narrower chat-change invalidation; shared journal-format module; remaining poll-counting waits.
 
 ## Before release
-- [ ] Full gate passes (`scripts/verify-release.sh`).
-- [ ] Hour-long soak of a Release build passes, no exceptions.
-- [ ] Gallery reviewed for the new states (light/dark, minimum window size 920×600).
-- [ ] Owner checks, or the owner defers them: VoiceOver across Settings, queue, file viewer, terminals; one compaction against a real gateway.
-- [ ] Release notes.
+- [x] Full gate passes (`scripts/verify-release.sh` at 163a292f; the one failure, a poll-count test wait, fixed in 2b847707 and its class rerun).
+- [x] Hour-long soak of a Release build passes, no exceptions (seed 1790977596393, 0 stalls, longest 207 ms).
+- [x] Gallery reviewed for the new states (light/dark, minimum window size 920×600).
+- [x] Owner checks deferred by the owner (2026-10-03): VoiceOver across Settings, queue, file viewer, terminals; one compaction against a real gateway.
+- [x] Release notes (`releases/0.1.119.html`).
