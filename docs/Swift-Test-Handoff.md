@@ -1369,3 +1369,31 @@ For comparable rich streaming, set `PI_PERF_DELTA_BYTES=64` and the correspondin
 window suites serially, with compilation and other performance runs idle. Include
 deferred work and workload heartbeats; do not compare only root assignment or
 infer physical display cadence. The 640-block initial sizing remains expensive.
+
+## Minimum window: the queue, the composer and the terminal
+
+At the 920×600 minimum window the transcript keeps about 150 points of reading
+space with the queue panel, a tall draft and an open terminal all on screen:
+
+- The queue's list takes at most 3.5 rows and its headings, less when the
+  pane has no room, down to one reachable row (`QueuePanel.room`).
+- Beside an open terminal the composer field stops growing at 88 points
+  (`ComposerScrollView.besideTerminalHeight`, about three and a half lines);
+  its text scrolls. Without a terminal it grows to 240 points as before.
+- The terminal body gives way down to its 120-point minimum (its frame is
+  flexible between that and the height it was dragged to, which is kept and
+  comes back when there is room). The queue budgets the terminal at that
+  minimum.
+
+`ConversationPaneTests.testATallDraftATerminalAndAQueueLeaveTheTranscriptItsReadingSpace`
+checks this with twenty waiting messages, the terminal at its default and a
+dragged-tall height, and the queue paused.
+
+The limit: while a turn runs, its live card at the bottom of the transcript
+takes about 100 points more. With all of the above at their minimums (footer
+about 36, composer 88 plus its bar, terminal 120 plus its title bar, queue one
+row) that leaves the transcript's scroll area about 50–75 points, and the
+window's minimum content height grows to about 670 points. Keeping 150 points
+there as well would mean hiding or shrinking the run card, or collapsing the
+queue or the terminal automatically, which changes what is on screen beyond
+this budget. The panel can be collapsed by hand.

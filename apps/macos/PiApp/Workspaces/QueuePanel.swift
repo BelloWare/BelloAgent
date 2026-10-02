@@ -102,8 +102,9 @@ struct QueuePanel: View {
     }
     /// The reading space the transcript keeps before the queue takes more.
     static let transcriptReserve: CGFloat = 150
-    /// The panel's own chrome around its list: header, padding and border.
-    static let chrome: CGFloat = 56
+    /// The panel's own chrome around its list (header, padding and border)
+    /// and the space below it.
+    static let chrome: CGFloat = 58 + PiSpacing.sm
     /// The height the list may take in a pane of `pane` points with a
     /// composer `composer` tall and a terminal `terminal` tall open below it,
     /// leaving the transcript its reserve and the footer its line.

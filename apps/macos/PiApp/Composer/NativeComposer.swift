@@ -29,6 +29,8 @@ struct NativeComposer: NSViewRepresentable {
     var skillPressed: (SkillChip, ComposerSkillToken) -> Void = { _, _ in }
     var skillHovered: (SkillChip, ComposerSkillToken, Bool) -> Void = { _, _, _ in }
     var describeSkill: (SkillChip) -> SkillDetail? = { _ in nil }
+    /// The field's ceiling (`ComposerScrollView.ceiling`).
+    var maximumFieldHeight: CGFloat = ComposerScrollView.maximumHeight
     /// False holds the text still: no typing, paste or drop changes it.
     var editable = true
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -73,7 +75,7 @@ struct NativeComposer: NSViewRepresentable {
         // laid the new line out. Handed on through state a run-loop turn
         // later, the line was drawn in the old frame first and the field
         // grew (or shrank) a frame behind it, moving the transcript twice.
-        editor.contentHeightChanged = { [weak scroll] height in scroll?.fieldHeight = height }
+        editor.contentHeightChanged = { [weak scroll] height in scroll?.request(height) }
         editor.skillStrip.changed = { [weak coordinator] in coordinator?.parent.skillsChanged() }
         editor.skillStrip.pressed = { [weak coordinator] in coordinator?.parent.skillPressed($0, $1) }
         editor.skillStrip.hovered = { [weak coordinator] in coordinator?.parent.skillHovered($0, $1, $2) }
@@ -97,6 +99,7 @@ struct NativeComposer: NSViewRepresentable {
                 window.makeFirstResponder(editor)
             }
         }
+        if scroll.ceiling != maximumFieldHeight { scroll.ceiling = maximumFieldHeight }
         guard let editor = scroll.documentView as? ComposerTextView else { return }
         editor.sessionID = sessionID
         // The model's own text always applies; only the reader's typing is held.
@@ -233,9 +236,21 @@ struct ComposerEditMeasurement {
 @MainActor final class ComposerScrollView: NSScrollView {
     static let minimumHeight: CGFloat = 44
     static let maximumHeight: CGFloat = 240
+    /// The ceiling with a terminal open below the chat: the field gives way
+    /// (its text scrolls) so the transcript keeps its reading space.
+    static let besideTerminalHeight: CGFloat = 88
+    /// The ceiling now; lowering it shrinks a tall field, raising it lets
+    /// the text take its own height again.
+    var ceiling: CGFloat = ComposerScrollView.maximumHeight {
+        didSet { if ceiling != oldValue { fieldHeight = textHeight } }
+    }
+    /// The height the text asks for, before the ceiling.
+    private var textHeight: CGFloat = ComposerScrollView.minimumHeight
+    /// The text's own height, kept for when the ceiling moves.
+    func request(_ height: CGFloat) { textHeight = height; fieldHeight = height }
     var fieldHeight: CGFloat = ComposerScrollView.minimumHeight {
         didSet {
-            let clamped = min(Self.maximumHeight, max(Self.minimumHeight, fieldHeight))
+            let clamped = min(ceiling, Self.maximumHeight, max(Self.minimumHeight, fieldHeight))
             if clamped != fieldHeight { fieldHeight = clamped; return }
             guard fieldHeight != oldValue else { return }
             invalidateIntrinsicContentSize()

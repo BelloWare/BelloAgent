@@ -29,8 +29,10 @@ struct ComposerInput: View {
     /// The pane this bar sits in, for `ComposerBarMetrics`.
     let paneWidth: CGFloat
     @Environment(\.piReduceMotion) private var reduceMotion
-    init(model: WorkspaceModel, session: SessionDisplay, paneWidth: CGFloat) {
-        self.model = model; self.session = session; self.draft = session.composerDraft; self.paneWidth = paneWidth
+    /// The field's ceiling: lower while a terminal is open below the chat.
+    var maximumFieldHeight: CGFloat = ComposerScrollView.maximumHeight
+    init(model: WorkspaceModel, session: SessionDisplay, paneWidth: CGFloat, maximumFieldHeight: CGFloat = ComposerScrollView.maximumHeight) {
+        self.model = model; self.session = session; self.draft = session.composerDraft; self.paneWidth = paneWidth; self.maximumFieldHeight = maximumFieldHeight
     }
     private var editing: Bool { session.editingMessageID != nil }
     /// The composer holds a queued message: Return saves it back in its place.
@@ -77,7 +79,7 @@ struct ComposerInput: View {
                     skillHovered: { chip, token, inside in
                         SkillPopovers.shared.hoverComposer(inside, chip: chip, anchor: token, session: session, reduceMotion: reduceMotion)
                     },
-                    describeSkill: { chip in .composer(chip, catalog: session.skillCatalog) }, editable: !session.queueEditResolving)
+                    describeSkill: { chip in .composer(chip, catalog: session.skillCatalog) }, maximumFieldHeight: maximumFieldHeight, editable: !session.queueEditResolving)
                     // Its height is its own (`ComposerScrollView`), in step with the text.
                     // While the helper answers a queued Save or Cancel, the
                     // rewrite holds still: nothing typed then could be lost.
