@@ -1,6 +1,6 @@
 # Bello Agent 0.1.118 — deep-review fixes and smoother chat switching
 
-Status: **candidate; publication pending.** Marketing version 0.1.118, build 122. Previous public release: 0.1.117/build 121. The owner approved publication on 2026-10-02 after the gate, acceptance tests and hour-long soak passed, and deferred the manual VoiceOver and real-gateway checks again; neither is claimed to have run.
+Status: **publicly released and verified** at [belloware.com](https://belloware.com/bello-agent.html), marketing version 0.1.118, build 122. Public verification completed at **2026-10-02 02:30:36 UTC**. Tagged source: **`3bd15d2`**, `v0.1.118`. Website: **`6eddd03`**. Previous public release: 0.1.117/build 121. The owner approved publication on 2026-10-02 after the gate, acceptance tests and hour-long soak passed, and deferred the manual VoiceOver and real-gateway checks again; neither is claimed to have run.
 
 ## Scope
 
@@ -31,4 +31,12 @@ Toolchain: macOS 14.8 (a VM) on Apple Silicon, Xcode 16.1, XcodeGen 2.44.1.
 
 ## Publication
 
-Pending.
+Packaged from **`3bd15d2`** (the release commit; its `apps/` and `packages/` trees equal the gated `215b971`) with `scripts/release.sh` on 2026-10-02: Release build, stripped binaries with retained dSYMs, Developer ID signing, packaged-helper offline smoke, app and DMG notarization and stapling, Gatekeeper validation, signed appcast and Ed25519 verification.
+
+- App notarization: **`38e10963-c282-437a-b2bb-36ccc05a0467`**, Accepted.
+- DMG notarization: **`492b446e-be5c-4257-8323-5f2fab0bd751`**, Accepted.
+- Installer: **12,357,208 bytes (11.78 MiB)**, below the 20 MiB target.
+- SHA-256: **`4174aee9376ee62730ab41ef16a79450e3f12a35a25ea69c8d5ea6d184e43e1e`**.
+- `validate-release.py --previous-build 121` passed; both local feeds byte-identical.
+
+The owner's approval was given in the integrating session; the release agent's attempt was blocked by the permission check, so the integrator ran packaging and publication. Source was fast-forwarded and pushed atomically to `main` and `dev/next` at `3bd15d2`. `publish-release.sh 0.1.118` committed and pushed website `6eddd03`. `verify-published.py` passed at 2026-10-02 02:30:36 UTC, about 3 minutes after the push: identical canonical and legacy feeds, public DMG SHA-256 match and Ed25519 signature. Install and update rehearsals were skipped under the standing owner policy.

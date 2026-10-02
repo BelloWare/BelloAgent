@@ -1,6 +1,6 @@
 # Next release: 0.1.118
 
-**Not released.** 0.1.117 (build 121) is the latest release; its record is in `docs/validation/` and in this file's git history.
+**Released 2026-10-02** as 0.1.118 (build 122, tag `v0.1.118`); record in `docs/validation/Bello-Agent-0.1.118-2026-10-02.md`. The refactors below were moved out of this release and are taken up separately.
 
 **All work for 0.1.118 goes on `dev/next`.** Workstream branches (`dev/ws1-…` etc.) are merged here by the integrator. `main` holds released versions only (docs/Release.md).
 
