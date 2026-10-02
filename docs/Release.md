@@ -45,7 +45,22 @@ The canonical Bello Agent feed is `https://belloware.com/assets/bello_agent.appc
 The legacy `pi_app.appcast.xml` feed remains byte-identical so existing Pi App
 installations receive the same update.
 
-**Bello Agent 0.1.118/build 122 is publicly released** at
+**Bello Agent 0.1.119/build 123 is publicly released** at
+[belloware.com](https://belloware.com/bello-agent.html), with source at
+[Git tag v0.1.119](https://github.com/BelloWare/BelloAgent/tree/v0.1.119) and website commit
+`5345b79`. The signed/notarized DMG is **12,710,550 bytes (12.12 MiB)**;
+SHA-256 `0315a304b588ecf216d67f3028c7a34cb36e7efab96fe560d017ff785119f4eb`. The public product page,
+identical update feeds and downloaded hash/Ed25519 verification passed at
+**2026-10-02 22:58:55 UTC**. It implements the approved UI/UX handoff: separate commit scopes and a
+true Reword Last Commit, Git Blame with navigation to the historical diff, Find through live reloads,
+a durable queue-wide edit hold with a bounded collapsible queue panel, image-only messages, Settings
+Save All with a dirty-close question, several terminals per project, honest MCP removal and
+contextual accessibility. The gate passed apart from one poll-counting test, fixed and rerun alone;
+the hour-long soak passed with no pauses over 250 ms (longest 207 ms). The owner deferred the
+VoiceOver and real-gateway checks. See the
+[0.1.119 validation record](validation/Bello-Agent-0.1.119-2026-10-03.md).
+
+**Bello Agent 0.1.118/build 122 is a historical verified release** at
 [belloware.com](https://belloware.com/bello-agent.html), with source at
 [Git tag v0.1.118](https://github.com/BelloWare/BelloAgent/tree/v0.1.118) and website commit
 `6eddd03`. The signed/notarized DMG is **12,357,208 bytes (11.78 MiB)**;

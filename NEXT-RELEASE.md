@@ -1,6 +1,6 @@
 # Next release: 0.1.119
 
-**Not released.** 0.1.118 (build 122, tag `v0.1.118`) is the latest release; its record is `docs/validation/Bello-Agent-0.1.118-2026-10-02.md`.
+**Released 2026-10-03** as 0.1.119 (build 123, tag `v0.1.119`); record in `docs/validation/Bello-Agent-0.1.119-2026-10-03.md`.
 
 **Scope (owner, 2026-10-02):** the approved UI/UX handoff, `docs/reviews/BelloAgent-approved-UI-UX-handoff-2026-10-02.md` (D1–D8, A1, A2). Its requirements and acceptance lists are the contract; read the item's section before working on it. Release when every item below is done.
 
