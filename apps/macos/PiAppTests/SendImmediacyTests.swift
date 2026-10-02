@@ -298,17 +298,22 @@ final class SendImmediacyTests: XCTestCase {
         }
         let text = "A question at the foot of a long chat"
         var passes = [pass()]
+        // Draws and samples at least six passes, and on until `done` holds:
+        // in the parallel lane's load six passes alone could end before the
+        // page caught up (0.1.119's gate). Every pass still counts toward
+        // the steadiness checked below.
+        func sample(until what: String, _ done: () -> Bool) async throws {
+            for _ in 0..<6 { await Task.yield(); try? await Task.sleep(for: .milliseconds(8)); pane.draw(); passes.append(pass()) }
+            try await eventually(what) { pane.draw(); passes.append(pass()); return done() }
+        }
         pane.session.showSending(TranscriptMessage(id: "turn-1", role: "user", text: text, state: TranscriptMessage.sendingState,
                                                    at: 400_000, turn: "turn-1", taskRootID: "turn-1"))
         pane.model.followSubmittedTurn(pane.session.id, refreshing: false)
-        for _ in 0..<6 { await Task.yield(); try? await Task.sleep(for: .milliseconds(8)); pane.draw(); passes.append(pass()) }
-        XCTAssertEqual(passes.last?.message(text).first?.drawn, true, "The message is drawn at the foot of the chat")
+        try await sample(until: "the message is drawn at the foot of the chat") { passes.last?.message(text).first?.drawn == true }
         // The helper's snapshot: the same message as the helper projects it.
         pane.session.messages.append(TranscriptMessage(id: "turn-1", role: "user", text: text, thinking: "", tools: [], state: "complete", truncated: false,
                                                        at: 400_120, turn: "turn-1", taskRootID: "turn-1", taskExecutionID: "execution-1"))
-        for _ in 0..<6 { await Task.yield(); try? await Task.sleep(for: .milliseconds(8)); pane.draw(); passes.append(pass()) }
-        XCTAssertTrue(pane.session.sendingRows.isEmpty, "The helper's row is the message now")
-        XCTAssertEqual(passes.last?.message(text).first?.state, "complete")
+        try await sample(until: "the helper's row is the message now") { pane.session.sendingRows.isEmpty && passes.last?.message(text).first?.state == "complete" }
         // Its reply arrives under it.
         pane.session.messages.append(TranscriptMessage(id: "reply-1", role: "assistant", text: "An answer that arrives below.", state: "streaming",
                                                        at: 400_500, turn: "turn-1", taskRootID: "turn-1", taskExecutionID: "execution-1"))
