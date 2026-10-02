@@ -21,7 +21,7 @@
 
 ## Workstream Git — Git and files (`dev/ws-git`)
 - [x] **D1** Commit Checked Files vs Commit Staged Changes, explicit scope; true Reword Last Commit that keeps the tree, index and worktree.
-- [ ] **D6** Find and Go to Line survive a live file reload.
+- [x] **D6** Find and Go to Line survive a live file reload.
 - [ ] **D8** Git Blame in the file viewer, with clicks opening the real commit-versus-parent diff at the line in Changes → History.
 
 ## Workstream Queue — queue and input (`dev/ws-queue`)

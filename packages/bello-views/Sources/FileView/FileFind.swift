@@ -66,12 +66,84 @@ import AppKit
         self.query = query; self.matchCase = matchCase
         restart()
     }
+    /// The view shows the file as read again: the same query, searched in
+    /// the new text, from where the reader is now, and nothing moved. The
+    /// match that was shown stays the one shown only if it is still exactly
+    /// there — checked by reading that place, not by searching the whole
+    /// file — and stays a candidate through further reloads until checked.
+    /// Anything the reader does meanwhile (Next, Previous, moving the
+    /// selection, a new query) wins over that check.
+    public func textChanged() {
+        let previous = current ?? keeping
+        stop()
+        search?.cancel(); search = nil; current = nil
+        keeping = previous
+        guard let view else { return }
+        selectionSeen = view.selectionRevision
+        // The selection as the view clamped it to the new text: a line gone
+        // with a shorter file is no place to search from.
+        anchor = view.selectedRange.start
+        let matcher = FileMatcher(query: query, matchCase: matchCase)
+        isTooLong = matcher.isTooLong
+        search = matcher.matchesNothing ? nil : view.source.search(matcher)
+        search?.onChange = { [weak self] in self?.searchChanged() }
+        view.needsDisplay = true
+        // Where matches fall, for a query that can overlap itself, depends
+        // on matching from its line's start: read from there, within a bound.
+        if let previous, let search, previous.line < view.source.lineCount,
+           case let from = matcher.overlaps ? FileTextPosition(line: previous.line, column: 0) : previous.start,
+           previous.columns.upperBound - from.column <= Self.keepingReach {
+            let source = view.source
+            working = Task { [weak self] in
+                let there: String? = await withCheckedContinuation { done in
+                    source.fetch(from: from, to: previous.end) { done.resume(returning: $0) }
+                }
+                guard let self, !Task.isCancelled, self.search === search else { return }
+                let at = previous.columns.lowerBound - from.column
+                // Answered either way only when the text was read and the
+                // search ran its course: a file changed or unreadable again
+                // meanwhile leaves the match to check in the next text.
+                var answered = there != nil
+                if let there, search.matcher.matches(in: there).contains(at..<(at + previous.columns.count)) {
+                    // A match starts exactly there: the search's first at or
+                    // after it is that one, found at once.
+                    let hit = await search.find(from: previous.start, forward: true)
+                    guard !Task.isCancelled, self.search === search else { return }
+                    if let hit, hit.line == previous.line, hit.columns == previous.columns {
+                        self.current = hit; self.anchor = hit.start
+                        self.view?.needsDisplay = true
+                    } else if hit == nil, search.stopped != nil || search.isStale {
+                        answered = false
+                    }
+                }
+                if answered { self.keeping = nil }
+                self.working = nil
+                self.onChange?()
+                self.run()
+            }
+        } else {
+            keeping = nil
+        }
+        onChange?()
+    }
+    /// The match shown before a reload, until the new text has been checked
+    /// for it; let go of when the reader moves on.
+    private var keeping: FileSearchHit?
+    /// How far along its line a kept match is checked (UTF-16 units).
+    static let keepingReach = 1 << 16
+    /// A find bar left open while the file could not be read, now that it
+    /// can: its query and case, searched as `textChanged` searches.
+    public func resume(query: String, matchCase: Bool) {
+        self.query = query; self.matchCase = matchCase
+        textChanged()
+    }
     public func next() { ask(.next) }
     public func previous() { ask(.previous) }
 
     /// Ends finding: the search and every find stopped, the matches no longer
     /// drawn. The selection stays where it is.
     public func close() {
+        keeping = nil
         stop()
         search?.cancel(); search = nil
         current = nil
@@ -82,6 +154,7 @@ import AppKit
     // MARK: Searching
 
     private func restart() {
+        keeping = nil
         stop()
         search?.cancel()
         current = nil
@@ -110,6 +183,7 @@ import AppKit
 
     private func ask(_ step: Step) {
         guard search != nil else { return }
+        keeping = nil
         steps.append(step)
         run()
     }
@@ -126,7 +200,7 @@ import AppKit
         guard !showing, let view else { return }
         selectionSeen = view.selectionRevision
         anchor = view.selectedRange.start
-        current = nil
+        current = nil; keeping = nil
         stop()
         view.needsDisplay = true
         onChange?()

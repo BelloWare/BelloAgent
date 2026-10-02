@@ -87,12 +87,14 @@ enum FileProjectState: Equatable {
                 case .ready, .truncated, .binary:
                     self.following = nil
                     self.madeDocument = fresh
-                    self.finder?.close(); self.finder = nil; self.bar = .none
                     if let scroll = self.madeScroll {
                         scroll.textView.show(fresh, name: self.title, preservingPosition: true)
                         self.syntax = FileSyntax(source: fresh, view: scroll.textView, extension: self.url.pathExtension)
                         scroll.textView.syntax = { [weak syntax = self.syntax] line, range, text in syntax?.colors(line: line, piece: range, text: text) ?? [] }
                     }
+                    // The bar the reader had open stays open, its query, case
+                    // and field as they were; finding goes on in the new text.
+                    self.textChanged()
                     fresh.onStatusChange = { [weak self, weak fresh] status in
                         guard let self, let fresh, self.madeDocument === fresh else { return }
                         self.status = status; self.fellBack = fresh.fellBack; self.updateSymbol()
@@ -100,7 +102,12 @@ enum FileProjectState: Equatable {
                     self.status = status; self.fellBack = fresh.fellBack; self.updateSymbol()
                     old.close()
                 case .failed:
-                    self.following = nil; fresh.close(); self.status = status; self.updateSymbol()
+                    // Gone or unreadable: the bar stays, its search stops
+                    // (no count of a text that is not there), and goes on
+                    // once the file is back.
+                    self.following = nil; fresh.close()
+                    self.finder?.close(); self.finder = nil
+                    self.status = status; self.updateSymbol(); self.findChanged()
                 default: break
                 }
             }
@@ -261,6 +268,20 @@ enum FileProjectState: Equatable {
         selectFieldText()
         findChanged()
     }
+    /// The file was read again: the find bar's search follows the new text,
+    /// from where the reader is, nothing moved and the keys left where they
+    /// are; a find bar whose search stopped while the file was gone starts
+    /// again.
+    private func textChanged() {
+        guard bar == .find, let view = madeScroll?.textView else { return }
+        if let finder { finder.textChanged() } else {
+            let finder = FileFind(view: view)
+            finder.onChange = { [weak self] in self?.findChanged() }
+            self.finder = finder
+            finder.resume(query: findQuery, matchCase: matchCase)
+        }
+        findChanged()
+    }
     func findNext() { finder?.next() }
     func findPrevious() { finder?.previous() }
     func openGoToLine() {
@@ -350,6 +371,16 @@ struct FileTabContent: View {
     var body: some View {
         VStack(spacing: 0) {
             FileTabHeader(tab: tab)
+            // Above whatever the file shows, and apart from it: a reload that
+            // finds the file gone, or not text, leaves the bar, its field and
+            // its keys as they were.
+            if tab.readable, tab.previewKind == nil {
+                switch tab.bar {
+                case .find: FileFindBar(tab: tab)
+                case .goToLine: FileGoToLineBar(tab: tab)
+                case .none: EmptyView()
+                }
+            }
             if let reason = tab.missingReason {
                 FileTabNotice(symbol: "questionmark.folder", title: "Missing", detail: reason, url: tab.url)
             } else if tab.previewKind != nil {
@@ -357,11 +388,6 @@ struct FileTabContent: View {
             } else if tab.status == .binary {
                 FileTabNotice(symbol: "doc", title: "Not text", detail: FileTabNotice.describe(tab.url), url: tab.url)
             } else if let scroll = tab.scroll {
-                switch tab.bar {
-                case .find: FileFindBar(tab: tab)
-                case .goToLine: FileGoToLineBar(tab: tab)
-                case .none: EmptyView()
-                }
                 FileTextHost(view: scroll)
             }
         }
