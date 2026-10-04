@@ -25,6 +25,10 @@ extension PiKit {
         let stroke = CALayer()
         /// A tint over the fill (the primary button's hover and press shade).
         let shade = CALayer()
+        /// The fill's shadow, shown only outside its shape: a SwiftUI shadow
+        /// never shows through a translucent (disabled) fill.
+        let shadowLayer = CALayer()
+        private let shadowMask = CAShapeLayer()
 
         private(set) var hovering = false
         /// Shows the pointing hand while enabled, as `piPointer()`.
@@ -54,8 +58,11 @@ extension PiKit {
             // SwiftUI's opacity fades each layer on its own, not the
             // composite: a label fades over its already faded fill.
             face.allowsGroupOpacity = false
+            face.addSublayer(shadowLayer)
             face.addSublayer(fill)
             face.addSublayer(shade)
+            shadowMask.fillRule = .evenOdd
+            shadowLayer.mask = shadowMask
             face.addSublayer(stroke)
             face.addSublayer(content)
             for layer in [fill, shade, stroke] { layer.cornerCurve = .continuous }
@@ -131,6 +138,15 @@ extension PiKit {
             face.setAffineTransform(transform)
             for layer in [fill, shade, content] as [CALayer] { layer.frame = face.bounds }
             stroke.frame = face.bounds.insetBy(dx: -strokeWidth / 2, dy: -strokeWidth / 2)
+            shadowLayer.frame = face.bounds
+            let shape = CGPath(roundedRect: face.bounds, cornerWidth: cornerRadius(for: face.bounds.size), cornerHeight: cornerRadius(for: face.bounds.size), transform: nil)
+            shadowLayer.shadowPath = shape
+            // The hole stops half a point inside the edge, so the shadow still
+            // lies under the fill's antialiased rim, as it does in SwiftUI.
+            let rim = face.bounds.insetBy(dx: 0.5, dy: 0.5)
+            let hole = CGPath(roundedRect: rim, cornerWidth: cornerRadius(for: rim.size), cornerHeight: cornerRadius(for: rim.size), transform: nil)
+            let outside = CGMutablePath(); outside.addRect(face.bounds.insetBy(dx: -40, dy: -40)); outside.addPath(hole)
+            shadowMask.frame = face.bounds; shadowMask.path = outside
             let radius = cornerRadius(for: face.bounds.size)
             fill.cornerRadius = radius; shade.cornerRadius = radius
             stroke.cornerRadius = radius + strokeWidth / 2; stroke.borderWidth = strokeWidth
@@ -314,20 +330,20 @@ extension PiKit {
                 fill.backgroundColor = piCGColor(.piBrandOrange)
                 shade.backgroundColor = piCGColor(NSColor.black.withAlphaComponent(pressed ? 0.10 : hovering ? 0.05 : 0))
                 stroke.borderColor = CGColor.clear
-                fill.shadowColor = piCGColor(.piBrandOrange); fill.shadowOpacity = 0.22
-                fill.shadowRadius = PiKit.shadowRadius(5); fill.shadowOffset = CGSize(width: 0, height: 2)
+                shadowLayer.shadowColor = piCGColor(.piBrandOrange); shadowLayer.shadowOpacity = 0.22
+                shadowLayer.shadowRadius = PiKit.shadowRadius(5); shadowLayer.shadowOffset = CGSize(width: 0, height: 2)
             case .secondary:
                 fill.backgroundColor = piCGColor(pressed || hovering ? .piFillStrong : .piFill)
                 stroke.borderColor = piCGColor(.piHairline)
-                fill.shadowOpacity = 0
+                shadowLayer.shadowOpacity = 0
             case .ghost, .ghostDanger:
                 fill.backgroundColor = piCGColor(pressed ? .piFillStrong : hovering ? .piFill : .clear)
                 stroke.borderColor = CGColor.clear
-                fill.shadowOpacity = 0
+                shadowLayer.shadowOpacity = 0
             case .danger:
                 fill.backgroundColor = piCGColor(NSColor.piDanger.withAlphaComponent(pressed ? 0.22 : hovering ? 0.17 : 0.12))
                 stroke.borderColor = CGColor.clear
-                fill.shadowOpacity = 0
+                shadowLayer.shadowOpacity = 0
             }
         }
     }

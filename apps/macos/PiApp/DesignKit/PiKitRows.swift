@@ -18,6 +18,7 @@ extension PiKit {
     /// `doubleClick`. Controls inside it stay their own.
     @MainActor final class SelectableRow: ButtonBase, WidthSizing {
         let contentView: NSView
+        private var disabledByRow: [NSControl] = []
         var selected: Bool { didSet { if oldValue != selected { selectionChanged() } } }
         var marked: Bool { didSet { refreshFace() } }
         var doubleClick: (() -> Void)?
@@ -46,7 +47,14 @@ extension PiKit {
             didSet {
                 guard oldValue != isEnabled else { return }
                 contentView.alphaValue = isEnabled ? 1 : CGFloat(PiKit.plainDisabledDimming)
-                PiKit.setControlsEnabled(isEnabled, in: contentView)
+                if isEnabled {
+                    // Only what the row turned off comes back on.
+                    for control in disabledByRow { control.isEnabled = true }
+                    disabledByRow = []
+                } else {
+                    disabledByRow = PiKit.controls(in: contentView).filter(\.isEnabled)
+                    for control in disabledByRow { control.isEnabled = false }
+                }
             }
         }
 
@@ -90,12 +98,9 @@ extension PiKit {
         }
     }
 
-    /// Sets every control under `view` enabled or not.
-    @MainActor static func setControlsEnabled(_ enabled: Bool, in view: NSView) {
-        for subview in view.subviews {
-            if let control = subview as? NSControl { control.isEnabled = enabled }
-            setControlsEnabled(enabled, in: subview)
-        }
+    /// Every control in `view`'s tree, `view` included.
+    @MainActor static func controls(in view: NSView) -> [NSControl] {
+        (view as? NSControl).map { [$0] } ?? [] + view.subviews.flatMap { controls(in: $0) }
     }
 
     /// The words a view shows, joined, for an accessibility name.
@@ -382,7 +387,7 @@ extension PiKit {
                 if fillsRow.contains(ObjectIdentifier(view)) {
                     let least = narrowest(view)
                     // Unbounded, it counts as its narrowest form.
-                    guard width.isFinite else { size.width = least; wraps = false; if apply { view.frame = CGRect(x: x, y: y, width: size.width, height: size.height) }; x += size.width + spacing; rowHeight = max(rowHeight, size.height); maxX = max(maxX, x - spacing); continue }
+                    guard width.isFinite else { size.width = least; size.height = PiKit.height(of: view, width: least); wraps = false; if apply { view.frame = CGRect(x: x, y: y, width: size.width, height: size.height) }; x += size.width + spacing; rowHeight = max(rowHeight, size.height); maxX = max(maxX, x - spacing); continue }
                     wraps = x > 0 && x + least > width
                     let room = max(least, wraps ? width : width - x)
                     if size.width > room { size.width = room; size.height = PiKit.height(of: view, width: room) }

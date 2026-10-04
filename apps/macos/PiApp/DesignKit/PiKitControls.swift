@@ -57,8 +57,17 @@ extension PiKit {
         /// switch's button.
         override func hitTest(_ point: NSPoint) -> NSView? {
             let local = convert(point, from: superview)
-            return isHidden || !track.frame.contains(local) ? nil : self
+            return isHidden || !trackPath.contains(local) ? nil : self
         }
+        /// The track's capsule in the control's coordinates: its clicks,
+        /// its focus ring and its pointer.
+        private var trackPath: CGPath {
+            let rect = track.frame
+            return CGPath(roundedRect: rect, cornerWidth: rect.height / 2, cornerHeight: rect.height / 2, transform: nil)
+        }
+        override var focusRingMaskBounds: NSRect { track.frame }
+        override func drawFocusRingMask() { NSBezierPath(cgPath: trackPath).fill() }
+        override func resetCursorRects() { if showsPointer && isEnabled { addCursorRect(track.frame, cursor: .pointingHand) } }
         override var intrinsicContentSize: NSSize {
             let text = labelLine.size(scale: piScale), track = PiKit.switchTrack(size)
             return NSSize(width: text.width + gap + track.width, height: max(text.height, track.height))
@@ -184,10 +193,7 @@ extension PiKit {
         /// focus) and only retitle; anything else rebuilds them.
         var items: [(Tag, String)] {
             didSet {
-                if oldValue.map(\.0) == items.map(\.0), buttons.count == items.count {
-                    for (button, item) in zip(buttons, items) where button.title != item.1 { button.title = item.1; button.setAccessibilityLabel(item.1) }
-                    invalidateIntrinsicContentSize(); needsLayout = true
-                } else { rebuild() }
+                rebuild()
             }
         }
         /// Set from outside without calling `onSelect`.
@@ -225,10 +231,20 @@ extension PiKit {
             override func isAccessibilitySelected() -> Bool { chosen }
         }
 
+        /// Reconciles the tab buttons with `items` by tag: a tab that stays
+        /// keeps its button (and its focus and accessibility identity), only
+        /// retitled; new tags get buttons, gone ones lose theirs.
+        private var byTag: [Tag: Tab] = [:]
         private func rebuild() {
-            buttons.forEach { $0.removeFromSuperview() }
+            var kept: [Tag: Tab] = [:]
             buttons = items.map { item in
+                if let tab = byTag[item.0] {
+                    if tab.title != item.1 { tab.title = item.1; tab.setAccessibilityLabel(item.1) }
+                    kept[item.0] = tab
+                    return tab
+                }
                 let tab = Tab(item.1)
+                kept[item.0] = tab
                 tab.onPress = { [weak self] in
                     guard let self, self.selection != item.0 else { return }
                     self.selection = item.0
@@ -237,6 +253,8 @@ extension PiKit {
                 addSubview(tab)
                 return tab
             }
+            for (tag, tab) in byTag where kept[tag] == nil { tab.removeFromSuperview() }
+            byTag = kept
             invalidateIntrinsicContentSize(); needsLayout = true
             selectionChanged(animated: false)
         }

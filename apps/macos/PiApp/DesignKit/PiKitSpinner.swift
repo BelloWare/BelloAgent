@@ -10,6 +10,9 @@ import QuartzCore
     private let ring = CAShapeLayer()
     private var lineWidth: CGFloat = 1.6
     private(set) var turning = true
+    /// Its size in a layout: the control size's ring, never stretched.
+    var fixedSize: CGSize? { didSet { invalidateIntrinsicContentSize() } }
+    override var intrinsicContentSize: NSSize { fixedSize ?? NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric) }
 
     override init(frame: NSRect) {
         super.init(frame: frame)

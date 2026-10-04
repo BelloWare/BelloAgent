@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import QuartzCore
 
 extension PiKit {
@@ -10,17 +11,23 @@ extension PiKit {
     /// changes rolls to its new value; figures of another `scope` (another
     /// chat) replace the old ones at once.
     @MainActor class StatPill: ButtonBase {
+        /// What the glyph slot shows: the symbol, or a context ring (with no
+        /// reading yet, an empty ring).
+        enum Glyph: Equatable { case symbol(String), ring(Double?) }
         private(set) var symbol: String
-        /// A context ring instead of the symbol: nil shows the symbol, a value its ring.
         private(set) var ring: Double??
         private(set) var label: String
         private(set) var warningTail: String?
         private(set) var scope: AnyHashable?
         /// Whether a change is rolling in now, for tests.
-        var isRolling: Bool { content.animation(forKey: kCATransition) != nil }
+        var isRolling: Bool { readingLayer.animation(forKey: kCATransition) != nil }
         /// Shown highlighted whatever the pointer does (its dialog is open).
         var open = false { didSet { refreshFace() } }
         private let ringView: Ring
+        /// The reading, a layer of its own so a roll moves the figures only.
+        let readingLayer = DrawingLayer()
+        /// A name for VoiceOver other than the reading itself, kept across updates.
+        var accessibilityName: String? { didSet { setAccessibilityLabel(accessibilityName ?? label) } }
 
         init(symbol: String, ring: Double?? = nil, label: String, warningTail: String? = nil, scope: AnyHashable? = nil) {
             self.symbol = symbol; self.ring = ring; self.label = label; self.warningTail = warningTail; self.scope = scope
@@ -29,26 +36,35 @@ extension PiKit {
             pressScales = false
             addSubview(ringView)
             ringView.isHidden = ring == nil
+            face.addSublayer(readingLayer)
+            readingLayer.drawer = { [weak self] rect in self?.drawReading(in: rect) }
             setAccessibilityLabel(label)
         }
         required init?(coder: NSCoder) { fatalError("Not used from a nib") }
 
         /// Updates the reading. Within one scope a change rolls; a new scope
         /// replaces it at once. Set together, so a switch never rolls.
-        func update(symbol: String? = nil, ring: Double?? = .none, label: String, warningTail: String? = nil, scope: AnyHashable?) {
-            let rolls = scope == self.scope && (label != self.label || warningTail != self.warningTail) && window != nil && !Motion.reduced
-            if let symbol { self.symbol = symbol }
-            if case .some(let value) = ring { self.ring = value; ringView.isHidden = value == nil; ringView.fraction = value.flatMap { $0 } ?? 0 }
+        func update(glyph: Glyph? = nil, label: String, warningTail: String? = nil, scope: AnyHashable?) {
+            let sameScope = scope == self.scope
+            let rolls = sameScope && (label != self.label || warningTail != self.warningTail) && window != nil && !Motion.reduced
+            switch glyph {
+            case .symbol(let name)?: symbol = name; ring = nil; ringView.isHidden = true
+            case .ring(let value)?: ring = .some(value); ringView.isHidden = false; ringView.fraction = value ?? 0
+            case nil: break
+            }
             self.label = label; self.warningTail = warningTail; self.scope = scope
-            setAccessibilityLabel(label)
+            if accessibilityName == nil { setAccessibilityLabel(label) }
             invalidateIntrinsicContentSize(); needsLayout = true
+            // Another chat's figures replace the old ones at once, a roll in
+            // progress included.
+            if !sameScope { readingLayer.removeAnimation(forKey: kCATransition) }
             if rolls {
                 let roll = CATransition()
                 roll.type = .push; roll.subtype = .fromTop
                 roll.duration = Motion.base; roll.timingFunction = Motion.timing(.easeOut)
-                content.add(roll, forKey: kCATransition)
+                readingLayer.add(roll, forKey: kCATransition)
             }
-            redrawContent()
+            redrawContent(); readingLayer.setNeedsDisplay()
         }
 
         private var reading: NSAttributedString {
@@ -71,13 +87,20 @@ extension PiKit {
         override func layout() {
             super.layout()
             ringView.frame = CGRect(x: 7 + 1, y: (bounds.height - 14) / 2, width: 14, height: 14)
+            CATransaction.begin(); CATransaction.setDisableActions(true)
+            readingLayer.frame = face.bounds; readingLayer.contentsScale = piScale; readingLayer.appearance = effectiveAppearance
+            CATransaction.commit()
+            readingLayer.setNeedsDisplay()
         }
+        override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); readingLayer.appearance = effectiveAppearance; readingLayer.setNeedsDisplay() }
         override func styleFace() {
             fill.backgroundColor = piCGColor(open || hovering ? .piFill : .clear)
             stroke.borderColor = CGColor.clear
         }
         override func drawContent(in rect: CGRect) {
             if ring == nil { Symbol(symbol, size: 11, weight: .medium).draw(centredIn: CGRect(x: 7, y: (rect.height - 16) / 2, width: 16, height: 16), color: .piInkTertiary, scale: piScale) }
+        }
+        private func drawReading(in rect: CGRect) {
             guard let context = NSGraphicsContext.current?.cgContext else { return }
             let size = readingSize
             context.saveGState()
@@ -97,6 +120,7 @@ extension PiKit {
     /// around it (`PiPopoverPresenter`).
     @MainActor final class StatPopoverPill: StatPill {
         let presenter: PiPopoverPresenter
+        private var observation: AnyCancellable?
         var width: CGFloat = 468
         var maximumHeight: CGFloat = 600
         var willOpen: () -> Void = {}
@@ -105,7 +129,10 @@ extension PiKit {
              help: String = "", presenter: PiPopoverPresenter, dialog: @escaping @MainActor () -> NSView) {
             self.presenter = presenter; self.dialog = dialog
             super.init(symbol: symbol, label: label, warningTail: warningTail)
-            setAccessibilityLabel(accessibility ?? label)
+            accessibilityName = accessibility
+            // Its highlight follows the popover however it closes: Escape, a
+            // click outside, another popover opening.
+            observation = presenter.$isShown.sink { [weak self] shown in MainActor.assumeIsolated { self?.open = shown } }
             if let identifier { setAccessibilityIdentifier(identifier) }
             toolTip = help.isEmpty ? label : help
             onPress = { [weak self] in self?.toggle() }
@@ -115,7 +142,6 @@ extension PiKit {
             guard let dialog else { return }
             if !presenter.isShown && !presenter.isOpening { willOpen() }
             presenter.toggle(from: self, width: width, maximumHeight: maximumHeight, animates: !Motion.reduced, view: dialog)
-            open = presenter.isShown
         }
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
@@ -133,8 +159,10 @@ extension PiKit {
     @MainActor final class ShimmerText: NSView {
         static let period: CFTimeInterval = 1.9
         static let band: CGFloat = 0.45
-        var text: String { didSet { invalidateIntrinsicContentSize(); needsLayout = true; setAccessibilityLabel(text) } }
+        var text: String { didSet { guard oldValue != text else { return }; invalidateIntrinsicContentSize(); needsLayout = true; setAccessibilityLabel(text) } }
         let size: CGFloat, weight: NSFont.Weight
+        /// The width the running sweep was started for.
+        private var sweptWidth: CGFloat = -1
         /// The words' ink and the highlight's (the transcript's muted and text inks).
         let ink: NSColor, glow: NSColor
         private let words = DrawingLayer(), mask = DrawingLayer(), gradient = CAGradientLayer()
@@ -172,8 +200,11 @@ extension PiKit {
             animate(span: span, width: width)
         }
         private func animate(span: CGFloat, width: CGFloat) {
+            // A sweep already running for this width keeps its phase.
+            guard !(isAnimating && sweptWidth == bounds.width) else { return }
             gradient.removeAnimation(forKey: "shimmer")
             guard !Motion.reduced, window != nil, bounds.width > 0 else { return }
+            sweptWidth = bounds.width
             let move = CABasicAnimation(keyPath: "locations")
             let w = Double(width / bounds.width)
             move.fromValue = [-w, -w / 2, 0]
@@ -225,6 +256,18 @@ extension PiKit {
         override func drawContent(in rect: CGRect) {
             Symbol("arrow.down", size: 13, weight: .bold).draw(centredIn: rect, color: hovering ? PiKit.transcriptAccent : PiKit.transcriptText, scale: piScale)
         }
+    }
+
+    // MARK: - Chart selection
+
+    /// The item under the pointer in one chart, held by the chart and told
+    /// only to the parts that follow the pointer (a rule, a band, the caption
+    /// under the chart): a step within the same item tells nobody.
+    @MainActor final class ChartSelection {
+        private(set) var index: Int?
+        var onChange: ((Int?) -> Void)?
+        init() {}
+        func select(_ index: Int?) { guard self.index != index else { return }; self.index = index; onChange?(index) }
     }
 
     // MARK: - Legend
@@ -317,7 +360,8 @@ extension PiKit {
         guard !Motion.reduced, let layer = view.layer ?? { view.wantsLayer = true; return view.layer }() else { return }
         let delay = 0.02 * Double(min(3, max(0, index)))
         let fade = CABasicAnimation(keyPath: "opacity"); fade.fromValue = 0; fade.toValue = 1
-        let rise = CABasicAnimation(keyPath: "transform.translation.y"); rise.fromValue = view.isFlipped ? -4 : -4; rise.toValue = 0
+        // From four points below: down is positive in a flipped view.
+        let rise = CABasicAnimation(keyPath: "transform.translation.y"); rise.fromValue = view.isFlipped ? 4 : -4; rise.toValue = 0
         let group = CAAnimationGroup(); group.animations = [fade, rise]
         group.duration = Motion.quick; group.timingFunction = Motion.timing(.easeOut)
         group.beginTime = CACurrentMediaTime() + delay; group.fillMode = .backwards
@@ -330,7 +374,8 @@ extension PiKit {
         guard !Motion.reduced, let layer = view.layer ?? { view.wantsLayer = true; return view.layer }() else { return }
         let fade = CABasicAnimation(keyPath: "opacity"); fade.fromValue = 0; fade.toValue = 1
         let move = CABasicAnimation(keyPath: "transform.translation.y")
-        move.fromValue = (fromTop ? -1 : 1) * view.bounds.height * (view.isFlipped ? -1 : 1); move.toValue = 0
+        // From its edge: above is negative in a flipped view.
+        move.fromValue = (fromTop ? -1 : 1) * view.bounds.height * (view.isFlipped ? 1 : -1); move.toValue = 0
         let group = CAAnimationGroup(); group.animations = [fade, move]
         group.duration = Motion.base; group.timingFunction = Motion.timing(.easeOut)
         layer.add(group, forKey: "arrive")

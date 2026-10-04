@@ -30,6 +30,7 @@ extension PiKit {
         private let subtitleView: NSTextField?
         private let badge: IconBadge?
         private let topLine = CALayer(), bottomLine = CALayer()
+        private let windowBar = PiWindowBarView(frame: .zero)
 
         init(_ title: String, subtitle: String? = nil, symbol: String? = nil, windowChrome: Bool = false, content: NSView,
              actions: [NSView] = [], footer: NSView? = nil) {
@@ -46,6 +47,9 @@ extension PiKit {
             super.init(frame: .zero)
             wantsLayer = true
             for view in [header, body, foot] { view.wantsLayer = true; addSubview(view) }
+            // In a window of its own the header is the title bar: the window's
+            // drag area and chrome lie behind it, as `PiWindowBar` gives the SwiftUI sheet.
+            if windowChrome { header.addSubview(windowBar) }
             for view in [badge, titleView, subtitleView].compactMap({ $0 }) as [NSView] { header.addSubview(view) }
             for action in actions { header.addSubview(action) }
             body.addSubview(content)
@@ -62,7 +66,9 @@ extension PiKit {
             let tallest = max(text, badge == nil ? 0 : 30, actions.map(\.fittingSize.height).max() ?? 0)
             return tallest + (windowChrome ? PiSpacing.md : PiSpacing.lg) + PiSpacing.lg
         }
-        private var footerHeight: CGFloat { footer.map { $0.fittingSize.height + PiSpacing.md * 2 + 1 } ?? 0 }
+        private var footerHeight: CGFloat {
+            footer.map { PiKit.height(of: $0, width: max(0, (bounds.width > 0 ? bounds.width : width ?? 480) - PiSpacing.xl * 2)) + PiSpacing.md * 2 + 1 } ?? 0
+        }
         override var intrinsicContentSize: NSSize {
             let content = self.content.fittingSize
             return NSSize(width: width ?? max(minWidth ?? 0, content.width),
@@ -73,6 +79,7 @@ extension PiKit {
             super.layout()
             let headerHeight = self.headerHeight
             header.frame = CGRect(x: 0, y: 0, width: bounds.width, height: headerHeight)
+            windowBar.frame = header.bounds
             let top = windowChrome ? PiSpacing.md : PiSpacing.lg
             let inner = headerHeight - top - PiSpacing.lg
             var x = leading

@@ -68,9 +68,20 @@ extension PiKit {
     /// VoiceOver names it for what it chooses and reads the choice as its value.
     @MainActor final class Dropdown<Tag: Hashable>: PillFaceButton {
         /// An open list closes when its items or selection change under it.
-        var items: [(Tag, String)] { didSet { label = current; setAccessibilityValue(current); popover?.close() } }
+        /// An open list follows its items and selection where it stands.
+        var items: [(Tag, String)] {
+            didSet {
+                guard oldValue.map(\.0) != items.map(\.0) || oldValue.map(\.1) != items.map(\.1) else { return }
+                label = current; setAccessibilityValue(current); refreshOpenList()
+            }
+        }
         /// Set from outside without calling `onSelect`.
-        var selection: Tag { didSet { label = current; setAccessibilityValue(current); if oldValue != selection { popover?.close() } } }
+        var selection: Tag { didSet { label = current; setAccessibilityValue(current); if oldValue != selection { refreshOpenList() } } }
+        private func refreshOpenList() {
+            guard let list, popover?.isShown == true else { return }
+            list.update(selection: selection, choices: items.map { Choice(id: $0.0, title: $0.1) })
+            (popover?.contentViewController)?.preferredContentSize = list.frame.size
+        }
         let placeholder: String
         var onSelect: ((Tag) -> Void)?
         private var popover: NSPopover?
@@ -138,8 +149,8 @@ extension PiKit {
     /// arrows never applies a choice before Return or a click; Escape closes.
     @MainActor final class ChoiceList<Tag: Hashable>: NSView {
         let title: String
-        let selection: Tag?
-        let choices: [Choice<Tag>]
+        private(set) var selection: Tag?
+        private(set) var choices: [Choice<Tag>]
         let note: String?
         let actionTitle: String?
         let action: (() -> Void)?
@@ -297,6 +308,21 @@ extension PiKit {
             setFrameSize(NSSize(width: Self.width, height: y))
         }
 
+        /// New choices or selection while it is open: its rows are rebuilt,
+        /// and the keyboard's row stays where it was while that is offered.
+        func update(selection: Tag?, choices: [Choice<Tag>]) {
+            self.selection = selection; self.choices = choices
+            for row in rows { row.removeFromSuperview() }
+            rows = choices.map { choice in
+                let row = Row(choice, chosen: choice.id == selection)
+                row.onPress = { [weak self] in self?.commit(choice.id) }
+                stack.addSubview(row)
+                return row
+            }
+            if !choices.contains(where: { $0.id == highlighted && $0.enabled }) { highlighted = Self.initialChoice(choices, selection: selection) }
+            layoutList(); refreshHighlight(); invalidateIntrinsicContentSize()
+        }
+
         static func initialChoice(_ choices: [Choice<Tag>], selection: Tag?) -> Tag? {
             choices.first { $0.id == selection && $0.enabled }?.id ?? choices.first { $0.enabled }?.id
         }
@@ -362,9 +388,32 @@ extension PiKit {
     static func wrappedHeight(_ text: String, font: NSFont, width: CGFloat) -> CGFloat {
         CGFloat(wrappedLines(text, font: font, width: width).count) * Line(text, font: font, color: .black).lineHeight
     }
-    /// Draws `text` wrapped in `rect` (flipped); returns the height it took.
-    @discardableResult static func drawWrapped(_ text: String, font: NSFont, color: NSColor, in rect: CGRect, scale: CGFloat = 2) -> CGFloat {
-        let lines = wrappedLines(text, font: font, width: rect.width)
+    /// Draws one line shrunk to fit `rect`'s width, down to `minimumScale`
+    /// of its size and cut with "…" past that, as `.minimumScaleFactor`.
+    static func drawScaled(_ line: Line, in rect: CGRect, minimumScale: CGFloat, scale: CGFloat = 2) {
+        let width = line.width
+        guard width > rect.width, width > 0 else { line.draw(at: rect.origin, scale: scale); return }
+        let factor = max(minimumScale, rect.width / width)
+        var smaller = line
+        smaller.font = NSFont(descriptor: line.font.fontDescriptor, size: line.font.pointSize * factor) ?? line.font
+        // Centred on the full-size line's middle, as a scaled `Text` sits.
+        let y = rect.minY + (line.lineHeight - smaller.lineHeight) / 2
+        smaller.draw(in: CGRect(x: rect.minX, y: PiKit.round(y, scale), width: rect.width, height: smaller.lineHeight), scale: scale)
+    }
+    /// Draws `text` wrapped in `rect` (flipped), up to `maximumLines` (the
+    /// last cut with "…"); returns the height it took.
+    @discardableResult static func drawWrapped(_ text: String, font: NSFont, color: NSColor, in rect: CGRect, scale: CGFloat = 2, maximumLines: Int = .max) -> CGFloat {
+        var lines = wrappedLines(text, font: font, width: rect.width)
+        if lines.count > maximumLines {
+            let kept = lines.prefix(maximumLines - 1)
+            let rest = lines.dropFirst(maximumLines - 1).joined(separator: " ")
+            lines = Array(kept)
+            var y = rect.minY
+            for line in lines { let drawn = Line(line, font: font, color: color); drawn.draw(at: CGPoint(x: rect.minX, y: y), scale: scale); y += drawn.lineHeight }
+            let last = Line(rest, font: font, color: color)
+            last.draw(in: CGRect(x: rect.minX, y: y, width: rect.width, height: last.lineHeight), scale: scale)
+            return y + last.lineHeight - rect.minY
+        }
         var y = rect.minY
         for line in lines {
             let drawn = Line(line, font: font, color: color)
@@ -372,6 +421,34 @@ extension PiKit {
             y += drawn.lineHeight
         }
         return y - rect.minY
+    }
+
+    /// Wrapping text the reader can select and copy (`.textSelection(.enabled)`),
+    /// its lines spaced and its baseline placed as `Text` places them.
+    @MainActor final class SelectableText: NSTextField, WidthSizing {
+        let textFont: NSFont
+        init(_ text: String, font: NSFont, color: NSColor) {
+            textFont = font
+            super.init(frame: .zero)
+            isEditable = false; isSelectable = true; isBordered = false; isBezeled = false; drawsBackground = false
+            lineBreakMode = .byWordWrapping; cell?.wraps = true; cell?.isScrollable = false
+            maximumNumberOfLines = 0
+            textColor = color; self.font = font
+            set(text)
+        }
+        required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+        /// Sets the text with SwiftUI's line height on every line.
+        func set(_ text: String) {
+            let lineHeight = Line(text, font: textFont, color: .black).lineHeight
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.minimumLineHeight = lineHeight; paragraph.maximumLineHeight = lineHeight
+            paragraph.lineBreakMode = .byWordWrapping
+            // The text system puts a line's baseline at its whole-point offset
+            // from the line's top, as `Text` does.
+            attributedStringValue = NSAttributedString(string: text, attributes: [.font: textFont, .foregroundColor: textColor ?? .piInk, .paragraphStyle: paragraph])
+            invalidateIntrinsicContentSize()
+        }
+        func height(forWidth width: CGFloat) -> CGFloat { PiKit.wrappedHeight(stringValue, font: textFont, width: width) }
     }
 
     /// Wrapping, selectable-free text as a view: `Text` that takes the lines it needs.

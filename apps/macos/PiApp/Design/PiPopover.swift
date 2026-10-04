@@ -75,21 +75,60 @@ import SwiftUI
 
     /// The same for AppKit content: `view` at `width`, as tall as it needs
     /// up to the room there is, scrolling inside past that.
-    func toggle(from anchor: NSView, width: CGFloat, maximumHeight: CGFloat, animates: Bool, view: @escaping @MainActor () -> NSView) {
+    func toggle(from anchor: NSView, width: CGFloat, maximumHeight: CGFloat, animates: Bool, within wait: Duration = .zero,
+                isReady: @escaping @MainActor () -> Bool = { true }, view: @escaping @MainActor () -> NSView) {
         if isShown || pending != nil { close(); return }
-        present(from: anchor, maximumHeight: maximumHeight, animates: animates) { room in
-            let content = view()
-            let height = min(room, PiKit.height(of: content, width: width))
-            let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: width, height: height))
-            scroll.drawsBackground = false; scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true
-            let document = PiKit.Box.ClipView(frame: NSRect(x: 0, y: 0, width: width, height: PiKit.height(of: content, width: width)))
-            content.frame = document.bounds; content.autoresizingMask = [.width]
-            document.addSubview(content)
-            scroll.documentView = document
-            let controller = NSViewController()
-            controller.view = scroll
-            controller.preferredContentSize = scroll.frame.size
-            return controller
+        let open = { [weak self, weak anchor] in
+            guard let self, let anchor else { return }
+            self.present(from: anchor, maximumHeight: maximumHeight, animates: animates) { room in
+                let document = NativeDocument(content: view(), width: width, room: room)
+                let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: width, height: document.shownHeight))
+                scroll.drawsBackground = false; scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true
+                scroll.documentView = document
+                let controller = NSViewController()
+                controller.view = scroll
+                controller.preferredContentSize = scroll.frame.size
+                document.controller = controller
+                return controller
+            }
+        }
+        // As the SwiftUI form: it waits up to `wait` for its content to be ready.
+        guard wait > .zero, !isReady() else { open(); return }
+        pending = Task { [weak self] in
+            let deadline = ContinuousClock.now.advanced(by: wait)
+            while !isReady(), ContinuousClock.now < deadline {
+                do { try await Task.sleep(for: .milliseconds(8)) } catch { return }
+            }
+            guard let self, !Task.isCancelled else { return }
+            self.pending = nil
+            open()
+        }
+    }
+
+    /// A native popover's document: its content at the popover's width, as
+    /// tall as it needs. It measures again on every layout, so content that
+    /// grows after opening grows the panel, up to its room, then scrolls.
+    final class NativeDocument: NSView {
+        let content: NSView
+        let width: CGFloat, room: CGFloat
+        weak var controller: NSViewController?
+        init(content: NSView, width: CGFloat, room: CGFloat) {
+            self.content = content; self.width = width; self.room = room
+            super.init(frame: NSRect(x: 0, y: 0, width: width, height: PiKit.height(of: content, width: width)))
+            addSubview(content)
+            content.frame = bounds
+        }
+        required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+        override var isFlipped: Bool { true }
+        var shownHeight: CGFloat { min(room, frame.height) }
+        override func layout() {
+            super.layout()
+            let height = PiKit.height(of: content, width: width)
+            if frame.height != height {
+                setFrameSize(NSSize(width: width, height: height))
+                controller?.preferredContentSize = NSSize(width: width, height: shownHeight)
+            }
+            content.frame = NSRect(x: 0, y: 0, width: width, height: height)
         }
     }
 

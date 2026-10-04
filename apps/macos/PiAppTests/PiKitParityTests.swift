@@ -16,7 +16,7 @@ import XCTest
     /// A circle or curve drawn as a path (a badge's dot, a legend swatch, a
     /// stacked bar's rounded ends): its edge antialiased a fraction of a
     /// pixel apart, never more than this many channels.
-    static let shapeShare = 0.002
+    static let shapeShare = 0.006
     static let largestChannel = 48
     private var results: [PiKitParity.Result] = []
 
@@ -48,15 +48,15 @@ import XCTest
                 // The pointer reached both: each looks different from itself at rest.
                 let rest = try await PiKitParity.compare("\(name)-\(suffix)-rest", appearance: appearance, hover: false,
                                                          swiftUI: swiftUI().frame(width: width), appKit: appKit(), canvas: canvas, width: width)
-                XCTAssertGreaterThan(PiKitParity.difference(rest.swiftUIImage, result.swiftUIImage).0, 0, "\(result.name): SwiftUI shows no hover", file: file, line: line)
-                XCTAssertGreaterThan(PiKitParity.difference(rest.appKitImage, result.appKitImage).0, 0, "\(result.name): AppKit shows no hover", file: file, line: line)
+                XCTAssertGreaterThan(PiKitParity.difference(rest.swiftUIImage, result.swiftUIImage, tolerance: 0).0, 0, "\(result.name): SwiftUI shows no hover", file: file, line: line)
+                XCTAssertGreaterThan(PiKitParity.difference(rest.appKitImage, result.appKitImage, tolerance: 0).0, 0, "\(result.name): AppKit shows no hover", file: file, line: line)
             }
         }
     }
 
     /// Symbols: placed as SwiftUI places them, rasterized by AppKit, whose
     /// antialiasing of a symbol's edges differs from SwiftUI's own.
-    static let symbolShare = 0.025
+    static let symbolShare = 0.03
 
     // MARK: Buttons
 

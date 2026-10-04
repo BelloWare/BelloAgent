@@ -274,6 +274,15 @@ import XCTest
         XCTAssertEqual(dropdown.accessibilityValue() as? String, "PUT")
     }
 
+    func testANotesTextCanBeSelectedAndCopied() {
+        let note = PiKit.Note("Could not save.", tone: .danger)
+        let label = note.subviews.compactMap { $0 as? NSTextField }.first
+        XCTAssertEqual(label?.isSelectable, true, "as `.textSelection(.enabled)` let the reader copy it")
+        XCTAssertEqual(label?.isEditable, false)
+        note.text = "Saved."
+        XCTAssertEqual(label?.stringValue, "Saved.")
+    }
+
     // MARK: Fields
 
     func testATextFieldReportsTheReadersEditsAndReturn() {
@@ -320,11 +329,84 @@ import XCTest
         _ = try await hosted(pill)
         pill.update(label: "1.2K tok", scope: "a")
         XCTAssertTrue(pill.isRolling, "a figure that changes within a chat rolls")
-        pill.content.removeAllAnimations()
+        XCTAssertNil(pill.content.animation(forKey: kCATransition), "only the figures roll, not the symbol")
         pill.update(label: "9.9K tok", scope: "b")
-        XCTAssertFalse(pill.isRolling, "another chat's figures replace the old ones at once")
+        XCTAssertFalse(pill.isRolling, "another chat's figures replace the old ones at once, a roll in progress included")
         pill.update(label: "9.9K tok", scope: "b")
         XCTAssertFalse(pill.isRolling, "an unchanged figure does not roll")
+    }
+
+    func testAPopoverPillsHighlightFollowsItsPopover() async throws {
+        let presenter = PiPopoverPresenter()
+        let pill = PiKit.StatPopoverPill(symbol: "chart.pie", label: "7.3K tok", accessibility: "Usage", presenter: presenter) { PiKit.Note("Panel") }
+        _ = try await hosted(pill)
+        pill.performClick(nil)
+        try await eventually("the popover opening") { presenter.isShown }
+        XCTAssertTrue(pill.open)
+        presenter.close()
+        try await eventually("the highlight following a close from elsewhere") { !pill.open }
+        pill.update(label: "7.4K tok", scope: nil)
+        XCTAssertEqual(pill.accessibilityLabel(), "Usage", "its own name survives a new reading")
+    }
+
+    func testAStatPillCanShowAnEmptyContextRingAndGoBackToItsSymbol() {
+        let pill = PiKit.StatPill(symbol: "chart.pie", label: "—")
+        let ring = { pill.subviews.compactMap { $0 as? PiKit.Ring }.first }
+        pill.update(glyph: .ring(nil), label: "—", scope: nil)
+        XCTAssertEqual(ring()?.isHidden, false, "no reading yet is an empty ring, not the symbol")
+        XCTAssertEqual(ring()?.fraction, 0)
+        pill.update(glyph: .symbol("chart.pie"), label: "—", scope: nil)
+        XCTAssertEqual(ring()?.isHidden, true)
+    }
+
+    func testTabsKeepTheButtonsOfTabsThatStay() {
+        let tabs = PiKit.Tabs(selection: 2, items: [(1, "One"), (2, "Two")])
+        let two = tabs.tab(2)
+        tabs.items = [(0, "Zero"), (1, "One"), (2, "Two, renamed")]
+        XCTAssertTrue(tabs.tab(2) === two, "a tab that stays keeps its button")
+        XCTAssertEqual(two?.title, "Two, renamed")
+        tabs.items = [(2, "Two")]
+        XCTAssertTrue(tabs.tab(2) === two)
+        XCTAssertNil(tabs.tab(1)?.superview)
+    }
+
+    func testEnablingARowRestoresOnlyWhatItDisabled() {
+        let off = PiKit.Switch(isOn: true); off.isEnabled = false
+        let on = PiKit.Switch(isOn: true)
+        let content = PiKit.Box.ClipView(); content.addSubview(off); content.addSubview(on)
+        let row = PiKit.SelectableRow(content: content)
+        row.isEnabled = false
+        XCTAssertFalse(on.isEnabled)
+        row.isEnabled = true
+        XCTAssertTrue(on.isEnabled)
+        XCTAssertFalse(off.isEnabled, "a control that was off before stays off")
+    }
+
+    func testAnOpenDropdownFollowsItsItemsInPlace() async throws {
+        let dropdown = PiKit.Dropdown(selection: "PUT", items: [("POST", "POST"), ("PUT", "PUT")])
+        _ = try await hosted(dropdown)
+        dropdown.toggleChoices()
+        let list = try XCTUnwrap(dropdown.list)
+        dropdown.items = [("POST", "POST"), ("PUT", "PUT"), ("PATCH", "PATCH")]
+        XCTAssertTrue(dropdown.list === list, "the open list is updated, not replaced")
+        XCTAssertEqual(list.choices.map(\.id), ["POST", "PUT", "PATCH"])
+        dropdown.items = [("POST", "POST"), ("PUT", "PUT"), ("PATCH", "PATCH")]
+        XCTAssertEqual(list.choices.count, 3, "an identical assignment changes nothing")
+    }
+
+    func testASpinnerKeepsItsControlSize() {
+        XCTAssertEqual(PiKit.spinner(controlSize: .small).intrinsicContentSize, NSSize(width: 16, height: 16))
+        XCTAssertEqual(PiKit.spinner(controlSize: .mini).intrinsicContentSize, NSSize(width: 10, height: 10))
+    }
+
+    func testAppearingRisesFromBelowInAFlippedView() {
+        PiKit.Motion.reducedOverride = false
+        defer { PiKit.Motion.reducedOverride = true }
+        let view = PiKit.Box.ClipView(); view.wantsLayer = true
+        PiKit.appear(view, index: 0)
+        let group = view.layer?.animation(forKey: "appear") as? CAAnimationGroup
+        let rise = group?.animations?.compactMap { $0 as? CABasicAnimation }.first { $0.keyPath == "transform.translation.y" }
+        XCTAssertEqual(rise?.fromValue as? CGFloat, 4, "four points below, down being positive when flipped")
     }
 
     // MARK: Gauges

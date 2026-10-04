@@ -278,15 +278,15 @@ extension PiKit {
 
     /// A note: a small tone symbol and caption text that wraps; danger reads in its tone.
     @MainActor final class Note: NSView, WidthSizing {
-        var text: String { didSet { label.text = text; invalidateIntrinsicContentSize(); needsLayout = true } }
+        var text: String { didSet { label.set(text); invalidateIntrinsicContentSize(); needsLayout = true } }
         let tone: PiTone
         private let icon: SymbolView
-        private let label: WrappedText
+        private let label: SelectableText
         init(_ text: String, tone: PiTone = .neutral) {
             self.text = text; self.tone = tone
             let name = tone == .danger ? "exclamationmark.triangle.fill" : tone == .warning ? "exclamationmark.circle" : "info.circle"
             icon = SymbolView(Symbol(name, size: 11), color: tone == .neutral ? .piInkTertiary : tone.nsColor)
-            label = WrappedText(text, font: PiKit.Font.caption, color: tone == .danger ? tone.nsColor : .piInkSecondary)
+            label = SelectableText(text, font: PiKit.Font.caption, color: tone == .danger ? tone.nsColor : .piInkSecondary)
             super.init(frame: .zero)
             addSubview(icon); addSubview(label)
         }
@@ -306,7 +306,9 @@ extension PiKit {
             super.layout()
             let box = icon.symbol.layoutSize
             icon.frame = CGRect(x: 0, y: 1, width: box.width, height: box.height)
-            label.frame = CGRect(x: box.width + 6, y: 0, width: max(0, bounds.width - box.width - 6), height: label.height(forWidth: bounds.width - box.width - 6))
+            let width = max(0, bounds.width - box.width - 6)
+            // A field's cell insets its text two points; the field sits that far out.
+            label.frame = CGRect(x: box.width + 6 - PiKit.fieldInset, y: 0, width: width + PiKit.fieldInset * 2, height: label.height(forWidth: width))
         }
     }
 
@@ -343,10 +345,10 @@ extension PiKit {
             }
             titleLine.draw(in: CGRect(x: x, y: 0, width: bounds.width - x, height: titleLine.lineHeight), scale: piScale)
             let y = titleLine.size().height + 6
-            valueLine.draw(in: CGRect(x: 0, y: y, width: bounds.width, height: valueLine.lineHeight), scale: piScale)
+            PiKit.drawScaled(valueLine, in: CGRect(x: 0, y: y, width: bounds.width, height: valueLine.size().height), minimumScale: 0.6, scale: piScale)
             if let caption {
                 PiKit.drawWrapped(caption, font: PiKit.Font.caption, color: .piInkTertiary,
-                                  in: CGRect(x: 0, y: y + valueLine.size().height + 6, width: bounds.width, height: captionHeight))
+                                  in: CGRect(x: 0, y: y + valueLine.size().height + 6, width: bounds.width, height: captionHeight), maximumLines: 2)
             }
         }
     }
@@ -382,7 +384,7 @@ extension PiKit {
     /// `contextTint`, the context ring's accent, warning at 80 per cent and
     /// danger at 95.
     @MainActor final class Ring: NSView {
-        var fraction: Double { didSet { needsLayout = true } }
+        var fraction: Double { didSet { needsLayout = true; needsDisplay = true } }
         let size: CGFloat
         let tone: NSColor
         let lineWidth: CGFloat
@@ -453,7 +455,7 @@ extension PiKit {
         }
         override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: height(forWidth: bounds.width > 0 ? bounds.width : 200)) }
         override func draw(_ dirtyRect: NSRect) {
-            valueLine.draw(in: CGRect(x: 0, y: 0, width: bounds.width, height: valueLine.lineHeight), scale: piScale)
+            PiKit.drawScaled(valueLine, in: CGRect(x: 0, y: 0, width: bounds.width, height: valueLine.size().height), minimumScale: 0.7, scale: piScale)
             var y = valueLine.size().height + 2
             titleLine.draw(in: CGRect(x: 0, y: y, width: bounds.width, height: titleLine.lineHeight), scale: piScale)
             y += titleLine.size().height + 2
@@ -541,6 +543,7 @@ extension PiKit {
     @MainActor static func spinner(controlSize: NSControl.ControlSize) -> PiSpinnerView {
         let (size, line): (CGFloat, CGFloat) = controlSize == .mini ? (10, 1.4) : controlSize == .small ? (16, 1.8) : (32, 2.6)
         let view = PiSpinnerView(frame: NSRect(x: 0, y: 0, width: size, height: size))
+        view.fixedSize = CGSize(width: size, height: size)
         view.configure(lineWidth: line, turning: !Motion.reduced)
         return view
     }

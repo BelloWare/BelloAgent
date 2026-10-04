@@ -6,7 +6,7 @@ extension PiKit {
     /// outside, as a SwiftUI stroke overlay is), an optional shadow, and
     /// content inset by padding. The cards, insets, raised panels and field
     /// frames are all this.
-    @MainActor class Box: NSView {
+    @MainActor class Box: NSView, WidthSizing {
         var fillColor: NSColor? { didSet { needsDisplay = true } }
         var strokeColor: NSColor? { didSet { needsDisplay = true } }
         var strokeWidth: CGFloat = 1 { didSet { needsLayout = true } }
@@ -56,7 +56,11 @@ extension PiKit {
         }
         /// The height for `width`, its content given the width inside the padding.
         func height(forWidth width: CGFloat) -> CGFloat {
-            guard let content else { return padding.top + padding.bottom }
+            guard let content else {
+                // A box with no content view (a field) is as tall as it says.
+                let own = intrinsicContentSize.height
+                return own == NSView.noIntrinsicMetric ? padding.top + padding.bottom : own
+            }
             return PiKit.height(of: content, width: width - padding.left - padding.right) + padding.top + padding.bottom
         }
         override func layout() {

@@ -16,7 +16,7 @@ import XCTest
     /// A channel this far apart counts as a different pixel: antialiasing of
     /// the same glyph or edge placed a fraction of a pixel differently stays
     /// under it.
-    static let channelTolerance = 16
+    static let channelTolerance = 8
     /// What one comparison found.
     struct Result: CustomStringConvertible {
         let name: String
@@ -151,7 +151,7 @@ import XCTest
 
     /// Pixels whose channels differ by more than the tolerance, of all, and
     /// the largest difference of a channel.
-    static func difference(_ a: NSBitmapImageRep, _ b: NSBitmapImageRep) -> (Int, Int, Int) {
+    static func difference(_ a: NSBitmapImageRep, _ b: NSBitmapImageRep, tolerance: Int = channelTolerance) -> (Int, Int, Int) {
         guard a.pixelsWide == b.pixelsWide, a.pixelsHigh == b.pixelsHigh else { return (a.pixelsWide * a.pixelsHigh, a.pixelsWide * a.pixelsHigh, 255) }
         var differing = 0, largest = 0
         var p = [Int](repeating: 0, count: 4), q = [Int](repeating: 0, count: 4)
@@ -161,7 +161,7 @@ import XCTest
                 var worst = 0
                 for channel in 0..<min(a.samplesPerPixel, 4) { worst = max(worst, abs(p[channel] - q[channel])) }
                 largest = max(largest, worst)
-                if worst > channelTolerance { differing += 1 }
+                if worst > tolerance { differing += 1 }
             }
         }
         return (differing, a.pixelsWide * a.pixelsHigh, largest)
