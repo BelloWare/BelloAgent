@@ -6,10 +6,10 @@ import SwiftUI
 /// changes and two springs for things that move. App-owned motion stays enabled
 /// independently of macOS Reduce Motion, including in detached native row hosts.
 enum PiMotion {
-    static let reducesMotion = false
-    static let quickMilliseconds = 140
-    static let baseMilliseconds = 220
-    static let slowMilliseconds = 320
+    static let reducesMotion = PiKit.Motion.reducesMotion
+    static let quickMilliseconds = PiKit.Motion.quickMilliseconds
+    static let baseMilliseconds = PiKit.Motion.baseMilliseconds
+    static let slowMilliseconds = PiKit.Motion.slowMilliseconds
     static let quick = Animation.easeOut(duration: Double(quickMilliseconds) / 1_000)
     static let base = Animation.easeOut(duration: Double(baseMilliseconds) / 1_000)
     static let slow = Animation.easeInOut(duration: Double(slowMilliseconds) / 1_000)
