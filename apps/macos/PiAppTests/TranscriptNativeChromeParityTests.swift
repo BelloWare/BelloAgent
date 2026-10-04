@@ -65,6 +65,9 @@ import XCTest
         } }
         return Data(bytes)
     }
+    static func triggers(in view: NSView) -> [PiPopoverTriggerButton] {
+        ((view as? PiPopoverTriggerButton).map { [$0] } ?? []) + view.subviews.flatMap { triggers(in: $0) }
+    }
     /// The most a symbol's own pixels may differ, each: what AppKit's
     /// rasterizing of the same symbol in the same place leaves, as
     /// `testSymbolsDrawAsSwiftUI` allows it.
@@ -107,6 +110,13 @@ import XCTest
             dump(view, 0)
         }
         guard hover else { return rest }
+        // A face whose hover comes from the app's AppKit press target over
+        // it (the quote bar's) is told directly, as the AppKit one is.
+        let triggers = Self.triggers(in: view)
+        if !triggers.isEmpty {
+            triggers.forEach { $0.onHover?(true) }
+            return try await settle("\(type(of: view)) under the pointer")
+        }
         let centre = window.convertPoint(toScreen: NSPoint(x: view.frame.midX, y: view.frame.midY))
         let top = NSScreen.screens.first?.frame.height ?? 0
         let point = CGPoint(x: centre.x, y: top - centre.y)

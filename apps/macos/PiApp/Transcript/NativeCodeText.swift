@@ -69,7 +69,7 @@ struct NativeCodeText: NSViewRepresentable {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = size * 0.4
         paragraph.lineBreakMode = .byWordWrapping
-        let base: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor(TranscriptPalette.text), .paragraphStyle: paragraph]
+        let base: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: TranscriptNSPalette.text, .paragraphStyle: paragraph]
         storage.beginEditing()
         if append {
             let suffix = String(decoding: next.utf8.dropFirst(source.utf8.count), as: UTF8.self)

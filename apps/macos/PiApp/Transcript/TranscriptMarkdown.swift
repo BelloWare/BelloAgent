@@ -1,5 +1,5 @@
 import Foundation
-import SwiftUI
+import AppKit
 
 // Markdown for the transcript, parsed by Foundation's own CommonMark parser
 // and laid out by us as native blocks: paragraphs, headings, lists, quotes,
@@ -25,13 +25,13 @@ struct MarkdownStyle: Sendable, Equatable {
     var id = "prose"
     var baseSize: CGFloat = 14.5
     var keepsSoftBreaks = false
-    var textColor: Color = TranscriptPalette.text
-    var codeBackground: Color = TranscriptPalette.panelStrong
-    var linkColor: Color = TranscriptPalette.accent
+    var textColor: NSColor = TranscriptNSPalette.text
+    var codeBackground: NSColor = TranscriptNSPalette.panelStrong
+    var linkColor: NSColor = TranscriptNSPalette.accent
     static let prose = MarkdownStyle()
     static let user = MarkdownStyle(id: "user", keepsSoftBreaks: true)
-    static let reasoning = MarkdownStyle(id: "reasoning", baseSize: 13, textColor: TranscriptPalette.muted)
-    static let summary = MarkdownStyle(id: "summary", baseSize: 13, textColor: TranscriptPalette.muted)
+    static let reasoning = MarkdownStyle(id: "reasoning", baseSize: 13, textColor: TranscriptNSPalette.muted)
+    static let summary = MarkdownStyle(id: "summary", baseSize: 13, textColor: TranscriptNSPalette.muted)
 }
 
 enum TranscriptMarkdown {
@@ -347,28 +347,22 @@ enum TranscriptMarkdown {
             if run.imageURL != nil { text = "[Image not loaded" + (text.isEmpty ? "]" : ": \(text)]") }
             var fragment = AttributedString(text)
             let strong = heading || intent.contains(.stronglyEmphasized), italic = intent.contains(.emphasized)
-            let weight: Font.Weight = strong ? .semibold : .regular
-            // The face is named twice: as SwiftUI's font, and as a value the
-            // TextKit text a reply is drawn in turns into its own font
-            // (`MarkdownTextBuilder.appKit`).
+            // The face is a value the TextKit text a reply is drawn in turns
+            // into its own font (`MarkdownTextBuilder.appKit`).
             if intent.contains(.code) {
                 fragment[MarkdownInlineCodeAttribute.self] = true
-                fragment.font = .system(size: size * 0.9, weight: weight, design: .monospaced)
-                fragment.backgroundColor = style.codeBackground
+                fragment.appKit.backgroundColor = style.codeBackground
                 fragment[MarkdownFontAttribute.self] = MarkdownFontSpec(size: size * 0.9, semibold: strong, monospaced: true, italic: italic)
             } else if heading {
-                fragment.font = .system(size: size, weight: weight, design: .serif)
                 fragment[MarkdownFontAttribute.self] = MarkdownFontSpec(size: size, semibold: true, serif: true)
             } else {
-                fragment.font = italic ? .system(size: size, weight: weight).italic() : .system(size: size, weight: weight)
                 fragment[MarkdownFontAttribute.self] = MarkdownFontSpec(size: size, semibold: strong, italic: italic)
             }
-            if italic && intent.contains(.code) { fragment.font = .system(size: size * 0.9, weight: weight, design: .monospaced).italic() }
-            fragment.foregroundColor = style.textColor
-            if intent.contains(.strikethrough) { fragment.strikethroughStyle = .single }
+            fragment.appKit.foregroundColor = style.textColor
+            if intent.contains(.strikethrough) { fragment.appKit.strikethroughStyle = .single }
             if run.imageURL == nil, let link = run.link, let safe = safeURL(link.absoluteString) {
                 fragment.link = safe
-                fragment.foregroundColor = style.linkColor
+                fragment.appKit.foregroundColor = style.linkColor
             }
             return fragment
     }
@@ -407,7 +401,8 @@ extension String {
 /// The transcript's palette, the same values the stylesheet carried, as
 /// appearance-aware colors.
 /// The transcript's colours as AppKit draws them. Each resolves against the
-/// appearance it is drawn in; `TranscriptPalette` is the same set for SwiftUI.
+/// appearance it is drawn in; `TranscriptPalette` (Workspaces/TranscriptPalette.swift)
+/// is the same set for SwiftUI.
 enum TranscriptNSPalette {
     private static func dynamic(_ light: (UInt32, Double), _ dark: (UInt32, Double)) -> NSColor {
         NSColor(name: nil) { appearance in
@@ -439,31 +434,4 @@ enum TranscriptNSPalette {
     static let comment = dynamic((0x7a766d, 1), (0x9a968d, 1))
     static let diffAdded = dynamic((0x2f8f4e, 0.12), (0x2f8f4e, 0.18))
     static let diffAddedMark = dynamic((0x2f8f4e, 1), (0x7cc48f, 1))
-}
-
-enum TranscriptPalette {
-    static let text = Color(nsColor: TranscriptNSPalette.text)
-    static let muted = Color(nsColor: TranscriptNSPalette.muted)
-    static let faint = Color(nsColor: TranscriptNSPalette.faint)
-    static let hair = Color(nsColor: TranscriptNSPalette.hair)
-    static let hairStrong = Color(nsColor: TranscriptNSPalette.hairStrong)
-    static let panel = Color(nsColor: TranscriptNSPalette.panel)
-    static let panelStrong = Color(nsColor: TranscriptNSPalette.panelStrong)
-    static let surface = Color(nsColor: TranscriptNSPalette.surface)
-    static let canvas = Color(nsColor: TranscriptNSPalette.canvas)
-    static let accent = Color(nsColor: TranscriptNSPalette.accent)
-    static let accentSoft = Color(nsColor: TranscriptNSPalette.accentSoft)
-    static let userBackground = Color(nsColor: TranscriptNSPalette.userBackground)
-    static let toolBackground = Color(nsColor: TranscriptNSPalette.toolBackground)
-    static let codeBackground = Color(nsColor: TranscriptNSPalette.codeBackground)
-    static let statusBackground = Color(nsColor: TranscriptNSPalette.statusBackground)
-    static let danger = Color(nsColor: TranscriptNSPalette.danger)
-    static let success = Color(nsColor: TranscriptNSPalette.success)
-    static let warning = Color(nsColor: TranscriptNSPalette.warning)
-    static let keyword = Color(nsColor: TranscriptNSPalette.keyword)
-    static let string = Color(nsColor: TranscriptNSPalette.string)
-    static let number = Color(nsColor: TranscriptNSPalette.number)
-    static let comment = Color(nsColor: TranscriptNSPalette.comment)
-    static let diffAdded = Color(nsColor: TranscriptNSPalette.diffAdded)
-    static let diffAddedMark = Color(nsColor: TranscriptNSPalette.diffAddedMark)
 }

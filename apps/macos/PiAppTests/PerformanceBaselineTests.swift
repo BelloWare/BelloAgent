@@ -34,7 +34,7 @@ final class PerformanceBaselineTests: XCTestCase {
         "## Step \($0)\n\nHere is what changed in `file\($0).swift`: the handler now **retries** twice and logs the reason. See [docs](https://example.com/\($0)).\n\n1. First point with detail.\n2. Second point with more detail.\n\n```swift\nlet value = compute(index: \($0))\nif value > 0 { print(\"ok\") }\n```\n"
     }.joined(separator: "\n")   // ~11 KB
 
-    func testParsingAndHighlightingBaselines() {
+    @MainActor func testParsingAndHighlightingBaselines() {
         let paragraph = "Some **bold** text with `code`, a [link](https://example.com) and a list:\n\n- one\n- two\n\n```swift\nfunc charge(_ order: Order) async throws -> Receipt { for attempt in 1...3 { } }\n```\n\n"
         let long = String(repeating: paragraph, count: 60)   // ~14 KB
         let blocks = clock("markdown 14 KB, cold") { TranscriptMarkdown.parse(long) }
@@ -53,7 +53,7 @@ final class PerformanceBaselineTests: XCTestCase {
         print(String(format: "PERF streaming parse per delta (11 KB reply, %d deltas): whole %.2f ms, settled parts + tail %.2f ms", deltas, whole * 1000 / Double(deltas), cut * 1000 / Double(deltas)))
         let code = String(repeating: "let value = compute(index: 42) // trailing comment\nif value > 0 { print(\"ok\") } else { throw Failure.bad }\n", count: 150)
         _ = clock("highlighter 16 KB swift") { SyntaxHighlighter.tokens(code, language: .swift) }
-        _ = clock("attributed highlighter 16 KB swift, cold") { SyntaxHighlighter.attributed(code + "\n// cold", language: "swift") }
+        _ = clock("coloured highlighter 16 KB swift, cold") { ColouredCode.storage(code + "\n// cold") }
         _ = clock("copy targets 14 KB") { TranscriptCopy.targets(in: long) }
         let messages = (0..<500).map { index -> TranscriptMessage in
             var message = TranscriptMessage(id: "m\(index)", role: index % 2 == 0 ? "user" : "assistant", text: paragraph, turn: "m\(index - index % 2)")

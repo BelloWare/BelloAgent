@@ -1,5 +1,4 @@
 import AppKit
-import SwiftUI
 
 // A rendered reply as one text. Every block of it — paragraphs, headings,
 // lists, quotes, tables and code — is laid out by TextKit in a single text
@@ -262,10 +261,9 @@ enum MarkdownTextLayout {
             var attributes: [NSAttributedString.Key: Any] = [
                 .font: (run[MarkdownFontAttribute.self] ?? MarkdownFontSpec(size: MarkdownStyle.prose.baseSize)).font
             ]
-            if let color = run.swiftUI.foregroundColor { attributes[.foregroundColor] = NSColor(color) }
-            else { attributes[.foregroundColor] = NSColor(TranscriptPalette.text) }
-            if let color = run.swiftUI.backgroundColor { attributes[.backgroundColor] = NSColor(color) }
-            if run.swiftUI.strikethroughStyle != nil { attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
+            attributes[.foregroundColor] = run.appKit.foregroundColor ?? TranscriptNSPalette.text
+            if let color = run.appKit.backgroundColor { attributes[.backgroundColor] = color }
+            if run.appKit.strikethroughStyle != nil { attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
             if let link = run.link { attributes[.link] = link }
             if run[MarkdownInlineCodeAttribute.self] == true { attributes[.piInlineCode] = String(characters[run.range]) }
             result.append(NSAttributedString(string: String(characters[run.range]), attributes: attributes))
@@ -299,7 +297,7 @@ enum MarkdownTextLayout {
     private func highlighted(_ code: String, language: String?, size: CGFloat, identity: MarkdownBlockIdentity, indent: CGFloat) -> CodeReading {
         let font = MarkdownTextFonts.font(size: size, monospaced: true)
         let paragraph = NSMutableParagraphStyle(); paragraph.lineBreakMode = .byWordWrapping
-        let base: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor(TranscriptPalette.text)]
+        let base: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: TranscriptNSPalette.text]
         let previous = codeReadings[identity]
         let append = previous.map { $0.language == language && $0.size == size && code.hasUTF8Prefix($0.code) } ?? false
         let mark = previous?.mark ?? MarkdownCodeMark(code: code, language: language, indent: indent)
@@ -342,16 +340,16 @@ enum MarkdownTextLayout {
             for token in scan.tokens {
                 let range = NSRange(location: utf16[token.range.lowerBound], length: utf16[token.range.upperBound] - utf16[token.range.lowerBound])
                 guard NSMaxRange(range) <= text.length else { continue }
-                let color: Color
+                let color: NSColor
                 switch token.kind {
-                case .keyword: color = TranscriptPalette.keyword
-                case .string: color = TranscriptPalette.string
-                case .number, .title: color = TranscriptPalette.number
+                case .keyword: color = TranscriptNSPalette.keyword
+                case .string: color = TranscriptNSPalette.string
+                case .number, .title: color = TranscriptNSPalette.number
                 case .comment:
-                    color = TranscriptPalette.comment
+                    color = TranscriptNSPalette.comment
                     text.addAttribute(.font, value: MarkdownTextFonts.font(size: size, monospaced: true, italic: true), range: range)
                 }
-                text.addAttribute(.foregroundColor, value: NSColor(color), range: range)
+                text.addAttribute(.foregroundColor, value: color, range: range)
             }
             if let last = scan.checkpoints.last(where: { $0 < utf16.count - 1 }) { checkpoint = (utf8[last], utf16[last]) }
         } else if !append {
@@ -394,7 +392,7 @@ enum MarkdownTextLayout {
             parts += paragraphs(block, identity: id, context: inner, gap: blockIndex == 0 ? gap : MarkdownTextLayout.innerGap, headingIndex: nil)
         }
         let markerText = NSMutableAttributedString(string: "\t" + marker + "\t", attributes: [
-            .font: markerFont, .foregroundColor: NSColor(context.style.textColor),
+            .font: markerFont, .foregroundColor: context.style.textColor,
             .piListMarker: String(repeating: "  ", count: context.listDepth) + (ordered ? marker + " " : "- ")
         ])
         let tabs = [NSTextTab(textAlignment: .right, location: markerRight), NSTextTab(textAlignment: .left, location: inner.indent)]
@@ -446,7 +444,7 @@ enum MarkdownTextLayout {
         table.layoutAlgorithm = .automaticLayoutAlgorithm
         table.collapsesBorders = true
         let mark = MarkdownTableMark(header: header, rows: rows, large: large)
-        let hair = NSColor(TranscriptPalette.hair)
+        let hair = TranscriptNSPalette.hair
         let headerFont = MarkdownTextFonts.font(size: 13, weight: .semibold)
         var cells: [[NSMutableAttributedString]] = []
         if !shownHeader.isEmpty {
@@ -471,7 +469,7 @@ enum MarkdownTextLayout {
         if large {
             let note = "Preview · first \(min(rows.count, MarkdownTablePresentation.previewRows)) of \(rows.count.formatted()) rows · up to \(MarkdownTablePresentation.previewColumns) columns"
             let text = NSMutableAttributedString(string: note, attributes: [
-                .font: MarkdownTextFonts.font(size: 11), .foregroundColor: NSColor(TranscriptPalette.muted), .piChrome: true
+                .font: MarkdownTextFonts.font(size: 11), .foregroundColor: TranscriptNSPalette.muted, .piChrome: true
             ])
             result.append(MarkdownTextParagraph(text: text, firstIndent: context.indent, indent: context.indent, tailIndent: 0,
                                                 lineSpacing: 0, gap: gap, marks: [.piChrome: true, .piTable: mark], breakCopy: ""))
@@ -486,7 +484,7 @@ enum MarkdownTextLayout {
                 block.setWidth(10, type: .absoluteValueType, for: .padding, edge: .maxX)
                 block.setWidth(6, type: .absoluteValueType, for: .padding, edge: .minY)
                 block.setWidth(6, type: .absoluteValueType, for: .padding, edge: .maxY)
-                if rowIndex == 0, !shownHeader.isEmpty { block.backgroundColor = NSColor(TranscriptPalette.panel) }
+                if rowIndex == 0, !shownHeader.isEmpty { block.backgroundColor = TranscriptNSPalette.panel }
                 let text = column < row.count ? row[column] : NSMutableAttributedString()
                 let alignment: NSTextAlignment
                 switch alignments.indices.contains(column) ? alignments[column] : .left {
@@ -609,8 +607,8 @@ final class MarkdownTextLayoutManager: NSLayoutManager {
             let full = Self.extent(of: mark, key: .piCodeBlock, around: characters, in: storage)
             guard let rect = panelRect(for: full, indent: mark.indent, container: container) else { return }
             let path = NSBezierPath(roundedRect: rect.offsetBy(dx: origin.x, dy: origin.y).insetBy(dx: 0.5, dy: 0.5), xRadius: 10, yRadius: 10)
-            NSColor(TranscriptPalette.codeBackground).setFill(); path.fill()
-            NSColor(TranscriptPalette.hair).setStroke(); path.lineWidth = 1; path.stroke()
+            TranscriptNSPalette.codeBackground.setFill(); path.fill()
+            TranscriptNSPalette.hair.setStroke(); path.lineWidth = 1; path.stroke()
         }
         super.drawBackground(forGlyphRange: glyphsToShow, at: origin)
         storage.enumerateAttribute(.piTable, in: characters) { value, _, _ in
@@ -619,11 +617,11 @@ final class MarkdownTextLayoutManager: NSLayoutManager {
             // The cells' own borders are TextKit's; the rounded outline is ours.
             guard let outline = tableOutline(full) else { return }
             let path = NSBezierPath(roundedRect: outline.offsetBy(dx: origin.x, dy: origin.y).insetBy(dx: 0.5, dy: 0.5), xRadius: 4, yRadius: 4)
-            NSColor(TranscriptPalette.hair).setStroke(); path.lineWidth = 1; path.stroke()
+            TranscriptNSPalette.hair.setStroke(); path.lineWidth = 1; path.stroke()
         }
         let text = storage.string as NSString
         var location = characters.location
-        NSColor(TranscriptPalette.hairStrong).setFill()
+        TranscriptNSPalette.hairStrong.setFill()
         while location < NSMaxRange(characters) {
             let paragraph = text.paragraphRange(for: NSRange(location: location, length: 0))
             location = max(location + 1, NSMaxRange(paragraph))

@@ -245,30 +245,28 @@ final class TranscriptPerformanceRegressionTests: XCTestCase {
         XCTAssertFalse(textFields(in: hosted).filter(\.isSelectable).contains { $0.stringValue.contains("Copy") }, "Copy controls must not inherit content selection")
     }
 
-    func testAttributedSyntaxKeepsUnicodeAndColorsTheFollowingTokensExactly() {
+    @MainActor func testAttributedSyntaxKeepsUnicodeAndColorsTheFollowingTokensExactly() {
         let code = "let cafe\u{301} = \"👩🏽‍💻 🇸🇬 e\u{301}\"\r\n// 🌈 comment with e\u{301}\nreturn 42"
-        let styled = SyntaxHighlighter.attributed(code, language: "swift")
-        XCTAssertEqual(String(styled.characters), code, "Coloring must never rewrite source or split its Unicode text")
-        func runs(_ color: Color) -> [String] {
-            styled.runs.filter { $0.foregroundColor == color }.map { String(styled[$0.range].characters) }
-        }
-        XCTAssertEqual(runs(TranscriptPalette.keyword), ["let", "return"])
-        XCTAssertEqual(runs(TranscriptPalette.string), ["\"👩🏽‍💻 🇸🇬 e\u{301}\""])
-        XCTAssertEqual(runs(TranscriptPalette.comment), ["// 🌈 comment with e\u{301}"])
-        XCTAssertEqual(runs(TranscriptPalette.number), ["42"])
+        let styled = ColouredCode.storage(code)
+        XCTAssertEqual(styled.string, code, "Coloring must never rewrite source or split its Unicode text")
+        func runs(_ color: NSColor) -> [String] { ColouredCode.runs(styled, color) }
+        XCTAssertEqual(runs(TranscriptNSPalette.keyword), ["let", "return"])
+        XCTAssertEqual(runs(TranscriptNSPalette.string), ["\"👩🏽‍💻 🇸🇬 e\u{301}\""])
+        XCTAssertEqual(runs(TranscriptNSPalette.comment), ["// 🌈 comment with e\u{301}"])
+        XCTAssertEqual(runs(TranscriptNSPalette.number), ["42"])
     }
 
-    func testDenseSyntaxNearTheHighlightLimitKeepsEveryTokenAndPlainSpan() {
+    @MainActor func testDenseSyntaxNearTheHighlightLimitKeepsEveryTokenAndPlainSpan() {
         let line = "let value = 42 // 🌈\n"
         let repetitions = 600
         let code = String(repeating: line, count: repetitions)
         XCTAssertLessThan(code.utf8.count, SyntaxHighlighter.limit)
-        let styled = SyntaxHighlighter.attributed(code, language: "swift")
-        XCTAssertEqual(String(styled.characters), code)
-        XCTAssertEqual(styled.runs.filter { $0.foregroundColor == TranscriptPalette.keyword }.count, repetitions)
-        XCTAssertEqual(styled.runs.filter { $0.foregroundColor == TranscriptPalette.number }.count, repetitions)
-        XCTAssertEqual(styled.runs.filter { $0.foregroundColor == TranscriptPalette.comment }.count, repetitions)
-        XCTAssertEqual(styled.runs.filter { $0.foregroundColor == TranscriptPalette.text }.map { String(styled[$0.range].characters) }.joined(), String(repeating: " value =  \n", count: repetitions))
+        let styled = ColouredCode.storage(code)
+        XCTAssertEqual(styled.string, code)
+        XCTAssertEqual(ColouredCode.runs(styled, TranscriptNSPalette.keyword).count, repetitions)
+        XCTAssertEqual(ColouredCode.runs(styled, TranscriptNSPalette.number).count, repetitions)
+        XCTAssertEqual(ColouredCode.runs(styled, TranscriptNSPalette.comment).count, repetitions)
+        XCTAssertEqual(ColouredCode.runs(styled, TranscriptNSPalette.text).joined(), String(repeating: " value =  \n", count: repetitions))
     }
 
     func testCollapsedFileLabelUsesTheResolvedPathAndLegacyLabelsStillUseArguments() {

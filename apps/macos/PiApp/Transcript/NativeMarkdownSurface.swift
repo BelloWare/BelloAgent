@@ -138,7 +138,7 @@ struct NativeMarkdownSurface: NSViewRepresentable {
         textContainer?.widthTracksTextView = false
         textContainer?.heightTracksTextView = false
         layoutManager?.allowsNonContiguousLayout = false
-        linkTextAttributes = [.foregroundColor: NSColor(TranscriptPalette.accent), .cursor: NSCursor.pointingHand]
+        linkTextAttributes = [.foregroundColor: TranscriptNSPalette.accent, .cursor: NSCursor.pointingHand]
         setAccessibilityLabel("Reply")
         delegate = self
     }
@@ -1053,14 +1053,14 @@ struct NativeMarkdownSurface: NSViewRepresentable {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
-        layer?.backgroundColor = NSColor(TranscriptPalette.accent).cgColor
+        layer?.backgroundColor = TranscriptNSPalette.accent.cgColor
         setAccessibilityElement(false)
     }
     required init?(coder: NSCoder) { nil }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
-        effectiveAppearance.performAsCurrentDrawingAppearance { layer?.backgroundColor = NSColor(TranscriptPalette.accent).cgColor }
+        effectiveAppearance.performAsCurrentDrawingAppearance { layer?.backgroundColor = TranscriptNSPalette.accent.cgColor }
     }
     func blink(_ on: Bool) {
         guard on != blinking else { return }
