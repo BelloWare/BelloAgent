@@ -1,5 +1,4 @@
 import AppKit
-import SwiftUI
 
 /// Composer pills for the per-chat connection, model and reasoning choices
 /// (contract H3). The model list comes from the shared catalog; manual entry
@@ -350,8 +349,7 @@ struct ModelSwitchPillContents: Equatable {
         let label = override ?? profile.modelId
         let model = self.model, chatID = chat.id
         toggle(modelPill) {
-            // TEMPORARY bridge: the catalog picker is still SwiftUI.
-            let picker = CatalogModelPicker(model: model, profile: profile, current: label, allowsCatalogSelection: true,
+            let picker = CatalogModelPickerView(model: model, profile: profile, current: label, allowsCatalogSelection: true,
                                             defaultTitle: "Use connection default · \(profile.modelId)", defaultSelected: override == nil,
                                             useDefault: { [weak self] in self?.closePopover(); Task { await model.setModel(nil, for: chatID) } },
                                             manualEntry: { [weak self] alias in
@@ -361,9 +359,21 @@ struct ModelSwitchPillContents: Equatable {
                 self?.closePopover()
                 Task { await model.setModel(item.id, for: chatID) }
             }
-            let host = NSHostingController(rootView: picker)
-            host.sizingOptions = [.preferredContentSize]
-            return host
+            let controller = NSViewController()
+            picker.setFrameSize(picker.intrinsicContentSize)
+            controller.view = picker
+            controller.preferredContentSize = picker.frame.size
+            // The popover follows the picker's height as its list arrives:
+            // `preferredContentSize` alone does not resize a shown popover.
+            picker.sizeChanged = { [weak self, weak controller, weak picker] in
+                guard let controller, let picker else { return }
+                let size = picker.intrinsicContentSize
+                guard controller.preferredContentSize != size else { return }
+                controller.preferredContentSize = size
+                if let popover = self?.popover, popover.contentViewController === controller { popover.contentSize = size }
+                else { picker.setFrameSize(size) }
+            }
+            return controller
         }
     }
 }

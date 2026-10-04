@@ -81,7 +81,7 @@ import Combine
 /// Text that wraps as SwiftUI's `Text` wraps it, up to `maximumLines` lines
 /// (the last cut with "…"), in one font with runs of different colors.
 /// Optionally the reader can select and copy it.
-@MainActor final class ShellText: NSView, PiKit.WidthSizing {
+@MainActor final class ShellText: NSView, PiKit.WidthSizing, ShellCutting {
     struct Run: Equatable {
         var text: String
         var color: NSColor
@@ -131,6 +131,19 @@ import Combine
         return max(1, min(maximumLines, ShellWrap.ranges(text, font: font, width: width).count))
     }
     func height(forWidth width: CGFloat) -> CGFloat { CGFloat(lineCount(width: width)) * lineHeight }
+    /// In a row, as wide as its widest wrapped line rather than all it is
+    /// offered, as `Text` beside other views in an `HStack`.
+    var hugsLines = false
+    func cutWidth(_ width: CGFloat) -> CGFloat {
+        guard hugsLines, !text.isEmpty else { return width }
+        let ranges = ShellWrap.ranges(text, font: font, width: width).prefix(maximumLines)
+        guard ranges.count > 1 else { return width }
+        let widest = ranges.map { range in
+            // A wrapped line keeps its trailing space, as `Text` measures it.
+            PiKit.Line((text as NSString).substring(with: range).trimmingCharacters(in: .newlines), font: font, color: .black).size(scale: piScale).width
+        }.max() ?? width
+        return min(width, widest)
+    }
     /// One line's natural width: the widest the text asks for.
     var naturalWidth: CGFloat {
         let widths = text.components(separatedBy: "\n").map { PiKit.Line($0, font: font, color: .black).size(scale: piScale).width }

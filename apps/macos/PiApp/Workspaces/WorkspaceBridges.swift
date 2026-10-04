@@ -142,3 +142,79 @@ struct WebhookPreviewSheet: View {
         return sheet
     }
 }
+
+/// The catalog picker where SwiftUI still hosts it (Settings' popover,
+/// Application/SettingsBridge.swift): the AppKit picker, as tall as it is.
+struct CatalogModelPicker: View {
+    typealias DraftListing = CatalogModelPickerView.DraftListing
+    let model: WorkspaceModel
+    let profile: ProfileRecord
+    let current: String?
+    var draft: DraftListing? = nil
+    var allowsCatalogSelection = false
+    var defaultTitle: String?
+    var defaultSelected = false
+    var useDefault: (() -> Void)?
+    var manualEntry: ((String) -> Void)?
+    let choose: (ModelDescriptor) -> Void
+    init(model: WorkspaceModel, profile: ProfileRecord, current: String?, draft: DraftListing? = nil, allowsCatalogSelection: Bool = false,
+         defaultTitle: String? = nil, defaultSelected: Bool = false,
+         useDefault: (() -> Void)? = nil, manualEntry: ((String) -> Void)? = nil, choose: @escaping (ModelDescriptor) -> Void) {
+        self.model = model; self.profile = profile; self.current = current; self.draft = draft
+        self.allowsCatalogSelection = allowsCatalogSelection; self.defaultTitle = defaultTitle; self.defaultSelected = defaultSelected
+        self.useDefault = useDefault; self.manualEntry = manualEntry; self.choose = choose
+    }
+    static func filtered(_ models: [ModelDescriptor], query: String) -> [ModelDescriptor] { CatalogModelPickerView.filtered(models, query: query) }
+    static func sourceLabel(_ profile: ProfileRecord) -> String { CatalogModelPickerView.sourceLabel(profile) }
+    var body: some View {
+        Host(picker: self)
+    }
+    private struct Host: NSViewRepresentable {
+        let picker: CatalogModelPicker
+        func makeNSView(context: Context) -> CatalogModelPickerView {
+            let view = CatalogModelPickerView(model: picker.model, profile: picker.profile, current: picker.current, draft: picker.draft,
+                                              allowsCatalogSelection: picker.allowsCatalogSelection, defaultTitle: picker.defaultTitle,
+                                              defaultSelected: picker.defaultSelected, useDefault: picker.useDefault,
+                                              manualEntry: picker.manualEntry, choose: picker.choose)
+            view.inheritedEnabled = context.environment.isEnabled
+            view.sizeChanged = { [weak view] in view?.invalidateIntrinsicContentSize() }
+            return view
+        }
+        /// New inputs reach the picker; its search and alias field stay.
+        func updateNSView(_ view: CatalogModelPickerView, context: Context) {
+            view.update(profile: picker.profile, current: picker.current, draft: picker.draft, allowsCatalogSelection: picker.allowsCatalogSelection,
+                        defaultTitle: picker.defaultTitle, defaultSelected: picker.defaultSelected, useDefault: picker.useDefault,
+                        manualEntry: picker.manualEntry, choose: picker.choose)
+            view.inheritedEnabled = context.environment.isEnabled
+        }
+        func sizeThatFits(_ proposal: ProposedViewSize, nsView: CatalogModelPickerView, context: Context) -> CGSize? { nsView.intrinsicContentSize }
+    }
+}
+
+// TEMPORARY: the limit editor is the Dashboard workstream's SwiftUI
+// `CostLimitLiveEditor`, shown in the shared SwiftUI popover presenter. It
+// moves back beside the cost-limit model code once the editor is AppKit.
+/// The popover "Raise limit…" opens over its button: the chat's limit editor.
+/// One app-owned popover at a time, like the stats pills' and the skills'.
+@MainActor final class CostLimitPopover {
+    static let shared = CostLimitPopover()
+    let presenter = PiPopoverPresenter()
+    /// The chat whose limit the open popover edits (a test seam).
+    private(set) var sessionID: String?
+    static let width: CGFloat = 380
+    func toggle(model: WorkspaceModel, footer: SessionMetrics, sessionID: String, anchor: NSView) {
+        if presenter.isShown, self.sessionID == sessionID { close(); return }
+        self.sessionID = sessionID
+        let reduce = PiMotion.reducesMotion
+        presenter.show(from: anchor, width: Self.width, maximumHeight: 460, animates: !reduce) {
+            AnyView(CostLimitLiveEditor(footer: footer, title: "Raise this chat's limit", choose: { limit in
+                try await model.setCostLimit(limit, for: sessionID)
+                // Chosen: the popover has done its job.
+                CostLimitPopover.shared.close()
+            })
+            .padding(PiSpacing.lg)
+            .environment(\.piReduceMotion, reduce).tint(Color.piAccent))
+        }
+    }
+    func close() { presenter.close(); sessionID = nil }
+}

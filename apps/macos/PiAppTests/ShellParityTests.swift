@@ -215,4 +215,81 @@ import XCTest
             WebhookPreviewSheetView(model: model, chatID: "c", dismiss: {})
         }
     }
+
+    /// The catalog picker over the bundled catalog, its default row shown.
+    func testCatalogModelPicker() async throws {
+        let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("picker-parity-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        defer { model.shutdown(); try? FileManager.default.removeItem(at: root) }
+        var profile = ProfileRecord(); profile.id = "bundled"; profile.name = "Fixture connection"
+        profile.modelId = "auto-router"; profile.baseUrl = "http://127.0.0.1:9/v1"
+        model.profiles = [profile]
+        _ = await model.listModels(for: profile)
+        try await eventually("the bundled catalog") { model.modelCatalog.entry(for: profile).models.count == 6 }
+        try await check("catalog-picker", canvas: .piSurface, width: CatalogModelPickerView.width,
+                        RefCatalogModelPicker(model: model, profile: profile, current: profile.modelId, defaultTitle: "Use connection default · auto-router",
+                                              defaultSelected: true, useDefault: {}) { _ in }) {
+            CatalogModelPickerView(model: model, profile: profile, current: profile.modelId, defaultTitle: "Use connection default · auto-router",
+                                   defaultSelected: true, useDefault: {}) { _ in }
+        }
+    }
+
+    /// A configured catalog with a long model name that wraps, a long default
+    /// title, the chosen model on its wash, and the source chooser. (A
+    /// connection name too long for its line is cut in both, but SwiftUI
+    /// sizes the picker as if it wrapped, a blank band at the bottom the
+    /// AppKit picker leaves out.)
+    func testCatalogModelPickerLongNamesAndSource() async throws {
+        let endpoint = try ModelListGateway { _ in
+            .json(#"{"models":[{"id":"long-model","name":"An Exceptionally Long Model Display Name That Has To Wrap Onto Another Line","mini":true,"description":"Short."},{"id":"chosen-model","name":"Chosen Model","description":"The one this chat uses now, on the accent wash."}]}"#)
+        }
+        defer { endpoint.stop() }
+        let base = try await endpoint.start()
+        let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("picker-parity-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        defer { model.shutdown(); try? FileManager.default.removeItem(at: root) }
+        var profile = ProfileRecord(); profile.id = "saved"; profile.name = "A connection with a name that fits"
+        profile.modelId = "auto-router"; profile.baseUrl = "https://gateway.invalid"; profile.catalogUrl = base + "/catalog"
+        var other = ProfileRecord(); other.id = "other"; other.name = "Other"; other.baseUrl = "https://other.invalid"
+        model.profiles = [profile, other]
+        _ = await model.listModels(for: profile)
+        try await eventually("the configured catalog") { model.modelCatalog.entry(for: profile).models.count == 2 }
+        let title = "Use connection default · auto-router, which the gateway routes to whichever model it prefers today"
+        try await check("catalog-picker-long", canvas: .piSurface, width: CatalogModelPickerView.width,
+                        RefCatalogModelPicker(model: model, profile: profile, current: "chosen-model", allowsCatalogSelection: true, defaultTitle: title,
+                                              defaultSelected: false, useDefault: {}) { _ in }) {
+            CatalogModelPickerView(model: model, profile: profile, current: "chosen-model", allowsCatalogSelection: true, defaultTitle: title,
+                                   defaultSelected: false, useDefault: {}) { _ in }
+        }
+    }
+
+    /// A refresh that failed over a list already shown: the medium failure
+    /// line over the error, three points apart, and the old list.
+    func testCatalogModelPickerRefreshFailure() async throws {
+        final class Count: @unchecked Sendable { var value = 0 }
+        let count = Count()
+        let endpoint = try ModelListGateway { _ in
+            count.value += 1
+            return count.value == 1 ? .json(#"{"models":[{"id":"kept","name":"Kept Model"}]}"#) : .json("not json")
+        }
+        defer { endpoint.stop() }
+        let base = try await endpoint.start()
+        let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("picker-parity-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        defer { model.shutdown(); try? FileManager.default.removeItem(at: root) }
+        var profile = ProfileRecord(); profile.id = "saved"; profile.name = "Saved"
+        profile.modelId = "kept"; profile.baseUrl = "https://gateway.invalid"; profile.catalogUrl = base + "/catalog"
+        model.profiles = [profile]
+        _ = await model.listModels(for: profile)
+        try await eventually("the first list") { model.modelCatalog.entry(for: profile).models == ["kept"] }
+        _ = await model.listModels(for: profile, force: true)
+        try await eventually("the failed refresh") { model.modelCatalog.entry(for: profile).error != nil && !model.modelCatalog.entry(for: profile).loading }
+        try await check("catalog-picker-error", canvas: .piSurface, width: CatalogModelPickerView.width,
+                        RefCatalogModelPicker(model: model, profile: profile, current: "kept") { _ in }) {
+            CatalogModelPickerView(model: model, profile: profile, current: "kept") { _ in }
+        }
+    }
 }
