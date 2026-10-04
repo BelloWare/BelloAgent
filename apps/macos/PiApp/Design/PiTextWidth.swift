@@ -46,8 +46,8 @@ import AppKit
     static func figure(_ value: String, medium: Bool = false) -> CGFloat {
         guard !value.isEmpty else { return 0 }
         let weight: NSFont.Weight = medium ? .medium : .regular
-        return remembered(Key(text: value, size: PiFont.captionSize, weight: weight.rawValue, kind: .monospacedDigits)) {
-            let font = NSFont.monospacedDigitSystemFont(ofSize: PiFont.captionSize, weight: weight)
+        return remembered(Key(text: value, size: PiKit.Font.captionSize, weight: weight.rawValue, kind: .monospacedDigits)) {
+            let font = NSFont.monospacedDigitSystemFont(ofSize: PiKit.Font.captionSize, weight: weight)
             return (value as NSString).size(withAttributes: [.font: font]).width.rounded(.up)
         }
     }
