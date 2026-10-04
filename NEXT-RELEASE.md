@@ -34,6 +34,7 @@
 - [ ] **App shell**: the SwiftUI `App` entry point becomes an `NSApplicationDelegate` with window controllers; menus, Settings window, scenes. No file imports SwiftUI; a test fails if one does.
 
 ## Before release
+- [ ] Codex (gpt-6.1-sol, xhigh) double-checks the whole change from e59e41a7 and gives advice; findings acted on, advice reported to the owner (owner, 2026-10-04).
 - [ ] Performance compared with the baseline: no measure worse; chat switch and opening a chat faster.
 - [ ] Full gallery compared with 0.1.119: pixel-identical apart from run-to-run data.
 - [ ] Full gate passes (`scripts/verify-release.sh`).
