@@ -109,11 +109,59 @@ extension PiKit {
             guard !text.isEmpty else { return }
             let line = CTLineCreateWithAttributedString(coreText(color))
             guard CTLineGetTypographicBounds(line, nil, nil, nil) > rect.width + 0.01 else { draw(line, at: rect.origin, scale: scale); return }
+            if truncation == .middle, !Self.hasRightToLeft(line) {
+                // SwiftUI's cut, not Core Text's: drawn as head, "…", tail
+                // (right-to-left text keeps Core Text's cut, which orders it).
+                guard let cut = middleCut(width: rect.width) else { return }
+                var x = rect.minX
+                for piece in [cut.head, "…", cut.tail] where !piece.isEmpty {
+                    var part = self; part.text = piece; part.uppercased = false
+                    part.draw(at: CGPoint(x: x, y: rect.minY), color: color, scale: scale)
+                    x += part.width
+                }
+                return
+            }
             // Too narrow for even the ellipsis: nothing is drawn, rather than
             // the whole line running past its room.
             guard let truncated = CTLineCreateTruncatedLine(line, Double(rect.width), truncation,
                                                             CTLineCreateWithAttributedString(NSAttributedString(string: "…", attributes: coreTextAttributes(color)))) else { return }
             draw(truncated, at: rect.origin, scale: scale)
+        }
+        /// What a line cut in the middle keeps, as SwiftUI's
+        /// `truncationMode(.middle)` keeps it: the head takes as many
+        /// characters as fit in half the room the ellipsis leaves, the tail
+        /// the rest of that room, and neither keeps a space beside the
+        /// ellipsis. Nil when not even the ellipsis fits. Core Text's own cut
+        /// favours the head and keeps one character more or fewer than
+        /// SwiftUI at about half of all widths; this one matches SwiftUI at
+        /// about two in three (`PiKitParityTests.testMiddleTruncation`). The
+        /// rest still differ by a character: SwiftUI's own rule is not public.
+        func middleCut(width: CGFloat) -> (head: String, tail: String)? {
+            let characters = Array(shown)
+            var probe = self; probe.uppercased = false
+            func measure(_ characters: ArraySlice<Character>) -> CGFloat { probe.text = String(characters); return probe.width }
+            let ellipsis = measure(["…"])
+            guard ellipsis <= width + 0.001 else { return nil }
+            let room = width - ellipsis
+            // The most characters, up to `most`, whose width fits `limit`:
+            // widths grow with the count, except where shaping joins
+            // characters, so a few counts past the search are tried too.
+            func fitting(_ most: Int, _ limit: CGFloat, _ slice: (Int) -> ArraySlice<Character>) -> Int {
+                var low = 0, high = most
+                while low < high { let mid = (low + high + 1) / 2; if measure(slice(mid)) <= limit + 0.001 { low = mid } else { high = mid - 1 } }
+                for count in stride(from: min(most, low + 8), to: low, by: -1) where measure(slice(count)) <= limit + 0.001 { return count }
+                return low
+            }
+            var head = fitting(characters.count, room / 2) { characters[0..<$0] }
+            while head > 0, characters[head - 1].isWhitespace { head -= 1 }
+            let left = room - measure(characters[0..<head])
+            var tail = fitting(characters.count - head, left) { characters[(characters.count - $0)...] }
+            while tail > 0, characters[characters.count - tail].isWhitespace { tail -= 1 }
+            return (String(characters[0..<head]), String(characters[(characters.count - tail)...]))
+        }
+        /// Whether any of the line runs right to left.
+        private static func hasRightToLeft(_ line: CTLine) -> Bool {
+            (CTLineGetGlyphRuns(line) as? [CTRun] ?? []).contains { CTRunGetStatus($0).contains(.rightToLeft) }
         }
         private func draw(_ line: CTLine, at origin: CGPoint, scale: CGFloat) {
             guard let context = NSGraphicsContext.current?.cgContext else { return }
@@ -176,13 +224,23 @@ extension PiKit {
             let trim = base.size.width - base.alignmentRect.width
             return CGSize(width: base.size.width - trim, height: base.size.height - trim)
         }
+        /// How far above the image's centre SwiftUI draws the glyph when it
+        /// centres a symbol in a taller frame (an icon button, a checkbox). An
+        /// `NSImage` symbol is rounded up to whole points and its glyph set on
+        /// the pixel grid; SwiftUI centres its own unrounded box and draws the
+        /// glyph at its exact place, between 0.02 and 0.48 points higher (0.29
+        /// on average over 16 symbols at icon-button sizes 20 to 28). A
+        /// quarter point puts every one within a quarter point of SwiftUI's.
+        /// A symbol drawn in its own box (`SymbolView` at `layoutSize`) sits
+        /// where SwiftUI puts it already.
+        static let lift: CGFloat = 0.25
         /// Draws the symbol centred in `rect` as SwiftUI centres it: its
         /// layout box on the pixel grid, the image's leading edge on the box's.
         func draw(centredIn rect: CGRect, color: NSColor, scale: CGFloat = 2) {
             guard let image = image(color) else { return }
             let drawn = image.size, box = layoutSize
             let x = PiKit.roundUpHalf(rect.midX - box.width / 2, scale)
-            let y = rect.midY - drawn.height / 2
+            let y = rect.midY - drawn.height / 2 - (rect.height > drawn.height ? Self.lift : 0)
             image.draw(in: CGRect(x: x, y: y, width: drawn.width, height: drawn.height),
                        from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
         }

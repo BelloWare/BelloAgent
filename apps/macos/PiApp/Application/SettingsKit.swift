@@ -178,7 +178,7 @@ import AppKit
 /// Text reads to VoiceOver as SwiftUI's `Text` did: its words as the static
 /// text's value, with no name of its own, so a control named after the same
 /// words is the only element named so. (`PiKit.TextLine` and `WrappedText`
-/// name themselves; this moves the words over.)
+/// do so themselves now; this moves the words over for `TextBlock`.)
 @MainActor enum StaticTextAccessibility {
     static func asValues(in view: NSView) {
         if view is PiKit.TextLine || view is PiKit.WrappedText || view is TextBlock {
@@ -197,8 +197,10 @@ import AppKit
 /// quieter detail) at least 180 points wide on the left, the control in a
 /// frame up to 380 wide on the right, 16 apart, inside 16 by 10 points,
 /// sharing the width as `HStack` shares it; a hairline under it, 16 in,
-/// unless it is the last. (`PiKit.Row` gives a long label all the room the
-/// control leaves; SwiftUI offered it half.)
+/// unless it is the last. `PiKit.Row` now shares the width the same way;
+/// this one stays for what it adds: controls that size to what they are
+/// offered (`ProposedWidthSizing`), `TextBlock` text and any row in a
+/// `SettingsCard`.
 @MainActor final class SettingsRow: NSView, PiKit.WidthSizing {
     let label: String, detail: String?
     let control: NSView?

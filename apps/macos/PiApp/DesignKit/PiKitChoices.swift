@@ -57,7 +57,7 @@ extension PiKit {
             chevronSymbol.draw(centredIn: CGRect(x: x, y: inner.minY, width: box.width, height: inner.height), color: .piInkTertiary, scale: piScale)
         }
         override func styleFace() {
-            fill.backgroundColor = piCGColor(hoverFill && hovering && isEnabled ? .piFill : .piSurface)
+            fill.backgroundColor = piCGColor(hoverFill && hovering && isEffectivelyEnabled ? .piFill : .piSurface)
             stroke.borderColor = piCGColor(.piHairlineStrong)
         }
     }
@@ -480,14 +480,15 @@ extension PiKit {
         func height(forWidth width: CGFloat) -> CGFloat { PiKit.wrappedHeight(stringValue, font: textFont, width: width) }
     }
 
-    /// Wrapping, selectable-free text as a view: `Text` that takes the lines it needs.
+    /// Wrapping, selectable-free text as a view: `Text` that takes the lines it
+    /// needs; to VoiceOver a static text whose words are its value, as `TextLine`.
     @MainActor final class WrappedText: NSView, WidthSizing {
-        var text: String { didSet { guard oldValue != text else { return }; needsDisplay = true; invalidateIntrinsicContentSize(); setAccessibilityLabel(text); PiKit.sizeChanged(self) } }
+        var text: String { didSet { guard oldValue != text else { return }; needsDisplay = true; invalidateIntrinsicContentSize(); setAccessibilityValue(text); PiKit.sizeChanged(self) } }
         var font: NSFont, color: NSColor
         init(_ text: String, font: NSFont, color: NSColor) {
             self.text = text; self.font = font; self.color = color
             super.init(frame: .zero)
-            setAccessibilityElement(true); setAccessibilityRole(.staticText); setAccessibilityLabel(text)
+            setAccessibilityElement(true); setAccessibilityRole(.staticText); setAccessibilityValue(text)
         }
         required init?(coder: NSCoder) { fatalError("Not used from a nib") }
         override var isFlipped: Bool { true }
@@ -547,7 +548,7 @@ extension PiKit {
         required init?(coder: NSCoder) { fatalError("Not used from a nib") }
         override var intrinsicContentSize: NSSize { faceView.fittingSize }
         override func layout() { super.layout(); faceView.frame = bounds }
-        override func styleFace() { fill.backgroundColor = CGColor.clear; stroke.borderColor = CGColor.clear; faceView.alphaValue = CGFloat(isEnabled ? 1 : disabledOpacity) }
+        override func styleFace() { fill.backgroundColor = CGColor.clear; stroke.borderColor = CGColor.clear; faceView.alphaValue = CGFloat(isEffectivelyEnabled ? 1 : disabledOpacity) }
         override func hitTest(_ point: NSPoint) -> NSView? { frame.contains(point) ? self : nil }
     }
 }

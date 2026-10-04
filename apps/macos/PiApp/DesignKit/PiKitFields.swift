@@ -135,7 +135,7 @@ extension PiKit {
 
         init(placeholder: String, text: String = "", icon: String? = nil, secure: Bool = false, mono: Bool = false,
              onChange: ((String) -> Void)? = nil, onSubmit: (() -> Void)? = nil) {
-            field = secure ? NSSecureTextField(string: text) : NSTextField(string: text)
+            field = secure ? SecureFieldText(string: text) : FieldText(string: text)
             self.icon = icon.map { Symbol($0, size: 11, weight: .medium) }
             self.onChange = onChange; self.onSubmit = onSubmit
             super.init(fill: .piSurface, stroke: .piHairline, cornerRadius: 10,
@@ -164,6 +164,20 @@ extension PiKit {
             if let iconView, let icon { iconView.frame = CGRect(x: padding.left, y: padding.top, width: icon.layoutSize.width, height: height) }
             field.frame = CGRect(x: padding.left + iconWidth - PiKit.fieldInset, y: padding.top, width: max(0, bounds.width - padding.left - padding.right - iconWidth) + PiKit.fieldInset * 2, height: height)
         }
+    }
+
+    /// A field's text, which reads disabled to VoiceOver and leaves the
+    /// key-view loop inside a disabled selectable row, as SwiftUI's did.
+    @MainActor final class FieldText: NSTextField {
+        override func isAccessibilityEnabled() -> Bool { isEnabled && !piInDisabledRow }
+        override var acceptsFirstResponder: Bool { super.acceptsFirstResponder && !piInDisabledRow }
+        override var canBecomeKeyView: Bool { super.canBecomeKeyView && !piInDisabledRow }
+    }
+    /// `FieldText` for a secure field.
+    @MainActor final class SecureFieldText: NSSecureTextField {
+        override func isAccessibilityEnabled() -> Bool { isEnabled && !piInDisabledRow }
+        override var acceptsFirstResponder: Bool { super.acceptsFirstResponder && !piInDisabledRow }
+        override var canBecomeKeyView: Bool { super.canBecomeKeyView && !piInDisabledRow }
     }
 
     /// A symbol as a view, centred in its frame as `Image(systemName:)` is;
@@ -199,7 +213,7 @@ extension PiKit {
 
     /// The rounded numeric field: whole numbers in monospaced digits.
     @MainActor final class NumberField: Box, NSTextFieldDelegate {
-        let field = NSTextField()
+        let field: NSTextField = FieldText()
         var value: Int {
             didSet { if oldValue != value || field.integerValue != value { field.integerValue = value } }
         }
