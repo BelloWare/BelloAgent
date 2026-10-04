@@ -107,6 +107,8 @@ struct ModelSwitchPillContents: Equatable {
     /// What the open connection or effort list shows, so an update that
     /// changes nothing leaves it alone.
     private var listShown: ListContents?
+    /// The open model picker, kept up to date with the chat while it is open.
+    private weak var openPicker: CatalogModelPickerView?
     private struct ListContents: Equatable {
         var ids: [String]
         var titles: [String]
@@ -175,6 +177,7 @@ struct ModelSwitchPillContents: Equatable {
         }
         if now.chatID != reading?.chatID { closePopover() }
         refreshOpenList()
+        refreshOpenPicker()
         guard now != reading else { return }
         reading = now
         apply()
@@ -195,7 +198,10 @@ struct ModelSwitchPillContents: Equatable {
         effort.text = contents.effort; effort.active = reading.effortActive
         effort.compact = form.effortIsCompact
         effort.setAccessibilityLabel("Reasoning effort: \(ModelSwitchPills.level(chat).label)")
-        for pill in [connection, modelPill, effort] { pill.isEnabled = !reading.disabled && inheritedEnabled }
+        let enabled = !reading.disabled && inheritedEnabled
+        for pill in [connection, modelPill, effort] { pill.isEnabled = enabled }
+        // A list opened before the pills went quiet goes with them: nothing in it may be chosen now.
+        if !enabled { closePopover() }
         invalidateIntrinsicContentSize(); needsLayout = true
         PiKit.sizeChanged(self)
     }
@@ -223,7 +229,16 @@ struct ModelSwitchPillContents: Equatable {
     // MARK: Lists
 
     private func closePopover() {
-        popover?.close(); popover = nil; popoverAnchor = nil; listShown = nil
+        popover?.close(); popover = nil; popoverAnchor = nil; listShown = nil; openPicker = nil
+    }
+    /// The open picker follows the chat: its model, its connection's default.
+    private func refreshOpenPicker() {
+        guard let picker = openPicker, let session, let chat = ModelSwitchPills.chat(model, session),
+              let profile = ModelSwitchPills.profile(model, chat) else { return }
+        let override = ModelSwitchPills.override(chat)
+        picker.update(profile: profile, current: override ?? profile.modelId, draft: nil, allowsCatalogSelection: true,
+                      defaultTitle: "Use connection default · \(profile.modelId)", defaultSelected: override == nil,
+                      useDefault: picker.useDefault, manualEntry: picker.manualEntry, choose: picker.choose)
     }
     /// Opens `content` from `anchor`, or closes the list when it is that pill's.
     private func toggle(_ anchor: NSView, _ content: () -> NSViewController) {
@@ -359,6 +374,7 @@ struct ModelSwitchPillContents: Equatable {
                 self?.closePopover()
                 Task { await model.setModel(item.id, for: chatID) }
             }
+            openPicker = picker
             let controller = NSViewController()
             picker.setFrameSize(picker.intrinsicContentSize)
             controller.view = picker

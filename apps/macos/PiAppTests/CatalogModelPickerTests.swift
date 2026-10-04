@@ -127,4 +127,34 @@ final class CatalogModelPickerTests: XCTestCase {
         XCTAssertEqual(popover.contentSize.height, before, accuracy: 1)
         popover.close()
     }
+
+    /// The composer's model picker, open, follows the chat's model, and goes
+    /// when the pills go quiet.
+    @MainActor func testTheComposersOpenPickerFollowsTheChatAndGoesWhenDisabled() async throws {
+        let fixture = try await Fixture(count: 4); defer { fixture.close() }
+        let model = fixture.model
+        let chat = ChatRecord(id: "chat", workspaceID: "project", title: "Chat", path: nil, profileID: fixture.profile.id)
+        model.chats = [chat]
+        let session = SessionDisplay(id: chat.id)
+        model.displays[session.id] = session
+        let pills = ModelSwitchPillsView(model: model, session: session)
+        fixture.window.contentView = pills
+        fixture.window.makeKeyAndOrderFront(nil)
+        pills.frame = fixture.window.contentView?.bounds ?? .zero
+        pills.layoutSubtreeIfNeeded()
+        try await eventually("the catalog") { model.modelCatalog.entry(for: fixture.profile).models.count == 4 }
+        pills.modelPill.performClick(nil)
+        func picker() -> CatalogModelPickerView? {
+            NSApp.windows.lazy.compactMap { $0.contentView?.subviewsOfType(CatalogModelPickerView.self).first ?? ($0.contentView as? CatalogModelPickerView) }.first
+        }
+        try await eventually("the picker opens") { picker()?.window != nil }
+        let open = try XCTUnwrap(picker())
+        func chosen() -> [String] { self.rows(open).filter { !$0.isHidden && $0.isChosen }.compactMap { $0.accessibilityIdentifier() } }
+        XCTAssertTrue(open.defaultSelected, "the connection default is in force")
+        var changed = chat; changed.model = "main2"
+        model.chats = [changed]
+        try await eventually("the open picker follows the chat's model") { open.layoutSubtreeIfNeeded(); return chosen() == ["catalog-choice-main2"] && !open.defaultSelected }
+        pills.inheritedEnabled = false
+        try await eventually("disabled, the list goes") { open.window?.isVisible != true }
+    }
 }

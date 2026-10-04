@@ -244,8 +244,10 @@ import Combine
                 view.update(side: side, width: chats.sideWidth, force: force)
             }
         } else {
+            // No pane: it goes, and its side's view and session with it.
             shownSideKey = nil
             chats.side = nil
+            rightPane = nil
         }
 
         // The chats stay mounted under a page.
