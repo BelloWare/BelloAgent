@@ -117,6 +117,19 @@ struct NativePlainText: NSViewRepresentable {
     }
     required init?(coder: NSCoder) { nil }
 
+    /// Lines set in the box SwiftUI gives a `Text` of this face, rather than
+    /// TextKit's own: a short text drawn natively reads exactly as the
+    /// SwiftUI text it replaces. A long text keeps TextKit's box, as it
+    /// always had.
+    private(set) var swiftUILines = false
+    func update(text next: String, face: TranscriptPlainTextFace, environment: TranscriptRowEnvironment, swiftUILines: Bool) {
+        if swiftUILines != self.swiftUILines { self.swiftUILines = swiftUILines; self.face = nil }
+        update(text: next, face: face, environment: environment)
+    }
+    /// SwiftUI's line box for a font: its whole line, rounded up to a point.
+    static func swiftUILine(_ font: NSFont) -> (height: CGFloat, baseline: CGFloat) {
+        (ceil(font.ascender - font.descender + font.leading), ceil(font.ascender))
+    }
     func update(text next: String, face: TranscriptPlainTextFace, environment: TranscriptRowEnvironment) {
         // Bytes, compared as memory: a long paste is not walked a character
         // at a time on every update of its row.
@@ -134,14 +147,19 @@ struct NativePlainText: NSViewRepresentable {
             let paragraph = NSMutableParagraphStyle()
             paragraph.lineSpacing = face.lineSpacing
             paragraph.lineBreakMode = .byWordWrapping
-            storage.setAttributedString(NSAttributedString(string: next, attributes: [
-                .font: face.nsFont, .foregroundColor: NSColor(TranscriptPalette.text), .paragraphStyle: paragraph
-            ]))
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: face.nsFont, .foregroundColor: TranscriptNSPalette.text, .paragraphStyle: paragraph
+            ]
+            if swiftUILines {
+                let font = face.nsFont, line = Self.swiftUILine(font)
+                paragraph.minimumLineHeight = line.height; paragraph.maximumLineHeight = line.height
+            }
+            storage.setAttributedString(NSAttributedString(string: next, attributes: attributes))
             text = next; self.face = face
             setAccessibilityLabel(face.label)
         }
         self.environment = environment
-        sizes.removeAll(keepingCapacity: true)
+        sizes.removeAll(keepingCapacity: true); exactSizes.removeAll(keepingCapacity: true)
         // New text keeps whatever of the reader's selection still fits it.
         if previousLength > 0 {
             selectedRanges = ranges.map { value in
@@ -152,6 +170,31 @@ struct NativePlainText: NSViewRepresentable {
         needsDisplay = true
     }
 
+    /// Sets the glyphs where SwiftUI draws them in its line box. TextKit puts
+    /// a taller line's extra room above the glyphs; SwiftUI's sit lower —
+    /// by the extra room, to the whole point, in a text of one line, and by
+    /// half of it in a text that wraps. Measured against SwiftUI's own
+    /// drawing (`TranscriptNativeRowParityTests`); only where the glyphs sit
+    /// changes, never the line box, so no height does.
+    private func placeGlyphsAsSwiftUI(_ face: TranscriptPlainTextFace, _ storage: NSTextStorage, _ manager: NSLayoutManager, _ container: NSTextContainer) {
+        let font = face.nsFont, room = Self.swiftUILine(font).height - (font.ascender - font.descender)
+        var lines = 0
+        manager.enumerateLineFragments(forGlyphRange: manager.glyphRange(for: container)) { _, _, _, _, stop in
+            lines += 1; if lines > 1 { stop.pointee = true }
+        }
+        let offset = lines > 1 ? room.rounded() / 2 : room.rounded()
+        guard storage.length > 0, (storage.attribute(.baselineOffset, at: 0, effectiveRange: nil) as? CGFloat) != offset else { return }
+        storage.addAttribute(.baselineOffset, value: offset, range: NSRange(location: 0, length: storage.length))
+        manager.ensureLayout(for: container)
+    }
+    /// The text's height at `width` before it is rounded up to a point.
+    func exactHeight(width: CGFloat) -> CGFloat {
+        guard !text.isEmpty else { return 0 }
+        _ = measure(width: width)
+        return exactSizes.last(where: { $0.width == width })?.height ?? measure(width: width).height
+    }
+    /// What `measure` found at each width before rounding, from the same pass.
+    private var exactSizes: [CGSize] = []
     func measure(width proposed: CGFloat?) -> CGSize {
         if proposed == 0 { return .zero }
         let width = proposed.flatMap { $0.isFinite && $0 > 0 ? $0 : nil } ?? TranscriptMetrics.pageWidth
@@ -164,9 +207,11 @@ struct NativePlainText: NSViewRepresentable {
         container.containerSize = NSSize(width: width, height: CGFloat.greatestFiniteMagnitude)
         manager.ensureLayout(for: container)
         layoutPasses += 1
+        if swiftUILines, let face, let storage = textStorage { placeGlyphsAsSwiftUI(face, storage, manager, container) }
         // The used rect ends at the last line's own box: TextKit puts line
         // spacing between lines, and a trailing line break is a line.
         let height = max(manager.usedRect(for: container).maxY, manager.extraLineFragmentRect.maxY)
+        if exactSizes.count == 4 { exactSizes.removeFirst() }; exactSizes.append(CGSize(width: width, height: height))
         let result = CGSize(width: width, height: max(1, ceil(height)))
         if sizes.count == 4 { sizes.removeFirst() }; sizes.append(result)
         return result

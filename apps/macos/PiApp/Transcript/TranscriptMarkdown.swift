@@ -406,12 +406,14 @@ extension String {
 
 /// The transcript's palette, the same values the stylesheet carried, as
 /// appearance-aware colors.
-enum TranscriptPalette {
-    private static func dynamic(_ light: (UInt32, Double), _ dark: (UInt32, Double)) -> Color {
-        Color(nsColor: NSColor(name: nil) { appearance in
+/// The transcript's colours as AppKit draws them. Each resolves against the
+/// appearance it is drawn in; `TranscriptPalette` is the same set for SwiftUI.
+enum TranscriptNSPalette {
+    private static func dynamic(_ light: (UInt32, Double), _ dark: (UInt32, Double)) -> NSColor {
+        NSColor(name: nil) { appearance in
             let value = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? dark : light
             return NSColor(srgbRed: CGFloat((value.0 >> 16) & 0xff) / 255, green: CGFloat((value.0 >> 8) & 0xff) / 255, blue: CGFloat(value.0 & 0xff) / 255, alpha: value.1)
-        })
+        }
     }
     static let text = dynamic((0x1d1b17, 1), (0xeceae4, 1))
     static let muted = dynamic((0x6e6a61, 1), (0xa9a59b, 1))
@@ -437,4 +439,31 @@ enum TranscriptPalette {
     static let comment = dynamic((0x7a766d, 1), (0x9a968d, 1))
     static let diffAdded = dynamic((0x2f8f4e, 0.12), (0x2f8f4e, 0.18))
     static let diffAddedMark = dynamic((0x2f8f4e, 1), (0x7cc48f, 1))
+}
+
+enum TranscriptPalette {
+    static let text = Color(nsColor: TranscriptNSPalette.text)
+    static let muted = Color(nsColor: TranscriptNSPalette.muted)
+    static let faint = Color(nsColor: TranscriptNSPalette.faint)
+    static let hair = Color(nsColor: TranscriptNSPalette.hair)
+    static let hairStrong = Color(nsColor: TranscriptNSPalette.hairStrong)
+    static let panel = Color(nsColor: TranscriptNSPalette.panel)
+    static let panelStrong = Color(nsColor: TranscriptNSPalette.panelStrong)
+    static let surface = Color(nsColor: TranscriptNSPalette.surface)
+    static let canvas = Color(nsColor: TranscriptNSPalette.canvas)
+    static let accent = Color(nsColor: TranscriptNSPalette.accent)
+    static let accentSoft = Color(nsColor: TranscriptNSPalette.accentSoft)
+    static let userBackground = Color(nsColor: TranscriptNSPalette.userBackground)
+    static let toolBackground = Color(nsColor: TranscriptNSPalette.toolBackground)
+    static let codeBackground = Color(nsColor: TranscriptNSPalette.codeBackground)
+    static let statusBackground = Color(nsColor: TranscriptNSPalette.statusBackground)
+    static let danger = Color(nsColor: TranscriptNSPalette.danger)
+    static let success = Color(nsColor: TranscriptNSPalette.success)
+    static let warning = Color(nsColor: TranscriptNSPalette.warning)
+    static let keyword = Color(nsColor: TranscriptNSPalette.keyword)
+    static let string = Color(nsColor: TranscriptNSPalette.string)
+    static let number = Color(nsColor: TranscriptNSPalette.number)
+    static let comment = Color(nsColor: TranscriptNSPalette.comment)
+    static let diffAdded = Color(nsColor: TranscriptNSPalette.diffAdded)
+    static let diffAddedMark = Color(nsColor: TranscriptNSPalette.diffAddedMark)
 }

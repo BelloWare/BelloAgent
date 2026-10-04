@@ -792,6 +792,13 @@ struct NativeMarkdownSurface: NSViewRepresentable {
     override var intrinsicContentSize: NSSize {
         NSSize(width: NSView.noIntrinsicMetric, height: sizes.last(where: { $0.width == bounds.width })?.height ?? NSView.noIntrinsicMetric)
     }
+    /// Told when this surface's height may have changed by itself, for a
+    /// native row that holds it directly rather than through SwiftUI.
+    var onSizeInvalidated: (() -> Void)?
+    override func invalidateIntrinsicContentSize() {
+        super.invalidateIntrinsicContentSize()
+        onSizeInvalidated?()
+    }
     override func viewDidEndLiveResize() {
         super.viewDidEndLiveResize()
         guard textLength > Self.liveResizeLength else { return }
