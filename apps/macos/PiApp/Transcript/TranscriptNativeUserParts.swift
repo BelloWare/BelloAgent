@@ -287,7 +287,14 @@ import Combine
     /// Who had the keyboard when the pointer came down: a click steps the
     /// version and leaves focus where it was, as a button's click does.
     private weak var responderBeforeClick: NSResponder?
+    /// Whether `point` (in this view) is on the chevron's circle, the shape
+    /// SwiftUI's button took clicks in (`contentShape(Circle())`).
+    private func inCircle(_ point: CGPoint) -> Bool {
+        let dx = point.x - bounds.midX, dy = point.y - bounds.midY, radius = min(bounds.width, bounds.height) / 2
+        return dx * dx + dy * dy <= radius * radius
+    }
     override func hitTest(_ point: NSPoint) -> NSView? {
+        guard let superview, inCircle(convert(point, from: superview)) else { return nil }
         let hit = super.hitTest(point) == nil ? nil : self as NSView?
         if hit === self, let current = window?.firstResponder, current !== self {
             if let editor = current as? NSTextView, editor.isFieldEditor, let field = editor.delegate as? NSResponder {
@@ -305,7 +312,7 @@ import Combine
     }
     override func mouseUp(with event: NSEvent) {
         defer { pressing = false }
-        guard pressing, enabled, bounds.contains(convert(event.locationInWindow, from: nil)) else { return }
+        guard pressing, enabled, inCircle(convert(event.locationInWindow, from: nil)) else { return }
         perform()
     }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }

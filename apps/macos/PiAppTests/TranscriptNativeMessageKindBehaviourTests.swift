@@ -365,4 +365,24 @@ final class TranscriptNativeMessageKindBehaviourTests: XCTestCase {
         let responder = stage.window.firstResponder
         XCTAssertTrue(responder === field || (responder as? NSTextView)?.delegate === field, "the field keeps the keyboard: \(String(describing: responder))")
     }
+
+    /// A chevron takes clicks on its circle only, as SwiftUI's did: its
+    /// transparent corners step nothing.
+    @MainActor func testAChevronCornerTakesNoClick() throws {
+        var stepped = 0
+        var actions = TranscriptActions(); actions.switchVersion = { _, _ in stepped += 1 }
+        let stage = Stage(Self.user(mark: MessageVersionMark(index: 1, count: 2, ids: ["a", "b"])), actions: actions); defer { stage.close() }
+        let later = try XCTUnwrap(stage.views(TranscriptNativeVersionChevron.self).last)
+        func click(_ point: CGPoint) throws {
+            let location = later.convert(point, to: nil)
+            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                stage.window.sendEvent(try XCTUnwrap(NSEvent.mouseEvent(with: type, location: location, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                                                        windowNumber: stage.window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)))
+            }
+        }
+        try click(CGPoint(x: 1, y: 1))
+        XCTAssertEqual(stepped, 0, "a corner is not the chevron")
+        try click(CGPoint(x: later.bounds.midX, y: later.bounds.midY))
+        XCTAssertEqual(stepped, 1)
+    }
 }
