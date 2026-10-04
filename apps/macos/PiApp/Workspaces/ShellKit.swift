@@ -251,6 +251,16 @@ extension NSView {
     if let text = view as? ShellText { return NSLayoutManager().defaultBaselineOffset(for: text.font) }
     if let symbol = view as? PiKit.SymbolView { return shellSymbolBaseline(symbol.symbol, height: height) }
     if let custom = view as? ShellBaselined { return custom.firstBaseline }
+    if let badge = view as? PiKit.Badge, !badge.text.isEmpty {
+        // Its words in the middle of the room inside its 3.5-point insets.
+        let line = PiKit.Line(badge.text, font: PiKit.Font.micro, color: .black)
+        return 3.5 + (height - 7 - line.size(scale: view.piScale).height) / 2 + line.baseline(scale: view.piScale)
+    }
+    if let button = view as? PiKit.Button {
+        // Its title in the middle of the button.
+        let line = PiKit.Line(button.title, font: button.titleFont, color: .black)
+        return (height - line.size(scale: view.piScale).height) / 2 + line.baseline(scale: view.piScale)
+    }
     return height
 }
 /// A view that knows where its first text baseline is.
@@ -589,14 +599,25 @@ extension NSView {
 /// a last word can end up alone where `PiNote` kept two.)
 @MainActor final class ShellNote: NSView, PiKit.WidthSizing {
     var text: String { didSet { guard oldValue != text else { return }; label.text = text; invalidateIntrinsicContentSize(); needsLayout = true; PiKit.sizeChanged(self) } }
-    let tone: PiTone
+    /// Its mark and ink: a status line takes the tone of what it last said.
+    var tone: PiTone {
+        didSet {
+            guard oldValue != tone else { return }
+            icon.symbol = Self.symbol(tone); icon.color = Self.iconColor(tone); label.color = Self.ink(tone)
+            invalidateIntrinsicContentSize(); needsLayout = true
+        }
+    }
     private let icon: PiKit.SymbolView
     private let label: ShellSelectableText
+    private static func symbol(_ tone: PiTone) -> PiKit.Symbol {
+        PiKit.Symbol(tone == .danger ? "exclamationmark.triangle.fill" : tone == .warning ? "exclamationmark.circle" : "info.circle", size: 11)
+    }
+    private static func iconColor(_ tone: PiTone) -> NSColor { tone == .neutral ? .piInkTertiary : tone.nsColor }
+    private static func ink(_ tone: PiTone) -> NSColor { tone == .danger ? tone.nsColor : .piInkSecondary }
     init(_ text: String, tone: PiTone = .neutral) {
         self.text = text; self.tone = tone
-        let name = tone == .danger ? "exclamationmark.triangle.fill" : tone == .warning ? "exclamationmark.circle" : "info.circle"
-        icon = PiKit.SymbolView(PiKit.Symbol(name, size: 11), color: tone == .neutral ? .piInkTertiary : tone.nsColor)
-        label = ShellSelectableText(text, font: PiKit.Font.caption, color: tone == .danger ? tone.nsColor : .piInkSecondary)
+        icon = PiKit.SymbolView(Self.symbol(tone), color: Self.iconColor(tone))
+        label = ShellSelectableText(text, font: PiKit.Font.caption, color: Self.ink(tone))
         super.init(frame: .zero)
         addSubview(icon); addSubview(label)
     }
@@ -692,5 +713,122 @@ extension PiKit.Symbol {
         // On the first line's middle.
         let line = CGRect(x: 0, y: titleY, width: icon.width, height: min(bounds.height, max(lineHeight, icon.height)))
         glyph.drawPlaced(centredIn: CGRect(x: 0, y: line.minY + (lineHeight - line.height) / 2, width: icon.width, height: line.height), color: color, scale: piScale)
+    }
+}
+
+extension PiKit.Button {
+    /// The title's face, as the button draws it (`PiKitButtons.swift`), for
+    /// lining a row up on its baseline. (DesignKit does not expose it yet.)
+    var titleFont: NSFont {
+        let size: CGFloat, weight: NSFont.Weight
+        switch style {
+        case .primary, .secondary: size = compact ? 12 : 13
+        case .ghost, .ghostDanger: size = 12.5
+        case .danger: size = 12
+        }
+        switch style {
+        case .primary, .danger: weight = .semibold
+        case .secondary, .ghost, .ghostDanger: weight = .medium
+        }
+        return .systemFont(ofSize: size, weight: weight)
+    }
+}
+
+extension NSScrollView {
+    /// Gives `document` the clip view's width and the height `height` says
+    /// for it, tiling again when a legacy scroller comes or goes with that
+    /// height, until the width agrees. `fill`: at least the visible height.
+    /// The width it settled on.
+    @discardableResult
+    func shellFit(_ document: NSView, fill: Bool = false, height: (CGFloat) -> CGFloat) -> CGFloat {
+        var width: CGFloat = 0
+        for _ in 0..<3 {
+            tile()
+            width = contentSize.width
+            let measured = height(width)
+            let size = CGSize(width: width, height: fill ? max(measured, contentSize.height) : measured)
+            if document.frame.size != size { document.frame = CGRect(origin: .zero, size: size) }
+            tile()
+            if contentSize.width == width { break }
+        }
+        return width
+    }
+}
+
+/// Lays a scroll view's owner out again when its clip view changes width
+/// on its own (the scroller style changed, a legacy scroller came or went),
+/// so the document follows the clip.
+@MainActor final class ShellClipWatcher {
+    nonisolated(unsafe) private var tokens: [NSObjectProtocol] = []
+    init(_ scroll: NSScrollView, owner: NSView) {
+        scroll.contentView.postsFrameChangedNotifications = true
+        let changed: @MainActor () -> Void = { [weak scroll, weak owner] in
+            guard let scroll, let owner, let document = scroll.documentView, document.frame.width != scroll.contentSize.width else { return }
+            owner.needsLayout = true
+        }
+        tokens.append(NotificationCenter.default.addObserver(forName: NSView.frameDidChangeNotification, object: scroll.contentView, queue: .main) { _ in
+            MainActor.assumeIsolated { changed() }
+        })
+        tokens.append(NotificationCenter.default.addObserver(forName: NSScroller.preferredScrollerStyleDidChangeNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { changed() }
+        })
+    }
+    deinit { for token in tokens { NotificationCenter.default.removeObserver(token) } }
+}
+
+/// A height that eases from where it was to where it is going over a fixed
+/// time, as SwiftUI animates a stack's frame: read each layout pass, with a
+/// tick on each frame whose rounded value moved, so the containers around
+/// lay out with it. The curve is Core Animation's ease-in-ease-out, so
+/// layer animations started alongside stay in step.
+@MainActor final class ShellEasing {
+    let duration: CFTimeInterval
+    /// A step moved the value: lay out again.
+    var tick: (() -> Void)?
+    private var from: CGFloat = 0
+    private var start: CFTimeInterval = 0
+    private var timer: Timer?
+    private var lastTarget: CGFloat = 0
+    private var lastShown: CGFloat?
+    var active: Bool { timer != nil }
+    init(duration: CFTimeInterval) { self.duration = duration }
+    deinit { MainActor.assumeIsolated { timer?.invalidate() } }
+
+    /// From `from` towards `target`; nothing to do when they are the same.
+    func begin(from: CGFloat, target: CGFloat) {
+        guard abs(from - target) >= 0.5 else { return }
+        self.from = from; lastTarget = target; start = CACurrentMediaTime(); lastShown = nil
+        timer?.invalidate()
+        let timer = Timer(timeInterval: 1.0 / 120, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.step() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
+    }
+    func stop() { timer?.invalidate(); timer = nil }
+    private func step() {
+        if CACurrentMediaTime() - start >= duration { stop(); tick?(); return }
+        let shown = (value(target: lastTarget) * 2).rounded() / 2
+        if shown != lastShown { lastShown = shown; tick?() }
+    }
+    /// The value now, on the way to `target`.
+    func value(target: CGFloat) -> CGFloat {
+        lastTarget = target
+        guard active else { return target }
+        let progress = min(1, max(0, (CACurrentMediaTime() - start) / duration))
+        return from + (target - from) * CGFloat(Self.easeInEaseOut(progress))
+    }
+    /// `CAMediaTimingFunction(name: .easeInEaseOut)`: the cubic Bézier through
+    /// (0.42, 0) and (0.58, 1), solved for its x.
+    nonisolated static func easeInEaseOut(_ x: Double) -> Double {
+        func bezier(_ t: Double, _ a: Double, _ b: Double) -> Double { 3 * a * t * (1 - t) * (1 - t) + 3 * b * t * t * (1 - t) + t * t * t }
+        var t = x
+        for _ in 0..<8 {
+            let current = bezier(t, 0.42, 0.58) - x
+            let derivative = 3 * 0.42 * (1 - t) * (1 - t) + 6 * (0.58 - 0.42) * t * (1 - t) + 3 * (1 - 0.58) * t * t
+            guard abs(derivative) > 1e-6 else { break }
+            t = min(1, max(0, t - current / derivative))
+        }
+        return bezier(t, 0, 1)
     }
 }

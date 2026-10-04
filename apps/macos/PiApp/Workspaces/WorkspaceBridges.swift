@@ -191,6 +191,45 @@ struct CatalogModelPicker: View {
     }
 }
 
+/// The Projects sheet, now AppKit, where SwiftUI presents it (`piSheetWindow`).
+struct WorkspaceManagerView: View {
+    let model: WorkspaceModel
+    @PiDismiss private var dismiss
+    var body: some View {
+        let dismiss = dismiss
+        AppKitSheet { WorkspaceManagerSheetView(model: model, dismiss: { dismiss() }) }
+            .frame(width: WorkspaceManagerSheetView.size.width, height: WorkspaceManagerSheetView.size.height)
+    }
+}
+
+/// A project's folders where SwiftUI still hosts them (Settings and onboarding,
+/// Application/SettingsBridge.swift): the AppKit list, as tall as it is.
+struct WorkspaceFolderList: View {
+    let model: WorkspaceModel
+    let workspace: WorkspaceRecord
+    var onError: (String) -> Void = { _ in }
+    /// Another project is another list (`.id`), bound to that project.
+    var body: some View { Host(model: model, workspaceID: workspace.id, onError: onError).id(workspace.id) }
+    private struct Host: NSViewRepresentable {
+        let model: WorkspaceModel
+        let workspaceID: String
+        let onError: (String) -> Void
+        func makeNSView(context: Context) -> WorkspaceFolderListView {
+            let view = WorkspaceFolderListView(model: model, workspaceID: workspaceID, onError: onError)
+            view.inheritedEnabled = context.environment.isEnabled
+            return view
+        }
+        func updateNSView(_ view: WorkspaceFolderListView, context: Context) {
+            view.onError = onError
+            view.inheritedEnabled = context.environment.isEnabled
+        }
+        func sizeThatFits(_ proposal: ProposedViewSize, nsView: WorkspaceFolderListView, context: Context) -> CGSize? {
+            let width = proposal.width ?? 480
+            return CGSize(width: width, height: nsView.height(forWidth: width))
+        }
+    }
+}
+
 // TEMPORARY: the limit editor is the Dashboard workstream's SwiftUI
 // `CostLimitLiveEditor`, shown in the shared SwiftUI popover presenter. It
 // moves back beside the cost-limit model code once the editor is AppKit.

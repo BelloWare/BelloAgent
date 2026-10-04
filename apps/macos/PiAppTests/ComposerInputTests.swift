@@ -331,11 +331,8 @@ extension ConversationPaneTests {
         try await waitFor("The pill never took the new model") { pill()?.text == "another-model" }
         XCTAssertTrue(pill() === shown, "The pill changed its label in place")
     }
-    func testProjectsSheetCrossesItsPanesInOneStack() throws {
-        let panes = try Self.excerpt(Self.appSource("Workspaces/WorkspaceManagerView.swift"), from: "list.frame(width: 250)", to: "NewWorkspaceDraft.editing")
-        XCTAssertTrue(panes.contains("ZStack {"))
-        XCTAssertFalse(panes.contains("Group {"), "A Group gives each pane its own frame: the leaving and arriving panes stand side by side")
-    }
+    // The Projects sheet's panes crossing in one place is now checked on the
+    // AppKit sheet itself: WorkspaceManagerSheetTests.testTheProjectsSheetCrossesItsPanesInOnePlace.
 }
 
 // MARK: - Escape on the edit banners

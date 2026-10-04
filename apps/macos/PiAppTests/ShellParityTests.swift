@@ -292,4 +292,28 @@ import XCTest
             CatalogModelPickerView(model: model, profile: profile, current: "kept") { _ in }
         }
     }
+
+    /// The Projects sheet: a project's detail with an extra folder and chats,
+    /// and, with no projects, the new-project form beside the empty list.
+    func testProjectsSheet() async throws {
+        let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("projects-parity-" + UUID().uuidString)
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        defer { model.shutdown(); try? FileManager.default.removeItem(at: root) }
+        var first = WorkspaceRecord(id: "p", path: "/tmp/bello-agent", trusted: true)
+        first.paths = ["/tmp/shared-libraries"]
+        model.workspaces = [first, WorkspaceRecord(id: "q", path: "/tmp/design-reference", trusted: false)]
+        model.chats = [ChatRecord(id: "c", workspaceID: "p", title: "Retry budget", path: nil, profileID: "none")]
+        model.selectedWorkspaceID = "p"
+        let size = WorkspaceManagerSheetView.size
+        try await check("sheet-projects", canvas: .piWindow, width: size.width,
+                        RefWorkspaceManagerView(model: model).frame(width: size.width, height: size.height)) {
+            WorkspaceManagerSheetView(model: model, dismiss: {})
+        }
+        let empty = WorkspaceModel(stateRoot: root.appendingPathComponent("empty"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        defer { empty.shutdown() }
+        try await check("sheet-projects-new", canvas: .piWindow, width: size.width,
+                        RefWorkspaceManagerView(model: empty).frame(width: size.width, height: size.height)) {
+            WorkspaceManagerSheetView(model: empty, dismiss: {})
+        }
+    }
 }
