@@ -631,3 +631,53 @@ extension PiKit.Symbol {
 
 /// A view showing one line that, cut short, is only as wide as what it shows.
 @MainActor protocol ShellCutting: AnyObject { func cutWidth(_ width: CGFloat) -> CGFloat }
+
+/// `Label(title, systemImage:)` in one font and color: the symbol at the
+/// font's size before the words, centred on the first line; the words wrap
+/// as `Text` wraps them when the label is given less than it asks for.
+@MainActor final class ShellLabel: NSView, ShellBaselined, PiKit.WidthSizing {
+    /// What SwiftUI puts between a label's icon image (its whole width, not
+    /// its alignment width) and its title.
+    static let spacing: CGFloat = 7.5
+    var text: String { didSet { if oldValue != text { title.set(text, color: color); changed() } } }
+    var symbol: String { didSet { if oldValue != symbol { changed() } } }
+    var color: NSColor { didSet { title.set(text, color: color); needsDisplay = true } }
+    let font: NSFont
+    private let title: ShellText
+    init(_ text: String, symbol: String, font: NSFont, color: NSColor) {
+        self.text = text; self.symbol = symbol; self.font = font; self.color = color
+        title = ShellText(text, font: font, color: color)
+        super.init(frame: .zero)
+        title.setAccessibilityElement(false)
+        addSubview(title)
+        setAccessibilityElement(true); setAccessibilityRole(.staticText); setAccessibilityLabel(text)
+    }
+    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    override var isFlipped: Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    private func changed() { setAccessibilityLabel(text); invalidateIntrinsicContentSize(); needsDisplay = true; needsLayout = true; PiKit.sizeChanged(self) }
+    private var glyph: PiKit.Symbol { PiKit.Symbol(symbol, size: font.pointSize, weight: font.fontDescriptor.symbolicTraits.contains(.bold) ? .bold : .regular) }
+    private var lineHeight: CGFloat { PiKit.Line("Ag", font: font, color: .black).lineHeight }
+    private var textX: CGFloat { glyph.imageSize.width + Self.spacing }
+    var naturalWidth: CGFloat { textX + title.naturalWidth }
+    func height(forWidth width: CGFloat) -> CGFloat {
+        max(glyph.layoutSize.height, title.height(forWidth: max(0, width - textX)))
+    }
+    override var intrinsicContentSize: NSSize { NSSize(width: naturalWidth, height: height(forWidth: naturalWidth)) }
+    var firstBaseline: CGFloat { titleY + NSLayoutManager().defaultBaselineOffset(for: font) }
+    private var titleY: CGFloat {
+        let lines = title.height(forWidth: max(0, bounds.width - textX))
+        return lines >= bounds.height ? 0 : PiKit.round((bounds.height - lines) / 2, piScale)
+    }
+    override func layout() {
+        super.layout()
+        let width = max(0, bounds.width - textX)
+        title.frame = CGRect(x: textX, y: titleY, width: width, height: title.height(forWidth: width))
+    }
+    override func draw(_ dirtyRect: NSRect) {
+        let icon = glyph.layoutSize
+        // On the first line's middle.
+        let line = CGRect(x: 0, y: titleY, width: icon.width, height: min(bounds.height, max(lineHeight, icon.height)))
+        glyph.drawPlaced(centredIn: CGRect(x: 0, y: line.minY + (lineHeight - line.height) / 2, width: icon.width, height: line.height), color: color, scale: piScale)
+    }
+}

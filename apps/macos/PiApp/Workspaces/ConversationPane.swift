@@ -36,7 +36,7 @@ struct SideActions {
     let transcript = ShellHostingView(rootView: AnyView(EmptyView()))
     private let starter = StarterPanelView()
     private let cover = LoadingCoverView()
-    private var queue: ShellHostingView?
+    private var queue: QueuePanelView?
     private var terminal: ShellHostingView?
     private var terminalWorkspace: WorkspaceRecord?
     private let missingFolder = MissingFolderBar()
@@ -254,12 +254,11 @@ struct SideActions {
         updateCover(state, before: before)
         // Below it: the queue, the terminal, the folder bar, the footer and the figures.
         if state.showsQueue, queue == nil {
-            let host = ShellHostingView(root: queueRoot(session))
+            let host = QueuePanelView(model: model, session: session)
+            host.room = queueRoom; host.inheritedEnabled = inheritedEnabled
             host.sizeChanged = { [weak self] in self?.needsLayout = true }
             addSubview(host, positioned: .below, relativeTo: composer)
-            // Laid out once at the pane's width now, so its height is known
-            // before the pane lays out: the layout lands in one step.
-            host.frame = CGRect(x: 0, y: bounds.height, width: bounds.width, height: max(1, host.intrinsicContentSize.height))
+            host.frame = CGRect(x: 0, y: bounds.height, width: bounds.width, height: host.height(forWidth: bounds.width))
             host.layoutSubtreeIfNeeded()
             queue = host
             arrive(host, before: before)
@@ -292,7 +291,7 @@ struct SideActions {
             terminal = nil; terminalWorkspace = nil
             leave(host)
         }
-        if before?.enabled != state.enabled, let queue { queue.setRoot(queueRoot(session)) }
+        queue?.inheritedEnabled = state.enabled
         // The window's disabled state over whatever the updates above enabled.
         if !state.enabled { for view in [sideHeader, recovered, footer, missingFolder, starter, cover] as [NSView] { enable(view, false) } }
         missingFolder.isHidden = state.missingFolder == nil
@@ -318,12 +317,6 @@ struct SideActions {
         needsLayout = true
     }
 
-    private func queueRoot(_ session: SessionDisplay) -> AnyView {
-        AnyView(QueuePanel(model: model, session: session, room: queueRoom)
-            .padding(.horizontal, PiSpacing.lg).padding(.bottom, PiSpacing.sm)
-            .disabled(!inheritedEnabled)
-            .piShellBridged())
-    }
 
     // MARK: The loading cover
 
@@ -461,19 +454,14 @@ struct SideActions {
                                    terminal: terminal != nil ? TerminalPanel.minimumHeight + TerminalPanel.chromeHeight : 0)
         if room != queueRoom {
             queueRoom = room
-            if let queue, let session {
-                DispatchQueue.main.async { [weak self, weak queue] in
-                    guard let self, let queue, self.queue === queue, self.session === session else { return }
-                    queue.setRoot(self.queueRoot(session))
-                }
-            }
+            queue?.room = room
         }
         // Bottom up: the terminal on the folder bar (or the composer), the
         // queue on the terminal. The queue's height is its own; the terminal
         // and the transcript share what is left, as a stack shares it between
         // two flexible views: the terminal, the less flexible, is offered half
         // and takes it within its own bounds; the transcript takes the rest.
-        let queueHeight = queue.map { hostHeight($0, width: width) } ?? 0
+        let queueHeight = queue.map { $0.height(forWidth: width) } ?? 0
         var terminalHeight: CGFloat = 0
         if let terminal {
             let remaining = max(0, bottom - queueHeight - top)

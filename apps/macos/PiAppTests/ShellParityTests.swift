@@ -96,4 +96,44 @@ import XCTest
             return banner
         }
     }
+
+    /// The queue panel over the composer, in the states a reader meets it:
+    /// a run with steering and follow-ups, paused and folded, a message in
+    /// the composer, and one held by an edit a restart left.
+    func testQueuePanel() async throws {
+        let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("queue-parity-" + UUID().uuidString)
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        defer { model.shutdown(); try? FileManager.default.removeItem(at: root) }
+        func session(_ name: String, _ configure: (SessionDisplay) -> Void) -> SessionDisplay {
+            let session = SessionDisplay(id: "queue-" + name)
+            session.queue = [["turnId": .string("s"), "kind": .string("steering"), "text": .string("[Steering] Look at the failing test first")],
+                             ["turnId": .string("a"), "kind": .string("follow-up"), "text": .string("Then summarise what changed in the release notes")],
+                             ["turnId": .string("b"), "kind": .string("follow-up"), "text": .string("Run the gallery again")],
+                             ["turnId": .string("c"), "kind": .string("follow-up"), "text": .string("")]]
+            configure(session)
+            return session
+        }
+        let scenes: [(String, SessionDisplay)] = [
+            ("running", session("running") { $0.state = "running" }),
+            ("paused-folded", session("folded") { $0.state = "paused"; $0.queuePaused = true; $0.queueCollapsed = true }),
+            ("editing", session("editing") { $0.state = "running"; $0.queueEditingID = "a"; $0.adoptQueueEditHold(QueueEditHold(["editId": .string("e"), "turnId": .string("a")]), revision: 1) }),
+            ("held", session("held") { $0.state = "idle"; $0.adoptQueueEditHold(QueueEditHold(["editId": .string("e"), "turnId": .string("b")]), revision: 1) }),
+        ]
+        // The detail of one message, its choices with a long model name.
+        let detail = session("detail") {
+            $0.queue[1]["model"] = .string("a-very-long-provider-prefix/with-a-model-name-that-goes-on-and-on-2026-09")
+            $0.queue[1]["thinkingLevel"] = .string("high"); $0.queue[1]["contextWindow"] = .number(200_000)
+        }
+        try await check("queue-detail", canvas: .piSurface, width: QueuedMessageDetailView.width, RefQueuedMessageDetail(model: model, session: detail, turnID: "a")
+                                .fixedSize(horizontal: false, vertical: true)) {
+            // At its ideal height, as its popover sizes it (a probe of the
+            // SwiftUI popover measured the same).
+            QueuedMessageDetailView(model: model, session: detail, turnID: "a")
+        }
+        for (name, session) in scenes {
+            try await check("queue-\(name)", width: 640, RefQueuePanel(model: model, session: session).padding(.horizontal, PiSpacing.lg).padding(.bottom, PiSpacing.sm)) {
+                QueuePanelView(model: model, session: session)
+            }
+        }
+    }
 }

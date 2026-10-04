@@ -156,9 +156,6 @@ final class SidebarRowDragTests: XCTestCase {
 }
 
 
-/// A drag in flight, as the sidebar sees one. AppKit's own session cannot run
-/// in a test process, so the hosted sidebar is asked what it would do with the
-/// very pasteboard item a dragged row writes.
 /// A drop target, written out.
 private struct DropTargetCase {
     let projectID: String
@@ -166,7 +163,10 @@ private struct DropTargetCase {
     @MainActor var target: SidebarListDocument.DropTarget { .group(projectID: projectID, topicID: topicID) }
 }
 
-@MainActor private final class DragInFlight: NSObject, NSDraggingInfo {
+/// A drag in flight, as a drop target sees one. AppKit's own session cannot
+/// run in a test process, so the target is asked what it would do with the
+/// very pasteboard item a dragged row writes.
+@MainActor final class DragInFlight: NSObject, NSDraggingInfo {
     let draggingPasteboard = NSPasteboard(name: .drag)
     var draggingLocation: NSPoint = .zero
     init(_ item: NSPasteboardItem) {
@@ -176,7 +176,9 @@ private struct DropTargetCase {
     nonisolated var draggedImage: NSImage? { nil }
     var draggingSourceOperationMask: NSDragOperation { [.move, .copy, .generic] }
     var draggedImageLocation: NSPoint { draggingLocation }
-    var draggingSource: Any? { nil }
+    /// Where the drag began, for a target that only takes its own drags.
+    var source: AnyObject?
+    var draggingSource: Any? { source }
     var draggingSequenceNumber: Int { 1 }
     func slideDraggedImage(to screenPoint: NSPoint) { }
     var draggingFormation: NSDraggingFormation = .default
