@@ -267,14 +267,33 @@ final class TranscriptNativeWorkBehaviourTests: XCTestCase {
         }
     }
 
-    /// VoiceOver hears a read's line numbers and a diff's signs.
-    @MainActor func testLineMarksAreSpoken() throws {
-        let card = ActionRowView.Card.read(text: "alpha\nbeta", firstLine: 41, path: nil, failed: false)
+    /// A read's line numbers are text VoiceOver reads and the reader can
+    /// select, as SwiftUI's were; so is a file's path without a link.
+    @MainActor func testLineNumbersAndPathsAreText() throws {
+        let card = ActionRowView.Card.read(text: "alpha\nbeta", firstLine: 41, path: "Sources/App.swift", failed: false)
         let view = TranscriptNativeCard.make(card)
         view.update(card, link: nil, environment: TranscriptRowEnvironment())
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 600, height: 300), styleMask: [.borderless], backing: .buffered, defer: false)
+        defer { window.contentView = nil }
+        window.contentView = TranscriptNativeRowParityTests.ParityCanvas(frame: CGRect(x: 0, y: 0, width: 600, height: 300))
+        window.contentView?.addSubview(view)
         view.frame = CGRect(x: 0, y: 0, width: 600, height: view.height(width: 600)); view.layoutSubtreeIfNeeded()
+        let texts = views(TranscriptPlainTextView.self, in: view).filter { $0.isSelectable }.map(\.string)
+        XCTAssertTrue(texts.contains("41") && texts.contains("42"), "texts: \(texts)")
         let spoken = views(TranscriptLabel.self, in: view).filter { $0.isAccessibilityElement() }.compactMap { $0.accessibilityLabel() }
-        XCTAssertTrue(spoken.contains("41") && spoken.contains("42"), "spoken: \(spoken)")
+        XCTAssertTrue(spoken.contains("Sources/App.swift"), "spoken: \(spoken)")
+    }
+
+    /// A card out of any window builds none of its lines, however it is updated.
+    @MainActor func testADetachedCardBuildsNoLines() throws {
+        let card = ActionRowView.Card.read(text: (1...100).map { "line \($0)" }.joined(separator: "\n"), firstLine: 1, path: nil, failed: false)
+        let view = try XCTUnwrap(TranscriptNativeCard.make(card) as? TranscriptNativeReadCard)
+        view.update(card, link: nil, environment: TranscriptRowEnvironment())
+        view.setExpanded(true)
+        view.frame = CGRect(x: 0, y: 0, width: 600, height: view.height(width: 600)); view.layoutSubtreeIfNeeded()
+        let lines = try XCTUnwrap(views(TranscriptCardLines.self, in: view).first { $0.lines.count == 100 })
+        lines.mountVisibleRows()
+        XCTAssertEqual(lines.builtCount, 0)
     }
 
     /// A line the reader is selecting in an expanded diff stays built while

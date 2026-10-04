@@ -138,6 +138,8 @@ enum TranscriptCardFaces {
     init() { label.font = TranscriptCardFaces.pathFont; label.truncation = .middle }
     func update(path: String, color: NSColor, open: (() -> Void)?, enabled: Bool, in host: NSView) {
         label.text = path; label.color = color
+        // Without a link the path is words VoiceOver reads; with one, its trigger.
+        label.speak(open == nil && !path.isEmpty ? path : nil)
         if let open {
             let trigger = self.trigger ?? {
                 let trigger = PiPopoverTriggerButton(frame: .zero)
@@ -364,12 +366,12 @@ enum TranscriptCardFaces {
     private var heights: [(width: CGFloat, rows: [CGFloat])] = []
     @MainActor private final class Row {
         let background: TranscriptPanel?
-        let mark = TranscriptLabel()
-        /// A number wider than its gutter, wrapped in it as SwiftUI wraps it.
-        var wrappedMark: TranscriptPlainTextView?
+        /// The sign or the number: selectable text, as SwiftUI's `Text` in a
+        /// selectable stack was, which a number wider than its gutter wraps in.
+        let mark = TranscriptPlainTextView()
         let text = TranscriptPlainTextView()
         init(background: TranscriptPanel?) { self.background = background }
-        var views: [NSView] { [background, mark, wrappedMark, text].compactMap { $0 } }
+        var views: [NSView] { [background, mark, text].compactMap { $0 } }
     }
     private var built: [Int: Row] = [:]
     /// Lays out every row, rather than the ones in view.
@@ -395,33 +397,16 @@ enum TranscriptCardFaces {
         }
         needsLayout = true
     }
-    /// Whether a mark is wider than its gutter, and so wraps in it.
-    private func wraps(_ mark: String) -> Bool {
-        style == .numbered && Self.markWidth(mark, font: markFont) > markWidth
-    }
-    private static func markWidth(_ mark: String, font: NSFont) -> CGFloat {
-        // A monospaced face's figures are already as wide as each other.
-        ceil((mark as NSString).size(withAttributes: [.font: font]).width * 2) / 2
-    }
+    private var markFace: TranscriptPlainTextFace { style == .diff ? TranscriptCardFaces.code : TranscriptCardFaces.number }
     private func configure(_ row: Row, _ line: Line) {
         row.background?.fill = line.background
-        row.mark.text = line.mark; row.mark.color = line.markColor
-        if wraps(line.mark) {
-            let wrapped = row.wrappedMark ?? { let view = TranscriptPlainTextView(); addSubview(view); row.wrappedMark = view; return view }()
-            wrapped.update(text: line.mark, face: TranscriptCardFaces.number, environment: environment, swiftUILines: true, color: line.markColor)
-            row.mark.isHidden = true
-        } else {
-            row.wrappedMark?.removeFromSuperview(); row.wrappedMark = nil
-            row.mark.isHidden = false
-        }
-        // VoiceOver hears a row's sign or its line number, as it heard the Text.
-        row.mark.speak(line.mark.trimmingCharacters(in: .whitespaces).isEmpty || row.mark.isHidden ? nil : line.mark)
+        row.mark.update(text: line.mark, face: markFace, environment: environment, swiftUILines: true, color: line.markColor)
         row.text.update(text: line.text.isEmpty ? " " : line.text, face: TranscriptCardFaces.code, environment: environment,
                         swiftUILines: true, color: TranscriptNSPalette.text)
     }
     private func holdsSelection(_ index: Int) -> Bool {
         guard let row = built[index] else { return false }
-        return [row.text, row.wrappedMark].compactMap { $0 }.contains { $0.selectedRange().length > 0 || window?.firstResponder === $0 }
+        return [row.text, row.mark].contains { $0.selectedRange().length > 0 || window?.firstResponder === $0 }
     }
     private func remove(_ index: Int) {
         guard let row = built.removeValue(forKey: index) else { return }
@@ -436,9 +421,10 @@ enum TranscriptCardFaces {
         let measurer = Self.measurer
         let rows = lines.map { line -> CGFloat in
             var mark = markHeight
-            if wraps(line.mark) {
-                measurer.update(text: line.mark, face: TranscriptCardFaces.number, environment: environment, swiftUILines: true)
-                mark = measurer.exactHeight(width: markWidth)
+            if style == .numbered {
+                // A number wider than its gutter wraps there.
+                measurer.update(text: line.mark, face: markFace, environment: environment, swiftUILines: true)
+                mark = max(mark, measurer.exactHeight(width: markWidth))
             }
             measurer.update(text: line.text.isEmpty ? " " : line.text, face: TranscriptCardFaces.code, environment: environment, swiftUILines: true)
             return max(mark, measurer.exactHeight(width: textWidth))
@@ -472,8 +458,10 @@ enum TranscriptCardFaces {
     func mountVisibleRows() {
         guard bounds.width > 0 else { return }
         let rows = rowHeights(width: bounds.width)
-        // Read through no scroll view, every row is in view.
-        let visible = buildsAll || observedClip == nil ? bounds : visibleRect.insetBy(dx: 0, dy: -200)
+        // Read through no scroll view, every row is in view; out of any
+        // window, none is.
+        let visible = buildsAll || (window != nil && observedClip == nil) ? bounds
+            : window == nil ? CGRect.null : visibleRect.insetBy(dx: 0, dy: -200)
         let rtl = environment.layoutDirection == .rightToLeft
         let textWidth = max(1, bounds.width - 32 - markWidth - gap)
         var y: CGFloat = 0
@@ -481,27 +469,22 @@ enum TranscriptCardFaces {
             defer { y += height }
             let frame = CGRect(x: 0, y: y, width: bounds.width, height: height)
             // A row out of view goes, unless the reader is selecting in it.
-            guard frame.intersects(visible) || holdsSelection(index) else { remove(index); continue }
+            guard (!visible.isNull && frame.intersects(visible)) || holdsSelection(index) else { remove(index); continue }
             let row = built[index] ?? {
                 let made = Row(background: style == .diff ? { let panel = TranscriptPanel(); panel.cornerRadius = 0; return panel }() : nil)
-                made.mark.font = markFont; made.mark.monospacedDigits = style == .numbered
                 for view in made.views { addSubview(view) }
                 configure(made, lines[index])
                 built[index] = made
                 return made
             }()
             row.background?.frame = pixelAligned(frame)
-            let markSize = row.mark.intrinsicSize
-            // A number ends at the right of its gutter, by its own width; a
-            // diff's mark stands at the left.
-            let markX: CGFloat = style == .numbered ? 16 + markWidth - row.mark.exactWidth : 16
-            row.mark.frame = TranscriptMotion.mirrored(CGRect(x: markX, y: y, width: markSize.width, height: markSize.height), of: row.mark, width: bounds.width, rtl)
-            if let wrapped = row.wrappedMark {
-                // Its lines as wide as its widest, at the right of the gutter.
-                let used = wrapped.usedWidth(width: markWidth)
-                wrapped.frame = TranscriptMotion.mirrored(CGRect(x: 16 + markWidth - used, y: y, width: used, height: ceil(wrapped.exactHeight(width: used))),
-                                                          width: bounds.width, rtl)
-            }
+            // A number ends at the right of its gutter, its lines as wide as
+            // its widest; a diff's sign stands at the left.
+            let used = row.mark.usedWidth(width: markWidth)
+            let markX: CGFloat = style == .numbered ? 16 + markWidth - used : 16
+            row.mark.frame = TranscriptMotion.mirrored(CGRect(x: markX, y: y, width: style == .numbered ? used : markWidth,
+                                                              height: ceil(row.mark.exactHeight(width: style == .numbered ? used : markWidth))),
+                                                       width: bounds.width, rtl)
             row.text.frame = TranscriptMotion.mirrored(CGRect(x: 16 + markWidth + gap, y: y, width: textWidth, height: ceil(height)), width: bounds.width, rtl)
         }
     }
