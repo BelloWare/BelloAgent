@@ -244,6 +244,64 @@ final class TranscriptNativeWorkBehaviourTests: XCTestCase {
         XCTAssertEqual(stage.row.height(width: 600), before)
     }
 
+    /// A diff too large to draw opens its full content under its
+    /// disclosure, and the card grows by it and says so.
+    @MainActor func testOpeningTheFullContentMakesTheCardTaller() throws {
+        let request = TranscriptActivity.EditRequest(before: "old one\nold two", after: "new one\nnew two\nnew three", mode: "edit", rows: [],
+                                                     hiddenRows: 0, complete: true, tooLarge: true, lines: 9_000)
+        let card = ActionRowView.Card.diff(request, path: "Big.json", outcome: .done, added: 3, removed: 2)
+        let view = TranscriptNativeCard.make(card)
+        view.update(card, link: nil, environment: TranscriptRowEnvironment())
+        let closed = view.height(width: 600)
+        view.frame = CGRect(x: 0, y: 0, width: 600, height: closed); view.layoutSubtreeIfNeeded()
+        let button = try XCTUnwrap(views(NSButton.self, in: view).first { $0.bezelStyle == .disclosure })
+        button.performClick(nil)
+        let open = view.height(width: 600)
+        XCTAssertGreaterThan(open, closed + 2 * 15 + 4 + 14, "Before and After are counted in the card's height")
+        view.frame = CGRect(x: 0, y: 0, width: 600, height: open); view.layoutSubtreeIfNeeded()
+        let footer = try XCTUnwrap(views(TranscriptLabel.self, in: view).first { $0.text == "└ " })
+        let sources = views(TranscriptCappedText.self, in: view).filter { !$0.isHiddenOrHasHiddenAncestor }
+        XCTAssertEqual(sources.count, 2)
+        for source in sources {
+            XCTAssertLessThanOrEqual(source.convert(source.bounds, to: view).maxY, footer.convert(footer.bounds, to: view).minY, "nothing is drawn over the foot")
+        }
+    }
+
+    /// VoiceOver hears a read's line numbers and a diff's signs.
+    @MainActor func testLineMarksAreSpoken() throws {
+        let card = ActionRowView.Card.read(text: "alpha\nbeta", firstLine: 1_000, path: nil, failed: false)
+        let view = TranscriptNativeCard.make(card)
+        view.update(card, link: nil, environment: TranscriptRowEnvironment())
+        view.frame = CGRect(x: 0, y: 0, width: 600, height: view.height(width: 600)); view.layoutSubtreeIfNeeded()
+        let spoken = views(TranscriptLabel.self, in: view).filter { $0.isAccessibilityElement() }.compactMap { $0.accessibilityLabel() }
+        XCTAssertTrue(spoken.contains("1,000") && spoken.contains("1,001"), "spoken: \(spoken)")
+    }
+
+    /// A line the reader is selecting in an expanded diff stays built while
+    /// it scrolls out of view, so the selection is still there.
+    @MainActor func testASelectionSurvivesScrollingAnExpandedDiff() throws {
+        let rows = (1...80).map { DiffRow(kind: .added, text: "line \($0)") }
+        let request = TranscriptActivity.EditRequest(before: "", after: "", mode: "edit", rows: rows, hiddenRows: 0, complete: true, tooLarge: false, lines: 80)
+        let card = ActionRowView.Card.diff(request, path: nil, outcome: .done, added: 80, removed: 0)
+        let view = try XCTUnwrap(TranscriptNativeCard.make(card) as? TranscriptNativeDiffCard)
+        view.update(card, link: nil, environment: TranscriptRowEnvironment())
+        view.setExpanded(true)
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 600, height: 400), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.contentView = nil; window.close() }
+        window.contentView = TranscriptNativeRowParityTests.ParityCanvas(frame: CGRect(x: 0, y: 0, width: 600, height: 400))
+        window.contentView?.addSubview(view)
+        view.frame = CGRect(x: 0, y: 0, width: 600, height: view.height(width: 600)); view.layoutSubtreeIfNeeded()
+        let scroll = try XCTUnwrap(views(TranscriptCappedLines.self, in: view).first)
+        scroll.layoutSubtreeIfNeeded()
+        let first = try XCTUnwrap(scroll.lines.builtTexts.first { $0.string == "line 1" })
+        first.setSelectedRange(NSRange(location: 0, length: 4))
+        scroll.contentView.scroll(to: CGPoint(x: 0, y: scroll.lines.frame.height - scroll.contentView.bounds.height))
+        scroll.lines.mountVisibleRows()
+        XCTAssertTrue(scroll.lines.builtTexts.contains { $0 === first }, "the selected line is kept")
+        XCTAssertFalse(scroll.lines.builtTexts.contains { $0.string == "line 2" }, "lines out of view are let go")
+    }
+
     /// A running row sweeps, on the render server; a finished one does not.
     @MainActor func testARunningRowSweeps() throws {
         let stage = Stage(ToolView(id: "b", name: "bash", state: "running", input: "{\"command\":\"npm test\"}", output: "", durationMs: nil, truncated: false))

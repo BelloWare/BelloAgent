@@ -385,8 +385,14 @@ enum TranscriptCardFaces {
     private func configure(_ row: (background: TranscriptPanel?, mark: TranscriptLabel, text: TranscriptPlainTextView), _ line: Line) {
         row.background?.fill = line.background
         row.mark.text = line.mark; row.mark.color = line.markColor
+        // VoiceOver hears a row's sign or its line number, as it heard the Text.
+        row.mark.speak(line.mark.trimmingCharacters(in: .whitespaces).isEmpty ? nil : line.mark)
         row.text.update(text: line.text.isEmpty ? " " : line.text, face: TranscriptCardFaces.code, environment: environment,
                         swiftUILines: true, color: TranscriptNSPalette.text)
+    }
+    private func holdsSelection(_ index: Int) -> Bool {
+        guard let text = built[index]?.text else { return false }
+        return text.selectedRange().length > 0 || window?.firstResponder === text
     }
     private func remove(_ index: Int) {
         guard let row = built.removeValue(forKey: index) else { return }
@@ -423,7 +429,8 @@ enum TranscriptCardFaces {
         for (index, height) in rows.enumerated() {
             defer { y += height }
             let frame = CGRect(x: 0, y: y, width: bounds.width, height: height)
-            guard frame.intersects(visible) else { remove(index); continue }
+            // A row out of view goes, unless the reader is selecting in it.
+            guard frame.intersects(visible) || holdsSelection(index) else { remove(index); continue }
             let row = built[index] ?? {
                 let background: TranscriptPanel? = style == .diff ? { let panel = TranscriptPanel(); panel.cornerRadius = 0; return panel }() : nil
                 let mark = TranscriptLabel(); mark.font = markFont; mark.monospacedDigits = style == .numbered
@@ -540,9 +547,15 @@ enum TranscriptCardFaces {
         body.alphaValue = [.failed, .cancelled, .unknown].contains(outcome) ? 0.72 : 1
         tooLarge.update(text: "Diff preview unavailable — \(transcriptNumber(request.lines, environment.locale)) lines. Full content is available below.", face: TranscriptCardFaces.message,
                         environment: environment, swiftUILines: true, color: TranscriptNSPalette.muted)
-        before.update(request.before, environment: environment)
-        after.update(request.after, environment: environment)
+        // The whole texts are set only where they can be shown: a diff that
+        // streams never copies its growing document into views nobody sees.
+        if request.tooLarge {
+            before.update(request.before, environment: environment)
+            after.update(request.after, environment: environment)
+        }
         after.title = request.mode == "edit" ? "After" : "Content"
+        for view in [before, after] { view.rightToLeft = rightToLeft }
+        disclosure.rightToLeft = rightToLeft
         disclosure.enabled = environment.isEnabled
         hiddenNote.update(text: TranscriptCardMetrics.moreLines(request.hiddenRows), face: TranscriptCardFaces.code, environment: environment,
                       swiftUILines: true, color: TranscriptNSPalette.faint)
@@ -609,8 +622,8 @@ enum TranscriptCardFaces {
         if request.tooLarge {
             let height = tooLarge.exactHeight(width: textWidth)
             show(tooLarge, CGRect(x: 16, y: b + 8, width: textWidth, height: ceil(height))); b += 8 + height + 8
-            let disclosureHeight = disclosure.height(width: textWidth)
-            show(disclosure, CGRect(x: 16, y: b + 8, width: textWidth, height: disclosureHeight))
+            show(disclosure, CGRect(x: 16, y: b + 8, width: textWidth, height: disclosure.headerHeight))
+            // What it opens stands under its line, set in past the triangle.
             var s = b + 8 + disclosure.headerHeight
             if disclosure.open {
                 for source in request.mode == "edit" ? [before, after] : [after] {
@@ -620,7 +633,7 @@ enum TranscriptCardFaces {
                 }
                 if request.mode != "edit" { hide(before) }
             } else { hide(before, after) }
-            b += 8 + disclosureHeight + 8
+            b = s + 8
         } else { hide(tooLarge, disclosure, before, after) }
         let cap = cap
         if cap.capped {
@@ -691,7 +704,10 @@ enum TranscriptCardFaces {
     var enabled = true { didSet { button.isEnabled = enabled } }
     var toggled: () -> Void = {}
     /// How far what it opens is set in, and how tall its own line is.
-    let indent: CGFloat = 0
+    /// (Not measured: SwiftUI's opened group could not be opened in a
+    /// test; what it opens lines up with its title.)
+    let indent: CGFloat = 11.5
+    var rightToLeft = false { didSet { if rightToLeft != oldValue { needsLayout = true } } }
     var headerHeight: CGFloat { 24 }
     override var isFlipped: Bool { true }
     override init(frame: NSRect) {
@@ -711,9 +727,11 @@ enum TranscriptCardFaces {
         super.layout()
         let size = button.fittingSize
         // Where SwiftUI's `DisclosureGroup` puts its triangle and its title (measured).
-        button.frame = CGRect(x: -3.5, y: (headerHeight - size.height) / 2, width: size.width, height: size.height)
+        button.frame = TranscriptMotion.mirrored(CGRect(x: -3.5, y: (headerHeight - size.height) / 2, width: size.width, height: size.height),
+                                                 width: bounds.width, rightToLeft)
         let text = label.intrinsicSize
-        label.frame = CGRect(x: 11.5, y: (headerHeight - text.height) / 2, width: text.width, height: text.height)
+        label.frame = TranscriptMotion.mirrored(CGRect(x: 11.5, y: (headerHeight - text.height) / 2, width: text.width, height: text.height),
+                                                of: label, width: bounds.width, rightToLeft)
     }
 }
 
@@ -723,6 +741,7 @@ enum TranscriptCardFaces {
     private let label = TranscriptLabel()
     private let text = TranscriptCappedText(cap: TranscriptCardMetrics.terminalCap)
     var title: String { get { label.text } set { label.text = newValue } }
+    var rightToLeft = false { didSet { if rightToLeft != oldValue { needsLayout = true } } }
     override var isFlipped: Bool { true }
     init(label title: String) {
         super.init(frame: .zero)
@@ -738,7 +757,7 @@ enum TranscriptCardFaces {
     override func layout() {
         super.layout()
         let size = label.intrinsicSize
-        label.frame = CGRect(x: 0, y: 0, width: size.width, height: size.height)
+        label.frame = TranscriptMotion.mirrored(CGRect(x: 0, y: 0, width: size.width, height: size.height), of: label, width: bounds.width, rightToLeft)
         text.frame = CGRect(x: 0, y: size.height + 4, width: bounds.width, height: text.height(width: bounds.width))
     }
 }

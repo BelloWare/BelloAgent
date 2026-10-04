@@ -153,6 +153,27 @@ final class TranscriptNativeWorkParityTests: XCTestCase {
         XCTAssertTrue(failures.isEmpty, failures.joined(separator: "\n"))
     }
 
+    /// Opt-in: what SwiftUI's disclosure in a too-large diff exposes.
+    @MainActor func testProbeDisclosure() throws {
+        try XCTSkipUnless(testEnvironment("PI_PROBE") == "1")
+        let request = TranscriptActivity.EditRequest(before: "old", after: "new", mode: "edit", rows: [], hiddenRows: 0, complete: true, tooLarge: true, lines: 9_000)
+        let host = NSHostingView(rootView: TranscriptDiffCard(request: request, path: "Big.json", added: 1, removed: 0).frame(width: 520))
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 520, height: 300), styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = host; host.layoutSubtreeIfNeeded()
+        func walk(_ element: Any, _ depth: Int) {
+            guard depth < 14, let object = element as? NSAccessibilityProtocol else { return }
+            FileHandle.standardError.write(Data("PROBE AX \(String(repeating: " ", count: depth))\(object.accessibilityRole()?.rawValue ?? "?") [\(object.accessibilityLabel() ?? "")] \(type(of: element))\n".utf8))
+            for child in object.accessibilityChildren() ?? [] { walk(child, depth + 1) }
+        }
+        walk(host, 0)
+        func views(_ view: NSView, _ depth: Int) {
+            FileHandle.standardError.write(Data("PROBE VIEW \(String(repeating: " ", count: depth))\(type(of: view)) \(view.frame)\n".utf8))
+            for child in view.subviews { views(child, depth + 1) }
+        }
+        views(host, 0)
+        window.contentView = nil
+    }
+
     /// Prints SwiftUI's frame for every symbol a work row draws.
     @MainActor func testProbeWorkSymbols() throws {
         try XCTSkipUnless(testEnvironment("PI_PROBE") == "1")

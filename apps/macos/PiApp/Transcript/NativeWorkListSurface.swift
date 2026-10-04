@@ -53,9 +53,25 @@ private struct NativeWorkListItem: Equatable {
     var openFile: ((String, ClosedRange<Int>?) -> Void)?
 }
 
-/// One card of the list: the native row and what it was last measured at.
+/// One card of the list: its call, the native row once it is needed, and
+/// what it was last measured at. A closed card nobody has scrolled to is
+/// never built: the shared closed height stands for it.
 @MainActor private final class NativeWorkListRowHost {
-    let view = TranscriptNativeActionRow()
+    private(set) var built: TranscriptNativeActionRow?
+    /// Called when the built row changed its own height.
+    var sizeChanged: () -> Void = {}
+    var view: TranscriptNativeActionRow {
+        if let built { return built }
+        let view = TranscriptNativeActionRow()
+        // A card never paints outside the space the list gave it, so a height
+        // that turns out to be wrong is a short card, never one drawn over
+        // the next.
+        view.clipsToBounds = true
+        view.sizeChanged = { [weak self] in self?.sizeChanged() }
+        built = view
+        apply()
+        return view
+    }
     private(set) var item: NativeWorkListItem
     private var sizes: [CGSize] = []
     private let relay: WorkListToggleRelay
@@ -69,11 +85,6 @@ private struct NativeWorkListItem: Equatable {
     init(item: NativeWorkListItem, relay: WorkListToggleRelay) {
         self.item = item
         self.relay = relay
-        // A card never paints outside the space the list gave it, so a height
-        // that turns out to be wrong is a short card, never one drawn over
-        // the next.
-        view.clipsToBounds = true
-        apply()
     }
     @discardableResult func update(_ item: NativeWorkListItem) -> Bool {
         guard self.item != item else { return false }
@@ -85,6 +96,7 @@ private struct NativeWorkListItem: Equatable {
     /// What the card measured no longer holds: it changed its own height.
     func forgetSizes() { sizes.removeAll(keepingCapacity: true); ownHeight = nil }
     private func apply() {
+        guard let view = built else { return }
         let id = item.tool.id
         view.update(tool: item.tool, open: item.open, fetched: item.fetched, environment: item.environment,
                     toggle: { [weak relay] in relay?.current(id) },
@@ -138,9 +150,11 @@ private struct NativeWorkListItem: Equatable {
     /// of cards, not all of them, and scrolling must measure none.
     var rowMeasurementCount: Int { rows.reduce(0) { $0 + $1.measurementCount } }
     var retainedRowCount: Int { rows.count }
-    var mountedRowCount: Int { rows.reduce(0) { $0 + ($1.view.superview === self ? 1 : 0) } }
+    var mountedRowCount: Int { rows.reduce(0) { $0 + ($1.built?.superview === self ? 1 : 0) } }
+    /// How many cards have a native row at all: the ones ever near the viewport, or measured.
+    var builtRowCount: Int { rows.reduce(0) { $0 + ($1.built == nil ? 0 : 1) } }
     /// The card at an index, for fixtures that check what is drawn where.
-    func mountedRowIDs() -> [String] { rows.filter { $0.view.superview === self }.map(\.id) }
+    func mountedRowIDs() -> [String] { rows.filter { $0.built?.superview === self }.map(\.id) }
 
     deinit { if let boundsObserver { NotificationCenter.default.removeObserver(boundsObserver) } }
 
@@ -161,7 +175,7 @@ private struct NativeWorkListItem: Equatable {
                 let host = NativeWorkListRowHost(item: item, relay: relay)
                 // A card that changes its own height (a diff expanded) is
                 // measured again, and the list laid out around it.
-                host.view.sizeChanged = { [weak self, weak host] in
+                host.sizeChanged = { [weak self, weak host] in
                     guard let self, let host else { return }
                     host.forgetSizes()
                     self.relayout()
@@ -170,7 +184,7 @@ private struct NativeWorkListItem: Equatable {
             }
         }
         if rows.count > tools.count {
-            for row in rows.dropFirst(tools.count) { row.view.removeFromSuperview() }
+            for row in rows.dropFirst(tools.count) { row.built?.removeFromSuperview() }
             rows.removeLast(rows.count - tools.count)
         }
         guard changed else { return }
@@ -267,9 +281,10 @@ private struct NativeWorkListItem: Equatable {
     }
     private func containsSelection(_ row: NativeWorkListRowHost) -> Bool {
         guard let responder = window?.firstResponder as? NSView else { return false }
-        if responder === row.view || responder.isDescendant(of: row.view) { return true }
+        guard let view = row.built else { return false }
+        if responder === view || responder.isDescendant(of: view) { return true }
         if let editor = responder as? NSTextView, editor.isFieldEditor, let owner = editor.delegate as? NSView {
-            return owner === row.view || owner.isDescendant(of: row.view)
+            return owner === view || owner.isDescendant(of: view)
         }
         return false
     }
@@ -304,8 +319,8 @@ private struct NativeWorkListItem: Equatable {
                         corrected = true
                     }
                 }
-            } else if row.view.superview === self {
-                row.view.removeFromSuperview()
+            } else if let view = row.built, view.superview === self {
+                view.removeFromSuperview()
             }
         }
         guard corrected else { return }

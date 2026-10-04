@@ -120,6 +120,7 @@ final class NativeWorkListViewportTests: XCTestCase {
         XCTAssertEqual(list.retainedRowCount, cards, "every tool call is still there")
         XCTAssertLessThan(list.mountedRowCount, 70, "a \(cards)-call turn must not put every card in the view tree")
         XCTAssertGreaterThan(list.mountedRowCount, 0, "the cards the reader can see are on screen")
+        XCTAssertLessThan(list.builtRowCount, cards / 2 + 10, "a closed card nobody has scrolled near is not built at all")
         assertCardsFit(list, "the settled turn")
 
         // Reading down through the turn: the cards come and go, every one of

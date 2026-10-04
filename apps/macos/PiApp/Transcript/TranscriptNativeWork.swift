@@ -85,12 +85,15 @@ import AppKit
         self.toggle = toggle
         self.link = link
         let changed = next != content || enabled != environment.isEnabled || rightToLeft != (environment.layoutDirection == .rightToLeft)
+        // Opening and closing turn the chevron and cross-fade the icon, as
+        // SwiftUI animated them; anything else is set as it is.
+        let turning = next.open != content.open && window != nil
         content = next
         enabled = environment.isEnabled
         rightToLeft = environment.layoutDirection == .rightToLeft
         if !enabled { setHovering(false) }
         if !(next.expandable && enabled), window?.firstResponder === self { window?.makeFirstResponder(nil) }
-        configure(animated: false)
+        configure(animated: turning)
         if changed { needsLayout = true }
     }
 
