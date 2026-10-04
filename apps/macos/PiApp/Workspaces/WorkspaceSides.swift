@@ -3,7 +3,7 @@ import AppKit
 
 // Side panels are durable child chats. A recovery intent precedes journal
 // publication so an interrupted acknowledgement cannot orphan saved history.
-struct SideRecord: Identifiable {
+struct SideRecord: Identifiable, Equatable {
     var id: String; var parentID: String; var workspaceID: String; var profileID: String; var title: String
     var kept = false; var keeping = false; var keepRequested = false
     /// Open on screen only; the helper session and journal appear with its first message.

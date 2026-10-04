@@ -1141,7 +1141,7 @@ private struct SelectedTranscriptOnly: View {
 private struct SelectedComposerOnly: View {
     @ObservedObject var model: WorkspaceModel
     var body: some View {
-        if let session = model.selected { ComposerInput(model: model, session: session, paneWidth: 1_000) }
+        if let session = model.selected { ComposerInputBridge(model: model, session: session, paneWidth: 1_000) }
     }
 }
 private struct SelectedFooterOnly: View {
@@ -1162,7 +1162,7 @@ private struct SelectedPaneParts: View {
         if let session = model.selected {
             VStack(spacing: 0) {
                 NativeTranscriptView(session: session, state: session.state, actions: TranscriptActions())
-                ComposerInput(model: model, session: session, paneWidth: 1_000)
+                ComposerInputBridge(model: model, session: session, paneWidth: 1_000)
                 MetricsFooter(model: model, session: session, contextWindow: nil, outputReserve: nil, compact: false) {}
             }
         }
@@ -1179,7 +1179,7 @@ private struct SelectedTranscriptWithStarterCard: View {
                 .overlay(alignment: .top) {
                     ZStack {
                         if session.messages.isEmpty {
-                            StarterPanel(model: model, chat: chat, sessionID: session.id).transition(.opacity)
+                            StarterPanelBridge(model: model, chat: chat, sessionID: session.id).transition(.opacity)
                         }
                     }.piAnimation(PiMotion.quick, value: session.messages.isEmpty)
                 }

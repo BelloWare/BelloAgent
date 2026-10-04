@@ -48,4 +48,51 @@ import XCTest
         XCTAssertFalse(editor.isEditable)
         XCTAssertEqual(scroll.ceiling, ComposerScrollView.besideTerminalHeight)
     }
+
+    /// The chat's actions menu reads the chat when it opens.
+    func testTheChatActionsMenuIsBuiltForItsChat() throws {
+        let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("chat-actions-" + UUID().uuidString)
+        let bench = try ConversationPaneTests.workbench(root: root, chats: ["menu"])
+        defer { bench.model.shutdown(); try? FileManager.default.removeItem(at: root) }
+        let session = SessionDisplay(id: bench.chats[0].id)
+        bench.model.displays[session.id] = session
+        let view = ConversationActionsMenuView(model: bench.model, sessionID: session.id)
+        view.session = session
+        var shown: [NSMenu] = []
+        PiMenus.intercept = { menu, _ in shown.append(menu) }
+        defer { PiMenus.intercept = nil }
+        let control = try XCTUnwrap(views(NSButton.self, in: view).first { $0.accessibilityIdentifier() == "conversationActions" })
+        control.performClick(nil)
+        let menu = try XCTUnwrap(shown.last)
+        XCTAssertTrue(menu.items.contains { $0.identifier?.rawValue == "sessionInspector" })
+    }
+
+    /// The window's disabled state (the app preparing to close) reaches the
+    /// pane's own controls, and they come back as they were.
+    func testThePaneFollowsTheWindowsDisabledState() async throws {
+        let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("pane-disabled-" + UUID().uuidString)
+        let bench = try ConversationPaneTests.workbench(root: root, chats: ["disabled"])
+        defer { bench.model.shutdown(); try? FileManager.default.removeItem(at: root) }
+        let session = SessionDisplay(id: bench.chats[0].id)
+        bench.model.displays[session.id] = session
+        session.draft = "ready to send"
+        let pane = ConversationPaneView(model: bench.model)
+        pane.frame = NSRect(x: 0, y: 0, width: 900, height: 700)
+        pane.show(session: session, chat: bench.chats[0])
+        pane.layoutSubtreeIfNeeded()
+        func button(_ label: String) -> NSButton? { views(NSButton.self, in: pane).first { $0.accessibilityLabel() == label } }
+        try await eventually("the composer can send") { button("Send")?.isEnabled == true }
+        XCTAssertEqual(button("Skills…")?.isEnabled, true)
+        // An edit's banner too: its Cancel.
+        session.draftBeforeEdit = DraftRecord(id: session.id, text: "")
+        session.editingMessageID = "earlier"
+        func cancel() -> NSButton? { views(NSButton.self, in: pane).first { ($0 as? PiKit.Button)?.title == "Cancel" } }
+        try await eventually("the edit banner is up") { cancel()?.isEnabled == true }
+        pane.inheritedEnabled = false
+        try await eventually("the composer stands down") {
+            !pane.composer.send.isEnabled && button("Skills…")?.isEnabled == false && cancel()?.isEnabled == false
+        }
+        pane.inheritedEnabled = true
+        try await eventually("the composer comes back") { button("Skills…")?.isEnabled == true && cancel()?.isEnabled == true }
+    }
 }

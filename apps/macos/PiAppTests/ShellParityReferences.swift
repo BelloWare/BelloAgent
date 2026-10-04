@@ -171,3 +171,80 @@ struct RefSkillPopoverView: View {
         }
     }
 }
+
+// MARK: - Composer (batch 3)
+
+struct RefPillLabel: View {
+    let icon: String
+    let text: String
+    let active: Bool
+    let loading: Bool
+    let maxWidth: CGFloat
+    /// Icon and chevron only, for a bar too narrow for labels; the help text still names the value.
+    var compact = false
+    @Environment(\.isEnabled) private var enabled
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: icon).font(.system(size: 11, weight: .semibold)).foregroundStyle(active ? Color.piAccent : Color.piInkSecondary)
+            if !compact {
+                Text(text).font(.system(size: 12, weight: .medium)).foregroundStyle(Color.piInk).lineLimit(1).truncationMode(.middle)
+                    .frame(maxWidth: maxWidth, alignment: .leading).fixedSize(horizontal: false, vertical: true)
+                    // The same label with new words: its text crossfades while the
+                    // chip resizes once, rather than a remove and an insert.
+                    .contentTransition(.opacity)
+            }
+            if loading { PiSpinner(size: 6, lineWidth: 1.2).frame(width: 10, height: 10).transition(.opacity) }
+            Image(systemName: "chevron.up.chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(Color.piInkTertiary)
+        }
+        .padding(.horizontal, compact ? 7 : 9).padding(.vertical, 4)
+        .background(active ? Color.piAccentSoft : Color.piSurface, in: Capsule())
+        .overlay(Capsule().stroke(active ? Color.piAccent.opacity(0.45) : Color.piHairlineStrong, lineWidth: 1))
+        .contentShape(Capsule())
+        .opacity(enabled ? 1 : 0.45)
+        .animation(.easeInOut(duration: 0.18), value: text)
+        .animation(.easeInOut(duration: 0.18), value: active)
+        .animation(.easeInOut(duration: 0.15), value: loading)
+    }
+}
+
+struct RefEditingBanner: View {
+    @ObservedObject var session: SessionDisplay
+    var blocker: String? = nil
+    let cancel: () -> Void
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Image(systemName: "pencil.line").foregroundStyle(Color.piAccent)
+                Text("Editing an earlier message").font(.system(size: 11.5, weight: .semibold))
+                Spacer(minLength: 4)
+                Button("Cancel", action: cancel).buttonStyle(.piGhost).keyboardShortcut(.cancelAction).disabled(session.editSubmitting)
+            }
+            Text(blocker ?? session.editNotice).font(PiFont.caption).foregroundStyle(blocker == nil ? Color.piInkSecondary : Color.piDanger).fixedSize(horizontal: false, vertical: true)
+            if session.editInputReviewRequired {
+                Button("Use text only / I've reselected the needed inputs") { session.editInputReviewRequired = false }.buttonStyle(.piGhost)
+            }
+        }.padding(8).background(Color.piAccentSoft, in: RoundedRectangle(cornerRadius: 10)).padding(.horizontal, 8).padding(.top, 8)
+            .accessibilityElement(children: .contain).accessibilityLabel("Editing an earlier message")
+    }
+}
+
+struct RefQueueEditBanner: View {
+    let steering: Bool
+    var resolving = false
+    let cancel: () -> Void
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Image(systemName: "pencil.line").foregroundStyle(Color.piAccent)
+                Text(steering ? "Editing a steering message" : "Editing a queued message").font(.system(size: 11.5, weight: .semibold))
+                Spacer(minLength: 4)
+                if resolving { PiSpinner(controlSize: .mini).accessibilityLabel("Waiting for the helper") }
+                Button("Cancel", action: cancel).buttonStyle(.piGhost).keyboardShortcut(.cancelAction).disabled(resolving)
+            }
+            Text("This message and the others waiting are paused while you edit. Return saves it in its place in the queue.").font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
+                .lineLimit(3).frame(maxWidth: .infinity, alignment: .leading)
+        }.padding(8).background(Color.piAccentSoft, in: RoundedRectangle(cornerRadius: 10)).padding(.horizontal, 8).padding(.top, 8)
+            .accessibilityElement(children: .contain).accessibilityLabel("Editing a queued message")
+    }
+}
+

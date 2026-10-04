@@ -316,15 +316,59 @@ extension ConversationPaneTests {
         let body = try Self.excerpt(Self.appSource("Transcript/NativeTranscriptView.swift"), from: "LiveTurnBarSlot(turn:", to: "}")
         XCTAssertFalse(body.contains(".id("), "A new presentation of the chat replays the live turn bar's entrance")
     }
-    func testModelChipChangesItsLabelInPlace() throws {
-        let label = try Self.excerpt(Self.appSource("Workspaces/ModelSwitchControls.swift"), from: "Text(text).font(.system(size: 12, weight: .medium))", to: "if loading")
-        XCTAssertTrue(label.contains(".contentTransition(.opacity)"))
-        XCTAssertFalse(label.contains(".id(text)"), "A new model name removes the chip's label and inserts another")
-        XCTAssertFalse(label.contains(".transition("), "The chip's label is replaced, not changed")
+    /// A new model name changes the pill's label in place: the same pill,
+    /// its words cross-fading, not a pill taken away and another put in.
+    @MainActor func testModelChipChangesItsLabelInPlace() async throws {
+        let pane = try Pane(); defer { pane.close() }
+        await pane.settle(8)
+        func pill() -> ComposerPillButton? {
+            Self.views(ComposerPillButton.self, in: pane.hosted).first { $0.accessibilityIdentifier() == "session-model-picker" }
+        }
+        let shown = try XCTUnwrap(pill())
+        XCTAssertEqual(shown.text, "pane-model")
+        var chat = pane.chat; chat.model = "another-model"
+        pane.model.chats = [chat]
+        try await waitFor("The pill never took the new model") { pill()?.text == "another-model" }
+        XCTAssertTrue(pill() === shown, "The pill changed its label in place")
     }
     func testProjectsSheetCrossesItsPanesInOneStack() throws {
         let panes = try Self.excerpt(Self.appSource("Workspaces/WorkspaceManagerView.swift"), from: "list.frame(width: 250)", to: "NewWorkspaceDraft.editing")
         XCTAssertTrue(panes.contains("ZStack {"))
         XCTAssertFalse(panes.contains("Group {"), "A Group gives each pane its own frame: the leaving and arriving panes stand side by side")
+    }
+}
+
+// MARK: - Escape on the edit banners
+
+extension ConversationPaneTests {
+    /// Escape is the banner's Cancel (`.keyboardShortcut(.cancelAction)`):
+    /// from the composer, through the window's own key handling, it puts the
+    /// earlier draft back. An open slash list takes Escape first.
+    @MainActor func testEscapeCancelsAnEditFromTheComposer() async throws {
+        let pane = try Pane(messages: [TranscriptMessage(id: "u1", role: "user", text: "Earlier", at: 1000, turn: "u1")]); defer { pane.close() }
+        await pane.settle(8)
+        pane.session.draftBeforeEdit = DraftRecord(id: pane.session.id, text: "my unsent draft")
+        pane.session.editingMessageID = "u1"
+        pane.session.draft = "Earlier, rewritten"
+        await pane.settle(8)
+        let editor = try XCTUnwrap(pane.editor)
+        pane.window.makeFirstResponder(editor)
+        XCTAssertNotNil(Self.views(ComposerEditBanner.self, in: pane.hosted).first, "The banner is up")
+        func escape() {
+            let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                         windowNumber: pane.window.windowNumber, context: nil, characters: "\u{1b}",
+                                         charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53)!
+            pane.window.sendEvent(event)
+        }
+        // An open slash list closes first; the edit stays.
+        pane.session.completionVisible = true
+        escape()
+        await pane.settle(4)
+        XCTAssertEqual(pane.session.editingMessageID, "u1", "Escape with the slash list open leaves the edit alone")
+        pane.session.completionVisible = false
+        await pane.settle(4)
+        escape()
+        try await waitFor("Escape never cancelled the edit") { pane.session.editingMessageID == nil }
+        XCTAssertEqual(pane.session.draft, "my unsent draft", "The earlier draft is back")
     }
 }

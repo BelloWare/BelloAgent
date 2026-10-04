@@ -38,7 +38,7 @@ final class PiMenuTests: XCTestCase {
         XCTAssertEqual(model.topicEditor?.projectID, "pane-project")
         // The chat actions read the chat when they open.
         model.topicEditor = nil
-        let actions = try XCTUnwrap(descendants(hosted).compactMap { $0 as? PiPopoverTriggerButton }
+        let actions = try XCTUnwrap(descendants(hosted).compactMap { $0 as? NSButton }
             .first { $0.accessibilityIdentifier() == "conversationActions" })
         actions.performClick(nil)
         let chatMenu = try XCTUnwrap(shown.last)

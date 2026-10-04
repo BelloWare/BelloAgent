@@ -117,7 +117,7 @@ final class LazyListAppKitControlTests: XCTestCase {
         await Self.settle(hosted, window)
         let popUps = descendants(hosted).filter { $0 is NSPopUpButton }.map { String(describing: type(of: $0)) }
         XCTAssertEqual(popUps, [], "Live pop-up menus in the window, each rebuilt on every update of the view that holds it: \(popUps)")
-        let triggers = descendants(hosted).compactMap { $0 as? PiPopoverTriggerButton }.compactMap { $0.accessibilityIdentifier() }
+        let triggers = descendants(hosted).compactMap { $0 as? NSButton }.compactMap { $0.accessibilityIdentifier() }
         for identifier in ["projectActions-pane-project", "projectActions-project-design", "topicActions-topic-a", "conversationActions"] {
             XCTAssertTrue(triggers.contains(identifier), "\(identifier) is a menu control in the window: \(triggers)")
         }

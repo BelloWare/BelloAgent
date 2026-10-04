@@ -68,4 +68,32 @@ import XCTest
             SkillPopoverContentView(session: nil) { (sent, plain) }
         }
     }
+
+    func testComposerPills() async throws {
+        for (name, text, active, compact, width) in [("named", "Team router · Responses", false, false, CGFloat(150)), ("active", "ui-fixture", true, false, 170),
+                                                     ("compact", "Effort", false, true, 176), ("compact-active", "Effort", true, true, 176),
+                                                     ("cut", "a-very-long-model-alias-that-is-cut-in-the-middle", false, false, 110)] {
+            // Symbols sit a fraction of a pixel apart (DesignKit's allowance),
+            // which in a pill this small is a larger share; a label cut in the
+            // middle is cut by Core Text, not SwiftUI.
+            try await check("pill-\(name)", share: name == "cut" ? 0.05 : 0.04, RefPillLabel(icon: "cpu", text: text, active: active, loading: false, maxWidth: width, compact: compact).fixedSize()) {
+                ComposerPillButton(icon: "cpu", text: text, active: active, maxTextWidth: width, compact: compact)
+            }
+        }
+    }
+
+    func testComposerEditBanners() async throws {
+        let session = SessionDisplay(id: "banner")
+        session.editNotice = "Editing message 3 of this chat. Send replaces it and everything after it."
+        try await check("editbanner", width: 600, RefEditingBanner(session: session, cancel: {})) {
+            let banner = ComposerEditBanner(title: "Editing an earlier message", accessibilityName: "Editing an earlier message", cancel: {})
+            banner.update(detail: session.editNotice, cancelEnabled: true)
+            return banner
+        }
+        try await check("queuebanner", width: 600, RefQueueEditBanner(steering: false, cancel: {})) {
+            let banner = ComposerEditBanner(title: "Editing a queued message", accessibilityName: "Editing a queued message", cancel: {})
+            banner.update(detail: "This message and the others waiting are paused while you edit. Return saves it in its place in the queue.", maximumLines: 3, cancelEnabled: true)
+            return banner
+        }
+    }
 }

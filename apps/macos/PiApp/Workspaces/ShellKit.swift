@@ -328,7 +328,8 @@ extension NSView {
             }
         }
         // Flexible children: highest priority first, then the least flexible,
-        // each offered an equal share of what is left.
+        // each offered an equal share of what is left. A line cut short takes
+        // the width of what it then shows, as `Text` does, not the share.
         var flexible = shown.indices.filter { shown[$0].size == .flexible }
         flexible.sort { a, b in shown[a].priority != shown[b].priority ? shown[a].priority > shown[b].priority : natural[a] < natural[b] }
         var remaining = flexible.count
@@ -341,7 +342,15 @@ extension NSView {
             var groupRemaining = group.count
             for child in group {
                 let share = max(0, room) / CGFloat(groupRemaining)
-                let taken = min(natural[child], share)
+                var taken = min(natural[child], share)
+                if taken < natural[child], let view = shown[child].view {
+                    let insets = shown[child].insets.left + shown[child].insets.right
+                    if let line = view as? PiKit.TextLine {
+                        taken = min(taken, shellTruncatedWidth(line.line, width: taken - insets, truncation: line.truncation, scale: piScale) + insets)
+                    } else if let cut = view as? ShellCutting {
+                        taken = min(taken, cut.cutWidth(taken - insets) + insets)
+                    }
+                }
                 widths[child] = taken; room -= taken; groupRemaining -= 1
             }
             remaining -= group.count; index += group.count
@@ -445,11 +454,28 @@ extension NSView {
 
     // MARK: Sizing
 
+    /// Heights already worked out, by width, until something inside changes.
+    private var heights: [CGFloat: CGFloat] = [:]
+    private var natural: CGFloat?
+    override func invalidateIntrinsicContentSize() {
+        heights.removeAll(keepingCapacity: true); natural = nil
+        super.invalidateIntrinsicContentSize()
+    }
     func height(forWidth width: CGFloat) -> CGFloat {
-        axis == .horizontal ? layoutRow(width: width).0 : layoutColumn(width: width).0
+        if let known = heights[width] { return known }
+        let height = axis == .horizontal ? layoutRow(width: width).0 : layoutColumn(width: width).0
+        if heights.count > 8 { heights.removeAll(keepingCapacity: true) }
+        heights[width] = height
+        return height
     }
     /// The natural width: every child at its own size.
     var naturalWidth: CGFloat {
+        if let natural { return natural }
+        let width = measureNaturalWidth()
+        natural = width
+        return width
+    }
+    private func measureNaturalWidth() -> CGFloat {
         let shown = shownItems
         if axis == .horizontal {
             let widths = shown.map { item -> CGFloat in
@@ -578,3 +604,28 @@ extension NSView {
         label.frame = CGRect(x: box.width + 6, y: 0, width: width, height: label.height(forWidth: width))
     }
 }
+
+extension PiKit.Symbol {
+    /// Draws the symbol as SwiftUI places an image in a stack: its layout
+    /// box centred in `rect` on the pixel grid, the image centred in its box.
+    func drawPlaced(centredIn rect: CGRect, color: NSColor, scale: CGFloat) {
+        let box = layoutSize
+        let placed = CGRect(x: PiKit.round(rect.midX - box.width / 2, scale), y: PiKit.round(rect.midY - box.height / 2, scale),
+                            width: box.width, height: box.height)
+        draw(centredIn: placed, color: color, scale: scale)
+    }
+}
+
+/// The width a line takes once cut to `width`: the cut line's own width,
+/// rounded up to the pixel, as `Text` reports it.
+@MainActor func shellTruncatedWidth(_ line: PiKit.Line, width: CGFloat, truncation: CTLineTruncationType, scale: CGFloat) -> CGFloat {
+    guard width > 0, !line.text.isEmpty else { return 0 }
+    let attributed = line.attributed
+    let full = CTLineCreateWithAttributedString(attributed)
+    let ellipsis = CTLineCreateWithAttributedString(NSAttributedString(string: "…", attributes: line.attributes()))
+    guard let cut = CTLineCreateTruncatedLine(full, Double(width), truncation, ellipsis) else { return 0 }
+    return min(width, PiKit.ceil(CTLineGetTypographicBounds(cut, nil, nil, nil), scale))
+}
+
+/// A view showing one line that, cut short, is only as wide as what it shows.
+@MainActor protocol ShellCutting: AnyObject { func cutWidth(_ width: CGFloat) -> CGFloat }
