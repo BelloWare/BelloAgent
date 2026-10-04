@@ -67,7 +67,7 @@ extension PiKit {
         }
         override var focusRingMaskBounds: NSRect { track.frame }
         override func drawFocusRingMask() { NSBezierPath(cgPath: trackPath).fill() }
-        override func resetCursorRects() { if showsPointer && isEnabled { addCursorRect(track.frame, cursor: .pointingHand) } }
+        override func resetCursorRects() { if showsPointer && isEffectivelyEnabled { addCursorRect(track.frame, cursor: .pointingHand) } }
         override var intrinsicContentSize: NSSize {
             let text = labelLine.size(scale: piScale), track = PiKit.switchTrack(size)
             return NSSize(width: text.width + gap + track.width, height: max(text.height, track.height))
@@ -95,7 +95,7 @@ extension PiKit {
         }
         override func styleFace() {
             // The track sits in a plain button: SwiftUI dims it again.
-            track.opacity = isEnabled ? 1 : 0.45 * PiKit.plainDisabledDimming
+            track.opacity = isEffectivelyEnabled ? 1 : 0.45 * PiKit.plainDisabledDimming
             track.backgroundColor = piCGColor(isOn ? .piAccent : .piFillStrong)
             track.borderColor = isOn ? CGColor.clear : piCGColor(.piHairlineStrong)
             fill.backgroundColor = CGColor.clear; stroke.borderColor = CGColor.clear
@@ -197,8 +197,12 @@ extension PiKit {
             }
         }
         /// Set from outside without calling `onSelect`.
-        var selection: Tag { didSet { if oldValue != selection { selectionChanged(animated: window != nil) } } }
+        var selection: Tag { didSet { if oldValue != selection { selectionChanged(animated: window != nil && animatesSelection) } } }
         var onSelect: ((Tag) -> Void)?
+        /// Whether the white capsule glides to a new choice; false moves it at
+        /// once (a SwiftUI call site with animations switched off, as the Git
+        /// panel's commit scope).
+        var animatesSelection = true
         var accessibilityName: String? { didSet { applyName() } }
         private var buttons: [Tab] = []
         private let well = CALayer()
@@ -367,11 +371,14 @@ extension PiKit {
     }
 
     /// One line of text as a view: `Text`, without selection or wrapping.
+    /// VoiceOver reads it as SwiftUI's `Text`: a static text whose words are
+    /// its value, with no name, so a control named after the same words is
+    /// the only element so named.
     @MainActor final class TextLine: NSView {
         var line: Line {
             didSet {
                 guard oldValue.text != line.text || oldValue.font != line.font || oldValue.color != line.color || oldValue.tracking != line.tracking || oldValue.uppercased != line.uppercased else { return }
-                invalidateIntrinsicContentSize(); needsDisplay = true; setAccessibilityLabel(line.text); PiKit.sizeChanged(self)
+                invalidateIntrinsicContentSize(); needsDisplay = true; setAccessibilityValue(line.text); PiKit.sizeChanged(self)
             }
         }
         /// How it ends when it is narrower than its text.
@@ -379,7 +386,7 @@ extension PiKit {
         init(_ line: Line = Line("", font: PiKit.Font.body, color: .piInk)) {
             self.line = line
             super.init(frame: .zero)
-            setAccessibilityElement(true); setAccessibilityRole(.staticText); setAccessibilityLabel(line.text)
+            setAccessibilityElement(true); setAccessibilityRole(.staticText); setAccessibilityValue(line.text)
         }
         required init?(coder: NSCoder) { fatalError("Not used from a nib") }
         override var isFlipped: Bool { true }

@@ -41,12 +41,19 @@ extension PiKit {
         override func isAccessibilitySelected() -> Bool { selected }
         override func cornerRadius(for size: CGSize) -> CGFloat { PiRadius.sm }
         /// Disabled, the row's content dims as a disabled plain button's label
-        /// does and takes no clicks: nothing inside it can be used. Each control
-        /// keeps its own enabled state, which stays the app's to set.
+        /// does and takes no clicks: nothing inside it can be used. The Pi
+        /// controls inside read disabled to VoiceOver and leave the key-view
+        /// loop, as SwiftUI's environment disabled them; each keeps its own
+        /// enabled state, which stays the app's to set.
         override var isEnabled: Bool {
             didSet {
                 guard oldValue != isEnabled else { return }
                 contentView.alphaValue = isEnabled ? 1 : CGFloat(PiKit.plainDisabledDimming)
+                // The controls inside read (and look) disabled with the row.
+                for control in PiKit.controls(in: contentView) {
+                    (control as? ButtonBase)?.refreshFace(animated: false)
+                    window?.invalidateCursorRects(for: control)
+                }
                 // Nor the keys: a control inside that had them gives them up.
                 if !isEnabled, let window, let responder = window.firstResponder as? NSView,
                    responder === contentView || responder.isDescendant(of: contentView) || (responder as? NSText)?.delegate.map({ ($0 as? NSView)?.isDescendant(of: contentView) == true }) == true {
@@ -190,24 +197,54 @@ extension PiKit {
         }
         required init?(coder: NSCoder) { fatalError("Not used from a nib") }
         override var isFlipped: Bool { true }
-        /// The text column: what the control leaves, never under 180 points.
-        private func textWidth(_ width: CGFloat) -> CGFloat {
-            let natural = max(Line(label, font: PiKit.Font.body, color: .black).size(scale: piScale).width,
-                              detail.map { Line($0, font: PiKit.Font.caption, color: .black).size(scale: piScale).width } ?? 0)
-            let room = width - 32 - controlSize(width: width).width - (control == nil ? 0 : PiSpacing.lg * 2)
-            return min(natural, max(180, room))
+        /// The text column and the control's frame as `PiRow`'s `HStack`
+        /// shares the row: the text at least 180 wide, the control in a frame
+        /// up to 380, a spacer between them. The less flexible of the two is
+        /// offered half the room first (a long label: half, not all the
+        /// control leaves), the other what remains, the spacer the rest.
+        private func shares(_ width: CGFloat) -> (text: CGFloat, control: CGFloat) {
+            let inner = max(0, width - PiSpacing.lg * 2)
+            guard control != nil else { return (textSizing(inner), 0) }
+            let available = max(0, inner - PiSpacing.lg * 2)
+            let textFlexibility = textSizing(.infinity) - textSizing(0)
+            let controlFlexibility = controlFrame(.infinity) - controlFrame(0)
+            if textFlexibility <= controlFlexibility {
+                let text = textSizing(available / 2)
+                return (text, controlFrame(max(0, available - text)))
+            }
+            let frame = controlFrame(available / 2)
+            return (textSizing(max(0, available - frame)), frame)
+        }
+        /// The text's width when offered `proposal`: its widest wrapped line,
+        /// never under 180 (`.frame(minWidth: 180)`).
+        private func textSizing(_ proposal: CGFloat) -> CGFloat {
+            let offered = max(proposal, 180)
+            let scale = piScale
+            func widest(_ text: String, _ font: NSFont) -> CGFloat {
+                guard offered.isFinite else { return Line(text, font: font, color: .black).size(scale: scale).width }
+                return PiKit.wrappedLines(text, font: font, width: offered).map { Line($0, font: font, color: .black).size(scale: scale).width }.max() ?? 0
+            }
+            let natural = max(widest(label, PiKit.Font.body), detail.map { widest($0, PiKit.Font.caption) } ?? 0)
+            return max(180, min(natural, offered))
+        }
+        /// The control's frame when offered `proposal`: what it is offered up
+        /// to 380, never narrower than a control of fixed width (`.frame(maxWidth: 380)`).
+        private func controlFrame(_ proposal: CGFloat) -> CGFloat {
+            guard let control else { return 0 }
+            let ideal = control.intrinsicContentSize.width
+            let least = ideal == NSView.noIntrinsicMetric ? 0 : ideal
+            return min(380, max(least, proposal.isFinite ? proposal : 380))
         }
         private func textHeight(_ width: CGFloat) -> CGFloat {
-            let column = textWidth(width)
+            let column = shares(width).text
             return labelView.height(forWidth: column) + (detailView.map { 2 + $0.height(forWidth: column) } ?? 0)
         }
+        /// The control at its own width in its frame (all of it when it has none).
         private func controlSize(width: CGFloat) -> CGSize {
             guard let control else { return .zero }
-            // The label's 180 points, then the stack's spacing on both sides
-            // of the spacer between them.
-            let room = min(380, max(0, width - 32 - 180 - PiSpacing.lg * 2))
-            let intrinsic = control.intrinsicContentSize
-            let controlWidth = intrinsic.width == NSView.noIntrinsicMetric ? room : min(room, intrinsic.width)
+            let frame = shares(width).control
+            let intrinsic = control.intrinsicContentSize.width
+            let controlWidth = intrinsic == NSView.noIntrinsicMetric ? frame : min(frame, intrinsic)
             return CGSize(width: controlWidth, height: PiKit.height(of: control, width: controlWidth))
         }
         func height(forWidth width: CGFloat) -> CGFloat {
@@ -218,7 +255,7 @@ extension PiKit {
             // The text block and the control are each centred in the row
             // inside its 10-point padding, as an HStack centres them.
             let inner = bounds.height - (hidesSeparator ? 0 : 1) - 20
-            let column = textWidth(bounds.width)
+            let column = shares(bounds.width).text
             var y = 10 + PiKit.round((inner - textHeight(bounds.width)) / 2, piScale)
             labelView.frame = CGRect(x: PiSpacing.lg, y: y, width: column, height: labelView.height(forWidth: column))
             y += labelView.frame.height + 2
@@ -403,5 +440,17 @@ extension PiKit {
         override var intrinsicContentSize: NSSize { place(width: bounds.width > 0 ? bounds.width : .infinity, apply: false) }
         override func layout() { super.layout(); _ = place(width: bounds.width, apply: true) }
         override func didAddSubview(_ subview: NSView) { super.didAddSubview(subview); invalidateIntrinsicContentSize(); needsLayout = true }
+    }
+}
+
+extension NSView {
+    /// Whether a disabled selectable row holds this view.
+    @MainActor var piInDisabledRow: Bool {
+        var view = superview
+        while let current = view {
+            if let row = current as? PiKit.SelectableRow, !row.isEnabled { return true }
+            view = current.superview
+        }
+        return false
     }
 }

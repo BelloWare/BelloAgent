@@ -1014,6 +1014,8 @@ extension SymbolButton {
         scopeTabs = PiKit.Tabs(selection: inputs.scope, items: [(GitCommitScope.checkedFiles, "Checked files"), (.stagedChanges, "Staged changes")],
                                accessibilityName: "Commit scope") { [controller] in controller.commitScope = $0 }
         super.init(frame: .zero)
+        // The SwiftUI tabs here had their animations switched off: the choice moves at once.
+        scopeTabs.animatesSelection = false
         scopeTabs.setAccessibilityIdentifier("git-commit-scope")
         message.field.setAccessibilityIdentifier("git-commit-message")
         message.onChange = { [controller] in controller.commitMessage = $0 }
