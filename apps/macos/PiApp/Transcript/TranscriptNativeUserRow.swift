@@ -21,6 +21,19 @@ import AppKit
     private let bubble = TranscriptPanel()
     private let text = TranscriptPlainTextView()
     private let clock = TranscriptLabel()
+    /// How a send that failed ended, over the bubble.
+    private var failedLabel: TranscriptLabel?
+    static let failedFont = NSFont.systemFont(ofSize: 12, weight: .medium)
+    /// The skills the message used, leading its bubble.
+    private var skills: TranscriptNativeSkillPills?
+    /// Between the skills and the text.
+    static let skillGap = MessageRowView.skillGap
+    /// Under a saved fragment whose text was not kept whole.
+    private var truncatedText: TranscriptPlainTextView?
+    /// The edit's versions, in the band.
+    private var switcher: TranscriptNativeVersionSwitcher?
+    /// What the message's requests reported, at the band's trailing end.
+    private var accounting: TranscriptNativeAccounting?
     private lazy var band = TranscriptPillBand(host: self)
     private var hover: TranscriptHoverTracker!
     private var hovering = false
@@ -32,13 +45,10 @@ import AppKit
     }
     override var isFlipped: Bool { true }
 
-    /// Whether this row can draw `item`: a message the reader typed, with
-    /// none of the parts not ported yet.
+    /// Whether this row can draw `item`: a message the reader typed.
     static func draws(_ item: TranscriptItem) -> Bool {
         guard case .message(let message) = item else { return false }
-        return message.role == "user" && message.kind == nil && (message.skills ?? []).isEmpty
-            && message.versions?.usable != true && message.truncated != true && message.failedEnd == nil
-            && (message.accounting?.requests ?? 0) == 0
+        return message.role == "user" && message.kind == nil
     }
 
     init(inputs: TranscriptRowInputs) {
@@ -94,6 +104,7 @@ import AppKit
             sendingTimer?.invalidate(); sendingTimer = nil; sendingShown = false
             clock.text = message.at.map(TranscriptActivity.formatClock) ?? ""
         }
+        configureParts(message)
         setAccessibilityLabel("\(message.role) message")
         // A row its turn's fold has emptied draws nothing and says nothing.
         setAccessibilityElement(!inputs.disclosure.foldedAway)
@@ -109,6 +120,45 @@ import AppKit
         }
         refreshBand()
     }
+
+    /// Builds the parts this message has and lets go of the ones it has not.
+    private func configureParts(_ message: TranscriptMessage) {
+        let environment = inputs.environment, actions = inputs.actions, id = message.id
+        if let failed = message.failedEnd {
+            let label = failedLabel ?? { let label = TranscriptLabel(); label.font = Self.failedFont; addSubview(label); failedLabel = label; return label }()
+            label.text = failed; label.color = TranscriptNSPalette.danger
+            label.speak(failed)
+        } else if let failedLabel {
+            failedLabel.removeFromSuperview(); self.failedLabel = nil
+        }
+        if let uses = message.skills, !uses.isEmpty {
+            let pills = skills ?? { let pills = TranscriptNativeSkillPills(); addSubview(pills); skills = pills; return pills }()
+            pills.update(messageID: id, skills: uses, actions: actions, environment: environment)
+        } else if let skills {
+            skills.removeFromSuperview(); self.skills = nil
+        }
+        if message.truncated == true {
+            let text = truncatedText ?? { let text = TranscriptPlainTextView(); text.isSelectable = false; addSubview(text); truncatedText = text; return text }()
+            text.update(text: TranscriptNativeReplyRow.truncatedNote, face: TranscriptNativeReplyRow.truncatedFace, environment: environment,
+                        swiftUILines: true, color: TranscriptNSPalette.muted)
+        } else if let truncatedText {
+            truncatedText.removeFromSuperview(); self.truncatedText = nil
+        }
+        if let mark = message.versions, mark.usable, let step = actions.switchVersion {
+            let view = switcher ?? { let view = TranscriptNativeVersionSwitcher(); addSubview(view); switcher = view; return view }()
+            view.update(messageID: id, mark: mark, environment: environment) { step(id, $0) }
+        } else if let switcher {
+            switcher.removeFromSuperview(); self.switcher = nil
+        }
+        if let totals = message.accounting, totals.requests > 0 {
+            let view = accounting ?? { let view = TranscriptNativeAccounting(); view.trailing = true; view.lineLimit = 1; addSubview(view); accounting = view; return view }()
+            view.update(totals, environment: environment) { actions.inspect(id) }
+        } else if let accounting {
+            accounting.removeFromSuperview(); self.accounting = nil
+        }
+    }
+    /// Whether the bubble shows the text: always, unless the message is only skills.
+    private var showsText: Bool { (message.skills ?? []).isEmpty || !message.text.isEmpty }
 
     private func setHovering(_ inside: Bool) {
         hovering = inside
@@ -129,27 +179,52 @@ import AppKit
 
     /// Where everything goes at `width`, and the height that needs.
     private struct Plan {
-        var bubble: CGRect
-        var text: CGRect
-        var band: CGRect
-        var height: CGFloat
+        var failed: CGRect = .zero
+        var bubble: CGRect = .zero
+        var skills: CGRect = .zero
+        var text: CGRect = .zero
+        var truncated: CGRect = .zero
+        var band: CGRect = .zero
+        var height: CGFloat = 0
     }
     private func plan(width: CGFloat) -> Plan {
-        if inputs.disclosure.foldedAway {
-            return Plan(bubble: .zero, text: .zero, band: .zero, height: 0)
-        }
+        guard !inputs.disclosure.foldedAway else { return Plan() }
+        var plan = Plan()
+        let message = message
         let bubbleWidth = max(0, min(TranscriptMetrics.proseWidth, width - Self.leadingRoom))
         let textWidth = max(1, bubbleWidth - 2 * Self.padding.width)
-        let textHeight = message.text.isEmpty ? 0 : text.exactHeight(width: textWidth)
-        let bubbleHeight = textHeight + 2 * Self.padding.height
-        let content = Self.top + bubbleHeight + Self.gap + Self.bandHeight + Self.bottom
+        // The stack, top down: how a failed send ended, the bubble, the note
+        // under an incomplete fragment, the band; six points between them.
+        var y = Self.top
+        if let failedLabel {
+            let size = failedLabel.intrinsicSize
+            plan.failed = CGRect(x: 0, y: y, width: size.width, height: size.height)
+            y = plan.failed.maxY + Self.gap
+        }
+        let skillsHeight = skills?.height(width: textWidth) ?? 0
+        let textHeight = showsText && !message.text.isEmpty ? text.exactHeight(width: textWidth) : 0
+        var inner = skillsHeight
+        if skills != nil, showsText { inner += Self.skillGap }
+        if showsText { inner += textHeight }
+        plan.bubble = CGRect(x: width - bubbleWidth, y: y, width: bubbleWidth, height: inner + 2 * Self.padding.height)
+        plan.skills = CGRect(x: plan.bubble.minX + Self.padding.width, y: plan.bubble.minY + Self.padding.height, width: textWidth, height: skillsHeight)
+        plan.text = CGRect(x: plan.skills.minX, y: plan.bubble.maxY - Self.padding.height - textHeight, width: textWidth, height: ceil(textHeight))
+        y = plan.bubble.maxY + Self.gap
+        if let truncatedText {
+            let used = truncatedText.usedWidth(width: width), height = truncatedText.exactHeight(width: width)
+            plan.truncated = CGRect(x: width - used, y: y, width: used, height: height)
+            y = plan.truncated.maxY + Self.gap
+        }
+        plan.band = CGRect(x: 0, y: y, width: width, height: Self.bandHeight)
+        let content = plan.band.maxY + Self.bottom
         // The row is a whole number of points tall, and its content sits in
         // the middle of it, as SwiftUI placed it.
-        let height = ceil(content), y = (height - content) / 2
-        let bubble = CGRect(x: width - bubbleWidth, y: y + Self.top, width: bubbleWidth, height: bubbleHeight)
-        let textFrame = CGRect(x: bubble.minX + Self.padding.width, y: bubble.minY + Self.padding.height, width: textWidth, height: ceil(textHeight))
-        let band = CGRect(x: 0, y: bubble.maxY + Self.gap, width: width, height: Self.bandHeight)
-        return Plan(bubble: bubble, text: textFrame, band: band, height: height)
+        plan.height = ceil(content)
+        let shift = (plan.height - content) / 2
+        for keyPath in [\Plan.failed, \Plan.bubble, \Plan.skills, \Plan.text, \Plan.truncated, \Plan.band] {
+            plan[keyPath: keyPath] = plan[keyPath: keyPath].offsetBy(dx: 0, dy: shift)
+        }
+        return plan
     }
     func settle() -> (height: CGFloat, passes: Int) {
         let plan = plan(width: bounds.width > 0 ? bounds.width : inputs.width)
@@ -160,22 +235,50 @@ import AppKit
 
     override func layout() {
         super.layout()
-        let planned = plan(width: bounds.width)
+        let plan = plan(width: bounds.width)
         let hidden = inputs.disclosure.foldedAway
-        bubble.isHidden = hidden; text.isHidden = hidden || message.text.isEmpty; clock.isHidden = hidden
+        let message = message
+        bubble.isHidden = hidden; text.isHidden = hidden || !showsText || message.text.isEmpty; clock.isHidden = hidden
+        for view in [failedLabel, skills, truncatedText, switcher, accounting] as [NSView?] { view?.isHidden = hidden }
+        guard !hidden else { return }
         // Frames on the pixel grid, as SwiftUI places views.
+        let width = bounds.width
         let rtl = inputs.environment.layoutDirection == .rightToLeft
-        let plan = Plan(bubble: TranscriptMotion.mirrored(planned.bubble, width: bounds.width, rtl),
-                        text: TranscriptMotion.mirrored(planned.text, width: bounds.width, rtl),
-                        band: planned.band, height: planned.height)
-        bubble.frame = pixelAligned(plan.bubble)
+        func mirrored(_ rect: CGRect) -> CGRect { TranscriptMotion.mirrored(rect, width: width, rtl) }
+        bubble.frame = pixelAligned(mirrored(plan.bubble))
         // The text keeps its exact place: SwiftUI does not round a text's origin.
-        text.frame = plan.text
-        // The band reads from its trailing edge: the time, then the pills.
-        let x = band.place(maxX: plan.band.maxX, midY: plan.band.midY, width: bounds.width, rightToLeft: rtl) - 10
-        let size = clock.intrinsicSize
-        clock.frame = TranscriptMotion.mirrored(CGRect(x: x - size.width, y: plan.band.midY - size.height / 2, width: size.width, height: size.height),
-                                                width: bounds.width, rtl)
+        text.frame = mirrored(plan.text)
+        skills?.frame = mirrored(plan.skills)
+        if let failedLabel { failedLabel.frame = TranscriptMotion.mirrored(plan.failed, of: failedLabel, width: width, rtl) }
+        truncatedText?.frame = mirrored(CGRect(x: plan.truncated.minX, y: plan.truncated.minY, width: plan.truncated.width, height: ceil(plan.truncated.height)))
+        // The band, as its `HStack` lays it out ten points apart: the versions,
+        // the time, the pills, and the accounting taking the rest from the
+        // trailing edge. Without accounting the band ends at the trailing edge.
+        var pieces: [(view: NSView?, width: CGFloat)] = []
+        if let switcher { pieces.append((switcher, switcher.width)) }
+        let clockShown = message.isSending || message.at != nil
+        if clockShown { pieces.append((clock, clock.intrinsicSize.width)) }
+        let pillsWidth = band.pills.reduce(0) { $0 + $1.pillSize.width } + 4 * CGFloat(max(0, band.pills.count - 1))
+        pieces.append((nil, pillsWidth))
+        let fixed = pieces.reduce(0) { $0 + $1.width } + 10 * CGFloat(pieces.count - 1)
+        let flexible = accounting.map { !$0.isEmpty } ?? false
+        var x = flexible ? 0 : width - fixed
+        let midY = plan.band.midY
+        for piece in pieces {
+            if let view = piece.view as? TranscriptLabel {
+                let size = view.intrinsicSize
+                view.frame = TranscriptMotion.mirrored(CGRect(x: x, y: midY - size.height / 2, width: size.width, height: size.height), of: view, width: width, rtl)
+            } else if let view = piece.view {
+                view.frame = mirrored(CGRect(x: x, y: midY - TranscriptNativeVersionSwitcher.height / 2, width: piece.width, height: TranscriptNativeVersionSwitcher.height))
+            } else {
+                band.place(maxX: x + piece.width, midY: midY, width: width, rightToLeft: rtl)
+            }
+            x += piece.width + 10
+        }
+        if let accounting, flexible {
+            let room = max(0, width - x), height = accounting.height(width: room)
+            accounting.frame = mirrored(CGRect(x: x, y: midY - height / 2, width: room, height: height))
+        }
     }
     private func pixelAligned(_ rect: CGRect) -> CGRect {
         let scale = window?.backingScaleFactor ?? 2

@@ -81,6 +81,45 @@ enum TranscriptLineLayout {
     }
 }
 
+/// One child of a vertical stack: the least and most it can be tall, and the
+/// height it takes when offered one.
+struct TranscriptStackPiece {
+    var minHeight: CGFloat
+    var idealHeight: CGFloat
+    var height: (CGFloat) -> CGFloat
+    static func fixed(_ height: CGFloat) -> TranscriptStackPiece { TranscriptStackPiece(minHeight: height, idealHeight: height, height: { _ in height }) }
+}
+
+enum TranscriptStackLayout {
+    /// The heights SwiftUI's `VStack` places its children at once it is as
+    /// tall as their ideal heights together: the least flexible child is
+    /// offered its share first, as across a line. A text that is offered
+    /// less than all its lines keeps fewer — SwiftUI's own placement gives a
+    /// wrapping header less than it measured when a more flexible child
+    /// follows it — and what is left over stays below the last child.
+    static func heights(_ pieces: [TranscriptStackPiece]) -> [CGFloat] {
+        // Unlike a line, the stack shares out the whole height: nothing is
+        // first set aside for each child's least (measured: a header that
+        // wraps is squeezed beside a two-line accounting, not a three-line one).
+        var remaining = pieces.reduce(0) { $0 + $1.idealHeight }
+        var heights = [CGFloat](repeating: 0, count: pieces.count)
+        let order = pieces.indices.sorted { a, b in
+            let fa = pieces[a].idealHeight - pieces[a].minHeight, fb = pieces[b].idealHeight - pieces[b].minHeight
+            return fa == fb ? a < b : fa < fb
+        }
+        var left = pieces.count
+        for index in order {
+            let piece = pieces[index]
+            let offer = max(piece.minHeight, remaining / CGFloat(left))
+            let height = offer >= piece.idealHeight ? piece.idealHeight : piece.height(offer)
+            heights[index] = height
+            remaining -= height
+            left -= 1
+        }
+        return heights
+    }
+}
+
 /// A dashed rule across the room it is given, as `DashedLine` drew it: a one
 /// point line of four on and four off, from its leading edge.
 @MainActor final class TranscriptDashedLine: NSView {

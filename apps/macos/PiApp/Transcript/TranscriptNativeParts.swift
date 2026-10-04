@@ -69,8 +69,8 @@ import AppKit
     /// `rect`, the frame of `view`, mirrored as SwiftUI mirrors it: a label
     /// by its own width.
     static func mirrored(_ rect: CGRect, of view: NSView, width: CGFloat, _ rightToLeft: Bool) -> CGRect {
-        guard rightToLeft else { (view as? TranscriptLabel)?.snapsX = true; return rect }
-        if let label = view as? TranscriptLabel { return label.mirrored(rect, width: width) }
+        guard rightToLeft else { (view as? TranscriptLabel)?.snapsX = true; (view as? TranscriptLabel)?.hangsTrailingSpace = false; return rect }
+        if let label = view as? TranscriptLabel, !label.mirrorsByFrame { return label.mirrored(rect, width: width) }
         return mirrored(rect, width: width, true)
     }
 }
@@ -97,6 +97,11 @@ import AppKit
     /// Whether the text stands on a whole pixel across; one laid out from
     /// the right by its own width does not.
     var snapsX = true { didSet { if snapsX != oldValue { needsDisplay = true } } }
+    /// Whether the line's trailing spaces lie past its end, as a line SwiftUI
+    /// sets from the right draws them: the words move over by their width.
+    /// A text centred in a box of its own mirrors with its frame, not from its end.
+    var mirrorsByFrame = false
+    var hangsTrailingSpace = false { didSet { if hangsTrailingSpace != oldValue { needsDisplay = true } } }
     override var isFlipped: Bool { true }
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -137,11 +142,14 @@ import AppKit
         "12.5/0.3": (15, -0.375), "10.5/0": (13, -0.375), "11.0/0.23": (14, 0.125),
         "11.5/0.23": (14, -0.375), "11.0/0.4": (14, 0.125), "12.0/0.23": (15, 0),
         "13.0/0": (16, 0), "12.5/0": (15, -0.375), "11.5/0": (14, -0.375), "12.0/0": (15, 0),
-        "11.0/0.23m": (14, 0.125), "11.5/0m": (14, -0.375), "12.0/0m": (15, 0)]
+        "11.0/0.23m": (14, 0.125), "11.5/0m": (14, -0.375), "12.0/0m": (15, 0),
+        "12.0/0.3": (15, 0), "13.0/0.3s": (16, -0.5), "11.0/0": (14, 0.125)]
     static func measured(_ font: NSFont) -> (height: CGFloat, baseline: CGFloat)? {
         let weight = (font.fontDescriptor.object(forKey: .traits) as? [NSFontDescriptor.TraitKey: Any])?[.weight] as? CGFloat ?? 0
-        // A monospaced face has its own line box: its key ends in "m".
-        return swiftUILines[String(format: "%.1f/%.2g", font.pointSize, weight) + (font.isFixedPitch ? "m" : "")]
+        // A monospaced face has its own line box: its key ends in "m"; a
+        // serif one (New York) in "s".
+        let design = font.isFixedPitch ? "m" : font.fontName.lowercased().contains("newyork") ? "s" : ""
+        return swiftUILines[String(format: "%.1f/%.2g", font.pointSize, weight) + design]
     }
     /// The line box SwiftUI gives this font.
     static func lineHeight(_ font: NSFont) -> CGFloat {
@@ -167,6 +175,8 @@ import AppKit
         let whole = rect.width + 0.25 >= intrinsicSize.width
         // SwiftUI draws such a text where its width puts it, between pixels.
         snapsX = !whole
+        // Set from the right, the line's trailing spaces hang past its end.
+        hangsTrailingSpace = whole
         return CGRect(x: width - rect.minX - (whole ? exactWidth : rect.width), y: rect.minY, width: rect.width, height: rect.height)
     }
     /// How wide the text is once cut short to fit `width`, as SwiftUI sizes
@@ -202,7 +212,8 @@ import AppKit
             line = CTLineCreateTruncatedLine(line, Double(bounds.width), ctTruncation, ellipsis) ?? line
         }
         // SwiftUI sets a text's origin on the pixel grid.
-        let origin = snapsX ? pixelSnappedOrigin : CGPoint(x: bounds.minX, y: pixelSnappedOrigin.y)
+        var origin = snapsX ? pixelSnappedOrigin : CGPoint(x: bounds.minX, y: pixelSnappedOrigin.y)
+        if hangsTrailingSpace { origin.x += CGFloat(CTLineGetTrailingWhitespaceWidth(line)) }
         context.textPosition = CGPoint(x: origin.x, y: origin.y + font.ascender + (Self.baselineOverride ?? Self.measured(font)?.baseline ?? 0))
         CTLineDraw(line, context)
         context.restoreGState()
@@ -259,6 +270,14 @@ extension NSView {
         "point.3.connected.trianglepath.dotted/12.0/\(NSFont.Weight.medium.rawValue)": CGSize(width: 16, height: 12.5),
         "circle/12.0/\(NSFont.Weight.medium.rawValue)": CGSize(width: 14.5, height: 14.5),
         "chevron.down/11.0/\(NSFont.Weight.semibold.rawValue)": CGSize(width: 13, height: 8),
+        // A skill pill's glyph, the version switcher's chevrons, a fold
+        // header's chevron and a tool result's.
+        "command/9.0/\(NSFont.Weight.bold.rawValue)": CGSize(width: 10.5, height: 10.5),
+        "chevron.left/9.5/\(NSFont.Weight.semibold.rawValue)": CGSize(width: 7.5, height: 10.5),
+        "chevron.right/9.5/\(NSFont.Weight.semibold.rawValue)": CGSize(width: 7.5, height: 10.5),
+        "chevron.down/10.0/\(NSFont.Weight.semibold.rawValue)": CGSize(width: 11, height: 7.5),
+        "chevron.right/12.5/\(NSFont.Weight.regular.rawValue)": CGSize(width: 9.5, height: 13),
+        "chevron.down/12.5/\(NSFont.Weight.regular.rawValue)": CGSize(width: 14, height: 8),
     ]
     /// How far from the middle of SwiftUI's frame SwiftUI draws the symbol,
     /// measured (`TranscriptTextCalibrationTests.testSymbolsDrawAsSwiftUI`).
@@ -271,6 +290,13 @@ extension NSView {
         "point.3.connected.trianglepath.dotted/12.0/\(NSFont.Weight.medium.rawValue)": CGPoint(x: 0, y: -0.875),
         "circle/12.0/\(NSFont.Weight.medium.rawValue)": CGPoint(x: 0.125, y: -1),
         "chevron.down/11.0/\(NSFont.Weight.semibold.rawValue)": CGPoint(x: 0, y: -0.375),
+        // Swept in testSymbolsDrawAsSwiftUI.
+        "chevron.down/10.0/\(NSFont.Weight.semibold.rawValue)": CGPoint(x: 0, y: -1),
+        "chevron.left/9.5/\(NSFont.Weight.semibold.rawValue)": CGPoint(x: 0, y: -0.875),
+        "chevron.right/9.5/\(NSFont.Weight.semibold.rawValue)": CGPoint(x: 0.375, y: -1),
+        "chevron.right/12.5/\(NSFont.Weight.regular.rawValue)": CGPoint(x: 0.375, y: -0.5),
+        // Swept in the bubble (TranscriptNativeRowParityTests.testSweepSkillGlyphOffset).
+        "command/9.0/\(NSFont.Weight.bold.rawValue)": CGPoint(x: 0.125, y: -0.625),
     ]
     /// For the calibration sweep only.
     nonisolated(unsafe) static var offsetOverride: CGPoint?
@@ -286,6 +312,8 @@ extension NSView {
     var square = false { didSet { if square != oldValue { needsDisplay = true } } }
     /// How far the symbol is turned about its middle, in degrees, clockwise
     /// on screen; animatable.
+    /// Drawn mirrored left to right, turn and all.
+    var mirroredAcross = false { didSet { if mirroredAcross != oldValue { needsDisplay = true } } }
     @objc dynamic var rotation: CGFloat = 0 { didSet { if rotation != oldValue { needsDisplay = true } } }
     override class func defaultAnimation(forKey key: NSAnimatablePropertyKey) -> Any? {
         key == "rotation" ? CABasicAnimation() : super.defaultAnimation(forKey: key)
@@ -310,8 +338,10 @@ extension NSView {
         let place = CGPoint(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2)
         let snapped = pixelSnapped(place), nudge = Self.offsetOverride ?? Self.swiftUIOffsets[key] ?? .zero
         let origin = CGPoint(x: snapped.x + nudge.x, y: snapped.y + nudge.y)
-        if rotation != 0 {
+        if rotation != 0 || mirroredAcross {
             context.translateBy(x: bounds.midX, y: bounds.midY)
+            // A right-to-left row mirrors a turned symbol, as SwiftUI flips its row.
+            if mirroredAcross { context.scaleBy(x: -1, y: 1) }
             context.rotate(by: rotation * .pi / 180)
             context.translateBy(x: -bounds.midX, y: -bounds.midY)
         }

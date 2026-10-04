@@ -27,7 +27,12 @@ final class TranscriptTextCalibrationTests: XCTestCase {
             ("figure12", .systemFont(ofSize: 12), .system(size: 12)),
             ("gutter11mm", .monospacedSystemFont(ofSize: 11, weight: .medium), .system(size: 11, weight: .medium, design: .monospaced)),
             ("number11.5mono", .monospacedSystemFont(ofSize: 11.5, weight: .regular), .system(size: 11.5, design: .monospaced)),
-            ("code12mono", .monospacedSystemFont(ofSize: 12, weight: .regular), .system(size: 12, design: .monospaced))]
+            ("code12mono", .monospacedSystemFont(ofSize: 12, weight: .regular), .system(size: 12, design: .monospaced)),
+            // A skill pill's name, a compaction's mark and title, the switcher's figure.
+            ("skill12sb", .systemFont(ofSize: 12, weight: .semibold), .system(size: 12, weight: .semibold)),
+            ("serif13sb", TranscriptNativeCompactionRow.titleFont, .system(size: 13, weight: .semibold, design: .serif)),
+            ("figure11m", .systemFont(ofSize: 11, weight: .medium), .system(size: 11, weight: .medium)),
+            ("detail11", .systemFont(ofSize: 11), .system(size: 11))]
         let sweeping = testEnvironment("PI_TEXT_CALIBRATION") == "1"
         defer { TranscriptLabel.baselineOverride = nil }
         var failures: [String] = []
@@ -66,7 +71,10 @@ final class TranscriptTextCalibrationTests: XCTestCase {
             ("title12.5sb", TranscriptNativeFailureRow.titleFace), ("pill11.5m", TranscriptPillButton.wrappedFace(.systemFont(ofSize: 11.5, weight: .medium))),
             ("code12mono", TranscriptCardFaces.code), ("banner11.5m", TranscriptCardFaces.banner),
             ("note11.5", TranscriptCardFaces.note), ("message12", TranscriptCardFaces.message),
-            ("number11.5mono", TranscriptCardFaces.number)]
+            ("number11.5mono", TranscriptCardFaces.number), ("usage10.5", TranscriptNativeAccounting.face),
+            ("detail11", TranscriptNativeRequestInfoRow.detailFace), ("label12.5", TranscriptNativeLabelButton.face),
+            ("pill11m", TranscriptPillButton.wrappedFace(TranscriptPillButton.font)),
+            ("serif13sb", TranscriptNativeCompactionRow.titleFace), ("model10.5", TranscriptNativeAccounting.modelFace)]
         var failures: [String] = []
         for (name, face) in faces {
             for n in [0, 1, 2, 3, 5] {
@@ -271,6 +279,24 @@ final class TranscriptTextCalibrationTests: XCTestCase {
             Self.measureInWindow(SizeProbe { Label("Continue", systemImage: "play.fill").font(.system(size: 11.5, weight: .medium)) }.frame(width: 300))
             FileHandle.standardError.write(Data("PROBE continue label: \(SizeProbe.size)\n".utf8))
         }
+    }
+    /// Opt-in: SwiftUI's sizes for the pieces of batch A's rows.
+    @MainActor func testProbeMessageParts() throws {
+        try XCTSkipUnless(testEnvironment("PI_PROBE") == "1")
+        func probe<V: View>(_ name: String, _ view: V) {
+            SizeProbe.size = .zero
+            Self.measureInWindow(SizeProbe { view }.frame(width: 300))
+            FileHandle.standardError.write(Data("PROBE part \(name): \(SizeProbe.size)\n".utf8))
+        }
+        probe("mark", Text("⇣").font(.system(size: 12, weight: .semibold)))
+        probe("serif", Text("Context compacted").font(.system(size: 13, weight: .semibold, design: .serif)))
+        probe("label-right", Label("Tool result recorded", systemImage: "chevron.right").font(.system(size: 12.5)))
+        probe("label-down", Label("Tool result recorded", systemImage: "chevron.down").font(.system(size: 12.5)))
+        probe("skill", SkillPillFace(name: "review"))
+        probe("skill-args", SkillPillFace(name: "release-checklist", arguments: "focus on notarization and the appcast"))
+        probe("fold", TranscriptFoldHeader(title: "Summary kept in context", open: false, toggle: {}, font: .system(size: 11.5, weight: .medium)))
+        probe("switcher", VersionSwitcher(messageID: "m", mark: MessageVersionMark(index: 2, count: 3, ids: ["a", "b", "c"]), step: { _ in }))
+        probe("accounting", MessageAccountingView(accounting: TranscriptNativeRowParityTests.totals(), onInspect: {}))
     }
     @MainActor func testProbeHostRounding() throws {
         try XCTSkipUnless(testEnvironment("PI_PROBE") == "1")

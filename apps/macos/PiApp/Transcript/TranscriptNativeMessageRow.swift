@@ -78,7 +78,8 @@ import AppKit
         let (_, top) = height(width: bounds.width)
         place(in: CGRect(x: 0, y: top, width: bounds.width, height: contentHeight(width: bounds.width)))
         // A pill fading out keeps the place it was given; only what was just placed mirrors.
-        if rightToLeft { for view in subviews where view.identifier != TranscriptMotion.leaving { view.frame = TranscriptMotion.mirrored(view.frame, width: bounds.width, true) } }
+        // A whole label ends where its own width ends, as SwiftUI sets it.
+        for view in subviews where view.identifier != TranscriptMotion.leaving { view.frame = TranscriptMotion.mirrored(view.frame, of: view, width: bounds.width, rightToLeft) }
     }
     /// `rect` on the pixel grid, as SwiftUI places a shape.
     func pixelAligned(_ rect: CGRect) -> CGRect {

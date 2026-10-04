@@ -22,6 +22,10 @@ struct TranscriptPlainTextFace: Equatable, Sendable {
     var label: String
     /// The face's weight (`NSFont.Weight`'s raw value); regular unless said.
     var weight: CGFloat = 0
+    /// Figures in fixed-width digits, as `monospacedDigit()` sets them.
+    var monospacedDigits = false
+    /// The system's serif design (New York).
+    var serif = false
 
     /// A message the reader sent: the face, size and colour the bubble has
     /// always read in, the prose's own.
@@ -33,10 +37,17 @@ struct TranscriptPlainTextFace: Equatable, Sendable {
 
     var font: Font {
         let weights: [CGFloat: Font.Weight] = [NSFont.Weight.medium.rawValue: .medium, NSFont.Weight.semibold.rawValue: .semibold, NSFont.Weight.bold.rawValue: .bold]
-        return .system(size: size, weight: weights[weight] ?? .regular, design: monospaced ? .monospaced : .default)
+        let font = Font.system(size: size, weight: weights[weight] ?? .regular, design: monospaced ? .monospaced : serif ? .serif : .default)
+        return monospacedDigits ? font.monospacedDigit() : font
     }
     var nsFont: NSFont {
-        monospaced ? .monospacedSystemFont(ofSize: size, weight: NSFont.Weight(weight)) : .systemFont(ofSize: size, weight: NSFont.Weight(weight))
+        var font: NSFont = monospaced ? .monospacedSystemFont(ofSize: size, weight: NSFont.Weight(weight)) : .systemFont(ofSize: size, weight: NSFont.Weight(weight))
+        if serif, let descriptor = font.fontDescriptor.withDesign(.serif), let serifFont = NSFont(descriptor: descriptor, size: size) { font = serifFont }
+        guard monospacedDigits else { return font }
+        let descriptor = font.fontDescriptor.addingAttributes([.featureSettings: [[
+            NSFontDescriptor.FeatureKey.typeIdentifier: kNumberSpacingType,
+            NSFontDescriptor.FeatureKey.selectorIdentifier: kMonospacedNumbersSelector]]])
+        return NSFont(descriptor: descriptor, size: size) ?? font
     }
 }
 
@@ -140,7 +151,9 @@ struct NativePlainText: NSViewRepresentable {
     }
     /// SwiftUI's line box for a font: its whole line, rounded up to a point.
     static func swiftUILine(_ font: NSFont) -> (height: CGFloat, baseline: CGFloat) {
-        (ceil(font.ascender - font.descender + font.leading), ceil(font.ascender))
+        // A face whose line SwiftUI sets taller than its metrics give (11
+        // points) has its measured line box.
+        (TranscriptLabel.measured(font)?.height ?? ceil(font.ascender - font.descender + font.leading), ceil(font.ascender))
     }
     func update(text next: String, face: TranscriptPlainTextFace, environment: TranscriptRowEnvironment) {
         // Bytes, compared as memory: a long paste is not walked a character
@@ -203,9 +216,11 @@ struct NativePlainText: NSViewRepresentable {
     static func glyphOffset(_ font: NSFont, height: CGFloat, scale: CGFloat) -> CGFloat {
         if let glyphOffsetOverride { return glyphOffsetOverride }
         // The faces whose glyphs SwiftUI sets lower by a fixed amount, in
-        // either design (11.5 pt, a read's wrapped line number too).
-        if let fixed = [11.5: 1.0][Double(font.pointSize)] { return CGFloat(fixed) }
+        // either design (10.5 to 11.5 pt, a read's wrapped line number too).
+        if let fixed = [10.5: 1.0, 11: 1.0, 11.5: 1.0][Double(font.pointSize)] { return CGFloat(fixed) }
         guard !font.isFixedPitch else { return 0 }
+        // The serif design (New York) a point lower too.
+        if font.fontName.lowercased().contains("newyork") { return 1 }
         guard font.pointSize == TranscriptPlainTextFace.user.size else { return 0 }
         let room = (ceil(height) - height) / 2
         return 1 - (room * scale).rounded() / scale

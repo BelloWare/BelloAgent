@@ -52,6 +52,9 @@ struct TranscriptRowInputs {
         if native, TranscriptNativeBranchRow.draws(item) { return TranscriptNativeBranchRow(inputs: inputs) }
         if native, TranscriptNativeStatusRow.draws(item) { return TranscriptNativeStatusRow(inputs: inputs) }
         if native, TranscriptNativeVersionBannerRow.draws(item) { return TranscriptNativeVersionBannerRow(inputs: inputs) }
+        if native, TranscriptNativeCompactionRow.draws(item) { return TranscriptNativeCompactionRow(inputs: inputs) }
+        if native, TranscriptNativeRequestInfoRow.draws(item) { return TranscriptNativeRequestInfoRow(inputs: inputs) }
+        if native, TranscriptNativeToolResultRow.draws(item) { return TranscriptNativeToolResultRow(inputs: inputs) }
         return TranscriptHostedRowContent(inputs: inputs)
     }
 }
