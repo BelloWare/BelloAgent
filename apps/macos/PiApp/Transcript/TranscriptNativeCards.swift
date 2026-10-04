@@ -475,10 +475,14 @@ enum TranscriptCardFaces {
     func mountVisibleRows() {
         guard bounds.width > 0 else { return }
         let rows = rowHeights(width: bounds.width)
+        // The scroll view's viewport around the lines, buffered as the
+        // document buffers it; an empty visible rect is the lines out of it.
+        let seen = visibleRect
+        let viewport = seen.isEmpty ? (observedClip.map { convert($0.bounds, from: $0) } ?? .null) : seen
         // Read through no scroll view, every row is in view; out of any
         // window, none is.
         let visible = buildsAll || (window != nil && observedClip == nil) ? bounds
-            : window == nil ? CGRect.null : visibleRect.insetBy(dx: 0, dy: -200)
+            : window == nil || viewport.isNull ? CGRect.null : TranscriptNativeDocument.buffered(viewport)
         let rtl = environment.layoutDirection == .rightToLeft
         let textWidth = max(1, bounds.width - 32 - markWidth - gap)
         var y: CGFloat = 0

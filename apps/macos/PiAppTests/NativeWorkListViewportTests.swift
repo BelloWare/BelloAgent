@@ -189,6 +189,36 @@ final class NativeWorkListViewportTests: XCTestCase {
         assertCardsFit(list, "with the diff expanded")
     }
 
+    /// The list moving inside its row (a section above it closing) brings
+    /// the lines of an open, expanded read into view without a scroll.
+    @MainActor func testAListThatMovesBuildsTheLinesNowInView() throws {
+        let tools = (0..<10).map { index in
+            ToolView(id: "t\(index)", name: "read", state: "completed", input: "{\"path\":\"F\(index).swift\"}",
+                     output: (1...400).map { "line \($0)" }.joined(separator: "\n"), durationMs: 10, truncated: false, path: "F\(index).swift")
+        }
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 640, height: 300), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.contentView = nil; window.close() }
+        let scroll = NSScrollView(frame: CGRect(x: 0, y: 0, width: 640, height: 300))
+        let document = TranscriptNativeRowParityTests.ParityCanvas(frame: CGRect(x: 0, y: 0, width: 640, height: 20_000))
+        scroll.documentView = document
+        window.contentView = scroll
+        let list = NativeWorkListContainer()
+        list.update(tools: tools, openTools: ["t0"], fetched: [:], toggle: { _ in }, environment: TranscriptRowEnvironment())
+        document.addSubview(list)
+        // Its first card at the edge of the buffered viewport, its lines past it.
+        list.frame = CGRect(x: 0, y: 520, width: 640, height: list.measure(width: 640).height)
+        list.layoutSubtreeIfNeeded()
+        let card = try XCTUnwrap(descendants(TranscriptNativeReadCard.self, in: list).first)
+        card.setExpanded(true)
+        list.frame.size.height = list.measure(width: 640).height
+        list.layoutSubtreeIfNeeded()
+        let lines = try XCTUnwrap(descendants(TranscriptCardLines.self, in: card).first { $0.lines.count == 400 })
+        XCTAssertEqual(lines.builtCount, 0, "nothing of it is in view yet")
+        list.setFrameOrigin(.zero)
+        XCTAssertGreaterThan(lines.builtCount, 5, "moved into view, its first lines are built")
+    }
+
     @MainActor func testFoldingAndUnfoldingASixtyCallTurnDoesNotMeasureEveryCard() async throws {
         let fixture = Fixture(tools: 60); defer { fixture.close() }
         await fixture.settle()

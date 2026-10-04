@@ -266,6 +266,16 @@ private struct NativeWorkListItem: Equatable {
         bindViewport()
         mountVisibleRows()
     }
+    /// The list moved inside the row it is drawn in (a section above it
+    /// opened or closed): other cards, and other lines of the open ones,
+    /// are in view now.
+    override func setFrameOrigin(_ newOrigin: NSPoint) {
+        let moved = newOrigin != frame.origin
+        super.setFrameOrigin(newOrigin)
+        guard moved, laidOutWidth != nil else { return }
+        mountVisibleRows()
+        for row in rows { if let view = row.built, view.superview === self { view.refreshVisibleLines() } }
+    }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         bindViewport()
