@@ -123,16 +123,21 @@ import AppKit
         self.inputs = inputs
         TranscriptAppearance.apply(inputs.environment, to: self)
         let message = message
-        let copyTargets = !message.isStreaming ? TranscriptCopy.targets(in: message.text) : []
+        // Only an assistant's words are a reply: its copies by section, its
+        // quoting and its file links (a tool's message of its own has none).
+        let assistant = message.role == "assistant"
+        let copyTargets = assistant && !message.isStreaming ? TranscriptCopy.targets(in: message.text) : []
         let headings = copyTargets.filter { if case .section = $0.kind { return true }; return false }
         markdown.read(source: message.text, style: .prose, capsWidth: true, streaming: message.isStreaming, headings: headings,
                       environment: inputs.environment, identity: message.id)
         markdown.park(raw)
-        markdown.textView.resolveFile = inputs.actions.resolveReplyFile
+        markdown.textView.resolveFile = assistant ? inputs.actions.resolveReplyFile : nil
         if let open = inputs.actions.openFile { markdown.textView.openFile = { path, lines in open(path, lines) } }
         else { markdown.textView.openFile = nil }
         markdown.textView.fileLinkIdentity = message.id
         quoteRegion.messageID = message.id
+        if assistant, quoteRegion.superview == nil { addSubview(quoteRegion, positioned: .below, relativeTo: nil) }
+        else if !assistant { quoteRegion.removeFromSuperview() }
         if raw {
             let parts = source ?? {
                 let panel = TranscriptPanel(); panel.cornerRadius = 10
@@ -196,7 +201,7 @@ import AppKit
     /// words: an overlay, so it never changes the row's layout.
     private func refreshCopy() {
         let message = message
-        let introduction = message.isStreaming || raw ? nil
+        let introduction = message.isStreaming || raw || message.role != "assistant" ? nil
             : TranscriptCopy.targets(in: message.text).first { $0.kind == .introduction || $0.kind == .whole }
         if let introduction, bodyHover.inside, !drawsNothing {
             let button = copy ?? { let button = TranscriptCopyButton(); addSubview(button); copy = button; return button }()

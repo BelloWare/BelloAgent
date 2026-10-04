@@ -149,16 +149,15 @@ final class TranscriptNativeEverywhereTests: XCTestCase {
         let enumerator = try XCTUnwrap(FileManager.default.enumerator(at: folder, includingPropertiesForKeys: nil))
         let files = enumerator.compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" }
         XCTAssertGreaterThan(files.count, 40, "the transcript's sources are where this test looks")
-        // Comments go first, so neither a comment between the words of an
-        // import nor one naming SwiftUI decides anything; then the words of
-        // an import may stand on separate lines.
+        // Comments and string literals go first, as the compiler reads the
+        // file, so neither a comment between the words of an import nor one
+        // naming SwiftUI decides anything; then the words of an import may
+        // stand on separate lines.
         let importing = #"\bimport\s+((struct|class|enum|protocol|typealias|func|var|let)\s+)?SwiftUI\b"#
         var offenders: [String] = []
         for file in files {
             let source = try String(contentsOf: file, encoding: .utf8)
-            let code = source
-                .replacingOccurrences(of: #"/\*[\s\S]*?\*/"#, with: " ", options: .regularExpression)
-                .replacingOccurrences(of: #"//[^\n]*"#, with: "", options: .regularExpression)
+            let code = Self.code(of: source)
             if code.range(of: importing, options: .regularExpression) != nil || code.contains("SwiftUI.") {
                 offenders.append(file.lastPathComponent)
             }
@@ -171,5 +170,64 @@ final class TranscriptNativeEverywhereTests: XCTestCase {
             let source = try String(contentsOf: file, encoding: .utf8)
             XCTAssertNil(source.range(of: #"@_exported\s+import\s+SwiftUI"#, options: .regularExpression), "\(file.lastPathComponent) re-exports SwiftUI")
         }
+    }
+
+    /// The guard reads code as the compiler does: an import behind or
+    /// between comments counts, words in a comment or a string do not.
+    func testTheGuardReadsCodeAsTheCompilerDoes() {
+        let importing = #"\bimport\s+((struct|class|enum|protocol|typealias|func|var|let)\s+)?SwiftUI\b"#
+        func imports(_ source: String) -> Bool { Self.code(of: source).range(of: importing, options: .regularExpression) != nil }
+        XCTAssertTrue(imports("// /*\nimport SwiftUI\n// */\n"))
+        XCTAssertTrue(imports("import /* UI */\n  SwiftUI\n"))
+        XCTAssertTrue(imports("/* a /* nested */ comment */ internal import SwiftUI"))
+        XCTAssertTrue(imports("let s = \"// not a comment\"\nimport SwiftUI"))
+        XCTAssertTrue(imports("let r = #\"a \" quote\"#\nimport struct SwiftUI.Color"))
+        XCTAssertFalse(imports("// import SwiftUI"))
+        XCTAssertFalse(imports("/* import SwiftUI */"))
+        XCTAssertFalse(imports("let s = \"import SwiftUI\""))
+        XCTAssertFalse(imports("let s = \"\"\"\nimport SwiftUI\n\"\"\""))
+    }
+
+    /// `source` as the compiler reads its code: comments (line comments, and
+    /// block comments, nested) and the contents of string literals (plain,
+    /// multi-line and raw) left out.
+    static func code(of source: String) -> String {
+        let text = Array(source.unicodeScalars)
+        var out = String.UnicodeScalarView()
+        var index = 0
+        func at(_ offset: Int) -> Unicode.Scalar? { index + offset < text.count ? text[index + offset] : nil }
+        while index < text.count {
+            let scalar = text[index]
+            if scalar == "/", at(1) == "/" {
+                while index < text.count, text[index] != "\n" { index += 1 }
+            } else if scalar == "/", at(1) == "*" {
+                var depth = 0
+                repeat {
+                    if at(0) == "/", at(1) == "*" { depth += 1; index += 2 }
+                    else if at(0) == "*", at(1) == "/" { depth -= 1; index += 2 }
+                    else { index += 1 }
+                } while depth > 0 && index < text.count
+                out.append(" ")
+            } else if scalar == "#" || scalar == "\"" {
+                // A string literal: its hashes, then one or three quotes.
+                var hashes = 0
+                while at(hashes) == "#" { hashes += 1 }
+                guard at(hashes) == "\"" else { out.append(scalar); index += 1; continue }
+                let triple = at(hashes + 1) == "\"" && at(hashes + 2) == "\""
+                index += hashes + (triple ? 3 : 1)
+                let quotes = triple ? 3 : 1
+                while index < text.count {
+                    if hashes == 0, text[index] == "\\" { index += 2; continue }
+                    if (0..<quotes).allSatisfy({ at($0) == "\"" }), (0..<hashes).allSatisfy({ at(quotes + $0) == "#" }) {
+                        index += quotes + hashes; break
+                    }
+                    index += 1
+                }
+                out.append(contentsOf: "\"\"".unicodeScalars)
+            } else {
+                out.append(scalar); index += 1
+            }
+        }
+        return String(out)
     }
 }

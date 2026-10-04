@@ -221,6 +221,23 @@ final class TranscriptNativeRowParityTests: XCTestCase {
         let assistant = try names("assistant")
         XCTAssertFalse(assistant.contains("Fork from here")); XCTAssertFalse(assistant.contains("View raw"))
         XCTAssertTrue(assistant.contains("Copy"))
+        // A tool's words are not a reply: nothing to quote into a side chat,
+        // no file links to resolve.
+        func regions(_ view: NSView) -> [TranscriptQuoteRegionView] {
+            ((view as? TranscriptQuoteRegionView).map { [$0] } ?? []) + view.subviews.flatMap { regions($0) }
+        }
+        func texts(_ view: NSView) -> [MarkdownTextView] {
+            ((view as? MarkdownTextView).map { [$0] } ?? []) + view.subviews.flatMap { texts($0) }
+        }
+        for (role, quoted) in [("tool", false), ("assistant", true)] {
+            var message = TranscriptMessage(id: "q-" + role, role: role, text: "Words to quote.")
+            message.state = "complete"
+            let actions = TranscriptActions(resolveReplyFile: { _ in nil })
+            let row = TranscriptRowContainer(item: .message(message), fresh: false, actions: actions, environment: environment)
+            _ = row.measure(width: 600)
+            XCTAssertEqual(regions(row).isEmpty, !quoted, "\(role): quoting")
+            XCTAssertEqual(texts(row).first?.resolveFile != nil, quoted, "\(role): file links")
+        }
     }
 
     @MainActor func testStatusRowsMatchTheirSwiftUIRows() throws {
