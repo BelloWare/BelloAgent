@@ -65,7 +65,8 @@ final class TranscriptTextCalibrationTests: XCTestCase {
             ("body13", TranscriptNativeFailureRow.bodyFace), ("status12", TranscriptNativeStatusRow.face),
             ("title12.5sb", TranscriptNativeFailureRow.titleFace), ("pill11.5m", TranscriptPillButton.wrappedFace(.systemFont(ofSize: 11.5, weight: .medium))),
             ("code12mono", TranscriptCardFaces.code), ("banner11.5m", TranscriptCardFaces.banner),
-            ("note11.5", TranscriptCardFaces.note), ("message12", TranscriptCardFaces.message)]
+            ("note11.5", TranscriptCardFaces.note), ("message12", TranscriptCardFaces.message),
+            ("number11.5mono", TranscriptCardFaces.number)]
         var failures: [String] = []
         for (name, face) in faces {
             for n in [0, 1, 2, 3, 5] {

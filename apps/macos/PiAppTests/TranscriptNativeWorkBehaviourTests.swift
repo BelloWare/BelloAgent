@@ -269,12 +269,12 @@ final class TranscriptNativeWorkBehaviourTests: XCTestCase {
 
     /// VoiceOver hears a read's line numbers and a diff's signs.
     @MainActor func testLineMarksAreSpoken() throws {
-        let card = ActionRowView.Card.read(text: "alpha\nbeta", firstLine: 1_000, path: nil, failed: false)
+        let card = ActionRowView.Card.read(text: "alpha\nbeta", firstLine: 41, path: nil, failed: false)
         let view = TranscriptNativeCard.make(card)
         view.update(card, link: nil, environment: TranscriptRowEnvironment())
         view.frame = CGRect(x: 0, y: 0, width: 600, height: view.height(width: 600)); view.layoutSubtreeIfNeeded()
         let spoken = views(TranscriptLabel.self, in: view).filter { $0.isAccessibilityElement() }.compactMap { $0.accessibilityLabel() }
-        XCTAssertTrue(spoken.contains("1,000") && spoken.contains("1,001"), "spoken: \(spoken)")
+        XCTAssertTrue(spoken.contains("41") && spoken.contains("42"), "spoken: \(spoken)")
     }
 
     /// A line the reader is selecting in an expanded diff stays built while
@@ -300,6 +300,53 @@ final class TranscriptNativeWorkBehaviourTests: XCTestCase {
         scroll.lines.mountVisibleRows()
         XCTAssertTrue(scroll.lines.builtTexts.contains { $0 === first }, "the selected line is kept")
         XCTAssertFalse(scroll.lines.builtTexts.contains { $0.string == "line 2" }, "lines out of view are let go")
+    }
+
+    /// A capped section whose text grows (a command still printing) can be
+    /// scrolled to its new end at once.
+    @MainActor func testACappedSectionTakesTheTextThatArrivesLater() {
+        let section = TranscriptCappedText(cap: TranscriptCardMetrics.sectionCap)
+        section.update("one\ntwo", face: TranscriptCardFaces.code, color: .black, environment: TranscriptRowEnvironment())
+        section.frame = CGRect(x: 0, y: 0, width: 300, height: section.height(width: 300)); section.layoutSubtreeIfNeeded()
+        section.update((1...40).map { "line \($0)" }.joined(separator: "\n"), face: TranscriptCardFaces.code, color: .black, environment: TranscriptRowEnvironment())
+        XCTAssertEqual(section.text.frame.height, ceil(section.text.exactHeight(width: 300)), "the document is as tall as its new text")
+        XCTAssertGreaterThan(section.text.frame.height, TranscriptCardMetrics.sectionCap)
+    }
+
+    /// A too-large diff sets its whole texts only once they are shown.
+    @MainActor func testFullContentIsSetOnlyWhenOpened() throws {
+        let request = TranscriptActivity.EditRequest(before: "old", after: "new text", mode: "edit", rows: [], hiddenRows: 0, complete: true, tooLarge: true, lines: 9_000)
+        let card = ActionRowView.Card.diff(request, path: nil, outcome: .done, added: 1, removed: 1)
+        let view = TranscriptNativeCard.make(card)
+        view.update(card, link: nil, environment: TranscriptRowEnvironment())
+        let texts = { self.views(TranscriptCappedText.self, in: view).map(\.text.string) }
+        XCTAssertEqual(texts(), ["", ""], "closed, nothing is copied in")
+        try XCTUnwrap(views(NSButton.self, in: view).first { $0.bezelStyle == .disclosure }).performClick(nil)
+        XCTAssertEqual(Set(texts()), ["old", "new text"])
+    }
+
+    /// An expanded read of a long file, in a conversation's scroll view,
+    /// builds the lines near the view and not the rest.
+    @MainActor func testAnExpandedReadBuildsOnlyTheLinesInView() throws {
+        let card = ActionRowView.Card.read(text: (1...400).map { "line \($0)" }.joined(separator: "\n"), firstLine: 1, path: nil, failed: false)
+        let view = try XCTUnwrap(TranscriptNativeCard.make(card) as? TranscriptNativeReadCard)
+        view.update(card, link: nil, environment: TranscriptRowEnvironment())
+        view.setExpanded(true)
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 600, height: 300), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.contentView = nil; window.close() }
+        let scroll = NSScrollView(frame: CGRect(x: 0, y: 0, width: 600, height: 300))
+        let document = TranscriptNativeRowParityTests.ParityCanvas(frame: CGRect(x: 0, y: 0, width: 600, height: view.height(width: 600)))
+        scroll.documentView = document
+        window.contentView = scroll
+        document.addSubview(view)
+        view.frame = document.bounds
+        scroll.layoutSubtreeIfNeeded(); view.layoutSubtreeIfNeeded()
+        let lines = try XCTUnwrap(views(TranscriptCardLines.self, in: view).first { !$0.isHidden && $0.lines.count == 400 })
+        XCTAssertGreaterThan(lines.builtCount, 10)
+        XCTAssertLessThan(lines.builtCount, 60, "400 lines, \(lines.builtCount) built")
+        scroll.contentView.scroll(to: CGPoint(x: 0, y: document.frame.height - 300))
+        XCTAssertTrue(lines.builtTexts.contains { $0.string == "line 400" }, "scrolling builds the lines it reaches")
     }
 
     /// A running row sweeps, on the render server; a finished one does not.

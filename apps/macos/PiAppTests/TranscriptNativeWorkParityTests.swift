@@ -110,6 +110,9 @@ final class TranscriptNativeWorkParityTests: XCTestCase {
             ("diff-too-large", .diff(request([], tooLarge: true), path: "Big.json", outcome: .done, added: 9_000, removed: 0), false),
             ("read-expanded", .read(text: lines, firstLine: 100, path: "Sources/File.swift", failed: false), true),
             ("read-failed", .read(text: "only line", firstLine: 1, path: nil, failed: true), false),
+            // Numbers wider than their gutter.
+            ("read-thousands", .read(text: "a\nb\nc\nd", firstLine: 998, path: "Big.swift", failed: false), false),
+            ("read-millions", .read(text: "a\nb", firstLine: 1_234_567, path: nil, failed: false), false),
         ]
         var failures: [String] = []
         let out = testEnvironment("PI_PARITY_OUT").map { URL(fileURLWithPath: $0, isDirectory: true) }

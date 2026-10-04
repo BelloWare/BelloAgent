@@ -19,6 +19,8 @@ enum TranscriptCardFaces {
     /// A payload, a command, a diff's and a read's lines.
     static let code = TranscriptPlainTextFace(size: 12, monospaced: true, lineSpacing: 0, label: "Text")
     nonisolated(unsafe) static let codeFont = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+    /// A read's line number too wide for its gutter, which wraps there.
+    static let number = TranscriptPlainTextFace(size: 11.5, monospaced: true, lineSpacing: 0, label: "Line number")
     /// A card's notes.
     static let note = TranscriptPlainTextFace(size: 11.5, monospaced: false, lineSpacing: 0, label: "Note")
     /// A diff too large to draw.
@@ -184,6 +186,8 @@ enum TranscriptCardFaces {
     required init?(coder: NSCoder) { nil }
     func update(_ string: String, face: TranscriptPlainTextFace, color: NSColor, environment: TranscriptRowEnvironment) {
         text.update(text: string, face: face, environment: environment, swiftUILines: true, color: color)
+        // Text that grew is scrolled through at its new height.
+        tile()
     }
     /// The section's height at `width`: its text's, up to the cap.
     func height(width: CGFloat) -> CGFloat { min(text.exactHeight(width: width), cap) }
@@ -358,9 +362,18 @@ enum TranscriptCardFaces {
     private(set) var lines: [Line] = []
     private var environment = TranscriptRowEnvironment()
     private var heights: [(width: CGFloat, rows: [CGFloat])] = []
-    private var built: [Int: (background: TranscriptPanel?, mark: TranscriptLabel, text: TranscriptPlainTextView)] = [:]
-    /// Lays out every row, rather than the ones in view: a short list.
-    var buildsAll = true
+    @MainActor private final class Row {
+        let background: TranscriptPanel?
+        let mark = TranscriptLabel()
+        /// A number wider than its gutter, wrapped in it as SwiftUI wraps it.
+        var wrappedMark: TranscriptPlainTextView?
+        let text = TranscriptPlainTextView()
+        init(background: TranscriptPanel?) { self.background = background }
+        var views: [NSView] { [background, mark, wrappedMark, text].compactMap { $0 } }
+    }
+    private var built: [Int: Row] = [:]
+    /// Lays out every row, rather than the ones in view.
+    var buildsAll = false
     override var isFlipped: Bool { true }
     init(style: Style) {
         self.style = style
@@ -374,7 +387,7 @@ enum TranscriptCardFaces {
     private var gap: CGFloat { style == .diff ? 8 : 12 }
     func update(_ lines: [Line], environment: TranscriptRowEnvironment) {
         let geometry = self.environment.hasSameGeometry(as: environment)
-        if lines.map(\.text) != self.lines.map(\.text) || !geometry { heights.removeAll() }
+        if lines.map(\.text) != self.lines.map(\.text) || lines.map(\.mark) != self.lines.map(\.mark) || !geometry { heights.removeAll() }
         self.lines = lines
         self.environment = environment
         for (index, row) in built {
@@ -382,21 +395,37 @@ enum TranscriptCardFaces {
         }
         needsLayout = true
     }
-    private func configure(_ row: (background: TranscriptPanel?, mark: TranscriptLabel, text: TranscriptPlainTextView), _ line: Line) {
+    /// Whether a mark is wider than its gutter, and so wraps in it.
+    private func wraps(_ mark: String) -> Bool {
+        style == .numbered && Self.markWidth(mark, font: markFont) > markWidth
+    }
+    private static func markWidth(_ mark: String, font: NSFont) -> CGFloat {
+        // A monospaced face's figures are already as wide as each other.
+        ceil((mark as NSString).size(withAttributes: [.font: font]).width * 2) / 2
+    }
+    private func configure(_ row: Row, _ line: Line) {
         row.background?.fill = line.background
         row.mark.text = line.mark; row.mark.color = line.markColor
+        if wraps(line.mark) {
+            let wrapped = row.wrappedMark ?? { let view = TranscriptPlainTextView(); addSubview(view); row.wrappedMark = view; return view }()
+            wrapped.update(text: line.mark, face: TranscriptCardFaces.number, environment: environment, swiftUILines: true, color: line.markColor)
+            row.mark.isHidden = true
+        } else {
+            row.wrappedMark?.removeFromSuperview(); row.wrappedMark = nil
+            row.mark.isHidden = false
+        }
         // VoiceOver hears a row's sign or its line number, as it heard the Text.
-        row.mark.speak(line.mark.trimmingCharacters(in: .whitespaces).isEmpty ? nil : line.mark)
+        row.mark.speak(line.mark.trimmingCharacters(in: .whitespaces).isEmpty || row.mark.isHidden ? nil : line.mark)
         row.text.update(text: line.text.isEmpty ? " " : line.text, face: TranscriptCardFaces.code, environment: environment,
                         swiftUILines: true, color: TranscriptNSPalette.text)
     }
     private func holdsSelection(_ index: Int) -> Bool {
-        guard let text = built[index]?.text else { return false }
-        return text.selectedRange().length > 0 || window?.firstResponder === text
+        guard let row = built[index] else { return false }
+        return [row.text, row.wrappedMark].compactMap { $0 }.contains { $0.selectedRange().length > 0 || window?.firstResponder === $0 }
     }
     private func remove(_ index: Int) {
         guard let row = built.removeValue(forKey: index) else { return }
-        row.background?.removeFromSuperview(); row.mark.removeFromSuperview(); row.text.removeFromSuperview()
+        for view in row.views { view.removeFromSuperview() }
     }
     /// Measures a row's text without building it.
     private static let measurer: TranscriptPlainTextView = { let view = TranscriptPlainTextView(); view.isSelectable = false; return view }()
@@ -406,8 +435,13 @@ enum TranscriptCardFaces {
         let markHeight = TranscriptLabel.lineHeight(markFont)
         let measurer = Self.measurer
         let rows = lines.map { line -> CGFloat in
+            var mark = markHeight
+            if wraps(line.mark) {
+                measurer.update(text: line.mark, face: TranscriptCardFaces.number, environment: environment, swiftUILines: true)
+                mark = measurer.exactHeight(width: markWidth)
+            }
             measurer.update(text: line.text.isEmpty ? " " : line.text, face: TranscriptCardFaces.code, environment: environment, swiftUILines: true)
-            return max(markHeight, measurer.exactHeight(width: textWidth))
+            return max(mark, measurer.exactHeight(width: textWidth))
         }
         if heights.count == 4 { heights.removeFirst() }
         heights.append((width, rows))
@@ -418,11 +452,28 @@ enum TranscriptCardFaces {
         super.layout()
         mountVisibleRows()
     }
+    // The rows in view follow the scroll view the lines are read through:
+    // the card's own, or the conversation's.
+    private weak var observedClip: NSClipView?
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        let clip = window == nil ? nil : enclosingScrollView?.contentView
+        guard clip !== observedClip else { return }
+        if let observedClip { NotificationCenter.default.removeObserver(self, name: NSView.boundsDidChangeNotification, object: observedClip) }
+        observedClip = clip
+        if let clip {
+            clip.postsBoundsChangedNotifications = true
+            NotificationCenter.default.addObserver(self, selector: #selector(scrolled), name: NSView.boundsDidChangeNotification, object: clip)
+        }
+        needsLayout = true
+    }
+    @objc private func scrolled() { mountVisibleRows() }
     /// Builds and places the rows that can be seen, and lets the others go.
     func mountVisibleRows() {
         guard bounds.width > 0 else { return }
         let rows = rowHeights(width: bounds.width)
-        let visible = buildsAll ? bounds : visibleRect.insetBy(dx: 0, dy: -200)
+        // Read through no scroll view, every row is in view.
+        let visible = buildsAll || observedClip == nil ? bounds : visibleRect.insetBy(dx: 0, dy: -200)
         let rtl = environment.layoutDirection == .rightToLeft
         let textWidth = max(1, bounds.width - 32 - markWidth - gap)
         var y: CGFloat = 0
@@ -432,11 +483,9 @@ enum TranscriptCardFaces {
             // A row out of view goes, unless the reader is selecting in it.
             guard frame.intersects(visible) || holdsSelection(index) else { remove(index); continue }
             let row = built[index] ?? {
-                let background: TranscriptPanel? = style == .diff ? { let panel = TranscriptPanel(); panel.cornerRadius = 0; return panel }() : nil
-                let mark = TranscriptLabel(); mark.font = markFont; mark.monospacedDigits = style == .numbered
-                let text = TranscriptPlainTextView()
-                for view in [background, mark, text] as [NSView?] { if let view { addSubview(view) } }
-                let made = (background: background, mark: mark, text: text)
+                let made = Row(background: style == .diff ? { let panel = TranscriptPanel(); panel.cornerRadius = 0; return panel }() : nil)
+                made.mark.font = markFont; made.mark.monospacedDigits = style == .numbered
+                for view in made.views { addSubview(view) }
                 configure(made, lines[index])
                 built[index] = made
                 return made
@@ -447,12 +496,19 @@ enum TranscriptCardFaces {
             // diff's mark stands at the left.
             let markX: CGFloat = style == .numbered ? 16 + markWidth - row.mark.exactWidth : 16
             row.mark.frame = TranscriptMotion.mirrored(CGRect(x: markX, y: y, width: markSize.width, height: markSize.height), of: row.mark, width: bounds.width, rtl)
+            if let wrapped = row.wrappedMark {
+                // Its lines as wide as its widest, at the right of the gutter.
+                let used = wrapped.usedWidth(width: markWidth)
+                wrapped.frame = TranscriptMotion.mirrored(CGRect(x: 16 + markWidth - used, y: y, width: used, height: ceil(wrapped.exactHeight(width: used))),
+                                                          width: bounds.width, rtl)
+            }
             row.text.frame = TranscriptMotion.mirrored(CGRect(x: 16 + markWidth + gap, y: y, width: textWidth, height: ceil(height)), width: bounds.width, rtl)
         }
     }
     private func pixelAligned(_ rect: CGRect) -> CGRect { TranscriptMotion.pixelAligned(rect, scale: window?.backingScaleFactor ?? 2) }
     /// The texts built now, for checks.
     var builtTexts: [TranscriptPlainTextView] { built.keys.sorted().compactMap { built[$0]?.text } }
+    var builtCount: Int { built.count }
 }
 
 /// Lines in a scroll of their own past `cap`, building only the rows in view.
@@ -460,17 +516,16 @@ enum TranscriptCardFaces {
     let lines: TranscriptCardLines
     let cap: CGFloat
     init(style: TranscriptCardLines.Style, cap: CGFloat) {
-        lines = TranscriptCardLines(style: style); lines.buildsAll = false
+        lines = TranscriptCardLines(style: style)
         self.cap = cap
         super.init(frame: .zero)
         drawsBackground = false; contentView.drawsBackground = false
         borderType = .noBorder; hasVerticalScroller = true; autohidesScrollers = true
         documentView = lines
-        contentView.postsBoundsChangedNotifications = true
-        NotificationCenter.default.addObserver(self, selector: #selector(scrolled), name: NSView.boundsDidChangeNotification, object: contentView)
     }
     required init?(coder: NSCoder) { nil }
-    @objc private func scrolled() { lines.mountVisibleRows() }
+    /// Fits the lines' new height, once they changed.
+    func refresh() { tile() }
     func height(width: CGFloat) -> CGFloat { min(lines.height(width: width), cap) }
     override func tile() {
         super.tile()
@@ -510,11 +565,11 @@ enum TranscriptCardFaces {
     private var showsFooter = false
     override init(frame: NSRect) {
         super.init(frame: frame)
-        banner.isSelectable = false; banner.setAccessibilityElement(false)
+        banner.isSelectable = false
         bannerRule.cornerRadius = 0
         tooLarge.setAccessibilityIdentifier("diff-too-large")
         disclosure.title = "View full content"
-        disclosure.toggled = { [weak self] in self?.invalidatePlans() }
+        disclosure.toggled = { [weak self] in self?.configureSources(); self?.invalidatePlans() }
         corner.font = TranscriptCardFaces.codeFont; corner.text = "└ "
         for label in [plus, minus] { label.font = TranscriptCardFaces.figureFont; label.monospacedDigits = true }
         for view in [corner, plus, minus] { footer.addSubview(view) }
@@ -549,10 +604,7 @@ enum TranscriptCardFaces {
                         environment: environment, swiftUILines: true, color: TranscriptNSPalette.muted)
         // The whole texts are set only where they can be shown: a diff that
         // streams never copies its growing document into views nobody sees.
-        if request.tooLarge {
-            before.update(request.before, environment: environment)
-            after.update(request.after, environment: environment)
-        }
+        configureSources()
         after.title = request.mode == "edit" ? "After" : "Content"
         for view in [before, after] { view.rightToLeft = rightToLeft }
         disclosure.rightToLeft = rightToLeft
@@ -570,6 +622,13 @@ enum TranscriptCardFaces {
         footer.setAccessibilityLabel("\(plusCount) lines added, \(minusCount) removed")
         more.enabled = environment.isEnabled; more.rightToLeft = rightToLeft
         configureLines()
+    }
+    /// The whole texts are set only while they are shown: a write that
+    /// streams never copies its growing document into views nobody sees.
+    private func configureSources() {
+        guard let request, request.tooLarge, disclosure.open else { return }
+        before.update(request.before, environment: environment)
+        after.update(request.after, environment: environment)
     }
     private var cap: (hidden: Int, capped: Bool, head: Int, tail: Int) {
         TranscriptCardMetrics.headTail(total: request?.rows.count ?? 0, maxLines: TranscriptCardMetrics.diffLines, expanded: expanded)
@@ -590,6 +649,7 @@ enum TranscriptCardFaces {
             scrolled.lines.update([], environment: environment)
         } else if expanded {
             scrolled.lines.update(lines(rows[...]), environment: environment)
+            scrolled.refresh()
             head.update([], environment: environment); tail.update([], environment: environment)
         } else {
             head.update(lines(rows[...]), environment: environment)
@@ -740,12 +800,13 @@ enum TranscriptCardFaces {
 @MainActor final class TranscriptCardSource: NSView {
     private let label = TranscriptLabel()
     private let text = TranscriptCappedText(cap: TranscriptCardMetrics.terminalCap)
-    var title: String { get { label.text } set { label.text = newValue } }
+    var title: String { get { label.text } set { label.text = newValue; label.speak(newValue) } }
     var rightToLeft = false { didSet { if rightToLeft != oldValue { needsLayout = true } } }
     override var isFlipped: Bool { true }
     init(label title: String) {
         super.init(frame: .zero)
         label.font = .systemFont(ofSize: 11.5, weight: .medium); label.text = title
+        label.speak(title)
         addSubview(label); addSubview(text)
     }
     required init?(coder: NSCoder) { nil }

@@ -202,9 +202,10 @@ struct NativePlainText: NSViewRepresentable {
     /// 11.5 pt text a point lower; the other faces where TextKit puts them.
     static func glyphOffset(_ font: NSFont, height: CGFloat, scale: CGFloat) -> CGFloat {
         if let glyphOffsetOverride { return glyphOffsetOverride }
-        guard !font.isFixedPitch else { return 0 }
-        // The faces whose glyphs SwiftUI sets lower by a fixed amount.
+        // The faces whose glyphs SwiftUI sets lower by a fixed amount, in
+        // either design (11.5 pt, a read's wrapped line number too).
         if let fixed = [11.5: 1.0][Double(font.pointSize)] { return CGFloat(fixed) }
+        guard !font.isFixedPitch else { return 0 }
         guard font.pointSize == TranscriptPlainTextFace.user.size else { return 0 }
         let room = (ceil(height) - height) / 2
         return 1 - (room * scale).rounded() / scale
