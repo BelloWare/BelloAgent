@@ -1,5 +1,4 @@
 import AppKit
-import SwiftUI
 import Combine
 
 // Tabs beside the chats: files, and later a repository's changes, shown as
@@ -46,7 +45,7 @@ import Combine
     /// The tab's content, made once, when it is first shown, and kept while
     /// the tab is open: its state survives other tabs being shown and the tab
     /// moving between the pane and windows.
-    func makeContent() -> AnyView { AnyView(EmptyView()) }
+    func makeAppKitContent() -> NSView { NSView() }
     /// What the tab needs to come back after a relaunch, beside its key.
     func savedState() -> Data? { nil }
     /// A tab of this kind, as saved; nil if it cannot come back.
@@ -74,7 +73,7 @@ import Combine
     /// and windows.
     var contentView: TabContentView {
         if let madeContent { return madeContent }
-        let view = TabContentView(rootView: AnyView(makeContent().piTabRoot()))
+        let view = TabContentView(content: makeAppKitContent())
         view.tab = self
         madeContent = view
         return view
@@ -97,10 +96,22 @@ import Combine
     }
 }
 
-/// A tab's content, kept by the tab: a hosting view of its own, so its state
-/// lives while the tab is open, wherever it is shown.
-final class TabContentView: NSHostingView<AnyView> {
+/// A tab's content, kept by the tab in a view of its own, so its state
+/// lives while the tab is open, wherever it is shown: the kind's view, on
+/// the content canvas, filling it.
+final class TabContentView: NSView {
     weak var tab: HostedTab?
+    let content: NSView
+    init(content: NSView) {
+        self.content = content
+        super.init(frame: .zero)
+        wantsLayer = true
+        content.frame = bounds; content.autoresizingMask = [.width, .height]
+        addSubview(content)
+    }
+    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    override var wantsUpdateLayer: Bool { true }
+    override func updateLayer() { layer?.backgroundColor = piCGColor(.piContent) }
 }
 
 extension TabHost {
@@ -120,12 +131,6 @@ extension TabHost {
     }
 }
 
-extension View {
-    /// What a tab's content inherits in the app, being a root of its own.
-    func piTabRoot() -> some View {
-        buttonStyle(.piSecondary).toggleStyle(.piSwitch).background(Color.piContent)
-    }
-}
 
 /// The pane beside the chats, or one window: its tabs, in order, and which
 /// is shown. In the pane, the chat's side can be shown in their place.

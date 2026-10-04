@@ -29,7 +29,7 @@ import Combine
             guard let self, let host = self.host else { return false }
             return host.closeShownTab(in: self.container, sideAvailable: false)
         }
-        window.contentView = TabWindowRootHosting.make(host: host, container: container)
+        window.contentView = TabWindowRootView(host: host, container: container)
         if let frame { window.setFrame(Self.onScreen(frame), display: false) } else { window.center() }
     }
     required init?(coder: NSCoder) { nil }
