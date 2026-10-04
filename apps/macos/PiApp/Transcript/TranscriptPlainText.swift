@@ -266,7 +266,8 @@ struct NativePlainText: NSViewRepresentable {
     /// cut by TextKit itself.
     static func limited(_ text: String, lines: Int) -> String {
         guard lines > 0 else { return text }
-        let parts = text.split(separator: "\n", omittingEmptySubsequences: false)
+        // Every newline form is one break (CRLF is one Character).
+        let parts = text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
         guard parts.count > lines else { return text }
         return parts.prefix(lines).joined(separator: "\n") + "…"
     }
@@ -313,6 +314,8 @@ struct NativePlainText: NSViewRepresentable {
             manager.enumerateLineFragments(forGlyphRange: manager.glyphRange(for: container)) { rect, _, _, _, stop in
                 lines += 1; bottom = rect.maxY; if lines == self.maximumLines { stop.pointee = true }
             }
+            // A trailing break's empty line is a line too, while the limit allows it.
+            if lines < maximumLines, manager.extraLineFragmentRect.height > 0 { bottom = manager.extraLineFragmentRect.maxY }
             height = min(height, bottom)
         }
         if exactSizes.count == 4 { exactSizes.removeFirst() }; exactSizes.append(CGSize(width: width, height: height))

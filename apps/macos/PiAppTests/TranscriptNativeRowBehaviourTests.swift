@@ -247,4 +247,17 @@ final class TranscriptNativeRowBehaviourTests: XCTestCase {
         let spin = try XCTUnwrap(spinner.layer?.sublayers?.compactMap { $0.animation(forKey: "turn") as? CABasicAnimation }.first)
         XCTAssertGreaterThan((spin.toValue as? Double) ?? 0, 0, "a rising angle turns clockwise in the flipped layer")
     }
+
+    /// A text limited to two lines keeps a trailing break's line when it
+    /// fits, and cuts any newline form with an ellipsis when it does not.
+    @MainActor func testLineLimitCountsEveryLineBreak() {
+        XCTAssertEqual(TranscriptPlainTextView.limited("first\r\nsecond\r\nthird", lines: 2), "first\nsecond…")
+        XCTAssertEqual(TranscriptPlainTextView.limited("first\u{2028}second\nthird", lines: 2), "first\nsecond…")
+        XCTAssertEqual(TranscriptPlainTextView.limited("first\n", lines: 2), "first\n")
+        let text = TranscriptPlainTextView(); text.isSelectable = false; text.maximumLines = 2
+        text.update(text: "first\n", face: TranscriptNativeBranchRow.detailFace, environment: TranscriptRowEnvironment(), swiftUILines: true)
+        let one = TranscriptPlainTextView(); one.isSelectable = false; one.maximumLines = 2
+        one.update(text: "first", face: TranscriptNativeBranchRow.detailFace, environment: TranscriptRowEnvironment(), swiftUILines: true)
+        XCTAssertEqual(text.exactHeight(width: 300), 2 * one.exactHeight(width: 300), "the empty second line is drawn")
+    }
 }
