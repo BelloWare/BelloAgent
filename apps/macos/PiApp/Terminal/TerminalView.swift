@@ -1,6 +1,5 @@
 import AppKit
 import CoreText
-import SwiftUI
 
 /// Draws a TerminalEmulator with CoreText and turns keys, mouse and paste into
 /// the bytes a program expects. The view owns scrollback viewing, selection
@@ -82,9 +81,9 @@ import SwiftUI
         emulator.cellPixelSize = (Int(cellWidth), Int(cellHeight))
     }
     private var isDark: Bool { effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua }
-    var defaultForeground: NSColor { NSColor(Color.piInk) }
-    var defaultBackground: NSColor { NSColor(Color.piTerminalSurface) }
-    private var accent: NSColor { NSColor(Color.piBrandOrange) }
+    var defaultForeground: NSColor { .piInk }
+    var defaultBackground: NSColor { .piTerminalSurface }
+    private var accent: NSColor { .piBrandOrange }
     private static let lightPalette: [NSColor] = ["1d1b17", "b3312c", "2f7d3b", "9a6a00", "2a5aa6", "8a3fb0", "1f7a8c", "c9c3b8", "6e6a61", "d1453f", "3d8a57", "b97a1e", "3b6fc4", "a35bd1", "2c96a8", "f2ede5"].map(NSColor.init(hex:))
     private static let darkPalette: [NSColor] = ["3a3129", "ea7c7c", "7cc48f", "e3b15c", "a8c9fc", "d7a5ee", "7fd3e0", "d9d4cb", "78746b", "f19a9a", "98d6a8", "f0c67c", "bcd6ff", "e4c0f5", "9fe0eb", "f5f1ea"].map(NSColor.init(hex:))
     func color(_ colour: TerminalColor, foreground: Bool) -> NSColor {

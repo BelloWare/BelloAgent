@@ -1,5 +1,4 @@
 import AppKit
-import SwiftUI
 
 /// Which form the metrics line takes, in the order `ViewThatFits` tried them:
 /// everything, then without the token total, then without the recency stamp,
