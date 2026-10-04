@@ -1,5 +1,4 @@
 import AppKit
-import SwiftUI
 
 /// How much of itself the pill group shows, in the order the trial layouts
 /// used to try: everything, then the connection and effort as icons with the

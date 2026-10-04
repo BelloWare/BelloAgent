@@ -50,7 +50,7 @@ final class QueuePanelGalleryTests: XCTestCase {
                     dump(pane.hosted, 0)
                 }
                 let field = try XCTUnwrap(ConversationPaneTests.views(ComposerTextView.self, in: pane.hosted).first?.enclosingScrollView)
-                if let list = ConversationPaneTests.views(NSScrollView.self, in: pane.hosted).first(where: { String(describing: Swift.type(of: $0)).contains("ListCore") }) {
+                if let list = ConversationPaneTests.views(NSScrollView.self, in: pane.hosted).first(where: { $0 is QueueListScrollView }) {
                     XCTAssertFalse(scene.collapsed, "\(scene.name): a collapsed panel shows no rows")
                     XCTAssertLessThanOrEqual(list.frame.height, QueuePanel.visibleRows * QueuePanel.rowHeight + 2 * QueuePanel.sectionHeaderHeight + 0.5, scene.name)
                     XCTAssertFalse(list.convert(list.bounds, to: nil).intersects(field.convert(field.bounds, to: nil)), "\(scene.name): the queue covers the composer")

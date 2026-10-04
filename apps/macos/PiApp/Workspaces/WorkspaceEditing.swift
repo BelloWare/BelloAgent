@@ -1,4 +1,3 @@
-import SwiftUI
 import AppKit
 
 // Edit-and-resend (contract H4) and the per-message details entry point.
@@ -217,29 +216,4 @@ struct PendingBranch: Equatable, Sendable {
     var from: String?
     var messageID: String
     var turnID: String
-}
-
-/// Slim banner above the composer field while an earlier message is being edited.
-/// Strip above the composer while context is being compacted and after it
-/// finished, so the change is noticed even when the transcript marker has
-/// scrolled away. Dismissed by the next send or the button.
-struct EditingBanner: View {
-    @ObservedObject var session: SessionDisplay
-    var blocker: String? = nil
-    let cancel: () -> Void
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
-                Image(systemName: "pencil.line").foregroundStyle(Color.piAccent)
-                Text("Editing an earlier message").font(.system(size: 11.5, weight: .semibold))
-                Spacer(minLength: 4)
-                Button("Cancel", action: cancel).buttonStyle(.piGhost).keyboardShortcut(.cancelAction).disabled(session.editSubmitting)
-            }
-            Text(blocker ?? session.editNotice).font(PiFont.caption).foregroundStyle(blocker == nil ? Color.piInkSecondary : Color.piDanger).fixedSize(horizontal: false, vertical: true)
-            if session.editInputReviewRequired {
-                Button("Use text only / I've reselected the needed inputs") { session.editInputReviewRequired = false }.buttonStyle(.piGhost)
-            }
-        }.padding(8).background(Color.piAccentSoft, in: RoundedRectangle(cornerRadius: 10)).padding(.horizontal, 8).padding(.top, 8)
-            .accessibilityElement(children: .contain).accessibilityLabel("Editing an earlier message")
-    }
 }

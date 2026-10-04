@@ -11,7 +11,7 @@ extension ConversationPaneTests {
         try XCTUnwrap(Self.views(TranscriptSurfaceMarker.self, in: pane.hosted).first?.enclosingScrollView).frame.height
     }
     @MainActor private func queueList(_ pane: Pane) -> NSScrollView? {
-        Self.views(NSScrollView.self, in: pane.hosted).first { String(describing: Swift.type(of: $0)).contains("ListCore") }
+        Self.views(NSScrollView.self, in: pane.hosted).first { $0 is QueueListScrollView }
     }
     @MainActor private func withTerminalHeight(_ height: Double, _ body: () async throws -> Void) async rethrows {
         let defaults = UserDefaults.standard, previous = defaults.object(forKey: "terminalHeight")
@@ -95,6 +95,82 @@ extension ConversationPaneTests {
         XCTAssertEqual(QueuedMessage.from(pane.session.queue).map(\.id), before, "nothing moved")
     }
 
+    /// Follow-ups are reordered by dragging their rows in the panel's own
+    /// table: a row dropped below the last goes last; steering rows and the
+    /// headings never move, and nothing is dragged while a message is edited.
+    @MainActor func testDraggingAFollowUpRowReordersTheQueue() async throws {
+        let pane = try Pane(width: 920, height: 700); defer { pane.close() }
+        pane.session.state = "running"
+        var queue: [[String: WireValue]] = [["turnId": .string("s"), "kind": .string("steering"), "text": .string("Steer")]]
+        for index in 0..<3 { queue.append(["turnId": .string("q\(index)"), "kind": .string("follow-up"), "text": .string("Message \(index)")]) }
+        pane.session.queue = queue
+        await pane.settle(12)
+        let table = try XCTUnwrap(Self.views(QueueTableView.self, in: pane.hosted).first)
+        // The headings are headings to VoiceOver (`.isHeader`).
+        XCTAssertEqual(table.view(atColumn: 0, row: 0, makeIfNecessary: true)?.accessibilityRole(), QueueHeadingView.headingRole)
+        XCTAssertEqual(table.view(atColumn: 0, row: 2, makeIfNecessary: true)?.accessibilityLabel(), "Follow-ups · when this run finishes")
+        try dropFirstFollowUpLast(table)
+        try await waitFor("The drag never reordered the queue") { QueuedMessage.from(pane.session.queue).map(\.id) == ["s", "q1", "q2", "q0"] }
+        NSPasteboard(name: .drag).clearContents()
+        // While a message is edited the follow-ups stay where they are.
+        pane.session.adoptQueueEditHold(QueueEditHold(["editId": .string("e"), "turnId": .string("q1")]), revision: 10)
+        await pane.settle(6)
+        noDragDuringAnEdit(table)
+        // A message that leaves during the drag: the order the drag began
+        // with goes to the helper, which refuses it; nothing moves.
+        pane.session.adoptQueueEditHold(nil, revision: 11)
+        await pane.settle(6)
+        let item = try XCTUnwrap(table.tableView(table, pasteboardWriterForRow: 3) as? NSPasteboardItem)
+        pane.session.queue.removeAll { $0["turnId"]?.string == "q2" }
+        await pane.settle(6)
+        let before = QueuedMessage.from(pane.session.queue).map(\.id)
+        dropBelowTheLast(item, in: table)
+        try await waitFor("The stale drop was never refused") { pane.session.notice.contains("changed while you were dragging") }
+        XCTAssertEqual(QueuedMessage.from(pane.session.queue).map(\.id), before, "nothing moved")
+        NSPasteboard(name: .drag).clearContents()
+    }
+    @MainActor private func dropBelowTheLast(_ item: NSPasteboardItem, in table: QueueTableView) {
+        let drag = DragInFlight(item); drag.source = table
+        XCTAssertTrue(table.tableView(table, acceptDrop: drag, row: table.numberOfRows, dropOperation: .above))
+    }
+    /// The drag itself, outside the async test (AppKit's drop calls are synchronous).
+    @MainActor private func dropFirstFollowUpLast(_ table: QueueTableView) throws {
+        // Lines: steering heading, s, follow-ups heading, q0, q1, q2.
+        XCTAssertEqual(table.numberOfRows, 6)
+        XCTAssertNil(table.tableView(table, pasteboardWriterForRow: 1), "a steering row does not move")
+        XCTAssertNil(table.tableView(table, pasteboardWriterForRow: 2), "nor a heading")
+        let written = try XCTUnwrap(table.tableView(table, pasteboardWriterForRow: 3) as? NSPasteboardItem)
+        let drag = DragInFlight(written); drag.source = table
+        XCTAssertEqual(table.tableView(table, validateDrop: drag, proposedRow: 6, proposedDropOperation: .above), .move)
+        // The same row's words, from a drag that began somewhere else.
+        let copy = NSPasteboardItem(); copy.setString("q0", forType: QueueTableView.dragType)
+        let foreign = DragInFlight(copy)
+        XCTAssertEqual(table.tableView(table, validateDrop: foreign, proposedRow: 6, proposedDropOperation: .above), [], "only the panel's own rows")
+        XCTAssertTrue(table.tableView(table, acceptDrop: drag, row: 6, dropOperation: .above))
+    }
+    @MainActor private func noDragDuringAnEdit(_ table: QueueTableView) {
+        XCTAssertNil(table.tableView(table, pasteboardWriterForRow: 4), "nothing is dragged during an edit")
+        let item = NSPasteboardItem(); item.setString("q0", forType: QueueTableView.dragType)
+        let drag = DragInFlight(item); drag.source = table
+        XCTAssertEqual(table.tableView(table, validateDrop: drag, proposedRow: 6, proposedDropOperation: .above), [])
+    }
+
+    /// In a narrow split pane the header's status wraps beside Resume and
+    /// never runs under it; the panel grows to hold it.
+    @MainActor func testTheQueueHeaderWrapsInANarrowPane() async throws {
+        let pane = try Pane(width: 460, height: 700); defer { pane.close() }
+        pane.session.state = "error"
+        pane.session.queue = (0..<3).map { ["turnId": .string("q\($0)"), "kind": .string("follow-up"), "text": .string("Message \($0)")] }
+        await pane.settle(12)
+        let panel = try XCTUnwrap(Self.views(QueuePanelView.self, in: pane.hosted).first)
+        let status = panel.status, resume = panel.resume
+        XCTAssertFalse(resume.isHidden)
+        XCTAssertLessThanOrEqual(status.frame.maxX, resume.frame.minX, "the status never runs under Resume")
+        XCTAssertGreaterThanOrEqual(status.frame.height, status.height(forWidth: status.frame.width) - 0.5, "it has the room its lines need")
+        let wide = status.height(forWidth: status.naturalWidth)
+        XCTAssertGreaterThan(status.frame.height, wide + 4, "at this width it takes a second line")
+    }
+
     /// The detail opened from its row: it shows the whole message; when the
     /// message leaves the queue while it is open, it says so, and nothing is
     /// edited or sent.
@@ -108,14 +184,14 @@ extension ConversationPaneTests {
         try await waitFor("The detail never opened") { NSApp.windows.contains { String(describing: Swift.type(of: $0)).contains("Popover") && $0.isVisible } }
         try await waitFor("The detail never showed its message") { pane.session.queueDetailShowing == "The whole message" }
         pane.session.queue.removeAll { $0["turnId"]?.string == "a" }
-        try await waitFor("The detail never said the message left") { pane.session.queueDetailShowing == QueuedMessageDetail.goneText }
+        try await waitFor("The detail never said the message left") { pane.session.queueDetailShowing == QueuedMessageDetailView.goneText }
         XCTAssertTrue(pane.edits.calls.isEmpty, "nothing was edited or held")
         XCTAssertEqual(pane.session.draft, "")
         // The last message leaving while its detail is open: still says so.
         pane.session.queueDetailID = "b"
         try await waitFor("The second detail never showed its message") { pane.session.queueDetailShowing == "Another" }
         pane.session.queue = []
-        try await waitFor("The detail of the last message never said it left") { pane.session.queueDetailShowing == QueuedMessageDetail.goneText }
+        try await waitFor("The detail of the last message never said it left") { pane.session.queueDetailShowing == QueuedMessageDetailView.goneText }
         XCTAssertTrue(NSApp.windows.contains { String(describing: Swift.type(of: $0)).contains("Popover") && $0.isVisible }, "the detail stays open")
         pane.session.queueDetailID = nil
         try await waitFor("The detail never closed") { !NSApp.windows.contains { String(describing: Swift.type(of: $0)).contains("Popover") && $0.isVisible } }

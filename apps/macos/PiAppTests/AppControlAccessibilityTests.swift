@@ -65,7 +65,7 @@ import FileView
         // Registered first, so it runs last: after the model's stores close.
         addTeardownBlock { @MainActor in registry.shutdown(); try? FileManager.default.removeItem(at: folder) }
         let model = makeWorkspaceModel(stateRoot: folder.appendingPathComponent("state"))
-        let window = try await hostedWindow(TerminalPanel(model: model, workspace: project), width: 920, height: 420)
+        let window = try await hostedWindow(TerminalPanelBridge(model: model, workspace: project), width: 920, height: 420)
         try await eventually("Terminal 1 opened") { registry.selected(for: project.id) != nil }
         let two = registry.create(for: project)
         registry.select(two.id, in: project.id)

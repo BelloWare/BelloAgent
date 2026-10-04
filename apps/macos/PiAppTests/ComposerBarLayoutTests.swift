@@ -187,6 +187,24 @@ final class ComposerBarLayoutTests: XCTestCase, SerialTestLane {
                      checks, worst, worstName, ComposerBarMetrics.safetyMargin))
     }
 
+    /// The AppKit pills are exactly as wide as the bar measures them: the
+    /// arithmetic decides the form, the pills draw it.
+    @MainActor func testTheAppKitPillsAreAsWideAsMeasured() throws {
+        for set in Self.labelSets() {
+            let metrics = Self.metrics(set) { _ in }
+            for form in ComposerPillsForm.allCases {
+                var pills: [ComposerPillButton] = []
+                if set.showsConnectionPill {
+                    pills.append(ComposerPillButton(icon: "antenna.radiowaves.left.and.right", text: set.connection, maxTextWidth: 150, compact: form.connectionIsCompact))
+                }
+                pills.append(ComposerPillButton(icon: "cpu", text: set.model, loading: set.loading, maxTextWidth: form.modelWidth, compact: form.modelIsCompact))
+                pills.append(ComposerPillButton(icon: "brain", text: set.effort, maxTextWidth: ModelSwitchPills.effortLabelWidth, compact: form.effortIsCompact))
+                let drawn = pills.map(\.intrinsicContentSize.width).reduce(0, +) + CGFloat(pills.count - 1) * ComposerBarMetrics.spacing
+                XCTAssertEqual(metrics.pillsWidth(form), drawn, accuracy: ComposerBarMetrics.roundingAllowance, "pills \(form) for \(set.name)")
+            }
+        }
+    }
+
     /// The form chosen by arithmetic is the form the old trial layouts would
     /// have chosen: the widest rung of the same ladder whose pieces, laid out
     /// by SwiftUI, fit the same available width.
@@ -371,12 +389,12 @@ struct TrialLayoutBar: View {
             if let chat = model.record(session.id) {
                 PiIconButton(symbol: "arrow.triangle.branch", label: "Changes", size: 28, filled: true) {}
                 SessionUsageButton(model: model, chat: chat, footer: session.footer)
-                ConversationActionsMenu(model: model, session: session, chat: chat)
+                Color.clear.frame(width: 28, height: 28)
             }
             ViewThatFits(in: .horizontal) {
-                ModelSwitchPills(model: model, session: session, form: .named)
-                ModelSwitchPills(model: model, session: session, form: .modelOnly)
-                ModelSwitchPills(model: model, session: session, form: .icons)
+                ReferencePills(model: model, session: session, form: .named)
+                ReferencePills(model: model, session: session, form: .modelOnly)
+                ReferencePills(model: model, session: session, form: .icons)
             }.padding(.trailing, 2)
             Circle().fill(Color.piBrandOrange).frame(width: 30, height: 30)
         }
@@ -404,12 +422,41 @@ struct MeasuredBar: View {
             if let chat = model.record(session.id) {
                 PiIconButton(symbol: "arrow.triangle.branch", label: "Changes", size: 28, filled: true) {}
                 SessionUsageButton(model: model, chat: chat, footer: session.footer)
-                ConversationActionsMenu(model: model, session: session, chat: chat)
+                Color.clear.frame(width: 28, height: 28)
             }
-            ModelSwitchPills(model: model, session: session, form: form.pills).padding(.trailing, 2)
+            ReferencePills(model: model, session: session, form: form.pills).padding(.trailing, 2)
             Circle().fill(Color.piBrandOrange).frame(width: 30, height: 30)
         }
         .padding(.horizontal, 10).padding(.vertical, 8)
+    }
+}
+
+/// The pills as the SwiftUI bar drew them (the chat's actions menu, also
+/// SwiftUI then, is a 28-point square here): the reference rows above time
+/// the old way of choosing a form against the measured one.
+struct ReferencePills: View {
+    @ObservedObject var model: WorkspaceModel
+    @ObservedObject var session: SessionDisplay
+    let form: ComposerPillsForm
+    var body: some View {
+        let contents = ModelSwitchPills.contents(model: model, session: session)
+        HStack(spacing: 4) {
+            if contents.showsConnection { pill("antenna.radiowaves.left.and.right", contents.connection, compact: form.connectionIsCompact, maxWidth: 150) }
+            pill("cpu", contents.model, compact: form.modelIsCompact, maxWidth: form.modelWidth, loading: contents.loading)
+            pill("brain", contents.effort, compact: form.effortIsCompact, maxWidth: ModelSwitchPills.effortLabelWidth)
+        }
+    }
+    private func pill(_ icon: String, _ text: String, compact: Bool, maxWidth: CGFloat, loading: Bool = false) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: icon).font(.system(size: 11, weight: .semibold))
+            if !compact {
+                Text(text).font(.system(size: 12, weight: .medium)).lineLimit(1).truncationMode(.middle)
+                    .frame(maxWidth: maxWidth, alignment: .leading).fixedSize(horizontal: false, vertical: true)
+            }
+            if loading { PiSpinner(size: 6, lineWidth: 1.2).frame(width: 10, height: 10) }
+            Image(systemName: "chevron.up.chevron.down").font(.system(size: 9, weight: .semibold))
+        }
+        .padding(.horizontal, compact ? 7 : 9).padding(.vertical, 4)
     }
 }
 

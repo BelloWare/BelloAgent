@@ -150,9 +150,12 @@ final class SidesPanelTests: XCTestCase {
         model.chats = chats
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 820), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: WorkspaceView(model: model).transaction { $0.animation = nil; $0.disablesAnimations = true })
+        // Without motion, as the SwiftUI window was hosted without animations.
+        PiKit.Motion.reducedOverride = true
+        window.contentView = WorkspaceRootView(model: model)
         window.makeKeyAndOrderFront(nil)
         addTeardownBlock { @MainActor in
+            PiKit.Motion.reducedOverride = nil
             RedrawCounter.recording = false; RedrawCounter.reset()
             model.sidesPanelReveal.hide()
             window.contentView = nil; window.close(); model.report.suspend(); model.shutdown(); try? await model.traces.close(); await model.store?.close()
@@ -169,7 +172,7 @@ final class SidesPanelTests: XCTestCase {
         return fixture
     }
 
-    /// SwiftUI takes a change on its next pass.
+    /// The window takes a change on its next pass.
     @MainActor private func draw(_ fixture: Fixture) async throws {
         for _ in 0..<4 {
             try await Task.sleep(for: .milliseconds(30))
@@ -341,7 +344,17 @@ final class SidesPanelTests: XCTestCase {
         var changes = 0
         var watching: Set<AnyCancellable> = []
         for id in ["P", "S1"] { model.displays[id]?.objectWillChange.sink { _ in changes += 1 }.store(in: &watching) }
-        RedrawCounter.reset(); RedrawCounter.recording = true
+        // The transcripts settle first: a page still being worked out off
+        // the main thread draws again when it lands, panel or no panel.
+        RedrawCounter.recording = true
+        for _ in 0..<20 {
+            RedrawCounter.reset()
+            try await Task.sleep(for: .milliseconds(300))
+            try await draw(fixture)
+            if RedrawCounter.counts["transcript", default: 0] == 0 { break }
+        }
+        changes = 0
+        RedrawCounter.reset()
 
         model.sidesPanelReveal.show(untilHidden: true)
         try await draw(fixture)

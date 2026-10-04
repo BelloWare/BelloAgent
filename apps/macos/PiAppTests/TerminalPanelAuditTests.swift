@@ -296,10 +296,10 @@ final class TerminalPanelSerialTests: TerminalPanelTestCase, SerialTestLane {
         let first = workspace("panel-one-" + UUID().uuidString), second = workspace("panel-two-" + UUID().uuidString)
         let model = makeWorkspaceModel(stateRoot: URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("panel-" + UUID().uuidString),
                                        vault: ConfigurationVault(storage: MemoryVaultStorage()))
-        let holder = WorkspaceHolder(workspace: first)
+        let panel = TerminalPanelView(model: model, workspace: first)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 420), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: TerminalPanelProbe(model: model, holder: holder))
+        window.contentView = panel
         window.makeKeyAndOrderFront(nil)
         defer { window.contentView = nil; window.close(); TerminalRegistry.shared.shutdown() }
 
@@ -307,7 +307,7 @@ final class TerminalPanelSerialTests: TerminalPanelTestCase, SerialTestLane {
         try await eventually("give the first project's shell the keyboard") { window.firstResponder === one.view }
         XCTAssertTrue(one.view.window === window, "the terminal is in the window")
 
-        holder.workspace = second
+        panel.workspace = second
         let two = TerminalRegistry.shared.session(for: second)
         XCTAssertTrue(one !== two)
         try await eventually("move the panel to the other project") { two.view.window === window }
@@ -523,13 +523,4 @@ final class TerminalPanelSerialTests: TerminalPanelTestCase, SerialTestLane {
     }
 }
 
-/// Swaps the project under a TerminalPanel the way the workspace view does.
-@MainActor private final class WorkspaceHolder: ObservableObject {
-    @Published var workspace: WorkspaceRecord
-    init(workspace: WorkspaceRecord) { self.workspace = workspace }
-}
-private struct TerminalPanelProbe: View {
-    let model: WorkspaceModel
-    @ObservedObject var holder: WorkspaceHolder
-    var body: some View { TerminalPanel(model: model, workspace: holder.workspace) }
-}
+

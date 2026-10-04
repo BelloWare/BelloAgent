@@ -1,4 +1,3 @@
-import SwiftUI
 import AppKit
 import Combine
 
@@ -121,20 +120,7 @@ struct SidesPanelActivity: Equatable {
 /// A strip that says when the pointer enters and leaves it, and where the
 /// pointer is, without ever taking a click: presses go to whatever is under
 /// it, the side pane's scroll bar included.
-struct SidesPanelPointerArea: NSViewRepresentable {
-    let changed: @MainActor (Bool) -> Void
-    /// Handed the question "is the pointer on this strip now?".
-    let asks: @MainActor (@escaping @MainActor () -> Bool) -> Void
-    func makeNSView(context: Context) -> SidesPanelPointerView {
-        let view = SidesPanelPointerView()
-        view.changed = changed
-        asks { [weak view] in view?.containsPointer ?? false }
-        return view
-    }
-    func updateNSView(_ view: SidesPanelPointerView, context: Context) { view.changed = changed }
-}
-
-final class SidesPanelPointerView: NSView {
+@MainActor final class SidesPanelPointerView: NSView {
     var changed: @MainActor (Bool) -> Void = { _ in }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
     override func updateTrackingAreas() {
@@ -159,54 +145,178 @@ final class SidesPanelPointerView: NSView {
     var panel: (() -> Bool)?
 }
 
+// MARK: - At the edge, while not pinned
+
 /// The panel while it is not pinned: a faint handle at the window's right
 /// edge, the strip that brings the panel, and the panel itself when it is
-/// out, laid over the conversation.
-struct SidesPanelEdge: View {
+/// out, laid over the conversation. It covers the content column and takes
+/// clicks only on the panel.
+@MainActor final class SidesPanelEdgeView: NSView {
     let model: WorkspaceModel
-    let parentID: String
-    @ObservedObject var reveal: SidesPanelReveal
-    @State private var probes = SidesPanelProbes()
-    /// Worked out when a side's activity changes, not on every change to the
-    /// workspace: the handle is all that shows most of the time.
-    @State private var activity = SidesPanelActivity()
-    @State private var handleHovered = false
-    var body: some View {
-        ZStack(alignment: .trailing) {
-            if reveal.shown {
-                SidesPanel(model: model, parentID: parentID, pinned: false)
-                    .overlay(alignment: .leading) { Rectangle().fill(Color.piHairlineStrong).frame(width: 1) }
-                    // A close shadow to lift the panel's edge and a wide one
-                    // to set it above the conversation: one alone read flat
-                    // in the light appearance.
-                    .shadow(color: Color.piShadow, radius: 2, x: -1)
-                    .shadow(color: Color.piShadow, radius: 24, x: -8)
-                    .background(SidesPanelPointerArea(changed: { _ in }, asks: { [probes] in probes.panel = $0 }))
-                    .transition(.move(edge: .trailing))
-            } else if activity.sides > 0 {
-                SidesPanelHandle(activity: activity, hovered: handleHovered)
-                    .background(SidesPanelPointerArea(changed: { [reveal] inside in handleHovered = inside; reveal.edge(inside) },
-                                                      asks: { [probes] in probes.handle = $0 }).padding(-4))
-                    .padding(.trailing, SidesPanelHandle.inset)
-                    .transition(.opacity)
+    let reveal: SidesPanelReveal
+    private(set) var parentID: String
+    private let probes = SidesPanelProbes()
+    private let edge = SidesPanelPointerView()
+    private let handle = SidesPanelHandleView()
+    private let handleArea = SidesPanelPointerView()
+    private var panel: SidesPanelView?
+    private let panelBox = SidesPanelShadowBox()
+    private let panelArea = SidesPanelPointerView()
+    private var activity = SidesPanelActivity()
+    private var shown = false
+    private var watching: Set<AnyCancellable> = []
+    /// Motion as the window has it.
+    var reducesMotion: () -> Bool = { PiKit.Motion.reduced }
+    /// The window's disabled state, handed to the panel.
+    var inheritedEnabled = true { didSet { if oldValue != inheritedEnabled { panel?.inheritedEnabled = inheritedEnabled } } }
+    /// Reduced motion as the window has it, handed to the handle and the panel.
+    var motionReduced = false {
+        didSet { guard oldValue != motionReduced else { return }; handle.motionReduced = motionReduced; panel?.motionReduced = motionReduced }
+    }
+
+    init(model: WorkspaceModel, parentID: String, reveal: SidesPanelReveal) {
+        self.model = model; self.parentID = parentID; self.reveal = reveal
+        super.init(frame: .zero)
+        // The strips are in the tree only while what they watch is there.
+        for view in [panelBox, edge] as [NSView] { addSubview(view) }
+        panelBox.isHidden = true
+        edge.changed = { [weak reveal] inside in reveal?.edge(inside) }
+        handleArea.changed = { [weak self] inside in self?.handle.hovered = inside; self?.reveal.edge(inside) }
+        probes.edge = { [weak edge] in edge?.containsPointer ?? false }
+        probes.handle = { [weak self] in guard let self, self.handleArea.superview != nil else { return false }; return self.handleArea.containsPointer }
+        probes.panel = { [weak self] in guard let self, self.shown else { return false }; return self.panelArea.containsPointer }
+        // `.onAppear`: the reveal asks these strips where the pointer is.
+        reveal.pointerAtEdge = { [probes] in probes.edge?() == true || probes.handle?() == true }
+        reveal.pointerOnPanel = { [probes] in probes.panel?() == true }
+        activity = model.sidesPanelActivity(of: parentID)
+        reveal.$shown.dropFirst().receive(on: DispatchQueue.main).sink { [weak self] _ in self?.apply(animated: true) }.store(in: &watching)
+        model.activityChanged.receive(on: DispatchQueue.main).sink { [weak self] _ in self?.activityChanged() }.store(in: &watching)
+        setAccessibilityElement(false)
+        apply(animated: false)
+    }
+    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    override var isFlipped: Bool { true }
+    /// Clicks reach the panel; everything else goes through to what is under it.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard shown, !panelBox.isHidden else { return nil }
+        let local = convert(point, from: superview)
+        return panelBox.frame.contains(local) ? panelBox.hitTest(convert(local, to: panelBox.superview)) : nil
+    }
+
+    /// Another chat beside the edge (`.onChange(of: parentID)`).
+    func show(parentID: String) {
+        guard parentID != self.parentID else { return }
+        self.parentID = parentID
+        activity = model.sidesPanelActivity(of: parentID)
+        panel?.parentID = parentID
+        apply(animated: false)
+    }
+    private func activityChanged() {
+        let next = model.sidesPanelActivity(of: parentID)
+        guard next != activity else { return }
+        activity = next
+        apply(animated: true)
+    }
+
+    private func apply(animated: Bool) {
+        handle.activity = activity
+        let wantsPanel = reveal.shown
+        let showsHandle = !wantsPanel && activity.sides > 0
+        if (handle.superview != nil) != showsHandle {
+            if showsHandle {
+                addSubview(handle, positioned: .below, relativeTo: panelBox); addSubview(handleArea, positioned: .below, relativeTo: panelBox)
+                if animated, !reducesMotion() { PiKit.fadeIn(handle, duration: PiKit.Motion.quick) }
+            } else { handle.removeFromSuperview(); handleArea.removeFromSuperview(); handle.hovered = false }
+        }
+        guard wantsPanel != shown else { needsLayout = true; return }
+        shown = wantsPanel
+        if wantsPanel {
+            if panel == nil {
+                let view = SidesPanelView(model: model, parentID: parentID, pinned: false)
+                view.inheritedEnabled = inheritedEnabled
+                view.motionReduced = motionReduced
+                panelBox.addSubview(panelArea)
+                panelBox.addSubview(view)
+                panel = view
             }
-            SidesPanelPointerArea(changed: { [reveal] in reveal.edge($0) }, asks: { [probes] in probes.edge = $0 })
-                .frame(width: SidesPanelMetrics.edgeWidth)
-                .frame(maxHeight: .infinity)
+            panel?.parentID = parentID
+            panelBox.isHidden = false
+            layoutSubtreeIfNeeded()
+            slide(in: true, animated: animated)
+        } else {
+            slide(in: false, animated: animated)
         }
-        .frame(maxHeight: .infinity)
-        .piAnimation(PiMotion.glide, value: reveal.shown)
-        .onAppear {
-            reveal.pointerAtEdge = { [probes] in probes.edge?() == true || probes.handle?() == true }
-            reveal.pointerOnPanel = { [probes] in probes.panel?() == true }
-            activity = model.sidesPanelActivity(of: parentID)
+        needsLayout = true
+    }
+    /// In from the trailing edge and back out (`.transition(.move(edge: .trailing))`, `PiMotion.glide`).
+    private func slide(in arriving: Bool, animated: Bool) {
+        guard let layer = panelBox.layer else { panelBox.isHidden = !arriving; return }
+        let width = panelBox.frame.width + 40
+        guard animated, window != nil, !reducesMotion() else {
+            layer.removeAnimation(forKey: "slide")
+            panelBox.isHidden = !arriving
+            if !arriving { dropPanel() }
+            return
         }
-        .onChange(of: parentID) { _, id in activity = model.sidesPanelActivity(of: id) }
-        .onReceive(model.activityChanged.receive(on: DispatchQueue.main)) { _ in
-            let next = model.sidesPanelActivity(of: parentID)
-            if next != activity { activity = next }
+        let move = PiKit.Motion.glide("transform.translation.x")
+        move.fromValue = arriving ? width : 0; move.toValue = arriving ? 0 : width
+        move.fillMode = .both; move.isRemovedOnCompletion = arriving
+        CATransaction.begin()
+        CATransaction.setCompletionBlock { [weak self] in
+            guard let self, !arriving, !self.shown else { return }
+            self.panelBox.isHidden = true; self.panelBox.layer?.removeAnimation(forKey: "slide"); self.dropPanel()
         }
-        .accessibilityElement(children: .contain)
+        layer.add(move, forKey: "slide")
+        CATransaction.commit()
+    }
+    /// The panel goes once it has left (`if reveal.shown { … }`): made again when it next comes.
+    private func dropPanel() { panel?.removeFromSuperview(); panel = nil; panelArea.removeFromSuperview() }
+
+    override func layout() {
+        super.layout()
+        edge.frame = CGRect(x: bounds.width - SidesPanelMetrics.edgeWidth, y: 0, width: SidesPanelMetrics.edgeWidth, height: bounds.height)
+        let size = handle.intrinsicContentSize
+        let inset = SidesPanelHandleView.inset
+        handle.frame = CGRect(x: bounds.width - inset - size.width, y: PiKit.round((bounds.height - size.height) / 2, piScale), width: size.width, height: size.height)
+        handleArea.frame = handle.frame.insetBy(dx: -4, dy: -4)
+        panelBox.frame = CGRect(x: bounds.width - SidesPanelMetrics.width, y: 0, width: SidesPanelMetrics.width, height: bounds.height)
+        panelArea.frame = panelBox.bounds
+        panel?.frame = panelBox.bounds
+    }
+}
+
+/// The panel's lift over the conversation: a strong hairline at its leading
+/// edge, a close shadow and a wide one.
+@MainActor final class SidesPanelShadowBox: NSView {
+    private let line = CALayer()
+    private let near = CALayer(), far = CALayer()
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.masksToBounds = false
+        for shadow in [far, near] { layer?.addSublayer(shadow) }
+    }
+    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    override var isFlipped: Bool { true }
+    override func didAddSubview(_ subview: NSView) { super.didAddSubview(subview); if let layer { layer.addSublayer(line); line.zPosition = 10 } }
+    override func layout() {
+        super.layout()
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        line.frame = CGRect(x: 0, y: 0, width: 1, height: bounds.height)
+        for (shadow, radius, x) in [(near, CGFloat(2), CGFloat(-1)), (far, CGFloat(24), CGFloat(-8))] {
+            shadow.frame = bounds
+            shadow.shadowPath = CGPath(rect: bounds, transform: nil)
+            shadow.shadowRadius = radius / 2 * 2; shadow.shadowOffset = CGSize(width: x, height: 0); shadow.shadowOpacity = 1
+        }
+        CATransaction.commit()
+        apply()
+    }
+    override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); apply() }
+    private func apply() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            line.backgroundColor = NSColor.piHairlineStrong.cgColor
+            near.shadowColor = NSColor.piShadow.cgColor; far.shadowColor = NSColor.piShadow.cgColor
+        }
     }
 }
 
@@ -214,26 +324,59 @@ struct SidesPanelEdge: View {
 /// carrying the ring of a side that is working or the dot of a new reply.
 /// Resting the pointer on it brings the panel, as resting it on the edge
 /// does; it takes no clicks, so nothing under it stops working.
-struct SidesPanelHandle: View {
-    let activity: SidesPanelActivity
-    var hovered = false
+@MainActor final class SidesPanelHandleView: NSView {
+    var activity = SidesPanelActivity() { didSet { if oldValue != activity { apply() } } }
+    var hovered = false {
+        didSet {
+            guard oldValue != hovered else { return }
+            PiKit.Motion.layers(PiKit.Motion.quick, .easeInOut, animated: window != nil && !motionReduced) { grip.opacity = hovered ? 0.8 : 0.45 }
+        }
+    }
+    /// Reduced motion as the window has it: the ring stands still.
+    var motionReduced = false { didSet { if oldValue != motionReduced { spinner?.configure(lineWidth: 1.4, turning: !(motionReduced || PiKit.Motion.reduced)) } } }
     /// Clear of the side pane's scroll bar when the system shows scroll bars
     /// all the time; against the edge when they only show while scrolling.
     static var inset: CGFloat {
         NSScroller.preferredScrollerStyle == .legacy ? NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy) + 3 : 3
     }
-    var body: some View {
-        VStack(spacing: 6) {
-            if activity.working { PiSpinner(size: 9) }
-            else if activity.failed { UnreadDot(failure: true) }
-            else if activity.unread { UnreadDot() }
-            Capsule(style: .continuous).fill(Color.piInkTertiary.opacity(hovered ? 0.8 : 0.45)).frame(width: 4, height: 34)
-                .piAnimation(PiMotion.quick, value: hovered)
-        }
-        .allowsHitTesting(false)
-        .accessibilityElement()
-        .accessibilityLabel(label)
-        .accessibilityIdentifier("sidesPanelHandle")
+    private let grip = CALayer()
+    private var spinner: PiSpinnerView?
+    private let dot = UnreadDotView()
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.addSublayer(grip)
+        grip.cornerRadius = 2; grip.cornerCurve = .continuous; grip.opacity = 0.45
+        addSubview(dot)
+        setAccessibilityElement(true); setAccessibilityRole(.group)
+        setAccessibilityIdentifier("sidesPanelHandle")
+        dot.setAccessibilityElement(false)
+        apply()
+    }
+    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    override var isFlipped: Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    private var markSize: CGSize? {
+        if activity.working { return CGSize(width: 9, height: 9) }
+        if activity.failed || activity.unread { return CGSize(width: UnreadDotView.size, height: UnreadDotView.size) }
+        return nil
+    }
+    override var intrinsicContentSize: NSSize {
+        let mark = markSize
+        return NSSize(width: max(4, mark?.width ?? 0), height: 34 + (mark.map { $0.height + 6 } ?? 0))
+    }
+    private func apply() {
+        if activity.working, spinner == nil {
+            let view = PiSpinnerView(frame: NSRect(x: 0, y: 0, width: 9, height: 9))
+            view.configure(lineWidth: 1.4, turning: !(motionReduced || PiKit.Motion.reduced))
+            view.setAccessibilityElement(false)
+            addSubview(view); spinner = view
+        } else if !activity.working, let spinner { spinner.removeFromSuperview(); self.spinner = nil }
+        dot.isHidden = activity.working || !(activity.failed || activity.unread)
+        dot.failure = activity.failed
+        setAccessibilityLabel(label)
+        invalidateIntrinsicContentSize(); needsLayout = true
+        superview?.needsLayout = true
     }
     private var label: String {
         let count = "\(activity.sides) side\(activity.sides == 1 ? "" : "s")"
@@ -241,6 +384,21 @@ struct SidesPanelHandle: View {
         if activity.unread { return count + ", one with a new reply. Rest the pointer on the window's right edge to show them." }
         return count + ". Rest the pointer on the window's right edge to show them."
     }
+    override func layout() {
+        super.layout()
+        var y: CGFloat = 0
+        if let mark = markSize {
+            let frame = CGRect(x: PiKit.round((bounds.width - mark.width) / 2, piScale), y: 0, width: mark.width, height: mark.height)
+            spinner?.frame = frame; dot.frame = frame
+            y = mark.height + 6
+        }
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        grip.frame = CGRect(x: PiKit.round((bounds.width - 4) / 2, piScale), y: y, width: 4, height: 34)
+        CATransaction.commit()
+        updateLayer()
+    }
+    override var wantsUpdateLayer: Bool { true }
+    override func updateLayer() { grip.backgroundColor = piCGColor(.piInkTertiary) }
 }
 
 // MARK: - The panel
@@ -248,168 +406,293 @@ struct SidesPanelHandle: View {
 /// The open chat's sides: New side first, then each side with its mark, its
 /// title and what it last did, the one in the side pane highlighted. Pinned,
 /// it is a column of the window; otherwise it lies over the conversation.
-struct SidesPanel: View {
-    @ObservedObject var model: WorkspaceModel
-    let parentID: String?
+@MainActor final class SidesPanelView: NSView {
+    let model: WorkspaceModel
+    var parentID: String? { didSet { if oldValue != parentID { refresh() } } }
     let pinned: Bool
-    /// The highlight glides to the side chosen, as the sidebar's does.
-    @Namespace private var selectionGlide
-    var body: some View {
+    private let heading = PiKit.TextLine(PiKit.Line("Sides", font: PiKit.Font.micro, color: .piInkTertiary, tracking: 0.5, uppercased: true))
+    private let count = PiKit.TextLine()
+    let pin: PiKit.IconButton
+    private let header: ShellStack
+    private let subtitle = PiKit.TextLine()
+    private let scroll = NSScrollView()
+    private let document = FlippedDocument()
+    private let column = ShellStack(.vertical, spacing: 2, padding: NSEdgeInsets(top: 0, left: PiSpacing.sm, bottom: PiSpacing.md, right: PiSpacing.sm))
+    private let glide = PiKit.SelectionGlide()
+    let newSide: PiKit.SelectableRow
+    private let empty = PiKit.TextLine(PiKit.Line("Open a chat to see its sides.", font: PiKit.Font.caption, color: .piInkTertiary))
+    private lazy var emptyRow = ShellStack(.vertical, padding: NSEdgeInsets(top: 8, left: 10, bottom: 8, right: 10), [.view(empty, .flexible)])
+    private var rows: [String: SidesPanelRowView] = [:]
+    private var observer: ShellObserver!
+    private var watched: [ObjectIdentifier] = []
+    private var shown: [SidesPanelRowView.Content]?
+    private var shownParent: String??
+    private var clipWatcher: ShellClipWatcher?
+    /// Reduced motion as the window has it: the rows' rings stand still.
+    var motionReduced = false {
+        didSet { guard oldValue != motionReduced else { return }; for row in rows.values { row.motionReduced = motionReduced } }
+    }
+    /// The window's disabled state: the pin, New side and the rows go quiet with it.
+    var inheritedEnabled = true { didSet { if oldValue != inheritedEnabled { shownParent = nil; refresh() } } }
+
+    init(model: WorkspaceModel, parentID: String?, pinned: Bool) {
+        self.model = model; self.parentID = parentID; self.pinned = pinned
+        pin = PiKit.IconButton(symbol: pinned ? "pin.fill" : "pin", label: pinned ? "Unpin the sides panel" : "Pin the sides panel open",
+                               tone: pinned ? .accent : .neutral, size: 24, filled: pinned)
+        header = ShellStack(.horizontal, spacing: 4, padding: NSEdgeInsets(top: 10, left: PiSpacing.lg, bottom: 0, right: PiSpacing.sm),
+                            [.view(heading), .view(count), .spacer(8), .view(pin)])
+        let plus = PiKit.SymbolView(PiKit.Symbol("plus", size: 11, weight: .semibold), color: .piAccent)
+        let words = PiKit.TextLine(PiKit.Line("New side", font: .systemFont(ofSize: 13, weight: .medium), color: .piAccent))
+        newSide = PiKit.SelectableRow(content: ShellStack(.horizontal, spacing: 9, [.view(plus, .fixed(16)), .view(words, .flexible), .spacer(0)]))
+        super.init(frame: .zero)
+        wantsLayer = true
+        pin.setAccessibilityIdentifier("sidesPanelPin")
+        pin.onPress = { [weak self] in guard let self else { return }; self.model.setSidesPanelPinned(!self.pinned) }
+        newSide.toolTip = "Open a new side conversation beside this chat"
+        newSide.setAccessibilityIdentifier("sidesPanelNewSide")
+        newSide.onPress = { [weak self] in guard let self, let parentID = self.parentID else { return }; self.model.openSideFromSidesPanel(parentID: parentID) }
+        count.line = PiKit.Line("", font: PiKit.Font.monospacedDigits(PiKit.Font.micro), color: .piInkTertiary)
+        subtitle.truncation = .end
+        scroll.drawsBackground = false; scroll.automaticallyAdjustsContentInsets = false
+        scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true; scroll.borderType = .noBorder
+        scroll.documentView = document
+        clipWatcher = ShellClipWatcher(scroll, owner: self)
+        document.addSubview(column)
+        for view in [header, subtitle, scroll] as [NSView] { addSubview(view) }
+        setAccessibilityElement(true); setAccessibilityRole(.group)
+        setAccessibilityLabel("Sides"); setAccessibilityIdentifier("sidesPanel")
+        observer = ShellObserver { [weak self] in self?.refresh() }
+        observer.observe(model)
+        observer.observe(publisher: SidebarMinute.shared.$tick.dropFirst())
+        refresh()
+    }
+    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    override var isFlipped: Bool { true }
+    override var wantsUpdateLayer: Bool { true }
+    override func updateLayer() { layer?.backgroundColor = piCGColor(.piWindow) }
+
+    func refresh() {
         let entries = parentID.map { model.sidesPanelEntries(of: $0) } ?? []
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 4) {
-                Text("Sides").font(PiFont.micro).foregroundStyle(Color.piInkTertiary).textCase(.uppercase).tracking(0.5)
-                if !entries.isEmpty {
-                    Text("\(entries.count)").font(PiFont.micro).foregroundStyle(Color.piInkTertiary).monospacedDigit()
-                }
-                Spacer()
-                PiIconButton(symbol: pinned ? "pin.fill" : "pin", label: pinned ? "Unpin the sides panel" : "Pin the sides panel open",
-                             tone: pinned ? .accent : .neutral, size: 24, filled: pinned) { [model] in model.setSidesPanelPinned(!pinned) }
-                    .accessibilityIdentifier("sidesPanelPin")
+        count.isHidden = entries.isEmpty
+        count.line = PiKit.Line("\(entries.count)", font: PiKit.Font.monospacedDigits(PiKit.Font.micro), color: .piInkTertiary)
+        if let title = parentID.flatMap({ model.record($0)?.title }) {
+            subtitle.isHidden = false
+            subtitle.line = PiKit.Line("of “\(title)”", font: PiKit.Font.caption, color: .piInkTertiary)
+            subtitle.toolTip = title
+        } else { subtitle.isHidden = true }
+        newSide.isEnabled = inheritedEnabled && (parentID.map { model.canOpenSide($0) && !model.installPreparing } ?? false)
+        pin.isEnabled = inheritedEnabled
+        // Each live side's page and figures are watched while it is listed.
+        let now = SidebarMinute.shared.now
+        var contents: [SidesPanelRowView.Content] = []
+        var objects: [ObjectIdentifier] = []
+        var watch: [() -> Void] = []
+        for entry in entries {
+            let unread = model.unreadOutputCount(sessionID: entry.id) > 0, failed = model.unreadFailure(sessionID: entry.id)
+            var stats: ChatRowStats
+            if let display = model.displays[entry.id] {
+                let footer = display.footer
+                stats = ChatRowStats(totals: footer.gateway, timing: footer.timing, now: now)
+                stats.updateActivity(state: display.state, loading: display.loading, activity: display.activity)
+                if let at = display.messages.last(where: { $0.at != nil })?.at { stats.noteActivity(max(stats.lastActivity ?? 0, at / 1_000), now: now) }
+                objects += [ObjectIdentifier(display), ObjectIdentifier(footer)]
+                watch.append { [weak self] in self?.observer.observe(display); self?.observer.observe(footer) }
+            } else {
+                let accounting = model.chatAccounting.row(for: entry.id)
+                stats = ChatRowStats(totals: accounting.totals, now: now)
+                objects.append(ObjectIdentifier(accounting))
+                watch.append { [weak self] in self?.observer.observe(accounting) }
             }
-            .padding(.leading, PiSpacing.lg).padding(.trailing, PiSpacing.sm).padding(.top, 10)
-            if let title = parentID.flatMap({ model.record($0)?.title }) {
-                Text("of “\(title)”").font(PiFont.caption).foregroundStyle(Color.piInkTertiary).lineLimit(1).truncationMode(.tail)
-                    .padding(.horizontal, PiSpacing.lg).padding(.top, 1).padding(.bottom, PiSpacing.sm)
-                    .help(title)
-            }
-            ScrollView {
-                VStack(spacing: 2) {
-                    if let parentID {
-                        newSide(parentID)
-                        ForEach(entries) { entry in SidesPanelRowSlot(model: model, entry: entry) }
-                    } else {
-                        Text("Open a chat to see its sides.").font(PiFont.caption).foregroundStyle(Color.piInkTertiary)
-                            .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10).padding(.vertical, 8)
-                    }
-                }
-                .padding(.horizontal, PiSpacing.sm).padding(.bottom, PiSpacing.md)
-            }
-            .environment(\.piSelectionNamespace, selectionGlide)
-            .modifier(SidebarMinuteClock())
+            contents.append(SidesPanelRowView.Content(entry: entry, stats: stats, unread: unread, failed: failed, enabled: inheritedEnabled))
         }
-        .frame(width: SidesPanelMetrics.width)
-        .frame(maxHeight: .infinity, alignment: .top)
-        .background(Color.piWindow)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Sides")
-        .accessibilityIdentifier("sidesPanel")
-    }
-
-    private func newSide(_ parentID: String) -> some View {
-        PiSelectableRow(selected: false, action: { [model] in model.openSideFromSidesPanel(parentID: parentID) }) {
-            HStack(spacing: 9) {
-                Image(systemName: "plus").font(.system(size: 11, weight: .semibold)).foregroundStyle(Color.piAccent)
-                    .frame(width: 16, height: 16)
-                Text("New side").font(.system(size: 13, weight: .medium)).foregroundStyle(Color.piAccent)
-                Spacer(minLength: 0)
-            }
+        if objects != watched {
+            watched = objects
+            observer.reset()
+            observer.observe(model)
+            observer.observe(publisher: SidebarMinute.shared.$tick.dropFirst())
+            for start in watch { start() }
         }
-        .disabled(!model.canOpenSide(parentID) || model.installPreparing)
-        .help("Open a new side conversation beside this chat")
-        .accessibilityIdentifier("sidesPanelNewSide")
-    }
-}
-
-/// A side's row, from its loaded page while it has one (so a run shows as it
-/// goes), else from the accounting the sidebar reads.
-private struct SidesPanelRowSlot: View {
-    let model: WorkspaceModel
-    let entry: SidesPanelEntry
-    var body: some View {
-        let unread = model.unreadOutputCount(sessionID: entry.id) > 0, failed = model.unreadFailure(sessionID: entry.id)
-        if let display = model.displays[entry.id] {
-            SidesPanelLiveRow(model: model, entry: entry, session: display, footer: display.footer, unread: unread, failed: failed)
+        guard contents != shown || shownParent != .some(parentID) else { return }
+        shown = contents; shownParent = .some(parentID)
+        var items: [ShellItem] = []
+        if parentID != nil {
+            items.append(.view(newSide, .fill))
+            let ids = Set(contents.map(\.entry.id))
+            for id in rows.keys where !ids.contains(id) { rows[id] = nil }
+            for content in contents {
+                let row = rows[content.entry.id] ?? SidesPanelRowView(model: model, glide: glide)
+                rows[content.entry.id] = row
+                row.motionReduced = motionReduced
+                row.update(content)
+                items.append(.view(row, .fill))
+            }
         } else {
-            SidesPanelRetainedRow(model: model, entry: entry, accounting: model.chatAccounting.row(for: entry.id), unread: unread, failed: failed)
+            rows.removeAll()
+            items.append(.view(emptyRow, .fill))
         }
+        column.items = items
+        column.relayoutAll(); header.relayoutAll()
+        needsLayout = true
     }
-}
 
-private struct SidesPanelLiveRow: View {
-    let model: WorkspaceModel
-    let entry: SidesPanelEntry
-    @ObservedObject var session: SessionDisplay
-    @ObservedObject var footer: SessionMetrics
-    let unread: Bool
-    let failed: Bool
-    @Environment(\.sidebarMinute) private var minute
-    private var stats: ChatRowStats {
-        let now = minute ?? Date()
-        var value = ChatRowStats(totals: footer.gateway, timing: footer.timing, now: now)
-        value.updateActivity(state: session.state, loading: session.loading, activity: session.activity)
-        if let at = session.messages.last(where: { $0.at != nil })?.at { value.noteActivity(max(value.lastActivity ?? 0, at / 1_000), now: now) }
-        return value
-    }
-    var body: some View { SidesPanelRow(model: model, entry: entry, stats: stats, unread: unread, failed: failed) }
-}
-
-private struct SidesPanelRetainedRow: View {
-    let model: WorkspaceModel
-    let entry: SidesPanelEntry
-    @ObservedObject var accounting: CachedSessionAccounting
-    let unread: Bool
-    let failed: Bool
-    @Environment(\.sidebarMinute) private var minute
-    var body: some View {
-        SidesPanelRow(model: model, entry: entry, stats: ChatRowStats(totals: accounting.totals, now: minute ?? Date()), unread: unread, failed: failed)
+    override func layout() {
+        super.layout()
+        let headerHeight = header.height(forWidth: bounds.width)
+        header.frame = CGRect(x: 0, y: 0, width: bounds.width, height: headerHeight)
+        var y = headerHeight
+        if !subtitle.isHidden {
+            let size = subtitle.intrinsicContentSize
+            // `.padding(.horizontal, lg).padding(.top, 1).padding(.bottom, sm)`
+            subtitle.frame = CGRect(x: PiSpacing.lg, y: y + 1, width: min(size.width, bounds.width - 2 * PiSpacing.lg), height: size.height)
+            y += 1 + size.height + PiSpacing.sm
+        }
+        scroll.frame = CGRect(x: 0, y: y, width: bounds.width, height: max(0, bounds.height - y))
+        scroll.shellFit(document) { column.height(forWidth: $0) }
+        column.frame = document.bounds
     }
 }
 
 /// One side: its mark (a ring while it works, the orange dot of a new reply,
 /// the red one of a failure, else a quiet dot), its title, and what it is
 /// doing or when it last did anything.
-struct SidesPanelRow: View {
-    let model: WorkspaceModel
-    let entry: SidesPanelEntry
-    let stats: ChatRowStats
-    let unread: Bool
-    let failed: Bool
-    private var working: Bool { stats.busy || stats.loading }
-    var body: some View {
-        PiSelectableRow(selected: entry.open, action: { [model, id = entry.id] in Task { await model.openFromSidesPanel(id) } }) {
-            HStack(alignment: .top, spacing: 9) {
-                mark.frame(width: 16, height: 16).padding(.top, 1)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(entry.title).font(.system(size: 13, weight: entry.open || unread ? .semibold : .regular)).foregroundStyle(Color.piInk)
-                        .lineLimit(2).truncationMode(.tail).fixedSize(horizontal: false, vertical: true)
-                    detail
-                }
-                Spacer(minLength: 0)
-            }
+@MainActor final class SidesPanelRowView: NSView, PiKit.WidthSizing {
+    /// What a row shows, and only that: a change elsewhere in the side's
+    /// figures leaves the row alone.
+    struct Content: Equatable {
+        var entry: SidesPanelEntry
+        var unread: Bool
+        var failed: Bool
+        var working: Bool
+        var lead: String?
+        var leadColor: NSColor?
+        var recency: String?
+        var enabled: Bool
+        @MainActor init(entry: SidesPanelEntry, stats: ChatRowStats, unread: Bool, failed: Bool, enabled: Bool) {
+            self.entry = entry; self.unread = unread; self.failed = failed; self.enabled = enabled
+            working = stats.busy || stats.loading
+            let lead = SidesPanelRowWords.lead(stats: stats, working: working, unread: unread, failed: failed)
+            self.lead = lead?.text; leadColor = lead?.color
+            recency = stats.recencyLabel
         }
-        .help(entry.title)
-        .accessibilityIdentifier("sidesPanelRow")
+        /// What VoiceOver reads for the row.
+        var spoken: String {
+            [entry.title, lead, recency ?? (lead == nil ? (entry.saved ? "Saved" : "Not saved yet") : nil)].compactMap { $0 }.joined(separator: ", ")
+        }
     }
-    @ViewBuilder private var mark: some View {
-        if working { PiSpinner(size: 11) }
-        else if failed { UnreadDot(failure: true) }
-        else if unread { UnreadDot() }
-        else { Circle().fill(Color.piInkTertiary.opacity(0.5)).frame(width: 6, height: 6).accessibilityHidden(true) }
+    let model: WorkspaceModel
+    let row: PiKit.SelectableRow
+    private let words = SidesPanelRowWords()
+    private(set) var content: Content?
+    var motionReduced: Bool { get { words.motionReduced } set { words.motionReduced = newValue } }
+    init(model: WorkspaceModel, glide: PiKit.SelectionGlide) {
+        self.model = model
+        row = PiKit.SelectableRow(content: words, glide: glide)
+        super.init(frame: .zero)
+        addSubview(row)
+        row.setAccessibilityIdentifier("sidesPanelRow")
+        row.onPress = { [weak self] in
+            guard let self, let id = self.content?.entry.id else { return }
+            let model = self.model
+            Task { await model.openFromSidesPanel(id) }
+        }
     }
-    /// What the side is doing, in the sidebar's words, then how long ago it
-    /// last did anything.
-    private var lead: (text: String, color: Color)? {
-        if working { return (PiSessionState.label(stats.state, loading: stats.loading), Color.piWarning) }
+    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    override var isFlipped: Bool { true }
+    func update(_ new: Content) {
+        guard new != content else { return }
+        content = new
+        words.update(new)
+        row.selected = new.entry.open
+        row.toolTip = new.entry.title
+        row.setAccessibilityLabel(new.spoken)
+        if row.isEnabled != new.enabled { row.isEnabled = new.enabled }
+        invalidateIntrinsicContentSize(); needsLayout = true
+    }
+    func height(forWidth width: CGFloat) -> CGFloat { row.height(forWidth: width) }
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: height(forWidth: bounds.width > 0 ? bounds.width : 232)) }
+    override func setFrameSize(_ newSize: NSSize) { super.setFrameSize(newSize); needsLayout = true }
+    override func layout() { super.layout(); row.frame = bounds }
+}
+
+/// A side row's mark and words (`HStack(alignment: .top, spacing: 9)`).
+@MainActor final class SidesPanelRowWords: NSView, PiKit.WidthSizing {
+    private var spinner: PiSpinnerView?
+    private let dot = UnreadDotView()
+    private let quiet = CALayer()
+    private let title = ShellText("", font: .systemFont(ofSize: 13), color: .piInk, maximumLines: 2)
+    private let detail = ShellText("", font: PiKit.Font.monospacedDigits(PiKit.Font.caption), color: .piInkTertiary, maximumLines: 1)
+    private var content: SidesPanelRowView.Content?
+    /// Reduced motion as the window has it: the ring stands still.
+    var motionReduced = false { didSet { if oldValue != motionReduced { spinner?.configure(lineWidth: 1.6, turning: !(motionReduced || PiKit.Motion.reduced)) } } }
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.addSublayer(quiet)
+        quiet.cornerRadius = 3
+        addSubview(dot); addSubview(title); addSubview(detail)
+    }
+    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    override var isFlipped: Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    func update(_ content: SidesPanelRowView.Content) {
+        self.content = content
+        if content.working, spinner == nil {
+            let view = PiSpinnerView(frame: NSRect(x: 0, y: 0, width: 11, height: 11))
+            view.configure(lineWidth: 1.6, turning: !(motionReduced || PiKit.Motion.reduced))
+            view.setAccessibilityElement(false)
+            addSubview(view); spinner = view
+        } else if !content.working, let spinner { spinner.removeFromSuperview(); self.spinner = nil }
+        dot.isHidden = content.working || !(content.failed || content.unread)
+        dot.failure = content.failed
+        quiet.isHidden = content.working || content.failed || content.unread
+        title.font = .systemFont(ofSize: 13, weight: content.entry.open || content.unread ? .semibold : .regular)
+        title.set(content.entry.title, color: .piInk)
+        var runs: [ShellText.Run] = []
+        if let lead = content.lead { runs.append(ShellText.Run(text: lead, color: content.leadColor ?? .piInkTertiary, weight: .medium)) }
+        if let recency = content.recency { runs.append(ShellText.Run(text: (content.lead == nil ? "" : " · ") + recency, color: .piInkTertiary)) }
+        else if content.lead == nil { runs.append(ShellText.Run(text: content.entry.saved ? "Saved" : "Not saved yet", color: .piInkTertiary)) }
+        detail.runs = runs
+        needsLayout = true; updateLayer()
+    }
+    /// What the side is doing, in the sidebar's words, then how long ago it last did anything.
+    static func lead(stats: ChatRowStats, working: Bool, unread: Bool, failed: Bool) -> (text: String, color: NSColor)? {
+        if working { return (PiSessionState.label(stats.state, loading: stats.loading), .piWarning) }
         if RunState(rawValue: stats.state).isStopped {
             return (PiSessionState.label(stats.state, costLimited: stats.costLimited),
-                    RunState(rawValue: stats.state) == .paused ? Color.piInfo : stats.costLimited ? Color.piWarning : Color.piDanger)
+                    RunState(rawValue: stats.state) == .paused ? .piInfo : stats.costLimited ? .piWarning : .piDanger)
         }
-        if failed { return ("Failed", Color.piDanger) }
-        if unread { return ("New reply", Color.piAccent) }
+        if failed { return ("Failed", .piDanger) }
+        if unread { return ("New reply", .piAccent) }
         return nil
     }
-    private var detail: some View {
-        let lead = lead
-        let recency = stats.recencyLabel
-        return HStack(spacing: 0) {
-            if let lead { Text(lead.text).foregroundStyle(lead.color).fontWeight(.medium) }
-            if let recency { Text((lead == nil ? "" : " · ") + recency) }
-            else if lead == nil { Text(entry.saved ? "Saved" : "Not saved yet") }
-        }
-        .font(PiFont.caption.monospacedDigit()).foregroundStyle(Color.piInkTertiary).lineLimit(1)
+    /// The mark, the stack's gap, the words, and the gap before the
+    /// `Spacer(minLength: 0)` that ends the row.
+    private func textWidth(_ width: CGFloat) -> CGFloat { max(0, width - 16 - 9 - 9) }
+    func height(forWidth width: CGFloat) -> CGFloat {
+        let text = title.height(forWidth: textWidth(width)) + 2 + detail.height(forWidth: textWidth(width))
+        return max(17, text)
     }
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: height(forWidth: bounds.width > 0 ? bounds.width : 212)) }
+    override var fittingSize: NSSize { NSSize(width: bounds.width, height: height(forWidth: bounds.width > 0 ? bounds.width : 212)) }
+    override func setFrameSize(_ newSize: NSSize) { super.setFrameSize(newSize); needsLayout = true }
+    override func layout() {
+        super.layout()
+        // The mark in a 16-point square, a point down.
+        let box = CGRect(x: 0, y: 1, width: 16, height: 16)
+        spinner?.frame = CGRect(x: box.midX - 5.5, y: box.midY - 5.5, width: 11, height: 11)
+        dot.frame = CGRect(x: box.midX - UnreadDotView.size / 2, y: box.midY - UnreadDotView.size / 2, width: UnreadDotView.size, height: UnreadDotView.size)
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        quiet.frame = CGRect(x: box.midX - 3, y: box.midY - 3, width: 6, height: 6)
+        CATransaction.commit()
+        let width = textWidth(bounds.width)
+        let titleHeight = title.height(forWidth: width)
+        title.frame = CGRect(x: 16 + 9, y: 0, width: width, height: titleHeight)
+        detail.frame = CGRect(x: 16 + 9, y: titleHeight + 2, width: width, height: detail.height(forWidth: width))
+    }
+    override var wantsUpdateLayer: Bool { true }
+    override func updateLayer() { quiet.backgroundColor = piCGColor(NSColor.piInkTertiary.withAlphaComponent(0.5)) }
 }
+
 
 // MARK: - What the panel lists, and what it does
 

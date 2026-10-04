@@ -99,7 +99,7 @@ final class SheetHoverReleaseTests: GitPanelTestCase, SerialTestLane {
         let host = TabHost(defaults: nil)
         host.showsWindows = false
         addTeardownBlock { @MainActor in host.tearDown() }
-        let (window, screen) = try await inFront(TabWindowRoot(host: host, container: host.pane).piTabRoot(), size: NSSize(width: 1280, height: 860))
+        let (window, screen) = try await inFront(TabWindowRootBridge(host: host, container: host.pane), size: NSSize(width: 1280, height: 860))
         var controllers: [() -> GitController?] = []
         for pass in 1...2 {
             weak var tab = autoreleasepool { host.open(kind: ChangesTab.kind, key: "under-pointer") { ChangesTab(projectID: "under-pointer", name: "project", roots: [folder.path]) } as? ChangesTab }

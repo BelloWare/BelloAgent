@@ -126,8 +126,8 @@ final class InlineSkillTests: XCTestCase {
         model.chats = [ChatRecord(id: view.id, workspaceID: "w", title: "A", profileID: "p")]
         let all = [skill("s1", name: "skill-review"), skill("s2", name: "skim-notes"), skill("s3", name: "sketch")]
         view.skillCatalog = SkillCatalog(state: .ready, scope: model.skillScope(sessionID: view.id, workspaceID: "w"), revision: "v1", entries: all.map(SkillSearch.Entry.init))
-        let hosted = NSHostingView(rootView: NativeComposer(text: Binding(get: { view.draft }, set: { view.draft = $0 }), send: { _ in XCTFail("Typing must not submit") }, sessionID: view.id,
-            locationChanged: { model.composerMoved($0, editor: $1, view: view) }))
+        let hosted = NativeComposer(text: view.draft, textChanged: { view.draft = $0 }, send: { _ in XCTFail("Typing must not submit") }, sessionID: view.id,
+            locationChanged: { model.composerMoved($0, editor: $1, view: view) }).makeView()
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 200), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false; window.contentView = hosted; window.makeKeyAndOrderFront(nil)
         defer { window.orderOut(nil); window.contentView = nil }
@@ -178,27 +178,35 @@ final class InlineSkillTests: XCTestCase {
         model.chats = [ChatRecord(id: view.id, workspaceID: "w", title: "A", profileID: "p")]
         view.skillCatalog = SkillCatalog(state: .ready, scope: model.skillScope(sessionID: view.id, workspaceID: "w"), revision: "v1",
                                          entries: (0..<5).map { skill("s\($0)", name: "review-\($0)") }.map(SkillSearch.Entry.init))
-        let hosted = NSHostingView(rootView: ComposerInput(model: model, session: view, paneWidth: 900))
+        let hosted = ComposerInputView(model: model)
+        hosted.paneWidth = 900; hosted.show(view)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 500), styleMask: [.titled], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false; window.contentView = hosted; window.orderFront(nil)
+        window.isReleasedWhenClosed = false; window.orderFront(nil)
+        window.contentView?.addSubview(hosted)
         defer { window.orderOut(nil); window.contentView = nil }
-        /// SwiftUI applies a published change on a later turn; measure after it.
-        func settle() async throws { for _ in 0..<6 { hosted.layoutSubtreeIfNeeded(); try await Task.sleep(for: .milliseconds(20)) } }
+        /// A published change is applied on a later turn; measure after it.
+        func settle() async throws {
+            for _ in 0..<6 {
+                hosted.frame = NSRect(x: 0, y: 0, width: 900, height: hosted.height(forWidth: 900))
+                hosted.layoutSubtreeIfNeeded(); try await Task.sleep(for: .milliseconds(20))
+            }
+        }
         try await settle()
-        let closed = hosted.fittingSize.height
+        let closed = hosted.height(forWidth: 900)
         view.draft = "/rev"
         view.completionToken = SlashCompletionToken.local(in: "/rev", at: ComposerLocation(sessionID: view.id, editorGeneration: UUID(), draftRevision: 1,
                                                                                             selectedRangeUTF16: NSRange(location: 4, length: 0), markedRangeUTF16: nil), directInput: false)
         view.completionVisible = true
         XCTAssertEqual(model.completions(view).count, 5)
         try await settle()
-        XCTAssertEqual(hosted.fittingSize.height, closed, accuracy: 0.5, "Opening the slash list resized the composer")
+        XCTAssertEqual(hosted.height(forWidth: 900), closed, accuracy: 0.5, "Opening the slash list resized the composer")
+        XCTAssertNotNil(ConversationPaneTests.views(SlashCompletionListView.self, in: hosted).first { !$0.isHidden }, "The list is up")
         view.completionToken = SlashCompletionToken.local(in: "/review-1", at: ComposerLocation(sessionID: view.id, editorGeneration: UUID(), draftRevision: 2,
                                                                                                  selectedRangeUTF16: NSRange(location: 9, length: 0), markedRangeUTF16: nil), directInput: false)
         view.objectWillChange.send()
         try await settle()
         XCTAssertEqual(model.completions(view).count, 1)
-        XCTAssertEqual(hosted.fittingSize.height, closed, accuracy: 0.5, "Filtering the slash list resized the composer")
+        XCTAssertEqual(hosted.height(forWidth: 900), closed, accuracy: 0.5, "Filtering the slash list resized the composer")
     }
 
     @MainActor func testMountedCaretSelectionBeyondEightAndStaleAcceptance() async throws {
@@ -211,8 +219,8 @@ final class InlineSkillTests: XCTestCase {
         view.skillCatalog = SkillCatalog(state: .ready, scope: model.skillScope(sessionID: view.id, workspaceID: "w"), revision: "v1", entries: all.map(SkillSearch.Entry.init))
         let original = "中文 👨‍👩‍👧‍👧 use /rev on this change"
         view.draft = original
-        let hosted = NSHostingView(rootView: NativeComposer(text: Binding(get: { view.draft }, set: { view.draft = $0 }), send: { _ in XCTFail("Selection must not submit") }, sessionID: view.id,
-            locationChanged: { model.composerMoved($0, editor: $1, view: view) }))
+        let hosted = NativeComposer(text: view.draft, textChanged: { view.draft = $0 }, send: { _ in XCTFail("Selection must not submit") }, sessionID: view.id,
+            locationChanged: { model.composerMoved($0, editor: $1, view: view) }).makeView()
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 200), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false; window.contentView = hosted; window.makeKeyAndOrderFront(nil)
         defer { window.orderOut(nil); window.contentView = nil }

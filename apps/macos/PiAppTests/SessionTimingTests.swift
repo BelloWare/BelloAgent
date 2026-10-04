@@ -947,23 +947,26 @@ final class SessionTimingTests: XCTestCase {
         // (14), row padding (20), and icon/spacing (24) leave 226/126pt.
         // A first-level child leaves another 14pt less: 112pt.
         let cases: [(state: String, output: Double?)] = [("idle", 100), ("paused", 100), ("stopping", 100), ("stopping", nil)]
-        let hosted = NSHostingView(rootView: AnyView(EmptyView()))
+        let hosted = NSView()
+        hosted.wantsLayer = true
+        let metrics = ChatRowMetricsView()
+        hosted.addSubview(metrics)
         let window = NSWindow(contentRect: NSRect(x: 120, y: 120, width: 250, height: 80), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false; window.contentView = hosted; window.makeKeyAndOrderFront(nil)
         defer { window.orderOut(nil); window.contentView = nil; window.close() }
         var wideHeights: [String: CGFloat] = [:]
-        // The sidebar tells the line its width, so the shipped path chooses its
-        // form by measuring the figures; a line told nothing still lays the
-        // forms out to find one that fits. Both must keep everything readable.
-        for told in [false, true] {
+        // The sidebar tells the line its width, so it chooses its form by
+        // measuring the figures, and must keep everything readable.
+        for told in [true] {
         for width in [CGFloat(226), CGFloat(126), CGFloat(112)] {
             for item in cases {
                 let id = item.state + (item.output == nil ? "-missing" : "") + (told ? "-told" : "")
                 var stats = ChatRowStats(totals: nil, timing: SessionTimingHistory(samples: [sample(id, output: item.output)]))
                 stats.requests = 1; stats.costUSD = 12.34
                 stats.updateActivity(state: item.state, loading: false, activity: [:])
-                hosted.rootView = AnyView(ChatRowMetrics(stats: stats, title: "Fixture", available: told ? width : .infinity)
-                    .frame(width: width, alignment: .leading).fixedSize(horizontal: false, vertical: true).padding(12))
+                metrics.update(stats: stats, available: width)
+                metrics.frame = CGRect(x: 12, y: 12, width: width, height: metrics.height(forWidth: width))
+                hosted.layer?.backgroundColor = hosted.piCGColor(.piWindow)
                 window.setContentSize(NSSize(width: width + 24, height: 80))
                 let rendered = try await renderedText(window, filename: "sidebar-metrics-\(Int(width))-\(id).jpg")
                 XCTAssertEqual(hosted.bounds.width, width + 24, accuracy: 0.5)
@@ -975,7 +978,7 @@ final class SessionTimingTests: XCTestCase {
                     XCTAssertTrue(rendered.contains("latest 124"), "The complete rate label must remain visible at \(width)pt: \(rendered)")
                 }
                 if item.state != "idle" { XCTAssertTrue(rendered.contains(item.state), rendered) }
-                let height = hosted.fittingSize.height
+                let height = metrics.height(forWidth: width) + 24
                 if width == 226 { wideHeights[id] = height }
                 else {
                     XCTAssertGreaterThan(height, try XCTUnwrap(wideHeights[id]) + 8,

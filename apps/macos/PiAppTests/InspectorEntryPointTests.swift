@@ -30,8 +30,8 @@ final class InspectorEntryPointTests: XCTestCase {
     }
 
     /// A press target of the pane by its identifier: the AppKit button over a pill's or badge's face.
-    @MainActor static func trigger(_ identifier: String, in pane: ConversationPaneTests.Pane) -> PiPopoverTriggerButton? {
-        ConversationPaneTests.views(PiPopoverTriggerButton.self, in: pane.hosted).first { $0.accessibilityIdentifier() == identifier }
+    @MainActor static func trigger(_ identifier: String, in pane: ConversationPaneTests.Pane) -> NSButton? {
+        ConversationPaneTests.views(NSButton.self, in: pane.hosted).first { $0.accessibilityIdentifier() == identifier }
     }
 
     @MainActor private func inspector(_ pane: ConversationPaneTests.Pane) -> SessionInspectorModel? {
@@ -87,7 +87,7 @@ final class InspectorEntryPointTests: XCTestCase {
         var shown: [NSMenu] = []
         PiMenus.intercept = { menu, _ in shown.append(menu) }
         defer { PiMenus.intercept = nil; pane.close() }
-        let actions = try XCTUnwrap(ConversationPaneTests.views(PiPopoverTriggerButton.self, in: pane.hosted)
+        let actions = try XCTUnwrap(ConversationPaneTests.views(NSButton.self, in: pane.hosted)
             .first { $0.accessibilityIdentifier() == "conversationActions" }, "The chat menu is in the composer bar")
         actions.performClick(nil)
         let menu = try XCTUnwrap(shown.last)

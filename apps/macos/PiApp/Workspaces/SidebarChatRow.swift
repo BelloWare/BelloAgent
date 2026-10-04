@@ -1,13 +1,12 @@
 import AppKit
-import SwiftUI
 
 /// How many sidebar rows have built their view tree. A test seam, not
 /// diagnostics: a selection change must rebuild the two rows whose selection
 /// changed and no others, and that is only checkable by counting.
 @MainActor enum SidebarRowRenderCount {
-    private(set) static var builds = 0
-    static func reset() { builds = 0 }
-    static func built() { builds &+= 1 }
+    /// Chat and side rows drawn again since the last reset.
+    static var builds: Int { SidebarChatRowView.builds }
+    static func reset() { SidebarChatRowView.builds = 0 }
 }
 
 /// Everything a sidebar chat row draws or branches on that does not come from
@@ -53,109 +52,6 @@ struct SidebarSideRowState: Equatable {
     var liveIdentity: ObjectIdentifier?
     var available: CGFloat = .infinity
     var indent: CGFloat = 0
-}
-
-/// One chat in the sidebar: its press surface, its highlight, its right-click
-/// menu and its drag source. Equatable on the record and the state above, so a
-/// workspace change that this row does not show leaves it standing.
-struct SidebarChatRow: View, Equatable {
-    nonisolated static func == (lhs: SidebarChatRow, rhs: SidebarChatRow) -> Bool {
-        // `model` and `projectID` are fixed for the row this identity names.
-        lhs.chat == rhs.chat && lhs.state == rhs.state
-    }
-    let model: WorkspaceModel
-    let chat: ChatRecord
-    let projectID: String
-    let state: SidebarChatRowState
-    @Environment(\.piReduceMotion) private var reduceMotion
-    @State private var insertionAfter: Bool?
-
-    /// A drag surface owns the pointer on draggable rows, so the press has to
-    /// route the same way whether it arrives from AppKit or from the button's
-    /// own keyboard activation.
-    private var click: @MainActor (NSEvent.ModifierFlags) -> Void {
-        let model = model, chat = chat
-        return { flags in
-            SidebarRowClick(modifiers: flags).apply(to: model, sessionID: chat.id) {
-                Task { await model.openFromSidebar(chat.id) }
-            }
-        }
-    }
-    private var rename: @MainActor () -> Void {
-        let model = model, chat = chat
-        return { if !chat.isBackgroundTask { model.presentRename(chat.id) } }
-    }
-
-    var body: some View {
-        let _ = SidebarRowRenderCount.built()
-        PiSelectableRow(selected: state.selected, marked: state.marked, providesCursor: !state.draggable,
-                        action: { click(NSEvent.modifierFlags) }, doubleClick: rename) {
-            ChatRow(model: model, chat: chat, selected: state.selected, unreadCount: state.unreadCount,
-                    unreadFailure: state.unreadFailure, live: state.liveIdentity != nil, subtitle: state.subtitle,
-                    hasSide: state.hasSide, expanded: state.expanded, available: state.available) {
-                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) {
-                    model.setSidebarSideFolded(chat.id, folded: !model.collapsedSidebarSides.contains(chat.id))
-                }
-            }
-        }
-        .contextMenu { menu }
-        .overlay {
-            if state.draggable {
-                GeometryReader { geometry in
-                    Color.clear.onDrop(of: [TopicSessionDrag.type], delegate: SessionOrderDrop(model: model, projectID: projectID, targetID: chat.id, height: geometry.size.height, insertionAfter: $insertionAfter))
-                }
-            }
-        }
-        .overlay(alignment: insertionAfter == true ? .bottom : .top) {
-            if insertionAfter != nil { Rectangle().fill(Color.piAccent).frame(height: 2).allowsHitTesting(false) }
-        }
-        .modifier(TopicSessionDragSource(model: model, sessionID: chat.id, projectID: projectID, enabled: state.draggable,
-                                         click: click, doubleClick: rename))
-        .padding(.leading, state.indent)
-    }
-
-    @ViewBuilder private var menu: some View {
-        if state.anyMarked && state.marked {
-            MarkedSessionActions(model: model)
-        } else {
-            PiMenuContent { [model, chat, state] in
-                if chat.parentSessionID != nil {
-                    PiMenuEntry.button("Open on Its Own", systemImage: "rectangle.expand.vertical") { Task { await model.select(chat.id) } }
-                    PiMenuEntry.divider
-                }
-                SessionOrganizationActions.entries(model: model, chat: chat)
-                PiMenuEntry.divider
-                SessionReferenceActions.entries(model: model, sessionID: chat.id)
-                if state.offersMarkAsRead {
-                    PiMenuEntry.divider
-                    PiMenuEntry.button("Mark as Read") { model.markSessionRead(chat.id) }
-                }
-            }
-        }
-    }
-}
-
-/// The open side conversation under its parent. Same bargain as the row above.
-struct SidebarSideRow: View, Equatable {
-    nonisolated static func == (lhs: SidebarSideRow, rhs: SidebarSideRow) -> Bool { lhs.state == rhs.state }
-    let model: WorkspaceModel
-    let state: SidebarSideRowState
-
-    var body: some View {
-        let _ = SidebarRowRenderCount.built()
-        PiSelectableRow(selected: state.selected, action: { [model, state] in Task { await model.openFromSidebar(state.id) } }) {
-            SideRow(title: state.title, kept: state.kept, selected: state.selected, unreadCount: state.unreadCount,
-                    display: state.liveIdentity == nil ? nil : model.displays[state.id], available: state.available)
-        }
-        .contextMenu {
-            PiMenuContent { [model, state] in
-                if state.kept, let record = model.record(state.id) { SessionOrganizationActions.entries(model: model, chat: record) }
-                SessionReferenceActions.entries(model: model, sessionID: state.id)
-                if state.unreadCount > 0 { PiMenuEntry.button("Mark as Read") { model.markSessionRead(state.id) } }
-            }
-        }
-        .padding(.leading, state.indent)
-    }
 }
 
 /// One listed chat and, when it is open, the side conversation under it.

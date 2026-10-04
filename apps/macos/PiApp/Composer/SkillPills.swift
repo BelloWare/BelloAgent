@@ -1,61 +1,115 @@
-import SwiftUI
 import AppKit
+import Combine
 
 // A skill pill: the composer's inline token and a sent message's pill share
-// one face and one press target. The face is SwiftUI; the target is an AppKit
-// button over it, so the press, the hover, the pointer, keyboard focus, Copy
+// one face and one press target. The face draws; the target is a button
+// over it (or around it, for a composer token), so the press, the hover, the pointer, keyboard focus, Copy
 // and the accessibility action belong to one view a popover can anchor to.
 
 /// What a pill looks like: the command glyph, "/name" and, when there are
-/// any, the arguments cut short after it.
-struct SkillPillFace: View {
-    let name: String
-    var arguments = ""
-    var hovered = false
-    var open = false
+/// any, the arguments cut short after it. It draws and never takes a click:
+/// its pill does.
+@MainActor final class SkillPillFaceView: NSView {
     nonisolated static let height: CGFloat = 18
-    var body: some View {
-        let shortened = SkillPillLabel.arguments(arguments)
-        HStack(spacing: 4) {
-            Image(systemName: "command").font(.system(size: 9, weight: .bold)).foregroundStyle(Color.piAccent)
-            Text("/" + name).font(.system(size: 12, weight: .semibold)).foregroundStyle(Color.piAccent)
-                .lineLimit(1).truncationMode(.middle).layoutPriority(1)
-            if !shortened.isEmpty {
-                Text(shortened).font(.system(size: 12)).foregroundStyle(Color.piInkSecondary).lineLimit(1).truncationMode(.tail)
-            }
-        }
-        .padding(.horizontal, 7)
-        .frame(height: Self.height)
-        .background {
-            // The card's own surface under a light orange tint, so the pill
-            // reads the same in the white composer and on the tinted bubble,
-            // and its labels keep their contrast on both.
-            let shape = RoundedRectangle(cornerRadius: 6, style: .continuous)
-            shape.fill(Color.piSurface)
-                .overlay { shape.fill(Color.piBrandOrange.opacity(hovered || open ? 0.19 : 0.12)) }
-                .overlay { if open { shape.strokeBorder(Color.piAccent.opacity(0.55), lineWidth: 1) } }
-        }
-        .fixedSize(horizontal: false, vertical: true)
-        .accessibilityHidden(true)
-    }
-}
+    static let padding: CGFloat = 7
+    static let spacing: CGFloat = 4
+    var name: String { didSet { if oldValue != name { contentChanged() } } }
+    var arguments: String { didSet { if oldValue != arguments { contentChanged() } } }
+    var hovered = false { didSet { if oldValue != hovered { styleChanged() } } }
+    var open = false { didSet { if oldValue != open { styleChanged() } } }
+    private let base = CALayer(), tint = CALayer(), border = CALayer()
+    private let content = PiKit.DrawingLayer()
 
-/// The face, lit while the pointer is over its pill or its popover is open.
-private struct SkillPillFaceHost: View {
-    let name: String
-    let arguments: String
-    let key: String
-    let hovered: Bool
-    @ObservedObject var popovers: SkillPopovers
-    var body: some View {
-        SkillPillFace(name: name, arguments: arguments, hovered: hovered, open: popovers.openKey == key)
+    init(name: String, arguments: String = "") {
+        self.name = name; self.arguments = arguments
+        super.init(frame: .zero)
+        wantsLayer = true
+        for layer in [base, tint, border] { layer.cornerRadius = 6; layer.cornerCurve = .continuous; self.layer?.addSublayer(layer) }
+        border.borderWidth = 1
+        content.drawer = { [weak self] rect in self?.drawContent(in: rect) }
+        layer?.addSublayer(content)
+        setAccessibilityElement(false)
     }
-}
-
-/// A hosting view that draws and never takes a click: its pill does.
-private final class PassiveHostingView<Content: View>: NSHostingView<Content> {
+    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    override var isFlipped: Bool { true }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
-    override var acceptsFirstResponder: Bool { false }
+
+    private static let glyph = PiKit.Symbol("command", size: 9, weight: .bold)
+    private var nameLine: PiKit.Line { PiKit.Line("/" + name, font: .systemFont(ofSize: 12, weight: .semibold), color: .piAccent) }
+    private var shortened: String { SkillPillLabel.arguments(arguments) }
+    private var argumentLine: PiKit.Line { PiKit.Line(shortened, font: .systemFont(ofSize: 12), color: .piInkSecondary) }
+
+    /// The width the face takes for its whole label, as SwiftUI sized it.
+    static func idealWidth(name: String, arguments: String, scale: CGFloat = 2) -> CGFloat {
+        let face = SkillPillFaceView(name: name, arguments: arguments)
+        return face.idealWidth(scale: scale)
+    }
+    func idealWidth(scale: CGFloat) -> CGFloat {
+        var width = Self.padding * 2 + Self.glyph.layoutSize.width + Self.spacing + nameLine.size(scale: scale).width
+        if !shortened.isEmpty { width += Self.spacing + argumentLine.size(scale: scale).width }
+        return width
+    }
+    override var intrinsicContentSize: NSSize { NSSize(width: idealWidth(scale: piScale), height: Self.height) }
+
+    private func contentChanged() { invalidateIntrinsicContentSize(); content.setNeedsDisplay() }
+    private func styleChanged() { needsLayout = true }
+
+    override func layout() {
+        super.layout()
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        for layer in [base, tint, border, content] as [CALayer] { layer.frame = bounds }
+        content.contentsScale = piScale
+        styleLayers()
+        CATransaction.commit()
+        content.setNeedsDisplay()
+    }
+    /// The card's own surface under a light orange tint, so the pill reads
+    /// the same in the white composer and on the tinted bubble, and its
+    /// labels keep their contrast on both.
+    private func styleLayers() {
+        base.backgroundColor = piCGColor(.piSurface)
+        tint.backgroundColor = piCGColor(NSColor.piBrandOrange.withAlphaComponent(hovered || open ? 0.19 : 0.12))
+        border.borderColor = open ? piCGColor(NSColor.piAccent.withAlphaComponent(0.55)) : CGColor.clear
+    }
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        content.appearance = effectiveAppearance
+        needsLayout = true
+    }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        content.appearance = effectiveAppearance; content.contentsScale = piScale
+        needsLayout = true
+    }
+
+    /// The glyph, the name and the arguments in a row, as an `HStack` lays
+    /// them out: the name first in line for room, the arguments cut first.
+    private func drawContent(in rect: CGRect) {
+        let scale = piScale
+        let glyphBox = Self.glyph.layoutSize
+        let name = nameLine, nameSize = name.size(scale: scale)
+        let arguments = shortened.isEmpty ? nil : argumentLine
+        let argumentSize = arguments?.size(scale: scale) ?? .zero
+        var room = rect.width - Self.padding * 2 - glyphBox.width - Self.spacing
+        if arguments != nil { room -= Self.spacing }
+        // A truncating line's least width is its ellipsis.
+        let least = arguments.map { PiKit.Line("…", font: $0.font, color: $0.color).size(scale: scale).width } ?? 0
+        let fits = nameSize.width + argumentSize.width <= room + 0.25
+        let nameWidth = fits ? nameSize.width : min(nameSize.width, max(0, room - least))
+        let argumentWidth = fits ? argumentSize.width : min(argumentSize.width, max(0, room - nameWidth))
+        let total = glyphBox.width + Self.spacing + nameWidth + (arguments == nil ? 0 : Self.spacing + argumentWidth)
+        var x = PiKit.round((rect.width - total) / 2, scale)
+        x = max(Self.padding, x)
+        Self.glyph.draw(centredIn: CGRect(x: x, y: 0, width: glyphBox.width, height: rect.height), color: .piAccent, scale: scale)
+        x += glyphBox.width + Self.spacing
+        let y = PiKit.round((rect.height - nameSize.height) / 2, scale)
+        name.draw(in: CGRect(x: x, y: y, width: nameWidth, height: nameSize.height), truncation: .middle, scale: scale)
+        if let arguments {
+            x += nameWidth + Self.spacing
+            arguments.draw(in: CGRect(x: x, y: PiKit.round((rect.height - argumentSize.height) / 2, scale), width: argumentWidth, height: argumentSize.height),
+                           truncation: .end, scale: scale)
+        }
+    }
 }
 
 /// The keys a focused composer token hands to its composer. `type` is any
@@ -185,7 +239,8 @@ class SkillPillButton: NSButton {
 /// knows its skill and how wide its face wants to be.
 final class ComposerSkillToken: SkillPillButton {
     private(set) var chip: SkillChip
-    private let face: PassiveHostingView<SkillPillFaceHost>
+    private let face: SkillPillFaceView
+    private var openObservation: AnyCancellable?
     /// The width the face needs for its whole label.
     private(set) var idealWidth: CGFloat = 0
     let popoverKey: String
@@ -193,13 +248,15 @@ final class ComposerSkillToken: SkillPillButton {
     init(chip: SkillChip, sessionID: String) {
         self.chip = chip
         popoverKey = SkillPopovers.composerKey(sessionID: sessionID, skillID: chip.id)
-        face = PassiveHostingView(rootView: SkillPillFaceHost(name: chip.name, arguments: chip.arguments, key: popoverKey,
-                                                               hovered: false, popovers: .shared))
+        face = SkillPillFaceView(name: chip.name, arguments: chip.arguments)
         super.init(frame: .zero)
-        face.sizingOptions = []
-        face.translatesAutoresizingMaskIntoConstraints = true
         face.autoresizingMask = [.width, .height]
         addSubview(face)
+        // Lit while its popover is open.
+        let key = popoverKey
+        openObservation = SkillPopovers.shared.$openKey.sink { [weak self] open in
+            MainActor.assumeIsolated { self?.face.open = open == key }
+        }
         apply(chip)
     }
     /// Tokens are made in code only.
@@ -210,11 +267,8 @@ final class ComposerSkillToken: SkillPillButton {
         let measured = self.chip.name != chip.name || self.chip.arguments != chip.arguments || idealWidth == 0
         self.chip = chip
         copiedText = SkillPillLabel.copied(chip.name)
-        refreshFace()
-        if measured {
-            let probe = NSHostingView(rootView: SkillPillFace(name: chip.name, arguments: chip.arguments))
-            idealWidth = ceil(probe.fittingSize.width)
-        }
+        face.name = chip.name; face.arguments = chip.arguments
+        if measured { idealWidth = ceil(face.idealWidth(scale: piScale)) }
     }
     /// What the token's card and popover say, asked for when an assistive
     /// technology reads the token rather than on every keystroke.
@@ -225,10 +279,7 @@ final class ComposerSkillToken: SkillPillButton {
     override func accessibilityHelp() -> String? {
         (describe?(chip)?.accessibilityHelp).map { $0 + ". Press to show its details." }
     }
-    override func hoverChanged() { refreshFace() }
-    private func refreshFace() {
-        face.rootView = SkillPillFaceHost(name: chip.name, arguments: chip.arguments, key: popoverKey, hovered: hovering, popovers: .shared)
-    }
+    override func hoverChanged() { face.hovered = hovering }
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
         face.frame = bounds
