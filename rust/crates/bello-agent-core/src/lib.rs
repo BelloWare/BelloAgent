@@ -6,6 +6,8 @@ pub mod runtime;
 pub mod session;
 pub mod sse;
 mod stream_journal;
+pub mod tools;
+pub mod workspace;
 
 pub use profile::{Credential, Profile};
 pub use provider::{Delta, Reply, ResponsesClient};

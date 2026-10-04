@@ -53,7 +53,7 @@ the source-backed comparison, exact durability contract, and backup guidance.
 
 - Rust snapshots use a separate `BelloAgent-rust/sessions` directory. macOS uses
   Application Support; Linux uses XDG_DATA_HOME or `~/.local/share`.
-- `--session FILE` selects another **Rust snapshot**, never a Swift journal.
+- `--session FILE` anchors another **Rust workspace and initial snapshot**, never a Swift journal.
 - Exclusive file locks prevent simultaneous writers. User-command checkpoints
   use private 0600 temporary files, fsync, atomic rename, then directory fsync.
 - Streamed deltas use a separate generation-scoped JSONL journal, synchronized
@@ -67,6 +67,19 @@ the source-backed comparison, exact durability contract, and backup guidance.
   credentials and custom header values.
 - Tools are not offered or executed in this slice. Unexpected function calls
   stop visibly instead of inventing tool results or silently claiming success.
+
+## Multiple chats and durable drafts
+
+The existing New Chat controls (Ctrl/Command-N) and sidebar now support multiple
+chats within the selected project. Saved drafts debounce in the background; closing
+flushes them and stops active runs. A failed save keeps the window and draft.
+`--session FILE` anchors a Rust-only workspace catalog beside that initial snapshot;
+relaunch restores its last saved chat. Use another anchor for a different project.
+See [the exact scope, recovery semantics and unported limits](docs/multichat-and-tools-checkpoint.md).
+
+The standalone ls tool module is fixture-tested groundwork only. Production model
+tools remain disabled. Latest multi-chat native interaction QA is blocked by the
+disconnected test desktop; Linux compile/test success is not visual verification.
 
 ## Measurement
 

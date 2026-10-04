@@ -446,7 +446,7 @@ pub struct SessionStore {
     #[cfg(test)]
     fault: WriteFault,
     path: PathBuf,
-    _lock: File,
+    _lock: Option<File>,
     session: Session,
     uncertain: bool,
     journal: Option<File>,
@@ -454,9 +454,70 @@ pub struct SessionStore {
     snapshot_limit: usize,
 }
 impl SessionStore {
+    /// An on-screen New chat has no file, lock, accepted input, or running work.
+    pub fn pending() -> Self {
+        let session = Session::new();
+        let encoded_bytes = encode_snapshot(&session)
+            .expect("empty session encodes")
+            .len();
+        Self {
+            #[cfg(test)]
+            fault: WriteFault::None,
+            path: PathBuf::new(),
+            _lock: None,
+            session,
+            uncertain: false,
+            journal: None,
+            encoded_bytes,
+            snapshot_limit: MAX_SNAPSHOT_BYTES,
+        }
+    }
+    pub fn pending_with_id(id: &str) -> Result<Self> {
+        Uuid::parse_str(id).map_err(|_| invalid("Invalid pending chat identity"))?;
+        let mut store = Self::pending();
+        store.session.id = id.into();
+        store.encoded_bytes = encode_snapshot(&store.session)?.len();
+        Ok(store)
+    }
+    pub fn is_persistent(&self) -> bool {
+        self._lock.is_some()
+    }
+    pub fn persist_to(&mut self, path: impl AsRef<Path>) -> Result<()> {
+        if self.is_persistent() {
+            let requested = if path.as_ref().is_absolute() {
+                path.as_ref().to_owned()
+            } else {
+                std::env::current_dir()?.join(path.as_ref())
+            };
+            if requested != self.path {
+                return Err(invalid("This chat is already stored at a different path"));
+            }
+            return Ok(());
+        }
+        if self.uncertain {
+            return Err(invalid(
+                "Session persistence is uncertain. Reopen before continuing.",
+            ));
+        }
+        match Self::open_seeded(path.as_ref(), Some(self.session.clone())) {
+            Ok(store) => {
+                *self = store;
+                Ok(())
+            }
+            Err(error) => {
+                if matches!(error, Error::PersistenceUncertain(_)) {
+                    self.uncertain = true;
+                }
+                Err(error)
+            }
+        }
+    }
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let path = if path.as_ref().is_absolute() {
-            path.as_ref().to_owned()
+        Self::open_seeded(path.as_ref(), None)
+    }
+    fn open_seeded(path: &Path, initial: Option<Session>) -> Result<Self> {
+        let path = if path.is_absolute() {
+            path.to_owned()
         } else {
             std::env::current_dir()?.join(path)
         };
@@ -489,8 +550,14 @@ impl SessionStore {
             }
             serde_json::from_slice(&fs::read(&path)?)?
         } else {
-            Session::new()
+            initial.clone().unwrap_or_default()
         };
+        if initial
+            .as_ref()
+            .is_some_and(|expected| expected.id != session.id)
+        {
+            return Err(invalid("The session file belongs to another chat"));
+        }
         if ![1, 2].contains(&session.version) {
             return Err(invalid(
                 "Unsupported Rust session format. Swift journals are not imported automatically.",
@@ -522,7 +589,7 @@ impl SessionStore {
             #[cfg(test)]
             fault: WriteFault::None,
             path,
-            _lock: lock,
+            _lock: Some(lock),
             session,
             uncertain: false,
             journal: None,
@@ -544,6 +611,9 @@ impl SessionStore {
         self.session.clone()
     }
     pub fn transact<T>(&mut self, change: impl FnOnce(&mut Session) -> Result<T>) -> Result<T> {
+        if !self.is_persistent() {
+            return Err(invalid("Materialize this New chat before accepting input"));
+        }
         if self.uncertain {
             return Err(invalid(
                 "Session persistence is uncertain. Reopen before continuing.",
@@ -581,6 +651,9 @@ impl SessionStore {
     /// Append and synchronize only the new stream fragment. Accepted input and
     /// queue/edit commands still use atomic full checkpoints through transact.
     pub fn append_delta(&mut self, reply_id: &str, delta: Delta) -> Result<()> {
+        if !self.is_persistent() {
+            return Err(invalid("Materialize this New chat before accepting output"));
+        }
         if self.uncertain {
             return Err(invalid(
                 "Session persistence is uncertain. Reopen before continuing.",
@@ -752,6 +825,29 @@ fn encode_snapshot(session: &Session) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn pending_chat_accepts_nothing_until_materialized_and_keeps_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("new.json");
+        let mut store = SessionStore::pending();
+        let id = store.snapshot().id;
+        assert!(!store.is_persistent());
+        assert!(!path.exists());
+        assert!(
+            store
+                .transact(|session| session
+                    .submit(Submission::new("must not accept".into(), Lane::FollowUp)))
+                .is_err()
+        );
+        assert!(store.snapshot().pending.is_empty());
+        store.persist_to(&path).unwrap();
+        assert_eq!(store.snapshot().id, id);
+        store
+            .transact(|session| session.submit(Submission::new("accepted".into(), Lane::FollowUp)))
+            .unwrap();
+        drop(store);
+        assert_eq!(SessionStore::open(path).unwrap().snapshot().id, id);
+    }
     #[test]
     fn hold_blocks_every_lane_and_preserves_identity() {
         let mut s = Session::new();

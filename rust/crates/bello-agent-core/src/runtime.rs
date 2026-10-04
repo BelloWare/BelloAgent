@@ -14,7 +14,7 @@ struct Inner {
     cancel: Option<CancellationToken>,
     fatal: Option<String>,
 }
-struct Configuration {
+pub struct Configuration {
     profile: Profile,
     credential: Credential,
 }
@@ -27,7 +27,7 @@ pub struct Controller {
     active_cancel: RwLock<Option<CancellationToken>>,
     stop_requested: AtomicBool,
     worker_active: AtomicBool,
-    config: Option<Configuration>,
+    config: Option<Arc<Configuration>>,
     client: ResponsesClient,
     runtime: tokio::runtime::Handle,
     worker: Mutex<Option<tokio::task::JoinHandle<()>>>,
@@ -37,8 +37,20 @@ impl Controller {
         store: SessionStore,
         configuration: Option<(Profile, Credential)>,
     ) -> Result<Arc<Self>> {
-        if let Some((profile, _)) = &configuration {
-            profile.validate()?;
+        let configuration = configuration.map(|(profile, credential)| {
+            Arc::new(Configuration {
+                profile,
+                credential,
+            })
+        });
+        Self::with_configuration(store, configuration)
+    }
+    pub fn with_configuration(
+        store: SessionStore,
+        configuration: Option<Arc<Configuration>>,
+    ) -> Result<Arc<Self>> {
+        if let Some(configuration) = &configuration {
+            configuration.profile.validate()?;
         }
         let initial = Arc::new(store.snapshot());
         Ok(Arc::new(Self {
@@ -53,14 +65,28 @@ impl Controller {
                 cancel: None,
                 fatal: None,
             }),
-            config: configuration.map(|(profile, credential)| Configuration {
-                profile,
-                credential,
-            }),
+            config: configuration,
             client: ResponsesClient::new()?,
             runtime: shared_runtime()?.handle().clone(),
             worker: Mutex::new(None),
         }))
+    }
+    pub fn configuration(&self) -> Option<Arc<Configuration>> {
+        self.config.clone()
+    }
+    pub fn is_persistent(&self) -> bool {
+        self.inner
+            .lock()
+            .is_ok_and(|inner| inner.store.is_persistent())
+    }
+    pub fn materialize(&self, path: &std::path::Path) -> Result<()> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| invalid("Session is unavailable"))?;
+        inner.store.persist_to(path)?;
+        self.publish(&inner);
+        Ok(())
     }
     pub fn configured(&self) -> bool {
         self.config.is_some()
@@ -101,8 +127,10 @@ impl Controller {
             .expect("cancellation lock poisoned") = None;
     }
     pub fn submit(self: &Arc<Self>, text: String, lane: Lane) -> Result<()> {
+        self.submit_identified(Submission::new(text, lane))
+    }
+    pub fn submit_identified(self: &Arc<Self>, mut item: Submission) -> Result<()> {
         let config=self.config.as_ref().ok_or_else(||invalid("No connection configured. Launch with --profile and --credential-stdin; no credentials are discovered automatically."))?;
-        let mut item = Submission::new(text, lane);
         item.model = Some(config.profile.model_id.clone());
         item.effort = Some(config.profile.thinking_level.clone());
         self.change(|s| s.submit(item))?;

@@ -29,13 +29,13 @@ Native UI paths begin `apps/macos/PiApp/` (abbreviated `App/`).
 | Durable queued editing | Core/SessionQueueEdit.swift | Implemented hold/save/cancel/remove and idempotent identity subset. Both lanes held, restart retains hold; tests. Source revision-basis/outcome pruning not ported |
 | Queue presentation | App/Workspaces/QueuePanel.swift | Partial. Bounded/collapsible panel, timing labels and full-text editing. Drag reorder and all detail controls not ported |
 | Images/attachments/image-only submissions | Core/PiImage.swift; App/Composer/Attachments.swift; Core/SessionQueue.swift validate | Unported. Attachment control unavailable; transport currently accepts text only |
-| Built-in tool definitions/execution | Core/Tools.swift; Core/SessionTools.swift; Core/SessionRun.swift | Unported. No tool definitions sent; unexpected tool calls cause visible error, no fabricated result |
+| Built-in tool definitions/execution | Core/Tools.swift; Core/SessionTools.swift; Core/SessionRun.swift | Production unported. Fixture-only ls module + bounded/cancellable executor now implemented; no tool definitions sent or executed by Controller, no fabricated result |
 | MCP lifecycle/invocation | Core/MCP.swift; Core/HostService.swift mcp.* | Unported |
 | Skills and resource resolution | Core/Resources.swift; Core/HostService.swift resources.* | Unported |
 | Compaction / context preview | Core/SessionCompaction.swift; Core/CompactionPlanner.swift; Core/ContextPreview.swift | Unported; no claim that local context budgeting is complete |
 | Historical message edits/versions | Core/SessionVersions.swift; Core/EditReplayPlan.swift; Core/MessageVersions.swift | Unported |
 | Branch/fork/side conversations | Core/SessionBranching.swift; Core/SessionSide.swift; Core/SessionPersistence.swift | Unported |
-| Multiple projects/topics/chat organization | App/Workspaces/WorkspaceModel.swift; WorkspaceTopics.swift; WorkspaceTabs.swift | Unported beyond explicit --project and one selected persisted session |
+| Multiple projects/topics/chat organization | App/Workspaces/WorkspaceModel.swift; WorkspaceTopics.swift; WorkspaceTabs.swift | Partial: independent chats in one explicitly selected project, existing New Chat/sidebar controls, draft/selection persistence and deferred creation. Projects manager, multiple roots, topics and organization remain unported |
 | Native transcript/composer | App/Transcript/; App/Workspaces/ComposerInput.swift | Partial source-matched GPUI shell/transcript/composer with shared IME-aware proportional input, source tokens/geometry, adjacent pane, source Enter/Shift-Enter intent, persisted sidebar/split resizing. Markdown/links/rich tool cards and many interaction surfaces remain unported; initial transcript window explicitly paged |
 | Quick Open / adjacent file tabs | App/Files/QuickOpen.swift; App/Files/QuickOpenPanel.swift; App/Files/WorkspaceQuickOpen.swift; App/Workspaces/WorkspaceTabs.swift | Source-shaped Ctrl/⌘P popup, bounded background fuzzy search, :line, recent files, independent file tabs and dirty-close flows. Core/lifecycle tests pass; latest native interaction QA pending |
 | Shared folder browser | App/Files/; App/Workspaces/WorkspaceView.swift RightPane | Reuses BelloBox bello-workbench-ui; lazy/background filesystem work. See shared ledger/tests for limits |
@@ -51,6 +51,12 @@ Native UI paths begin `apps/macos/PiApp/` (abbreviated `App/`).
 | Accessibility / shortcut parity | NEXT-RELEASE.md A1; App/Design/; App/Application/ | Partial GPUI keyboard/text handling. AX tree, VoiceOver, app-wide shortcut audit not validated |
 | macOS distribution / update / signing | project.yml; docs/Release.md; App/Application/ | Unported/unverified. cfg-selected macOS storage path; no release/tag/feed/assets changed |
 | Performance vs Swift | README.md prior validation; docs/validation/ | Measurement hooks implemented; same-hardware baseline and sustained latency comparison pending. CPU callback timing is not frame presentation |
+
+## Latest incremental slice
+
+[Two-chat/durable-draft and ls-groundwork scope](multichat-and-tools-checkpoint.md)
+records the newest implementation and its limits. Production model tools remain
+disabled. Latest multi-chat native interactions are not yet visually verified.
 
 ## Storage and privacy
 
@@ -85,14 +91,19 @@ for isolation, durability, format, permission, recovery, and backup limits.
 - No real gateway, paid model call, user credential or source-app storage used in
   automated validation.
 
+- Multi-chat/draft development candidate: 84 workspace tests, strict Clippy,
+  rustfmt and native build passed on 2026-10-04 05:53 UTC. Final identities,
+  race fixes and unverified native interactions are recorded in
+  [the validation record](validation/multichat-2026-10-04.md).
+
 ## Next implementation priorities
 
 1. Preserve the existing UI before extending it: equivalent-state dark/light,
    minimum-size and responsive split/composer checks; close gaps recorded in the
    independent UI checklist. Continue repeated Send/Stop/Retry, queue-hold and
    reopen interaction checks.
-2. Add multiple sessions/projects and durable drafts without coupling display
-   invalidation to every session.
+2. Validate the new two-chat/durable-draft slice, then add source Projects
+   management, bounded display eviction and remaining organization semantics.
 3. Port guarded tool execution, MCP, resource/skill loading, compaction and replay
    semantics from their source tests. Do not expose unsupported controls early.
 4. Add native credential vault/settings and source-backed migration/import.

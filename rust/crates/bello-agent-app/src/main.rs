@@ -1,18 +1,24 @@
 mod assets;
+mod chat;
+mod chat_navigation;
 mod file_tab;
 mod layout;
 mod quick_open;
 mod theme;
-use bello_agent_core::{Controller, Credential, Lane, Profile, RunState, Session, SessionStore};
+use bello_agent_core::workspace::{ChatRecord, DraftRecord, SubmissionIntent, WorkspaceStore};
+use bello_agent_core::{Controller, Credential, Lane, Profile, RunState, SessionStore};
 use bello_workbench_ui::{
     EditorAppearance, EditorView, WorkbenchAppearance, WorkbenchPanel, WorkbenchView,
 };
+use chat::ChatState;
 use file_tab::{FileTabEvent, FileTabView};
 use gpui::{prelude::*, *};
 use quick_open::{QuickOpenEvent, QuickOpenView};
 use std::{
+    collections::BTreeMap,
     fs::{File, OpenOptions},
     io::{Read, Write},
+    ops::{Deref, DerefMut},
     path::PathBuf,
     sync::{Arc, Mutex, OnceLock},
     time::Instant,
@@ -64,8 +70,26 @@ struct FileEntry {
     _events: Subscription,
 }
 
-struct AgentView {
+struct LaunchState {
     controller: Arc<Controller>,
+    project: PathBuf,
+    workspace: Arc<Mutex<WorkspaceStore>>,
+    record: ChatRecord,
+    draft: DraftRecord,
+    pending: bool,
+}
+
+struct AgentView {
+    chat: ChatState,
+    inactive: BTreeMap<String, ChatState>,
+    records: Vec<ChatRecord>,
+    workspace: Arc<Mutex<WorkspaceStore>>,
+    selection_revision: u64,
+    shutting_down: bool,
+    close_ready: bool,
+    chat_directory: PathBuf,
+    unloaded_drafts: BTreeMap<String, DraftRecord>,
+    recoveries: BTreeMap<String, SubmissionIntent>,
     palette: Palette,
     layout: layout::Layout,
     layout_store: Arc<layout::LayoutStore>,
@@ -78,47 +102,55 @@ struct AgentView {
     next_file_id: u64,
     quick_open: Entity<QuickOpenView>,
     _quick_events: Subscription,
-    error_expanded: bool,
-    dismissed_error: Option<String>,
     project: PathBuf,
     icon: Arc<Image>,
     filter: Entity<EditorView>,
     _editor_events: Vec<Subscription>,
-    session: Arc<Session>,
-    composer: Entity<EditorView>,
     workbench: Entity<WorkbenchView>,
     show_files: bool,
-    error: Option<String>,
-    editing: Option<String>,
-    draft_before_edit: String,
-    visible_messages: usize,
-    queue_open: bool,
-    last_revision: u64,
-    busy: bool,
     close_dialog: bool,
-    _poll: Task<()>,
     _release: Subscription,
 }
+impl Deref for AgentView {
+    type Target = ChatState;
+    fn deref(&self) -> &Self::Target {
+        &self.chat
+    }
+}
+impl DerefMut for AgentView {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.chat
+    }
+}
 impl AgentView {
-    fn new(
-        controller: Arc<Controller>,
-        project: PathBuf,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        let session = controller.snapshot_shared();
-        let last_revision = controller.revision();
+    fn new(launch: LaunchState, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let LaunchState {
+            controller,
+            project,
+            workspace,
+            record,
+            draft,
+            pending,
+        } = launch;
         let palette = current_palette(window);
+        let state = workspace.lock().expect("workspace lock").snapshot();
+        let chat_directory = workspace
+            .lock()
+            .expect("workspace lock")
+            .chat_path(&record.id)
+            .expect("valid chat id")
+            .parent()
+            .unwrap()
+            .to_owned();
+        let mut records = state.chats.clone();
+        if !records.iter().any(|item| item.id == record.id) {
+            records.insert(0, record.clone());
+        }
         let layout_store = Arc::new(layout::LayoutStore::new(
-            default_session().parent().unwrap().join("layout.json"),
+            record.snapshot.parent().unwrap().join("layout.json"),
         ));
         let layout = layout_store.load();
-        let composer = cx.new(|cx| {
-            let mut view = EditorView::new(String::new(), window, cx);
-            view.set_composer_mode(cx);
-            view.set_appearance(Self::composer_style(palette), cx);
-            view
-        });
+        let chat = ChatState::new(controller, record, draft, pending, palette, window, cx);
         let filter = cx.new(|cx| {
             let mut view = EditorView::new(String::new(), window, cx);
             let mut style = Self::composer_style(palette);
@@ -129,10 +161,7 @@ impl AgentView {
             view.set_appearance(style, cx);
             view
         });
-        let editor_events = vec![
-            cx.subscribe(&composer, |_, _, _, cx| cx.notify()),
-            cx.subscribe(&filter, |_, _, _, cx| cx.notify()),
-        ];
+        let editor_events = vec![cx.subscribe(&filter, |_, _, _, cx| cx.notify())];
         let workbench = cx.new(|cx| WorkbenchView::new(project.clone(), window, cx));
         workbench.update(cx, |view, cx| {
             view.set_appearance(Self::workbench_style(palette), cx);
@@ -154,36 +183,39 @@ impl AgentView {
             ImageFormat::Png,
             include_bytes!("../../../../assets/branding/bello-agent-icon-128.png").to_vec(),
         ));
-        let mut updates = controller.subscribe();
-        let poll = cx.spawn(async move |view, cx| {
-            while updates.changed().await.is_ok() {
-                let snapshot = updates.borrow_and_update().clone();
-                if view
-                    .update(cx, |view, cx| {
-                        view.last_revision = view.controller.revision();
-                        if view.session.error != snapshot.error {
-                            view.dismissed_error = None;
-                            view.error_expanded = false;
-                        }
-                        view.session = snapshot;
-                        cx.notify();
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        });
         let release = cx.on_release(|view, _| {
             let _ = view.controller.stop();
+            for chat in view.inactive.values() {
+                let _ = chat.controller.stop();
+            }
         });
         let weak = cx.weak_entity();
         window.on_window_should_close(cx, move |window, cx| {
             weak.update(cx, |view, cx| view.request_close(window, cx))
                 .unwrap_or(true)
         });
+        let initial_view = cx.weak_entity();
+        cx.defer(move |cx| {
+            let _ = initial_view.update(cx, |view, cx| {
+                let id = view.record.id.clone();
+                if view.controller.is_persistent() {
+                    view.receive_snapshot(&id, view.session.clone(), cx);
+                }
+                view.reconcile_edit(&id, cx);
+                view.reconcile_intents(&id, cx);
+            });
+        });
         Self {
-            controller,
+            chat,
+            inactive: BTreeMap::new(),
+            records,
+            chat_directory,
+            unloaded_drafts: state.drafts,
+            recoveries: state.intents,
+            workspace,
+            selection_revision: state.selection_revision,
+            shutting_down: false,
+            close_ready: false,
             palette,
             layout,
             layout_store,
@@ -196,25 +228,13 @@ impl AgentView {
             next_file_id: 1,
             quick_open,
             _quick_events: quick_events,
-            error_expanded: false,
-            dismissed_error: None,
             project,
             icon,
             filter,
             _editor_events: editor_events,
-            session,
-            composer,
             workbench,
             show_files: false,
-            error: None,
-            editing: None,
-            draft_before_edit: String::new(),
-            visible_messages: 100,
-            queue_open: true,
-            last_revision,
-            busy: false,
             close_dialog: false,
-            _poll: poll,
             _release: release,
         }
     }
@@ -235,50 +255,45 @@ impl AgentView {
         &mut self,
         cx: &mut Context<Self>,
         command: impl FnOnce(Arc<Controller>) -> bello_agent_core::Result<R> + Send + 'static,
-        apply: impl FnOnce(&mut Self, R, &mut Context<Self>) + 'static,
+        apply: impl FnOnce(&mut ChatState, R, &mut Context<Self>) + 'static,
     ) {
-        if self.busy {
+        if self.busy || self.loading || self.load_failed || self.shutting_down {
             return;
         }
         self.busy = true;
         self.error = None;
         self.dismissed_error = None;
         self.error_expanded = false;
+        let id = self.record.id.clone();
+        let controller = self.controller.clone();
         self.composer
             .update(cx, |editor, cx| editor.set_read_only(true, cx));
-        let controller = self.controller.clone();
         let task = cx
             .background_executor()
             .spawn(async move { command(controller) });
         cx.spawn(async move |view, cx| {
             let result = task.await;
             let _ = view.update(cx, move |view, cx| {
-                view.busy = false;
-                view.composer
-                    .update(cx, |editor, cx| editor.set_read_only(false, cx));
-                match result {
-                    Ok(value) => apply(view, value, cx),
-                    Err(error) => view.error = Some(error.to_string()),
+                if let Some(chat) = view.chat_mut(&id) {
+                    chat.busy = false;
+                    chat.composer
+                        .update(cx, |editor, cx| editor.set_read_only(false, cx));
+                    chat.session = chat.controller.snapshot_shared();
+                    match result {
+                        Ok(value) => apply(chat, value, cx),
+                        Err(error) => chat.error = Some(error.to_string()),
+                    }
+                    chat.session = chat.controller.snapshot_shared();
                 }
-                view.refresh(cx);
+                view.draft_changed(&id, cx);
+                cx.notify();
             });
         })
         .detach();
         cx.notify();
     }
     fn submit(&mut self, lane: Lane, cx: &mut Context<Self>) {
-        let text = self.composer.read(cx).text().to_owned();
-        if text.trim().is_empty() {
-            return;
-        }
-        self.command(
-            cx,
-            move |controller| controller.submit(text, lane),
-            |view, (), cx| {
-                view.composer
-                    .update(cx, |editor, cx| editor.set_text(String::new(), cx))
-            },
-        );
+        self.submit_chat(lane, cx);
     }
     fn edit(&mut self, turn_id: &str, cx: &mut Context<Self>) {
         if self.editing.is_some() {
@@ -298,8 +313,10 @@ impl AgentView {
             move |controller| controller.begin_edit(&turn_id, &requested_edit),
             move |view, text, cx| {
                 view.draft_before_edit = view.composer.read(cx).text().to_owned();
+                view.queued_original = Some(text.clone());
                 view.composer
                     .update(cx, |editor, cx| editor.set_text(text, cx));
+                view.queued_turn_id = view.session.edit.as_ref().map(|edit| edit.turn_id.clone());
                 view.editing = Some(edit_id);
             },
         );
@@ -325,6 +342,8 @@ impl AgentView {
             },
             |view, (), cx| {
                 view.editing = None;
+                view.queued_turn_id = None;
+                view.queued_original = None;
                 let draft = std::mem::take(&mut view.draft_before_edit);
                 view.composer
                     .update(cx, |editor, cx| editor.set_text(draft, cx));
@@ -343,6 +362,8 @@ impl AgentView {
             move |view, (), cx| {
                 if removes_edit && view.editing.is_some() {
                     view.editing = None;
+                    view.queued_turn_id = None;
+                    view.queued_original = None;
                     let draft = std::mem::take(&mut view.draft_before_edit);
                     view.composer
                         .update(cx, |editor, cx| editor.set_text(draft, cx));
@@ -350,10 +371,18 @@ impl AgentView {
             },
         );
     }
-    fn request_close(&mut self, _: &mut Window, cx: &mut Context<Self>) -> bool {
-        if self.busy
-            || self.controller.snapshot_shared().state == RunState::Running
-            || !self.composer.read(cx).text().is_empty()
+    fn request_close(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.close_ready {
+            return true;
+        }
+        if self.shutting_down {
+            return false;
+        }
+        if self.session.state == RunState::Running
+            || self
+                .inactive
+                .values()
+                .any(|chat| chat.session.state == RunState::Running)
             || self.workbench.read(cx).has_unsaved_changes(cx)
             || self
                 .files
@@ -362,10 +391,10 @@ impl AgentView {
         {
             self.close_dialog = true;
             cx.notify();
-            false
         } else {
-            true
+            self.begin_shutdown(window, cx);
         }
+        false
     }
     fn open_changes(&mut self, cx: &mut Context<Self>) {
         self.changes_open = true;
@@ -462,6 +491,10 @@ impl AgentView {
         }
     }
     fn global_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.shutting_down {
+            cx.stop_propagation();
+            return;
+        }
         let mods = &event.keystroke.modifiers;
         let command = mods.platform || (cfg!(target_os = "linux") && mods.control);
         if self.close_dialog {
@@ -481,7 +514,10 @@ impl AgentView {
             }
             return;
         }
-        if command && event.keystroke.key == "p" {
+        if command && event.keystroke.key == "n" {
+            self.new_chat(window, cx);
+            cx.stop_propagation();
+        } else if command && event.keystroke.key == "p" {
             self.quick_open.update(cx, |view, cx| view.show(window, cx));
             cx.stop_propagation();
             cx.notify();
@@ -1050,7 +1086,22 @@ impl AgentView {
             .flex()
             .flex_col()
             .gap(px(16.));
-        if self.session.messages.is_empty() {
+        if self.loading {
+            transcript = transcript.child(
+                div()
+                    .py(px(24.))
+                    .text_color(rgb(p.secondary))
+                    .child("Preparing…"),
+            );
+        } else if self.load_failed {
+            transcript = transcript.child(
+                self.button("retry-chat-load", "Retry opening chat")
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        let id = view.record.id.clone();
+                        view.load_chat(&id, cx);
+                    })),
+            );
+        } else if self.session.messages.is_empty() {
             transcript = transcript.child(self.starter(cx));
         }
         let start = self
@@ -1277,7 +1328,10 @@ impl AgentView {
         bar = bar
             .child(model_pill)
             .child(effort_pill.child(self.icon("down", 9.)));
-        let can_send = !self.busy && !self.composer.read(cx).text().trim().is_empty();
+        let can_send = !self.busy
+            && !self.loading
+            && !self.shutting_down
+            && !self.composer.read(cx).text().trim().is_empty();
         bar = bar.child(
             div()
                 .id("send")
@@ -1334,6 +1388,36 @@ impl AgentView {
             .overflow_hidden()
             .flex()
             .flex_col();
+        for intent in self
+            .recoveries
+            .values()
+            .filter(|intent| intent.chat_id == self.record.id)
+        {
+            let restore = intent.id.clone();
+            let dismiss = intent.id.clone();
+            let actions = div()
+                .flex()
+                .gap(px(8.))
+                .child(
+                    self.button(
+                        SharedString::from(format!("restore-{restore}")),
+                        "Insert in draft",
+                    )
+                    .on_click(
+                        cx.listener(move |view, _, _, cx| view.resolve_intent(&restore, true, cx)),
+                    ),
+                )
+                .child(
+                    self.button(SharedString::from(format!("dismiss-{dismiss}")), "Dismiss")
+                        .on_click(cx.listener(move |view, _, _, cx| {
+                            view.resolve_intent(&dismiss, false, cx)
+                        })),
+                );
+            composer = composer.child(div().px(px(12.)).py(px(8.)).bg(p.accent_soft()).flex().flex_col().gap(px(6.))
+                .child(div().text_size(px(11.5)).child("Unconfirmed submission · It may have been accepted. Review before sending again."))
+                .child(div().text_size(px(12.)).max_h(px(60.)).overflow_hidden().child(intent.text.chars().take(300).collect::<String>()))
+                .child(actions));
+        }
         if self.editing.is_some() {
             composer = composer.child(
                 div()
@@ -1399,12 +1483,6 @@ impl AgentView {
     }
     fn sidebar(&self, cx: &mut Context<Self>) -> Div {
         let p = self.palette;
-        let status = match self.session.state {
-            RunState::Idle => "Ready",
-            RunState::Running => "Working",
-            RunState::Paused => "Paused",
-            RunState::Error => "Failed",
-        };
         let name = self
             .project
             .file_name()
@@ -1442,7 +1520,7 @@ impl AgentView {
                     ))
                     .child(
                         self.icon_button("new-project-chat", "plus", 22.)
-                            .opacity(0.45),
+                            .on_click(cx.listener(|view, _, window, cx| view.new_chat(window, cx))),
                     )
                     .child(
                         self.icon_button("project-actions", "dots", 22.)
@@ -1450,17 +1528,51 @@ impl AgentView {
                     ),
             );
         let filter = self.filter.read(cx).text().trim().to_lowercase();
-        if filter.is_empty() || self.session.title.to_lowercase().contains(&filter) {
+        for record in &self.records {
+            let chat = self.chat_ref(&record.id);
+            let title = chat
+                .map(|chat| {
+                    if chat.loading || chat.load_failed {
+                        chat.record.title.as_str()
+                    } else {
+                        chat.session.title.as_str()
+                    }
+                })
+                .unwrap_or(record.title.as_str());
+            if !filter.is_empty() && !title.to_lowercase().contains(&filter) {
+                continue;
+            }
+            let id = record.id.clone();
+            let selected = id == self.record.id;
+            let status = chat
+                .map(|chat| {
+                    if chat.loading {
+                        "Preparing…"
+                    } else {
+                        match chat.session.state {
+                            RunState::Idle => "Ready",
+                            RunState::Running => "Working",
+                            RunState::Paused => "Paused",
+                            RunState::Error => "Failed",
+                        }
+                    }
+                })
+                .unwrap_or("Ready");
             list = list.child(
                 div()
+                    .id(SharedString::from(format!("chat-row-{id}")))
                     .mx(px(4.))
                     .px(px(10.))
                     .py(px(9.))
                     .rounded(px(8.))
-                    .bg(p.accent_soft())
+                    .when(selected, |d| d.bg(p.accent_soft()))
                     .flex()
                     .gap(px(8.))
                     .items_center()
+                    .cursor_pointer()
+                    .on_click(
+                        cx.listener(move |view, _, window, cx| view.select_chat(&id, window, cx)),
+                    )
                     .child(self.icon("chat", 16.))
                     .child(
                         div()
@@ -1473,11 +1585,8 @@ impl AgentView {
                                 div()
                                     .text_size(px(13.))
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .child(if self.session.messages.is_empty() {
-                                        "New chat".into()
-                                    } else {
-                                        self.session.title.clone()
-                                    }),
+                                    .truncate()
+                                    .child(title.to_owned()),
                             )
                             .child(
                                 div()
@@ -1540,7 +1649,7 @@ impl AgentView {
                     .child(
                         self.icon_button("new-chat", "new-chat", 24.)
                             .bg(p.accent_soft())
-                            .opacity(0.45),
+                            .on_click(cx.listener(|view, _, window, cx| view.new_chat(window, cx))),
                     )
                     .child(
                         self.icon_button("manage-projects", "folder", 24.)
@@ -1605,6 +1714,11 @@ impl Render for AgentView {
             self.composer.update(cx, |editor, cx| {
                 editor.set_appearance(Self::composer_style(palette), cx)
             });
+            for chat in self.inactive.values() {
+                chat.composer.update(cx, |editor, cx| {
+                    editor.set_appearance(Self::composer_style(palette), cx)
+                });
+            }
             self.filter.update(cx, |editor, cx| {
                 let mut style = Self::composer_style(palette);
                 style.font_size = 13.;
@@ -1771,7 +1885,26 @@ impl Render for AgentView {
             );
         }
         if self.close_dialog {
-            element=element.child(div().absolute().inset_0().flex().items_center().justify_center().bg(rgba(0x00000055)).child(div().w(px(440.)).p(px(24.)).rounded(px(16.)).bg(rgb(p.surface)).border_1().border_color(p.hairline()).flex().flex_col().gap(px(16.)).child(div().text_size(px(17.)).font_weight(FontWeight::SEMIBOLD).child("Close this workspace?")).child(div().text_size(px(13.)).text_color(rgb(p.secondary)).child("The current response will stop. Unsaved file drafts and composer text will be discarded. Accepted messages and queued input stay saved.")).child(div().flex().gap(px(12.)).child(self.button("keep-working","Keep working").on_click(cx.listener(|v,_,_,cx|{v.close_dialog=false;cx.notify();}))).child(self.button("close-discard","Discard drafts and close").on_click(cx.listener(|v,_,window,_|{let _=v.controller.stop();window.remove_window();}))))));
+            element=element.child(div().absolute().inset_0().occlude().flex().items_center().justify_center().bg(rgba(0x00000055)).child(div().w(px(440.)).p(px(24.)).rounded(px(16.)).bg(rgb(p.surface)).border_1().border_color(p.hairline()).flex().flex_col().gap(px(16.)).child(div().text_size(px(17.)).font_weight(FontWeight::SEMIBOLD).child("Close this workspace?")).child(div().text_size(px(13.)).text_color(rgb(p.secondary)).child("Active responses will stop. Unsaved file drafts will be discarded. Chat drafts, accepted messages, and queued input will be saved before closing.")).child(div().flex().gap(px(12.)).child(self.button("keep-working","Keep working").on_click(cx.listener(|v,_,_,cx|{v.close_dialog=false;cx.notify();}))).child(self.button("close-discard","Close workspace").on_click(cx.listener(|v,_,window,cx|v.begin_shutdown(window,cx)))))));
+        }
+        if self.shutting_down {
+            element = element.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .occlude()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(rgba(0x00000044))
+                    .child(
+                        div()
+                            .p(px(20.))
+                            .rounded(px(16.))
+                            .bg(rgb(p.surface))
+                            .child("Saving drafts…"),
+                    ),
+            );
         }
         perf("render_callback", started.elapsed().as_micros());
         element
@@ -1832,7 +1965,54 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         None
     };
-    let controller = Controller::new(SessionStore::open(session)?, configuration)?;
+    project = std::fs::canonicalize(project)?;
+    if !session.is_absolute() {
+        session = std::env::current_dir()?.join(session);
+    }
+    let mut workspace = WorkspaceStore::open(session.with_extension("workspace.json"), &project)?;
+    let state = workspace.snapshot();
+    let selected = state
+        .selected
+        .as_ref()
+        .and_then(|id| state.chats.iter().find(|chat| &chat.id == id))
+        .or(state.chats.first())
+        .cloned();
+    let (store, record, pending) = if let Some(record) = selected {
+        let store = if record.snapshot.exists() {
+            SessionStore::open(&record.snapshot)?
+        } else {
+            SessionStore::pending_with_id(&record.id)?
+        };
+        if store.snapshot().id != record.id {
+            return Err("Catalog and session identity disagree".into());
+        }
+        (store, record, false)
+    } else {
+        let existing = session.exists();
+        let store = if existing {
+            SessionStore::open(&session)?
+        } else {
+            SessionStore::pending()
+        };
+        let snapshot = store.snapshot();
+        let record = ChatRecord {
+            id: snapshot.id,
+            title: snapshot.title,
+            snapshot: session,
+        };
+        if existing {
+            workspace.register(record.clone(), DraftRecord::default())?;
+        }
+        (store, record, !existing)
+    };
+    let draft = workspace
+        .snapshot()
+        .drafts
+        .get(&record.id)
+        .cloned()
+        .unwrap_or_default();
+    let workspace = Arc::new(Mutex::new(workspace));
+    let controller = Controller::new(store, configuration)?;
     perf(
         "startup_initialized",
         START.get().unwrap().elapsed().as_micros(),
@@ -1850,7 +2030,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 },
                 move |window, cx| {
                     window.set_window_title("Bello Agent");
-                    cx.new(|cx| AgentView::new(controller, project, window, cx))
+                    cx.new(|cx| {
+                        AgentView::new(
+                            LaunchState {
+                                controller,
+                                project,
+                                workspace,
+                                record,
+                                draft,
+                                pending,
+                            },
+                            window,
+                            cx,
+                        )
+                    })
                 },
             )
             .expect("Could not create native GPUI window");
