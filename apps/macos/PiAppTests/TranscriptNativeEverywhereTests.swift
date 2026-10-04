@@ -128,4 +128,25 @@ final class TranscriptNativeEverywhereTests: XCTestCase {
         }
         XCTAssertTrue(hosted.isEmpty, "drawn by no native row: \(Set(hosted).sorted())")
     }
+
+    /// The transcript is AppKit through and through: no file in
+    /// apps/macos/PiApp/Transcript imports SwiftUI, or names it.
+    func testNoTranscriptFileUsesSwiftUI() throws {
+        let folder = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("PiApp/Transcript")
+        let files = try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil).filter { $0.pathExtension == "swift" }
+        XCTAssertGreaterThan(files.count, 40, "the transcript's sources are where this test looks")
+        var offenders: [String] = []
+        for file in files {
+            let source = try String(contentsOf: file, encoding: .utf8)
+            for (index, line) in source.components(separatedBy: "\n").enumerated() {
+                let code = line.components(separatedBy: "//")[0].trimmingCharacters(in: .whitespaces)
+                if code.range(of: #"^(@\w+\s+)*import\s+(struct\s+|class\s+|enum\s+|func\s+)?SwiftUI\b"#, options: .regularExpression) != nil
+                    || code.contains("SwiftUI.") {
+                    offenders.append("\(file.lastPathComponent):\(index + 1): \(code)")
+                }
+            }
+        }
+        XCTAssertTrue(offenders.isEmpty, "SwiftUI in Transcript/: \(offenders.joined(separator: "; "))")
+    }
 }
