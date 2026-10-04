@@ -410,22 +410,6 @@ extension PiKit {
     static func wrappedHeight(_ text: String, font: NSFont, width: CGFloat) -> CGFloat {
         CGFloat(wrappedLines(text, font: font, width: width).count) * Line(text, font: font, color: .black).lineHeight
     }
-    /// `text` cut with "…" at its end to fit `width`: the longest start
-    /// that fits with its ellipsis, found in a few measurements; "" when not
-    /// even the ellipsis fits.
-    static func fit(_ text: String, font: NSFont, width: CGFloat) -> String {
-        func measured(_ value: String) -> CGFloat { Line(value, font: font, color: .black).width }
-        guard measured(text) > width else { return text }
-        let characters = Array(text)
-        func cut(_ count: Int) -> String { String(characters.prefix(count)).trimmingCharacters(in: .whitespaces) + "…" }
-        guard measured("…") <= width else { return "" }
-        var low = 0, high = characters.count - 1
-        while low < high {
-            let middle = (low + high + 1) / 2
-            if measured(cut(middle)) <= width { low = middle } else { high = middle - 1 }
-        }
-        return cut(low)
-    }
     /// Draws one line shrunk to fit `rect`'s width, down to `minimumScale`
     /// of its size and cut with "…" past that, as `.minimumScaleFactor`.
     static func drawScaled(_ line: Line, in rect: CGRect, minimumScale: CGFloat, scale: CGFloat = 2) {
@@ -452,9 +436,10 @@ extension PiKit {
             let start = wrappedRanges(text, font: font, width: rect.width)[maximumLines - 1].location
             let rest = (text as NSString).substring(from: start)
             let paragraph = rest.components(separatedBy: "\n").first ?? rest
-            let shown = paragraph.count < rest.count ? fit(paragraph + "…", font: font, width: rect.width) : fit(paragraph, font: font, width: rect.width)
-            let last = Line(shown, font: font, color: color)
-            last.draw(at: CGPoint(x: rect.minX, y: y), scale: scale)
+            // Core Text cuts it, shaping and all; a paragraph that fits but has
+            // more after it ends with the ellipsis itself.
+            let last = Line(paragraph.count < rest.count ? paragraph + "…" : paragraph, font: font, color: color)
+            last.draw(in: CGRect(x: rect.minX, y: y, width: rect.width, height: last.lineHeight), scale: scale)
             return y + last.lineHeight - rect.minY
         }
         var y = rect.minY
@@ -496,7 +481,7 @@ extension PiKit {
 
     /// Wrapping, selectable-free text as a view: `Text` that takes the lines it needs.
     @MainActor final class WrappedText: NSView, WidthSizing {
-        var text: String { didSet { needsDisplay = true; invalidateIntrinsicContentSize(); setAccessibilityLabel(text); PiKit.sizeChanged(self) } }
+        var text: String { didSet { guard oldValue != text else { return }; needsDisplay = true; invalidateIntrinsicContentSize(); setAccessibilityLabel(text); PiKit.sizeChanged(self) } }
         var font: NSFont, color: NSColor
         init(_ text: String, font: NSFont, color: NSColor) {
             self.text = text; self.font = font; self.color = color

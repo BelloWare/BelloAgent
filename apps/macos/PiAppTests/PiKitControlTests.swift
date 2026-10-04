@@ -285,13 +285,26 @@ import XCTest
         XCTAssertEqual(rows(list).count, 0)
     }
 
-    func testCuttingTextNeverFailsAndKeepsTheLongestStart() {
-        let font = PiKit.Font.caption
-        XCTAssertEqual(PiKit.fit("Short", font: font, width: 500), "Short")
-        let cut = PiKit.fit("A long caption that does not fit", font: font, width: 80)
-        XCTAssertTrue(cut.hasSuffix("…")); XCTAssertLessThanOrEqual(PiKit.Line(cut, font: font, color: .black).width, 80)
-        XCTAssertEqual(PiKit.fit("Anything", font: font, width: 1), "", "not even the ellipsis fits")
-        XCTAssertEqual(PiKit.fit("", font: font, width: 0), "")
+    func testATwoLineCaptionDrawsAtAnyWidth() {
+        // Drawing must not fail however narrow, with right-to-left shaping too.
+        let image = NSImage(size: NSSize(width: 60, height: 40), flipped: true) { rect in
+            for width in [0, 1, 6, 40] as [CGFloat] {
+                PiKit.drawWrapped(String(repeating: "لا", count: 7) + "XYZQ\nmore\nlines", font: PiKit.Font.caption, color: .black,
+                                  in: CGRect(x: 0, y: 0, width: width, height: rect.height), maximumLines: 2)
+            }
+            return true
+        }
+        XCTAssertNotNil(image.cgImage(forProposedRect: nil, context: nil, hints: nil))
+    }
+
+    func testAnUnchangedTextAssignmentDoesNotLayOutAgain() {
+        let badge = PiKit.Badge(text: "Running")
+        let container = PiKit.Box.ClipView(); container.addSubview(badge)
+        container.layoutSubtreeIfNeeded()
+        badge.text = "Running"
+        XCTAssertFalse(container.needsLayout, "the same text asks nothing of its container")
+        badge.text = "Stopped"
+        XCTAssertTrue(container.needsLayout)
     }
 
     func testANativePopoverGrowsWithItsContent() {
