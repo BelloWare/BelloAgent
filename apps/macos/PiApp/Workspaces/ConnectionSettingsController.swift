@@ -1,7 +1,7 @@
 import AppKit
 import CryptoKit
 import Foundation
-import SwiftUI
+import Combine
 
 /// The Settings sheet's connection editor, kept apart from the view so the
 /// whole flow can be driven by tests: one draft per connection tab, so

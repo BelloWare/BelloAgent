@@ -22,7 +22,7 @@
 
 ## Wave 1
 - [x] **Baseline**: today's numbers on dev/next before any port — chat switch, opening a large chat, streaming a long reply, scrolling, typing latency, soak main-thread maxima. Recorded in `docs/perf/appkit-baseline.md`.
-- [ ] **Pi components in AppKit** (`Design/`): buttons, toggles/switches, tabs, steppers, choice picker, menu, popover, hover card, sheet, question, badges, stat pill, surfaces, flow indicators, chart parts. Same look and API shape; gallery parity.
+- [x] **Pi components in AppKit** (`Design/`): buttons, toggles/switches, tabs, steppers, choice picker, menu, popover, hover card, sheet, question, badges, stat pill, surfaces, flow indicators, chart parts. Same look and API shape; gallery parity.
 - [ ] **Transcript** (`Transcript/`): rows, cards, chrome, pills, markdown/code surfaces, turn fold, versions, large table — all AppKit inside the existing AppKit scroll view. Chat switch measured against the baseline.
 
 ## Wave 2 (after the components land)
@@ -34,6 +34,7 @@
 - [ ] **App shell**: the SwiftUI `App` entry point becomes an `NSApplicationDelegate` with window controllers; menus, Settings window, scenes. No file imports SwiftUI; a test fails if one does.
 
 ## Before release
+- [ ] Codex (gpt-6.1-sol, xhigh) double-checks the whole change from e59e41a7 and gives advice; findings acted on, advice reported to the owner (owner, 2026-10-04).
 - [ ] Performance compared with the baseline: no measure worse; chat switch and opening a chat faster.
 - [ ] Full gallery compared with 0.1.119: pixel-identical apart from run-to-run data.
 - [ ] Full gate passes (`scripts/verify-release.sh`).
