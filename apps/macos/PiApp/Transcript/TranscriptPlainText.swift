@@ -183,6 +183,17 @@ struct NativePlainText: NSViewRepresentable {
     /// half of it in a text that wraps. Measured against SwiftUI's own
     /// drawing (`TranscriptNativeRowParityTests`); only where the glyphs sit
     /// changes, never the line box, so no height does.
+    /// How far TextKit's glyphs are raised to sit where SwiftUI draws them,
+    /// for one line and for wrapped lines. `glyphOffsetOverride` is for the
+    /// calibration sweep only.
+    nonisolated(unsafe) static var glyphOffsetOverride: CGFloat?
+    /// Measured, not derived: no formula of the font's metrics gave every
+    /// face (TranscriptTextCalibrationTests sweeps and checks this table).
+    static func glyphOffset(_ font: NSFont, wrapped: Bool) -> CGFloat {
+        if let glyphOffsetOverride { return glyphOffsetOverride }
+        if font.pointSize == TranscriptPlainTextFace.user.size, !font.isFixedPitch { return wrapped ? 0.5 : 1 }
+        return 0
+    }
     /// Whether the text was one line or more at each width it was measured at.
     private var lineCounts: [(width: CGFloat, lines: Int)] = []
     private func countLines(_ manager: NSLayoutManager, _ container: NSTextContainer) -> Int {
@@ -196,8 +207,7 @@ struct NativePlainText: NSViewRepresentable {
     private func placeGlyphsAsSwiftUI(width: CGFloat) {
         guard swiftUILines, let face, let storage = textStorage, storage.length > 0,
               let lines = lineCounts.last(where: { $0.width == width })?.lines else { return }
-        let font = face.nsFont, room = Self.swiftUILine(font).height - (font.ascender - font.descender)
-        let offset = lines > 1 ? room.rounded() / 2 : room.rounded()
+        let offset = Self.glyphOffset(face.nsFont, wrapped: lines > 1)
         guard (storage.attribute(.baselineOffset, at: 0, effectiveRange: nil) as? CGFloat) != offset else { return }
         storage.addAttribute(.baselineOffset, value: offset, range: NSRange(location: 0, length: storage.length))
     }

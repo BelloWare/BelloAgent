@@ -104,9 +104,12 @@ import AppKit
         if !body.isHidden { stack += Self.spacing + bodyHeight }
         if !detail.isHidden { stack += Self.spacing + detailHeight }
         let cardHeight = stack + 2 * Self.padding.height
-        let content = Self.rowTop + Self.margin + cardHeight + Self.margin + Self.rowBottom
+        // SwiftUI gives a card with a pill in its header a point more above
+        // and below (measured: the card's own frame is the same).
+        let margin = Self.margin + (retry == nil ? 0 : 1)
+        let content = Self.rowTop + margin + cardHeight + margin + Self.rowBottom
         let height = ceil(content), offset = (height - content) / 2
-        let card = CGRect(x: 0, y: offset + Self.rowTop + Self.margin, width: width, height: cardHeight)
+        let card = CGRect(x: 0, y: offset + Self.rowTop + margin, width: width, height: cardHeight)
         let x = Self.padding.width, top = card.minY + Self.padding.height
         let mark = CGRect(x: x, y: top + (header - Self.markSize) / 2, width: Self.markSize, height: Self.markSize)
         let title = CGRect(x: mark.maxX + 8, y: top + (header - titleSize.height) / 2, width: titleSize.width, height: titleSize.height)

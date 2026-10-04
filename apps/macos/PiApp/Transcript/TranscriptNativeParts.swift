@@ -102,8 +102,23 @@ import AppKit
         attributed = value
         return value
     }
+    /// For the calibration sweep only.
+    nonisolated(unsafe) static var baselineOverride: CGFloat?
+    /// SwiftUI's line box and baseline for the fonts the rows use, measured
+    /// against SwiftUI's own `Text` (TranscriptTextCalibrationTests): its
+    /// height, and how far its baseline sits from the font's ascender. No
+    /// rule of the font's metrics gave all of them.
+    private static let swiftUILines: [String: (height: CGFloat, baseline: CGFloat)] = [
+        "12.5/0.3": (15, -0.375), "10.5/0": (13, -0.375), "11.0/0.23": (14, 0.125),
+        "11.5/0.23": (14, -0.375), "11.0/0.4": (14, 0.125)]
+    static func measured(_ font: NSFont) -> (height: CGFloat, baseline: CGFloat)? {
+        let weight = (font.fontDescriptor.object(forKey: .traits) as? [NSFontDescriptor.TraitKey: Any])?[.weight] as? CGFloat ?? 0
+        return swiftUILines[String(format: "%.1f/%.2g", font.pointSize, weight)]
+    }
     /// The line box SwiftUI gives this font.
-    static func lineHeight(_ font: NSFont) -> CGFloat { ceil((font.ascender - font.descender + font.leading) * 2) / 2 }
+    static func lineHeight(_ font: NSFont) -> CGFloat {
+        measured(font)?.height ?? ceil(font.ascender - font.descender + font.leading)
+    }
     /// The size the text needs on one line.
     var intrinsicSize: CGSize {
         if let measured { return measured }
@@ -121,7 +136,7 @@ import AppKit
         // A flipped view: CoreText draws upward from the baseline.
         context.textMatrix = CGAffineTransform(scaleX: 1, y: -1)
         let line = CTLineCreateWithAttributedString(string)
-        context.textPosition = CGPoint(x: 0, y: font.ascender + font.leading / 2)
+        context.textPosition = CGPoint(x: 0, y: font.ascender + (Self.baselineOverride ?? Self.measured(font)?.baseline ?? 0))
         CTLineDraw(line, context)
         context.restoreGState()
     }
@@ -146,9 +161,13 @@ import AppKit
     }
     required init?(coder: NSCoder) { nil }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    /// The stroke, centred on the shape's edge as SwiftUI strokes a shape:
+    /// a layer half the line wider all round, its border the whole line.
+    private let edge = CALayer()
     override func updateLayer() {
         guard let layer else { return }
-        layer.cornerRadius = cornerRadius ?? bounds.height / 2
+        let radius = cornerRadius ?? bounds.height / 2
+        layer.cornerRadius = radius
         layer.cornerCurve = .continuous
         var background: CGColor?, border: CGColor?
         effectiveAppearance.performAsCurrentDrawingAppearance {
@@ -156,12 +175,18 @@ import AppKit
             border = stroke?.cgColor
         }
         layer.backgroundColor = background
-        layer.borderColor = border
-        layer.borderWidth = border == nil ? 0 : strokeWidth
+        if edge.superlayer == nil { layer.addSublayer(edge) }
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        edge.frame = layer.bounds.insetBy(dx: -strokeWidth / 2, dy: -strokeWidth / 2)
+        edge.cornerRadius = radius + strokeWidth / 2
+        edge.cornerCurve = .continuous
+        edge.borderColor = border
+        edge.borderWidth = border == nil ? 0 : strokeWidth
+        CATransaction.commit()
     }
     override func layout() {
         super.layout()
-        if cornerRadius == nil { needsDisplay = true }
+        needsDisplay = true
     }
 }
 
@@ -195,8 +220,10 @@ import AppKit
         refresh()
     }
     required init?(coder: NSCoder) { nil }
-    /// A label's icon and title, as SwiftUI's `Label` spaces them.
-    private var iconWidth: CGFloat { icon.image.map { $0.size.width + 6 } ?? 0 }
+    /// A label's icon and title, as SwiftUI's `Label` spaces them: the
+    /// symbol's outline, then 8 points (measured against SwiftUI's frames).
+    private var glyph: CGRect? { icon.image.map { $0.alignmentRect } }
+    private var iconWidth: CGFloat { glyph.map { $0.width + 8 } ?? 0 }
     var pillSize: CGSize {
         let text = label.intrinsicSize
         // A `Label`'s symbol stands a point taller than its title's line.
@@ -206,8 +233,11 @@ import AppKit
         super.layout()
         face.frame = bounds
         let text = label.intrinsicSize
-        if let image = icon.image {
-            icon.frame = CGRect(x: 10, y: (bounds.height - image.size.height) / 2, width: image.size.width, height: image.size.height)
+        if let image = icon.image, let glyph {
+            // The image view draws the whole image; place it so its outline
+            // lands where SwiftUI draws the symbol.
+            let x = 10 - glyph.minX, y = (bounds.height - glyph.height) / 2 - (image.size.height - glyph.maxY)
+            icon.frame = CGRect(x: x, y: y, width: image.size.width, height: image.size.height)
         }
         label.frame = CGRect(x: 10 + iconWidth, y: (bounds.height - text.height) / 2, width: text.width, height: text.height)
     }

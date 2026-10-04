@@ -171,6 +171,13 @@ final class TranscriptNativeRowParityTests: XCTestCase {
         let rep = canvas.bitmapImageRepForCachingDisplay(in: canvas.bounds)!
         canvas.cacheDisplay(in: canvas.bounds, to: rep)
         let content = row.subviews.first
+        if testEnvironment("PI_PARITY_FRAMES") == "1", let content {
+            func walk(_ view: NSView, _ depth: Int) {
+                FileHandle.standardError.write(Data("FRAME \(String(repeating: " ", count: depth))\(type(of: view)) \(view.frame)\n".utf8))
+                for child in view.subviews { walk(child, depth + 1) }
+            }
+            walk(content, 0)
+        }
         row.removeFromSuperview()
         window.contentView = nil
         return Rendered(height: height, image: rep, content: content)
