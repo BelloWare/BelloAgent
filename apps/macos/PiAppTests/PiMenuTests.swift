@@ -27,7 +27,7 @@ final class PiMenuTests: XCTestCase {
             await LazyListAppKitControlTests.settle(hosted, window)
         }
         XCTAssertEqual(PiMenus.built, before, "Updates of the sidebar and the composer built menus nobody opened")
-        let trigger = try XCTUnwrap(descendants(hosted).compactMap { $0 as? PiPopoverTriggerButton }
+        let trigger = try XCTUnwrap(descendants(hosted).compactMap { $0 as? PiKit.MenuControl }
             .first { $0.accessibilityIdentifier() == "projectActions-pane-project" })
         trigger.performClick(nil)
         XCTAssertEqual(PiMenus.built, before + 1, "One press, one menu")

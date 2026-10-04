@@ -143,9 +143,7 @@ final class ArchiveSwitchTests: XCTestCase {
         defer { window.contentView = nil; window.close() }
         // Pinned to the top, as the sidebar's list is: a centred group moved
         // every row whenever it grew.
-        window.contentView = NSHostingView(rootView: ProjectSidebarGroup(model: model, project: model.workspaces[0], available: true, name: "One")
-            .frame(width: 280, height: 900, alignment: .topLeading)
-            .transaction { $0.animation = nil; $0.disablesAnimations = true })
+        window.contentView = makeSidebar(model)
         window.makeKeyAndOrderFront(nil)
         let hosted = try XCTUnwrap(window.contentView)
         func settle() { hosted.needsLayout = true; hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded() }
@@ -154,11 +152,11 @@ final class ArchiveSwitchTests: XCTestCase {
         }
         func tops() -> [CGFloat] { rows(hosted).map { $0.convert($0.bounds, to: nil).maxY }.sorted(by: >) }
         settle()
-        XCTAssertEqual(rows(hosted).count, 2, "Off: the topic's active chat and the project's")
+        XCTAssertEqual(rows(hosted).count, 2, "Off: the topic's active chat and the project's (the second project has none)")
         let before = tops()
         model.setArchivedChatsShown(true)
         settle()
-        XCTAssertEqual(rows(hosted).count, 4, "On: each group's archived chat joins it")
+        XCTAssertEqual(rows(hosted).count, 5, "On: each group's archived chat joins it, the second project's too")
         XCTAssertEqual(tops().first, before.first, "The first active row stays where it was")
         model.setArchivedChatsShown(false)
         settle()

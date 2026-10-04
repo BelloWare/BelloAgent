@@ -1,6 +1,5 @@
 import XCTest
 import AppKit
-import SwiftUI
 @testable import PiApp
 
 /// A workspace the size the owner actually keeps: hundreds of chats spread over
@@ -65,8 +64,7 @@ final class SidebarScalePerformanceTests: XCTestCase {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 280, height: 1_000),
                               styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: SidebarScaleHost(model: model)
-            .transaction { $0.animation = nil; $0.disablesAnimations = true })
+        window.contentView = makeSidebar(model, width: 280, height: 1_000)
         window.makeKeyAndOrderFront(nil)
         let hosted = try XCTUnwrap(window.contentView)
         hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
@@ -167,91 +165,46 @@ final class SidebarScalePerformanceTests: XCTestCase {
         XCTAssertGreaterThan(computed, 0, "The rename has to invalidate what the sidebar cached")
     }
 
-    /// Where the part of a sidebar frame that does not scale with rows goes.
-    /// Each probe is hosted over the same workspace and asked to redraw after
-    /// the same selection change the real sidebar answers in about 15 ms.
+    /// Where a sidebar frame goes, part by part. Each part is hosted over the
+    /// same workspace and asked to redraw after the same selection change.
     @MainActor func testWhatEachPartOfASidebarFrameCosts() throws {
         let fixture = try fixture()
         defer { fixture.teardown() }
         let model = fixture.model
         model.markedSessionIDs = ["project0-chat3", "project0-chat6"]
-        let projects = model.workspaces
 
-        func measure(_ label: String, _ view: some View) {
+        func measure(_ label: String, _ view: NSView, refresh: @escaping () -> Void = {}) {
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 280, height: 1_000),
                                   styleMask: [.titled], backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false
-            window.contentView = NSHostingView(rootView: AnyView(view).transaction { $0.animation = nil; $0.disablesAnimations = true })
+            view.frame = NSRect(x: 0, y: 0, width: 280, height: 1_000)
+            window.contentView = view
             window.makeKeyAndOrderFront(nil)
-            guard let hosted = window.contentView else { return }
-            hosted.needsLayout = true; hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            view.needsLayout = true; view.layoutSubtreeIfNeeded(); window.displayIfNeeded()
             _ = time(label) { index in
                 model.selectedWorkspaceID = index % 2 == 0 ? "project0" : "project1"
                 model.selectedID = "project0-chat\(index)"
-                hosted.needsLayout = true
-                hosted.layoutSubtreeIfNeeded()
+                refresh()
+                view.needsLayout = true
+                view.layoutSubtreeIfNeeded()
                 window.displayIfNeeded()
             }
             window.contentView = nil; window.close()
         }
 
-        measure("three project headers with their menus", HeaderProbe(model: model, projects: projects, menus: true))
-        measure("three project headers without their menus", HeaderProbe(model: model, projects: projects, menus: false))
-        measure("twelve project headers with their menus",
-                HeaderProbe(model: model, projects: projects + projects + projects + projects, menus: true))
-        measure("twelve project headers without their menus",
-                HeaderProbe(model: model, projects: projects + projects + projects + projects, menus: false))
-        measure("the project list host alone", ProjectListProbe(model: model))
-        measure("the marked-rows bar alone", SelectionBarProbe(model: model))
-
-        // The rows themselves, with and without the drag surface every
-        // draggable row carries.
-        let rows = Array(model.chats.filter { $0.workspaceID == "project0" && !$0.isArchived }.prefix(24))
-        measure("twenty-four rows with their drag surface", RowProbe(model: model, chats: rows, dragging: true))
-        measure("twenty-four rows without their drag surface", RowProbe(model: model, chats: rows, dragging: false))
-        let few = Array(rows.prefix(8))
-        measure("eight rows with their drag surface", RowProbe(model: model, chats: few, dragging: true))
-        measure("eight rows without their drag surface", RowProbe(model: model, chats: few, dragging: false))
-
-        // The real group, so the difference from the parts above is whatever
-        // the group itself adds: its drop zones, its topic groups and the
-        // per-group work that does not belong to any row.
-        measure("twenty-four rows with their tooltip and right-click menu",
-                RowProbe(model: model, chats: rows, dragging: true, chrome: true))
-        // The rows the sidebar actually draws: same press surface, menu and
-        // drag source, compared on their values instead of rebuilt.
-        measure("twenty-four real rows, compared not rebuilt", EquatableRowProbe(model: model, chats: rows))
-
-        // The two things a real group wraps its rows in that a bare list does not.
-        measure("twenty-four rows inside one drop zone",
-                RowProbe(model: model, chats: rows, dragging: true)
-                    .contentShape(Rectangle())
-                    .onDrop(of: [TopicSessionDrag.type], isTargeted: .constant(false)) { _ in false })
-        measure("twenty-four rows inside four nested drop zones",
-                RowProbe(model: model, chats: rows, dragging: true)
-                    .contentShape(Rectangle())
-                    .onDrop(of: [TopicSessionDrag.type], isTargeted: .constant(false)) { _ in false }
-                    .contentShape(Rectangle())
-                    .onDrop(of: [TopicSessionDrag.type], isTargeted: .constant(false)) { _ in false }
-                    .contentShape(Rectangle())
-                    .onDrop(of: [TopicSessionDrag.type], isTargeted: .constant(false)) { _ in false }
-                    .contentShape(Rectangle())
-                    .onDrop(of: [TopicSessionDrag.type], isTargeted: .constant(false)) { _ in false })
-
-        // What a row is made of.
-        measure("24 rows: settled, values only", ChatRowContentProbe(model: model, chats: rows, shape: .plain))
-        measure("24 rows: settled, each observing its accounting", ChatRowContentProbe(model: model, chats: rows, shape: .observed))
-        measure("24 rows: with a metrics line (ViewThatFits)", ChatRowContentProbe(model: model, chats: rows, shape: .metrics))
-        measure("24 rows: the same figures in one layout", ChatRowContentProbe(model: model, chats: rows, shape: .metricsSingle))
-        measure("24 rows: metrics line and accounting observable", ChatRowContentProbe(model: model, chats: rows, shape: .observedMetrics))
-        measure("24 rows: hand-built with hover and two animations", ChatRowContentProbe(model: model, chats: rows, shape: .handmade))
-        measure("24 rows: hand-built with hover only", ChatRowContentProbe(model: model, chats: rows, shape: .handmadeHover))
-        measure("24 rows: hand-built with the two animations only", ChatRowContentProbe(model: model, chats: rows, shape: .handmadeAnimated))
-        measure("24 rows: hand-built with neither", ChatRowContentProbe(model: model, chats: rows, shape: .handmadeStill))
-
-        let project = try XCTUnwrap(model.workspaces.first)
-        measure("one real project group", ProjectSidebarGroup(model: model, project: project, available: true, name: "project0"))
-        measure("three real project groups", SidebarScaleHost(model: model))
+        let bar = SidebarSelectionBarView(model: model)
+        measure("the marked-rows bar alone", bar) { bar.refresh() }
+        // The list without the column around it: the work of building its
+        // entries and changing only the rows that changed.
+        let list = SidebarListDocument(model: model)
+        measure("the list alone, rebuilt from the model", list) {
+            list.update(SidebarListContents.build(model: model, filter: "", sidebarWidth: 280, confirmingRemove: [], removing: [], dropTarget: nil),
+                        width: 280, animated: false)
+        }
+        _ = time("building the list's entries, nothing drawn", repeats: 20) { _ in
+            _ = SidebarListContents.build(model: model, filter: "", sidebarWidth: 280, confirmingRemove: [], removing: [], dropTarget: nil)
+        }
+        measure("the whole sidebar column", makeSidebar(model, width: 280, height: 1_000))
     }
 
     /// The model work behind one sidebar pass, measured without SwiftUI in the
@@ -279,263 +232,5 @@ final class SidebarScalePerformanceTests: XCTestCase {
         XCTAssertGreaterThan(model.markedChats.count, 10)
         _ = time("markedChats with a marked range", repeats: 20) { _ in _ = model.markedChats.count }
         model.clearSessionMarks()
-    }
-}
-
-/// What one project header is made of, so each part can be priced on its own.
-/// A faithful copy rather than the header itself: the question is what a
-/// `Menu` and a `contextMenu` cost when the whole sidebar is invalidated, and
-/// the real header cannot be asked to leave them out.
-private struct HeaderProbe: View {
-    @ObservedObject var model: WorkspaceModel
-    let projects: [WorkspaceRecord]
-    let menus: Bool
-    var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            ForEach(projects) { project in
-                header(project)
-            }
-        }.padding(.horizontal, PiSpacing.sm)
-    }
-    @ViewBuilder private func header(_ project: WorkspaceRecord) -> some View {
-        let strip = HStack(spacing: 4) {
-            Button { } label: {
-                HStack(spacing: 7) {
-                    Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).frame(width: 10)
-                    Image(systemName: "folder").font(.system(size: 12, weight: .medium))
-                    Text(project.id).font(.system(size: 12, weight: .semibold)).lineLimit(1)
-                    Spacer(minLength: 0)
-                }
-                .foregroundStyle(model.selectedWorkspaceID == project.id ? Color.piInk : Color.piInkSecondary)
-                .contentShape(Rectangle())
-            }.buttonStyle(.plain).piPointer()
-            PiIconButton(symbol: "arrow.triangle.branch", label: "Changes", size: 22) { }
-            PiIconButton(symbol: "plus", label: "New chat", size: 22) { }
-            if menus {
-                Menu { actions(project) } label: { Image(systemName: "ellipsis").frame(width: 18, height: 22).contentShape(Rectangle()) }
-                    .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().piPointer()
-            }
-        }
-        .padding(.horizontal, 7).padding(.vertical, 3)
-        if menus { strip.contextMenu { actions(project) } } else { strip }
-    }
-    @ViewBuilder private func actions(_ project: WorkspaceRecord) -> some View {
-        Button("New Chat", systemImage: "square.and.pencil") { }
-        Button("New Topic…", systemImage: "folder.badge.plus") { }
-        Button("Changes and History…", systemImage: "arrow.triangle.branch") { }
-        Button("Collapse Project") { }
-        Divider()
-        Button("Manage Project…", systemImage: "folder.badge.gearshape") { }
-    }
-}
-
-/// Chat rows as the sidebar builds them, with and without the AppKit drag
-/// surface each draggable row carries. The surface is an overlay over a
-/// preference the row publishes, which makes SwiftUI resolve preferences and
-/// lay the row out again; this prices that.
-private struct RowProbe: View {
-    @ObservedObject var model: WorkspaceModel
-    let chats: [ChatRecord]
-    let dragging: Bool
-    /// The tooltip and the right-click menu every real row also carries.
-    var chrome = false
-    var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            ForEach(chats) { chat in
-                row(chat)
-            }
-        }.padding(.horizontal, PiSpacing.sm)
-    }
-    @ViewBuilder private func row(_ chat: ChatRecord) -> some View {
-        let built = PiSelectableRow(selected: model.selectedID == chat.id, providesCursor: !dragging, action: { }) {
-                    HStack(spacing: 8) {
-                        Image(systemName: "bubble.left").font(.system(size: 12, weight: .medium))
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack(spacing: 4) {
-                                Text(chat.title).font(.system(size: 13)).lineLimit(1)
-                                Spacer(minLength: 4)
-                                HStack(spacing: 4) {
-                                    PiIconButton(symbol: "archivebox", label: "Archive chat", size: 18) { }
-                                }
-                                .anchorPreference(key: SidebarRowControlBounds.self, value: .bounds) { [$0] }
-                            }
-                            Text("Ready").font(PiFont.caption).foregroundStyle(Color.piInkTertiary).lineLimit(1)
-                        }
-                    }
-                }
-        if chrome {
-            built
-                .help("Ready · 4 requests · cache 2 hit / 1 miss")
-                .contextMenu {
-                    Button("Rename…") { }
-                    Button("Pin Chat", systemImage: "pin") { }
-                    Button("Archive Chat", systemImage: "archivebox") { }
-                    Menu { Button("Project root", systemImage: "tray") { } } label: { Label("Move to Topic", systemImage: "folder") }
-                    Divider()
-                    Button("Copy Session ID", systemImage: "number") { }
-                }
-                .modifier(TopicSessionDragSource(model: model, sessionID: chat.id, projectID: chat.workspaceID,
-                                                 enabled: dragging, click: { _ in }, doubleClick: { }))
-                .padding(.leading, 14)
-        } else {
-            built
-                .modifier(TopicSessionDragSource(model: model, sessionID: chat.id, projectID: chat.workspaceID,
-                                                 enabled: dragging, click: { _ in }, doubleClick: { }))
-                .padding(.leading, 14)
-        }
-    }
-}
-
-/// What a chat row is made of, priced piece by piece: the per-row observable
-/// that carries retained billing, the metrics line that picks its layout by
-/// trying several, and the animations and hover the row hangs off itself.
-private struct ChatRowContentProbe: View {
-    enum Shape {
-        case plain, observed, metrics, metricsSingle, observedMetrics, handmade, handmadeStill, handmadeHover, handmadeAnimated
-        var activity: Bool { self == .metrics || self == .observedMetrics }
-    }
-    @ObservedObject var model: WorkspaceModel
-    let chats: [ChatRecord]
-    let shape: Shape
-    /// Retained figures for a settled row: what the accounting cache holds.
-    private func totals() -> GatewayTotals {
-        var value = GatewayTotals(requests: 7, costSamples: 7, costUSD: 1.2345)
-        value.tokens = GatewayTokenTotals(total: 98_765, samples: 7)
-        return value
-    }
-    var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            ForEach(chats) { chat in row(chat) }
-        }.padding(.horizontal, PiSpacing.sm)
-    }
-    @ViewBuilder private func row(_ chat: ChatRecord) -> some View {
-        switch shape {
-        case .plain, .metrics:
-            rowBody(chat, stats: ChatRowStats(totals: shape.activity ? totals() : nil))
-        case .metricsSingle:
-            // The same figures the metrics line shows, in the one layout
-            // `ViewThatFits` would have chosen at this width.
-            PiSelectableRow(selected: model.selectedID == chat.id, action: { }) {
-                HStack(alignment: .center, spacing: 8) {
-                    Image(systemName: "bubble.left").font(.system(size: 12, weight: .medium)).frame(width: 16, height: 16)
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: 4) {
-                            Text(chat.title).font(.system(size: 13)).lineLimit(1)
-                            Spacer(minLength: 4)
-                        }
-                        HStack(spacing: 6) {
-                            Text("$1.23")
-                            Text("· 98.8K tok")
-                            Text("· 3m ago")
-                        }
-                        .font(PiFont.caption.monospacedDigit()).foregroundStyle(Color.piInkTertiary)
-                        .lineLimit(1).fixedSize(horizontal: true, vertical: false)
-                    }
-                }
-            }
-        case .observed, .observedMetrics:
-            RetainedAccountingRow(accounting: model.chatAccounting.row(for: chat.id)) { retained in
-                rowBody(chat, stats: ChatRowStats(totals: shape.activity ? (retained ?? totals()) : nil))
-            }
-        case .handmade, .handmadeStill, .handmadeHover, .handmadeAnimated:
-            handmade(chat)
-        }
-    }
-    private func rowBody(_ chat: ChatRecord, stats: ChatRowStats) -> some View {
-        PiSelectableRow(selected: model.selectedID == chat.id, action: { }) {
-            ChatRowBody(stats: stats, title: chat.title, subtitle: "Ready", symbol: "bubble.left",
-                        selected: model.selectedID == chat.id).equatable()
-        }
-    }
-    /// The same row drawn by hand, so the animations and the hover it carries
-    /// can be left out one at a time.
-    @ViewBuilder private func handmade(_ chat: ChatRecord) -> some View {
-        let content = HStack(alignment: .center, spacing: 8) {
-            Image(systemName: "bubble.left").font(.system(size: 12, weight: .medium)).frame(width: 16, height: 16)
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 4) {
-                    Text(chat.title).font(.system(size: 13)).lineLimit(1)
-                    Spacer(minLength: 4)
-                }
-                Text("Ready").font(PiFont.caption).foregroundStyle(Color.piInkTertiary).lineLimit(1)
-            }
-        }
-        PiSelectableRow(selected: model.selectedID == chat.id, action: { }) {
-            switch shape {
-            case .handmadeStill:
-                content.help("Ready")
-            case .handmadeHover:
-                content.help("Ready").onHover { _ in }
-            case .handmadeAnimated:
-                content.help("Ready")
-                    .piAnimation(PiMotion.spring, value: model.selectedID == chat.id)
-                    .piAnimation(PiMotion.quick, value: model.selectedID == chat.id)
-            default:
-                content.help("Ready").onHover { _ in }
-                    .piAnimation(PiMotion.spring, value: model.selectedID == chat.id)
-                    .piAnimation(PiMotion.quick, value: model.selectedID == chat.id)
-            }
-        }
-    }
-}
-
-/// The bare host: the project groups' own `ForEach` with nothing in it.
-private struct ProjectListProbe: View {
-    @ObservedObject var model: WorkspaceModel
-    var body: some View {
-        ScrollView {
-            LazyVStack(spacing: 9) {
-                ForEach(model.sidebarProjects) { project in
-                    Text(project.name).font(PiFont.caption)
-                        .foregroundStyle(model.selectedWorkspaceID == project.id ? Color.piInk : Color.piInkSecondary)
-                }
-            }.padding(.horizontal, PiSpacing.sm)
-        }
-    }
-}
-
-/// The marked-rows bar on its own.
-private struct SelectionBarProbe: View {
-    @ObservedObject var model: WorkspaceModel
-    var body: some View {
-        SidebarSelectionBar(model: model).padding(.horizontal, PiSpacing.md)
-    }
-}
-
-/// The sidebar's own list, hosted without the window chrome and the content
-/// pane so a redraw measures the sidebar and nothing else.
-private struct SidebarScaleHost: View {
-    @ObservedObject var model: WorkspaceModel
-    var body: some View {
-        ScrollView {
-            LazyVStack(spacing: 9) {
-                ForEach(model.sidebarProjects) { project in
-                    ProjectSidebarGroup(model: model, project: project.record, available: project.available, name: project.name)
-                }
-            }.padding(.horizontal, PiSpacing.sm)
-        }
-    }
-}
-
-/// The real sidebar row, which is `Equatable` on the chat record and the small
-/// state its group looks up for it. A workspace change that this row does not
-/// show must leave its whole subtree — press surface, menu, drag source —
-/// standing rather than rebuilt.
-private struct EquatableRowProbe: View {
-    @ObservedObject var model: WorkspaceModel
-    let chats: [ChatRecord]
-    var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            ForEach(chats) { chat in
-                SidebarChatRow(model: model, chat: chat, projectID: chat.workspaceID,
-                               state: SidebarChatRowState(selected: model.selectedID == chat.id,
-                                                          marked: model.isSessionMarked(chat.id),
-                                                          anyMarked: model.hasMarkedSessions,
-                                                          unreadCount: model.unreadOutputCount(sessionID: chat.id),
-                                                          draggable: true, subtitle: "Ready",
-                                                          available: 240, indent: 14))
-                    .equatable()
-            }
-        }.padding(.horizontal, PiSpacing.sm)
     }
 }

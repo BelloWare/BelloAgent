@@ -91,6 +91,8 @@ import Combine
     var maximumLines: Int { didSet { if oldValue != maximumLines { changed() } } }
     /// How a single line that does not fit is cut.
     var truncation: CTLineTruncationType = .end { didSet { needsDisplay = true } }
+    /// Each line centred, as `.multilineTextAlignment(.center)`.
+    var centred = false { didSet { if oldValue != centred { needsDisplay = true } } }
     var text: String { runs.map(\.text).joined() }
 
     init(_ text: String, font: NSFont, color: NSColor, maximumLines: Int = .max) {
@@ -174,11 +176,11 @@ import Combine
             }
             context.saveGState()
             context.textMatrix = CGAffineTransform(scaleX: 1, y: -1)
-            context.textPosition = CGPoint(x: 0, y: CGFloat(index) * height + baseline)
+            let x = centred ? PiKit.round((bounds.width - CTLineGetTypographicBounds(line, nil, nil, nil)) / 2, scale) : 0
+            context.textPosition = CGPoint(x: max(0, x), y: CGFloat(index) * height + baseline)
             CTLineDraw(line, context)
             context.restoreGState()
         }
-        _ = scale
     }
 }
 

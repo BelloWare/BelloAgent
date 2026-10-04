@@ -119,8 +119,8 @@ final class SidebarMetricsLayoutTests: XCTestCase {
         XCTAssertEqual(later.recencyLabel, "3m ago")
         XCTAssertNotEqual(fresh, later, "A row whose stamp reads differently is drawn again")
         XCTAssertEqual(ChatRowStats(totals: totals, now: start.addingTimeInterval(20)), fresh, "and one whose stamp reads the same is not")
-        let before = ChatRowBody(stats: fresh, title: "A", subtitle: "", symbol: "bubble.left", selected: false)
-        let after = ChatRowBody(stats: later, title: "A", subtitle: "", symbol: "bubble.left", selected: false)
+        let before = ChatRowBodyView.Content(stats: fresh, title: "A", subtitle: "", symbol: "bubble.left", selected: false)
+        let after = ChatRowBodyView.Content(stats: later, title: "A", subtitle: "", symbol: "bubble.left", selected: false)
         XCTAssertFalse(before == after)
     }
 
@@ -257,10 +257,9 @@ final class SidebarMetricsLayoutTests: XCTestCase {
                        "A first-level child row has no room for the rate beside the cost")
 
         func height(_ available: CGFloat, width: CGFloat) -> CGFloat {
-            let hosting = NSHostingView(rootView: ChatRowMetrics(stats: stats, title: "Fixture", available: available)
-                .frame(width: width, alignment: .leading).fixedSize(horizontal: false, vertical: true))
-            hosting.layoutSubtreeIfNeeded()
-            return hosting.fittingSize.height
+            let line = ChatRowMetricsView()
+            line.update(stats: stats, available: available)
+            return line.height(forWidth: width)
         }
         let wide = height(226, width: 226), narrow = height(112, width: 112)
         XCTAssertGreaterThan(narrow, wide + 8, "The narrow row must wrap the rate below state and cost, not truncate it away")

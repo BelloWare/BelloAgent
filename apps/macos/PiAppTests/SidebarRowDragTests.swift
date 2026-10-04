@@ -1,6 +1,5 @@
 import XCTest
 import AppKit
-import SwiftUI
 @testable import PiApp
 
 /// Dragging a sidebar chat row. A SwiftUI `Button` claims mouse-down on macOS,
@@ -47,10 +46,18 @@ final class SidebarRowDragTests: XCTestCase {
         let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
         let model = try await makeModel(root, chats: (1...3).map { chat("chat\($0)", order: Int64($0)) })
         defer { model.shutdown() }
-        func source(_ id: String) -> TopicSessionDragSource {
-            TopicSessionDragSource(model: model, sessionID: id, projectID: "project", enabled: true, click: { _ in }, doubleClick: { })
+        // What a draggable row's surface hands the drag when the press travels
+        // (the row is kept, as the list keeps it while it is on screen).
+        var rows: [NSView] = []
+        defer { _ = rows }
+        func source(_ id: String) throws -> TopicSessionRowActions {
+            let row = SidebarChatRowView(model: model, chat: try XCTUnwrap(model.record(id)), state: SidebarChatRowState(draggable: true),
+                                         projectID: "project", glide: PiKit.SelectionGlide())
+            rows.append(row)
+            let surface = try XCTUnwrap(row.subviews.compactMap { $0 as? TopicSessionDragSurfaceView }.first, "A draggable row carries a drag surface")
+            return surface.actions
         }
-        let alone = try XCTUnwrap(source("chat2").dragItem())
+        let alone = try XCTUnwrap(try source("chat2").item())
         XCTAssertEqual(alone.types, [NSPasteboard.PasteboardType(TopicSessionDrag.type.identifier)],
                        "A chat drag is not also a text or file drop")
         XCTAssertEqual(try payload(alone).sessionIDs, ["chat2"], "An unmarked row drags only itself")
@@ -58,14 +65,14 @@ final class SidebarRowDragTests: XCTestCase {
         model.selectedID = "chat1"
         model.extendSessionMarks(to: "chat3")
         XCTAssertEqual(model.markedChats.map(\.id), ["chat1", "chat2", "chat3"])
-        XCTAssertEqual(try payload(try XCTUnwrap(source("chat2").dragItem())).sessionIDs, ["chat1", "chat2", "chat3"],
+        XCTAssertEqual(try payload(try XCTUnwrap(try source("chat2").item())).sessionIDs, ["chat1", "chat2", "chat3"],
                        "A marked row drags every marked chat of its project")
         model.toggleSessionMark("chat2")
-        XCTAssertEqual(try payload(try XCTUnwrap(source("chat2").dragItem())).sessionIDs, ["chat2"],
+        XCTAssertEqual(try payload(try XCTUnwrap(try source("chat2").item())).sessionIDs, ["chat2"],
                        "Unmarking a row takes it out of the marked drag again")
         // Nothing may reach the pasteboard that a drop would refuse.
         XCTAssertNil(TopicSessionDrag(sessionID: "", workspaceID: "project").pasteboardItem())
-        let image = try XCTUnwrap(source("chat2").dragImage(), "A drag with no image is the bug the owner reported")
+        let image = try XCTUnwrap(try source("chat2").image(), "A drag with no image is the bug the owner reported")
         XCTAssertGreaterThan(image.size.width, 0); XCTAssertGreaterThan(image.size.height, 0)
         await model.store?.close()
     }
@@ -130,17 +137,17 @@ final class SidebarRowDragTests: XCTestCase {
         defer { model.shutdown() }
         let topic = try await model.createTopic(in: "project", title: "Destination")
 
-        let marked = [TopicSessionDrag(sessionIDs: ["first", "second"], workspaceID: "project").provider()]
+        let marked = dragPasteboard([TopicSessionDrag(sessionIDs: ["first", "second"], workspaceID: "project").pasteboardItem()])
         XCTAssertTrue(TopicSessionDrag.acceptSidebarDrop(marked, model: model, projectID: "project", topicID: topic.id))
         try await settle { model.record("first")?.topicID == topic.id && model.record("second")?.topicID == topic.id }
 
         // The project's own area is the way back out of a topic.
-        let one = [TopicSessionDrag(sessionID: "first", workspaceID: "project").provider()]
+        let one = dragPasteboard([TopicSessionDrag(sessionID: "first", workspaceID: "project").pasteboardItem()])
         XCTAssertTrue(TopicSessionDrag.acceptSidebarDrop(one, model: model, projectID: "project", topicID: nil))
         try await settle { model.record("first")?.topicID == nil }
         XCTAssertEqual(model.record("second")?.topicID, topic.id, "Only what was dropped moves")
 
-        let foreign = [TopicSessionDrag(sessionID: "second", workspaceID: "other").provider()]
+        let foreign = dragPasteboard([TopicSessionDrag(sessionID: "second", workspaceID: "other").pasteboardItem()])
         XCTAssertTrue(TopicSessionDrag.acceptSidebarDrop(foreign, model: model, projectID: "project", topicID: topic.id))
         try await settle { model.error != nil }
         XCTAssertEqual(model.record("second")?.topicID, topic.id, "A chat from another project cannot be dropped here")
@@ -152,6 +159,13 @@ final class SidebarRowDragTests: XCTestCase {
 /// A drag in flight, as the sidebar sees one. AppKit's own session cannot run
 /// in a test process, so the hosted sidebar is asked what it would do with the
 /// very pasteboard item a dragged row writes.
+/// A drop target, written out.
+private struct DropTargetCase {
+    let projectID: String
+    let topicID: String?
+    @MainActor var target: SidebarListDocument.DropTarget { .group(projectID: projectID, topicID: topicID) }
+}
+
 @MainActor private final class DragInFlight: NSObject, NSDraggingInfo {
     let draggingPasteboard = NSPasteboard(name: .drag)
     var draggingLocation: NSPoint = .zero
@@ -208,8 +222,7 @@ final class SidebarDropZoneTests: XCTestCase {
         model.chats = chats
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 280, height: 900), styleMask: [.borderless],
                               backing: .buffered, defer: false)
-        window.contentView = NSHostingView(rootView: ProjectSidebarGroup(model: model, project: project, available: true, name: "Project")
-            .transaction { $0.animation = nil; $0.disablesAnimations = true })
+        window.contentView = makeSidebar(model)
         let hosted = try XCTUnwrap(window.contentView)
         hosted.layoutSubtreeIfNeeded()
         return (model, hosted, project, root)
@@ -218,39 +231,54 @@ final class SidebarDropZoneTests: XCTestCase {
     @MainActor func testATopicAndItsProjectTakeADropAcrossTheirRowsNotJustTheirHeaders() throws {
         let (model, hosted, project, root) = try sidebar()
         defer { model.shutdown(); try? FileManager.default.removeItem(at: root) }
-        // Every view the sidebar registered for a drop, front to back, which is
-        // the order AppKit itself offers a drag to them.
-        func zones(_ view: NSView) -> [NSView] {
-            view.subviews.flatMap { zones($0) } + (view.registeredDraggedTypes.isEmpty ? [] : [view])
-        }
-        let dropZones = zones(hosted).map { (view: $0, frame: $0.convert($0.bounds, to: hosted)) }
-        XCTAssertEqual(dropZones.count, model.chats.count + 2, "Session reorder targets coexist with project and topic targets")
-        let groupZones = dropZones.filter { $0.frame.height > 100 }
-        XCTAssertEqual(groupZones.count, 2, "Both group drop targets must extend beyond a single session row")
-        let topic = try XCTUnwrap(groupZones.min { $0.frame.height < $1.frame.height })
-        let wholeProject = try XCTUnwrap(groupZones.max { $0.frame.height < $1.frame.height })
-        XCTAssertGreaterThan(topic.frame.height, 150,
-                             "A topic's header strip is about thirty points tall: its drop zone must reach its chat rows")
-        XCTAssertEqual(wholeProject.frame.height, hosted.bounds.height, accuracy: 1,
-                       "The project's whole group takes a drop, not only its header strip")
+        // One view takes every drop over the list and decides by where it is.
+        let list = try XCTUnwrap((hosted as? WorkspaceSidebarView)?.list)
+        XCTAssertFalse(list.registeredDraggedTypes.isEmpty, "The list takes chats dropped on it")
+        func frame(_ id: String) throws -> CGRect { try XCTUnwrap(list.frame(of: id), id) }
+        let topic = DropTargetCase(projectID: project.id, topicID: "topic")
+        let loose = DropTargetCase(projectID: project.id, topicID: nil)
+        // A topic's header strip and the gaps between its chat rows: into the topic.
+        let topicHeader = CGPoint(x: 40, y: try frame("topic|topic").midY)
+        let topicGap = CGPoint(x: 40, y: try frame("chat|in3").maxY + 1)
+        XCTAssertGreaterThan(topicGap.y - topicHeader.y, 100, "A topic's drop area reaches well past its header strip, down its rows")
+        XCTAssertEqual(list.dropTarget(at: topicHeader), topic.target)
+        XCTAssertEqual(list.dropTarget(at: topicGap), topic.target)
+        // The project's own rows, and the room under the last: out of any topic.
+        let projectGap = CGPoint(x: 40, y: try frame("chat|out2").maxY + 1)
+        let underEverything = CGPoint(x: 40, y: list.bounds.maxY - 2)
+        XCTAssertEqual(list.dropTarget(at: projectGap), loose.target)
+        XCTAssertEqual(list.dropTarget(at: underEverything), loose.target, "The project's whole group takes a drop, not only its header strip")
+        XCTAssertEqual(list.dropTarget(at: CGPoint(x: 40, y: try frame("project|" + project.id).midY)), loose.target)
+        // Over a row itself: before or after it.
+        let out1 = try frame("chat|out1")
+        XCTAssertEqual(list.dropTarget(at: CGPoint(x: 40, y: out1.minY + 2)), .row(id: "out1", projectID: project.id, after: false))
+        XCTAssertEqual(list.dropTarget(at: CGPoint(x: 40, y: out1.maxY - 2)), .row(id: "out1", projectID: project.id, after: true))
+        // Beside a row, in its indent: the group it sits in, not the row.
+        XCTAssertEqual(list.dropTarget(at: CGPoint(x: out1.minX + 2, y: out1.midY)), loose.target)
+        let in1 = try frame("chat|in1")
+        XCTAssertEqual(list.dropTarget(at: CGPoint(x: in1.minX + 2, y: in1.midY)), topic.target)
 
         // The sidebar accepts the payload a dragged row writes, over a topic's
         // own rows and over the project's rows below every topic.
         let drag = DragInFlight(try XCTUnwrap(TopicSessionDrag(sessionIDs: ["out0", "out1"], workspaceID: project.id).pasteboardItem()))
-        for zone in [topic, wholeProject] {
-            drag.draggingLocation = hosted.convert(CGPoint(x: zone.frame.midX, y: zone.frame.maxY - 8), to: nil)
-            let answer = zone.view.draggingEntered(drag)
+        for point in [topicGap, projectGap, underEverything] {
+            drag.draggingLocation = list.convert(point, to: nil)
+            let answer = list.draggingEntered(drag)
             XCTAssertEqual(answer, .copy, "A group must light up for chats of its own project")
             XCTAssertTrue(TopicSessionDragSurfaceView.operationMask(for: .withinApplication).contains(answer),
                           "A dragged row must allow the operation its destination answers with")
-            zone.view.draggingExited(drag)
+            list.draggingExited(drag)
         }
+        drag.draggingLocation = list.convert(CGPoint(x: 40, y: out1.minY + 2), to: nil)
+        XCTAssertEqual(list.draggingEntered(drag), .move, "Over a row, the chats move beside it")
+        XCTAssertTrue(TopicSessionDragSurfaceView.operationMask(for: .withinApplication).contains(.move))
+        list.draggingExited(drag)
         // Nothing else on the pasteboard is a chat move.
         let text = NSPasteboardItem(); text.setString("chat", forType: .string)
         let plain = DragInFlight(text)
-        plain.draggingLocation = drag.draggingLocation
-        XCTAssertEqual(topic.view.draggingEntered(plain), [], "Dropped text is not a chat")
-        topic.view.draggingExited(plain)
+        plain.draggingLocation = list.convert(topicGap, to: nil)
+        XCTAssertEqual(list.draggingEntered(plain), [], "Dropped text is not a chat")
+        list.draggingExited(plain)
         NSPasteboard(name: .drag).clearContents()
     }
 
@@ -274,5 +302,139 @@ final class SidebarDropZoneTests: XCTestCase {
             XCTAssertFalse(TopicSessionDragSurfaceView.claims(CGPoint(x: button.midX, y: button.midY), controls: controls))
             XCTAssertTrue(TopicSessionDragSurfaceView.claims(CGPoint(x: row.bounds.midX / 2, y: row.bounds.midY), controls: controls))
         }
+    }
+
+    /// Archive's confirmation is wider than the button it replaces; the drag
+    /// surface must leave the whole of it to the row, or pressing Archive
+    /// would select the row instead.
+    @MainActor func testTheArchiveConfirmationIsCutOutOfTheDragSurfaceAtOnce() throws {
+        let (model, hosted, _, root) = try sidebar()
+        defer { model.shutdown(); try? FileManager.default.removeItem(at: root) }
+        let list = try XCTUnwrap((hosted as? WorkspaceSidebarView)?.list)
+        let row = try XCTUnwrap(list.views["chat|out1"] as? SidebarChatRowView)
+        func descendants(_ view: NSView) -> [NSView] { view.subviews.flatMap { [$0] + descendants($0) } }
+        let surface = try XCTUnwrap(descendants(row).compactMap { $0 as? TopicSessionDragSurfaceView }.first)
+        let archive = try XCTUnwrap(descendants(row).compactMap { $0 as? PiKit.IconButton }.first { $0.label == "Archive chat" })
+        // The press itself, with no display pass after it to tidy up.
+        archive.onPress?()
+        let confirm = try XCTUnwrap(descendants(row).first { $0.accessibilityIdentifier() == "confirmArchive" && !$0.isHidden })
+        let place = confirm.convert(confirm.bounds, to: surface)
+        XCTAssertTrue(surface.controls.contains { $0.insetBy(dx: -0.5, dy: -0.5).contains(place) },
+                      "The confirmation \(place) is not cut out of the surface: \(surface.controls)")
+        XCTAssertFalse(TopicSessionDragSurfaceView.claims(CGPoint(x: place.midX, y: place.midY), controls: surface.controls))
+        // The row takes the height the confirmation needs, and the rows after it move.
+        func placed() throws -> (row: CGRect, next: CGRect) { (try XCTUnwrap(list.frame(of: "chat|out1")), try XCTUnwrap(list.frame(of: "chat|out2"))) }
+        let asked = row.entryHeight(width: row.bounds.width)
+        XCTAssertEqual(row.frame.height, asked, accuracy: 0.01)
+        let open = try placed()
+        XCTAssertEqual(open.row.height, asked, accuracy: 0.01)
+        XCTAssertEqual(open.next.minY, open.row.maxY + SidebarListContents.rowSpacing, accuracy: 0.01)
+        // Leaving the row puts the question away, and the row its height.
+        row.body.mouseExited(with: try XCTUnwrap(NSEvent.enterExitEvent(with: .mouseExited, location: .zero, modifierFlags: [], timestamp: 0,
+                                                                         windowNumber: 0, context: nil, eventNumber: 0, trackingNumber: 0, userData: nil)))
+        XCTAssertEqual(row.frame.height, row.entryHeight(width: row.bounds.width), accuracy: 0.01)
+        let closed = try placed()
+        XCTAssertEqual(closed.next.minY, closed.row.maxY + SidebarListContents.rowSpacing, accuracy: 0.01)
+    }
+
+    /// While the window is disabled (an install being prepared) the sidebar
+    /// takes no press, no drop and offers no enabled control.
+    @MainActor func testADisabledWindowLeavesTheSidebarInert() throws {
+        let (model, hosted, project, root) = try sidebar()
+        defer { model.shutdown(); try? FileManager.default.removeItem(at: root) }
+        let sidebar = try XCTUnwrap(hosted as? WorkspaceSidebarView)
+        let row = try XCTUnwrap(sidebar.list.frame(of: "chat|out1"))
+        let point = sidebar.list.convert(CGPoint(x: row.midX, y: row.midY), to: sidebar)
+        XCTAssertNotNil(sidebar.hitTest(sidebar.convert(point, to: sidebar.superview)))
+        XCTAssertTrue(sidebar.newChat.isEnabled)
+        sidebar.inheritedEnabled = false
+        XCTAssertNil(sidebar.hitTest(sidebar.convert(point, to: sidebar.superview)), "No press reaches a row")
+        XCTAssertFalse(sidebar.newChat.isEnabled); XCTAssertFalse(sidebar.settings.isEnabled); XCTAssertFalse(sidebar.filterField.field.isEnabled)
+        let drag = DragInFlight(try XCTUnwrap(TopicSessionDrag(sessionIDs: ["out0"], workspaceID: project.id).pasteboardItem()))
+        drag.draggingLocation = sidebar.list.convert(CGPoint(x: row.midX, y: row.midY), to: nil)
+        XCTAssertEqual(sidebar.list.draggingEntered(drag), [], "No drop is taken")
+        XCTAssertFalse(sidebar.list.performDragOperation(drag))
+        // Changes while disabled leave every control in the list disabled.
+        func enabledControls() -> [String] {
+            func walk(_ view: NSView) -> [NSView] { view.subviews.flatMap { [$0] + walk($0) } }
+            return walk(sidebar.list).compactMap { $0 as? NSControl }.filter(\.isEnabled).map { String(describing: type(of: $0)) }
+        }
+        XCTAssertEqual(enabledControls(), [])
+        model.topics[0].title = "Renamed while disabled"
+        model.chats[0].title = "Renamed chat while disabled"
+        sidebar.settle()
+        XCTAssertEqual(enabledControls(), [], "An update re-enabled a control while the window is disabled")
+        sidebar.inheritedEnabled = true
+        XCTAssertNotNil(sidebar.hitTest(sidebar.convert(point, to: sidebar.superview)))
+        XCTAssertTrue(sidebar.newChat.isEnabled)
+        XCTAssertEqual(sidebar.list.draggingEntered(drag), .move)
+        sidebar.list.draggingExited(drag)
+        NSPasteboard(name: .drag).clearContents()
+    }
+
+    /// A legacy scroller that comes and goes changes the room the rows have:
+    /// they follow the clip view's width both ways.
+    @MainActor func testRowsFollowALegacyScrollerComingAndGoing() throws {
+        let (model, hosted, _, root) = try sidebar()
+        defer { model.shutdown(); try? FileManager.default.removeItem(at: root) }
+        let sidebar = try XCTUnwrap(hosted as? WorkspaceSidebarView)
+        sidebar.scroll.scrollerStyle = .legacy
+        // Short enough that the ten chats overflow.
+        sidebar.frame.size.height = 300
+        sidebar.settle()
+        func widths() throws -> (clip: CGFloat, row: CGFloat) {
+            sidebar.settle(); sidebar.scroll.layoutSubtreeIfNeeded(); sidebar.settle()
+            let row = try XCTUnwrap(sidebar.list.views.first { $0.key.hasPrefix("chat|") }?.value)
+            return (sidebar.scroll.contentSize.width, row.frame.width)
+        }
+        let overflowing = try widths()
+        XCTAssertLessThan(overflowing.clip, sidebar.bounds.width, "The legacy scroller takes room")
+        XCTAssertEqual(overflowing.row, overflowing.clip - 16, accuracy: 0.01)
+        sidebar.setFilter("Loose 1")
+        let short = try widths()
+        XCTAssertEqual(short.clip, sidebar.bounds.width, accuracy: 0.01, "With nothing to scroll the scroller goes")
+        XCTAssertEqual(short.row, short.clip - 16, accuracy: 0.01, "and the rows take its room back")
+        sidebar.setFilter("")
+        let again = try widths()
+        XCTAssertEqual(again.row, again.clip - 16, accuracy: 0.01)
+    }
+
+    /// A row whose height changed on screen (its rate arrived and stacked
+    /// under the cost) keeps that height once it scrolls out of the list's
+    /// range and an unrelated change lays the list out again.
+    @MainActor func testAHeightThatChangedOnScreenSurvivesTheRowScrollingAway() throws {
+        let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("sidebar-heights-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = makeWorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        defer { model.shutdown() }
+        let project = WorkspaceRecord(id: "project", path: root.path, trusted: true)
+        model.workspaces = [project]; model.selectedWorkspaceID = project.id
+        model.chats = (0..<80).map { ChatRecord(id: "c\($0)", workspaceID: project.id, title: "Chat \($0)", path: nil, profileID: "fixture", sidebarOrder: Int64(1_000 - $0)) }
+        model.setSidebarShownRoots(project.id, to: 80, in: project.id)
+        // Live from the start, nothing billed yet.
+        let display = SessionDisplay(id: "c0")
+        model.displays["c0"] = display
+        let sidebar = makeSidebar(model, width: 200, height: 400)
+        let list = sidebar.list
+        let before = try XCTUnwrap(list.frame(of: "chat|c0")).height
+        // A paused run's cost and rate arrive: the row's entry is the same, its height is not.
+        display.state = "paused"
+        display.footer.gateway = GatewayTotals(requests: 1, costSamples: 1, costUSD: 12.34)
+        display.footer.timing = SessionTimingHistory(samples: [SessionTimingSample(id: "r", wall: Date(), ttftMilliseconds: 200,
+                                                                                   streamingMilliseconds: 800, outputTokens: 100, requestMilliseconds: 1_000)])
+        sidebar.settle(); list.layoutSubtreeIfNeeded(); sidebar.settle()
+        let grown = try XCTUnwrap(list.frame(of: "chat|c0")).height
+        XCTAssertGreaterThan(grown, before, "The rate stacks under the cost in a narrow sidebar")
+        // Far away, so the row loses its view.
+        sidebar.scroll.contentView.scroll(to: CGPoint(x: 0, y: list.bounds.height - sidebar.scroll.contentSize.height))
+        sidebar.scroll.reflectScrolledClipView(sidebar.scroll.contentView)
+        list.materialize()
+        XCTAssertNil(list.views["chat|c0"], "The row is out of the list's range")
+        model.chats[60].title = "Renamed far below"
+        sidebar.settle()
+        let kept = try XCTUnwrap(list.frame(of: "chat|c0")), next = try XCTUnwrap(list.frame(of: "chat|c1"))
+        XCTAssertEqual(kept.height, grown, accuracy: 0.01, "The list remembers the height the row had on screen")
+        XCTAssertEqual(next.minY, kept.maxY + SidebarListContents.rowSpacing, accuracy: 0.01)
     }
 }

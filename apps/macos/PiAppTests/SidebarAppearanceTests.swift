@@ -1,6 +1,5 @@
 import XCTest
 import AppKit
-import SwiftUI
 @testable import PiApp
 
 /// The sidebar at its narrowest, in both appearances, with everything that can
@@ -12,7 +11,8 @@ final class SidebarAppearanceTests: XCTestCase {
     @MainActor private func crowdedModel(_ root: URL) throws -> (WorkspaceModel, WorkspaceRecord) {
         let model = makeWorkspaceModel(stateRoot: root.appendingPathComponent("state"),
                                        vault: ConfigurationVault(storage: MemoryVaultStorage()))
-        let project = WorkspaceRecord(id: "project", path: root.path, trusted: true)
+        // Named as the old fixtures named it: the list shows the folder's name.
+        let project = WorkspaceRecord(id: "project", path: root.appendingPathComponent("bello-agent").path, trusted: true)
         model.workspaces = [project]
         model.selectedWorkspaceID = project.id
         model.topics = [TopicRecord(id: "topic", workspaceID: project.id, title: "Billing and invoicing")]
@@ -53,28 +53,22 @@ final class SidebarAppearanceTests: XCTestCase {
         let root = URL(fileURLWithPath: base).appendingPathComponent("sidebar-shot-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        let (model, project) = try crowdedModel(root)
+        let (model, _) = try crowdedModel(root)
         defer { model.shutdown() }
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: 620),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
-        let sidebar = VStack(alignment: .leading, spacing: 0) {
-            SidebarSelectionBar(model: model).padding(.horizontal, PiSpacing.md).padding(.vertical, 6)
-            ProjectSidebarGroup(model: model, project: project, available: true, name: "bello-agent", sidebarWidth: width)
-                .padding(.horizontal, PiSpacing.sm)
-            Spacer(minLength: 0)
-        }
-        .frame(width: width, alignment: .leading)
-        .background(Color.piWindow)
-        .transaction { $0.animation = nil; $0.disablesAnimations = true }
-        window.contentView = NSHostingView(rootView: sidebar)
+        let sidebar = makeSidebar(model, width: width, height: 620)
+        window.contentView = sidebar
         window.makeKeyAndOrderFront(nil)
-        let hosted = try XCTUnwrap(window.contentView)
+        let hosted: NSView = sidebar
         hosted.needsLayout = true
         hosted.layoutSubtreeIfNeeded()
         window.displayIfNeeded()
-        let bounds = hosted.bounds
+        // The list and the bar of marked rows over it; the column's own
+        // hairline and bottom bar run edge to edge by design.
+        let bounds = Self.listArea(sidebar)
         let image = try XCTUnwrap(hosted.bitmapImageRepForCachingDisplay(in: bounds))
         hosted.cacheDisplay(in: bounds, to: image)
         if let destination = testEnvironment("PI_APP_SIDEBAR_SHOT_ROOT") {
@@ -127,7 +121,8 @@ final class SidebarAppearanceTests: XCTestCase {
             let model = makeWorkspaceModel(stateRoot: root.appendingPathComponent("state"),
                                            vault: ConfigurationVault(storage: MemoryVaultStorage()))
             defer { model.shutdown() }
-            let project = WorkspaceRecord(id: "project", path: root.path, trusted: true)
+            // Named as the old fixtures named it: the list shows the folder's name.
+        let project = WorkspaceRecord(id: "project", path: root.appendingPathComponent("bello-agent").path, trusted: true)
             model.workspaces = [project]; model.selectedWorkspaceID = project.id
             let figures: [(String, Double?, Double?, TimeInterval?)] = [
                 ("Cents and thousands", 0.0042, 12_300, 5),
@@ -151,15 +146,14 @@ final class SidebarAppearanceTests: XCTestCase {
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: 420), styleMask: [.titled],
                                   backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false
-            window.contentView = NSHostingView(rootView:
-                ProjectSidebarGroup(model: model, project: project, available: true, name: "bello-agent", sidebarWidth: width)
-                    .frame(width: width, alignment: .leading).background(Color.piWindow)
-                    .transaction { $0.animation = nil; $0.disablesAnimations = true })
+            let sidebar = makeSidebar(model, width: width, height: 420)
+            window.contentView = sidebar
             window.makeKeyAndOrderFront(nil)
-            let hosted = try XCTUnwrap(window.contentView)
+            let hosted: NSView = sidebar
             hosted.needsLayout = true; hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
-            let image = try XCTUnwrap(hosted.bitmapImageRepForCachingDisplay(in: hosted.bounds))
-            hosted.cacheDisplay(in: hosted.bounds, to: image)
+            let area = Self.listArea(sidebar)
+            let image = try XCTUnwrap(hosted.bitmapImageRepForCachingDisplay(in: area))
+            hosted.cacheDisplay(in: area, to: image)
             let inks = inkColumns(image)
             XCTAssertTrue(inks.trailing.isEmpty,
                           "At \(Int(width))pt something is drawn into the last two points of the sidebar at rows \(inks.trailing)")
@@ -189,10 +183,7 @@ final class SidebarAppearanceTests: XCTestCase {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 620), styleMask: [.titled],
                               backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView:
-            ProjectSidebarGroup(model: model, project: project, available: true, name: "bello-agent")
-                .frame(width: 300, alignment: .leading).background(Color.piWindow)
-                .transaction { $0.animation = nil; $0.disablesAnimations = true })
+        window.contentView = makeSidebar(model, width: 300, height: 620)
         window.makeKeyAndOrderFront(nil)
         let hosted = try XCTUnwrap(window.contentView)
         defer { window.contentView = nil; window.close() }
@@ -282,12 +273,15 @@ final class SidebarAppearanceTests: XCTestCase {
     /// reading; only a one-pixel outline told them apart.
     @MainActor func testAMarkedRowDoesNotWearTheOpenChatsHighlight() throws {
         func fill(selected: Bool, marked: Bool) throws -> NSColor {
-            let row = PiSelectableRow(selected: selected, marked: marked, action: {}) {
-                Text("Chat").font(PiFont.body).frame(maxWidth: .infinity, alignment: .leading)
-            }
-            let view = NSHostingView(rootView: row.frame(width: 240, height: 34).background(Color.piWindow))
-            view.frame = NSRect(x: 0, y: 0, width: 240, height: 34)
+            // The row the sidebar's chats are, on the sidebar's background.
+            let row = PiKit.SelectableRow(content: PiKit.TextLine(PiKit.Line("Chat", font: PiKit.Font.body, color: .piInk)),
+                                          selected: selected, marked: marked)
+            let view = NSView(frame: NSRect(x: 0, y: 0, width: 240, height: 34))
+            view.wantsLayer = true
             view.appearance = NSAppearance(named: .aqua)
+            view.layer?.backgroundColor = view.piCGColor(.piWindow)
+            row.frame = view.bounds
+            view.addSubview(row)
             view.layoutSubtreeIfNeeded()
             let image = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
             view.cacheDisplay(in: view.bounds, to: image)
@@ -304,7 +298,13 @@ final class SidebarAppearanceTests: XCTestCase {
         XCTAssertGreaterThan(distance(plain, selected), 0.03, "The open chat must still stand out from an ordinary row")
     }
 
-    @MainActor private func captureHeader(_ name: String, width: CGFloat) throws -> NSBitmapImageRep {
+    /// A header's picture, its buttons on show and the room its name has.
+    private struct HeaderShot {
+        let image: NSBitmapImageRep
+        let buttons: [String]
+        let nameRoom: CGFloat
+    }
+    @MainActor private func captureHeader(_ name: String, width: CGFloat) throws -> HeaderShot {
         let base = scratchBase()
         let root = URL(fileURLWithPath: base).appendingPathComponent("sidebar-header-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -312,19 +312,19 @@ final class SidebarAppearanceTests: XCTestCase {
         let (model, project) = try crowdedModel(root)
         defer { model.shutdown() }
         model.setProjectExpanded(project.id, expanded: false)
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: 40), styleMask: [.titled],
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: 400), styleMask: [.titled],
                               backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView:
-            ProjectSidebarGroup(model: model, project: project, available: true, name: "bello-agent", sidebarWidth: width)
-                .frame(width: width, alignment: .leading)
-                .background(Color.piWindow)
-                .transaction { $0.animation = nil; $0.disablesAnimations = true })
+        let sidebar = makeSidebar(model, width: width, height: 400)
+        window.contentView = sidebar
         window.makeKeyAndOrderFront(nil)
-        let hosted = try XCTUnwrap(window.contentView)
-        hosted.needsLayout = true; hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
-        let image = try XCTUnwrap(hosted.bitmapImageRepForCachingDisplay(in: hosted.bounds))
-        hosted.cacheDisplay(in: hosted.bounds, to: image)
+        sidebar.settle(); window.displayIfNeeded()
+        // Just the project's header strip, as the list draws it.
+        let header = try XCTUnwrap(sidebar.list.views["project|" + project.id])
+        let strip = header.convert(header.bounds, to: sidebar)
+        let image = try XCTUnwrap(sidebar.bitmapImageRepForCachingDisplay(in: strip))
+        sidebar.cacheDisplay(in: strip, to: image)
+        let hosted: NSView = header
         if let destination = testEnvironment("PI_APP_SIDEBAR_SHOT_ROOT") {
             let directory = URL(fileURLWithPath: destination)
             try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -333,8 +333,12 @@ final class SidebarAppearanceTests: XCTestCase {
             }
             print("SHOT \(destination)/\(name).png \(Int(hosted.bounds.width))x\(Int(hosted.bounds.height))")
         }
+        func descendants(_ view: NSView) -> [NSView] { view.subviews.flatMap { [$0] + descendants($0) } }
+        let controls = descendants(header).compactMap { $0 as? PiKit.ButtonBase }.filter { !$0.isHidden }
+        let buttons = controls.compactMap { $0.accessibilityIdentifier().split(separator: "-").first.map(String.init) }
+        let disclosure = try XCTUnwrap(controls.first { $0.accessibilityIdentifier().hasPrefix("projectDisclosure-") })
         window.contentView = nil; window.close()
-        return image
+        return HeaderShot(image: image, buttons: buttons.sorted(), nameRoom: disclosure.frame.width)
     }
 
     /// A sidebar pulled in below the threshold gives the project's own buttons'
@@ -342,12 +346,23 @@ final class SidebarAppearanceTests: XCTestCase {
     @MainActor func testANarrowProjectHeaderDropsItsButtonsAndKeepsItsName() throws {
         let wide = try captureHeader("sidebar-header-wide", width: WindowChrome.sidebarWidth)
         let narrow = try captureHeader("sidebar-header-narrow", width: WindowChrome.minimumSidebarWidth)
-        let wideControls = trailingInk(wide, points: 70), narrowControls = trailingInk(narrow, points: 70)
+        let wideControls = trailingInk(wide.image, points: 70), narrowControls = trailingInk(narrow.image, points: 70)
         print("PERF sidebar header trailing ink: wide \(wideControls), narrow \(narrowControls)")
         XCTAssertGreaterThan(wideControls, 0, "The wide header draws its changes, new-chat and actions controls")
         XCTAssertGreaterThan(narrowControls, 0, "The narrow header still has its actions menu")
-        XCTAssertLessThan(narrowControls * 2, wideControls,
-                          "A narrow header must give the changes and new-chat buttons' room back to the project's name")
+        XCTAssertEqual(wide.buttons, ["newProjectChat", "projectActions", "projectChanges", "projectDisclosure"],
+                       "The wide header shows its changes, new-chat and actions controls")
+        XCTAssertEqual(narrow.buttons, ["projectActions", "projectDisclosure"],
+                       "A narrow header keeps only its actions menu")
+        let lost = WindowChrome.sidebarWidth - WindowChrome.minimumSidebarWidth
+        XCTAssertGreaterThan(narrow.nameRoom, wide.nameRoom - lost + 40,
+                             "A narrow header must give the changes and new-chat buttons' room back to the project's name")
+    }
+
+    /// The part of the sidebar column the rows are in: under its header, over its hairline.
+    @MainActor static func listArea(_ sidebar: WorkspaceSidebarView) -> NSRect {
+        NSRect(x: 0, y: WorkspaceSidebarView.headerHeight, width: sidebar.bounds.width,
+               height: sidebar.scroll.frame.maxY - WorkspaceSidebarView.headerHeight)
     }
 
     /// Ink in the trailing strip of a header, in pixels.

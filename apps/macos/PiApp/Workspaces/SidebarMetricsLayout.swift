@@ -80,7 +80,8 @@ struct SidebarMetricsFigures: Equatable {
     }
 }
 
-extension ChatRowMetrics {
+/// The arithmetic of a row's metrics line.
+enum ChatRowMetrics {
     /// The width a row's metrics line has to itself, worked out from the width
     /// of the sidebar. Every inset between the two is named here so the
     /// arithmetic lives in one place, and the line truncates rather than

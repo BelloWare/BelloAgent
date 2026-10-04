@@ -79,8 +79,9 @@ final class LazyListAppKitControlTests: XCTestCase {
         }
     }
 
-    /// The sidebar's lazy list holds no AppKit control that sizes itself: the
-    /// project and topic menus, and a working chat's spinner, are SwiftUI.
+    /// The sidebar's list holds no control that sizes itself under SwiftUI:
+    /// it is AppKit, its menus are built when they open, and a working
+    /// chat's spinner turns on its own layer.
     @MainActor func testTheSidebarListHostsNoControlThatResizesItselfOnUpdate() async throws {
         let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("lazy-list-controls-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -97,8 +98,13 @@ final class LazyListAppKitControlTests: XCTestCase {
         // The list's own content, not the scroll view's scrollers.
         let content = try XCTUnwrap(list.documentView, "The sidebar's list has content")
         XCTAssertGreaterThan(descendants(content).count, 0, "The sidebar's list has content")
-        let controls = Self.selfSizingControls(in: content)
-        XCTAssertEqual(controls, [], "The sidebar's lazy list hosts AppKit controls that resize themselves on every update: \(controls)")
+        // The list is AppKit now: nothing in it is hosted by SwiftUI, so no
+        // control in it can turn its own size change into another SwiftUI
+        // transaction. It still keeps no pop-up button or progress indicator.
+        let hosts = descendants(content).filter { String(describing: type(of: $0)).contains("HostingView") }
+        XCTAssertEqual(hosts.count, 0, "The sidebar's list hosts SwiftUI: \(hosts.map { String(describing: type(of: $0)) })")
+        let controls = descendants(content).filter { $0 is NSPopUpButton || $0 is NSProgressIndicator }.map { String(describing: type(of: $0)) }
+        XCTAssertEqual(controls, [], "The sidebar's list keeps controls that size themselves: \(controls)")
         // The compacting chat still says it is working: its ring turns on
         // its own layer, at no cost to the main thread.
         let spinners = descendants(content).compactMap { $0 as? PiSpinnerView }

@@ -38,3 +38,22 @@ struct StarterPanelBridge: NSViewRepresentable {
         return CGSize(width: width, height: nsView.height(forWidth: width))
     }
 }
+
+/// The sidebar as a test hosts it: the AppKit column for `model`, its
+/// filter already typed, every change applied before it returns.
+@MainActor func makeSidebar(_ model: WorkspaceModel, width: CGFloat = 280, height: CGFloat = 900, filter: String = "") -> WorkspaceSidebarView {
+    let sidebar = WorkspaceSidebarView(model: model, width: width)
+    sidebar.frame = CGRect(x: 0, y: 0, width: width, height: height)
+    if !filter.isEmpty { sidebar.setFilter(filter) }
+    sidebar.settle()
+    return sidebar
+}
+
+/// A pasteboard holding `items`, as a drag's own pasteboard holds what the
+/// dragged rows wrote.
+@MainActor func dragPasteboard(_ items: [NSPasteboardItem?]) -> NSPasteboard {
+    let pasteboard = NSPasteboard(name: NSPasteboard.Name("bello-test-drag-" + UUID().uuidString))
+    pasteboard.clearContents()
+    pasteboard.writeObjects(items.compactMap { $0 })
+    return pasteboard
+}
