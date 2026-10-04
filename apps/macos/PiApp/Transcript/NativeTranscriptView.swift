@@ -248,7 +248,7 @@ final class TranscriptSurfaceMarker: NSView {
         if shownSession != ObjectIdentifier(session) || shownDirection != environment.layoutDirection {
             shownSession = ObjectIdentifier(session); shownDirection = environment.layoutDirection
             shownEarlier = .quiet; shownTurnInput = nil; shownPartial = nil; shownNewerBeside = .quiet; shownNewerAbove = .quiet
-            for slot in [earlierSlot, partialSlot, besideSlot, aboveSlot] { slot.show(nil, animated: false) }
+            for slot in [earlierSlot, partialSlot, besideSlot, aboveSlot] { slot.clear() }
         }
         let earlier = earlierEdge, turnInput = session.presentation.partialTurnInput
         if earlier != shownEarlier || turnInput != shownTurnInput {
@@ -451,11 +451,13 @@ final class TranscriptSurfaceMarker: NSView {
                                                                   width: earlier.width, height: earlier.height), scale: scale)
         earlierSlot.place(offered: earlierRoom)
         // The turn's question: top trailing, ten down and eighteen in.
-        let partial = partialSlot.size(offered: surface.width)
+        // Offered what its trailing inset leaves, as SwiftUI's padding did.
+        let partialRoom = max(0, surface.width - 18)
+        let partial = partialSlot.size(offered: partialRoom)
         let partialX = rightToLeft ? surface.minX + 18 : surface.maxX - 18 - partial.width
         partialSlot.frame = TranscriptMotion.pixelAligned(CGRect(x: partialX, y: surface.minY + 10,
                                                                  width: partial.width, height: partial.height), scale: scale)
-        partialSlot.place(offered: surface.width)
+        partialSlot.place(offered: partialRoom)
         // Back to bottom: centred twelve points above the foot.
         let diameter = PiKit.BackToBottomPill.diameter
         latestBox.frame = TranscriptMotion.pixelAligned(CGRect(x: surface.midX - diameter / 2, y: surface.maxY - 12 - diameter,

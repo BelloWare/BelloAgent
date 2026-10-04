@@ -158,6 +158,51 @@ import XCTest
         try await eventually("the live bar let go", timeout: .seconds(5)) { pane.layoutSubtreeIfNeeded(); return report == nil }
     }
 
+    /// Another chat takes the pane while an edge fades out: nothing of the
+    /// chat it left stays, fading or not.
+    func testAnotherChatLeavesNoFadingEdgeBehind() throws {
+        let cursor = ConversationCursor(incarnation: "r", lineage: "root", entry: "m1")
+        let first = SessionDisplay(id: "first"), second = SessionDisplay(id: "second")
+        first.olderPage = ConversationPageBoundary(cursor: cursor, loading: false, error: "Connection reset")
+        let pane = NativeTranscriptPane(frame: CGRect(x: 0, y: 0, width: 600, height: 400))
+        pane.update(session: first, state: "idle", actions: TranscriptActions(), environment: TranscriptRowEnvironment(), reduceMotion: false)
+        XCTAssertNotNil(pane.earlierSlot.shown)
+        first.olderPage = ConversationPageBoundary()
+        pane.update(session: first, state: "idle", actions: TranscriptActions(), environment: TranscriptRowEnvironment(), reduceMotion: false)
+        XCTAssertFalse(pane.earlierSlot.isEmpty, "the error fades out")
+        pane.update(session: second, state: "idle", actions: TranscriptActions(), environment: TranscriptRowEnvironment(), reduceMotion: false)
+        XCTAssertTrue(pane.earlierSlot.isEmpty, "gone at once with the chat it belonged to")
+        XCTAssertTrue(pane.earlierSlot.subviews.isEmpty)
+    }
+
+    /// The turn's question is offered what its trailing inset leaves, so in
+    /// a pane as narrow as it is it wraps rather than leaving the pane.
+    func testThePartialChipStaysInsideANarrowPane() throws {
+        let session = SessionDisplay(id: "narrow")
+        let chip = TranscriptPartialTurnChipView(inspect: {})
+        let natural = chip.size(offered: .greatestFiniteMagnitude).width
+        let pane = NativeTranscriptPane(frame: CGRect(x: 0, y: 0, width: natural, height: 300))
+        pane.update(session: session, state: "idle", actions: TranscriptActions(), environment: TranscriptRowEnvironment(), reduceMotion: true)
+        pane.partialSlot.show(pane.partialChip("u1"), animated: false)
+        pane.layoutSubtreeIfNeeded()
+        XCTAssertLessThanOrEqual(pane.partialSlot.frame.maxX, natural - 18 + 0.5, "it keeps its inset from the trailing edge")
+        XCTAssertGreaterThanOrEqual(pane.partialSlot.frame.minX, -0.5)
+    }
+
+    /// A link whose words wrap takes the click on them, as on the rest of it.
+    func testAWrappedLinkTakesTheClickOnItsWords() throws {
+        let link = TranscriptEdgeLinkButton(title: "Earlier work in this turn", quiet: true, perform: {})
+        let size = link.size(offered: 80)
+        XCTAssertGreaterThan(size.height, link.size.height, "it wraps")
+        let holder = NSView(frame: CGRect(x: 0, y: 0, width: 200, height: 200))
+        holder.addSubview(link)
+        link.frame = CGRect(origin: .zero, size: size)
+        link.layoutSubtreeIfNeeded()
+        let words = try XCTUnwrap(link.subviews.first { $0 is TranscriptPlainTextView && !$0.isHidden })
+        let point = link.convert(CGPoint(x: words.frame.midX, y: words.frame.midY), to: holder)
+        XCTAssertTrue(holder.hitTest(point) === link)
+    }
+
     func testAnEdgeComingAndGoingFadesAndTheSameKindUpdatesInPlace() throws {
         let slot = TranscriptEdgeSlot()
         let pane = NativeTranscriptPane()

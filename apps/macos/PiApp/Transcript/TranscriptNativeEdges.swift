@@ -120,6 +120,8 @@ import AppKit
     override func mouseEntered(with event: NSEvent) { hovering = true }
     override func mouseExited(with event: NSEvent) { hovering = false; pressed = false }
     override func cursorUpdate(with event: NSEvent) { NSCursor.pointingHand.set() }
+    /// The whole link takes the click, its wrapped words included.
+    override func hitTest(_ point: NSPoint) -> NSView? { super.hitTest(point) == nil ? nil : self }
     override func mouseDown(with event: NSEvent) { pressed = true }
     override func mouseUp(with event: NSEvent) {
         let inside = bounds.contains(convert(event.locationInWindow, from: nil))
@@ -496,6 +498,12 @@ final class TranscriptEdgeMarkerView: NSView {
         }
     }
     var isEmpty: Bool { all.isEmpty }
+    /// Shows nothing at once: what it showed and what was still fading out go.
+    func clear() {
+        for item in all { item.view.removeFromSuperview(); item.marker.removeFromSuperview() }
+        leaving.removeAll(); shown = nil
+        superview?.needsLayout = true
+    }
     /// Every link it shows presses, or not.
     func setEnabled(_ enabled: Bool) {
         func walk(_ view: NSView) {
