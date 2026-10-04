@@ -57,7 +57,7 @@ extension PiKit {
             chevronSymbol.draw(centredIn: CGRect(x: x, y: inner.minY, width: box.width, height: inner.height), color: .piInkTertiary, scale: piScale)
         }
         override func styleFace() {
-            fill.backgroundColor = piCGColor(hoverFill && hovering ? .piFill : .piSurface)
+            fill.backgroundColor = piCGColor(hoverFill && hovering && isEnabled ? .piFill : .piSurface)
             stroke.borderColor = piCGColor(.piHairlineStrong)
         }
     }
@@ -67,9 +67,10 @@ extension PiKit {
     /// The pill dropdown: the chosen item, opening the choices in a popover.
     /// VoiceOver names it for what it chooses and reads the choice as its value.
     @MainActor final class Dropdown<Tag: Hashable>: PillFaceButton {
-        var items: [(Tag, String)] { didSet { label = current } }
+        /// An open list closes when its items or selection change under it.
+        var items: [(Tag, String)] { didSet { label = current; setAccessibilityValue(current); popover?.close() } }
         /// Set from outside without calling `onSelect`.
-        var selection: Tag { didSet { label = current; setAccessibilityValue(current) } }
+        var selection: Tag { didSet { label = current; setAccessibilityValue(current); if oldValue != selection { popover?.close() } } }
         let placeholder: String
         var onSelect: ((Tag) -> Void)?
         private var popover: NSPopover?
@@ -81,6 +82,8 @@ extension PiKit {
             super.init(label: items.first { $0.0 == selection }?.1 ?? placeholder, icon: icon, chevron: "chevron.up.chevron.down", compact: compact,
                        fontSize: compact ? 12 : 13, padding: compact ? (10, 5) : (12, 7), hoverFill: false)
             self.maxLabelWidth = maxLabelWidth
+            // The SwiftUI dropdown is a plain button: disabled, its face dims.
+            disabledOpacity = PiKit.plainDisabledDimming
             setAccessibilityLabel(accessibilityName ?? placeholder)
             setAccessibilityValue(current)
             onPress = { [weak self] in self?.toggleChoices() }
@@ -91,17 +94,22 @@ extension PiKit {
         private(set) var list: ChoiceList<Tag>?
         func toggleChoices() {
             if let popover, popover.isShown { popover.close(); return }
+            // A dropdown not on screen has nowhere to open its list.
+            guard window != nil else { return }
             let list = ChoiceList(title: placeholder, selection: selection, choices: items.map { Choice(id: $0.0, title: $0.1) },
                                   choose: { [weak self] value in
                                       guard let self else { return }
                                       self.popover?.close()
+                                      // Only a choice that is still offered.
+                                      guard self.items.contains(where: { $0.0 == value }) else { return }
                                       if value != self.selection { self.selection = value; self.onSelect?(value) }
                                   }, cancel: { [weak self] in self?.popover?.close() })
             self.list = list
             let popover = PiKit.popover(list)
             self.popover = popover
             popover.show(relativeTo: bounds, of: self, preferredEdge: .maxY)
-            window?.makeFirstResponder(list)
+            // The list is in the popover's window, which takes the keys.
+            list.window?.makeFirstResponder(list)
         }
     }
 
@@ -140,9 +148,33 @@ extension PiKit {
         /// The row the keyboard is on.
         private(set) var highlighted: Tag?
         private var rows: [Row] = []
+        private var empty: TextLine?
+        private let divider = DividerView()
+
+        /// SwiftUI's `Divider().overlay(Color.piHairline)`: the system
+        /// separator with the hairline over it.
+        @MainActor final class DividerView: NSView {
+            override func draw(_ dirtyRect: NSRect) {
+                NSColor.separatorColor.setFill(); bounds.fill()
+                NSColor.piHairline.setFill(); bounds.fill(using: .sourceOver)
+            }
+        }
+
+        /// The management action under the list: a full-width accent line of body text.
+        @MainActor final class ActionRow: ButtonBase {
+            init(_ title: String) { super.init(frame: .zero); self.title = title; pressScales = false; setAccessibilityLabel(title) }
+            required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+            private var line: Line { Line(title, font: PiKit.Font.body, color: .piAccent) }
+            override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: line.size(scale: piScale).height + 16) }
+            override func shape(in rect: CGRect) -> CGPath { CGPath(rect: rect, transform: nil) }
+            override func styleFace() { fill.backgroundColor = CGColor.clear; stroke.borderColor = CGColor.clear }
+            override func drawContent(in rect: CGRect) { line.draw(at: CGPoint(x: 8, y: 8), scale: piScale) }
+        }
         private let scroll = NSScrollView()
         private let stack = FlippedView()
+        /// Its whole width, padding included, as the SwiftUI list's frame.
         static var width: CGFloat { 310 }
+        static var inner: CGFloat { width - 16 }
 
         final class FlippedView: NSView { override var isFlipped: Bool { true } }
 
@@ -150,7 +182,7 @@ extension PiKit {
              action: (() -> Void)? = nil, choose: @escaping (Tag) -> Void, cancel: @escaping () -> Void) {
             self.title = title; self.selection = selection; self.choices = choices; self.note = note
             self.actionTitle = actionTitle; self.action = action; self.choose = choose; self.cancel = cancel
-            super.init(frame: NSRect(x: 0, y: 0, width: Self.width + 16, height: 100))
+            super.init(frame: NSRect(x: 0, y: 0, width: Self.width, height: 100))
             wantsLayer = true
             setAccessibilityIdentifier("pi-choice-list")
             highlighted = Self.initialChoice(choices, selection: selection)
@@ -159,6 +191,8 @@ extension PiKit {
         required init?(coder: NSCoder) { fatalError("Not used from a nib") }
         override var isFlipped: Bool { true }
         override var acceptsFirstResponder: Bool { true }
+        /// Its size, set when its rows are laid out.
+        override var intrinsicContentSize: NSSize { frame.size }
 
         /// A choice row.
         @MainActor final class Row: ButtonBase {
@@ -171,7 +205,7 @@ extension PiKit {
                 pressScales = false
                 disabledOpacity = 1
                 isEnabled = choice.enabled
-                setAccessibilityLabel(choice.title)
+                setAccessibilityLabel([choice.title, choice.subtitle].compactMap { $0 }.joined(separator: ", "))
             }
             required init?(coder: NSCoder) { fatalError("Not used from a nib") }
             override func isAccessibilitySelected() -> Bool { chosen }
@@ -185,7 +219,8 @@ extension PiKit {
             }
             override func drawContent(in rect: CGRect) {
                 if chosen {
-                    Symbol("checkmark", size: 11, weight: .semibold).draw(centredIn: CGRect(x: 8, y: 8, width: 14, height: Line(choice.title, font: PiKit.Font.body, color: ink).lineHeight), color: .piAccent, scale: piScale)
+                    // Centred on the whole text block, as the row's HStack centres it.
+                    Symbol("checkmark", size: 11, weight: .semibold).draw(centredIn: CGRect(x: 8, y: 8, width: 14, height: rect.height - 16), color: .piAccent, scale: piScale)
                 }
                 let textWidth = rect.width - 16 - 24
                 var y: CGFloat = 8
@@ -215,11 +250,13 @@ extension PiKit {
                 return row
             }
             if choices.isEmpty {
-                stack.addSubview(TextLine(Line("No available choices", font: PiKit.Font.body, color: .piInkTertiary)))
+                empty = TextLine(Line("No available choices", font: PiKit.Font.body, color: .piInkTertiary))
+                stack.addSubview(empty!)
             }
             if let note { addSubview(WrappedText(note, font: PiKit.Font.caption, color: .piInkSecondary)) }
             if let actionTitle, let action {
-                let button = Button(actionTitle, style: .ghost)
+                addSubview(divider)
+                let button = ActionRow(actionTitle)
                 button.onPress = action
                 addSubview(button)
             }
@@ -231,7 +268,7 @@ extension PiKit {
             min(360, max(40, CGFloat(choices.count) * 40 + CGFloat(choices.filter { $0.subtitle != nil }.count) * 18))
         }
         private func layoutList() {
-            let width = Self.width
+            let width = Self.inner
             var y: CGFloat = 8
             if let titleView = subviews.first as? TextLine {
                 titleView.frame = CGRect(x: 16, y: y + 4, width: width - 16, height: titleView.intrinsicContentSize.height)
@@ -243,6 +280,7 @@ extension PiKit {
                 row.frame = CGRect(x: 0, y: rowY, width: width, height: height)
                 rowY += height + 2
             }
+            if let empty { empty.frame = CGRect(x: 8, y: 8, width: width - 16, height: empty.intrinsicContentSize.height); rowY = empty.frame.maxY + 8 + 2 }
             stack.frame = CGRect(x: 0, y: 0, width: width, height: max(rowY - 2, 0))
             scroll.frame = CGRect(x: 8, y: y, width: width, height: listHeight)
             y = scroll.frame.maxY + 8
@@ -250,10 +288,13 @@ extension PiKit {
                 let height = (view as! WrappedText).height(forWidth: width - 16)
                 view.frame = CGRect(x: 16, y: y, width: width - 16, height: height); y += height + 8
             }
-            for view in subviews where view is Button {
+            if divider.superview != nil {
+                divider.frame = CGRect(x: 8, y: y, width: width, height: 1); y += 1 + 8
+            }
+            for view in subviews where view is ActionRow {
                 view.frame = CGRect(x: 8, y: y, width: width, height: view.intrinsicContentSize.height); y += view.frame.height + 8
             }
-            setFrameSize(NSSize(width: width + 16, height: y))
+            setFrameSize(NSSize(width: Self.width, height: y))
         }
 
         static func initialChoice(_ choices: [Choice<Tag>], selection: Tag?) -> Tag? {
@@ -266,15 +307,23 @@ extension PiKit {
             return enabled[min(enabled.count - 1, max(0, index + delta))]
         }
         private func refreshHighlight() {
-            for row in rows { row.focused = row.choice.id == highlighted && window?.firstResponder === self }
+            for row in rows { row.focused = row.choice.id == highlighted && hasKeys }
             if let row = rows.first(where: { $0.choice.id == highlighted }) { row.scrollToVisible(row.bounds) }
         }
         func commit(_ id: Tag) {
             guard choices.contains(where: { $0.id == id && $0.enabled }) else { return }
             choose(id)
         }
-        override func becomeFirstResponder() -> Bool { DispatchQueue.main.async { [weak self] in self?.refreshHighlight() }; return true }
-        override func resignFirstResponder() -> Bool { DispatchQueue.main.async { [weak self] in self?.refreshHighlight() }; return true }
+        /// It takes the keys as soon as it is shown, as the SwiftUI list
+        /// focuses itself when it appears.
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let window, window.firstResponder !== self { window.makeFirstResponder(self) }
+        }
+        /// Whether it has the keys: the keyboard's row is outlined only then.
+        private var hasKeys = false
+        override func becomeFirstResponder() -> Bool { hasKeys = true; refreshHighlight(); return true }
+        override func resignFirstResponder() -> Bool { hasKeys = false; refreshHighlight(); return true }
         override func keyDown(with event: NSEvent) {
             switch event.keyCode {
             case 126: highlighted = Self.nextChoice(choices, after: highlighted, delta: -1); refreshHighlight()
@@ -347,9 +396,14 @@ extension PiKit {
     /// (`PiMenus`), so a long list costs nothing until someone asks for it.
     @MainActor final class MenuButton: PillFaceButton {
         let entries: @MainActor () -> [PiMenuEntry]
+        /// The title, kept as the accessibility name and tooltip when it changes.
+        override var label: String {
+            didSet { setAccessibilityLabel(label); if help.isEmpty { toolTip = label } }
+        }
+        private let help: String
         init(title: String, icon: String? = nil, identifier: String? = nil, help: String = "", maxLabelWidth: CGFloat? = nil,
              @PiMenuBuilder entries: @escaping @MainActor () -> [PiMenuEntry]) {
-            self.entries = entries
+            self.entries = entries; self.help = help
             super.init(label: title, icon: icon, chevron: "chevron.down", compact: false, fontSize: 13, padding: (12, 7), hoverFill: true)
             self.maxLabelWidth = maxLabelWidth
             disabledOpacity = 0.35

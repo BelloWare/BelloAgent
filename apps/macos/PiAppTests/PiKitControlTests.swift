@@ -60,6 +60,32 @@ import XCTest
         XCTAssertFalse(PiKit.SelectableRow(content: NSView()).pressScales)
     }
 
+    /// Under the pointer each style takes its SwiftUI twin's hover fill (the
+    /// twins' own hover is compared in `PiKitParityTests.testHoverStates`
+    /// where the runner may post pointer events).
+    func testHoverTakesEachStylesHoverFill() {
+        let probe = NSView()
+        func fill(_ button: PiKit.ButtonBase, hovering: Bool) -> CGColor? { button.setHovering(hovering); return button.fill.backgroundColor }
+        let secondary = PiKit.Button("Reload", style: .secondary)
+        XCTAssertEqual(fill(secondary, hovering: false), probe.piCGColor(.piFill))
+        XCTAssertEqual(fill(secondary, hovering: true), probe.piCGColor(.piFillStrong))
+        let ghost = PiKit.Button("More", style: .ghost)
+        XCTAssertEqual(fill(ghost, hovering: true), probe.piCGColor(.piFill))
+        let danger = PiKit.Button("Delete", style: .danger)
+        XCTAssertEqual(fill(danger, hovering: true), probe.piCGColor(NSColor.piDanger.withAlphaComponent(0.17)))
+        let primary = PiKit.Button("Save", style: .primary)
+        primary.setHovering(true)
+        XCTAssertEqual(primary.shade.backgroundColor, probe.piCGColor(NSColor.black.withAlphaComponent(0.05)))
+        let icon = PiKit.IconButton(symbol: "xmark", label: "Close")
+        XCTAssertEqual(fill(icon, hovering: true), probe.piCGColor(.piFillStrong))
+        let row = PiKit.SelectableRow(content: NSView())
+        XCTAssertEqual(fill(row, hovering: true), probe.piCGColor(.piFill))
+        let menu = PiKit.MenuButton(title: "Branches") { PiMenuEntry.button("main") {} }
+        XCTAssertEqual(fill(menu, hovering: true), probe.piCGColor(.piFill))
+        menu.isEnabled = false
+        XCTAssertEqual(fill(menu, hovering: true), probe.piCGColor(.piSurface), "a disabled menu does not light up")
+    }
+
     func testAnIconButtonCanSayWhichItemItActsOn() async throws {
         let window = try await hosted(PiKit.IconButton(symbol: "xmark", label: "Remove", spokenLabel: "Remove follow-up 2"))
         let button = try await AXClient.find(in: window) { $0.label == "Remove follow-up 2" }
@@ -204,6 +230,48 @@ import XCTest
         XCTAssertTrue(selected.selected); XCTAssertFalse(other.selected)
         XCTAssertTrue(AXClient.press(other))
         XCTAssertEqual(clicks, 1)
+    }
+
+    func testAClickOnAResizeHandleIsNotADrag() async throws {
+        var changes: [CGFloat] = [], ends: [CGFloat] = []
+        let handle = PiKit.ResizeHandle(orientation: .vertical, label: "Sidebar width", changed: { changes.append($0) }, ended: { ends.append($0) })
+        let window = try await hosted(handle)
+        func event(_ type: NSEvent.EventType, x: CGFloat) -> NSEvent {
+            NSEvent.mouseEvent(with: type, location: NSPoint(x: x, y: 40), modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber,
+                               context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+        }
+        handle.mouseDown(with: event(.leftMouseDown, x: 24)); handle.mouseUp(with: event(.leftMouseUp, x: 24))
+        XCTAssertEqual(changes, []); XCTAssertEqual(ends, [], "a click alone is not a drag")
+        handle.mouseDown(with: event(.leftMouseDown, x: 24))
+        handle.mouseDragged(with: event(.leftMouseDragged, x: 24.5))
+        XCTAssertEqual(changes, [], "under a point is not yet a drag")
+        handle.mouseDragged(with: event(.leftMouseDragged, x: 30))
+        handle.mouseUp(with: event(.leftMouseUp, x: 34))
+        XCTAssertEqual(changes, [6]); XCTAssertEqual(ends, [10])
+        XCTAssertEqual(handle.accessibilityRole(), .splitter)
+    }
+
+    func testADisabledRowDimsAndDisablesItsContent() {
+        let toggle = PiKit.Switch(isOn: true)
+        let content = PiKit.Box.ClipView(); content.addSubview(toggle)
+        let row = PiKit.SelectableRow(content: content)
+        row.isEnabled = false
+        XCTAssertFalse(toggle.isEnabled, "a control inside a disabled row is disabled")
+        XCTAssertEqual(content.alphaValue, CGFloat(PiKit.plainDisabledDimming), accuracy: 0.001)
+        row.isEnabled = true
+        XCTAssertTrue(toggle.isEnabled)
+    }
+
+    func testAnOpenDropdownOnlyCommitsAChoiceStillOffered() async throws {
+        var chosen: [String] = []
+        let dropdown = PiKit.Dropdown(selection: "PUT", items: [("POST", "POST"), ("PUT", "PUT")]) { chosen.append($0) }
+        _ = try await hosted(dropdown)
+        dropdown.toggleChoices()
+        let list = try XCTUnwrap(dropdown.list)
+        dropdown.items = [("PUT", "PUT")]
+        list.commit("POST")
+        XCTAssertEqual(chosen, [], "POST was taken away while the list was open")
+        XCTAssertEqual(dropdown.accessibilityValue() as? String, "PUT")
     }
 
     // MARK: Fields

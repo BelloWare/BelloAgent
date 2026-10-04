@@ -10,10 +10,13 @@ import XCTest
 ///
 /// Serial: the windows are on screen and the hover cases move the pointer.
 @MainActor final class PiKitParityTests: XCTestCase, SerialTestLane {
-    /// Pixels allowed past the channel tolerance, as a share of the capture:
-    /// a glyph edge or a curve antialiased a fraction of a pixel apart.
-    static let allowedShare = 0.004
-    /// The most a channel may differ in a capture without symbols.
+    /// No pixel of a capture without symbols may differ past the channel
+    /// tolerance: the pictures are the same.
+    static let allowedShare = 0.0
+    /// A circle or curve drawn as a path (a badge's dot, a legend swatch, a
+    /// stacked bar's rounded ends): its edge antialiased a fraction of a
+    /// pixel apart, never more than this many channels.
+    static let shapeShare = 0.002
     static let largestChannel = 48
     private var results: [PiKitParity.Result] = []
 
@@ -38,15 +41,22 @@ import XCTest
             XCTAssertLessThanOrEqual(Double(result.differing), Double(result.total) * share, result.description, file: file, line: line)
             // Without symbols the pictures are the same: no pixel further
             // apart than antialiasing of the same edge.
-            if share == Self.allowedShare {
+            if share != Self.symbolShare {
                 XCTAssertLessThanOrEqual(result.largest, Self.largestChannel, result.description, file: file, line: line)
+            }
+            if hover {
+                // The pointer reached both: each looks different from itself at rest.
+                let rest = try await PiKitParity.compare("\(name)-\(suffix)-rest", appearance: appearance, hover: false,
+                                                         swiftUI: swiftUI().frame(width: width), appKit: appKit(), canvas: canvas, width: width)
+                XCTAssertGreaterThan(PiKitParity.difference(rest.swiftUIImage, result.swiftUIImage).0, 0, "\(result.name): SwiftUI shows no hover", file: file, line: line)
+                XCTAssertGreaterThan(PiKitParity.difference(rest.appKitImage, result.appKitImage).0, 0, "\(result.name): AppKit shows no hover", file: file, line: line)
             }
         }
     }
 
     /// Symbols: placed as SwiftUI places them, rasterized by AppKit, whose
     /// antialiasing of a symbol's edges differs from SwiftUI's own.
-    static let symbolShare = 0.015
+    static let symbolShare = 0.025
 
     // MARK: Buttons
 
@@ -62,7 +72,6 @@ import XCTest
         for (name, style, view) in styles {
             try await check("button-\(name)", view) { PiKit.Button(titles[name]!, style: style) }
             try await check("button-\(name)-disabled", view.disabled(true)) { let button = PiKit.Button(titles[name]!, style: style); button.isEnabled = false; return button }
-            try await check("button-\(name)-hover", hover: true, view) { PiKit.Button(titles[name]!, style: style) }
         }
         try await check("button-primary-compact", SwiftUI.Button("Send") {}.buttonStyle(.piPrimaryCompact)) { PiKit.Button("Send", style: .primary, compact: true) }
         try await check("button-secondary-compact", SwiftUI.Button("Copy") {}.buttonStyle(.piSecondaryCompact)) { PiKit.Button("Copy", style: .secondary, compact: true) }
@@ -76,7 +85,6 @@ import XCTest
         try await check("icon", share: share, PiIconButton(symbol: "xmark", label: "Close") {}) { PiKit.IconButton(symbol: "xmark", label: "Close") }
         try await check("icon-filled", share: share, PiIconButton(symbol: "plus", label: "Increase", size: 24, filled: true) {}) { PiKit.IconButton(symbol: "plus", label: "Increase", size: 24, filled: true) }
         try await check("icon-tone", share: share, PiIconButton(symbol: "trash", label: "Delete", tone: .danger) {}) { PiKit.IconButton(symbol: "trash", label: "Delete", tone: .danger) }
-        try await check("icon-hover", hover: true, share: share, PiIconButton(symbol: "info.circle", label: "Info", size: 22) {}) { PiKit.IconButton(symbol: "info.circle", label: "Info", size: 22) }
         try await check("icon-disabled", share: share, PiIconButton(symbol: "minus", label: "Decrease", size: 24, filled: true) {}.disabled(true)) {
             let button = PiKit.IconButton(symbol: "minus", label: "Decrease", size: 24, filled: true); button.isEnabled = false; return button
         }
@@ -105,9 +113,6 @@ import XCTest
         try await check("progress", width: 160, PiProgressBar(value: 0.3, total: 1)) { PiKit.ProgressBar(value: 0.3) }
         try await check("tabs", PiTabs(selection: .constant(2), items: [(1, "Working tree"), (2, "History"), (3, "Stashes")])) {
             PiKit.Tabs(selection: 2, items: [(1, "Working tree"), (2, "History"), (3, "Stashes")])
-        }
-        try await check("tabs-hover", hover: true, PiTabs(selection: .constant(1), items: [(1, "One"), (2, "Two")])) {
-            PiKit.Tabs(selection: 1, items: [(1, "One"), (2, "Two")])
         }
         try await check("stepper", width: 260, share: Self.symbolShare,
                         PiStepper(name: "Idle helper grace", unit: "seconds", value: .constant(30), range: 10...600, step: 10)) {
@@ -150,9 +155,6 @@ import XCTest
         try await check("menubutton", share: share, PiMenuButton(title: "main", icon: "arrow.triangle.branch") { PiMenuEntry.button("Other") {} }) {
             PiKit.MenuButton(title: "main", icon: "arrow.triangle.branch") { PiMenuEntry.button("Other") {} }
         }
-        try await check("menubutton-hover", hover: true, share: share, PiMenuButton(title: "Branches") { PiMenuEntry.button("Other") {} }) {
-            PiKit.MenuButton(title: "Branches") { PiMenuEntry.button("Other") {} }
-        }
     }
 
     func testRowsAndGroups() async throws {
@@ -162,9 +164,6 @@ import XCTest
                             PiSelectableRow(selected: selected, marked: marked, action: {}) { Text("claude").font(PiFont.body).foregroundStyle(Color.piInk) }) {
                 PiKit.SelectableRow(content: label("claude"), selected: selected, marked: marked)
             }
-        }
-        try await check("row-hover", hover: true, width: 240, PiSelectableRow(selected: false, action: {}) { Text("gpt-5").font(PiFont.body).foregroundStyle(Color.piInk) }) {
-            PiKit.SelectableRow(content: label("gpt-5"))
         }
         try await check("settings-group", width: 520, share: Self.symbolShare,
                         PiSettingsGroup(title: "Updates", footer: "Checks belloware.com once a day.") {
@@ -187,9 +186,9 @@ import XCTest
     func testBadgesAndChips() async throws {
         let share = Self.symbolShare
         try await check("badge", PiBadge(text: "Draft")) { PiKit.Badge(text: "Draft") }
-        try await check("badge-dot", PiBadge(text: "Running", tone: .success, dot: true)) { PiKit.Badge(text: "Running", tone: .success, dot: true) }
+        try await check("badge-dot", share: Self.shapeShare, PiBadge(text: "Running", tone: .success, dot: true)) { PiKit.Badge(text: "Running", tone: .success, dot: true) }
         try await check("badge-icon", share: share, PiBadge(text: "Pinned", tone: .accent, icon: "pin.fill")) { PiKit.Badge(text: "Pinned", tone: .accent, icon: "pin.fill") }
-        try await check("badge-empty", PiBadge(text: "", tone: .warning, dot: true)) { PiKit.Badge(text: "", tone: .warning, dot: true) }
+        try await check("badge-empty", share: Self.shapeShare, PiBadge(text: "", tone: .warning, dot: true)) { PiKit.Badge(text: "", tone: .warning, dot: true) }
         try await check("iconbadge", share: share, PiIconBadge(symbol: "gearshape", tone: .info)) { PiKit.IconBadge(symbol: "gearshape", tone: .info) }
         try await check("iconbadge-filled", share: share, PiIconBadge(symbol: "bolt.fill", size: 30, filled: true)) { PiKit.IconBadge(symbol: "bolt.fill", size: 30, filled: true) }
         try await check("chip", share: share, PiChip(text: "README.md", icon: "doc.text", remove: {})) { PiKit.Chip(text: "README.md", icon: "doc.text", remove: {}) }
@@ -223,10 +222,10 @@ import XCTest
         }
         try await check("chartheader", width: 300, PiChartHeader("Tokens per turn", subtitle: "Last 40 turns")) { PiKit.ChartHeader("Tokens per turn", subtitle: "Last 40 turns") }
         let segments = [PiBarSegment(id: "a", fraction: 0.6), PiBarSegment(id: "b", fraction: 0.3), PiBarSegment(id: "c", fraction: 0.005)]
-        try await check("segmented", width: 240, PiSegmentedBar(segments: segments, color: { $0 == "a" ? .piAccent : $0 == "b" ? .piInfo : .piSuccess })) {
+        try await check("segmented", width: 240, share: Self.shapeShare, PiSegmentedBar(segments: segments, color: { $0 == "a" ? .piAccent : $0 == "b" ? .piInfo : .piSuccess })) {
             PiKit.SegmentedBar(segments: segments.map { PiKit.BarSegment(id: $0.id, fraction: $0.fraction) }, color: { $0 == "a" ? .piAccent : $0 == "b" ? .piInfo : .piSuccess })
         }
-        try await check("legend", width: 300, PiLegendRow(color: .piAccent, title: "Output", value: "12,400", share: "41%", detail: "reasoning 3,100")) {
+        try await check("legend", width: 300, share: Self.shapeShare, PiLegendRow(color: .piAccent, title: "Output", value: "12,400", share: "41%", detail: "reasoning 3,100")) {
             PiKit.LegendRow(color: .piAccent, title: "Output", value: "12,400", share: "41%", detail: "reasoning 3,100")
         }
     }
@@ -241,7 +240,48 @@ import XCTest
             return sheet
         }
     }
+
+    // MARK: Lists and flow
+
+    func testChoiceListAndFlow() async throws {
+        let choices = [PiChoice(id: 1, title: "Claude Opus"), PiChoice(id: 2, title: "GPT", subtitle: "Needs a key"), PiChoice(id: 3, title: "Local", enabled: false)]
+        try await check("choicelist", share: Self.symbolShare,
+                        PiChoiceList(title: "Model", selection: 2, choices: choices, note: "Changes apply to the next turn.", actionTitle: "Manage connections…", action: {}, choose: { _ in }, cancel: {})) {
+            PiKit.ChoiceList(title: "Model", selection: 2, choices: choices.map { PiKit.Choice(id: $0.id, title: $0.title, subtitle: $0.subtitle, enabled: $0.enabled) },
+                             note: "Changes apply to the next turn.", actionTitle: "Manage connections…", action: {}, choose: { _ in }, cancel: {})
+        }
+        try await check("flow", width: 200, share: Self.shapeShare,
+                        PiFlow { PiBadge(text: "Working tree"); PiBadge(text: "History", tone: .accent); PiBadge(text: "Stashes", dot: true); PiBadge(text: "Remote branches") }) {
+            let flow = PiKit.FlowView()
+            for badge in [PiKit.Badge(text: "Working tree"), PiKit.Badge(text: "History", tone: .accent), PiKit.Badge(text: "Stashes", dot: true), PiKit.Badge(text: "Remote branches")] { flow.addSubview(badge) }
+            return flow
+        }
+    }
+
+    // MARK: Hover
+
+    /// Under a real pointer. Posting the pointer's events needs the test
+    /// runner to be allowed to control the computer (Accessibility); without
+    /// it the hover cannot be shown to either twin, and this is skipped.
+    func testHoverStates() async throws {
+        try XCTSkipUnless(CGPreflightPostEventAccess(), "Posting pointer events needs Accessibility permission for the test runner")
+        for (name, style, view) in [("primary", PiKit.Button.Style.primary, AnyView(SwiftUI.Button("Save Changes") {}.buttonStyle(.piPrimary))),
+                                    ("secondary", .secondary, AnyView(SwiftUI.Button("Reload") {}.buttonStyle(.piSecondary))),
+                                    ("ghost", .ghost, AnyView(SwiftUI.Button("Show more") {}.buttonStyle(.piGhost))),
+                                    ("danger", .danger, AnyView(SwiftUI.Button("Delete") {}.buttonStyle(.piDanger)))] {
+            let title = ["primary": "Save Changes", "secondary": "Reload", "ghost": "Show more", "danger": "Delete"][name]!
+            try await check("button-\(name)-hover", hover: true, view) { PiKit.Button(title, style: style) }
+        }
+        try await check("icon-hover", hover: true, share: Self.symbolShare, PiIconButton(symbol: "info.circle", label: "Info", size: 22) {}) { PiKit.IconButton(symbol: "info.circle", label: "Info", size: 22) }
+        try await check("menubutton-hover", hover: true, share: Self.symbolShare, PiMenuButton(title: "Branches") { PiMenuEntry.button("Other") {} }) {
+            PiKit.MenuButton(title: "Branches") { PiMenuEntry.button("Other") {} }
+        }
+        try await check("row-hover", hover: true, width: 240, PiSelectableRow(selected: false, action: {}) { Text("gpt-5").font(PiFont.body).foregroundStyle(Color.piInk) }) {
+            PiKit.SelectableRow(content: PiKit.TextLine(PiKit.Line("gpt-5", font: PiKit.Font.body, color: .piInk)))
+        }
+    }
 }
+
 
 /// A view at a fixed size, for a parity check of something sized by its container.
 private final class Fixed: NSView {

@@ -16,7 +16,7 @@ import XCTest
     /// A channel this far apart counts as a different pixel: antialiasing of
     /// the same glyph or edge placed a fraction of a pixel differently stays
     /// under it.
-    static let channelTolerance = 40
+    static let channelTolerance = 16
     /// What one comparison found.
     struct Result: CustomStringConvertible {
         let name: String
@@ -26,6 +26,8 @@ import XCTest
         let largest: Int
         let swiftUIFit: CGSize
         let appKitFit: CGSize
+        let swiftUIImage: NSBitmapImageRep
+        let appKitImage: NSBitmapImageRep
         var description: String {
             "\(name): \(differing)/\(total) px differ (largest channel \(largest)); fitting SwiftUI \(swiftUIFit) AppKit \(appKitFit)"
         }
@@ -64,7 +66,8 @@ import XCTest
             }
         }
         let (differing, total, largest) = difference(first, second)
-        return Result(name: name, size: size, differing: differing, total: total, largest: largest, swiftUIFit: swiftUIFit, appKitFit: appKitFit)
+        return Result(name: name, size: size, differing: differing, total: total, largest: largest, swiftUIFit: swiftUIFit, appKitFit: appKitFit,
+                      swiftUIImage: first, appKitImage: second)
     }
 
     /// `view` at its fitting size, centred as a hosting view centres its
@@ -88,16 +91,34 @@ import XCTest
         }
         content.addSubview(view)
         window.orderFrontRegardless()
-        // Nothing focused: a field that took focus would show its text selected.
-        window.makeFirstResponder(nil)
+        // No field editing: a field that took focus would show its text
+        // selected. A view that takes the keys itself (a choice list) keeps them.
+        if window.firstResponder is NSText { window.makeFirstResponder(nil) }
         defer { view.removeFromSuperview(); window.orderOut(nil); window.contentView = nil }
         if hover {
+            // The app the reader points at is the active one: tracking areas
+            // report the pointer there, as in use.
+            NSApp.activate(ignoringOtherApps: true)
+            var settled: Data?
+            try await eventually("the window server showing \(type(of: view)) at rest", timeout: .seconds(10), poll: .milliseconds(60)) {
+                view.layoutSubtreeIfNeeded(); window.displayIfNeeded(); CATransaction.flush()
+                guard let now = try? windowImage(window).representation(using: .png, properties: [:]) else { return false }
+                defer { settled = now }
+                return now == settled
+            }
             let centre = window.convertPoint(toScreen: NSPoint(x: view.frame.midX, y: view.frame.midY))
             let top = NSScreen.screens.first?.frame.height ?? 0
-            CGWarpMouseCursorPosition(CGPoint(x: centre.x, y: top - centre.y))
+            let point = CGPoint(x: centre.x, y: top - centre.y)
+            CGWarpMouseCursorPosition(point)
             // A warp moves no tracking area by itself; a moved event does.
-            if let moved = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: CGPoint(x: centre.x, y: top - centre.y), mouseButton: .left) {
-                moved.post(tap: .cghidEventTap)
+            CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left)?.post(tap: .cghidEventTap)
+            // Until the hover shows, for as long as it may take to arrive;
+            // a control that never shows one is the test's to report.
+            let clock = ContinuousClock(), deadline = clock.now.advanced(by: .seconds(3))
+            while clock.now < deadline {
+                view.layoutSubtreeIfNeeded(); window.displayIfNeeded(); CATransaction.flush()
+                if let now = try? windowImage(window).representation(using: .png, properties: [:]), now != settled { break }
+                try await Task.sleep(for: .milliseconds(30))
             }
         }
         var previous: Data?, image: NSBitmapImageRep?

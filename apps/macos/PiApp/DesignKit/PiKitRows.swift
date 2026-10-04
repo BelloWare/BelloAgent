@@ -40,6 +40,15 @@ extension PiKit {
         required init?(coder: NSCoder) { fatalError("Not used from a nib") }
         override func isAccessibilitySelected() -> Bool { selected }
         override func cornerRadius(for size: CGSize) -> CGFloat { PiRadius.sm }
+        /// Disabled, the row's content dims as a disabled plain button's label
+        /// does, and the controls inside it are disabled too.
+        override var isEnabled: Bool {
+            didSet {
+                guard oldValue != isEnabled else { return }
+                contentView.alphaValue = isEnabled ? 1 : CGFloat(PiKit.plainDisabledDimming)
+                PiKit.setControlsEnabled(isEnabled, in: contentView)
+            }
+        }
 
         func height(forWidth width: CGFloat) -> CGFloat {
             PiKit.height(of: contentView, width: width - Self.padding.left - Self.padding.right) + Self.padding.top + Self.padding.bottom
@@ -75,9 +84,17 @@ extension PiKit {
             if event.clickCount == 2 { doubleClick?() }
         }
         override func hitTest(_ point: NSPoint) -> NSView? {
-            // A control inside the row keeps its own clicks.
-            if let hit = super.hitTest(point), hit !== self, hit !== contentView, hit is NSControl { return hit }
-            return frame.contains(point) ? self : nil
+            // A control inside the row keeps its own clicks while enabled.
+            if let hit = super.hitTest(point), hit !== self, hit !== contentView, let control = hit as? NSControl, control.isEnabled { return hit }
+            return frame.contains(point) && shape(in: bounds).contains(convert(point, from: superview)) ? self : nil
+        }
+    }
+
+    /// Sets every control under `view` enabled or not.
+    @MainActor static func setControlsEnabled(_ enabled: Bool, in view: NSView) {
+        for subview in view.subviews {
+            if let control = subview as? NSControl { control.isEnabled = enabled }
+            setControlsEnabled(enabled, in: subview)
         }
     }
 
@@ -116,7 +133,7 @@ extension PiKit {
         func setRows(_ rows: [Row]) {
             self.rows.forEach { $0.removeFromSuperview() }
             self.rows = rows
-            for (index, row) in rows.enumerated() { row.last = index == rows.count - 1 || row.last; stack.addSubview(row) }
+            for (index, row) in rows.enumerated() { row.lastInGroup = index == rows.count - 1; stack.addSubview(row) }
             needsLayout = true; invalidateIntrinsicContentSize()
         }
         func height(forWidth width: CGFloat) -> CGFloat {
@@ -149,15 +166,19 @@ extension PiKit {
     @MainActor final class Row: NSView, WidthSizing {
         let label: String, detail: String?
         let control: NSView?
-        var last: Bool { didSet { needsDisplay = true } }
-        private let labelView: TextLine
-        private let detailView: TextLine?
+        /// No hairline under it, whatever its place (the SwiftUI row's `last`).
+        var last: Bool { didSet { needsLayout = true } }
+        /// Whether it is the last row of its group; the group sets it.
+        var lastInGroup = false { didSet { needsLayout = true } }
+        private var hidesSeparator: Bool { last || lastInGroup }
+        private let labelView: WrappedText
+        private let detailView: WrappedText?
         private let separator = CALayer()
 
         init(label: String, detail: String? = nil, last: Bool = false, control: NSView?) {
             self.label = label; self.detail = detail; self.control = control; self.last = last
-            labelView = TextLine(Line(label, font: PiKit.Font.body, color: .piInk))
-            detailView = detail.map { TextLine(Line($0, font: PiKit.Font.caption, color: .piInkSecondary)) }
+            labelView = WrappedText(label, font: PiKit.Font.body, color: .piInk)
+            detailView = detail.map { WrappedText($0, font: PiKit.Font.caption, color: .piInkSecondary) }
             super.init(frame: .zero)
             wantsLayer = true
             addSubview(labelView)
@@ -167,7 +188,17 @@ extension PiKit {
         }
         required init?(coder: NSCoder) { fatalError("Not used from a nib") }
         override var isFlipped: Bool { true }
-        private var textHeight: CGFloat { labelView.intrinsicContentSize.height + (detailView.map { 2 + $0.intrinsicContentSize.height } ?? 0) }
+        /// The text column: what the control leaves, never under 180 points.
+        private func textWidth(_ width: CGFloat) -> CGFloat {
+            let natural = max(Line(label, font: PiKit.Font.body, color: .black).size(scale: piScale).width,
+                              detail.map { Line($0, font: PiKit.Font.caption, color: .black).size(scale: piScale).width } ?? 0)
+            let room = width - 32 - controlSize(width: width).width - (control == nil ? 0 : PiSpacing.lg * 2)
+            return min(natural, max(180, room))
+        }
+        private func textHeight(_ width: CGFloat) -> CGFloat {
+            let column = textWidth(width)
+            return labelView.height(forWidth: column) + (detailView.map { 2 + $0.height(forWidth: column) } ?? 0)
+        }
         private func controlSize(width: CGFloat) -> CGSize {
             guard let control else { return .zero }
             // The label's 180 points, then the stack's spacing on both sides
@@ -178,23 +209,24 @@ extension PiKit {
             return CGSize(width: controlWidth, height: PiKit.height(of: control, width: controlWidth))
         }
         func height(forWidth width: CGFloat) -> CGFloat {
-            max(textHeight, controlSize(width: width).height) + 20 + (last ? 0 : 1)
+            max(textHeight(width), controlSize(width: width).height) + 20 + (hidesSeparator ? 0 : 1)
         }
         override func layout() {
             super.layout()
             // The text block and the control are each centred in the row
             // inside its 10-point padding, as an HStack centres them.
-            let inner = bounds.height - (last ? 0 : 1) - 20
-            var y = 10 + PiKit.round((inner - textHeight) / 2, piScale)
-            labelView.frame = CGRect(x: PiSpacing.lg, y: y, width: labelView.intrinsicContentSize.width, height: labelView.intrinsicContentSize.height)
+            let inner = bounds.height - (hidesSeparator ? 0 : 1) - 20
+            let column = textWidth(bounds.width)
+            var y = 10 + PiKit.round((inner - textHeight(bounds.width)) / 2, piScale)
+            labelView.frame = CGRect(x: PiSpacing.lg, y: y, width: column, height: labelView.height(forWidth: column))
             y += labelView.frame.height + 2
-            if let detailView { detailView.frame = CGRect(x: PiSpacing.lg, y: y, width: detailView.intrinsicContentSize.width, height: detailView.intrinsicContentSize.height) }
+            if let detailView { detailView.frame = CGRect(x: PiSpacing.lg, y: y, width: column, height: detailView.height(forWidth: column)) }
             if let control {
                 let size = controlSize(width: bounds.width)
                 control.frame = CGRect(x: bounds.width - PiSpacing.lg - size.width, y: 10 + PiKit.round((inner - size.height) / 2, piScale), width: size.width, height: size.height)
             }
             CATransaction.begin(); CATransaction.setDisableActions(true)
-            separator.isHidden = last
+            separator.isHidden = hidesSeparator
             separator.frame = CGRect(x: PiSpacing.lg, y: bounds.height - 1, width: bounds.width - PiSpacing.lg, height: 1)
             CATransaction.commit()
             updateLayer()
@@ -221,6 +253,9 @@ extension PiKit {
         var ended: ((CGFloat) -> Void)?
         private var hovering = false
         private var start: NSPoint?
+        /// Whether the pointer has moved a point since the press: a click
+        /// alone is not a drag, as SwiftUI's one-point drag threshold has it.
+        private var moved = false
         private let line = CALayer(), grip = CALayer()
         private var vertical: Bool { orientation == .vertical }
 
@@ -266,16 +301,19 @@ extension PiKit {
         override func cursorUpdate(with event: NSEvent) { (vertical ? NSCursor.resizeLeftRight : NSCursor.resizeUpDown).set() }
         override func mouseEntered(with event: NSEvent) { hovering = true; refresh() }
         override func mouseExited(with event: NSEvent) { hovering = false; refresh(); if !dragging { NSCursor.arrow.set() } }
-        override func mouseDown(with event: NSEvent) { start = event.locationInWindow }
+        override func mouseDown(with event: NSEvent) { start = event.locationInWindow; moved = false }
         override func mouseDragged(with event: NSEvent) {
             guard let start else { return }
             let now = event.locationInWindow
+            if !moved, hypot(now.x - start.x, now.y - start.y) < 1 { return }
+            moved = true
             changed?(vertical ? now.x - start.x : start.y - now.y)
         }
         override func mouseUp(with event: NSEvent) {
             guard let start else { return }
             let now = event.locationInWindow
             self.start = nil
+            guard moved else { return }
             ended?(vertical ? now.x - start.x : start.y - now.y)
         }
     }
@@ -343,11 +381,13 @@ extension PiKit {
                 var wraps: Bool
                 if fillsRow.contains(ObjectIdentifier(view)) {
                     let least = narrowest(view)
+                    // Unbounded, it counts as its narrowest form.
+                    guard width.isFinite else { size.width = least; wraps = false; if apply { view.frame = CGRect(x: x, y: y, width: size.width, height: size.height) }; x += size.width + spacing; rowHeight = max(rowHeight, size.height); maxX = max(maxX, x - spacing); continue }
                     wraps = x > 0 && x + least > width
                     let room = max(least, wraps ? width : width - x)
-                    if size.width > room { size.width = room }
+                    if size.width > room { size.width = room; size.height = PiKit.height(of: view, width: room) }
                 } else {
-                    if width.isFinite, size.width > width { size.width = width }
+                    if width.isFinite, size.width > width { size.width = width; size.height = PiKit.height(of: view, width: width) }
                     wraps = x > 0 && x + size.width > width
                 }
                 if wraps { x = 0; y += rowHeight + rowSpacing; rowHeight = 0 }

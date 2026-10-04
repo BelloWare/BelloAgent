@@ -48,8 +48,17 @@ extension PiKit {
         }
         required init?(coder: NSCoder) { fatalError("Not used from a nib") }
 
-        private var labelLine: Line { Line(label, font: PiKit.Font.body, color: .piInk) }
+        /// The label's type and ink: the body font in ink unless the place says.
+        var labelFont: NSFont = PiKit.Font.body { didSet { invalidateIntrinsicContentSize(); redrawContent() } }
+        var labelInk: NSColor = .piInk { didSet { redrawContent() } }
+        private var labelLine: Line { Line(label, font: labelFont, color: labelInk) }
         private var gap: CGFloat { label.isEmpty ? 0 : 8 }
+        /// Only the track takes clicks, as only the track is the SwiftUI
+        /// switch's button.
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            let local = convert(point, from: superview)
+            return isHidden || !track.frame.contains(local) ? nil : self
+        }
         override var intrinsicContentSize: NSSize {
             let text = labelLine.size(scale: piScale), track = PiKit.switchTrack(size)
             return NSSize(width: text.width + gap + track.width, height: max(text.height, track.height))
@@ -107,11 +116,14 @@ extension PiKit {
             setAccessibilityLabel(label)
         }
         required init?(coder: NSCoder) { fatalError("Not used from a nib") }
-        private var labelLine: Line { Line(label, font: PiKit.Font.body, color: .piInk) }
+        var labelFont: NSFont = PiKit.Font.body { didSet { invalidateIntrinsicContentSize(); redrawContent() } }
+        var labelInk: NSColor = .piInk { didSet { redrawContent() } }
+        private var labelLine: Line { Line(label, font: labelFont, color: labelInk) }
         override var intrinsicContentSize: NSSize {
             let text = labelLine.size(scale: piScale)
             return NSSize(width: 14 + (label.isEmpty ? 0 : 5) + text.width, height: max(14, text.height))
         }
+        override func shape(in rect: CGRect) -> CGPath { CGPath(rect: rect, transform: nil) }
         override func accessibilityValue() -> Any? { isOn ? 1 : 0 }
         override func styleFace() { fill.backgroundColor = CGColor.clear; stroke.borderColor = CGColor.clear }
         override func drawContent(in rect: CGRect) {
@@ -168,7 +180,16 @@ extension PiKit {
     /// a white capsule that glides to the next choice. With a name it is one
     /// named group of tabs to VoiceOver, the chosen tab marked selected.
     @MainActor final class Tabs<Tag: Hashable>: NSView {
-        var items: [(Tag, String)] { didSet { rebuild() } }
+        /// The tabs. The same tags in the same order keep their buttons (and
+        /// focus) and only retitle; anything else rebuilds them.
+        var items: [(Tag, String)] {
+            didSet {
+                if oldValue.map(\.0) == items.map(\.0), buttons.count == items.count {
+                    for (button, item) in zip(buttons, items) where button.title != item.1 { button.title = item.1; button.setAccessibilityLabel(item.1) }
+                    invalidateIntrinsicContentSize(); needsLayout = true
+                } else { rebuild() }
+            }
+        }
         /// Set from outside without calling `onSelect`.
         var selection: Tag { didSet { if oldValue != selection { selectionChanged(animated: window != nil) } } }
         var onSelect: ((Tag) -> Void)?

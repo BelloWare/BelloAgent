@@ -180,6 +180,24 @@ extension PiKit {
             if showsPointer && isEnabled { addCursorRect(bounds, cursor: .pointingHand) }
         }
 
+        /// Clicks land inside the control's shape only, as SwiftUI's
+        /// `contentShape` keeps them: a capsule's corners, a circle's outside,
+        /// are not the control.
+        var hitsShapeOnly = true
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            guard let hit = super.hitTest(point) else { return nil }
+            guard hitsShapeOnly, hit === self else { return hit }
+            let local = convert(point, from: superview)
+            return shape(in: bounds).contains(local) ? self : nil
+        }
+        override func viewDidChangeBackingProperties() {
+            super.viewDidChangeBackingProperties()
+            // A window moved between a 1x and a 2x display redraws at its scale.
+            content.contentsScale = piScale
+            invalidateIntrinsicContentSize(); needsLayout = true
+            content.setNeedsDisplay()
+        }
+
         // MARK: Focus
 
         override var focusRingMaskBounds: NSRect { bounds }
