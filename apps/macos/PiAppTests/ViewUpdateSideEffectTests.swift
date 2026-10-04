@@ -153,7 +153,7 @@ final class ViewUpdateSideEffectTests: XCTestCase {
         let start = Date()
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1180, height: 780), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: GitPanelView(controller: GitController(roots: [root.path])))
+        window.contentView = GitPanelView(controller: GitController(roots: [root.path]))
         window.makeKeyAndOrderFront(nil)
         defer { window.contentView = nil; window.close() }
         for _ in 0..<60 { window.contentView?.layoutSubtreeIfNeeded(); window.displayIfNeeded(); try await Task.sleep(for: .milliseconds(25)) }

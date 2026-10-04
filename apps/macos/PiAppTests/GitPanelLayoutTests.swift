@@ -40,8 +40,7 @@ final class GitPanelLayoutTests: GitPanelTestCase {
 
         func show(_ shown: Int) -> (cost: Double, chips: [String]) {
             let holder = ChipHolder(); holder.shown = shown
-            let view = GitCommitFileChips(detail: detail, selected: Binding(get: { holder.selected }, set: { holder.selected = $0 }),
-                                          shown: Binding(get: { holder.shown }, set: { holder.shown = $0 }), showHistory: { _ in })
+            let view = makeChipsView(detail, holder: holder)
             var window: NSWindow!
             let elapsed = milliseconds {
                 window = host(view, width: 760, height: 620)

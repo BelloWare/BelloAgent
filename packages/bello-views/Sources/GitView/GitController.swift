@@ -1,4 +1,5 @@
-import SwiftUI
+import Combine
+import Foundation
 import AppKit
 
 /// The diff's layout and its whole-diff gate. Only the diff observes them.

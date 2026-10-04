@@ -40,8 +40,8 @@ final class GitDiffTableTests: GitPanelTestCase {
             window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: height), styleMask: [.titled], backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false
             let holder = holder
-            window.contentView = NSHostingView(rootView: DiffView(files: files, title: "Sources/Engine/Router.swift", subtitle: "Working tree versus index", identity: "tests",
-                                                                   split: Binding(get: { split }, set: { _ in }), expanded: Binding(get: { holder.expanded }, set: { holder.expanded = $0 }), openFile: openFile))
+            window.contentView = makeDiffView(files: files, title: "Sources/Engine/Router.swift", subtitle: "Working tree versus index", identity: "tests",
+                                              split: split, holder: holder, openFile: openFile)
             window.makeKeyAndOrderFront(nil)
             draw()
         }
@@ -188,8 +188,9 @@ final class GitDiffTableTests: GitPanelTestCase {
         window.isReleasedWhenClosed = false
         defer { window.contentView = nil; window.close() }
         func host(menu: GitDiffMenuBuilder?) throws -> GitDiffTableView {
-            window.contentView = NSHostingView(rootView: GitDiffTable(files: files, split: false, wrap: false, showAll: false, identity: "menu",
-                                                                      top: AnyView(Text("Heading")), topKey: 0, more: nil, menu: menu))
+            let table = GitDiffTable()
+            table.update(files: files, split: false, wrap: false, showAll: false, identity: "menu", top: TestDiffHeading("Heading"), topHeightKey: 0, more: nil, menu: menu)
+            window.contentView = table
             window.makeKeyAndOrderFront(nil)
             window.contentView?.layoutSubtreeIfNeeded(); window.displayIfNeeded()
             return try XCTUnwrap(Pane.views(in: window.contentView!).first)
@@ -246,8 +247,9 @@ final class GitDiffTableTests: GitPanelTestCase {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 400), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         func host() {
-            window.contentView = NSHostingView(rootView: GitDiffTable(files: files, split: false, wrap: wrap, showAll: false, identity: "wrap",
-                                                                      top: AnyView(Text("Heading")), topKey: 0, more: nil))
+            let table = GitDiffTable()
+            table.update(files: files, split: false, wrap: wrap, showAll: false, identity: "wrap", top: TestDiffHeading("Heading"), topHeightKey: 0, more: nil)
+            window.contentView = table
             window.contentView?.layoutSubtreeIfNeeded(); window.displayIfNeeded()
         }
         window.makeKeyAndOrderFront(nil)
@@ -320,8 +322,7 @@ final class GitDiffTableTests: GitPanelTestCase {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 620), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         func host() {
-            window.contentView = NSHostingView(rootView: GitCommitFileChips(detail: detail, selected: Binding(get: { holder.selected }, set: { holder.selected = $0 }),
-                                                                            shown: Binding(get: { holder.shown }, set: { holder.shown = $0 }), showHistory: { history.append($0) }))
+            window.contentView = makeChipsView(detail, holder: holder) { history.append($0) }
             window.contentView?.layoutSubtreeIfNeeded(); window.displayIfNeeded()
         }
         window.makeKeyAndOrderFront(nil)
