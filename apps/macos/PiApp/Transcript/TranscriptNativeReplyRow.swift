@@ -20,7 +20,15 @@ import AppKit
     private let dots = TranscriptWaitingDots()
     /// The line under a reply that ended early: at the output limit, or for
     /// a reason the provider gave.
-    private let notice = TranscriptLabel()
+    /// Built only for a reply that ended early, so every other reply has one text.
+    private var noticeText: TranscriptPlainTextView?
+    private var notice: TranscriptPlainTextView {
+        if let noticeText { return noticeText }
+        let text = TranscriptPlainTextView(); text.isSelectable = false
+        addSubview(text); noticeText = text
+        return text
+    }
+    static let noticeFace = TranscriptPlainTextFace(size: 12, monospaced: false, lineSpacing: 0, label: "Notice")
     private let noticeIcon = NSImageView()
     static let noticeFont = NSFont.systemFont(ofSize: 12)
     private var pills: [TranscriptPillButton] = []
@@ -48,8 +56,7 @@ import AppKit
         addSubview(quoteRegion)
         addSubview(markdown)
         addSubview(dots)
-        addSubview(noticeIcon); addSubview(notice)
-        notice.font = Self.noticeFont
+        addSubview(noticeIcon)
         noticeIcon.image = NSImage(systemSymbolName: "exclamationmark.triangle", accessibilityDescription: nil)?
             .withSymbolConfiguration(.init(pointSize: 11, weight: .medium))
         noticeIcon.setAccessibilityElement(false)
@@ -111,8 +118,14 @@ import AppKit
         }
         dots.running = message.text.isEmpty && message.isStreaming
         let early = MessageRowView.earlyEnd(message.stopReason)
-        notice.text = early ?? ""; notice.color = TranscriptNSPalette.warning; noticeIcon.contentTintColor = TranscriptNSPalette.warning
-        notice.speak(early, identifier: early == nil ? nil : message.stopReason == "length" ? "reply-output-limit" : "reply-ended-early")
+        if let early {
+            notice.update(text: early, face: Self.noticeFace, environment: inputs.environment, swiftUILines: true, color: TranscriptNSPalette.warning)
+            notice.setAccessibilityLabel(early)
+            notice.setAccessibilityIdentifier(message.stopReason == "length" ? "reply-output-limit" : "reply-ended-early")
+        } else if let noticeText {
+            noticeText.removeFromSuperview(); self.noticeText = nil
+        }
+        noticeIcon.contentTintColor = TranscriptNSPalette.warning
         // A row a fold has emptied draws nothing and says nothing.
         setAccessibilityElement(!drawsNothing)
         setAccessibilityLabel("assistant message")
@@ -149,13 +162,15 @@ import AppKit
         let wanted = hovering && !drawsNothing
             ? RowActionsView.pills(message, actions: inputs.actions, forks: inputs.environment.forks, source: sourceToggle) : []
         if pills.map(\.title) != wanted.map(\.title) {
-            pills.forEach { $0.removeFromSuperview() }
+            // Leaving pills fade out as they used to, then go.
+            for old in pills { TranscriptMotion.leave(old) }
             pills = wanted.map { pill in
                 let button = TranscriptPillButton(title: pill.title, accent: pill.accent, perform: pill.perform)
                 button.enabled = inputs.environment.isEnabled
                 addSubview(button)
                 return button
             }
+            needsLayout = true
             layoutSubtreeIfNeeded()
             pills.forEach(TranscriptMotion.arrive)
         } else {
@@ -197,9 +212,11 @@ import AppKit
             y += Self.gap
         }
         var noticeFrame = CGRect.zero
-        if !notice.text.isEmpty {
-            // Two points of room above it, as the notice's own padding gave.
-            let line = max(TranscriptLabel.lineHeight(Self.noticeFont), noticeIcon.image?.size.height ?? 0)
+        if let notice = noticeText, !notice.string.isEmpty {
+            // Two points of room above it, as the notice's own padding gave;
+            // the text wraps beside its icon.
+            let textWidth = max(1, width - (noticeIcon.image?.size.width ?? 0) - 6)
+            let line = max(notice.exactHeight(width: textWidth), noticeIcon.image?.size.height ?? 0)
             noticeFrame = CGRect(x: 0, y: y + 2, width: width, height: line)
             y = noticeFrame.maxY + Self.gap
         }
@@ -222,12 +239,15 @@ import AppKit
         quoteRegion.frame = plan.source == .zero ? plan.markdown : plan.markdown.union(plan.source)
         if let parts = source { parts.panel.frame = plan.source; parts.text.frame = plan.sourceText }
         dots.isHidden = hidden || !dots.running
-        notice.isHidden = hidden || notice.text.isEmpty; noticeIcon.isHidden = notice.isHidden
-        if !notice.isHidden {
-            let icon = noticeIcon.image?.size ?? .zero, text = notice.intrinsicSize
+        noticeText?.isHidden = hidden; noticeIcon.isHidden = hidden || noticeText == nil
+        if let notice = noticeText, !notice.isHidden {
+            let icon = noticeIcon.image?.size ?? .zero
+            let textWidth = max(1, plan.notice.width - icon.width - 6), text = notice.exactHeight(width: textWidth)
             noticeIcon.frame = CGRect(x: 0, y: plan.notice.midY - icon.height / 2, width: icon.width, height: icon.height)
-            notice.frame = CGRect(x: icon.width + 6, y: plan.notice.midY - text.height / 2, width: text.width, height: text.height)
+            notice.frame = CGRect(x: icon.width + 6, y: plan.notice.midY - text / 2, width: textWidth, height: ceil(text))
         }
+        // 4: a folded reply's source takes no room and says nothing.
+        if let parts = source { parts.panel.isHidden = hidden; parts.text.isHidden = hidden }
         dots.frame = CGRect(x: 0, y: plan.markdown.minY, width: TranscriptWaitingDots.width, height: Self.waitingHeight)
         if let copy {
             copy.frame = CGRect(x: plan.markdown.maxX - TranscriptCopyButton.size.width, y: plan.markdown.minY - 3,
@@ -244,7 +264,7 @@ import AppKit
         }
         if rtl {
             copy.map { $0.frame = TranscriptMotion.mirrored($0.frame, width: bounds.width, true) }
-            [noticeIcon, notice, dots].forEach { $0.frame = TranscriptMotion.mirrored($0.frame, width: bounds.width, true) }
+            for view in [noticeIcon, noticeText, dots] as [NSView?] { if let view { view.frame = TranscriptMotion.mirrored(view.frame, width: bounds.width, true) } }
         }
     }
     override func updateTrackingAreas() {

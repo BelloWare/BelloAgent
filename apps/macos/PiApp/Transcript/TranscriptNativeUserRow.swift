@@ -117,13 +117,15 @@ import AppKit
         let wanted = hovering && !message.isSending
             ? RowActionsView.pills(message, actions: inputs.actions, forks: inputs.environment.forks, source: nil) : []
         if pills.map(\.title) != wanted.map(\.title) {
-            pills.forEach { $0.removeFromSuperview() }
+            // Leaving pills fade out as they used to, then go.
+            for old in pills { TranscriptMotion.leave(old) }
             pills = wanted.map { pill in
                 let button = TranscriptPillButton(title: pill.title, accent: pill.accent, perform: pill.perform)
                 button.enabled = inputs.environment.isEnabled
                 addSubview(button)
                 return button
             }
+            needsLayout = true
             layoutSubtreeIfNeeded()
             pills.forEach(TranscriptMotion.arrive)
         } else {

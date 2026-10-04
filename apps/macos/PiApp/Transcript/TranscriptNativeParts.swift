@@ -41,6 +41,16 @@ import AppKit
             view.animator().setFrameOrigin(final.origin)
         }
     }
+    /// A pill leaving: it fades out and falls the 2 points it rose, then goes.
+    static func leave(_ view: NSView) {
+        view.setAccessibilityElement(false)
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = Double(PiMotion.quickMilliseconds) / 1_000
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            view.animator().alphaValue = 0
+            view.animator().setFrameOrigin(CGPoint(x: view.frame.minX, y: view.frame.minY + 2))
+        }, completionHandler: { MainActor.assumeIsolated { view.removeFromSuperview() } })
+    }
     /// `rect` with its origin on the pixel grid and its size rounded up to a
     /// whole pixel, as SwiftUI places a background.
     static func pixelAligned(_ rect: CGRect, scale: CGFloat) -> CGRect {
