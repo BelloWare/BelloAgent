@@ -262,6 +262,11 @@ import AppKit
         if inside, enabled { perform() }
     }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    /// VoiceOver's press does what a click does.
+    override func accessibilityPerformPress() -> Bool {
+        guard enabled else { return false }
+        perform(); return true
+    }
 }
 
 /// Watches the pointer over a view without taking anything from it.

@@ -98,7 +98,8 @@ import AppKit
         setAccessibilityElement(!inputs.disclosure.foldedAway)
         setAccessibilityCustomActions(TranscriptRowAction.all(message, inputs.actions, forks: inputs.environment.forks)
             .map { action in NSAccessibilityCustomAction(name: action.name) { action.perform(); return true } })
-        if before.width != inputs.width || before.item != inputs.item || before.disclosure.foldedAway != inputs.disclosure.foldedAway {
+        if before.width != inputs.width || before.item != inputs.item || before.disclosure.foldedAway != inputs.disclosure.foldedAway
+            || before.environment != inputs.environment {
             needsLayout = true
         }
         refreshBand()

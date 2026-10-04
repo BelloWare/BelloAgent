@@ -126,7 +126,7 @@ struct NativePlainText: NSViewRepresentable {
     private(set) var color: NSColor = TranscriptNSPalette.text
     func update(text next: String, face: TranscriptPlainTextFace, environment: TranscriptRowEnvironment, swiftUILines: Bool,
                 color: NSColor = TranscriptNSPalette.text) {
-        if swiftUILines != self.swiftUILines || color != self.color || environment.layoutDirection != self.environment?.layoutDirection {
+        if swiftUILines != self.swiftUILines || color != self.color {
             self.swiftUILines = swiftUILines; self.color = color; self.face = nil
         }
         update(text: next, face: face, environment: environment)
@@ -138,7 +138,9 @@ struct NativePlainText: NSViewRepresentable {
     func update(text next: String, face: TranscriptPlainTextFace, environment: TranscriptRowEnvironment) {
         // Bytes, compared as memory: a long paste is not walked a character
         // at a time on every update of its row.
+        // A new writing direction realigns the text, so it is set again.
         let sameText = self.face == face && text.hasSameUTF8(as: next)
+            && environment.layoutDirection == (self.environment?.layoutDirection ?? environment.layoutDirection)
         guard !sameText || self.environment != environment, let storage = textStorage else { return }
         if sameText, let current = self.environment, current.hasSameGeometry(as: environment) {
             // Painted again, measured the same: the colours are dynamic and

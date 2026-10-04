@@ -32,6 +32,32 @@ final class TranscriptNativeRowBehaviourTests: XCTestCase {
         for pill in pills { XCTAssertGreaterThan(pill.frame.width, 20, "\(pill.title) was laid out"); XCTAssertGreaterThan(pill.frame.height, 15) }
     }
 
+    /// A row on screen follows a change of writing direction: its bubble moves
+    /// to the other side without anything else changing.
+    @MainActor func testAMountedRowMirrorsWhenTheDirectionChanges() throws {
+        let item = TranscriptItem.message(TranscriptMessage(id: "u1", role: "user", text: "Hello", at: 1_000))
+        let (row, window) = mounted(item)
+        defer { window.contentView = nil }
+        let content = try XCTUnwrap(row.subviews.first as? TranscriptNativeUserRow)
+        let bubble = { content.subviews.compactMap { $0 as? TranscriptPanel }.first?.frame ?? .zero }
+        let before = bubble()
+        var environment = TranscriptRowEnvironment(); environment.layoutDirection = .rightToLeft
+        row.update(item: item, fresh: false, actions: TranscriptActions(), environment: environment)
+        row.layoutSubtreeIfNeeded(); content.layoutSubtreeIfNeeded()
+        XCTAssertEqual(bubble().minX, row.bounds.width - before.maxX, accuracy: 0.5, "the bubble stands at the other edge")
+    }
+
+    /// VoiceOver's press on a pill does what a click does, and nothing while
+    /// the row takes no input.
+    @MainActor func testAPillPressedByVoiceOverActs() {
+        var pressed = 0
+        let pill = TranscriptPillButton(title: "Retry request", accent: true, perform: { pressed += 1 })
+        XCTAssertTrue(pill.accessibilityPerformPress())
+        pill.enabled = false
+        XCTAssertFalse(pill.accessibilityPerformPress())
+        XCTAssertEqual(pressed, 1)
+    }
+
     /// Glyphs sit for the width the text is drawn at: a text that wrapped
     /// while narrow is set as one line again once it is wide again.
     @MainActor func testGlyphsFollowTheWidthTheTextIsDrawnAt() throws {
