@@ -136,4 +136,35 @@ import XCTest
             }
         }
     }
+
+    /// The terminal panel: tabs, title, folder and buttons, wide and in a
+    /// narrow pane, with the shown shell's state.
+    func testTerminalPanel() async throws {
+        let registry = TerminalRegistry.shared
+        registry.shutdown()
+        let folder = URL(fileURLWithPath: scratchBase()).appendingPathComponent("terminal-parity-project")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let model = WorkspaceModel(stateRoot: folder.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        defer { registry.shutdown(); model.shutdown(); try? FileManager.default.removeItem(at: folder) }
+        let project = WorkspaceRecord(id: "parity-terminals", path: folder.path, trusted: true)
+        let one = registry.create(for: project), two = registry.create(for: project)
+        registry.rename(two.id, in: project.id, to: "Dev server")
+        // Still shells with nothing on screen: the same picture both times.
+        for session in [one, two] { session.process.terminate(); session.emulator.feed(Data("\u{1b}[2J\u{1b}[H".utf8)) }
+        two.shellTitle = "zsh — ~/projects/app"
+        two.exited = true
+        // The shell's own view moves between the two panels; the first time
+        // SwiftUI's host has not drawn it yet, so one picture is thrown away.
+        _ = try await PiKitParity.compare("terminal-warmup", swiftUI: RefTerminalPanel(model: model, workspace: project).frame(width: 600, height: 200),
+                                          appKit: TerminalParityHolder(TerminalPanelView(model: model, workspace: project)), width: 600)
+        // (At 460 points SwiftUI's header overflowed, centred and cut at both
+        // ends; the AppKit header fits, its tabs scrolling past their room.)
+        for width in [CGFloat(920), 600] {
+            try await check("terminal-\(Int(width))", canvas: .piWindow, width: width, RefTerminalPanel(model: model, workspace: project).frame(height: 200)) {
+                let panel = TerminalPanelView(model: model, workspace: project)
+                panel.frame.size.height = 200
+                return TerminalParityHolder(panel)
+            }
+        }
+    }
 }

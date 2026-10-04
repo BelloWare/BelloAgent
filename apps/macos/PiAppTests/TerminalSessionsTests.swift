@@ -252,7 +252,7 @@ final class TerminalTabsPanelTests: XCTestCase, SerialTestLane {
         let model = makeWorkspaceModel(stateRoot: folder.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 920, height: 420), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: TerminalPanel(model: model, workspace: project))
+        window.contentView = TerminalPanelView(model: model, workspace: project)
         window.makeKeyAndOrderFront(nil)
         defer { window.contentView = nil; window.close(); registry.shutdown(); model.shutdown() }
 
@@ -272,7 +272,7 @@ final class TerminalTabsPanelTests: XCTestCase, SerialTestLane {
         // Hidden and shown again: the same terminal.
         window.contentView = NSView()
         try await eventually("the panel is gone") { one.view.window == nil }
-        window.contentView = NSHostingView(rootView: TerminalPanel(model: model, workspace: project))
+        window.contentView = TerminalPanelView(model: model, workspace: project)
         try await eventually("Terminal 1 is back with the keyboard") { window.firstResponder === one.view }
         XCTAssertEqual(registry.sessions(for: project.id).count, 3, "showing the panel again opened no new terminal")
 
@@ -280,6 +280,87 @@ final class TerminalTabsPanelTests: XCTestCase, SerialTestLane {
         let fresh = try XCTUnwrap(registry.restart(one.id, in: project.id, generation: one.generation))
         try await eventually("the new shell has the keyboard") { window.firstResponder === fresh.view }
         XCTAssertNil(one.view.window)
+    }
+
+    /// The panel's top edge drags its height, from four points above the
+    /// line too, and the height it is dropped at is remembered; disabled, it
+    /// takes no drag and its buttons are off.
+    @MainActor func testTheTopEdgeDragsTheHeightAndRemembersIt() async throws {
+        let registry = TerminalRegistry.shared
+        registry.shutdown()
+        let defaults = UserDefaults.standard, previous = defaults.object(forKey: TerminalPanelView.heightKey)
+        defer { if let previous { defaults.set(previous, forKey: TerminalPanelView.heightKey) } else { defaults.removeObject(forKey: TerminalPanelView.heightKey) } }
+        defaults.set(240.0, forKey: TerminalPanelView.heightKey)
+        let folder = scratchRoot("terminal-drag")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let project = WorkspaceRecord(id: "drag-" + UUID().uuidString, path: folder.path, trusted: true)
+        let model = makeWorkspaceModel(stateRoot: folder.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 700, height: 500))
+        let panel = TerminalPanelView(model: model, workspace: project)
+        container.addSubview(panel)
+        panel.frame = NSRect(x: 0, y: 100, width: 700, height: panel.idealHeight)
+        panel.layoutSubtreeIfNeeded()
+        defer { registry.shutdown(); model.shutdown() }
+        XCTAssertEqual(panel.terminalHeight, 240)
+        // A change that shows nothing new lays nothing out again.
+        panel.layoutSubtreeIfNeeded()
+        registry.objectWillChange.send()
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertFalse(panel.needsLayout, "an unchanged registry asks for no layout")
+        let ideal = panel.idealHeight
+        // Two points above the panel's top edge (in the container, which is not flipped).
+        let above = NSPoint(x: 350, y: panel.frame.maxY + 2)
+        XCTAssertTrue(container.hitTest(above) === panel.handle, "the grab strip reaches above the line")
+        panel.handle.changed?(-40)
+        XCTAssertEqual(panel.idealHeight, ideal + 40, "dragged up, the terminal grows")
+        panel.handle.ended?(-40)
+        XCTAssertEqual(defaults.double(forKey: TerminalPanelView.heightKey), 280, "and the height is kept")
+        panel.handle.changed?(10_000); panel.handle.ended?(10_000)
+        XCTAssertEqual(panel.terminalHeight, TerminalPanel.minimumHeight, "never below its minimum")
+        // Every panel follows the remembered height.
+        let other = TerminalPanelView(model: model, workspace: project)
+        var told = 0
+        other.sizeChanged = { told += 1 }
+        panel.handle.changed?(-60); panel.handle.ended?(-60)
+        XCTAssertEqual(other.terminalHeight, TerminalPanel.minimumHeight + 60)
+        try await eventually("another panel was told its height changed") { told > 0 }
+        panel.inheritedEnabled = false
+        XCTAssertFalse(container.hitTest(above) === panel.handle, "disabled, no drag")
+        let inside = NSPoint(x: 350, y: panel.frame.maxY - 2)
+        XCTAssertFalse(container.hitTest(inside) === panel.handle, "nor from inside the panel")
+        let before = panel.terminalHeight
+        panel.handle.changed?(-40)
+        XCTAssertEqual(panel.terminalHeight, before, "a drag that began anyway changes nothing")
+        XCTAssertFalse(panel.header.hide.isEnabled); XCTAssertFalse(panel.header.newTerminal.isEnabled)
+        func descendants(_ view: NSView) -> [NSView] { view.subviews.flatMap { [$0] + descendants($0) } }
+        let tabs = descendants(panel.header).compactMap { $0 as? PiKit.Tabs<UUID>.Tab }
+        XCTAssertFalse(tabs.isEmpty)
+        XCTAssertTrue(tabs.allSatisfy { !$0.isEnabled }, "the tabs are off too")
+    }
+
+    /// A button pressed after a restart but before the header caught up acts
+    /// on the terminal it showed, which is gone: nothing happens to the new one.
+    @MainActor func testAButtonActsOnTheTerminalItShowed() async throws {
+        let registry = TerminalRegistry.shared
+        registry.shutdown()
+        let folder = scratchRoot("terminal-target")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let project = WorkspaceRecord(id: "target-" + UUID().uuidString, path: folder.path, trusted: true)
+        let model = makeWorkspaceModel(stateRoot: folder.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        let panel = TerminalPanelView(model: model, workspace: project)
+        panel.frame = NSRect(x: 0, y: 0, width: 700, height: 300)
+        defer { registry.shutdown(); model.shutdown() }
+        let one = try XCTUnwrap(registry.selected(for: project.id))
+        XCTAssertEqual(panel.header.target?.generation, one.generation)
+        var asked = 0
+        PiQuestion.shared.answerAlert = { _ in asked += 1; return .alertFirstButtonReturn }
+        defer { PiQuestion.shared.answerAlert = nil }
+        // Restarted elsewhere, and pressed before the header is redrawn.
+        let fresh = try XCTUnwrap(registry.restart(one.id, in: project.id, generation: one.generation))
+        panel.header.restart.performClick(nil)
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(asked, 0, "no question about the new terminal")
+        XCTAssertTrue(registry.selected(for: project.id) === fresh, "the new terminal was not restarted by a stale press")
     }
 
     /// Opt-in pictures of the panel with several terminals, wide and narrow,
@@ -305,7 +386,7 @@ final class TerminalTabsPanelTests: XCTestCase, SerialTestLane {
             for (name, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
                 let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: 300), styleMask: [.titled], backing: .buffered, defer: false)
                 window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: appearance)
-                window.contentView = NSHostingView(rootView: TerminalPanel(model: model, workspace: project))
+                window.contentView = TerminalPanelView(model: model, workspace: project)
                 window.orderFront(nil)
                 try await Task.sleep(for: .milliseconds(600))
                 let view = try XCTUnwrap(window.contentView)

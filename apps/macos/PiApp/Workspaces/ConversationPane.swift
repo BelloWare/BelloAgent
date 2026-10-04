@@ -6,8 +6,7 @@ import SwiftUI
 // terminal, the composer and the metrics footer).
 //
 // TEMPORARY bridges in this file, until their owners are AppKit: the
-// transcript (Transcript/, `NativeTranscriptView`), the queue panel and the
-// terminal panel (next in this workstream), and the metrics footer
+// transcript (Transcript/, `NativeTranscriptView`) and the metrics footer
 // (Inspector/), each in a hosting view the pane lays out; and the
 // `ConversationPane` representable the still-SwiftUI workspace, side and
 // tab panes host the AppKit pane through.
@@ -37,7 +36,7 @@ struct SideActions {
     private let starter = StarterPanelView()
     private let cover = LoadingCoverView()
     private var queue: QueuePanelView?
-    private var terminal: ShellHostingView?
+    private var terminal: TerminalPanelView?
     private var terminalWorkspace: WorkspaceRecord?
     private let missingFolder = MissingFolderBar()
     private let footer = PaneFooterView()
@@ -267,21 +266,17 @@ struct SideActions {
             leave(host)
         }
         if let workspace = state.terminalWorkspace {
+            if let host = terminal, terminalWorkspace?.id != workspace.id {
+                host.removeFromSuperview(); terminal = nil
+            }
             if let host = terminal {
                 // The same panel follows its project's record (a relocated folder).
-                if terminalWorkspace != workspace || before?.enabled != state.enabled {
-                    if terminalWorkspace?.id != workspace.id {
-                        host.removeFromSuperview(); terminal = nil
-                    } else {
-                        host.setRoot(AnyView(TerminalPanel(model: model, workspace: workspace).disabled(!state.enabled).piShellBridged()), reportsHeight: false)
-                        terminalWorkspace = workspace
-                    }
-                }
-            }
-            if terminal == nil {
+                host.workspace = workspace; terminalWorkspace = workspace
+                host.inheritedEnabled = state.enabled
+            } else {
                 let arriving = before?.terminalWorkspace == nil
-                let host = ShellHostingView(root: AnyView(TerminalPanel(model: model, workspace: workspace).disabled(!state.enabled).piShellBridged()), reportsHeight: false)
-                host.minimum = TerminalPanel.minimumHeight + TerminalPanel.chromeHeight
+                let host = TerminalPanelView(model: model, workspace: workspace)
+                host.inheritedEnabled = state.enabled
                 host.sizeChanged = { [weak self] in self?.needsLayout = true }
                 addSubview(host, positioned: .below, relativeTo: composer)
                 terminal = host; terminalWorkspace = workspace
@@ -465,7 +460,7 @@ struct SideActions {
         var terminalHeight: CGFloat = 0
         if let terminal {
             let remaining = max(0, bottom - queueHeight - top)
-            let least = terminal.minimumHeight(forWidth: width), most = max(least, hostHeight(terminal, width: width))
+            let least = terminal.minimumHeight, most = max(least, terminal.idealHeight)
             terminalHeight = min(most, max(least, (remaining / 2).rounded(.down)))
             frames.append((terminal, CGRect(x: 0, y: bottom - terminalHeight, width: width, height: terminalHeight)))
         }

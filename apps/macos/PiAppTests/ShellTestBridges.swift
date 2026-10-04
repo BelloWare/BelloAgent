@@ -57,3 +57,22 @@ struct StarterPanelBridge: NSViewRepresentable {
     pasteboard.writeObjects(items.compactMap { $0 })
     return pasteboard
 }
+
+/// The terminal panel where a fixture hosts SwiftUI.
+struct TerminalPanelBridge: NSViewRepresentable {
+    let model: WorkspaceModel
+    let workspace: WorkspaceRecord
+    func makeNSView(context: Context) -> TerminalPanelView { TerminalPanelView(model: model, workspace: workspace) }
+    func updateNSView(_ view: TerminalPanelView, context: Context) { view.workspace = workspace }
+}
+
+/// A terminal panel at a fixed height, for a picture of it.
+@MainActor final class TerminalParityHolder: NSView, PiKit.WidthSizing {
+    let panel: TerminalPanelView
+    init(_ panel: TerminalPanelView) { self.panel = panel; super.init(frame: .zero); addSubview(panel) }
+    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    override var isFlipped: Bool { true }
+    func height(forWidth width: CGFloat) -> CGFloat { 200 }
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: 200) }
+    override func layout() { super.layout(); panel.frame = bounds }
+}
