@@ -20,13 +20,8 @@ final class TranscriptNativeRowParityTests: XCTestCase {
     struct Fixture { let name: String; let item: TranscriptItem }
 
     /// Pairs that still differ, each an open item of the port rather than a
-    /// tolerance: the long question at 380 points sits where SwiftUI's
-    /// rounding of a fractional row (0.16 pt) moves its glyphs by a fraction
-    /// of a pixel that the native text does not reproduce yet. Heights match.
-    static let knownDeviations = Set(["user-long-380-light", "user-long-380-dark"])
-        // The output-limit notice under a reply: same height, its icon and
-        // text not yet placed exactly where SwiftUI's HStack puts them.
-        .union(["380", "520", "792"].flatMap { w in ["light", "dark"].map { "reply-length-\(w)-\($0)" } })
+    /// tolerance. None now.
+    static let knownDeviations = Set<String>()
 
     static var userFixtures: [Fixture] {
         let at = 1_790_000_000_000.0
@@ -80,7 +75,10 @@ final class TranscriptNativeRowParityTests: XCTestCase {
         for (name, message) in [("reply-prose", reply("a1", "The loop retries three times with a fixed delay. I widened the budget to five and made the delay grow.")),
                                 ("reply-markdown", reply("a2", markdown)),
                                 ("reply-waiting", reply("a3", "", streaming: true)),
-                                ("reply-length", { var m = reply("a4", "Cut short by the limit"); m.stopReason = "length"; return m }())] {
+                                ("reply-length", { var m = reply("a4", "Cut short by the limit"); m.stopReason = "length"; return m }()),
+                                ("reply-aborted", { var m = reply("a5", "Stopped while it was still writing this"); m.state = "aborted"; return m }()),
+                                ("reply-error", { var m = reply("a6", "The provider failed partway"); m.stopReason = "error"; return m }()),
+                                ("reply-truncated", { var m = reply("a7", "An old fragment"); m.truncated = true; return m }())] {
             var question = TranscriptMessage(id: "q-" + message.id, role: "user", text: "Question")
             question.at = message.at
             let items = TaskTranscriptPlan.items([question, message], lifecycle: nil, display: .normal)
@@ -102,28 +100,95 @@ final class TranscriptNativeRowParityTests: XCTestCase {
         ]
     }
 
+    static var costLimitFixtures: [Fixture] {
+        func notice(_ id: String, code: String, _ text: String, detail: String? = nil) -> TranscriptItem {
+            var message = TranscriptMessage(id: id, role: "system", text: text)
+            message.kind = "failure"; message.failureCode = code; message.detail = detail
+            return .message(message)
+        }
+        return [
+            Fixture(name: "cost-run", item: notice("failure:run:1", code: SessionDisplay.costLimitCode,
+                                                   "This chat reached its $0.003 cost limit ($0.004 spent).", detail: "Queued messages wait until it is raised.")),
+            Fixture(name: "cost-send", item: notice("failure:send:2", code: SessionDisplay.costLimitCode,
+                                                    "This chat reached its $0.003 cost limit ($0.004 spent). Raise the limit to continue.")),
+            Fixture(name: "cost-raised-run", item: notice("failure:run:3", code: SessionDisplay.costLimitRaised, "The limit is $10 now.")),
+            Fixture(name: "cost-raised-send", item: notice("failure:send:4", code: SessionDisplay.costLimitRaised, "The limit is $10 now.")),
+        ]
+    }
+
+    @MainActor func testCostLimitRowsMatchTheirSwiftUIRows() throws {
+        try compare(Self.costLimitFixtures, expectNative: TranscriptNativeFailureRow.self, widths: [792, 520, 380, 300, 240])
+    }
+
     @MainActor func testFailureRowsMatchTheirSwiftUIRows() throws {
-        TranscriptRowRenderer.failureRows = true
-        defer { TranscriptRowRenderer.failureRows = false }
-        try XCTSkipUnless(testEnvironment("PI_PARITY_PENDING") == "1", "the failure card is not calibrated yet; set PI_PARITY_PENDING=1")
-        try compare(Self.failureFixtures, expectNative: TranscriptNativeFailureRow.self)
+        // Narrow too: the header's words wrap beside the Retry pill.
+        try compare(Self.failureFixtures, expectNative: TranscriptNativeFailureRow.self, widths: [792, 520, 380, 300, 240])
+    }
+
+    static var noticeFixtures: [Fixture] {
+        func row(_ id: String, kind: String, _ text: String, detail: String? = nil) -> TranscriptItem {
+            var message = TranscriptMessage(id: id, role: "system", text: text)
+            message.kind = kind; message.detail = detail
+            return .message(message)
+        }
+        return [
+            Fixture(name: "notice", item: row("n1", kind: "notice", "Retrying in 4 s (attempt 2 of 5)")),
+            Fixture(name: "branch", item: row("b1", kind: "branch", "")),
+            Fixture(name: "branch-detail", item: row("b2", kind: "branch", "", detail: "You changed the question")),
+            Fixture(name: "branch-long", item: row("b3", kind: "branch", String(repeating: "The edit replaced the earlier question with a longer one. ", count: 4))),
+        ]
+    }
+
+    static var statusFixtures: [Fixture] {
+        func status(_ id: String, _ text: String, state: String? = nil, truncated: Bool = false) -> TranscriptItem {
+            var message = TranscriptMessage(id: id, role: "system", text: text)
+            message.state = state; message.truncated = truncated ? true : nil
+            return .message(message)
+        }
+        return [
+            Fixture(name: "status-short", item: status("s1", "Model changed to gpt-6.1-sol")),
+            Fixture(name: "status-long", item: status("s2", String(repeating: "The helper restarted after an update and reloaded this chat's settings. ", count: 3))),
+            Fixture(name: "status-failed", item: status("s3", "The request stopped", state: "error")),
+            Fixture(name: "status-truncated", item: status("s4", "Saved status", truncated: true)),
+        ]
+    }
+
+    @MainActor func testVersionBannersMatchTheirSwiftUIRows() throws {
+        func banner(_ id: String, detail: String) -> TranscriptItem {
+            var message = TranscriptMessage(id: id, role: "system", text: "Version 1 of 2")
+            message.kind = "versionBanner"; message.detail = detail
+            return .message(message)
+        }
+        try compare([Fixture(name: "banner", item: banner("version-banner:1", detail: "Replies from before your edit")),
+                     Fixture(name: "banner-long", item: banner("version-banner:2", detail: String(repeating: "Replies from before your edit, read only. ", count: 4)))],
+                    expectNative: TranscriptNativeVersionBannerRow.self, widths: [792, 520, 380, 240])
+    }
+
+    @MainActor func testStatusRowsMatchTheirSwiftUIRows() throws {
+        try compare(Self.statusFixtures, expectNative: TranscriptNativeStatusRow.self)
+    }
+
+    @MainActor func testNoticeRowsMatchTheirSwiftUIRows() throws {
+        try compare(Array(Self.noticeFixtures.prefix(1)), expectNative: TranscriptNativeNoticeRow.self)
+        try compare(Array(Self.noticeFixtures.dropFirst()), expectNative: TranscriptNativeBranchRow.self)
     }
 
     @MainActor func testReplyBodiesMatchTheirSwiftUIRows() throws {
         let fixtures = Self.replyFixtures
         // A reply still waiting for its first token is not a body row yet.
-        XCTAssertEqual(Set(fixtures.map(\.name)), ["reply-prose", "reply-markdown", "reply-length"], "every finished reply must plan a body row")
+        XCTAssertEqual(Set(fixtures.map(\.name)), ["reply-prose", "reply-markdown", "reply-length", "reply-aborted", "reply-error", "reply-truncated"],
+                       "every finished reply must plan a body row")
         try compare(fixtures, expectNative: TranscriptNativeReplyRow.self)
     }
 
     // MARK: Drawing a row both ways
 
-    @MainActor private func compare<T: NSView>(_ fixtures: [Fixture], expectNative: T.Type) throws {
+    @MainActor private func compare<T: NSView>(_ fixtures: [Fixture], expectNative: T.Type, widths: [CGFloat] = [792, 520, 380]) throws {
         let out = testEnvironment("PI_PARITY_OUT").map { URL(fileURLWithPath: $0, isDirectory: true) }
         if let out { try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true) }
         var failures: [String] = []
         for fixture in fixtures {
-            for width in [792.0, 520.0, 380.0] as [CGFloat] {
+            for width in widths {
                 for dark in [false, true] {
                     let label = "\(fixture.name)-\(Int(width))-\(dark ? "dark" : "light")"
                     let hosted = render(fixture.item, width: width, dark: dark, native: false)
@@ -133,7 +198,7 @@ final class TranscriptNativeRowParityTests: XCTestCase {
                     if hosted.height != native.height {
                         failures.append("\(label): height \(native.height) native, \(hosted.height) SwiftUI")
                     }
-                    let (differing, total, diff) = Self.difference(hosted.image, native.image)
+                    let (differing, total, diff) = Self.difference(hosted.image, native.image, masked: native.animated)
                     let share = total == 0 ? 0 : Double(differing) / Double(total)
                     if share > Self.pixelTolerance, !Self.knownDeviations.contains(label) { failures.append(String(format: "%@: %.2f%% of pixels differ (%d)", label, share * 100, differing)) }
                     if let out {
@@ -147,7 +212,9 @@ final class TranscriptNativeRowParityTests: XCTestCase {
         XCTAssertTrue(failures.isEmpty, failures.joined(separator: "\n"))
     }
 
-    struct Rendered { let height: CGFloat; let image: NSBitmapImageRep; let content: NSView? }
+    /// `animated`: where the native row draws something that moves with the
+    /// clock (a turning ring), in pixels; both captures skip it.
+    struct Rendered { let height: CGFloat; let image: NSBitmapImageRep; let content: NSView?; var animated: [CGRect] = [] }
 
     @MainActor private func render(_ item: TranscriptItem, width: CGFloat, dark: Bool, native: Bool) -> Rendered {
         let previous = TranscriptRowRenderer.native
@@ -156,14 +223,18 @@ final class TranscriptNativeRowParityTests: XCTestCase {
         var environment = TranscriptRowEnvironment()
         environment.colorScheme = dark ? .dark : .light
         let row = TranscriptRowContainer(item: item, fresh: false, actions: TranscriptActions(), environment: environment)
-        let height = row.measure(width: width).height
-        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: width, height: height), styleMask: [.borderless], backing: .buffered, defer: false)
+        // Measured in the window, as the document measures a row it has
+        // mounted: SwiftUI rounds sizes to the pixels of the window it is in.
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: width, height: 100), styleMask: [.borderless], backing: .buffered, defer: false)
         window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
-        let canvas = ParityCanvas(frame: CGRect(x: 0, y: 0, width: width, height: height))
+        let canvas = ParityCanvas(frame: CGRect(x: 0, y: 0, width: width, height: 100))
         canvas.wantsLayer = true
         canvas.layer?.backgroundColor = NSColor.white.cgColor
         window.contentView = canvas
         canvas.addSubview(row)
+        let height = row.measure(width: width).height
+        window.setContentSize(CGSize(width: width, height: height))
+        canvas.frame = CGRect(x: 0, y: 0, width: width, height: height)
         row.frame = CGRect(x: 0, y: 0, width: width, height: height)
         row.layoutForViewport()
         canvas.layoutSubtreeIfNeeded()
@@ -178,16 +249,40 @@ final class TranscriptNativeRowParityTests: XCTestCase {
             }
             walk(content, 0)
         }
+        if testEnvironment("PI_PARITY_AX") == "1", let content {
+            // SwiftUI's own geometry, from its accessibility frames, row-relative.
+            func walk(_ element: Any, _ depth: Int) {
+                guard depth < 12, let object = element as? NSAccessibilityProtocol else { return }
+                let frame = object.accessibilityFrame()
+                let inWindow = window.convertFromScreen(frame)
+                let local = CGRect(x: inWindow.minX, y: height - inWindow.maxY, width: inWindow.width, height: inWindow.height)
+                let role = object.accessibilityRole()?.rawValue ?? "?"
+                let label = object.accessibilityLabel() ?? (object.accessibilityValue() as? String) ?? ""
+                FileHandle.standardError.write(Data("AX \(native ? "N" : "S") \(String(repeating: " ", count: depth))\(role) [\(label.prefix(30))] \(local)\n".utf8))
+                for child in object.accessibilityChildren() ?? [] { walk(child, depth + 1) }
+            }
+            walk(content, 0)
+        }
+        var animated: [CGRect] = []
+        func findAnimated(_ view: NSView) {
+            if view is TranscriptSpinner, !view.isHidden {
+                let rect = view.convert(view.bounds, to: canvas).insetBy(dx: -1, dy: -1)
+                let scale = CGFloat(rep.pixelsWide) / width
+                animated.append(CGRect(x: rect.minX * scale, y: rect.minY * scale, width: rect.width * scale, height: rect.height * scale))
+            }
+            for child in view.subviews { findAnimated(child) }
+        }
+        findAnimated(row)
         row.removeFromSuperview()
         window.contentView = nil
-        return Rendered(height: height, image: rep, content: content)
+        return Rendered(height: height, image: rep, content: content, animated: animated)
     }
 
     final class ParityCanvas: NSView { override var isFlipped: Bool { true } }
 
     /// How many pixels differ beyond the tolerance, of how many, and an image
     /// with them in red over the SwiftUI capture faded out.
-    static func difference(_ a: NSBitmapImageRep, _ b: NSBitmapImageRep) -> (Int, Int, NSBitmapImageRep?) {
+    static func difference(_ a: NSBitmapImageRep, _ b: NSBitmapImageRep, masked: [CGRect] = []) -> (Int, Int, NSBitmapImageRep?) {
         let width = max(a.pixelsWide, b.pixelsWide), height = max(a.pixelsHigh, b.pixelsHigh)
         let p = rgba(a, width: width, height: height), q = rgba(b, width: width, height: height)
         guard let out = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height, bitsPerSample: 8,
@@ -197,7 +292,9 @@ final class TranscriptNativeRowParityTests: XCTestCase {
         for index in 0..<(width * height) {
             let o = index * 4
             var far = false
-            for c in 0..<3 where abs(Int(p[o + c]) - Int(q[o + c])) > channelTolerance { far = true }
+            let point = CGPoint(x: CGFloat(index % width) + 0.5, y: CGFloat(index / width) + 0.5)
+            let skipped = masked.contains { $0.contains(point) }
+            for c in 0..<3 where !skipped && abs(Int(p[o + c]) - Int(q[o + c])) > channelTolerance { far = true }
             if far { differing += 1 }
             let base = UInt8(Int(p[o]) * 3 / 10 + 178)
             data[o] = far ? 255 : base; data[o + 1] = far ? 0 : base; data[o + 2] = far ? 0 : base; data[o + 3] = 255

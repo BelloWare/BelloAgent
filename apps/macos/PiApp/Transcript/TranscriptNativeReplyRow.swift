@@ -29,9 +29,20 @@ import AppKit
         return text
     }
     static let noticeFace = TranscriptPlainTextFace(size: 12, monospaced: false, lineSpacing: 0, label: "Notice")
-    private let noticeIcon = NSImageView()
+    private let noticeIcon = TranscriptSymbol()
+    /// The notice symbol's width as SwiftUI lays it out: its outline's.
+    private var noticeIconWidth: CGFloat { noticeIcon.image?.alignmentRect.width ?? 0 }
+    /// How much higher SwiftUI's row centres the symbol than the line's middle (measured).
+    static let noticeIconLift: CGFloat = 0.625
     static let noticeFont = NSFont.systemFont(ofSize: 12)
-    private var pills: [TranscriptPillButton] = []
+    /// How a reply that failed or was stopped ended, over its words.
+    private var failedLabel: TranscriptLabel?
+    static let failedFont = NSFont.systemFont(ofSize: 12, weight: .medium)
+    /// Under a saved fragment whose text was not kept whole.
+    private var truncatedText: TranscriptPlainTextView?
+    static let truncatedNote = "This older saved fragment is incomplete; the original text was not retained."
+    static let truncatedFace = TranscriptPlainTextFace(size: 12, monospaced: false, lineSpacing: 0, label: "Note")
+    private lazy var band = TranscriptPillBand(host: self)
     private var hover: TranscriptHoverTracker!
     private var hovering = false
     /// The pointer over the reply's words, where its Copy shows.
@@ -47,7 +58,7 @@ import AppKit
     /// parts not ported yet.
     static func draws(_ item: TranscriptItem) -> Bool {
         guard let message = reply(of: item) else { return false }
-        return message.role == "assistant" && message.kind == nil && message.failedEnd == nil && message.truncated != true
+        return message.role == "assistant" && message.kind == nil
     }
 
     init(inputs: TranscriptRowInputs) {
@@ -126,11 +137,28 @@ import AppKit
             noticeText.removeFromSuperview(); self.noticeText = nil
         }
         noticeIcon.contentTintColor = TranscriptNSPalette.warning
+        if let failed = message.failedEnd {
+            let label = failedLabel ?? { let label = TranscriptLabel(); label.font = Self.failedFont; addSubview(label); failedLabel = label; return label }()
+            label.text = failed; label.color = TranscriptNSPalette.danger
+            label.speak(failed)
+        } else if let failedLabel {
+            failedLabel.removeFromSuperview(); self.failedLabel = nil
+        }
+        if message.truncated == true {
+            let text = truncatedText ?? { let text = TranscriptPlainTextView(); text.isSelectable = false; addSubview(text); truncatedText = text; return text }()
+            text.update(text: Self.truncatedNote, face: Self.truncatedFace, environment: inputs.environment, swiftUILines: true, color: TranscriptNSPalette.muted)
+        } else if let truncatedText {
+            truncatedText.removeFromSuperview(); self.truncatedText = nil
+        }
         // A row a fold has emptied draws nothing and says nothing.
         setAccessibilityElement(!drawsNothing)
         setAccessibilityLabel("assistant message")
         setAccessibilityCustomActions(TranscriptRowAction.all(message, inputs.actions, forks: inputs.environment.forks, source: sourceToggle)
-            .map { action in NSAccessibilityCustomAction(name: action.name) { action.perform(); return true } })
+            .map { action in NSAccessibilityCustomAction(name: action.name) { [weak self] in
+                // A row in a pane that takes no input acts on nothing, as its pills do.
+                guard self?.inputs.environment.isEnabled == true else { return false }
+                action.perform(); return true
+            } })
         needsLayout = true
         refreshBand()
         refreshCopy()
@@ -146,6 +174,7 @@ import AppKit
             let button = copy ?? { let button = TranscriptCopyButton(); addSubview(button); copy = button; return button }()
             button.target = introduction
             button.enabled = inputs.environment.isEnabled
+            button.rightToLeft = inputs.environment.layoutDirection == .rightToLeft
             needsLayout = true
         } else if let copy {
             copy.removeFromSuperview(); self.copy = nil
@@ -161,21 +190,7 @@ import AppKit
     private func refreshBand() {
         let wanted = hovering && !drawsNothing
             ? RowActionsView.pills(message, actions: inputs.actions, forks: inputs.environment.forks, source: sourceToggle) : []
-        if pills.map(\.title) != wanted.map(\.title) {
-            // Leaving pills fade out as they used to, then go.
-            for old in pills { TranscriptMotion.leave(old) }
-            pills = wanted.map { pill in
-                let button = TranscriptPillButton(title: pill.title, accent: pill.accent, perform: pill.perform)
-                button.enabled = inputs.environment.isEnabled
-                addSubview(button)
-                return button
-            }
-            needsLayout = true
-            layoutSubtreeIfNeeded()
-            pills.forEach(TranscriptMotion.arrive)
-        } else {
-            for (button, pill) in zip(pills, wanted) { button.perform = pill.perform; button.enabled = inputs.environment.isEnabled }
-        }
+        band.show(wanted, enabled: inputs.environment.isEnabled)
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
@@ -185,6 +200,8 @@ import AppKit
     // MARK: Geometry
 
     private struct Plan {
+        var failed: CGRect = .zero
+        var truncated: CGRect = .zero
         var notice: CGRect = .zero
         var markdown: CGRect
         var source: CGRect
@@ -196,12 +213,19 @@ import AppKit
         guard !drawsNothing else { return Plan(markdown: .zero, source: .zero, sourceText: .zero, band: .zero, height: 0) }
         var y: CGFloat = 0
         var markdownFrame = CGRect.zero, sourceFrame = CGRect.zero, sourceText = CGRect.zero
+        var failedFrame = CGRect.zero, truncatedFrame = CGRect.zero
+        if let failedLabel {
+            // The ending's word on a line of its own, above the words.
+            let size = failedLabel.intrinsicSize
+            failedFrame = CGRect(x: 0, y: 0, width: size.width, height: size.height)
+            y = failedFrame.maxY + Self.gap
+        }
         if drawsBody {
             let message = message
             let measured = raw ? 0 : markdown.measure(width: width).height
             let height = message.text.isEmpty && message.isStreaming ? max(Self.waitingHeight, measured) : measured
-            markdownFrame = CGRect(x: 0, y: 0, width: width, height: height)
-            y = height
+            markdownFrame = CGRect(x: 0, y: y, width: width, height: height)
+            y += height
             if raw, let parts = source {
                 let inner = max(1, width - 2 * Self.sourcePadding.width)
                 let text = parts.text.measure(width: inner).height
@@ -211,17 +235,22 @@ import AppKit
             }
             y += Self.gap
         }
+        if let truncatedText {
+            let height = truncatedText.exactHeight(width: width)
+            truncatedFrame = CGRect(x: 0, y: y, width: width, height: height)
+            y = truncatedFrame.maxY + Self.gap
+        }
         var noticeFrame = CGRect.zero
         if let notice = noticeText, !notice.string.isEmpty {
             // Two points of room above it, as the notice's own padding gave;
             // the text wraps beside its icon.
-            let textWidth = max(1, width - (noticeIcon.image?.size.width ?? 0) - 6)
+            let textWidth = max(1, width - noticeIconWidth - 6)
             let line = max(notice.exactHeight(width: textWidth), noticeIcon.image?.size.height ?? 0)
             noticeFrame = CGRect(x: 0, y: y + 2, width: width, height: line)
             y = noticeFrame.maxY + Self.gap
         }
         let band = CGRect(x: 0, y: y, width: width, height: Self.bandHeight)
-        return Plan(notice: noticeFrame, markdown: markdownFrame, source: sourceFrame, sourceText: sourceText, band: band, height: band.maxY + Self.bottom)
+        return Plan(failed: failedFrame, truncated: truncatedFrame, notice: noticeFrame, markdown: markdownFrame, source: sourceFrame, sourceText: sourceText, band: band, height: band.maxY + Self.bottom)
     }
     func settle() -> (height: CGFloat, passes: Int) {
         let plan = plan(width: bounds.width > 0 ? bounds.width : inputs.width)
@@ -239,12 +268,15 @@ import AppKit
         quoteRegion.frame = plan.source == .zero ? plan.markdown : plan.markdown.union(plan.source)
         if let parts = source { parts.panel.frame = plan.source; parts.text.frame = plan.sourceText }
         dots.isHidden = hidden || !dots.running
+        failedLabel?.isHidden = hidden; failedLabel?.frame = plan.failed
+        truncatedText?.isHidden = hidden
+        truncatedText.map { $0.frame = CGRect(x: plan.truncated.minX, y: plan.truncated.minY, width: plan.truncated.width, height: ceil(plan.truncated.height)) }
         noticeText?.isHidden = hidden; noticeIcon.isHidden = hidden || noticeText == nil
         if let notice = noticeText, !notice.isHidden {
             let icon = noticeIcon.image?.size ?? .zero
-            let textWidth = max(1, plan.notice.width - icon.width - 6), text = notice.exactHeight(width: textWidth)
-            noticeIcon.frame = CGRect(x: 0, y: plan.notice.midY - icon.height / 2, width: icon.width, height: icon.height)
-            notice.frame = CGRect(x: icon.width + 6, y: plan.notice.midY - text / 2, width: textWidth, height: ceil(text))
+            let textWidth = max(1, plan.notice.width - noticeIconWidth - 6), text = notice.exactHeight(width: textWidth)
+            noticeIcon.frame = CGRect(x: 0, y: plan.notice.midY - icon.height / 2 - Self.noticeIconLift, width: icon.width, height: icon.height)
+            notice.frame = CGRect(x: noticeIconWidth + 6, y: plan.notice.midY - text / 2, width: textWidth, height: ceil(text))
         }
         // 4: a folded reply's source takes no room and says nothing.
         if let parts = source { parts.panel.isHidden = hidden; parts.text.isHidden = hidden }
@@ -254,17 +286,10 @@ import AppKit
                                 width: TranscriptCopyButton.size.width, height: TranscriptCopyButton.size.height)
         }
         let rtl = inputs.environment.layoutDirection == .rightToLeft
-        var x = plan.band.maxX
-        for button in pills.reversed() {
-            let size = button.pillSize
-            x -= size.width
-            button.frame = TranscriptMotion.mirrored(CGRect(x: x, y: plan.band.midY - size.height / 2, width: size.width, height: size.height),
-                                                     width: bounds.width, rtl)
-            x -= 4
-        }
+        band.place(maxX: plan.band.maxX, midY: plan.band.midY, width: bounds.width, rightToLeft: rtl)
         if rtl {
             copy.map { $0.frame = TranscriptMotion.mirrored($0.frame, width: bounds.width, true) }
-            for view in [noticeIcon, noticeText, dots] as [NSView?] { if let view { view.frame = TranscriptMotion.mirrored(view.frame, width: bounds.width, true) } }
+            for view in [noticeIcon, noticeText, dots, failedLabel, truncatedText] as [NSView?] { if let view { view.frame = TranscriptMotion.mirrored(view.frame, width: bounds.width, true) } }
         }
     }
     override func updateTrackingAreas() {

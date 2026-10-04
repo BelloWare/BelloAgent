@@ -1,145 +1,229 @@
 import AppKit
 
-/// A run failure, drawn by AppKit where the conversation stopped: a red mark
-/// and "Something went wrong", what failed, and what the helper said about it,
-/// in a tinted card; a failed run offers to retry. It reads and measures as
-/// `FailureRowView` did.
-@MainActor final class TranscriptNativeFailureRow: NSView, TranscriptRowContent {
-    /// The hosted row's room above and below a message that is not the reader's.
-    static let rowTop: CGFloat = 4, rowBottom: CGFloat = 10
+/// Where a run stopped, drawn by AppKit in a tinted card: a mark and what
+/// happened, the helper's own words, what it added, and the one thing to do
+/// next. A failure is red, with "Something went wrong" and, for a run, Retry
+/// request (`FailureRowView`); a cost limit is amber, with Raise limit… or,
+/// once the limit is above the spend, Continue (`CostLimitNoticeRow`).
+@MainActor final class TranscriptNativeFailureRow: TranscriptNativeMessageRow {
     /// The card's own room around it, and inside it.
     static let margin: CGFloat = 8
     static let padding = CGSize(width: 14, height: 10)
     static let spacing: CGFloat = 6
     static let markSize: CGFloat = 18
-    static let titleFont = NSFont.systemFont(ofSize: 12.5, weight: .semibold)
+    static let titleFace = TranscriptPlainTextFace(size: 12.5, monospaced: false, lineSpacing: 0, label: "Title", weight: NSFont.Weight.semibold.rawValue)
     static let bodyFace = TranscriptPlainTextFace(size: 13, monospaced: false, lineSpacing: 0, label: "Error")
     static let detailFace = TranscriptPlainTextFace(size: 12, monospaced: false, lineSpacing: 0, label: "Detail")
+    static let pillFont = NSFont.systemFont(ofSize: 11.5, weight: .medium)
 
-    weak var owner: TranscriptRowContainer?
-    private var inputs: TranscriptRowInputs
     private let card = TranscriptPanel()
-    private let mark = TranscriptPanel()
+    /// A failure's red disc with its "!".
+    private let disc = TranscriptPanel()
     private let bang = TranscriptLabel()
-    private let title = TranscriptLabel()
+    /// A cost limit's symbol.
+    private let symbol = TranscriptSymbol()
+    private let title = TranscriptPlainTextView()
     private let body = TranscriptPlainTextView()
     private let detail = TranscriptPlainTextView()
-    private var retry: TranscriptPillButton?
-    override var isFlipped: Bool { true }
+    private var pill: TranscriptPillButton?
+    /// Raise limit… opens the chat's limit editor as a popover over itself.
+    private var trigger: PiPopoverTriggerButton?
 
-    static func message(of item: TranscriptItem) -> TranscriptMessage? {
-        guard case .message(let message) = item, message.kind == "failure",
-              message.failureCode?.hasPrefix(SessionDisplay.costLimitCode) != true else { return nil }
+    override class func message(of item: TranscriptItem) -> TranscriptMessage? {
+        guard case .message(let message) = item, message.kind == "failure" else { return nil }
         return message
     }
-    static func draws(_ item: TranscriptItem) -> Bool { message(of: item) != nil }
-
-    init(inputs: TranscriptRowInputs) {
-        self.inputs = inputs
-        super.init(frame: .zero)
+    override init(inputs: TranscriptRowInputs) {
+        super.init(inputs: inputs)
         card.cornerRadius = 12
-        mark.cornerRadius = nil
+        disc.cornerRadius = nil; disc.circular = true
         bang.text = "!"; bang.font = .systemFont(ofSize: 11, weight: .bold); bang.color = .white
-        title.text = "Something went wrong"; title.font = Self.titleFont
+        title.isSelectable = false; title.setAccessibilityElement(false)
         detail.isSelectable = false
-        for view in [card, mark, bang, title, body, detail] as [NSView] { addSubview(view) }
-        setAccessibilityElement(true); setAccessibilityRole(.group)
+        for view in [card, disc, bang, symbol, title, body, detail] as [NSView] { addSubview(view) }
         apply(inputs)
     }
     required init?(coder: NSCoder) { nil }
 
-    func accepts(_ item: TranscriptItem) -> Bool { Self.draws(item) }
-    override func invalidateIntrinsicContentSize() {
-        super.invalidateIntrinsicContentSize()
-        owner?.contentSizeChanged()
+    /// What the card says and does.
+    private enum Kind: Equatable {
+        case failure(retry: Bool)
+        /// At the limit, or (`raised`) with the limit above the spend again;
+        /// `run`: a stopped run rather than a refused message.
+        case costLimit(raised: Bool, run: Bool)
     }
-    private var message: TranscriptMessage { Self.message(of: inputs.item) ?? TranscriptMessage(id: "", role: "system", text: "") }
-    /// A run failure can be retried from where it stopped; a refused send is retyped.
-    private var retryable: Bool { message.id.hasPrefix("failure:run:") }
-
-    func apply(_ inputs: TranscriptRowInputs) {
-        self.inputs = inputs
-        TranscriptAppearance.apply(inputs.environment, to: self)
+    private var kind: Kind {
         let message = message
-        card.fill = TranscriptNSPalette.danger.withAlphaComponent(0.08)
-        card.stroke = TranscriptNSPalette.danger.withAlphaComponent(0.35)
-        mark.fill = TranscriptNSPalette.danger
-        title.color = TranscriptNSPalette.danger
-        body.update(text: message.text, face: Self.bodyFace, environment: inputs.environment, swiftUILines: true)
-        body.isHidden = message.text.isEmpty
-        detail.update(text: message.detail ?? "", face: Self.detailFace, environment: inputs.environment, swiftUILines: true,
-                      color: TranscriptNSPalette.muted)
-        detail.isHidden = (message.detail ?? "").isEmpty
-        if retryable {
-            let button = retry ?? {
-                let button = TranscriptPillButton(title: "Retry request", accent: true, symbol: "arrow.clockwise", font: .systemFont(ofSize: 11.5, weight: .medium),
-                                                  perform: {})
-                button.setAccessibilityElement(true); button.setAccessibilityRole(.button)
-                button.setAccessibilityIdentifier("retry-run"); button.setAccessibilityLabel("Retry request")
-                button.toolTip = "Send the failed request again from where the turn stopped, with this chat's current model and effort; queued follow-ups continue after it"
-                addSubview(button); retry = button
-                return button
-            }()
-            let actions = inputs.actions
-            button.perform = { actions.retry() }
-            button.enabled = inputs.environment.isEnabled
-        } else if let retry {
-            retry.removeFromSuperview(); self.retry = nil
+        let run = message.id.hasPrefix("failure:run:")
+        guard message.failureCode?.hasPrefix(SessionDisplay.costLimitCode) == true else { return .failure(retry: run) }
+        return .costLimit(raised: message.failureCode == SessionDisplay.costLimitRaised, run: run)
+    }
+    /// The pill the header offers, if any.
+    private enum Offer: Equatable { case retry, continueRun, raise }
+    private var offer: Offer? {
+        switch kind {
+        case .failure(let retry): return retry ? .retry : nil
+        case .costLimit(let raised, let run): return raised ? (run ? .continueRun : nil) : .raise
         }
-        setAccessibilityLabel("Error: \(message.text)")
-        needsLayout = true
+    }
+    private var tint: NSColor {
+        switch kind {
+        case .failure: return TranscriptNSPalette.danger
+        case .costLimit(let raised, _): return raised ? TranscriptNSPalette.accent : TranscriptNSPalette.warning
+        }
+    }
+
+    override func configure() {
+        let message = message, kind = kind, environment = inputs.environment
+        let titleText: String
+        switch kind {
+        case .failure:
+            card.fill = TranscriptNSPalette.danger.withAlphaComponent(0.08)
+            card.stroke = TranscriptNSPalette.danger.withAlphaComponent(0.35)
+            disc.fill = TranscriptNSPalette.danger
+            titleText = "Something went wrong"
+            setAccessibilityLabel("Error: \(message.text)")
+            setAccessibilityIdentifier(nil)
+        case .costLimit(let raised, let run):
+            card.fill = raised ? TranscriptNSPalette.accentSoft : TranscriptNSPalette.warning.withAlphaComponent(0.09)
+            card.stroke = (raised ? TranscriptNSPalette.accent : TranscriptNSPalette.warning).withAlphaComponent(0.35)
+            symbol.show(raised ? "checkmark.circle.fill" : "dollarsign.circle.fill", size: 15, weight: .semibold)
+            symbol.contentTintColor = tint
+            titleText = raised ? "Cost limit raised" : run ? "Stopped at this chat's cost limit" : "This chat is at its cost limit"
+            setAccessibilityLabel((raised ? "Cost limit raised: " : "Cost limit reached: ") + message.text)
+            setAccessibilityIdentifier("cost-limit-notice")
+        }
+        title.update(text: titleText, face: Self.titleFace, environment: environment, swiftUILines: true, color: tint)
+        body.update(text: message.text, face: Self.bodyFace, environment: environment, swiftUILines: true)
+        detail.update(text: message.detail ?? "", face: Self.detailFace, environment: environment, swiftUILines: true, color: TranscriptNSPalette.muted)
+        configurePill()
+    }
+    override func hides(_ view: NSView) -> Bool {
+        let failure: Bool
+        if case .failure = kind { failure = true } else { failure = false }
+        return ((view === disc || view === bang) && !failure) || (view === symbol && failure)
+            || (view === body && message.text.isEmpty) || (view === detail && (message.detail ?? "").isEmpty)
+    }
+
+    private func configurePill() {
+        let offer = offer, actions = inputs.actions
+        if pill?.title != offer.map(Self.title) {
+            pill?.removeFromSuperview(); pill = nil
+            trigger?.removeFromSuperview(); trigger = nil
+        }
+        guard let offer else { return }
+        let button = pill ?? {
+            let button: TranscriptPillButton
+            switch offer {
+            case .retry:
+                button = TranscriptPillButton(title: Self.title(offer), accent: true, symbol: "arrow.clockwise", font: Self.pillFont, perform: {})
+                button.setAccessibilityIdentifier("retry-run")
+                button.toolTip = "Send the failed request again from where the turn stopped, with this chat's current model and effort; queued follow-ups continue after it"
+            case .continueRun:
+                button = TranscriptPillButton(title: Self.title(offer), accent: true, symbol: "play.fill", font: Self.pillFont, perform: {})
+                button.setAccessibilityIdentifier("cost-limit-continue")
+                button.toolTip = "Send the stopped request again from where the run stopped, with this chat's current model and effort; queued follow-ups go on after it"
+            case .raise:
+                // Its own face, with an AppKit press target over it that the
+                // limit editor's popover is anchored to.
+                button = TranscriptPillButton(title: Self.title(offer), accent: true, symbol: "arrow.up.circle", font: Self.pillFont, perform: {})
+                button.style = .raise; button.wraps = false
+                let trigger = PiPopoverTriggerButton(frame: .zero)
+                trigger.toolTip = "Choose a higher limit for this chat, or no limit"
+                trigger.setAccessibilityLabel(Self.title(offer)); trigger.setAccessibilityIdentifier("cost-limit-raise")
+                trigger.onHover = { [weak button] in button?.setHovering($0) }
+                button.addSubview(trigger); self.trigger = trigger
+            }
+            if offer != .raise {
+                button.setAccessibilityElement(true); button.setAccessibilityRole(.button)
+                button.setAccessibilityLabel(Self.title(offer)); button.focusable = true
+            }
+            addSubview(button); pill = button
+            return button
+        }()
+        switch offer {
+        case .retry: button.perform = { actions.retry() }
+        case .continueRun: button.perform = { actions.costLimit?(.continueRun, nil) }
+        case .raise:
+            button.perform = {}
+            trigger?.onPress = { anchor in actions.costLimit?(.raise, anchor) }
+            trigger?.isEnabled = inputs.environment.isEnabled
+        }
+        button.enabled = inputs.environment.isEnabled
+        button.rightToLeft = rightToLeft
+    }
+    nonisolated private static func title(_ offer: Offer) -> String {
+        switch offer {
+        case .retry: return "Retry request"
+        case .continueRun: return "Continue"
+        case .raise: return "Raise limit…"
+        }
     }
 
     // MARK: Geometry
 
-    private struct Plan { var card, mark, title, body, detail, retry: CGRect; var height: CGFloat }
+    /// The mark: a failure's 18-point disc, or a cost limit's symbol as
+    /// SwiftUI lays an image out, its outline's size.
+    private var markSize: CGSize {
+        if case .failure = kind { return CGSize(width: Self.markSize, height: Self.markSize) }
+        return symbol.swiftUIFrame ?? symbol.image?.size ?? .zero
+    }
+    /// The header line as SwiftUI's `HStack` shares it: the mark, the title
+    /// (which wraps in a narrow card), a spacer and the pill (whose title
+    /// wraps too, unless it is Raise limit…, which keeps its one line).
+    private func header(inner: CGFloat) -> (sizes: [CGSize], spacing: [CGFloat]) {
+        let title = title
+        var pieces: [TranscriptLinePiece] = [.fixed(markSize),
+                                             .text(ideal: title.idealWidth, used: { title.usedWidth(width: $0) }, height: { title.exactHeight(width: $0) }),
+                                             .spacer()]
+        if let pill {
+            pieces.append(pill.wraps ? TranscriptLinePiece(minWidth: 0, maxWidth: pill.pillSize.width, size: { pill.size(offered: $0) })
+                                     : .fixed(pill.pillSize))
+        }
+        let spacing = [CGFloat](repeating: 8, count: pieces.count - 1)
+        return (TranscriptLineLayout.sizes(pieces, spacing: spacing, width: inner), spacing)
+    }
+    private struct Plan { var card, mark, title, body, detail, pill: CGRect; var height: CGFloat }
     private func plan(width: CGFloat) -> Plan {
         let inner = max(1, width - 2 * Self.padding.width)
-        let titleSize = title.intrinsicSize
-        let pill = retry?.pillSize ?? .zero
-        let header = max(Self.markSize, titleSize.height, pill.height)
-        let bodyHeight = body.isHidden ? 0 : body.exactHeight(width: inner)
-        let detailHeight = detail.isHidden ? 0 : detail.exactHeight(width: inner)
+        let line = header(inner: inner)
+        let header = line.sizes.map(\.height).max() ?? 0
+        let hasBody = !message.text.isEmpty, hasDetail = !(message.detail ?? "").isEmpty
+        let bodyHeight = hasBody ? body.exactHeight(width: inner) : 0
+        let detailHeight = hasDetail ? detail.exactHeight(width: inner) : 0
         var stack = header
-        if !body.isHidden { stack += Self.spacing + bodyHeight }
-        if !detail.isHidden { stack += Self.spacing + detailHeight }
+        if hasBody { stack += Self.spacing + bodyHeight }
+        if hasDetail { stack += Self.spacing + detailHeight }
         let cardHeight = stack + 2 * Self.padding.height
-        // SwiftUI gives a card with a pill in its header a point more above
-        // and below (measured: the card's own frame is the same).
-        let margin = Self.margin + (retry == nil ? 0 : 1)
-        let content = Self.rowTop + margin + cardHeight + margin + Self.rowBottom
-        let height = ceil(content), offset = (height - content) / 2
-        let card = CGRect(x: 0, y: offset + Self.rowTop + margin, width: width, height: cardHeight)
-        let x = Self.padding.width, top = card.minY + Self.padding.height
-        let mark = CGRect(x: x, y: top + (header - Self.markSize) / 2, width: Self.markSize, height: Self.markSize)
-        let title = CGRect(x: mark.maxX + 8, y: top + (header - titleSize.height) / 2, width: titleSize.width, height: titleSize.height)
-        let retry = CGRect(x: card.maxX - Self.padding.width - pill.width, y: top + (header - pill.height) / 2, width: pill.width, height: pill.height)
+        let margin = Self.margin
+        let card = CGRect(x: 0, y: margin, width: width, height: cardHeight)
+        let top = card.minY + Self.padding.height
+        let frames = TranscriptLineLayout.frames(line.sizes, spacing: line.spacing, x: Self.padding.width, midY: top + header / 2)
         var y = top + header
         var bodyFrame = CGRect.zero, detailFrame = CGRect.zero
-        if !body.isHidden { y += Self.spacing; bodyFrame = CGRect(x: x, y: y, width: inner, height: ceil(bodyHeight)); y += bodyHeight }
-        if !detail.isHidden { y += Self.spacing; detailFrame = CGRect(x: x, y: y, width: inner, height: ceil(detailHeight)) }
-        return Plan(card: card, mark: mark, title: title, body: bodyFrame, detail: detailFrame, retry: retry, height: height)
+        let x = Self.padding.width
+        if hasBody { y += Self.spacing; bodyFrame = CGRect(x: x, y: y, width: inner, height: ceil(bodyHeight)); y += bodyHeight }
+        if hasDetail { y += Self.spacing; detailFrame = CGRect(x: x, y: y, width: inner, height: ceil(detailHeight)) }
+        return Plan(card: card, mark: frames[0], title: frames[1], body: bodyFrame, detail: detailFrame,
+                    pill: pill == nil ? .zero : frames[3], height: margin + cardHeight + margin)
     }
-    func settle() -> (height: CGFloat, passes: Int) {
-        let plan = plan(width: bounds.width > 0 ? bounds.width : inputs.width)
-        layoutSubtreeIfNeeded()
-        return (max(1, plan.height), 1)
-    }
-    func confirmHeight() -> CGFloat { max(1, plan(width: bounds.width > 0 ? bounds.width : inputs.width).height) }
-
-    override func layout() {
-        super.layout()
-        let plan = plan(width: bounds.width)
-        let scale = window?.backingScaleFactor ?? 2
-        let rtl = inputs.environment.layoutDirection == .rightToLeft
-        func place(_ rect: CGRect) -> CGRect { TranscriptMotion.mirrored(rect, width: bounds.width, rtl) }
-        card.frame = TranscriptMotion.pixelAligned(place(plan.card), scale: scale)
-        mark.frame = TranscriptMotion.pixelAligned(place(plan.mark), scale: scale)
+    override func contentHeight(width: CGFloat) -> CGFloat { plan(width: width).height }
+    override func place(in rect: CGRect) {
+        let plan = plan(width: rect.width)
+        func shifted(_ frame: CGRect) -> CGRect { frame.offsetBy(dx: rect.minX, dy: rect.minY) }
+        card.frame = pixelAligned(shifted(plan.card))
+        disc.frame = pixelAligned(shifted(plan.mark))
         let bangSize = bang.intrinsicSize
-        bang.frame = CGRect(x: mark.frame.midX - bangSize.width / 2, y: mark.frame.midY - bangSize.height / 2, width: bangSize.width, height: bangSize.height)
-        title.frame = place(plan.title)
-        body.frame = place(plan.body)
-        detail.frame = place(plan.detail)
-        retry?.frame = place(plan.retry)
+        bang.frame = CGRect(x: disc.frame.midX - bangSize.width / 2, y: disc.frame.midY - bangSize.height / 2, width: bangSize.width, height: bangSize.height)
+        if let image = symbol.image {
+            // The image is drawn whole, in the middle of SwiftUI's frame for it.
+            let mark = shifted(plan.mark)
+            symbol.frame = CGRect(x: mark.midX - image.size.width / 2, y: mark.midY - image.size.height / 2, width: image.size.width, height: image.size.height)
+        }
+        title.frame = shifted(plan.title)
+        body.frame = shifted(plan.body)
+        detail.frame = shifted(plan.detail)
+        pill?.frame = shifted(plan.pill)
+        trigger?.frame = pill?.bounds ?? .zero
     }
 }

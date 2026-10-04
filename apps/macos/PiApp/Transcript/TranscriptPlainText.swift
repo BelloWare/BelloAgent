@@ -20,6 +20,8 @@ struct TranscriptPlainTextFace: Equatable, Sendable {
     var characterWidth: CGFloat { monospaced ? 0.6 : 0.52 }
     /// What assistive technology calls the text.
     var label: String
+    /// The face's weight (`NSFont.Weight`'s raw value); regular unless said.
+    var weight: CGFloat = 0
 
     /// A message the reader sent: the face, size and colour the bubble has
     /// always read in, the prose's own.
@@ -29,8 +31,13 @@ struct TranscriptPlainTextFace: Equatable, Sendable {
     static let source = TranscriptPlainTextFace(size: MarkdownStyle.prose.baseSize * 0.86, monospaced: true,
                                                 lineSpacing: MarkdownStyle.prose.baseSize * 0.86 * 0.4, label: "Markdown source")
 
-    var font: Font { .system(size: size, design: monospaced ? .monospaced : .default) }
-    var nsFont: NSFont { monospaced ? .monospacedSystemFont(ofSize: size, weight: .regular) : .systemFont(ofSize: size) }
+    var font: Font {
+        let weights: [CGFloat: Font.Weight] = [NSFont.Weight.medium.rawValue: .medium, NSFont.Weight.semibold.rawValue: .semibold, NSFont.Weight.bold.rawValue: .bold]
+        return .system(size: size, weight: weights[weight] ?? .regular, design: monospaced ? .monospaced : .default)
+    }
+    var nsFont: NSFont {
+        monospaced ? .monospacedSystemFont(ofSize: size, weight: NSFont.Weight(weight)) : .systemFont(ofSize: size, weight: NSFont.Weight(weight))
+    }
 }
 
 /// Literal text as one selectable text. A short text is SwiftUI's own; a
@@ -155,20 +162,23 @@ struct NativePlainText: NSViewRepresentable {
             paragraph.lineSpacing = face.lineSpacing
             paragraph.lineBreakMode = .byWordWrapping
             // The text's leading edge, as SwiftUI aligns it.
-            paragraph.alignment = environment.layoutDirection == .rightToLeft ? .right : .left
+            paragraph.alignment = centred ? .center : environment.layoutDirection == .rightToLeft ? .right : .left
             let attributes: [NSAttributedString.Key: Any] = [
                 .font: face.nsFont, .foregroundColor: color, .paragraphStyle: paragraph
             ]
             if swiftUILines {
                 let font = face.nsFont, line = Self.swiftUILine(font)
                 paragraph.minimumLineHeight = line.height; paragraph.maximumLineHeight = line.height
+                // SwiftUI's text breaks lines as a label does: it pushes a
+                // word down rather than leave one alone on the last line.
+                paragraph.lineBreakStrategy = .standard
             }
             storage.setAttributedString(NSAttributedString(string: next, attributes: attributes))
             text = next; self.face = face
             setAccessibilityLabel(face.label)
         }
         self.environment = environment
-        sizes.removeAll(keepingCapacity: true); exactSizes.removeAll(keepingCapacity: true); lineCounts.removeAll()
+        sizes.removeAll(keepingCapacity: true); exactSizes.removeAll(keepingCapacity: true); ideal = nil
         // New text keeps whatever of the reader's selection still fits it.
         if previousLength > 0 {
             selectedRanges = ranges.map { value in
@@ -180,38 +190,87 @@ struct NativePlainText: NSViewRepresentable {
     }
 
     /// Sets the glyphs where SwiftUI draws them in its line box. TextKit puts
-    /// a taller line's extra room above the glyphs; SwiftUI's sit lower —
-    /// by the extra room, to the whole point, in a text of one line, and by
-    /// half of it in a text that wraps. Measured against SwiftUI's own
-    /// drawing (`TranscriptNativeRowParityTests`); only where the glyphs sit
-    /// changes, never the line box, so no height does.
-    /// How far TextKit's glyphs are raised to sit where SwiftUI draws them,
-    /// for one line and for wrapped lines. `glyphOffsetOverride` is for the
-    /// calibration sweep only.
+    /// a taller line's extra room above the glyphs; SwiftUI's sit lower. Only
+    /// where the glyphs sit changes, never the line box, so no height does.
+    /// `glyphOffsetOverride` is for the calibration sweep only.
     nonisolated(unsafe) static var glyphOffsetOverride: CGFloat?
-    /// Measured, not derived: no formula of the font's metrics gave every
-    /// face (TranscriptTextCalibrationTests sweeps and checks this table).
-    static func glyphOffset(_ font: NSFont, wrapped: Bool) -> CGFloat {
+    /// How far TextKit's glyphs are raised to sit where SwiftUI draws them,
+    /// for a text `height` tall before rounding, drawn at `scale` pixels a
+    /// point. Measured, not derived (TranscriptTextCalibrationTests sweeps
+    /// and checks it): the user's face sits a point lower, less half the room
+    /// SwiftUI's whole-point frame adds below the text, to the nearest pixel;
+    /// 11.5 pt text a point lower; the other faces where TextKit puts them.
+    static func glyphOffset(_ font: NSFont, height: CGFloat, scale: CGFloat) -> CGFloat {
         if let glyphOffsetOverride { return glyphOffsetOverride }
-        if font.pointSize == TranscriptPlainTextFace.user.size, !font.isFixedPitch { return wrapped ? 0.5 : 1 }
-        return 0
-    }
-    /// Whether the text was one line or more at each width it was measured at.
-    private var lineCounts: [(width: CGFloat, lines: Int)] = []
-    private func countLines(_ manager: NSLayoutManager, _ container: NSTextContainer) -> Int {
-        var lines = 0
-        manager.enumerateLineFragments(forGlyphRange: manager.glyphRange(for: container)) { _, _, _, _, stop in
-            lines += 1; if lines > 1 { stop.pointee = true }
-        }
-        return lines
+        guard !font.isFixedPitch else { return 0 }
+        // The faces whose glyphs SwiftUI sets lower by a fixed amount.
+        if let fixed = [11.5: 1.0][Double(font.pointSize)] { return CGFloat(fixed) }
+        guard font.pointSize == TranscriptPlainTextFace.user.size else { return 0 }
+        let room = (ceil(height) - height) / 2
+        return 1 - (room * scale).rounded() / scale
     }
     /// Sets the glyphs for the width the text is drawn at.
+    private var placingGlyphs = false
     private func placeGlyphsAsSwiftUI(width: CGFloat) {
-        guard swiftUILines, let face, let storage = textStorage, storage.length > 0,
-              let lines = lineCounts.last(where: { $0.width == width })?.lines else { return }
-        let offset = Self.glyphOffset(face.nsFont, wrapped: lines > 1)
+        guard swiftUILines, !placingGlyphs, let face, let storage = textStorage, storage.length > 0 else { return }
+        // A text drawn narrower than it was measured (as wide as its widest
+        // line) is measured where it is drawn, once.
+        placingGlyphs = true
+        let height = exactSizes.last(where: { $0.width == width })?.height ?? { _ = measure(width: width); return exactSizes.last(where: { $0.width == width })?.height }()
+        placingGlyphs = false
+        guard let height else { return }
+        let offset = Self.glyphOffset(face.nsFont, height: height, scale: window?.backingScaleFactor ?? 2)
         guard (storage.attribute(.baselineOffset, at: 0, effectiveRange: nil) as? CGFloat) != offset else { return }
         storage.addAttribute(.baselineOffset, value: offset, range: NSRange(location: 0, length: storage.length))
+    }
+    /// The text stands on the pixel nearest where it is put, as SwiftUI sets
+    /// a text (in a parent on the pixel grid). The reader's own message keeps
+    /// its exact place: its glyph offsets (`glyphOffset`) were measured so.
+    var snapsToPixels = true
+    override func setFrameOrigin(_ newOrigin: NSPoint) {
+        guard snapsToPixels else { return super.setFrameOrigin(newOrigin) }
+        let scale = window?.backingScaleFactor ?? 2
+        super.setFrameOrigin(NSPoint(x: (newOrigin.x * scale).rounded() / scale, y: (newOrigin.y * scale).rounded() / scale))
+    }
+    /// Lines centred, as `multilineTextAlignment(.center)` sets them.
+    var centred = false { didSet { if centred != oldValue { face = nil } } }
+    /// How wide the text's widest line is at `width`, as SwiftUI sizes a
+    /// text that wraps.
+    func usedWidth(width: CGFloat) -> CGFloat {
+        guard !text.isEmpty, let container = textContainer, let manager = layoutManager else { return 0 }
+        _ = measure(width: width)
+        let previous = container.containerSize
+        container.containerSize = NSSize(width: width, height: CGFloat.greatestFiniteMagnitude)
+        var widest: CGFloat = 0
+        manager.enumerateLineFragments(forGlyphRange: manager.glyphRange(for: container)) { _, used, _, _, _ in widest = max(widest, used.width) }
+        container.containerSize = previous
+        // Up to a whole pixel, as SwiftUI sizes a text; set at that width, the
+        // text wraps where it did.
+        widest = ceil(widest * 2) / 2
+        return min(width, widest)
+    }
+    /// At most this many lines, the last cut short with an ellipsis, as
+    /// SwiftUI's `lineLimit` does; zero for no limit.
+    var maximumLines = 0 {
+        didSet {
+            guard maximumLines != oldValue else { return }
+            textContainer?.maximumNumberOfLines = maximumLines
+            textContainer?.lineBreakMode = maximumLines > 0 ? .byTruncatingTail : .byWordWrapping
+            sizes.removeAll(); exactSizes.removeAll(); ideal = nil
+        }
+    }
+    /// How wide the text is with all the room it wants: its widest line.
+    private var ideal: CGFloat?
+    var idealWidth: CGFloat {
+        if let ideal { return ideal }
+        guard !text.isEmpty, let container = textContainer, let manager = layoutManager else { return 0 }
+        let previous = container.containerSize
+        container.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        manager.ensureLayout(for: container)
+        let width = ceil(manager.usedRect(for: container).width * 2) / 2
+        container.containerSize = previous
+        ideal = width
+        return width
     }
     /// The text's height at `width` before it is rounded up to a point.
     func exactHeight(width: CGFloat) -> CGFloat {
@@ -233,7 +292,6 @@ struct NativePlainText: NSViewRepresentable {
         container.containerSize = NSSize(width: width, height: CGFloat.greatestFiniteMagnitude)
         manager.ensureLayout(for: container)
         layoutPasses += 1
-        if swiftUILines { lineCounts.removeAll { $0.width == width }; lineCounts.append((width, countLines(manager, container))); if lineCounts.count > 4 { lineCounts.removeFirst() } }
         // The used rect ends at the last line's own box: TextKit puts line
         // spacing between lines, and a trailing line break is a line.
         let height = max(manager.usedRect(for: container).maxY, manager.extraLineFragmentRect.maxY)
@@ -245,6 +303,11 @@ struct NativePlainText: NSViewRepresentable {
     override func layout() {
         super.layout()
         alignTextToBounds()
+    }
+    /// Where the glyphs sit depends on the pixel grid they land on.
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        if bounds.width > 0 { placeGlyphsAsSwiftUI(width: bounds.width) }
     }
     private func alignTextToBounds() {
         if bounds.width > 0, textContainer?.containerSize.width != bounds.width {

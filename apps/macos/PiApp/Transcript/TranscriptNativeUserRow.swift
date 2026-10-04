@@ -21,7 +21,7 @@ import AppKit
     private let bubble = TranscriptPanel()
     private let text = TranscriptPlainTextView()
     private let clock = TranscriptLabel()
-    private var pills: [TranscriptPillButton] = []
+    private lazy var band = TranscriptPillBand(host: self)
     private var hover: TranscriptHoverTracker!
     private var hovering = false
     private var sendingShown = false
@@ -46,6 +46,7 @@ import AppKit
         super.init(frame: .zero)
         clipsToBounds = false
         bubble.cornerRadius = 14
+        text.snapsToPixels = false
         addSubview(bubble)
         addSubview(text)
         clock.font = Self.clockFont; clock.monospacedDigits = true
@@ -97,7 +98,11 @@ import AppKit
         // A row its turn's fold has emptied draws nothing and says nothing.
         setAccessibilityElement(!inputs.disclosure.foldedAway)
         setAccessibilityCustomActions(TranscriptRowAction.all(message, inputs.actions, forks: inputs.environment.forks)
-            .map { action in NSAccessibilityCustomAction(name: action.name) { action.perform(); return true } })
+            .map { action in NSAccessibilityCustomAction(name: action.name) { [weak self] in
+                // A row in a pane that takes no input acts on nothing, as its pills do.
+                guard self?.inputs.environment.isEnabled == true else { return false }
+                action.perform(); return true
+            } })
         if before.width != inputs.width || before.item != inputs.item || before.disclosure.foldedAway != inputs.disclosure.foldedAway
             || before.environment != inputs.environment {
             needsLayout = true
@@ -117,21 +122,7 @@ import AppKit
         else { clock.speak(clock.text.isEmpty ? nil : "Sent at \(clock.text)") }
         let wanted = hovering && !message.isSending
             ? RowActionsView.pills(message, actions: inputs.actions, forks: inputs.environment.forks, source: nil) : []
-        if pills.map(\.title) != wanted.map(\.title) {
-            // Leaving pills fade out as they used to, then go.
-            for old in pills { TranscriptMotion.leave(old) }
-            pills = wanted.map { pill in
-                let button = TranscriptPillButton(title: pill.title, accent: pill.accent, perform: pill.perform)
-                button.enabled = inputs.environment.isEnabled
-                addSubview(button)
-                return button
-            }
-            needsLayout = true
-            layoutSubtreeIfNeeded()
-            pills.forEach(TranscriptMotion.arrive)
-        } else {
-            for (button, pill) in zip(pills, wanted) { button.perform = pill.perform; button.enabled = inputs.environment.isEnabled }
-        }
+        band.show(wanted, enabled: inputs.environment.isEnabled)
     }
 
     // MARK: Geometry
@@ -181,17 +172,7 @@ import AppKit
         // The text keeps its exact place: SwiftUI does not round a text's origin.
         text.frame = plan.text
         // The band reads from its trailing edge: the time, then the pills.
-        var x = plan.band.maxX
-        var placed: [CGRect] = []
-        for button in pills.reversed() {
-            let size = button.pillSize
-            x -= size.width
-            placed.append(CGRect(x: x, y: plan.band.midY - size.height / 2, width: size.width, height: size.height))
-            x -= 4
-        }
-        for (button, frame) in zip(pills.reversed(), placed) { button.frame = TranscriptMotion.mirrored(frame, width: bounds.width, rtl) }
-        if !pills.isEmpty { x += 4 }
-        x -= 10
+        let x = band.place(maxX: plan.band.maxX, midY: plan.band.midY, width: bounds.width, rightToLeft: rtl) - 10
         let size = clock.intrinsicSize
         clock.frame = TranscriptMotion.mirrored(CGRect(x: x - size.width, y: plan.band.midY - size.height / 2, width: size.width, height: size.height),
                                                 width: bounds.width, rtl)
