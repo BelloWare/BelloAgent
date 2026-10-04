@@ -756,7 +756,7 @@ struct NativeMarkdownSurface: NSViewRepresentable {
         // Colours are dynamic and resolve against the appearance the text is
         // drawn in; the row's colour scheme and contrast decide it.
         let dark = environment.colorScheme == .dark
-        let increased = environment.contrast == .increased
+        let increased = environment.increasedContrast
         let name: NSAppearance.Name = increased ? (dark ? .accessibilityHighContrastDarkAqua : .accessibilityHighContrastAqua) : (dark ? .darkAqua : .aqua)
         if appearance?.name != name { appearance = NSAppearance(named: name); textView.needsDisplay = true }
     }
@@ -1086,7 +1086,7 @@ struct MarkdownCodeToolbar: View {
             CopyButton(target: MarkdownCopyTarget(kind: .code, label: "Copy code", text: code), visible: true)
         }
         .frame(height: 20)
-        .environment(\.colorScheme, environment.colorScheme)
+        .environment(\.colorScheme, environment.swiftUIColorScheme)
     }
 }
 
@@ -1095,7 +1095,7 @@ struct MarkdownHeadingAction: View {
     let target: MarkdownCopyTarget
     let environment: TranscriptRowEnvironment
     var body: some View {
-        CopyButton(target: target, visible: true).environment(\.colorScheme, environment.colorScheme)
+        CopyButton(target: target, visible: true).environment(\.colorScheme, environment.swiftUIColorScheme)
     }
 }
 
@@ -1107,6 +1107,6 @@ struct MarkdownTableAction: View {
         Button("Open full table") { MarkdownTableWindow.open(header: mark.header, rows: mark.rows) }
             .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(TranscriptPalette.accent)
             .piPointer()
-            .environment(\.colorScheme, environment.colorScheme)
+            .environment(\.colorScheme, environment.swiftUIColorScheme)
     }
 }

@@ -57,8 +57,8 @@ final class TranscriptRowChangeTests: XCTestCase {
         XCTAssertEqual(change(old, closed, old, closed), .none)
         var dark = closed; dark.environment.colorScheme = .dark
         XCTAssertEqual(change(old, closed, old, dark), .repaint, "A colour is paint: every height stays")
-        var larger = closed; larger.environment.dynamicTypeSize = .xxLarge
-        XCTAssertEqual(change(old, closed, old, larger), .settled(.remeasure), "A type size is geometry")
+        var larger = closed; larger.environment.locale = Locale(identifier: "ar")
+        XCTAssertEqual(change(old, closed, old, larger), .settled(.remeasure), "A locale is geometry")
         XCTAssertEqual(change(old, closed, new, closed), .streamed(TranscriptStreamingTail.Append(messageID: "body", text: "Hello there")),
                        "A token goes to the reply's own surface")
         XCTAssertEqual(change(old, closed, new, closed, tree: false), .unseenGrowth, "A row with no tree stands at an estimate")
@@ -82,7 +82,7 @@ final class TranscriptRowChangeTests: XCTestCase {
         XCTAssertFalse(Row.closedPartKeepsHeight(from: old, cardOpen, to: new, cardOpen), "Nothing may be open in the row")
         var fresh = closed; fresh.fresh = true
         XCTAssertFalse(Row.closedPartKeepsHeight(from: old, closed, to: new, fresh), "Anything else about the row changing measures it again")
-        var larger = closed; larger.environment.dynamicTypeSize = .xxLarge
+        var larger = closed; larger.environment.layoutDirection = .rightToLeft
         XCTAssertFalse(Row.closedPartKeepsHeight(from: old, closed, to: new, larger))
         let prose = try part("text", of: reply()), longer = try part("text", of: reply(answer: "Answer and more"))
         XCTAssertFalse(Row.closedPartKeepsHeight(from: prose, closed, to: longer, closed), "Prose is never one line")

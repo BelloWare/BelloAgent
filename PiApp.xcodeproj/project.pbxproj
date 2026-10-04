@@ -411,6 +411,7 @@
 		A5C3EC8CF3CB56B15BC5895C /* PseudoTerminalReapTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EFE8AD793C228AD2764F26D3 /* PseudoTerminalReapTests.swift */; };
 		A5D4C7A85333E0B587889F5E /* SessionTimingHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C0DEDC55A20BCA391C9CA7D /* SessionTimingHistory.swift */; };
 		A614CF27521C2BE01FF0F3F0 /* SessionStatsPopovers.swift in Sources */ = {isa = PBXBuildFile; fileRef = 404C31A143E07012FAC91956 /* SessionStatsPopovers.swift */; };
+		A626A660D1093C7548AC724A /* NativeTranscriptHost.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03AA9A4984FBDEB60F17C7D4 /* NativeTranscriptHost.swift */; };
 		A6DB6B982F6F13B83E83EEE3 /* DashboardTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7C369E760DC8413BBF4680D /* DashboardTests.swift */; };
 		A7050F955080402331343488 /* SidebarMultiSelectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8470C646B38F61D4045CBDD6 /* SidebarMultiSelectionTests.swift */; };
 		A709EFBAEBB7410036F8A504 /* DesignContrastTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8647B3FE9F0358A7828C18B /* DesignContrastTests.swift */; };
@@ -650,6 +651,7 @@
 		0235CB09C9A42BBE55D34A09 /* SlashCompletion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SlashCompletion.swift; sourceTree = "<group>"; };
 		0240051F720E8E5A77D8B2B3 /* WorkspaceManagerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceManagerView.swift; sourceTree = "<group>"; };
 		035700B5D8AFF36A98FA657A /* SidebarRowDragTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarRowDragTests.swift; sourceTree = "<group>"; };
+		03AA9A4984FBDEB60F17C7D4 /* NativeTranscriptHost.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeTranscriptHost.swift; sourceTree = "<group>"; };
 		03BFE92A90D4B108808625ED /* TopicSessionDragTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TopicSessionDragTests.swift; sourceTree = "<group>"; };
 		03F32155ADBE82259A400FE5 /* PiAppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PiAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		04437124F2EA5D18D9E4C4EC /* GitDiscardQuestionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitDiscardQuestionTests.swift; sourceTree = "<group>"; };
@@ -1446,6 +1448,7 @@
 				7F713C7BF568A767BE0B464B /* ModelCatalog.swift */,
 				D1F8E6C57699F8E2DC69FA95 /* ModelCatalogEndpoint.swift */,
 				00081CE01EA691E42E85F64A /* ModelSwitchControls.swift */,
+				03AA9A4984FBDEB60F17C7D4 /* NativeTranscriptHost.swift */,
 				571BC0FF9438121310D9F56B /* OnboardingState.swift */,
 				7AEC0013884AB622853DED11 /* OnboardingView.swift */,
 				CBF84EE04447891F18EE359E /* ProfileSettings.swift */,
@@ -2321,6 +2324,7 @@
 				54A104DA0C289B7248532A07 /* NativeCodeText.swift in Sources */,
 				59A6F3DBD9953E7A5467AEB0 /* NativeComposer.swift in Sources */,
 				774FD80716B2B9D0D03DB3FC /* NativeMarkdownSurface.swift in Sources */,
+				A626A660D1093C7548AC724A /* NativeTranscriptHost.swift in Sources */,
 				82503B67330D640EFBAC4B38 /* NativeTranscriptScrollView.swift in Sources */,
 				1473F283E5468BB8432ACA1D /* NativeTranscriptView.swift in Sources */,
 				E6F12BA2A5D3217DD70AC590 /* NativeWorkListSurface.swift in Sources */,

@@ -9,7 +9,7 @@ import AppKit
 @MainActor enum TranscriptAppearance {
     static func named(_ environment: TranscriptRowEnvironment) -> NSAppearance.Name {
         let dark = environment.colorScheme == .dark
-        if environment.contrast == .increased { return dark ? .accessibilityHighContrastDarkAqua : .accessibilityHighContrastAqua }
+        if environment.increasedContrast { return dark ? .accessibilityHighContrastDarkAqua : .accessibilityHighContrastAqua }
         return dark ? .darkAqua : .aqua
     }
     /// Gives `view` the row's appearance, if it does not have it already.

@@ -273,15 +273,14 @@ final class NativeWorkListViewportTests: XCTestCase {
         let before = list.measure(width: width).height
         let measured = list.rowMeasurementCount
         XCTAssertGreaterThan(before, 0)
-        for change in [{ (value: inout TranscriptRowEnvironment) in value.dynamicTypeSize = .accessibility3 },
-                       { (value: inout TranscriptRowEnvironment) in value.layoutDirection = .rightToLeft },
+        for change in [{ (value: inout TranscriptRowEnvironment) in value.layoutDirection = .rightToLeft },
                        { (value: inout TranscriptRowEnvironment) in value.locale = Locale(identifier: "ar") }] {
             change(&environment)
             let count = list.rowMeasurementCount
             list.update(tools: tools, openTools: [], fetched: [:], toggle: { _ in }, environment: environment)
             let after = list.measure(width: width).height
             XCTAssertGreaterThan(list.rowMeasurementCount, count,
-                                 "after \(environment.dynamicTypeSize), \(environment.layoutDirection), \(environment.locale.identifier) the closed cards still stand at the height the old environment measured")
+                                 "after \(environment.layoutDirection), \(environment.locale.identifier) the closed cards still stand at the height the old environment measured")
             // What a list that only ever knew this environment measures.
             let fresh = NativeWorkListContainer()
             fresh.update(tools: tools, openTools: [], fetched: [:], toggle: { _ in }, environment: environment)

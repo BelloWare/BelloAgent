@@ -131,7 +131,7 @@ final class TranscriptNativeWorkParityTests: XCTestCase {
                         default: view = AnyView(EmptyView())
                         }
                         let host = NSHostingView(rootView: view.frame(width: width, alignment: .leading).fixedSize(horizontal: false, vertical: true)
-                            .environment(\.colorScheme, environment.colorScheme).focusEffectDisabled().piStableLayout())
+                            .environment(\.colorScheme, environment.swiftUIColorScheme).focusEffectDisabled().piStableLayout())
                         host.safeAreaRegions = []; host.sizingOptions = [.intrinsicContentSize]
                         return (host, { max(1, ceil(host.fittingSize.height)) })
                     }
@@ -276,9 +276,9 @@ final class TranscriptNativeWorkParityTests: XCTestCase {
                 .equatable()
                 .frame(width: width, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)
-                .environment(\.colorScheme, environment.colorScheme)
+                .environment(\.colorScheme, environment.swiftUIColorScheme)
                 .environment(\.transcriptOpensFiles, environment.opensFiles)
-                .environment(\.layoutDirection, environment.layoutDirection)
+                .environment(\.layoutDirection, environment.swiftUILayoutDirection)
                 .focusEffectDisabled()
                 .piStableLayout())
             host.safeAreaRegions = []

@@ -207,8 +207,8 @@ final class TranscriptNativeTurnParityTests: XCTestCase {
                 let host = NSHostingView(rootView: content
                     .frame(width: width, alignment: .leading)
                     .fixedSize(horizontal: false, vertical: true)
-                    .environment(\.colorScheme, environment.colorScheme)
-                    .environment(\.layoutDirection, environment.layoutDirection)
+                    .environment(\.colorScheme, environment.swiftUIColorScheme)
+                    .environment(\.layoutDirection, environment.swiftUILayoutDirection)
                     .focusEffectDisabled()
                     .piStableLayout())
                 host.safeAreaRegions = []

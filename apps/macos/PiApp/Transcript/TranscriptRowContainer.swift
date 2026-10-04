@@ -3,29 +3,31 @@ import AppKit
 
 /// Values affecting the row's own rendering must cross the hosting boundary.
 /// Reduce Motion remains a system accessibility environment in both hosts.
+/// Whether a row is painted light or dark.
+enum TranscriptColorScheme: Equatable { case light, dark }
+
+/// What a row is drawn under, in AppKit's own terms. The pane's SwiftUI
+/// wrapper (`NativeTranscriptHost`) reads it from its environment.
 struct TranscriptRowEnvironment: Equatable {
-    var colorScheme: ColorScheme
-    var contrast: ColorSchemeContrast
-    var dynamicTypeSize: DynamicTypeSize
-    var layoutDirection: LayoutDirection
-    var locale: Locale
-    var isEnabled: Bool
+    var colorScheme = TranscriptColorScheme.light
+    /// The system's Increase Contrast.
+    var increasedContrast = false
+    var layoutDirection = NSUserInterfaceLayoutDirection.leftToRight
+    /// SwiftUI's own default: a locale with no identifier.
+    var locale = Locale(identifier: "")
+    var isEnabled = true
     /// Whether the chat's replies offer "Fork from here" (`transcriptForks`).
-    var forks: Bool
+    var forks = false
     /// Whether file tools' paths open their files (`transcriptOpensFiles`).
-    var opensFiles: Bool
-    init(_ values: EnvironmentValues = EnvironmentValues()) {
-        colorScheme = values.colorScheme; contrast = values.colorSchemeContrast
-        dynamicTypeSize = values.dynamicTypeSize; layoutDirection = values.layoutDirection; locale = values.locale
-        isEnabled = values.isEnabled; forks = values.transcriptForks; opensFiles = values.transcriptOpensFiles
-    }
+    var opensFiles = false
+    init() {}
     /// Whether a row measured under these values is as tall under those.
-    /// The type size, the writing direction and the locale decide how text
-    /// wraps; the colour scheme, the contrast and whether the pane takes input
-    /// only decide how it is painted. The pane is disabled while Reports is
-    /// in front, and that must not cost every row its measurement.
+    /// The writing direction and the locale decide how text wraps; the
+    /// colour scheme, the contrast and whether the pane takes input only
+    /// decide how it is painted. The pane is disabled while Reports is in
+    /// front, and that must not cost every row its measurement.
     func hasSameGeometry(as other: TranscriptRowEnvironment) -> Bool {
-        return dynamicTypeSize == other.dynamicTypeSize && layoutDirection == other.layoutDirection && locale == other.locale
+        return layoutDirection == other.layoutDirection && locale == other.locale
     }
 }
 
@@ -77,9 +79,8 @@ struct TranscriptHostedRow: View {
         }
         .frame(width: width, alignment: .leading)
         .fixedSize(horizontal: false, vertical: true)
-        .environment(\.colorScheme, environment.colorScheme)
-        .environment(\.dynamicTypeSize, environment.dynamicTypeSize)
-        .environment(\.layoutDirection, environment.layoutDirection)
+        .environment(\.colorScheme, environment.swiftUIColorScheme)
+        .environment(\.layoutDirection, environment.swiftUILayoutDirection)
         .environment(\.locale, environment.locale)
         .environment(\.transcriptForks, environment.forks)
         .environment(\.transcriptOpensFiles, environment.opensFiles)
