@@ -85,6 +85,8 @@ import Combine
     struct Run: Equatable {
         var text: String
         var color: NSColor
+        /// Its own weight in the text's face (`.fontWeight`), else the text's.
+        var weight: NSFont.Weight? = nil
     }
     var runs: [Run] { didSet { if oldValue != runs { changed() } } }
     var font: NSFont { didSet { if oldValue != font { changed() } } }
@@ -93,6 +95,8 @@ import Combine
     var truncation: CTLineTruncationType = .end { didSet { needsDisplay = true } }
     /// Each line centred, as `.multilineTextAlignment(.center)`.
     var centred = false { didSet { if oldValue != centred { needsDisplay = true } } }
+    /// Extra room between lines (`.lineSpacing`).
+    var lineSpacing: CGFloat = 0 { didSet { if oldValue != lineSpacing { changed() } } }
     var text: String { runs.map(\.text).joined() }
 
     init(_ text: String, font: NSFont, color: NSColor, maximumLines: Int = .max) {
@@ -120,6 +124,9 @@ import Combine
     private var attributed: NSAttributedString {
         let string = NSMutableAttributedString()
         for run in runs {
+            let font = run.weight.map { weight in
+                NSFont(descriptor: self.font.fontDescriptor.addingAttributes([.traits: [NSFontDescriptor.TraitKey.weight: weight]]), size: self.font.pointSize) ?? self.font
+            } ?? self.font
             string.append(NSAttributedString(string: run.text, attributes: [.font: font, .foregroundColor: run.color,
                                                                               NSAttributedString.Key(kCTForegroundColorAttributeName as String): run.color.cgColor]))
         }
@@ -130,7 +137,10 @@ import Combine
         guard !runs.isEmpty, !text.isEmpty else { return 1 }
         return max(1, min(maximumLines, ShellWrap.ranges(text, font: font, width: width).count))
     }
-    func height(forWidth width: CGFloat) -> CGFloat { CGFloat(lineCount(width: width)) * lineHeight }
+    func height(forWidth width: CGFloat) -> CGFloat {
+        let lines = CGFloat(lineCount(width: width))
+        return lines * lineHeight + max(0, lines - 1) * lineSpacing
+    }
     /// In a row, as wide as its widest wrapped line rather than all it is
     /// offered, as `Text` beside other views in an `HStack`.
     var hugsLines = false
@@ -190,7 +200,7 @@ import Combine
             context.saveGState()
             context.textMatrix = CGAffineTransform(scaleX: 1, y: -1)
             let x = centred ? PiKit.round((bounds.width - CTLineGetTypographicBounds(line, nil, nil, nil)) / 2, scale) : 0
-            context.textPosition = CGPoint(x: max(0, x), y: CGFloat(index) * height + baseline)
+            context.textPosition = CGPoint(x: max(0, x), y: CGFloat(index) * (height + lineSpacing) + baseline)
             CTLineDraw(line, context)
             context.restoreGState()
         }
@@ -548,6 +558,15 @@ extension NSView {
     let singleLine: Bool
     var text: String { didSet { if oldValue != text { apply(); invalidateIntrinsicContentSize(); needsLayout = true; PiKit.sizeChanged(self) } } }
     var color: NSColor { didSet { apply() } }
+    /// At most this many lines, the last cut (`.lineLimit`); 0 for all of them.
+    var maximumLines = 0 {
+        didSet {
+            guard oldValue != maximumLines, !singleLine else { return }
+            field.maximumNumberOfLines = maximumLines
+            field.cell?.truncatesLastVisibleLine = maximumLines > 0
+            invalidateIntrinsicContentSize(); needsLayout = true; PiKit.sizeChanged(self)
+        }
+    }
 
     init(_ text: String, font: NSFont, color: NSColor, singleLine: Bool = false, truncation: NSLineBreakMode = .byTruncatingTail) {
         self.text = text; self.font = font; self.color = color; self.singleLine = singleLine
@@ -581,7 +600,9 @@ extension NSView {
     }
     var firstBaseline: CGFloat { NSLayoutManager().defaultBaselineOffset(for: font) }
     func height(forWidth width: CGFloat) -> CGFloat {
-        singleLine ? lineHeight : ShellWrap.height(text, font: font, width: width)
+        if singleLine { return lineHeight }
+        let full = ShellWrap.height(text, font: font, width: width)
+        return maximumLines > 0 ? min(full, CGFloat(maximumLines) * lineHeight) : full
     }
     override var intrinsicContentSize: NSSize {
         NSSize(width: naturalWidth, height: height(forWidth: bounds.width > 0 ? bounds.width : naturalWidth))
@@ -830,5 +851,56 @@ extension NSScrollView {
             t = min(1, max(0, t - current / derivative))
         }
         return bezier(t, 0, 1)
+    }
+}
+
+/// `.piInset()`: the surface in a rounded rectangle, its hairline stroked
+/// on the edge and clipped with the content, so only the inner half shows.
+/// (PiKit.inset strokes the whole line outside the edge, a half point wider
+/// and darker than the SwiftUI inset; a DesignKit gap, reported.)
+@MainActor final class ShellInset: NSView {
+    let content: NSView
+    init(_ content: NSView) {
+        self.content = content
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.masksToBounds = true
+        layer?.cornerRadius = PiRadius.md; layer?.cornerCurve = .continuous
+        layer?.borderWidth = 0.5
+        addSubview(content)
+    }
+    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    override var isFlipped: Bool { true }
+    override func layout() { super.layout(); content.frame = bounds }
+    override var wantsUpdateLayer: Bool { true }
+    override func updateLayer() {
+        layer?.backgroundColor = piCGColor(.piSurface)
+        layer?.borderColor = piCGColor(.piHairline)
+    }
+}
+
+extension ShellWrap {
+    /// The text as `Text` shows it in at most `lines` lines at `width`: the
+    /// whole lines, then the last one cut at the longest start that fits
+    /// with an ellipsis, where more follows. (A text field's own truncation
+    /// keeps a few more letters than SwiftUI does.)
+    static func cut(_ text: String, font: NSFont, width: CGFloat, lines: Int, scale: CGFloat) -> String {
+        let ranges = Self.ranges(text, font: font, width: width)
+        guard lines > 0, ranges.count > lines else { return text }
+        let string = text as NSString
+        let head = ranges.prefix(lines - 1).map { string.substring(with: $0) }.joined()
+        var rest = string.substring(from: ranges[lines - 1].location)
+        if let breakAt = rest.firstIndex(of: "\n") { rest = String(rest[..<breakAt]) }
+        let characters = Array(rest)
+        func fits(_ count: Int) -> Bool {
+            let piece = String(characters[..<count]).replacingOccurrences(of: "\\s+$", with: "", options: .regularExpression) + "…"
+            return PiKit.Line(piece, font: font, color: .black).size(scale: scale).width <= width
+        }
+        var low = 0, high = characters.count
+        while low < high {
+            let middle = (low + high + 1) / 2
+            if fits(middle) { low = middle } else { high = middle - 1 }
+        }
+        return head + String(characters[..<low]).replacingOccurrences(of: "\\s+$", with: "", options: .regularExpression) + "…"
     }
 }

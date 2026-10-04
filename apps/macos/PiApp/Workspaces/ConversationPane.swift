@@ -1,15 +1,13 @@
 import AppKit
-import SwiftUI
 
 // The chat itself: the transcript, what sits above it (a side's header, a
 // recovery banner, a starter card) and what sits below it (the queue, the
 // terminal, the composer and the metrics footer).
 //
-// TEMPORARY bridges in this file, until their owners are AppKit: the
-// transcript (Transcript/, `NativeTranscriptView`) and the metrics footer
-// (Inspector/), each in a hosting view the pane lays out; and the
-// `ConversationPane` representable the still-SwiftUI workspace, side and
-// tab panes host the AppKit pane through.
+// The transcript (Transcript/) and the metrics footer (Inspector/) are still
+// SwiftUI, each in a hosting view the pane lays out; they are made in
+// ConversationPaneBridges.swift (TEMPORARY), with the `ConversationPane`
+// representable that SwiftUI hosts and tests reach the pane through.
 
 struct SideActions {
     var bringBack: () -> Void
@@ -32,7 +30,7 @@ struct SideActions {
     private let sideHeader: SideHeaderView
     private let sideLine = CALayer()
     private let recovered = RecoveredBannerView()
-    let transcript = ShellHostingView(rootView: AnyView(EmptyView()))
+    let transcript = ShellHostingView.empty()
     private let starter = StarterPanelView()
     private let cover = LoadingCoverView()
     private var queue: QueuePanelView?
@@ -41,7 +39,7 @@ struct SideActions {
     private let missingFolder = MissingFolderBar()
     private let footer = PaneFooterView()
     let composer: ComposerInputView
-    private let metrics = ShellHostingView(rootView: AnyView(EmptyView()))
+    private let metrics = ShellHostingView.empty()
     private var observer: ShellObserver?
     private var shown: State?
     private var coverTask: Task<Void, Never>?
@@ -220,7 +218,7 @@ struct SideActions {
         // The transcript: a new root only when what it is drawn from changed.
         if before?.sessionID != state.sessionID || before?.transcriptState != state.transcriptState
             || before?.canFork != state.canFork || before?.canQuote != state.canQuote || before?.enabled != state.enabled {
-            transcript.setRoot(AnyView(TranscriptBridge(model: model, session: session, state: state.transcriptState, canFork: state.canFork, canQuote: state.canQuote).disabled(!state.enabled)), reportsHeight: false)
+            transcript.showTranscript(model: model, session: session, state: state.transcriptState, canFork: state.canFork, canQuote: state.canQuote, enabled: state.enabled)
         }
         // Above it: a side's header and a recovery banner.
         // A side's header is in the pane only while it shows a side.
@@ -304,10 +302,10 @@ struct SideActions {
         if before?.sessionID != state.sessionID || before?.contextWindow != state.contextWindow || before?.outputReserve != state.outputReserve
             || (before?.side == nil) != (state.side == nil) || before?.enabled != state.enabled {
             let model = self.model, id = session.id
-            metrics.setRoot(AnyView(MetricsFooter(model: model, session: session, contextWindow: state.contextWindow,
-                                                     outputReserve: state.outputReserve, compact: state.side != nil) { [model, id] in
+            metrics.showMetrics(model: model, session: session, contextWindow: state.contextWindow, outputReserve: state.outputReserve,
+                                compact: state.side != nil, enabled: state.enabled) { [model, id] in
                 model.openInspector(session: id, focus: .overview)
-            }.disabled(!state.enabled).piShellBridged()))
+            }
         }
         needsLayout = true
     }
@@ -518,152 +516,6 @@ struct SideActions {
     static func boundaryDetail(_ side: SideRecord) -> String {
         "Snapshot through \(side.boundary["cutoffEntryId"]?.string ?? "empty context") · \(Int(side.boundary["omittedIncompleteEntries"]?.number ?? 0)) incomplete entries omitted"
             + (side.boundary["instructionsRefreshed"]?.bool == true ? " · instructions refreshed" : " · initial instruction snapshot")
-    }
-}
-
-// MARK: - Hosted SwiftUI (temporary)
-
-/// A hosting view the pane lays out with frames. Its content says how tall
-/// it is at the width it is given (laid out there, it reports its height),
-/// so the pane never lays a second copy out to ask.
-@MainActor final class ShellHostingView: NSHostingView<AnyView>, PiKit.WidthSizing {
-    var sizeChanged: (() -> Void)?
-    private var reported: CGFloat?
-    convenience init(root: AnyView, reportsHeight: Bool = true) {
-        self.init(rootView: AnyView(EmptyView()))
-        setRoot(root, reportsHeight: reportsHeight)
-    }
-    required init(rootView: AnyView) {
-        super.init(rootView: rootView)
-        sizingOptions = [.intrinsicContentSize]
-    }
-    @MainActor @preconcurrency required init?(coder: NSCoder) { fatalError("Not used from a nib") }
-    /// A new root. One that reports its height is as tall as it says; one
-    /// that does not fills what it is given (the transcript), or takes
-    /// between its least and its own height (the terminal).
-    /// A root that does not report its height says so through its own
-    /// size (a terminal dragged taller): the pane lays out again.
-    private var reportsHeight = true
-    override func invalidateIntrinsicContentSize() {
-        super.invalidateIntrinsicContentSize()
-        guard !reportsHeight else { return }
-        DispatchQueue.main.async { [weak self] in self?.sizeChanged?() }
-    }
-    func setRoot(_ root: AnyView, reportsHeight: Bool = true) {
-        self.reportsHeight = reportsHeight
-        guard reportsHeight else { reported = nil; rootView = root; return }
-        rootView = AnyView(root.fixedSize(horizontal: false, vertical: true)
-            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { [weak self] height in
-                guard let self else { return }
-                let height = ceil(height)
-                guard height != self.reported else { return }
-                self.reported = height
-                // Not inside SwiftUI's own update.
-                DispatchQueue.main.async { [weak self] in self?.sizeChanged?() }
-            })
-    }
-    /// The height its content last reported, or what it asks for before then.
-    func height(forWidth width: CGFloat) -> CGFloat { reported ?? ceil(max(0, intrinsicContentSize.height)) }
-    /// The least it can be: the terminal gives way down to this.
-    func minimumHeight(forWidth width: CGFloat) -> CGFloat { minimum ?? 0 }
-    var minimum: CGFloat?
-}
-
-extension View {
-    /// What the workspace window's SwiftUI root gave every view in it: the
-    /// app's button and toggle styles.
-    /// A hosting view under the title bar keeps its content there too.
-    func piShellBridged() -> some View {
-        buttonStyle(.piSecondary).toggleStyle(.piSwitch).ignoresSafeArea(.container, edges: .top)
-    }
-}
-
-/// The transcript as the pane used to build it, until the transcript itself is AppKit.
-private struct TranscriptBridge: View {
-    let model: WorkspaceModel
-    let session: SessionDisplay
-    /// The run state, carried here so a change to it is a change to this view.
-    let state: String
-    let canFork: Bool
-    let canQuote: Bool
-    var body: some View {
-        let model = model, session = session
-        NativeTranscriptView(session: session, state: state,
-                             actions: TranscriptActions(inspect: { model.showMessageDetail(session.id, messageID: $0) },
-                                                        edit: { model.editMessage($0, sessionID: session.id) },
-                                                        copyMessage: { id in
-                                                            guard let message = session.presentedMessages.first(where: { $0.id == id }) else { return }
-                                                            NSPasteboard.general.clearContents(); NSPasteboard.general.setString(message.text, forType: .string)
-                                                        },
-                                                        stop: { model.stop(sessionID: session.id) },
-                                                        // The retry carries this chat's current model, effort and budgets, as a send would.
-                                                        retry: { model.action("turn.retry", params: model.record(session.id).map { model.turnOverrides(for: $0) } ?? [:], sessionID: session.id) },
-                                                        quoteReply: canQuote ? { quote in model.openQuotedSide(parentID: session.id, quote: quote) } : nil,
-                                                        inspectTurn: { [weak model] turn in
-                                                            model?.openInspector(session: session.id, focus: WorkspaceModel.inspectorFocus(for: turn))
-                                                        },
-                                                        skillPressed: { [weak model, weak session] messageID, use, anchor in
-                                                            guard let model, let session else { return }
-                                                            SkillPopovers.shared.pressSent(use: use, messageID: messageID, anchor: anchor, model: model, session: session)
-                                                        },
-                                                        skillHovered: { [weak session] _, use, anchor, inside in
-                                                            guard let session else { return }
-                                                            SkillPopovers.shared.hoverSent(inside, use: use, anchor: anchor, session: session)
-                                                        },
-                                                        costLimit: { [weak model] action, anchor in model?.costLimitNotice(action, sessionID: session.id, anchor: anchor) },
-                                                        fork: { [weak model, id = session.id] messageID in model?.forkFromReply(sessionID: id, messageID: messageID) },
-                                                        switchVersion: { [weak model] messageID, step in model?.showVersion(sessionID: session.id, messageID: messageID, step: step) },
-                                                        latestVersion: { [weak model] in model?.latestVersion(sessionID: session.id) },
-                                                        openFile: { [weak model] path, lines in model?.openFile(fromChat: session.id, path: path, lines: lines) },
-                                                        resolveReplyFile: { [weak model] text in await model?.resolveReplyFile(text, fromChat: session.id) }),
-                             onAnchorChanged: { anchor in session.scrollAnchor = anchor; model.anchorChanged(session) },
-                             onReadReply: { sessionID, messageID in model.acknowledgeVisibleReply(sessionID: sessionID, messageID: messageID) },
-                             onLoadEarlier: { sessionID in model.loadEarlier(sessionID: sessionID) },
-                             onLoadNewer: { model.loadNewer(sessionID: $0) },
-                             onLatest: { model.latest(sessionID: $0) },
-                             onViewportReady: { model.historyViewportReady($0, generation: $1) })
-            .equatable()
-            .environment(\.transcriptForks, canFork)
-            .environment(\.transcriptOpensFiles, true)
-            .piStableLayout()
-            .background(Color.piContent)
-            .piShellBridged()
-    }
-}
-
-/// The pane inside the still-SwiftUI workspace, side and tab panes (TEMPORARY).
-struct ConversationPane: View {
-    let model: WorkspaceModel
-    let session: SessionDisplay
-    let chat: ChatRecord
-    /// How wide this pane is; the AppKit pane reads its own width.
-    let paneWidth: CGFloat
-    var side: SideRecord? = nil
-    var sideActions: SideActions? = nil
-    @MainActor static func coversTranscript(_ session: SessionDisplay) -> Bool { ConversationPaneView.coversTranscript(session) }
-    static var coverDelay: Duration { ConversationPaneView.coverDelay }
-    var body: some View {
-        // Under the title bar, as the SwiftUI pane was: its transcript starts
-        // beside the window's controls.
-        Host(model: model, session: session, chat: chat, side: side, sideActions: sideActions)
-            .ignoresSafeArea(.container, edges: .top)
-    }
-    private struct Host: NSViewRepresentable {
-        let model: WorkspaceModel
-        let session: SessionDisplay
-        let chat: ChatRecord
-        var side: SideRecord?
-        var sideActions: SideActions?
-        func makeNSView(context: Context) -> ConversationPaneView {
-            let view = ConversationPaneView(model: model)
-            view.show(session: session, chat: chat, side: side, sideActions: sideActions)
-            return view
-        }
-        func updateNSView(_ view: ConversationPaneView, context: Context) {
-            view.inheritedEnabled = context.environment.isEnabled
-            view.show(session: session, chat: chat, side: side, sideActions: sideActions)
-        }
-
     }
 }
 

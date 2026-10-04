@@ -1675,3 +1675,299 @@ private struct RefNewWorkspacePane: View {
             catch { failed(error.localizedDescription) } }
     }
 }
+
+// MARK: - Error strip, welcome and sides panel (WorkspaceView.swift and SidesPanel.swift before batch 10)
+
+/// Non-modal error strip at the top of the window. A gateway can return
+/// kilobytes of explanation, so the strip stays three lines tall until it is
+/// opened, then scrolls inside a bounded box; Copy takes the whole message
+/// whether it is open or not.
+struct RefErrorBanner: View {
+    let text: String
+    let dismiss: () -> Void
+    /// Where Copy writes; a test passes its own rather than the owner's clipboard.
+    var pasteboard: NSPasteboard = .general
+    @State private var expanded: Bool
+    init(text: String, pasteboard: NSPasteboard = .general, expanded: Bool = false, dismiss: @escaping () -> Void) {
+        self.text = text; self.pasteboard = pasteboard; self.dismiss = dismiss
+        _expanded = State(initialValue: expanded)
+    }
+    /// Longer than this and the strip offers to open; the figure is about three
+    /// lines at the strip's width.
+    static let collapsedCharacters = 220
+    static let expandedHeight: CGFloat = 220
+    var canExpand: Bool { text.count > Self.collapsedCharacters || text.contains("\n") }
+    static func copy(_ text: String, to pasteboard: NSPasteboard) {
+        pasteboard.clearContents(); pasteboard.setString(text, forType: .string)
+    }
+    var body: some View {
+        HStack(alignment: .top, spacing: PiSpacing.sm) {
+            Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 13, weight: .semibold)).foregroundStyle(Color.piDanger).padding(.top, 2)
+            message
+            Spacer(minLength: PiSpacing.sm)
+            HStack(spacing: 2) {
+                if canExpand {
+                    Button(expanded ? "Less" : "More") { expanded.toggle() }.buttonStyle(.piGhost)
+                        .accessibilityIdentifier("errorBannerExpand")
+                }
+                Button("Copy") { Self.copy(text, to: pasteboard) }.buttonStyle(.piGhost)
+                    .accessibilityIdentifier("errorBannerCopy")
+                Button("Dismiss", action: dismiss).buttonStyle(.piSecondaryCompact)
+                    .accessibilityIdentifier("errorBannerDismiss")
+            }.fixedSize()
+        }
+        .padding(.leading, PiSpacing.md).padding(.trailing, 4).padding(.vertical, PiSpacing.sm)
+        .frame(maxWidth: 640)
+        // A wash of the danger colour over the surface, so the strip reads as
+        // a failure at the same strength in both appearances; a plain surface
+        // with a faint outline all but disappeared against a dark canvas.
+        .background(Color.piDanger.opacity(0.10), in: RoundedRectangle(cornerRadius: PiRadius.md, style: .continuous))
+        .background(Color.piSurface, in: RoundedRectangle(cornerRadius: PiRadius.md, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: PiRadius.md, style: .continuous).stroke(Color.piDanger.opacity(0.55), lineWidth: 1))
+        .shadow(color: Color.piShadow, radius: 12, y: 4)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Error: " + text)
+        .accessibilityIdentifier("errorBanner")
+    }
+    @ViewBuilder private var message: some View {
+        let body = Text(text).font(PiFont.body).foregroundStyle(Color.piInk).textSelection(.enabled)
+        // A strip left open by one error must not open a short one that follows.
+        if expanded && canExpand {
+            ScrollView { body.fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading) }
+                .frame(maxHeight: Self.expandedHeight)
+                .accessibilityIdentifier("errorBannerText")
+        } else {
+            body.lineLimit(3).fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("errorBannerText")
+        }
+    }
+}
+
+struct RefWorkspaceWelcome: View {
+    @ObservedObject var model: WorkspaceModel
+    /// The project a new chat would start in: the chosen one, else the first trusted one.
+    private var readyWorkspace: WorkspaceRecord? {
+        model.workspaces.first { $0.id == model.selectedWorkspaceID && $0.trusted } ?? model.workspaces.first(where: \.trusted)
+    }
+    private var ready: Bool { readyWorkspace != nil && !model.requestProfiles.isEmpty }
+    var body: some View {
+        VStack(spacing: PiSpacing.lg) {
+            Image("BelloAgentIcon")
+                .resizable().interpolation(.high).frame(width: 84, height: 84)
+                .accessibilityLabel("Bello Agent")
+            VStack(spacing: 8) {
+                Text("What are we working on?").font(PiFont.display(30)).foregroundStyle(Color.piInk)
+                Text(ready ? "Start a new chat in \(readyWorkspace.map(WorkspaceLabel.name) ?? "your project"), or pick a chat in the sidebar.\nSide conversations, exact HTTP inspection and cost accounting are built in."
+                     : "Create a project from one or more trusted folders and connect a LiteLLM route to start a chat.\nSide conversations, exact HTTP inspection and cost accounting are built in.")
+                    .font(PiFont.body).foregroundStyle(Color.piInkSecondary).multilineTextAlignment(.center).lineSpacing(3).frame(maxWidth: 460)
+            }
+            HStack(spacing: PiSpacing.md) {
+                if ready, let workspace = readyWorkspace {
+                    // Both halves exist: the next step is a chat, not another setup sheet.
+                    Button { model.newChat(in: workspace.id) } label: { Label("New Chat", systemImage: "square.and.pencil") }.buttonStyle(.piPrimary)
+                        .accessibilityIdentifier("welcome-new-chat")
+                    Button { model.showWorkspaceManager = true } label: { Label("Projects…", systemImage: "folder") }.buttonStyle(.piSecondary)
+                    Button { model.showProfiles = true } label: { Label("Connections…", systemImage: "slider.horizontal.3") }.buttonStyle(.piSecondary)
+                } else {
+                    Button { model.showWorkspaceManager = true } label: { Label(model.workspaces.isEmpty ? "Create a project" : "Projects…", systemImage: "folder") }.buttonStyle(.piPrimary)
+                    Button { model.showProfiles = true } label: { Label(model.requestProfiles.isEmpty ? "Add a Connection…" : "Connections…", systemImage: "slider.horizontal.3") }.buttonStyle(.piSecondary)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.piContent)
+    }
+}
+
+struct RefSidesPanelHandle: View {
+    let activity: SidesPanelActivity
+    var hovered = false
+    /// Clear of the side pane's scroll bar when the system shows scroll bars
+    /// all the time; against the edge when they only show while scrolling.
+    static var inset: CGFloat {
+        NSScroller.preferredScrollerStyle == .legacy ? NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy) + 3 : 3
+    }
+    var body: some View {
+        VStack(spacing: 6) {
+            if activity.working { PiSpinner(size: 9) }
+            else if activity.failed { UnreadDot(failure: true) }
+            else if activity.unread { UnreadDot() }
+            Capsule(style: .continuous).fill(Color.piInkTertiary.opacity(hovered ? 0.8 : 0.45)).frame(width: 4, height: 34)
+                .piAnimation(PiMotion.quick, value: hovered)
+        }
+        .allowsHitTesting(false)
+        .accessibilityElement()
+        .accessibilityLabel(label)
+        .accessibilityIdentifier("sidesPanelHandle")
+    }
+    private var label: String {
+        let count = "\(activity.sides) side\(activity.sides == 1 ? "" : "s")"
+        if activity.working { return count + ", one working. Rest the pointer on the window's right edge to show them." }
+        if activity.unread { return count + ", one with a new reply. Rest the pointer on the window's right edge to show them." }
+        return count + ". Rest the pointer on the window's right edge to show them."
+    }
+}
+
+struct RefSidesPanel: View {
+    @ObservedObject var model: WorkspaceModel
+    let parentID: String?
+    let pinned: Bool
+    /// The highlight glides to the side chosen, as the sidebar's does.
+    @Namespace private var selectionGlide
+    var body: some View {
+        let entries = parentID.map { model.sidesPanelEntries(of: $0) } ?? []
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 4) {
+                Text("Sides").font(PiFont.micro).foregroundStyle(Color.piInkTertiary).textCase(.uppercase).tracking(0.5)
+                if !entries.isEmpty {
+                    Text("\(entries.count)").font(PiFont.micro).foregroundStyle(Color.piInkTertiary).monospacedDigit()
+                }
+                Spacer()
+                PiIconButton(symbol: pinned ? "pin.fill" : "pin", label: pinned ? "Unpin the sides panel" : "Pin the sides panel open",
+                             tone: pinned ? .accent : .neutral, size: 24, filled: pinned) { [model] in model.setSidesPanelPinned(!pinned) }
+                    .accessibilityIdentifier("sidesPanelPin")
+            }
+            .padding(.leading, PiSpacing.lg).padding(.trailing, PiSpacing.sm).padding(.top, 10)
+            if let title = parentID.flatMap({ model.record($0)?.title }) {
+                Text("of “\(title)”").font(PiFont.caption).foregroundStyle(Color.piInkTertiary).lineLimit(1).truncationMode(.tail)
+                    .padding(.horizontal, PiSpacing.lg).padding(.top, 1).padding(.bottom, PiSpacing.sm)
+                    .help(title)
+            }
+            ScrollView {
+                VStack(spacing: 2) {
+                    if let parentID {
+                        newSide(parentID)
+                        ForEach(entries) { entry in RefSidesPanelRowSlot(model: model, entry: entry) }
+                    } else {
+                        Text("Open a chat to see its sides.").font(PiFont.caption).foregroundStyle(Color.piInkTertiary)
+                            .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10).padding(.vertical, 8)
+                    }
+                }
+                .padding(.horizontal, PiSpacing.sm).padding(.bottom, PiSpacing.md)
+            }
+            .environment(\.piSelectionNamespace, selectionGlide)
+            .modifier(SidebarMinuteClock())
+        }
+        .frame(width: SidesPanelMetrics.width)
+        .frame(maxHeight: .infinity, alignment: .top)
+        .background(Color.piWindow)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Sides")
+        .accessibilityIdentifier("sidesPanel")
+    }
+
+    private func newSide(_ parentID: String) -> some View {
+        PiSelectableRow(selected: false, action: { [model] in model.openSideFromSidesPanel(parentID: parentID) }) {
+            HStack(spacing: 9) {
+                Image(systemName: "plus").font(.system(size: 11, weight: .semibold)).foregroundStyle(Color.piAccent)
+                    .frame(width: 16, height: 16)
+                Text("New side").font(.system(size: 13, weight: .medium)).foregroundStyle(Color.piAccent)
+                Spacer(minLength: 0)
+            }
+        }
+        .disabled(!model.canOpenSide(parentID) || model.installPreparing)
+        .help("Open a new side conversation beside this chat")
+        .accessibilityIdentifier("sidesPanelNewSide")
+    }
+}
+
+/// A side's row, from its loaded page while it has one (so a run shows as it
+/// goes), else from the accounting the sidebar reads.
+private struct RefSidesPanelRowSlot: View {
+    let model: WorkspaceModel
+    let entry: SidesPanelEntry
+    var body: some View {
+        let unread = model.unreadOutputCount(sessionID: entry.id) > 0, failed = model.unreadFailure(sessionID: entry.id)
+        if let display = model.displays[entry.id] {
+            RefSidesPanelLiveRow(model: model, entry: entry, session: display, footer: display.footer, unread: unread, failed: failed)
+        } else {
+            RefSidesPanelRetainedRow(model: model, entry: entry, accounting: model.chatAccounting.row(for: entry.id), unread: unread, failed: failed)
+        }
+    }
+}
+
+private struct RefSidesPanelLiveRow: View {
+    let model: WorkspaceModel
+    let entry: SidesPanelEntry
+    @ObservedObject var session: SessionDisplay
+    @ObservedObject var footer: SessionMetrics
+    let unread: Bool
+    let failed: Bool
+    @Environment(\.sidebarMinute) private var minute
+    private var stats: ChatRowStats {
+        let now = minute ?? Date()
+        var value = ChatRowStats(totals: footer.gateway, timing: footer.timing, now: now)
+        value.updateActivity(state: session.state, loading: session.loading, activity: session.activity)
+        if let at = session.messages.last(where: { $0.at != nil })?.at { value.noteActivity(max(value.lastActivity ?? 0, at / 1_000), now: now) }
+        return value
+    }
+    var body: some View { RefSidesPanelRow(model: model, entry: entry, stats: stats, unread: unread, failed: failed) }
+}
+
+private struct RefSidesPanelRetainedRow: View {
+    let model: WorkspaceModel
+    let entry: SidesPanelEntry
+    @ObservedObject var accounting: CachedSessionAccounting
+    let unread: Bool
+    let failed: Bool
+    @Environment(\.sidebarMinute) private var minute
+    var body: some View {
+        RefSidesPanelRow(model: model, entry: entry, stats: ChatRowStats(totals: accounting.totals, now: minute ?? Date()), unread: unread, failed: failed)
+    }
+}
+
+/// One side: its mark (a ring while it works, the orange dot of a new reply,
+/// the red one of a failure, else a quiet dot), its title, and what it is
+/// doing or when it last did anything.
+struct RefSidesPanelRow: View {
+    let model: WorkspaceModel
+    let entry: SidesPanelEntry
+    let stats: ChatRowStats
+    let unread: Bool
+    let failed: Bool
+    private var working: Bool { stats.busy || stats.loading }
+    var body: some View {
+        PiSelectableRow(selected: entry.open, action: { [model, id = entry.id] in Task { await model.openFromSidesPanel(id) } }) {
+            HStack(alignment: .top, spacing: 9) {
+                mark.frame(width: 16, height: 16).padding(.top, 1)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(entry.title).font(.system(size: 13, weight: entry.open || unread ? .semibold : .regular)).foregroundStyle(Color.piInk)
+                        .lineLimit(2).truncationMode(.tail).fixedSize(horizontal: false, vertical: true)
+                    detail
+                }
+                Spacer(minLength: 0)
+            }
+        }
+        .help(entry.title)
+        .accessibilityIdentifier("sidesPanelRow")
+    }
+    @ViewBuilder private var mark: some View {
+        if working { PiSpinner(size: 11) }
+        else if failed { UnreadDot(failure: true) }
+        else if unread { UnreadDot() }
+        else { Circle().fill(Color.piInkTertiary.opacity(0.5)).frame(width: 6, height: 6).accessibilityHidden(true) }
+    }
+    /// What the side is doing, in the sidebar's words, then how long ago it
+    /// last did anything.
+    private var lead: (text: String, color: Color)? {
+        if working { return (PiSessionState.label(stats.state, loading: stats.loading), Color.piWarning) }
+        if RunState(rawValue: stats.state).isStopped {
+            return (PiSessionState.label(stats.state, costLimited: stats.costLimited),
+                    RunState(rawValue: stats.state) == .paused ? Color.piInfo : stats.costLimited ? Color.piWarning : Color.piDanger)
+        }
+        if failed { return ("Failed", Color.piDanger) }
+        if unread { return ("New reply", Color.piAccent) }
+        return nil
+    }
+    private var detail: some View {
+        let lead = lead
+        let recency = stats.recencyLabel
+        return HStack(spacing: 0) {
+            if let lead { Text(lead.text).foregroundStyle(lead.color).fontWeight(.medium) }
+            if let recency { Text((lead == nil ? "" : " · ") + recency) }
+            else if lead == nil { Text(entry.saved ? "Saved" : "Not saved yet") }
+        }
+        .font(PiFont.caption.monospacedDigit()).foregroundStyle(Color.piInkTertiary).lineLimit(1)
+    }
+}
+

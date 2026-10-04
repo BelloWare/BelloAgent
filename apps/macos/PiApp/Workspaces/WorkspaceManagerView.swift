@@ -72,7 +72,7 @@ enum WorkspaceLabel {
 /// between, kept by path so a row stays put while others come and go.
 @MainActor final class WorkspaceFolderStack: NSView, PiKit.WidthSizing {
     private let column = ShellStack(.vertical, spacing: 0)
-    private lazy var box = PiKit.inset(column)
+    private lazy var box = ShellInset(column)
     private var rows: [String: WorkspaceFolderRowView] = [:]
     private var lines: [String: ShellHairline] = [:]
     private var head: NSView?
@@ -155,7 +155,13 @@ enum WorkspaceLabel {
             view.wantsLayer = true
             guard let layer = view.layer else { view.removeFromSuperview(); continue }
             CATransaction.begin()
+            // Gone when its exit ends: on the animation's completion, or on
+            // the clock if the window is not drawing to complete it.
             CATransaction.setCompletionBlock { [weak view] in view?.removeFromSuperview() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.easingDuration + 0.05) { [weak self, weak view] in
+                guard let view, let self, !self.rows.values.contains(where: { $0 === view }) else { return }
+                view.removeFromSuperview()
+            }
             let fade = CABasicAnimation(keyPath: "opacity")
             fade.fromValue = 1; fade.toValue = 0
             // Up by its own height as it goes (`.move(edge: .top)`).

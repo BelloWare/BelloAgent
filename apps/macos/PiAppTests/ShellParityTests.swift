@@ -316,4 +316,69 @@ import XCTest
             WorkspaceManagerSheetView(model: empty, dismiss: {})
         }
     }
+
+    /// The error strip's card: a short message, and a long one closed.
+    func testErrorBanner() async throws {
+        let short = "The gateway rejected the request: the key has expired."
+        try await check("errorbanner-short", width: 640, RefErrorBanner(text: short, dismiss: {})) { ErrorBannerView(text: short) }
+        let long = "The gateway rejected the request. " + String(repeating: "Upstream detail that the provider returned verbatim and keeps going. ", count: 8)
+        try await check("errorbanner-long", width: 640, RefErrorBanner(text: long, dismiss: {})) { ErrorBannerView(text: long) }
+    }
+
+    /// No chat open: the welcome, ready to start a chat, and before setup.
+    func testWelcome() async throws {
+        let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("welcome-parity-" + UUID().uuidString)
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        defer { model.shutdown(); try? FileManager.default.removeItem(at: root) }
+        let size = NSSize(width: 900, height: 560)
+        try await check("welcome-setup", width: size.width, RefWorkspaceWelcome(model: model).frame(width: size.width, height: size.height)) {
+            ParityFrame(size: size, WorkspaceWelcomeView(model: model))
+        }
+        model.workspaces = [WorkspaceRecord(id: "p", path: "/tmp/bello-agent", trusted: true)]
+        var profile = ProfileRecord(); profile.id = "r"; profile.name = "Route"; profile.modelId = "m"; profile.baseUrl = "https://gateway.invalid"
+        model.profiles = [profile]
+        model.selectedWorkspaceID = "p"
+        try await check("welcome-ready", width: size.width, RefWorkspaceWelcome(model: model).frame(width: size.width, height: size.height)) {
+            ParityFrame(size: size, WorkspaceWelcomeView(model: model))
+        }
+    }
+
+    /// The sides panel pinned beside a chat with two sides, and its handle.
+    func testSidesPanel() async throws {
+        let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("sides-parity-" + UUID().uuidString)
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        defer { model.shutdown(); try? FileManager.default.removeItem(at: root) }
+        model.workspaces = [WorkspaceRecord(id: "p", path: "/tmp/bello-agent", trusted: true)]
+        var parent = ChatRecord(id: "P", workspaceID: "p", title: "Retry budget for the payment worker", path: nil, profileID: "none")
+        parent.sidebarOrder = 1
+        var first = ChatRecord(id: "S1", workspaceID: "p", title: "Why does the worker stop after three attempts?", path: nil, profileID: "none")
+        first.parentSessionID = "P"; first.sidebarOrder = 2
+        var second = ChatRecord(id: "S2", workspaceID: "p", title: "Idempotency keys for refunds", path: nil, profileID: "none")
+        second.parentSessionID = "P"; second.sidebarOrder = 3
+        model.chats = [parent, first, second]
+        let size = NSSize(width: SidesPanelMetrics.width, height: 360)
+        try await check("sidespanel", canvas: .piWindow, width: size.width,
+                        RefSidesPanel(model: model, parentID: "P", pinned: true).frame(height: size.height)) {
+            ParityFrame(size: size, SidesPanelView(model: model, parentID: "P", pinned: true))
+        }
+        for (name, activity) in [("handle", SidesPanelActivity(sides: 2)), ("handle-unread", SidesPanelActivity(sides: 2, unread: true))] {
+            try await check("sidespanel-\(name)", RefSidesPanelHandle(activity: activity)) {
+                let handle = SidesPanelHandleView(); handle.activity = activity; return handle
+            }
+        }
+    }
+}
+
+/// An AppKit view at a fixed size, for comparing with a SwiftUI view framed the same.
+@MainActor final class ParityFrame: NSView {
+    private let size: NSSize
+    init(size: NSSize, _ content: NSView) {
+        self.size = size
+        super.init(frame: NSRect(origin: .zero, size: size))
+        addSubview(content)
+    }
+    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    override var isFlipped: Bool { true }
+    override var intrinsicContentSize: NSSize { size }
+    override func layout() { super.layout(); subviews.first?.frame = bounds }
 }

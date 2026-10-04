@@ -199,7 +199,8 @@ final class WorkspaceManagerSheetTests: XCTestCase {
         let tall = stack.frame.height
         let row = try XCTUnwrap(list.subviewsOfType(WorkspaceFolderRowView.self).first { $0.path == extra.path })
         try await model.updateConfiguration { $0.workspaces[0].paths = [] }
-        try await eventually("the list takes the change") { list.refresh(); return stack.height(forWidth: stack.bounds.width) < tall }
+        list.refresh()
+        XCTAssertTrue(stack.isEasing, "the inset eases to its new height rather than jumping")
         list.layoutSubtreeIfNeeded()
         XCTAssertNotNil(row.superview, "the row is still leaving")
         XCTAssertGreaterThan(stack.frame.height, tall / 2, "the inset has not jumped to its new height")
