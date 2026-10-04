@@ -467,57 +467,67 @@ import AppKit
 }
 
 /// A long fence's way between its sections, as `CodeBlockView` drew it:
-/// Previous, where the reader is, Next, ten points in.
+/// Previous, where the reader is, Next, ten points in, the three sharing the
+/// line as an `HStack` shares it and wrapping when it is short.
 @MainActor final class TranscriptCodeSections: NSView {
-    private let previous = TranscriptLinkButton()
-    private let next = TranscriptLinkButton()
-    private let label = TranscriptPlainTextView()
+    static let buttonFace = TranscriptPlainTextFace(size: NSFont.systemFontSize, monospaced: false, lineSpacing: 0, label: "Button")
     static let face = TranscriptPlainTextFace(size: PiFont.captionSize, monospaced: false, lineSpacing: 0, label: "Code section")
+    private let previous = TranscriptWrappingButton()
+    private let next = TranscriptWrappingButton()
+    private let label = TranscriptPlainTextView()
     var step: (Int) -> Void = { _ in }
     private var rightToLeft = false
     override var isFlipped: Bool { true }
     override init(frame: NSRect) {
         super.init(frame: frame)
-        for (button, title, delta) in [(previous, "Previous section", -1), (next, "Next section", 1)] {
-            button.label.font = .systemFont(ofSize: NSFont.systemFontSize)
-            button.label.text = title
-            button.underlinesOnHover = false; button.pointsOnHover = false
-            button.perform = { [weak self] in self?.step(delta) }
-            addSubview(button)
-        }
         label.isSelectable = false
-        addSubview(label)
+        for view in [previous, label, next] as [NSView] { addSubview(view) }
         setAccessibilityElement(true); setAccessibilityRole(.group)
         setAccessibilityIdentifier("codeSectionNavigation")
     }
     required init?(coder: NSCoder) { nil }
+    var buttons: [TranscriptWrappingButton] { [previous, next] }
     func update(index: Int, count: Int, environment: TranscriptRowEnvironment) {
         rightToLeft = environment.layoutDirection == .rightToLeft
         let words = "Code section \(index + 1) of \(count) · Copy includes the full code"
         label.update(text: words, face: Self.face, environment: environment, swiftUILines: true, color: .piInkSecondary)
         label.setAccessibilityLabel(words)
-        previous.enabled = environment.isEnabled && index > 0
-        next.enabled = environment.isEnabled && index + 1 < count
-        for button in [previous, next] { button.label.color = button.enabled ? .labelColor : .tertiaryLabelColor }
+        previous.update(title: "Previous section", enabled: environment.isEnabled && index > 0, environment: environment) { [weak self] in self?.step(-1) }
+        next.update(title: "Next section", enabled: environment.isEnabled && index + 1 < count, environment: environment) { [weak self] in self?.step(1) }
         needsLayout = true
     }
-    /// The words take what the buttons leave, wrapping when that is less than their line.
-    private func wordsSize(width: CGFloat) -> CGSize {
-        let room = max(1, width - 20 - previous.size.width - next.size.width - 16)
-        let used = min(label.idealWidth, room)
-        return CGSize(width: label.usedWidth(width: used), height: label.exactHeight(width: used))
+    private func sizes(width: CGFloat) -> [CGSize] {
+        let texts = [previous.text, label, next.text]
+        let pieces = texts.map { text in TranscriptLinePiece.text(ideal: text.idealWidth, used: { text.usedWidth(width: max(1, $0)) },
+                                                                  height: { text.exactHeight(width: max(1, $0)) }) }
+        return TranscriptLineLayout.sizes(pieces, spacing: [8, 8], width: max(0, width - 20))
     }
-    private func line(width: CGFloat) -> CGFloat { max(previous.size.height, next.size.height, wordsSize(width: width).height) }
-    func height(width: CGFloat) -> CGFloat { 10 + line(width: width) + 10 }
+    func height(width: CGFloat) -> CGFloat { 10 + (sizes(width: width).map(\.height).max() ?? 0) + 10 }
     override func layout() {
         super.layout()
-        let line = line(width: bounds.width), words = wordsSize(width: bounds.width)
-        var x: CGFloat = 10
-        for view in [previous, label, next] as [NSView] {
-            let size = (view as? TranscriptLinkButton)?.size ?? words
-            view.frame = TranscriptMotion.mirrored(CGRect(x: x, y: 10 + (line - size.height) / 2, width: size.width, height: view === label ? ceil(size.height) : size.height),
-                                                   width: bounds.width, rightToLeft)
-            x += size.width + 8
+        let sizes = sizes(width: bounds.width), line = sizes.map(\.height).max() ?? 0
+        let frames = TranscriptLineLayout.frames(sizes, spacing: [8, 8], x: 10, midY: 10 + line / 2)
+        for (view, frame) in zip([previous, label, next] as [NSView], frames) {
+            view.frame = TranscriptMotion.mirrored(CGRect(x: frame.minX, y: frame.minY, width: frame.width, height: ceil(frame.height)), width: bounds.width, rightToLeft)
         }
     }
+}
+
+/// A plain button whose title wraps when it is offered less than its line.
+@MainActor final class TranscriptWrappingButton: TranscriptNativeToggle {
+    let text = TranscriptPlainTextView()
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        text.isSelectable = false; text.setAccessibilityElement(false)
+        addSubview(text)
+    }
+    required init?(coder: NSCoder) { nil }
+    func update(title: String, enabled: Bool, environment: TranscriptRowEnvironment, perform: @escaping () -> Void) {
+        text.update(text: title, face: TranscriptCodeSections.buttonFace, environment: environment, swiftUILines: true,
+                    color: enabled ? .labelColor : .tertiaryLabelColor)
+        var state = environment; state.isEnabled = enabled
+        set(environment: state, toggle: perform)
+        setAccessibilityLabel(title)
+    }
+    override func layout() { super.layout(); text.frame = bounds }
 }

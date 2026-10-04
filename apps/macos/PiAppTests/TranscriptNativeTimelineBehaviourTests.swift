@@ -237,9 +237,9 @@ final class TranscriptNativeTimelineBehaviourTests: XCTestCase {
         XCTAssertGreaterThan(code.sections.count, 1)
         let navigation = try XCTUnwrap(stage.views(TranscriptCodeSections.self).first)
         XCTAssertEqual(navigation.accessibilityIdentifier(), "codeSectionNavigation")
-        let buttons = navigation.subviews.compactMap { $0 as? TranscriptLinkButton }
-        XCTAssertFalse(try XCTUnwrap(buttons.first { $0.label.text == "Previous section" }).accessibilityPerformPress(), "the first section has no previous")
-        XCTAssertTrue(try XCTUnwrap(buttons.first { $0.label.text == "Next section" }).accessibilityPerformPress())
+        let buttons = navigation.buttons
+        XCTAssertFalse(try XCTUnwrap(buttons.first { $0.text.string == "Previous section" }).accessibilityPerformPress(), "the first section has no previous")
+        XCTAssertTrue(try XCTUnwrap(buttons.first { $0.text.string == "Next section" }).accessibilityPerformPress())
         XCTAssertEqual(code.section, 1)
         XCTAssertNotNil(navigation.subviews.compactMap { $0 as? TranscriptPlainTextView }.first { $0.string.hasPrefix("Code section 2 of") })
         let text = try XCTUnwrap(stage.views(TranscriptCodeTextView.self).first)
@@ -406,11 +406,19 @@ final class TranscriptNativeTimelineBehaviourTests: XCTestCase {
 
     @MainActor func testANarrowFencesNavigationStaysInside() throws {
         let long = "{\"lines\": [\n" + (1...1_200).map { "  \"line \($0) of a long argument document\"," }.joined(separator: "\n") + "\n]}"
-        let stage = Stage(P.partItem(P.segment("a9", "toolArguments", long, name: "write")), opened: [.work("part:a9")], width: 380); defer { stage.close() }
-        let navigation = try XCTUnwrap(stage.views(TranscriptCodeSections.self).first)
-        for view in navigation.subviews { XCTAssertLessThanOrEqual(view.frame.maxX, navigation.bounds.width - 9.5, "\(type(of: view)) stays inside the fence") }
-        let words = try XCTUnwrap(navigation.subviews.compactMap { $0 as? TranscriptPlainTextView }.first)
-        XCTAssertGreaterThan(words.frame.height, 20, "the words wrap where they have no room")
+        for (width, rightToLeft) in [(CGFloat(380), false), (220, false), (220, true), (160, true)] {
+            let stage = Stage(P.partItem(P.segment("a9", "toolArguments", long, name: "write")), rightToLeft: rightToLeft, opened: [.work("part:a9")], width: width)
+            defer { stage.close() }
+            let navigation = try XCTUnwrap(stage.views(TranscriptCodeSections.self).first)
+            for view in navigation.subviews {
+                XCTAssertGreaterThanOrEqual(view.frame.minX, 9.5, "\(type(of: view)) at \(width) stays inside the fence")
+                XCTAssertLessThanOrEqual(view.frame.maxX, navigation.bounds.width - 9.5, "\(type(of: view)) at \(width) stays inside the fence")
+                XCTAssertLessThanOrEqual(view.frame.maxY, navigation.bounds.height - 9.5, "\(type(of: view)) at \(width) is as tall as the bar")
+            }
+            let words = try XCTUnwrap(navigation.subviews.compactMap { $0 as? TranscriptPlainTextView }.first)
+            XCTAssertGreaterThan(words.frame.height, 20, "the words wrap where they have no room")
+            XCTAssertGreaterThan(words.frame.width, 20, "and keep a share of the line")
+        }
     }
 
     @MainActor func testADisabledPanesMenusOfferNothing() throws {
