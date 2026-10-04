@@ -115,7 +115,8 @@ import Combine
         super.layout()
         for panel in [base, tint] { panel.frame = bounds }
         // `strokeBorder`: the line inside the face.
-        edge.frame = bounds.insetBy(dx: 0.5, dy: 0.5)
+        // Never a null rectangle, however small the face is laid out.
+        edge.frame = CGRect(x: 0.5, y: 0.5, width: max(0, bounds.width - 1), height: max(0, bounds.height - 1))
         button.frame = bounds
         let widths = textWidths(in: bounds.width)
         var x = Self.padding
@@ -157,6 +158,9 @@ import Combine
         }
         for (pill, use) in zip(pills, skills) { pill.update(messageID: messageID, use: use, actions: actions, environment: environment) }
         rightToLeft = environment.layoutDirection == .rightToLeft
+        // A pill's words or the reading direction may have changed with the
+        // same skills: the flow places them again.
+        needsLayout = true
         setAccessibilityLabel(skills.count == 1 ? "Skill used by this message" : "Skills used by this message")
     }
     /// Each pill's frame at `width`, as `PiFlow` places them.
@@ -280,7 +284,25 @@ import Combine
     override func mouseEntered(with event: NSEvent) { hover.set(true) }
     override func mouseExited(with event: NSEvent) { hover.set(false) }
     override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
-    override func mouseDown(with event: NSEvent) { pressing = true }
+    /// Who had the keyboard when the pointer came down: a click steps the
+    /// version and leaves focus where it was, as a button's click does.
+    private weak var responderBeforeClick: NSResponder?
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let hit = super.hitTest(point) == nil ? nil : self as NSView?
+        if hit === self, let current = window?.firstResponder, current !== self {
+            if let editor = current as? NSTextView, editor.isFieldEditor, let field = editor.delegate as? NSResponder {
+                responderBeforeClick = field
+            } else {
+                responderBeforeClick = current
+            }
+        }
+        return hit
+    }
+    override func mouseDown(with event: NSEvent) {
+        pressing = true
+        if window?.firstResponder === self, let before = responderBeforeClick, before !== self { window?.makeFirstResponder(before) }
+        responderBeforeClick = nil
+    }
     override func mouseUp(with event: NSEvent) {
         defer { pressing = false }
         guard pressing, enabled, bounds.contains(convert(event.locationInWindow, from: nil)) else { return }

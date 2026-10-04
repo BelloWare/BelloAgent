@@ -264,4 +264,69 @@ final class TranscriptNativeMessageKindBehaviourTests: XCTestCase {
         XCTAssertGreaterThan(try usage(ltr).midX, width / 2, "the usage ends the band at the trailing edge")
         XCTAssertLessThan(try usage(rtl).midX, width / 2)
     }
+
+
+    /// A tool result whose title wraps opens from a click on its words, not
+    /// only on its chevron.
+    @MainActor func testAWrappedTitleOpensFromItsWords() throws {
+        var message = TranscriptMessage(id: "t1", role: "tool", text: "Build complete.")
+        message.kind = "toolResult"; message.detail = "Tool result · " + String(repeating: "a_long_tool_name_", count: 6) + " · completed"
+        let stage = Stage(.message(message), width: 260); defer { stage.close() }
+        let line = try XCTUnwrap(stage.views(TranscriptNativeLabelButton.self).first)
+        XCTAssertGreaterThan(line.frame.height, 20, "the title wraps")
+        let words = try XCTUnwrap(line.subviews.compactMap { $0 as? TranscriptPlainTextView }.first { !$0.isHidden })
+        let location = words.convert(CGPoint(x: words.bounds.midX, y: words.bounds.midY), to: nil)
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            stage.window.sendEvent(try XCTUnwrap(NSEvent.mouseEvent(with: type, location: location, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                                                    windowNumber: stage.window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)))
+        }
+        XCTAssertTrue(stage.disclosure.isOpen(.compaction("t1")))
+    }
+
+    /// The same skills with new words, or read from the other side, are
+    /// placed again: a pill is as wide as what it now says.
+    @MainActor func testSkillPillsFollowNewWordsAndDirection() throws {
+        let stage = Stage(Self.user(skills: [TranscriptNativeRowParityTests.skill("review"), TranscriptNativeRowParityTests.skill("tag")]))
+        defer { stage.close() }
+        func frames() -> [CGRect] { stage.views(TranscriptNativeSkillPill.self).map { $0.convert($0.bounds, to: stage.content) } }
+        let before = frames()
+        stage.item = Self.user(skills: [TranscriptNativeRowParityTests.skill("review", arguments: "focus on the release notes"), TranscriptNativeRowParityTests.skill("tag")])
+        stage.refresh()
+        let after = frames()
+        XCTAssertGreaterThan(after[0].width, before[0].width + 40, "the arguments widen the pill")
+        XCTAssertGreaterThan(after[1].minX, before[1].minX + 40, "and the next pill moves along")
+        stage.environment.layoutDirection = .rightToLeft
+        stage.refresh()
+        let mirrored = frames()
+        XCTAssertGreaterThan(mirrored[0].minX, mirrored[1].minX, "the first skill reads first from the right")
+    }
+
+    /// A click on a version chevron steps the version and leaves the
+    /// keyboard where it was, as SwiftUI's button did: typing still reaches
+    /// the composer.
+    @MainActor func testAChevronClickLeavesTheKeyboardWhereItWas() throws {
+        var stepped = 0
+        var actions = TranscriptActions(); actions.switchVersion = { _, _ in stepped += 1 }
+        let stage = Stage(Self.user(mark: MessageVersionMark(index: 1, count: 2, ids: ["a", "b"])), actions: actions); defer { stage.close() }
+        let field = NSTextField(frame: CGRect(x: 0, y: 560, width: 200, height: 22))
+        stage.window.contentView?.addSubview(field)
+        XCTAssertTrue(stage.window.makeFirstResponder(field))
+        let later = try XCTUnwrap(stage.views(TranscriptNativeVersionChevron.self).last)
+        try stage.click(later)
+        XCTAssertEqual(stepped, 1)
+        let responder = stage.window.firstResponder
+        XCTAssertTrue(responder === field || (responder as? NSTextView)?.delegate === field, "the field keeps the keyboard: \(String(describing: responder))")
+    }
+
+    /// A compaction whose title wraps, read from the other side once it is
+    /// on screen, sets its lines from the right.
+    @MainActor func testAWrappedCompactionTitleFollowsTheDirection() throws {
+        let stage = Stage(Self.compaction(), width: 300); defer { stage.close() }
+        func title() -> TranscriptPlainTextView? { stage.views(TranscriptPlainTextView.self).first { $0.string == "Context compacted" } }
+        XCTAssertNotNil(title(), "the title wraps at this width")
+        stage.environment.layoutDirection = .rightToLeft
+        stage.refresh()
+        let paragraph = try XCTUnwrap(title()?.textStorage?.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle)
+        XCTAssertEqual(paragraph.alignment, .right)
+    }
 }

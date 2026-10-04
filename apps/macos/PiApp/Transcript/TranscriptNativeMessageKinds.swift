@@ -54,7 +54,9 @@ import AppKit
     /// leaves focus where it was, as a button's click does.
     private weak var responderBeforeClick: NSResponder?
     override func hitTest(_ point: NSPoint) -> NSView? {
-        let hit = super.hitTest(point)
+        // Anything inside the line is the line: a wrapped title's text view
+        // takes no click of its own.
+        let hit = super.hitTest(point) == nil ? nil : self as NSView?
         if hit === self, let current = window?.firstResponder, current !== self {
             if let editor = current as? NSTextView, editor.isFieldEditor, let field = editor.delegate as? NSResponder {
                 responderBeforeClick = field
@@ -217,6 +219,7 @@ import AppKit
         title.color = TranscriptNSPalette.text
         detail.text = message.detail ?? ""; detail.color = TranscriptNSPalette.muted
         hair.fill = TranscriptNSPalette.hair
+        wrappedTitle?.update(text: "Context compacted", face: Self.titleFace, environment: environment, swiftUILines: true, color: TranscriptNSPalette.text)
         let id = message.id, toggle = inputs.toggle
         fold.update(title: Self.summaryTitle, font: Self.foldFont, open: open,
                     help: ("Hide the summary this compaction kept in context", "Show the summary this compaction kept in context"),
@@ -325,7 +328,7 @@ import AppKit
         let cardHeight = inner + 2 * Self.padding.height
         let total = 2 * (Self.ruleWidth + 8) + cardWidth
         let card = CGRect(x: (width - total) / 2 + Self.ruleWidth + 8, y: 12, width: cardWidth, height: cardHeight)
-        return Plan(card: card, inner: card.insetBy(dx: Self.padding.width, dy: Self.padding.height), header: heights[0], section: section,
+        return Plan(card: card, inner: CGRect(x: card.minX + Self.padding.width, y: card.minY + Self.padding.height, width: innerWidth, height: inner), header: heights[0], section: section,
                     markdown: markdownHeight, accounting: hasAccounting ? heights[heights.count - 1] : 0,
                     leftover: max(0, pieces.reduce(0) { $0 + $1.idealHeight } - heights.reduce(0, +)), height: 12 + cardHeight + 12)
     }
