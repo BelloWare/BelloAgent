@@ -392,7 +392,7 @@ import AppKit
     private var open = false
     private var fetched: ToolInputDocument?
     private var environment = TranscriptRowEnvironment()
-    private var cardModel: ActionRowView.Card?
+    private var cardModel: TranscriptToolRow.Card?
     override var isFlipped: Bool { true }
 
     override init(frame: NSRect) {
@@ -405,7 +405,7 @@ import AppKit
     /// Takes the call as it is now. `openFile` opens a file at its lines.
     func update(tool: ToolView, open: Bool, fetched: ToolInputDocument?, environment: TranscriptRowEnvironment,
                 toggle: @escaping () -> Void, openFile: ((String, ClosedRange<Int>?) -> Void)?) {
-        let model = ActionRowView.model(of: tool)
+        let model = TranscriptToolRow.model(of: tool)
         let link: (() -> Void)? = {
             guard environment.opensFiles, let openFile, let file = model.file else { return nil }
             return { openFile(file.path, file.lines) }
@@ -418,7 +418,7 @@ import AppKit
         self.tool = tool; self.open = open; self.fetched = fetched; self.environment = environment
         // What a closed row opens costs nothing: it is not built at all.
         if open {
-            let next = ActionRowView.card(of: tool, fetched: fetched, model: model, linked: link != nil)
+            let next = TranscriptToolRow.card(of: tool, fetched: fetched, model: model, linked: link != nil)
             if card == nil || !TranscriptNativeCard.sameKind(cardModel, next) {
                 card?.removeFromSuperview()
                 let made = TranscriptNativeCard.make(next)

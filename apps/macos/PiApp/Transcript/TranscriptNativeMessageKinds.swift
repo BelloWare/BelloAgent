@@ -256,7 +256,7 @@ import AppKit
             || (view === accounting && !hasAccounting)
     }
     private func refreshBand() {
-        let wanted = hovering && !drawsNothing ? RowActionsView.pills(message, actions: inputs.actions, forks: false, source: nil) : []
+        let wanted = hovering && !drawsNothing ? TranscriptRowPills.pills(message, actions: inputs.actions, forks: false, source: nil) : []
         // The pills share the header's line: in a narrow card they can make
         // the title wrap, and the row grow, as SwiftUI's did.
         let width = bounds.width > 0 ? bounds.width : inputs.width

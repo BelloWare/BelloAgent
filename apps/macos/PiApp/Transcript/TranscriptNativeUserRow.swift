@@ -27,7 +27,7 @@ import AppKit
     /// The skills the message used, leading its bubble.
     private var skills: TranscriptNativeSkillPills?
     /// Between the skills and the text.
-    static let skillGap = MessageRowView.skillGap
+    static let skillGap = TranscriptMessageRows.skillGap
     /// Under a saved fragment whose text was not kept whole.
     private var truncatedText: TranscriptPlainTextView?
     /// The edit's versions, in the band.
@@ -86,7 +86,7 @@ import AppKit
         let message = message
         bubble.fill = TranscriptNSPalette.userBackground
         text.update(text: message.text, face: .user, environment: inputs.environment,
-                    swiftUILines: !TranscriptPlainText.usesTextKit(message.text))
+                    swiftUILines: !TranscriptPlainTextView.usesTextKit(message.text))
         text.isHidden = message.text.isEmpty
         clock.color = TranscriptNSPalette.faint
         if message.isSending {
@@ -171,7 +171,7 @@ import AppKit
         if message.isSending { clock.speak("Sending", identifier: "messageSending") }
         else { clock.speak(clock.text.isEmpty ? nil : "Sent at \(clock.text)") }
         let wanted = hovering && !message.isSending
-            ? RowActionsView.pills(message, actions: inputs.actions, forks: inputs.environment.forks, source: nil) : []
+            ? TranscriptRowPills.pills(message, actions: inputs.actions, forks: inputs.environment.forks, source: nil) : []
         band.show(wanted, enabled: inputs.environment.isEnabled)
     }
 

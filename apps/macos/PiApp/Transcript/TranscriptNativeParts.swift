@@ -836,7 +836,7 @@ extension NSView {
     private(set) var pills: [TranscriptPillButton] = []
     init(host: NSView) { self.host = host }
     /// Shows `wanted`, keeping the pills already there when they are the same.
-    func show(_ wanted: [RowActionsView.Pill], enabled: Bool) {
+    func show(_ wanted: [TranscriptRowPills.Pill], enabled: Bool) {
         guard let host else { return }
         if pills.map(\.title) != wanted.map(\.title) {
             // Leaving pills fade out as they used to, then go.

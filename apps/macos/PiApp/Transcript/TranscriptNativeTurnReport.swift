@@ -321,8 +321,8 @@ import AppKit
     private func show() {
         guard let reading = clock?.reading else { return }
         let live = self.live
-        let elapsed = reading.elapsedMs.map { TurnDurationMetrics.label($0, live: live) } ?? "—"
-        let text = "AI \(TurnDurationMetrics.label(reading.modelMs, live: live)) · Tools \(TurnDurationMetrics.label(reading.toolMs, live: live))"
+        let elapsed = reading.elapsedMs.map { TurnDurationText.label($0, live: live) } ?? "—"
+        let text = "AI \(TurnDurationText.label(reading.modelMs, live: live)) · Tools \(TurnDurationText.label(reading.toolMs, live: live))"
         let changedLines = split.text != text && !live
         title.color = TranscriptNSPalette.faint
         clockLabel.text = elapsed; clockLabel.color = TranscriptNSPalette.text
@@ -494,7 +494,7 @@ import AppKit
     func copyTurnInfo() {
         guard let content else { return }
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(TurnLineView.copyText(TurnInfoPresentation.live(content.turn, at: .now), model: content.model), forType: .string)
+        NSPasteboard.general.setString(TurnPillsPresentation.copyText(TurnInfoPresentation.live(content.turn, at: .now), model: content.model), forType: .string)
     }
     override func menu(for event: NSEvent) -> NSMenu? {
         let menu = NSMenu()
@@ -700,7 +700,7 @@ import AppKit
         let stamps = [turn.startedAt.map { "Started " + TranscriptActivity.formatClock($0) },
                       turn.isRunning ? nil : turn.endedAt.map { "finished " + TranscriptActivity.formatClock($0) }].compactMap { $0 }.joined(separator: " · ")
         toolTip = stamps.isEmpty ? nil : stamps
-        setAccessibilityLabel("Turn: \(TurnLineView.counts(turn))")
+        setAccessibilityLabel("Turn: \(TurnPillsPresentation.counts(turn))")
         needsLayout = true
     }
     func height(width: CGFloat) -> CGFloat { Self.gap + Self.inset + report.height(width: width) }
@@ -729,7 +729,7 @@ import AppKit
     override class func draws(_ item: TranscriptItem) -> Bool { turn(of: item) != nil }
     override var drawsNothing: Bool { inputs.disclosure.foldedAway || inputs.disclosure.responseLine }
     private var turn: TurnSummary? { Self.turn(of: inputs.item) }
-    private var notice: String? { turn.flatMap(StableTurnSummaryView.shownNotice) }
+    private var notice: String? { turn.flatMap(TurnInfoPresentation.noticeBelowCard) }
 
     override init(inputs: TranscriptRowInputs) {
         super.init(inputs: inputs)

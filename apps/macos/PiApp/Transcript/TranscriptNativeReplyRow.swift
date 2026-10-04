@@ -134,12 +134,12 @@ import AppKit
             source = parts
             parts.panel.fill = TranscriptNSPalette.codeBackground; parts.panel.stroke = TranscriptNSPalette.hair
             parts.text.update(text: message.text, face: .source, environment: inputs.environment,
-                              swiftUILines: !TranscriptPlainText.usesTextKit(message.text))
+                              swiftUILines: !TranscriptPlainTextView.usesTextKit(message.text))
         } else if let parts = source {
             parts.panel.removeFromSuperview(); parts.text.removeFromSuperview(); source = nil
         }
         dots.running = message.text.isEmpty && message.isStreaming
-        let early = MessageRowView.earlyEnd(message.stopReason)
+        let early = TranscriptMessageRows.earlyEnd(message.stopReason)
         if let early {
             notice.update(text: early, face: Self.noticeFace, environment: inputs.environment, swiftUILines: true, color: TranscriptNSPalette.warning)
             notice.setAccessibilityLabel(early)
@@ -200,7 +200,7 @@ import AppKit
     }
     private func refreshBand() {
         let wanted = hovering && !drawsNothing
-            ? RowActionsView.pills(message, actions: inputs.actions, forks: inputs.environment.forks, source: sourceToggle) : []
+            ? TranscriptRowPills.pills(message, actions: inputs.actions, forks: inputs.environment.forks, source: sourceToggle) : []
         band.show(wanted, enabled: inputs.environment.isEnabled)
     }
 

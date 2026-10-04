@@ -48,8 +48,11 @@ final class TranscriptPerformanceRegressionTests: XCTestCase {
     }
 
     @MainActor func testMeasuredRowReusesExactHeightAndInvalidatesForWidthAndContent() {
+        // A reply's body, as the planner hands it over (a bare assistant
+        // message is no row the page ever holds).
         var message = TranscriptMessage(id: "measured", role: "assistant", text: String(repeating: "A selectable paragraph with a useful amount of text. ", count: 20))
-        let row = TranscriptRowContainer(item: .message(message), fresh: false, actions: TranscriptActions())
+        func body(_ message: TranscriptMessage) -> TranscriptItem { .block(TranscriptNativeRowParityTests.block("body:measured", .body, message: message)) }
+        let row = TranscriptRowContainer(item: body(message), fresh: false, actions: TranscriptActions())
         let original = row.measure(width: 600)
         XCTAssertGreaterThan(original.height, 50, "The cache must contain real text layout, never a placeholder height")
         let before = row.measurementCount
@@ -71,10 +74,11 @@ final class TranscriptPerformanceRegressionTests: XCTestCase {
         row.frame = NSRect(origin: .zero, size: original)
         row.layoutSubtreeIfNeeded()
         XCTAssertEqual(row.subviews.first?.frame.size, original)
-        XCTAssertEqual(row.subviews.first?.fittingSize.height ?? 0, original.height, accuracy: 1,
+        // The content's own height at the width it is laid out at.
+        XCTAssertEqual((row.subviews.first as? TranscriptRowContent)?.confirmHeight() ?? 0, original.height, accuracy: 1,
                        "A speculative size must never leave native text wrapped for a different viewport")
         message.text += String(repeating: "\n\nAnother complete paragraph.", count: 12)
-        row.update(item: .message(message), fresh: false, actions: TranscriptActions())
+        row.update(item: body(message), fresh: false, actions: TranscriptActions())
         XCTAssertGreaterThan(row.measure(width: 300).height, narrow.height)
     }
 

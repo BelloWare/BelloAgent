@@ -249,7 +249,7 @@ final class TranscriptNativeWorkBehaviourTests: XCTestCase {
     @MainActor func testOpeningTheFullContentMakesTheCardTaller() throws {
         let request = TranscriptActivity.EditRequest(before: "old one\nold two", after: "new one\nnew two\nnew three", mode: "edit", rows: [],
                                                      hiddenRows: 0, complete: true, tooLarge: true, lines: 9_000)
-        let card = ActionRowView.Card.diff(request, path: "Big.json", outcome: .done, added: 3, removed: 2)
+        let card = TranscriptToolRow.Card.diff(request, path: "Big.json", outcome: .done, added: 3, removed: 2)
         let view = TranscriptNativeCard.make(card)
         view.update(card, link: nil, environment: TranscriptRowEnvironment())
         let closed = view.height(width: 600)
@@ -270,7 +270,7 @@ final class TranscriptNativeWorkBehaviourTests: XCTestCase {
     /// A read's line numbers are text VoiceOver reads and the reader can
     /// select, as SwiftUI's were; so is a file's path without a link.
     @MainActor func testLineNumbersAndPathsAreText() throws {
-        let card = ActionRowView.Card.read(text: "alpha\nbeta", firstLine: 41, path: "Sources/App.swift", failed: false)
+        let card = TranscriptToolRow.Card.read(text: "alpha\nbeta", firstLine: 41, path: "Sources/App.swift", failed: false)
         let view = TranscriptNativeCard.make(card)
         view.update(card, link: nil, environment: TranscriptRowEnvironment())
         let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 600, height: 300), styleMask: [.borderless], backing: .buffered, defer: false)
@@ -287,7 +287,7 @@ final class TranscriptNativeWorkBehaviourTests: XCTestCase {
     /// An expanded diff out of any window that keeps streaming measures
     /// only what its capped scroll needs, not every row, on each update.
     @MainActor func testADetachedStreamingDiffMeasuresOnlyItsCap() throws {
-        func card(_ count: Int) -> ActionRowView.Card {
+        func card(_ count: Int) -> TranscriptToolRow.Card {
             let rows = (1...count).map { DiffRow(kind: .added, text: "line \($0)") }
             return .diff(TranscriptActivity.EditRequest(before: "", after: "", mode: "write", rows: rows, hiddenRows: 0, complete: true, tooLarge: false, lines: count),
                          path: nil, outcome: .running, added: nil, removed: nil)
@@ -331,7 +331,7 @@ final class TranscriptNativeWorkBehaviourTests: XCTestCase {
 
     /// A card out of any window builds none of its lines, however it is updated.
     @MainActor func testADetachedCardBuildsNoLines() throws {
-        let card = ActionRowView.Card.read(text: (1...100).map { "line \($0)" }.joined(separator: "\n"), firstLine: 1, path: nil, failed: false)
+        let card = TranscriptToolRow.Card.read(text: (1...100).map { "line \($0)" }.joined(separator: "\n"), firstLine: 1, path: nil, failed: false)
         let view = try XCTUnwrap(TranscriptNativeCard.make(card) as? TranscriptNativeReadCard)
         view.update(card, link: nil, environment: TranscriptRowEnvironment())
         view.setExpanded(true)
@@ -346,7 +346,7 @@ final class TranscriptNativeWorkBehaviourTests: XCTestCase {
     @MainActor func testASelectionSurvivesScrollingAnExpandedDiff() throws {
         let rows = (1...80).map { DiffRow(kind: .added, text: "line \($0)") }
         let request = TranscriptActivity.EditRequest(before: "", after: "", mode: "edit", rows: rows, hiddenRows: 0, complete: true, tooLarge: false, lines: 80)
-        let card = ActionRowView.Card.diff(request, path: nil, outcome: .done, added: 80, removed: 0)
+        let card = TranscriptToolRow.Card.diff(request, path: nil, outcome: .done, added: 80, removed: 0)
         let view = try XCTUnwrap(TranscriptNativeCard.make(card) as? TranscriptNativeDiffCard)
         view.update(card, link: nil, environment: TranscriptRowEnvironment())
         view.setExpanded(true)
@@ -380,7 +380,7 @@ final class TranscriptNativeWorkBehaviourTests: XCTestCase {
     /// A too-large diff sets its whole texts only once they are shown.
     @MainActor func testFullContentIsSetOnlyWhenOpened() throws {
         let request = TranscriptActivity.EditRequest(before: "old", after: "new text", mode: "edit", rows: [], hiddenRows: 0, complete: true, tooLarge: true, lines: 9_000)
-        let card = ActionRowView.Card.diff(request, path: nil, outcome: .done, added: 1, removed: 1)
+        let card = TranscriptToolRow.Card.diff(request, path: nil, outcome: .done, added: 1, removed: 1)
         let view = TranscriptNativeCard.make(card)
         view.update(card, link: nil, environment: TranscriptRowEnvironment())
         let texts = { self.views(TranscriptCappedText.self, in: view).map(\.text.string) }
@@ -392,7 +392,7 @@ final class TranscriptNativeWorkBehaviourTests: XCTestCase {
     /// An expanded read of a long file, in a conversation's scroll view,
     /// builds the lines near the view and not the rest.
     @MainActor func testAnExpandedReadBuildsOnlyTheLinesInView() throws {
-        let card = ActionRowView.Card.read(text: (1...400).map { "line \($0)" }.joined(separator: "\n"), firstLine: 1, path: nil, failed: false)
+        let card = TranscriptToolRow.Card.read(text: (1...400).map { "line \($0)" }.joined(separator: "\n"), firstLine: 1, path: nil, failed: false)
         let view = try XCTUnwrap(TranscriptNativeCard.make(card) as? TranscriptNativeReadCard)
         view.update(card, link: nil, environment: TranscriptRowEnvironment())
         view.setExpanded(true)

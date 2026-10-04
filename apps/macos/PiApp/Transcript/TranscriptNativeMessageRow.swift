@@ -247,7 +247,7 @@ import AppKit
     }
     override func keepsPlace(_ view: NSView) -> Bool { view === capsule || view === words || (view === header && message.failedEnd == nil) }
     private func refreshBand() {
-        let wanted = hovering && !drawsNothing ? RowActionsView.pills(message, actions: inputs.actions, forks: inputs.environment.forks, source: nil) : []
+        let wanted = hovering && !drawsNothing ? TranscriptRowPills.pills(message, actions: inputs.actions, forks: inputs.environment.forks, source: nil) : []
         let changed = band.pills.map(\.title) != wanted.map(\.title)
         band.show(wanted, enabled: inputs.environment.isEnabled)
         // The accounting shares the band with the pills.

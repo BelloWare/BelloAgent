@@ -38,29 +38,42 @@ struct TranscriptRowInputs {
     func confirmHeight() -> CGFloat
 }
 
-/// Builds the content for an item: native rows where they exist, the
-/// SwiftUI row for everything not yet ported.
+/// Builds the content for an item: the native row that draws it.
 @MainActor enum TranscriptRowRenderer {
-    /// Off draws every row through SwiftUI, for checks that a native row
-    /// reads exactly as the SwiftUI one it replaces.
-    static var native = true
+    /// A test seam: draws every row through this instead (the parity tests'
+    /// SwiftUI rows, which the native ones must read exactly as).
+    static var reference: ((TranscriptRowInputs) -> NSView & TranscriptRowContent)?
     static func content(for item: TranscriptItem, inputs: TranscriptRowInputs) -> NSView & TranscriptRowContent {
-        if native, TranscriptNativeUserRow.draws(item) { return TranscriptNativeUserRow(inputs: inputs) }
-        if native, TranscriptNativeReplyRow.draws(item) { return TranscriptNativeReplyRow(inputs: inputs) }
-        if native, TranscriptNativeFailureRow.draws(item) { return TranscriptNativeFailureRow(inputs: inputs) }
-        if native, TranscriptNativeNoticeRow.draws(item) { return TranscriptNativeNoticeRow(inputs: inputs) }
-        if native, TranscriptNativeBranchRow.draws(item) { return TranscriptNativeBranchRow(inputs: inputs) }
-        if native, TranscriptNativeStatusRow.draws(item) { return TranscriptNativeStatusRow(inputs: inputs) }
-        if native, TranscriptNativeVersionBannerRow.draws(item) { return TranscriptNativeVersionBannerRow(inputs: inputs) }
-        if native, TranscriptNativeCompactionRow.draws(item) { return TranscriptNativeCompactionRow(inputs: inputs) }
-        if native, TranscriptNativeRequestInfoRow.draws(item) { return TranscriptNativeRequestInfoRow(inputs: inputs) }
-        if native, TranscriptNativeToolResultRow.draws(item) { return TranscriptNativeToolResultRow(inputs: inputs) }
-        if native, TranscriptNativeTurnSummaryRow.draws(item) { return TranscriptNativeTurnSummaryRow(inputs: inputs) }
-        if native, TranscriptNativeTurnFoldRow.draws(item) { return TranscriptNativeTurnFoldRow(inputs: inputs) }
-        if native, TranscriptNativeResponseRow.draws(item) { return TranscriptNativeResponseRow(inputs: inputs) }
-        if native, TranscriptNativePartRow.draws(item) { return TranscriptNativePartRow(inputs: inputs) }
-        if native, TranscriptNativeExecutionRow.draws(item) { return TranscriptNativeExecutionRow(inputs: inputs) }
-        if native, TranscriptNativeLegacyRow.draws(item) { return TranscriptNativeLegacyRow(inputs: inputs) }
-        return TranscriptHostedRowContent(inputs: inputs)
+        if let reference { return reference(inputs) }
+        if TranscriptNativeUserRow.draws(item) { return TranscriptNativeUserRow(inputs: inputs) }
+        if TranscriptNativeReplyRow.draws(item) { return TranscriptNativeReplyRow(inputs: inputs) }
+        if TranscriptNativeFailureRow.draws(item) { return TranscriptNativeFailureRow(inputs: inputs) }
+        if TranscriptNativeNoticeRow.draws(item) { return TranscriptNativeNoticeRow(inputs: inputs) }
+        if TranscriptNativeBranchRow.draws(item) { return TranscriptNativeBranchRow(inputs: inputs) }
+        if TranscriptNativeStatusRow.draws(item) { return TranscriptNativeStatusRow(inputs: inputs) }
+        if TranscriptNativeVersionBannerRow.draws(item) { return TranscriptNativeVersionBannerRow(inputs: inputs) }
+        if TranscriptNativeCompactionRow.draws(item) { return TranscriptNativeCompactionRow(inputs: inputs) }
+        if TranscriptNativeRequestInfoRow.draws(item) { return TranscriptNativeRequestInfoRow(inputs: inputs) }
+        if TranscriptNativeToolResultRow.draws(item) { return TranscriptNativeToolResultRow(inputs: inputs) }
+        if TranscriptNativeTurnSummaryRow.draws(item) { return TranscriptNativeTurnSummaryRow(inputs: inputs) }
+        if TranscriptNativeTurnFoldRow.draws(item) { return TranscriptNativeTurnFoldRow(inputs: inputs) }
+        if TranscriptNativeResponseRow.draws(item) { return TranscriptNativeResponseRow(inputs: inputs) }
+        if TranscriptNativePartRow.draws(item) { return TranscriptNativePartRow(inputs: inputs) }
+        if TranscriptNativeExecutionRow.draws(item) { return TranscriptNativeExecutionRow(inputs: inputs) }
+        if TranscriptNativeLegacyRow.draws(item) { return TranscriptNativeLegacyRow(inputs: inputs) }
+        // Nothing the planners make reaches here (TranscriptNativeEverywhereTests).
+        return TranscriptNativeEmptyRow(inputs: inputs)
     }
+}
+
+/// A row that draws nothing and takes no room: what an item no native row
+/// draws stands as, should a planner ever make one.
+@MainActor final class TranscriptNativeEmptyRow: NSView, TranscriptRowContent {
+    weak var owner: TranscriptRowContainer?
+    init(inputs: TranscriptRowInputs) { super.init(frame: .zero); setAccessibilityElement(false) }
+    required init?(coder: NSCoder) { nil }
+    func accepts(_ item: TranscriptItem) -> Bool { false }
+    func apply(_ inputs: TranscriptRowInputs) {}
+    func settle() -> (height: CGFloat, passes: Int) { (0, 0) }
+    func confirmHeight() -> CGFloat { 0 }
 }

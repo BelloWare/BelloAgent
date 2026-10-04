@@ -1,4 +1,3 @@
-import SwiftUI
 import AppKit
 
 /// Render the same reported observations inline, in the live dock, and in its
@@ -225,12 +224,4 @@ enum TurnInfoPresentation {
     }
     required init?(coder: NSCoder) { nil }
     @objc private func open(_ sender: Any?) { if let turn { actions.inspectTurn?(turn) } }
-}
-
-struct TurnInfoButton: NSViewRepresentable {
-    let turn: TurnSummary
-    let actions: TranscriptActions
-    func makeNSView(context: Context) -> TurnInfoNSButton { TurnInfoNSButton() }
-    func updateNSView(_ button: TurnInfoNSButton, context: Context) { button.turn = turn; button.actions = actions }
-    func sizeThatFits(_ proposal: ProposedViewSize, nsView: TurnInfoNSButton, context: Context) -> CGSize? { TurnInfoNSButton.size }
 }

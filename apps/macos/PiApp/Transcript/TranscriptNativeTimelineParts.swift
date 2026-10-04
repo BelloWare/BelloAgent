@@ -60,7 +60,7 @@ import AppKit
     func update(_ model: Model) {
         self.model = model
         TranscriptAppearance.apply(model.environment, to: self)
-        let row = TimelinePartRow(part: model.part, message: model.message, actions: model.actions, open: model.open, toggle: model.toggle)
+        let row = TranscriptTimelinePart(part: model.part, message: model.message)
         let kind = Self.kind(of: model.part, card: model.card)
         if kind != self.kind { clear() }
         self.kind = kind
@@ -98,10 +98,10 @@ import AppKit
     }
     private func changed() { needsLayout = true; sizeChanged() }
 
-    private func configureWork(_ row: TimelinePartRow, _ model: Model) {
+    private func configureWork(_ row: TranscriptTimelinePart, _ model: Model) {
         let part = model.part, running = row.source.isStreaming
         let line = self.line ?? { let line = TranscriptNativeWorkLine(); addSubview(line); self.line = line; return line }()
-        let summary = row.reasoning ? TimelinePartRow.thinkSummary(part.text, running: running)
+        let summary = row.reasoning ? TranscriptTimelineText.thinkSummary(part.text, running: running)
             : (part.part.kind == "status" ? "" : TranscriptActivity.firstLine(part.text))
         line.update(TranscriptNativeWorkLine.Content(icon: row.icon, title: row.title, summary: summary, state: row.state,
                                                      expandable: true, open: model.open, follow: row.reasoning && running),
@@ -114,7 +114,7 @@ import AppKit
         }
         if part.part.kind == "toolArguments" {
             let code = self.code ?? {
-                let code = TranscriptNativeCodeBlock(usesTextKit: NativeCodeText.enabled && (running || part.text.utf8.count >= NativeCodeText.minimumBytes))
+                let code = TranscriptNativeCodeBlock(usesTextKit: TranscriptCodeTextView.enabled && (running || part.text.utf8.count >= TranscriptCodeTextView.minimumBytes))
                 code.sizeChanged = { [weak self] in self?.changed() }
                 addSubview(code); self.code = code
                 return code

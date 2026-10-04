@@ -138,7 +138,7 @@ import Combine
 /// The skills a sent message used, as pills that flow like words, six points
 /// apart, at the start of its bubble (`TranscriptSkillPills`).
 @MainActor final class TranscriptNativeSkillPills: NSView {
-    static let spacing = TranscriptSkillPills.spacing
+    static let spacing = TranscriptSkillPillMetrics.spacing
     private(set) var pills: [TranscriptNativeSkillPill] = []
     private var rightToLeft = false
     override var isFlipped: Bool { true }

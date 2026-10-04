@@ -103,7 +103,7 @@ final class TranscriptNativeWorkParityTests: XCTestCase {
                                            hiddenRows: hidden, complete: complete, tooLarge: tooLarge, lines: tooLarge ? 9_000 : rows.count)
         }
         let lines = (1...40).map { "line \($0) of the file" }.joined(separator: "\n")
-        let cards: [(String, ActionRowView.Card, Bool)] = [
+        let cards: [(String, TranscriptToolRow.Card, Bool)] = [
             ("diff-expanded", .diff(request(rows), path: "Sources/Values.swift", outcome: .done, added: 20, removed: 10), true),
             ("diff-expanded-short", .diff(request(Array(rows.prefix(14))), path: nil, outcome: .running, added: nil, removed: nil), true),
             ("diff-partial", .diff(request(Array(rows.prefix(5)), mode: "write", hidden: 120, complete: false), path: "Notes.md", outcome: .cancelled, added: nil, removed: nil), false),

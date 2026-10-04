@@ -1,4 +1,9 @@
 import SwiftUI
+import AppKit
+@testable import PiApp
+
+// The SwiftUI views of Transcript/TimelinePartRow.swift before the transcript was AppKit,
+// kept as they were for the parity tests to draw against.
 
 /// One part of a response, at the position it arrived at: the reply's prose,
 /// the reasoning it returned, or the card of the call it made. A call's card is

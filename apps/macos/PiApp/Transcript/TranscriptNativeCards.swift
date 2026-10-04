@@ -51,7 +51,7 @@ enum TranscriptCardFaces {
     }
     required init?(coder: NSCoder) { nil }
 
-    static func make(_ card: ActionRowView.Card) -> TranscriptNativeCard {
+    static func make(_ card: TranscriptToolRow.Card) -> TranscriptNativeCard {
         switch card {
         case .diff: return TranscriptNativeDiffCard()
         case .terminal: return TranscriptNativeTerminalCard()
@@ -61,13 +61,13 @@ enum TranscriptCardFaces {
     }
     /// Whether two cards are drawn by the same view, which keeps what the
     /// reader did in it (a diff expanded, a section scrolled).
-    static func sameKind(_ a: ActionRowView.Card?, _ b: ActionRowView.Card) -> Bool {
+    static func sameKind(_ a: TranscriptToolRow.Card?, _ b: TranscriptToolRow.Card) -> Bool {
         switch (a, b) {
         case (.diff?, .diff), (.terminal?, .terminal), (.read?, .read), (.io?, .io): return true
         default: return false
         }
     }
-    func update(_ card: ActionRowView.Card, link: (() -> Void)?, environment: TranscriptRowEnvironment) {
+    func update(_ card: TranscriptToolRow.Card, link: (() -> Void)?, environment: TranscriptRowEnvironment) {
         self.link = link
         self.environment = environment
         panel.fill = TranscriptNSPalette.codeBackground
@@ -77,7 +77,7 @@ enum TranscriptCardFaces {
         needsLayout = true
     }
     /// Sets the card's pieces.
-    func configure(_ card: ActionRowView.Card) {}
+    func configure(_ card: TranscriptToolRow.Card) {}
     /// The panel's content: each piece's frame inside a panel `width` wide,
     /// in the panel's coordinates (a piece inside another after it), and
     /// its height. Worked out without touching any view: it is kept per width.
@@ -295,7 +295,7 @@ enum TranscriptCardFaces {
         for view in [path.label, headerRule, inSection, middleRule, outSection, note] as [NSView] { addSubview(view) }
     }
     required init?(coder: NSCoder) { nil }
-    override func configure(_ card: ActionRowView.Card) {
+    override func configure(_ card: TranscriptToolRow.Card) {
         guard case let .io(pathText, input, output, failed, noteText) = card else { return }
         hasPath = pathText != nil
         path.update(path: pathText ?? "", color: TranscriptNSPalette.muted, open: link, enabled: environment.isEnabled, in: self)
@@ -592,7 +592,7 @@ enum TranscriptCardFaces {
         configureLines()
         invalidatePlans()
     }
-    override func configure(_ card: ActionRowView.Card) {
+    override func configure(_ card: TranscriptToolRow.Card) {
         guard case let .diff(request, pathText, outcome, added, removed) = card else { return }
         self.request = request
         let environment = environment
@@ -860,9 +860,9 @@ enum TranscriptCardFaces {
     }
     required init?(coder: NSCoder) { nil }
     func setExpanded(_ value: Bool) { expanded = value; configureLines(); invalidatePlans() }
-    override func configure(_ card: ActionRowView.Card) {
+    override func configure(_ card: TranscriptToolRow.Card) {
         guard case let .read(text, firstLine, pathText, failed) = card else { return }
-        let window = TranscriptReadCard.window(of: text)
+        let window = TranscriptReadCardText.window(of: text)
         lines = window.lines; self.firstLine = max(1, firstLine)
         hasPath = pathText != nil; hasNote = window.note != nil
         path.update(path: pathText ?? "", color: TranscriptNSPalette.muted, open: link, enabled: environment.isEnabled, in: body)
@@ -885,7 +885,7 @@ enum TranscriptCardFaces {
     private func configureLines() {
         let cap = cap
         let shown = cap.capped ? cap.head + cap.tail : lines.count
-        windowLabel.text = TranscriptReadCard.window(shown: shown, total: lines.count)
+        windowLabel.text = TranscriptReadCardText.window(shown: shown, total: lines.count)
         windowLabel.color = TranscriptNSPalette.faint
         windowLabel.speak(windowLabel.text, identifier: "read-card-window")
         if cap.capped {
@@ -947,7 +947,7 @@ enum TranscriptCardFaces {
         for view in [prompt, command, rule, output] as [NSView] { addSubview(view) }
     }
     required init?(coder: NSCoder) { nil }
-    override func configure(_ card: ActionRowView.Card) {
+    override func configure(_ card: TranscriptToolRow.Card) {
         guard case let .terminal(commandText, outputText, failed) = card else { return }
         prompt.color = TranscriptNSPalette.faint
         command.update(text: commandText, face: TranscriptCardFaces.code, environment: environment, swiftUILines: true, color: TranscriptNSPalette.text)

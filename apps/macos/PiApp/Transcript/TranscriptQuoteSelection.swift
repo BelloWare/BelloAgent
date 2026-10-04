@@ -1,19 +1,9 @@
 import AppKit
-import SwiftUI
 
 struct TranscriptQuote: Equatable, Sendable {
     let messageID: String
     /// The selected rendered text, with native UTF-16 selection boundaries.
     let text: String
-}
-
-/// A geometry-only marker behind assistant prose (including its code blocks).
-/// User text, reasoning/tool details and accounting labels have no marker.
-/// It neither intercepts input nor introduces another text/hosting surface.
-struct TranscriptQuoteRegion: NSViewRepresentable {
-    let messageID: String
-    func makeNSView(context: Context) -> TranscriptQuoteRegionView { TranscriptQuoteRegionView() }
-    func updateNSView(_ view: TranscriptQuoteRegionView, context: Context) { view.messageID = messageID }
 }
 
 final class TranscriptQuoteRegionView: NSView {

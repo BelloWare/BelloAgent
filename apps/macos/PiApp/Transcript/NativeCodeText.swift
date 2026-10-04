@@ -1,26 +1,11 @@
 import AppKit
-import SwiftUI
-
-/// A persistent selectable leaf. The fence's chrome and complete-source copy
-/// action stay in CodeBlockView; TextKit owns only literal code and wrapping.
-struct NativeCodeText: NSViewRepresentable {
-    // Internal comparison seam. Small fences keep the cheaper SwiftUI leaf;
-    // a large fence uses TextKit's bounded drawing and incremental text storage.
-    static var enabled = true
-    static let minimumBytes = 16_384
-    let source: String
-    let language: String?
-    let size: CGFloat
-    func makeNSView(context: Context) -> TranscriptCodeTextView { TranscriptCodeTextView() }
-    func updateNSView(_ view: TranscriptCodeTextView, context: Context) {
-        view.update(source: source, language: language, size: size, environment: TranscriptRowEnvironment(context.environment))
-    }
-    func sizeThatFits(_ proposal: ProposedViewSize, nsView: TranscriptCodeTextView, context: Context) -> CGSize? {
-        nsView.measure(width: proposal.width)
-    }
-}
 
 @MainActor final class TranscriptCodeTextView: NSTextView {
+    /// Whether code this long is drawn by this view rather than as plain
+    /// text; a test seam.
+    static var enabled = true
+    /// From this many bytes a finished fence is drawn by this view.
+    static let minimumBytes = 16_384
     // TextKit's back-pointers are weak. Own the storage before constructing
     // the text view, including the interval before super.init adopts it.
     private var ownedStorage: NSTextStorage?
@@ -106,16 +91,16 @@ struct NativeCodeText: NSViewRepresentable {
             storage.setAttributes(base, range: NSRange(location: dirtyStart, length: storage.length - dirtyStart))
             for token in scan.tokens {
                 let range = NSRange(location: utf16[token.range.lowerBound], length: utf16[token.range.upperBound] - utf16[token.range.lowerBound])
-                let color: Color
+                let color: NSColor
                 switch token.kind {
-                case .keyword: color = TranscriptPalette.keyword
-                case .string: color = TranscriptPalette.string
-                case .number, .title: color = TranscriptPalette.number
+                case .keyword: color = TranscriptNSPalette.keyword
+                case .string: color = TranscriptNSPalette.string
+                case .number, .title: color = TranscriptNSPalette.number
                 case .comment:
-                    color = TranscriptPalette.comment
+                    color = TranscriptNSPalette.comment
                     storage.addAttribute(.font, value: NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask), range: range)
                 }
-                storage.addAttribute(.foregroundColor, value: NSColor(color), range: range)
+                storage.addAttribute(.foregroundColor, value: color, range: range)
             }
             if let last = scan.checkpoints.last(where: { $0 < utf16.count - 1 }) { checkpoint = (utf8[last], utf16[last]) }
             else { checkpoint = resume }

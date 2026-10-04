@@ -21,7 +21,7 @@ import AppKit
     func update(thinking: String, streaming: Bool, open: Bool, toggle: @escaping () -> Void, environment: TranscriptRowEnvironment) {
         self.open = open
         rightToLeft = environment.layoutDirection == .rightToLeft
-        line.update(TranscriptNativeWorkLine.Content(icon: "brain", title: "Think", summary: TimelinePartRow.thinkSummary(thinking, running: streaming),
+        line.update(TranscriptNativeWorkLine.Content(icon: "brain", title: "Think", summary: TranscriptTimelineText.thinkSummary(thinking, running: streaming),
                                                      state: streaming ? .running : .ok, expandable: true, open: open, follow: streaming),
                     link: nil, toggle: toggle, environment: environment)
         if open {
@@ -74,7 +74,7 @@ import AppKit
     func update(tools: [ToolView], openTools: Set<String>, fetched: [String: ToolInputDocument], toggle: @escaping (String) -> Void,
                 openFile: ((String, ClosedRange<Int>?) -> Void)?, environment: TranscriptRowEnvironment) {
         rightToLeft = environment.layoutDirection == .rightToLeft
-        if tools.count >= NativeWorkListSurface.minimumRowCount {
+        if tools.count >= NativeWorkListContainer.minimumRowCount {
             for row in rows { row.removeFromSuperview() }
             rows = []
             let list = self.list ?? {

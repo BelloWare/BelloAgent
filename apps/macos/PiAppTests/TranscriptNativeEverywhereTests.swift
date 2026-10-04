@@ -116,7 +116,8 @@ final class TranscriptNativeEverywhereTests: XCTestCase {
             kinds.insert(label)
             let inputs = TranscriptRowInputs(item: item, fresh: false, actions: TranscriptActions(), width: 600, environment: TranscriptRowEnvironment())
             let content = TranscriptRowRenderer.content(for: item, inputs: inputs)
-            if content is TranscriptHostedRowContent { hosted.append(label + " (" + item.id + ")") }
+            // Drawn by no native row: through SwiftUI's reference row, or as nothing.
+            if content is TranscriptHostedRowContent || content is TranscriptNativeEmptyRow { hosted.append(label + " (" + item.id + ")") }
         }
         // The page really holds every presentation and kind.
         for presentation in ["turnFold", "response", "timeline", "work", "body", "summary", "reply"] {
@@ -125,6 +126,6 @@ final class TranscriptNativeEverywhereTests: XCTestCase {
         for kind in ["compaction", "branch", "versionBanner", "failure", "notice", "toolResult", "requestInfo", "execution"] {
             XCTAssertTrue(kinds.contains { $0.hasSuffix("/\(kind)") }, "the page has a \(kind) row")
         }
-        XCTAssertTrue(hosted.isEmpty, "drawn through SwiftUI: \(Set(hosted).sorted())")
+        XCTAssertTrue(hosted.isEmpty, "drawn by no native row: \(Set(hosted).sorted())")
     }
 }
