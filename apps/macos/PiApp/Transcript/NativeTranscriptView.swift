@@ -90,10 +90,15 @@ struct NativeTranscriptView: View {
                 .overlay(alignment: .bottom) {
                     ZStack {
                         if !page.atBottom || session.newerPage.available, page.snapshot?.items.isEmpty == false {
-                            PiBackToBottomPill { if session.browsingHistory || session.newerPage.available { onLatest(session.id) } else { page.jumpToLatest() } }
-                                .background(TranscriptEdgeMarker(edge: "newer", kind: "latest", text: "Jump to the latest message", action: {
-                                    if session.browsingHistory || session.newerPage.available { onLatest(session.id) } else { page.jumpToLatest() }
-                                }))
+                            // Weak: SwiftUI can keep a hover handler — and the action
+                            // in it — after the circle is gone, and that must not
+                            // keep the chat the reader left.
+                            let latest = { [weak session, weak page, onLatest] in
+                                guard let session else { return }
+                                if session.browsingHistory || session.newerPage.available { onLatest(session.id) } else { page?.jumpToLatest() }
+                            }
+                            PiBackToBottomPill(action: latest)
+                                .background(TranscriptEdgeMarker(edge: "newer", kind: "latest", text: "Jump to the latest message", action: latest))
                                 // Beside the circle, not in a row with it: the
                                 // circle stays where it is whatever shows there.
                                 .overlay(alignment: .leading) {
