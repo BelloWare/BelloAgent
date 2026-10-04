@@ -41,6 +41,13 @@ import AppKit
             view.animator().setFrameOrigin(final.origin)
         }
     }
+    /// `rect` with its origin on the pixel grid and its size rounded up to a
+    /// whole pixel, as SwiftUI places a background.
+    static func pixelAligned(_ rect: CGRect, scale: CGFloat) -> CGRect {
+        func snap(_ value: CGFloat) -> CGFloat { (value * scale).rounded() / scale }
+        let minY = snap(rect.minY), minX = snap(rect.minX)
+        return CGRect(x: minX, y: minY, width: snap(rect.maxX) - minX, height: ceil(rect.height * scale) / scale)
+    }
     /// `rect` in a row `width` wide laid out right to left.
     static func mirrored(_ rect: CGRect, width: CGFloat, _ rightToLeft: Bool) -> CGRect {
         rightToLeft ? CGRect(x: width - rect.maxX, y: rect.minY, width: rect.width, height: rect.height) : rect
@@ -154,6 +161,7 @@ import AppKit
     static let font = NSFont.systemFont(ofSize: 11, weight: .medium)
     private let face = TranscriptPanel()
     private let label = TranscriptLabel()
+    private let icon = NSImageView()
     let title: String
     let accent: Bool
     var perform: () -> Void
@@ -162,28 +170,40 @@ import AppKit
     private var hovering = false { didSet { if hovering != oldValue { refresh() } } }
     private var pressed = false { didSet { alphaValue = pressed ? 0.7 : 1 } }
     override var isFlipped: Bool { true }
-    init(title: String, accent: Bool, perform: @escaping () -> Void) {
+    init(title: String, accent: Bool, symbol: String? = nil, font: NSFont = TranscriptPillButton.font, perform: @escaping () -> Void) {
         self.title = title; self.accent = accent; self.perform = perform
         super.init(frame: .zero)
         face.cornerRadius = nil
         addSubview(face); addSubview(label)
-        label.text = title; label.font = Self.font
+        label.text = title; label.font = font
+        if let symbol {
+            icon.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: font.pointSize, weight: .medium))
+            icon.setAccessibilityElement(false)
+            addSubview(icon)
+        }
         setAccessibilityElement(false)
         refresh()
     }
     required init?(coder: NSCoder) { nil }
+    /// A label's icon and title, as SwiftUI's `Label` spaces them.
+    private var iconWidth: CGFloat { icon.image.map { $0.size.width + 6 } ?? 0 }
     var pillSize: CGSize {
         let text = label.intrinsicSize
-        return CGSize(width: text.width + 20, height: text.height + 8)
+        // A `Label`'s symbol stands a point taller than its title's line.
+        return CGSize(width: iconWidth + text.width + 20, height: text.height + (icon.image == nil ? 0 : 1) + 8)
     }
     override func layout() {
         super.layout()
         face.frame = bounds
         let text = label.intrinsicSize
-        label.frame = CGRect(x: 10, y: (bounds.height - text.height) / 2, width: text.width, height: text.height)
+        if let image = icon.image {
+            icon.frame = CGRect(x: 10, y: (bounds.height - image.size.height) / 2, width: image.size.width, height: image.size.height)
+        }
+        label.frame = CGRect(x: 10 + iconWidth, y: (bounds.height - text.height) / 2, width: text.width, height: text.height)
     }
     private func refresh() {
         label.color = hovering ? (accent ? TranscriptNSPalette.accent : TranscriptNSPalette.text) : TranscriptNSPalette.muted
+        icon.contentTintColor = label.color
         face.fill = hovering ? TranscriptNSPalette.panelStrong : nil
         face.stroke = hovering && accent ? TranscriptNSPalette.accent : TranscriptNSPalette.hairStrong
     }

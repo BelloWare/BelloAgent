@@ -89,6 +89,26 @@ final class TranscriptNativeRowParityTests: XCTestCase {
         return fixtures
     }
 
+    static var failureFixtures: [Fixture] {
+        func failure(_ id: String, _ text: String, detail: String? = nil) -> TranscriptItem {
+            var message = TranscriptMessage(id: id, role: "system", text: text)
+            message.kind = "failure"; message.detail = detail
+            return .message(message)
+        }
+        return [
+            Fixture(name: "failure-run", item: failure("failure:run:1", "The gateway closed the connection before the reply finished.",
+                                                       detail: "HTTP 502 from the provider after 31 s. The request can be sent again.")),
+            Fixture(name: "failure-send", item: failure("failure:send:2", "The message was refused: it is larger than the model accepts.")),
+        ]
+    }
+
+    @MainActor func testFailureRowsMatchTheirSwiftUIRows() throws {
+        TranscriptRowRenderer.failureRows = true
+        defer { TranscriptRowRenderer.failureRows = false }
+        try XCTSkipUnless(testEnvironment("PI_PARITY_PENDING") == "1", "the failure card is not calibrated yet; set PI_PARITY_PENDING=1")
+        try compare(Self.failureFixtures, expectNative: TranscriptNativeFailureRow.self)
+    }
+
     @MainActor func testReplyBodiesMatchTheirSwiftUIRows() throws {
         let fixtures = Self.replyFixtures
         // A reply still waiting for its first token is not a body row yet.

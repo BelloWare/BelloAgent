@@ -44,9 +44,14 @@ struct TranscriptRowInputs {
     /// Off draws every row through SwiftUI, for checks that a native row
     /// reads exactly as the SwiftUI one it replaces.
     static var native = true
+    /// Failure cards draw natively only once they match (see `content`).
+    static var failureRows = false
     static func content(for item: TranscriptItem, inputs: TranscriptRowInputs) -> NSView & TranscriptRowContent {
         if native, TranscriptNativeUserRow.draws(item) { return TranscriptNativeUserRow(inputs: inputs) }
         if native, TranscriptNativeReplyRow.draws(item) { return TranscriptNativeReplyRow(inputs: inputs) }
+        // Not yet: the failure card's Retry pill is not yet as tall as SwiftUI's
+        // (TranscriptNativeRowParityTests.testFailureRowsMatchTheirSwiftUIRows).
+        if native, failureRows, TranscriptNativeFailureRow.draws(item) { return TranscriptNativeFailureRow(inputs: inputs) }
         return TranscriptHostedRowContent(inputs: inputs)
     }
 }

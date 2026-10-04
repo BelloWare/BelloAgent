@@ -122,8 +122,11 @@ struct NativePlainText: NSViewRepresentable {
     /// SwiftUI text it replaces. A long text keeps TextKit's box, as it
     /// always had.
     private(set) var swiftUILines = false
-    func update(text next: String, face: TranscriptPlainTextFace, environment: TranscriptRowEnvironment, swiftUILines: Bool) {
-        if swiftUILines != self.swiftUILines { self.swiftUILines = swiftUILines; self.face = nil }
+    /// The text's colour; the transcript's text colour unless a row says otherwise.
+    private(set) var color: NSColor = TranscriptNSPalette.text
+    func update(text next: String, face: TranscriptPlainTextFace, environment: TranscriptRowEnvironment, swiftUILines: Bool,
+                color: NSColor = TranscriptNSPalette.text) {
+        if swiftUILines != self.swiftUILines || color != self.color { self.swiftUILines = swiftUILines; self.color = color; self.face = nil }
         update(text: next, face: face, environment: environment)
     }
     /// SwiftUI's line box for a font: its whole line, rounded up to a point.
@@ -148,7 +151,7 @@ struct NativePlainText: NSViewRepresentable {
             paragraph.lineSpacing = face.lineSpacing
             paragraph.lineBreakMode = .byWordWrapping
             let attributes: [NSAttributedString.Key: Any] = [
-                .font: face.nsFont, .foregroundColor: TranscriptNSPalette.text, .paragraphStyle: paragraph
+                .font: face.nsFont, .foregroundColor: color, .paragraphStyle: paragraph
             ]
             if swiftUILines {
                 let font = face.nsFont, line = Self.swiftUILine(font)
