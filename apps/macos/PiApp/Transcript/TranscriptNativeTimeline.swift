@@ -356,4 +356,12 @@ import AppKit
         press(); return true
     }
     override func isAccessibilityEnabled() -> Bool { enabled }
+    // A plain button: in the key loop where keyboard navigation reaches
+    // buttons, and Space or Return presses it.
+    override var acceptsFirstResponder: Bool { enabled }
+    override var canBecomeKeyView: Bool { enabled && NSApp.isFullKeyboardAccessEnabled }
+    override func keyDown(with event: NSEvent) {
+        guard enabled, [" ", "\r"].contains(event.charactersIgnoringModifiers ?? "") else { return super.keyDown(with: event) }
+        press()
+    }
 }

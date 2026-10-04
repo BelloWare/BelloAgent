@@ -353,4 +353,52 @@ final class TranscriptNativeTimelineBehaviourTests: XCTestCase {
         XCTAssertGreaterThan(work.frame.maxX, row.bounds.width - 13, "the replies end at the right, inside the rule")
         XCTAssertLessThan(work.frame.minX, 1)
     }
+
+    // MARK: Codex's first review
+
+    @MainActor func testTheFoldAndModelButtonsTakeSpaceAndReturn() throws {
+        let stage = Stage(Self.header()); defer { stage.close() }
+        let button = try XCTUnwrap(stage.views(TranscriptNativeResponseFoldButton.self).first)
+        XCTAssertTrue(stage.window.makeFirstResponder(button))
+        try stage.key(" ", code: 49)
+        XCTAssertTrue(stage.disclosure.isOpen(.responseLine("r1")), "Space folds the response")
+        var actions = TranscriptActions()
+        var inspected: String?
+        actions.inspect = { inspected = $0 }
+        let figures = P.legacyFixtures.first { $0.name == "reply-figures" }!
+        let reply = Stage(figures.item, actions: actions); defer { reply.close() }
+        let model = try XCTUnwrap(reply.views(TranscriptNativeModelButton.self).first)
+        XCTAssertTrue(reply.window.makeFirstResponder(model))
+        try reply.key("\r", code: 36)
+        XCTAssertEqual(inspected, "w4", "Return opens the model's reports")
+    }
+
+    @MainActor func testEveryFigureIsReadOut() throws {
+        let figures = P.legacyFixtures.first { $0.name == "reply-figures" }!
+        let stage = Stage(figures.item); defer { stage.close() }
+        let flow = try XCTUnwrap(stage.views(TranscriptNativeFigures.self).first)
+        let spoken = flow.subviews.compactMap { $0 as? TranscriptLabel }.filter { $0.isAccessibilityElement() }.compactMap { $0.accessibilityLabel() }
+        XCTAssertEqual(spoken.count, 3, "duration, tokens and cost: \(spoken)")
+        XCTAssertTrue(spoken.contains { $0.hasSuffix("tokens") })
+    }
+
+    @MainActor func testADisabledCodeBlockCopiesNothing() throws {
+        let stage = Stage(P.partItem(P.segment("a1", "toolArguments", P.arguments, name: "bash")), enabled: false, opened: [.work("part:a1")]); defer { stage.close() }
+        let code = try XCTUnwrap(stage.views(TranscriptNativeCodeBlock.self).first)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString("before", forType: .string)
+        XCTAssertFalse(try XCTUnwrap(code.accessibilityCustomActions()?.first).handler?() ?? true)
+        XCTAssertEqual(NSPasteboard.general.string(forType: .string), "before")
+    }
+
+    @MainActor func testFiguresFollowAChangeOfDirection() throws {
+        let figures = P.legacyFixtures.first { $0.name == "reply-figures" }!
+        let stage = Stage(figures.item); defer { stage.close() }
+        let flow = try XCTUnwrap(stage.views(TranscriptNativeFigures.self).first)
+        let first = try XCTUnwrap(flow.subviews.first)
+        XCTAssertLessThan(first.frame.minX, 1)
+        stage.environment.layoutDirection = .rightToLeft
+        stage.refresh()
+        XCTAssertGreaterThan(first.frame.maxX, flow.bounds.width - 1, "the first figure moves to the right")
+    }
 }

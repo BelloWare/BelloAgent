@@ -342,7 +342,8 @@ import AppKit
         copy.enabled = environment.isEnabled
         copy.rightToLeft = rightToLeft
         setAccessibilityCustomActions([NSAccessibilityCustomAction(name: "Copy code") { [weak self] in
-            guard let self else { return false }
+            // A pane that takes no input copies nothing, as its Copy refuses.
+            guard let self, self.environment.isEnabled else { return false }
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(self.code, forType: .string)
             return true

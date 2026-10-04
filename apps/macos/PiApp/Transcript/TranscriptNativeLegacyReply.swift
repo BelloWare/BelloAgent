@@ -154,6 +154,8 @@ import AppKit
         }
         for (index, text) in texts.enumerated() {
             let label = TranscriptLabel(); label.font = Self.font; label.monospacedDigits = true; label.text = text; label.color = TranscriptNSPalette.faint
+            // Each figure is read out, as each `Text` of the flow was.
+            label.speak(text)
             var views: [NSView] = [label], widths = [label.intrinsicSize.width]
             var height = label.intrinsicSize.height
             if index + 1 < count { let dot = dotLabel(); views.append(dot); widths.append(dot.intrinsicSize.width); height = max(height, dot.intrinsicSize.height) }
@@ -182,7 +184,7 @@ import AppKit
         return (origins, [], y + rowHeight)
     }
     func height(width: CGFloat) -> CGFloat { items.isEmpty ? 0 : flow(width: width).height }
-    var rightToLeft = false
+    var rightToLeft = false { didSet { if rightToLeft != oldValue { needsLayout = true } } }
     override func layout() {
         super.layout()
         let placed = flow(width: bounds.width)
@@ -250,6 +252,14 @@ import AppKit
         open(); return true
     }
     override func isAccessibilityEnabled() -> Bool { enabled }
+    // A plain button: in the key loop where keyboard navigation reaches
+    // buttons, and Space or Return presses it.
+    override var acceptsFirstResponder: Bool { enabled }
+    override var canBecomeKeyView: Bool { enabled && NSApp.isFullKeyboardAccessEnabled }
+    override func keyDown(with event: NSEvent) {
+        guard enabled, [" ", "\r"].contains(event.charactersIgnoringModifiers ?? "") else { return super.keyDown(with: event) }
+        open()
+    }
 }
 
 /// One reply's work inside a legacy group: its thought, its calls, what its
