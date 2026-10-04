@@ -767,7 +767,24 @@ extension NSView {
     override func mouseEntered(with event: NSEvent) { hovering = true }
     override func mouseExited(with event: NSEvent) { hovering = false }
     override func cursorUpdate(with event: NSEvent) { NSCursor.pointingHand.set() }
-    override func mouseDown(with event: NSEvent) {}
+    /// Who had the keyboard when the pointer came down: a click acts and
+    /// leaves focus where it was, as a SwiftUI button's click does.
+    private weak var responderBeforeClick: NSResponder?
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let hit = super.hitTest(point) == nil ? nil : self as NSView?
+        if hit === self, let current = window?.firstResponder, current !== self {
+            if let editor = current as? NSTextView, editor.isFieldEditor, let field = editor.delegate as? NSResponder {
+                responderBeforeClick = field
+            } else {
+                responderBeforeClick = current
+            }
+        }
+        return hit
+    }
+    override func mouseDown(with event: NSEvent) {
+        if window?.firstResponder === self, let before = responderBeforeClick, before !== self { window?.makeFirstResponder(before) }
+        responderBeforeClick = nil
+    }
     override func mouseUp(with event: NSEvent) {
         if bounds.contains(convert(event.locationInWindow, from: nil)), enabled { perform() }
     }

@@ -120,7 +120,8 @@ import AppKit
         set(environment: environment, toggle: toggle)
         // Closed, it points to where the line reads from: SwiftUI mirrors the turned chevron with the row.
         chevron.mirroredAcross = environment.layoutDirection == .rightToLeft
-        chevron.setRotation(open ? 0 : -90, animated: turning && !PiMotion.reducesMotion)
+        // `PiMotion.base`, as `TranscriptFoldHeader` turned it.
+        chevron.setRotation(open ? 0 : -90, animated: turning && !PiMotion.reducesMotion, duration: Double(PiMotion.baseMilliseconds) / 1_000)
         toolTip = open ? help.open : help.closed
         setAccessibilityLabel(open ? "Hide \(text)" : "Show \(text)")
         refresh()
@@ -218,6 +219,8 @@ import AppKit
         mark.color = TranscriptNSPalette.accent
         title.color = TranscriptNSPalette.text
         detail.text = message.detail ?? ""; detail.color = TranscriptNSPalette.muted
+        // What the compaction did is read out, as SwiftUI's text was.
+        detail.speak(message.detail)
         hair.fill = TranscriptNSPalette.hair
         wrappedTitle?.update(text: "Context compacted", face: Self.titleFace, environment: environment, swiftUILines: true, color: TranscriptNSPalette.text)
         let id = message.id, toggle = inputs.toggle
@@ -254,7 +257,12 @@ import AppKit
     }
     private func refreshBand() {
         let wanted = hovering && !drawsNothing ? RowActionsView.pills(message, actions: inputs.actions, forks: false, source: nil) : []
+        // The pills share the header's line: in a narrow card they can make
+        // the title wrap, and the row grow, as SwiftUI's did.
+        let width = bounds.width > 0 ? bounds.width : inputs.width
+        let before = band.pills.map(\.title) == wanted.map(\.title) ? nil : contentHeight(width: width)
         band.show(wanted, enabled: inputs.environment.isEnabled)
+        if let before, contentHeight(width: width) != before { owner?.contentSizeChanged() }
     }
 
     // MARK: Geometry

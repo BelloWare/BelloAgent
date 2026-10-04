@@ -461,11 +461,11 @@ import AppKit
 
 extension TranscriptSymbol {
     /// Turns the symbol about its middle, in degrees clockwise on screen.
-    func setRotation(_ degrees: CGFloat, animated: Bool) {
+    func setRotation(_ degrees: CGFloat, animated: Bool, duration: Double = TranscriptRowChrome.chevronSeconds) {
         guard rotation != degrees else { return }
         guard animated else { rotation = degrees; return }
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = TranscriptRowChrome.chevronSeconds
+            context.duration = duration
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             animator().rotation = degrees
         }

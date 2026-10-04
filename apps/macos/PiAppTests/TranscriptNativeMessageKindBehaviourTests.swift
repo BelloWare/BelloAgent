@@ -329,4 +329,40 @@ final class TranscriptNativeMessageKindBehaviourTests: XCTestCase {
         let paragraph = try XCTUnwrap(title()?.textStorage?.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle)
         XCTAssertEqual(paragraph.alignment, .right)
     }
+
+    /// In a narrow card the pills that come up under the pointer make the
+    /// title wrap: the row says it grew, as SwiftUI's row did.
+    @MainActor func testPillsThatWrapTheTitleGrowTheRow() async throws {
+        let stage = Stage(Self.compaction(), width: 480); defer { stage.close() }
+        let content = try XCTUnwrap(stage.content as? TranscriptNativeCompactionRow)
+        let before = content.confirmHeight(), validations = stage.row.intrinsicValidationCount
+        try stage.hover(stage.content, true)
+        XCTAssertEqual(stage.views(TranscriptPillButton.self).count, 2)
+        XCTAssertGreaterThan(content.confirmHeight(), before, "the wrapped title makes the content taller")
+        // The row is told, and checks its height on the next turn of the run
+        // loop (by then the real pointer, elsewhere, may have taken the pills away).
+        try await eventually("the row checks its height") { stage.row.intrinsicValidationCount > validations }
+    }
+
+    /// What a compaction did is read out with it.
+    @MainActor func testACompactionSaysWhatItDid() throws {
+        let stage = Stage(Self.compaction()); defer { stage.close() }
+        let spoken = stage.views(TranscriptLabel.self).filter { $0.isAccessibilityElement() }.compactMap { $0.accessibilityLabel() }
+        XCTAssertTrue(spoken.contains("Compacted 48,213 tokens · 6 messages kept"), "\(spoken)")
+    }
+
+    /// The model's name opens the request's details and leaves the keyboard
+    /// where it was.
+    @MainActor func testTheModelLinkLeavesTheKeyboardWhereItWas() throws {
+        var inspected = 0
+        var actions = TranscriptActions(); actions.inspect = { _ in inspected += 1 }
+        let stage = Stage(Self.compaction(accounting: TranscriptNativeRowParityTests.totals()), actions: actions); defer { stage.close() }
+        let field = NSTextField(frame: CGRect(x: 0, y: 560, width: 200, height: 22))
+        stage.window.contentView?.addSubview(field)
+        XCTAssertTrue(stage.window.makeFirstResponder(field))
+        try stage.click(try XCTUnwrap(stage.views(TranscriptLinkButton.self).first))
+        XCTAssertEqual(inspected, 1)
+        let responder = stage.window.firstResponder
+        XCTAssertTrue(responder === field || (responder as? NSTextView)?.delegate === field, "the field keeps the keyboard: \(String(describing: responder))")
+    }
 }
