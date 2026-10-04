@@ -216,6 +216,17 @@ extension NSFont {
         popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: anchor.isFlipped ? .maxY : .minY)
         if let focus { content.window?.makeFirstResponder(focus) }
     }
+    /// Shows a view controller's content beside `anchor`, on `edge`.
+    func showController(_ controller: NSViewController, from anchor: NSView, edge: NSRectEdge) {
+        close()
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.animates = !PiKit.Motion.reduced
+        popover.contentViewController = controller
+        popover.delegate = self
+        self.popover = popover
+        popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: edge)
+    }
     func close() { popover?.close() }
     func popoverDidClose(_ notification: Notification) {
         popover = nil
@@ -318,4 +329,30 @@ extension NSFont {
     view.fixedSize = CGSize(width: size, height: size)
     view.configure(lineWidth: lineWidth, turning: !PiKit.Motion.reduced)
     return view
+}
+
+/// Literal source text, edited as plain monospaced text with nothing
+/// substituted: smart quotes or dashes would corrupt JSON
+/// (`NativeCodeEditor`'s AppKit twin).
+@MainActor final class CodeEditorView: NSScrollView, NSTextViewDelegate {
+    let editor = NSTextView()
+    var onChange: ((String) -> Void)?
+    init(accessibilityLabel: String = "Literal model configuration JSON") {
+        super.init(frame: .zero)
+        hasVerticalScroller = true; borderType = .noBorder; drawsBackground = false; autohidesScrollers = true
+        editor.isRichText = false; editor.allowsUndo = true; editor.drawsBackground = false; editor.textContainerInset = NSSize(width: 8, height: 8)
+        editor.isAutomaticQuoteSubstitutionEnabled = false; editor.isAutomaticDashSubstitutionEnabled = false
+        editor.isAutomaticSpellingCorrectionEnabled = false; editor.isAutomaticTextReplacementEnabled = false
+        editor.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        editor.isVerticallyResizable = true; editor.autoresizingMask = [.width]; editor.textContainer?.widthTracksTextView = true
+        editor.delegate = self
+        editor.setAccessibilityLabel(accessibilityLabel)
+        documentView = editor
+    }
+    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    var text: String {
+        get { editor.string }
+        set { if !editor.hasMarkedText(), editor.string != newValue { editor.string = newValue } }
+    }
+    func textDidChange(_ notification: Notification) { onChange?(editor.string) }
 }

@@ -46,7 +46,7 @@ import AppKit
         }
         /// Takes what it is offered between `min` and `max` (a field, a flexible frame).
         static func flexible(min: CGFloat = 0, max: CGFloat = .infinity, height: @escaping @MainActor (CGFloat) -> CGFloat) -> Sizing {
-            Sizing(width: { proposal in Swift.min(max, Swift.max(min, proposal.isFinite ? proposal : max.isFinite ? max : min)) }, height: height)
+            Sizing(width: { proposal in Swift.min(max, Swift.max(min, proposal)) }, height: height)
         }
         /// A nested row, sized as SwiftUI sizes a stack inside a stack.
         static func row(_ items: [Item], spacing: CGFloat, priority: Double = 0) -> Sizing {
