@@ -63,7 +63,7 @@ import AppKit
     static func reply(of item: TranscriptItem) -> TranscriptMessage? {
         // A message of no kind a row knows, from someone other than the
         // reader or the app, reads as plain words too (`MessageRowView`'s default).
-        if case .message(let message) = item, message.kind == nil, message.role != "user", message.role != "system" { return message }
+        if case .message(let message) = item, message.readsPlain, message.role != "user", message.role != "system" { return message }
         guard case .block(let block) = item, block.presentation == .body, let message = block.message else { return nil }
         return message
     }
@@ -76,6 +76,8 @@ import AppKit
     /// parts not ported yet.
     static func draws(_ item: TranscriptItem) -> Bool {
         guard let message = reply(of: item) else { return false }
+        // A message standing as a row of its own, whoever's it is.
+        if case .message = item { return true }
         return message.role == "assistant" && message.kind == nil
     }
 

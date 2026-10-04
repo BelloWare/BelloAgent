@@ -96,7 +96,7 @@ final class TranscriptNativeEverywhereTests: XCTestCase {
         // Messages standing as rows of their own: a reply outside any block,
         // and messages of a kind no row knows, which read as plain messages.
         var custom: [TranscriptItem] = []
-        for role in ["assistant", "user", "system"] {
+        for role in ["assistant", "user", "system", "tool"] {
             var message = TranscriptMessage(id: "custom-" + role, role: role, text: "A \(role) message of its own kind.")
             message.kind = "custom"
             custom.append(.message(message))
@@ -123,9 +123,8 @@ final class TranscriptNativeEverywhereTests: XCTestCase {
             case .block(let block): label = "block \(block.presentation)/\(block.part?.part.kind ?? "-")/\(block.message?.role ?? "-")"
             }
             kinds.insert(label)
-            let inputs = TranscriptRowInputs(item: item.drawnAs, fresh: false, actions: TranscriptActions(), width: 600, environment: TranscriptRowEnvironment())
-            // As the row container hands it over.
-            let content = TranscriptRowRenderer.content(for: item.drawnAs, inputs: inputs)
+            let inputs = TranscriptRowInputs(item: item, fresh: false, actions: TranscriptActions(), width: 600, environment: TranscriptRowEnvironment())
+            let content = TranscriptRowRenderer.content(for: item, inputs: inputs)
             // Drawn by no native row: through SwiftUI's reference row, or as nothing.
             if content is TranscriptHostedRowContent || content is TranscriptNativeEmptyRow { hosted.append(label + " (" + item.id + ")") }
         }
@@ -150,18 +149,21 @@ final class TranscriptNativeEverywhereTests: XCTestCase {
         let enumerator = try XCTUnwrap(FileManager.default.enumerator(at: folder, includingPropertiesForKeys: nil))
         let files = enumerator.compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" }
         XCTAssertGreaterThan(files.count, 40, "the transcript's sources are where this test looks")
+        // Comments go first, so neither a comment between the words of an
+        // import nor one naming SwiftUI decides anything; then the words of
+        // an import may stand on separate lines.
         let importing = #"\bimport\s+((struct|class|enum|protocol|typealias|func|var|let)\s+)?SwiftUI\b"#
         var offenders: [String] = []
         for file in files {
             let source = try String(contentsOf: file, encoding: .utf8)
-            for (index, line) in source.components(separatedBy: "\n").enumerated() {
-                let code = line.components(separatedBy: "//")[0]
-                if code.range(of: importing, options: .regularExpression) != nil || code.contains("SwiftUI.") {
-                    offenders.append("\(file.lastPathComponent):\(index + 1): \(code.trimmingCharacters(in: .whitespaces))")
-                }
+            let code = source
+                .replacingOccurrences(of: #"/\*[\s\S]*?\*/"#, with: " ", options: .regularExpression)
+                .replacingOccurrences(of: #"//[^\n]*"#, with: "", options: .regularExpression)
+            if code.range(of: importing, options: .regularExpression) != nil || code.contains("SwiftUI.") {
+                offenders.append(file.lastPathComponent)
             }
         }
-        XCTAssertTrue(offenders.isEmpty, "SwiftUI in Transcript/: \(offenders.joined(separator: "; "))")
+        XCTAssertTrue(offenders.isEmpty, "SwiftUI in Transcript/: \(offenders.sorted().joined(separator: ", "))")
         // Nothing in the app hands SwiftUI to every file of the module.
         let app = folder.deletingLastPathComponent()
         let all = try XCTUnwrap(FileManager.default.enumerator(at: app, includingPropertiesForKeys: nil)).compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" }

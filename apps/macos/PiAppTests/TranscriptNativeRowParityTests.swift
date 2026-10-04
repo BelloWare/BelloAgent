@@ -194,12 +194,33 @@ final class TranscriptNativeRowParityTests: XCTestCase {
         try compare([Fixture(name: "alone", item: message("alone", "assistant", words)),
                      Fixture(name: "alone-usage", item: message("alone-usage", "assistant", words, accounting: Self.totals())),
                      Fixture(name: "alone-length", item: message("alone-length", "assistant", words, stop: "length")),
-                     Fixture(name: "custom-assistant", item: message("custom-a", "assistant", words, kind: "custom", accounting: Self.totals()))],
+                     Fixture(name: "custom-assistant", item: message("custom-a", "assistant", words, kind: "custom", accounting: Self.totals())),
+                     Fixture(name: "custom-tool", item: message("custom-t", "tool", "A tool's words.", kind: "custom"))],
                     expectNative: TranscriptNativeReplyRow.self)
         try compare([Fixture(name: "custom-system", item: message("custom-s", "system", "Model changed", kind: "custom"))],
                     expectNative: TranscriptNativeStatusRow.self)
         try compare([Fixture(name: "custom-user", item: message("custom-u", "user", "A question of its own kind.", kind: "custom"))],
                     expectNative: TranscriptNativeUserRow.self)
+    }
+
+    /// A message of an unknown kind keeps its kind for what it offers: no
+    /// Edit for the reader's, no Fork or source for anyone else's.
+    @MainActor func testMessagesOfAnUnknownKindOfferWhatTheyDid() throws {
+        var environment = TranscriptRowEnvironment(); environment.forks = true
+        let actions = TranscriptActions(fork: { _ in })
+        func names(_ role: String) throws -> [String] {
+            var message = TranscriptMessage(id: "u-" + role, role: role, text: "Words of their own kind.")
+            message.kind = "custom"; message.state = "complete"
+            let row = TranscriptRowContainer(item: .message(message), fresh: false, actions: actions, environment: environment)
+            _ = row.measure(width: 600)
+            let content = try XCTUnwrap(row.subviews.first)
+            XCTAssertFalse(content is TranscriptNativeEmptyRow, "\(role): drawn")
+            return (content.accessibilityCustomActions() ?? []).map(\.name)
+        }
+        XCTAssertFalse(try names("user").contains("Edit"))
+        let assistant = try names("assistant")
+        XCTAssertFalse(assistant.contains("Fork from here")); XCTAssertFalse(assistant.contains("View raw"))
+        XCTAssertTrue(assistant.contains("Copy"))
     }
 
     @MainActor func testStatusRowsMatchTheirSwiftUIRows() throws {

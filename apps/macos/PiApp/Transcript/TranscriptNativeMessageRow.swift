@@ -201,7 +201,7 @@ import AppKit
     private var hover: TranscriptHoverTracker!
     private var hovering = false
     override class func message(of item: TranscriptItem) -> TranscriptMessage? {
-        guard case .message(let message) = item, message.role == "system", message.kind == nil else { return nil }
+        guard case .message(let message) = item, message.role == "system", message.readsPlain else { return nil }
         return message
     }
     override init(inputs: TranscriptRowInputs) {

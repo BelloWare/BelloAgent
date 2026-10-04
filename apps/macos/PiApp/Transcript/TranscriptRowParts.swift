@@ -346,16 +346,12 @@ struct TranscriptTimelinePart {
     }
 }
 
-extension TranscriptItem {
-    /// The kinds of message a row of its own draws; any other kind reads as
-    /// a plain message, as `MessageRowView`'s default drew it.
+extension TranscriptMessage {
+    /// The kinds of message a row of its own draws.
     nonisolated static let drawnKinds: Set<String> = ["execution", "toolResult", "requestInfo", "compaction", "branch", "versionBanner",
                                                        "failure", "notice"]
-    /// The item as its row draws it: a message of a kind no row knows, as
-    /// a message of none.
-    var drawnAs: TranscriptItem {
-        guard case .message(var message) = self, let kind = message.kind, !Self.drawnKinds.contains(kind) else { return self }
-        message.kind = nil
-        return .message(message)
-    }
+    /// Whether this message reads as a plain one: no kind, or a kind no row
+    /// knows, as `MessageRowView`'s default drew it. It keeps its kind for
+    /// everything else (no Edit, no Fork, no source for an unknown kind).
+    var readsPlain: Bool { kind.map { !Self.drawnKinds.contains($0) } ?? true }
 }

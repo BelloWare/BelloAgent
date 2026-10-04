@@ -289,7 +289,7 @@ struct TranscriptRowEnvironment: Equatable {
             TranscriptLayoutClock.hostBuildSeconds += TranscriptLayoutClock.now - started
             TranscriptLayoutClock.hostBuilds += 1
         } }
-        let view = TranscriptRowRenderer.content(for: item.drawnAs, inputs: inputs())
+        let view = TranscriptRowRenderer.content(for: item, inputs: inputs())
         view.owner = self
         hosted = view
         awaitingViewportLayout = true
@@ -554,7 +554,7 @@ struct TranscriptRowEnvironment: Equatable {
         let key = workListKey
         let known = workList?.key == key ? workList?.height : nil
         if known != nil { workListReuses += 1 }
-        return TranscriptRowInputs(item: item.drawnAs, fresh: fresh, actions: relay, width: width, environment: environment,
+        return TranscriptRowInputs(item: item, fresh: fresh, actions: relay, width: width, environment: environment,
                                    disclosure: disclosure, toggle: { [weak self] part in self?.toggleDisclosure(part) },
                                    workListHeight: known,
                                    workListMeasured: { [weak self] height in
@@ -573,10 +573,10 @@ struct TranscriptRowEnvironment: Equatable {
             TranscriptLayoutClock.rootUpdateSeconds += TranscriptLayoutClock.now - started
             TranscriptLayoutClock.rootUpdates += 1
         } }
-        if !hosted.accepts(item.drawnAs) {
+        if !hosted.accepts(item) {
             // The item became something this content cannot draw: build the
             // content that can, in the same place.
-            let replacement = TranscriptRowRenderer.content(for: item.drawnAs, inputs: inputs())
+            let replacement = TranscriptRowRenderer.content(for: item, inputs: inputs())
             replacement.owner = self
             replacement.frame = hosted.frame
             hosted.owner = nil

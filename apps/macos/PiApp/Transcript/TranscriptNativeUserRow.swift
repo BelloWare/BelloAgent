@@ -48,7 +48,7 @@ import AppKit
     /// Whether this row can draw `item`: a message the reader typed.
     static func draws(_ item: TranscriptItem) -> Bool {
         guard case .message(let message) = item else { return false }
-        return message.role == "user" && message.kind == nil
+        return message.role == "user" && message.readsPlain
     }
 
     init(inputs: TranscriptRowInputs) {
