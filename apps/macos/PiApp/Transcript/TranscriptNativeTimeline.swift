@@ -309,8 +309,9 @@ import AppKit
     override func menu(for event: NSEvent) -> NSMenu? {
         guard let header else { return nil }
         let title = collapsed ? "Show This Response" : "Fold This Response to One Line"
-        return PiMenus.menu(ReplyMenu.entries(header.message, actions: inputs.actions, forks: inputs.environment.forks,
-                                              fold: (title, { [weak self] in self?.fold() })))
+        return TranscriptNativeMenus.offered(PiMenus.menu(ReplyMenu.entries(header.message, actions: inputs.actions, forks: inputs.environment.forks,
+                                                                           fold: (title, { [weak self] in self?.fold() }))),
+                                             enabled: inputs.environment.isEnabled)
     }
 }
 
@@ -363,5 +364,19 @@ import AppKit
     override func keyDown(with event: NSEvent) {
         guard enabled, [" ", "\r"].contains(event.charactersIgnoringModifiers ?? "") else { return super.keyDown(with: event) }
         press()
+    }
+}
+
+/// A row's menu in a pane that takes no input: offered, as SwiftUI offered a
+/// disabled row's menu, with every command refused.
+@MainActor enum TranscriptNativeMenus {
+    static func offered(_ menu: NSMenu, enabled: Bool) -> NSMenu {
+        guard !enabled else { return menu }
+        func refuse(_ menu: NSMenu) {
+            menu.autoenablesItems = false
+            for item in menu.items { item.isEnabled = false; if let submenu = item.submenu { refuse(submenu) } }
+        }
+        refuse(menu)
+        return menu
     }
 }

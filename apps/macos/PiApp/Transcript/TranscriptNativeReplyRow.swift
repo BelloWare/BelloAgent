@@ -205,7 +205,8 @@ import AppKit
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
-        PiMenus.menu(ReplyMenu.entries(message, actions: inputs.actions, forks: inputs.environment.forks, fold: fold, source: sourceToggle))
+        TranscriptNativeMenus.offered(PiMenus.menu(ReplyMenu.entries(message, actions: inputs.actions, forks: inputs.environment.forks, fold: fold, source: sourceToggle)),
+                                      enabled: inputs.environment.isEnabled)
     }
 
     // MARK: Geometry

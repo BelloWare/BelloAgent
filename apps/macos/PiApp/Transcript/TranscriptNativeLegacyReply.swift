@@ -240,8 +240,25 @@ import AppKit
                                                      scale: window?.backingScaleFactor ?? 2))
     }
     override func resetCursorRects() { if enabled { addCursorRect(bounds, cursor: .pointingHand) } }
-    override func hitTest(_ point: NSPoint) -> NSView? { super.hitTest(point) == nil ? nil : self }
-    override func mouseDown(with event: NSEvent) { pressing = true }
+    /// Who had the keyboard when the pointer came down: a click acts and
+    /// leaves focus where it was, as a SwiftUI button's click does.
+    private weak var responderBeforeClick: NSResponder?
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let hit = super.hitTest(point) == nil ? nil : self as NSView?
+        if hit === self, let current = window?.firstResponder, current !== self {
+            if let editor = current as? NSTextView, editor.isFieldEditor, let field = editor.delegate as? NSResponder {
+                responderBeforeClick = field
+            } else {
+                responderBeforeClick = current
+            }
+        }
+        return hit
+    }
+    override func mouseDown(with event: NSEvent) {
+        pressing = true
+        if window?.firstResponder === self, let before = responderBeforeClick, before !== self { window?.makeFirstResponder(before) }
+        responderBeforeClick = nil
+    }
     override func mouseUp(with event: NSEvent) {
         defer { pressing = false }
         if pressing, enabled, bounds.contains(convert(event.locationInWindow, from: nil)) { open() }

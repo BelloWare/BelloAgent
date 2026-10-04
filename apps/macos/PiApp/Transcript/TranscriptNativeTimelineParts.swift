@@ -471,7 +471,8 @@ import AppKit
 @MainActor final class TranscriptCodeSections: NSView {
     private let previous = TranscriptLinkButton()
     private let next = TranscriptLinkButton()
-    private let label = TranscriptLabel()
+    private let label = TranscriptPlainTextView()
+    static let face = TranscriptPlainTextFace(size: PiFont.captionSize, monospaced: false, lineSpacing: 0, label: "Code section")
     var step: (Int) -> Void = { _ in }
     private var rightToLeft = false
     override var isFlipped: Bool { true }
@@ -484,7 +485,7 @@ import AppKit
             button.perform = { [weak self] in self?.step(delta) }
             addSubview(button)
         }
-        label.font = .systemFont(ofSize: PiFont.captionSize)
+        label.isSelectable = false
         addSubview(label)
         setAccessibilityElement(true); setAccessibilityRole(.group)
         setAccessibilityIdentifier("codeSectionNavigation")
@@ -492,22 +493,30 @@ import AppKit
     required init?(coder: NSCoder) { nil }
     func update(index: Int, count: Int, environment: TranscriptRowEnvironment) {
         rightToLeft = environment.layoutDirection == .rightToLeft
-        label.text = "Code section \(index + 1) of \(count) · Copy includes the full code"
-        label.color = .piInkSecondary
-        label.speak(label.text)
+        let words = "Code section \(index + 1) of \(count) · Copy includes the full code"
+        label.update(text: words, face: Self.face, environment: environment, swiftUILines: true, color: .piInkSecondary)
+        label.setAccessibilityLabel(words)
         previous.enabled = environment.isEnabled && index > 0
         next.enabled = environment.isEnabled && index + 1 < count
         for button in [previous, next] { button.label.color = button.enabled ? .labelColor : .tertiaryLabelColor }
         needsLayout = true
     }
-    private var line: CGFloat { max(previous.size.height, next.size.height, label.intrinsicSize.height) }
-    func height(width: CGFloat) -> CGFloat { 10 + line + 10 }
+    /// The words take what the buttons leave, wrapping when that is less than their line.
+    private func wordsSize(width: CGFloat) -> CGSize {
+        let room = max(1, width - 20 - previous.size.width - next.size.width - 16)
+        let used = min(label.idealWidth, room)
+        return CGSize(width: label.usedWidth(width: used), height: label.exactHeight(width: used))
+    }
+    private func line(width: CGFloat) -> CGFloat { max(previous.size.height, next.size.height, wordsSize(width: width).height) }
+    func height(width: CGFloat) -> CGFloat { 10 + line(width: width) + 10 }
     override func layout() {
         super.layout()
+        let line = line(width: bounds.width), words = wordsSize(width: bounds.width)
         var x: CGFloat = 10
         for view in [previous, label, next] as [NSView] {
-            let size = (view as? TranscriptLinkButton)?.size ?? label.intrinsicSize
-            view.frame = TranscriptMotion.mirrored(CGRect(x: x, y: 10 + (line - size.height) / 2, width: size.width, height: size.height), width: bounds.width, rightToLeft)
+            let size = (view as? TranscriptLinkButton)?.size ?? words
+            view.frame = TranscriptMotion.mirrored(CGRect(x: x, y: 10 + (line - size.height) / 2, width: size.width, height: view === label ? ceil(size.height) : size.height),
+                                                   width: bounds.width, rightToLeft)
             x += size.width + 8
         }
     }

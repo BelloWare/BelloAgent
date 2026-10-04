@@ -241,7 +241,7 @@ final class TranscriptNativeTimelineBehaviourTests: XCTestCase {
         XCTAssertFalse(try XCTUnwrap(buttons.first { $0.label.text == "Previous section" }).accessibilityPerformPress(), "the first section has no previous")
         XCTAssertTrue(try XCTUnwrap(buttons.first { $0.label.text == "Next section" }).accessibilityPerformPress())
         XCTAssertEqual(code.section, 1)
-        XCTAssertNotNil(navigation.subviews.compactMap { $0 as? TranscriptLabel }.first { $0.text.hasPrefix("Code section 2 of") })
+        XCTAssertNotNil(navigation.subviews.compactMap { $0 as? TranscriptPlainTextView }.first { $0.string.hasPrefix("Code section 2 of") })
         let text = try XCTUnwrap(stage.views(TranscriptCodeTextView.self).first)
         XCTAssertFalse(text.string.hasPrefix("{"), "the second section is shown")
         NSPasteboard.general.clearContents()
@@ -400,5 +400,48 @@ final class TranscriptNativeTimelineBehaviourTests: XCTestCase {
         stage.environment.layoutDirection = .rightToLeft
         stage.refresh()
         XCTAssertGreaterThan(first.frame.maxX, flow.bounds.width - 1, "the first figure moves to the right")
+    }
+
+    // MARK: Codex's second review
+
+    @MainActor func testANarrowFencesNavigationStaysInside() throws {
+        let long = "{\"lines\": [\n" + (1...1_200).map { "  \"line \($0) of a long argument document\"," }.joined(separator: "\n") + "\n]}"
+        let stage = Stage(P.partItem(P.segment("a9", "toolArguments", long, name: "write")), opened: [.work("part:a9")], width: 380); defer { stage.close() }
+        let navigation = try XCTUnwrap(stage.views(TranscriptCodeSections.self).first)
+        for view in navigation.subviews { XCTAssertLessThanOrEqual(view.frame.maxX, navigation.bounds.width - 9.5, "\(type(of: view)) stays inside the fence") }
+        let words = try XCTUnwrap(navigation.subviews.compactMap { $0 as? TranscriptPlainTextView }.first)
+        XCTAssertGreaterThan(words.frame.height, 20, "the words wrap where they have no room")
+    }
+
+    @MainActor func testADisabledPanesMenusOfferNothing() throws {
+        var actions = TranscriptActions()
+        var copied: String?
+        actions.copyMessage = { copied = $0 }
+        func event(_ view: NSView, _ window: NSWindow) throws -> NSEvent {
+            try XCTUnwrap(NSEvent.mouseEvent(with: .rightMouseDown, location: view.convert(CGPoint(x: 20, y: 10), to: nil), modifierFlags: [],
+                                             timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+        }
+        let header = Stage(Self.header(), actions: actions, enabled: false); defer { header.close() }
+        let row = try XCTUnwrap(header.content as? TranscriptNativeResponseRow)
+        let menu = try XCTUnwrap(row.menu(for: try event(row, header.window)))
+        XCTAssertFalse(menu.items.isEmpty, "the menu is offered")
+        XCTAssertTrue(menu.items.allSatisfy { !$0.isEnabled }, "every command refused")
+        let words = Stage(P.partItem(P.segment("t1", "text", "Words.")), actions: actions, enabled: false); defer { words.close() }
+        let reply = try XCTUnwrap(words.views(TranscriptNativeReplyRow.self).first)
+        let replyMenu = try XCTUnwrap(reply.menu(for: try event(reply, words.window)))
+        XCTAssertTrue(replyMenu.items.allSatisfy { !$0.isEnabled })
+        XCTAssertNil(copied)
+    }
+
+    @MainActor func testClickingTheModelLeavesTheKeyboardWhereItWas() throws {
+        let figures = P.legacyFixtures.first { $0.name == "reply-figures" }!
+        let stage = Stage(figures.item); defer { stage.close() }
+        let field = NSTextField(frame: CGRect(x: 0, y: 560, width: 200, height: 24))
+        stage.window.contentView?.addSubview(field)
+        XCTAssertTrue(stage.window.makeFirstResponder(field))
+        let model = try XCTUnwrap(stage.views(TranscriptNativeModelButton.self).first)
+        try stage.click(model)
+        let responder = stage.window.firstResponder
+        XCTAssertTrue(responder === field || (responder as? NSTextView)?.delegate === field, "the composer keeps the keyboard")
     }
 }
