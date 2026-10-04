@@ -29,6 +29,49 @@ import XCTest
         XCTAssertEqual(NSPasteboard.general.string(forType: .string), "before")
     }
 
+    /// Space and Return press a Copy, as they pressed SwiftUI's button; it
+    /// takes the keyboard only while the pane takes input.
+    func testACopyButtonIsPressedFromTheKeyboard() throws {
+        let toolbar = MarkdownCodeToolbarView()
+        toolbar.update(language: nil, code: "let k = 1", environment: TranscriptRowEnvironment())
+        XCTAssertTrue(toolbar.copy.acceptsFirstResponder)
+        for key in [" ", "\r"] {
+            clearPasteboard()
+            let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil,
+                                                       characters: key, charactersIgnoringModifiers: key, isARepeat: false, keyCode: key == " " ? 49 : 36))
+            toolbar.copy.keyDown(with: event)
+            XCTAssertEqual(NSPasteboard.general.string(forType: .string), "let k = 1", "\(key == " " ? "Space" : "Return") copies")
+        }
+        var disabled = TranscriptRowEnvironment(); disabled.isEnabled = false
+        toolbar.update(language: nil, code: "let k = 1", environment: disabled)
+        XCTAssertFalse(toolbar.copy.acceptsFirstResponder)
+        XCTAssertFalse(toolbar.copy.isAccessibilityEnabled())
+    }
+
+    /// A reply whose pane stops taking input, its text unchanged, stops the
+    /// Copy already on screen over its fence at once.
+    func testAShownToolbarFollowsThePaneTakingNoInput() throws {
+        let source = "```swift\nfunc send() {}\n```\n"
+        let (surface, window) = MarkdownTextSurfaceTests.surface(source)
+        let text = surface.textView
+        let manager = try XCTUnwrap(text.layoutManager), container = try XCTUnwrap(text.textContainer)
+        let range = (text.string as NSString).range(of: "func send")
+        let rect = manager.boundingRect(forGlyphRange: manager.glyphRange(forCharacterRange: range, actualCharacterRange: nil), in: container)
+        let point = NSPoint(x: rect.midX, y: rect.midY + text.topInset)
+        let event = try XCTUnwrap(NSEvent.mouseEvent(with: .mouseMoved, location: surface.convert(point, to: nil), modifierFlags: [], timestamp: 0,
+                                                     windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 0, pressure: 0))
+        surface.mouseMoved(with: event)
+        let toolbar = try XCTUnwrap(surface.subviews.compactMap { $0 as? MarkdownCodeToolbarView }.first)
+        XCTAssertTrue(toolbar.copy.enabled)
+        var disabled = TranscriptRowEnvironment(); disabled.isEnabled = false
+        surface.read(source: source, style: .prose, capsWidth: true, streaming: false, headings: [], environment: disabled, identity: "reply")
+        XCTAssertFalse(toolbar.copy.enabled, "the Copy on screen refuses once the pane takes no input")
+        clearPasteboard()
+        XCTAssertFalse(toolbar.copy.accessibilityPerformPress())
+        XCTAssertEqual(NSPasteboard.general.string(forType: .string), "before")
+        withExtendedLifetime(window) {}
+    }
+
     func testAFenceToolbarMirrorsRightToLeft() {
         let toolbar = MarkdownCodeToolbarView()
         var environment = TranscriptRowEnvironment()

@@ -55,12 +55,22 @@ import XCTest
         } }
         return (outside, inside, a.pixelsWide * a.pixelsHigh)
     }
+    /// The image's pixels outside `rects`, to compare one capture with the next.
+    static func masked(_ image: NSBitmapImageRep, _ rects: [CGRect]) -> Data {
+        var bytes = [UInt8]()
+        var p = [Int](repeating: 0, count: 4)
+        for y in 0..<image.pixelsHigh { for x in 0..<image.pixelsWide {
+            if rects.contains(where: { $0.contains(CGPoint(x: x, y: y)) }) { continue }
+            image.getPixel(&p, atX: x, y: y); bytes.append(UInt8(p[0])); bytes.append(UInt8(p[1])); bytes.append(UInt8(p[2]))
+        } }
+        return Data(bytes)
+    }
     /// The most a symbol's own pixels may differ, each: what AppKit's
     /// rasterizing of the same symbol in the same place leaves, as
     /// `testSymbolsDrawAsSwiftUI` allows it.
     static let symbolPixels = 400
     static func capture(_ view: NSView, size: CGSize, appearance: NSAppearance.Name, hover: Bool, canvas: NSColor,
-                        fit given: CGSize? = nil) async throws -> NSBitmapImageRep {
+                        fit given: CGSize? = nil, moving: (@MainActor (NSView, CGFloat) -> [CGRect])? = nil) async throws -> NSBitmapImageRep {
         let margin: CGFloat = 12, fit = given ?? view.fittingSize
         let screen = NSScreen.screens.first?.visibleFrame ?? .zero
         let window = NSWindow(contentRect: NSRect(x: screen.minX + 40, y: screen.maxY - 40 - size.height, width: size.width, height: size.height),
@@ -78,7 +88,9 @@ import XCTest
             var previous: Data?, image: NSBitmapImageRep?
             try await eventually("the window server showing \(what)", timeout: .seconds(10), poll: .milliseconds(60)) {
                 view.layoutSubtreeIfNeeded(); window.displayIfNeeded(); CATransaction.flush()
-                guard let now = try? PiKitParity.windowImage(window), let data = now.representation(using: .png, properties: [:]) else { return false }
+                guard let now = try? PiKitParity.windowImage(window), var data = now.representation(using: .png, properties: [:]) else { return false }
+                // What moves on its own is left out of "at rest".
+                if let moving { data = Self.masked(now, moving(view, size.height)) }
                 defer { previous = data }
                 if data == previous { image = now; return true }
                 return false
@@ -95,26 +107,37 @@ import XCTest
             dump(view, 0)
         }
         guard hover else { return rest }
-        NSApp.activate(ignoringOtherApps: true)
         let centre = window.convertPoint(toScreen: NSPoint(x: view.frame.midX, y: view.frame.midY))
         let top = NSScreen.screens.first?.frame.height ?? 0
         let point = CGPoint(x: centre.x, y: top - centre.y)
-        CGWarpMouseCursorPosition(point)
-        CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left)?.post(tap: .cghidEventTap)
-        try await Task.sleep(for: .milliseconds(50))
-        let nudged = CGPoint(x: point.x + 1, y: point.y)
-        CGWarpMouseCursorPosition(nudged)
-        CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: nudged, mouseButton: .left)?.post(tap: .cghidEventTap)
         defer {
             let away = CGPoint(x: 1, y: 1)
             CGWarpMouseCursorPosition(away)
             CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: away, mouseButton: .left)?.post(tap: .cghidEventTap)
         }
-        // Until the hover shows; a control that never shows one is the test's to report.
+        // The pointer comes onto it, from off it, until the hover shows (a
+        // busy run can lose the first move); a control that never shows one
+        // is the test's to report.
         let restData = rest.representation(using: .png, properties: [:])
-        try? await eventually("the hover showing", timeout: .seconds(3), poll: .milliseconds(30)) {
-            view.layoutSubtreeIfNeeded(); window.displayIfNeeded(); CATransaction.flush()
-            return (try? PiKitParity.windowImage(window))?.representation(using: .png, properties: [:]) != restData
+        for _ in 0..<3 {
+            NSApp.activate(ignoringOtherApps: true)
+            let away = CGPoint(x: 1, y: 1)
+            CGWarpMouseCursorPosition(away)
+            CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: away, mouseButton: .left)?.post(tap: .cghidEventTap)
+            try await Task.sleep(for: .milliseconds(50))
+            CGWarpMouseCursorPosition(point)
+            CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left)?.post(tap: .cghidEventTap)
+            try await Task.sleep(for: .milliseconds(50))
+            let nudged = CGPoint(x: point.x + 1, y: point.y)
+            CGWarpMouseCursorPosition(nudged)
+            CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: nudged, mouseButton: .left)?.post(tap: .cghidEventTap)
+            var shows = false
+            try? await eventually("the hover showing", timeout: .seconds(3), poll: .milliseconds(30)) {
+                view.layoutSubtreeIfNeeded(); window.displayIfNeeded(); CATransaction.flush()
+                shows = (try? PiKitParity.windowImage(window))?.representation(using: .png, properties: [:]) != restData
+                return shows
+            }
+            if shows { break }
         }
         return try await settle("\(type(of: view)) under the pointer")
     }

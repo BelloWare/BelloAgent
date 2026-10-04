@@ -480,8 +480,10 @@ struct NativeMarkdownSurface: NSViewRepresentable {
         }
         let oldCount = segments.count
         guard compared < units.count || keep < oldCount || !sameText else {
+            let environmentChanged = lastInputs?.environment != inputs.environment
             lastInputs = inputs; priorSourceText = sourceText
             updateCaret()
+            if environmentChanged { applyControlEnvironment() }
             return
         }
         // A token on the fence at the reply's end sets only the code it adds.
@@ -971,6 +973,14 @@ struct NativeMarkdownSurface: NSViewRepresentable {
         hideHeadingAction()
     }
     private func hideControls() { hideToolbar(); hideHeadingAction() }
+    /// The controls on screen take the reply's values as they are now: a
+    /// pane that stopped taking input stops their Copy at once.
+    private func applyControlEnvironment() {
+        let environment = lastInputs?.environment ?? TranscriptRowEnvironment()
+        if let toolbar, toolbar.superview != nil { toolbar.update(language: toolbar.languageName, code: toolbar.code, environment: environment) }
+        if let headingAction, headingAction.superview != nil, let target = headingAction.target { headingAction.update(target: target, environment: environment) }
+        for view in tableActions.values { if let mark = view.mark { view.update(mark: mark, environment: environment) } }
+    }
     private func showToolbar(_ mark: MarkdownCodeMark, panel: NSRect) {
         // Made again on each move: the copy is of the code as it now reads.
         let view = toolbar ?? MarkdownCodeToolbarView()

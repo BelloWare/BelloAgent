@@ -312,9 +312,28 @@ extension ConversationPaneTests {
         let to = try XCTUnwrap(source.range(of: end, range: from.upperBound..<source.endIndex), "\(end) not found after \(start)")
         return source[from.lowerBound..<to.upperBound]
     }
-    func testLiveTurnBarKeepsItsIdentityAcrossPresentations() throws {
-        let body = try Self.excerpt(Self.appSource("Transcript/NativeTranscriptView.swift"), from: "LiveTurnBarSlot(turn:", to: "}")
-        XCTAssertFalse(body.contains(".id("), "A new presentation of the chat replays the live turn bar's entrance")
+    /// A new presentation of the chat (a revisit, a reload, an earlier
+    /// version) keeps the live bar where it stands: the same view, its
+    /// entrance not played again.
+    @MainActor func testLiveTurnBarKeepsItsIdentityAcrossPresentations() async throws {
+        let session = SessionDisplay(id: "presentations")
+        session.messages = TranscriptStreamingStressTests.history(turns: 2)
+        session.state = "running"
+        let pane = NativeTranscriptPane(frame: CGRect(x: 0, y: 0, width: 700, height: 500))
+        let window = NSWindow(contentRect: pane.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = pane
+        defer { window.contentView = nil }
+        pane.update(session: session, state: "running", actions: TranscriptActions(), environment: TranscriptRowEnvironment(), reduceMotion: false)
+        func bar() -> TranscriptNativeTurnReport? { pane.subviews.compactMap { $0 as? TranscriptNativeTurnReport }.first }
+        try await eventually("the live bar", timeout: .seconds(5)) { pane.layoutSubtreeIfNeeded(); return bar() != nil }
+        let shown = try XCTUnwrap(bar())
+        XCTAssertNotNil(shown.layer?.animation(forKey: "arrive"), "the bar arrives once")
+        shown.layer?.removeAllAnimations()
+        session.presentationGeneration = UUID()
+        pane.update(session: session, state: "running", actions: TranscriptActions(), environment: TranscriptRowEnvironment(), reduceMotion: false)
+        for _ in 0..<5 { pane.layoutSubtreeIfNeeded(); try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertTrue(bar() === shown, "the same bar stands across a new presentation")
+        XCTAssertNil(shown.layer?.animation(forKey: "arrive"), "A new presentation of the chat replays the live turn bar's entrance")
     }
     func testModelChipChangesItsLabelInPlace() throws {
         let label = try Self.excerpt(Self.appSource("Workspaces/ModelSwitchControls.swift"), from: "Text(text).font(.system(size: 12, weight: .medium))", to: "if loading")

@@ -284,6 +284,7 @@ struct NativePlainText: NSViewRepresentable {
         let previous = container.containerSize
         container.containerSize = NSSize(width: width, height: CGFloat.greatestFiniteMagnitude)
         var widest: CGFloat = 0
+        var lastLine = NSRange(location: NSNotFound, length: 0)
         // A line set from the right leaves its trailing spaces out of its
         // used rect; SwiftUI counts them, as it does for a line set from the left.
         let fromRight = environment?.layoutDirection == .rightToLeft && !centred
@@ -296,8 +297,15 @@ struct NativePlainText: NSViewRepresentable {
                 line = CGFloat(CTLineGetTypographicBounds(typeset, nil, nil, nil))
             }
             widest = max(widest, line)
+            lastLine = glyphs
         }
+        // A centred text cut short by its line limit takes all the room it
+        // was offered, as SwiftUI sizes one (one set from its leading edge
+        // keeps its widest line).
+        let cut = centred && maximumLines > 0 && lastLine.location != NSNotFound
+            && manager.truncatedGlyphRange(inLineFragmentForGlyphAt: lastLine.location).location != NSNotFound
         container.containerSize = previous
+        if cut { return width }
         // Up to a whole pixel, as SwiftUI sizes a text; set at that width, the
         // text wraps where it did.
         widest = ceil(widest * 2) / 2

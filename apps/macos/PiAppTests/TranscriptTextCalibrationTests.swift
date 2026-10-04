@@ -194,6 +194,17 @@ final class TranscriptTextCalibrationTests: XCTestCase {
         FileHandle.standardError.write(Data("CALIBRATE copy button: SwiftUI \(SizeProbe.size)\n".utf8))
         XCTAssertEqual(SizeProbe.size, TranscriptCopyButton.size)
     }
+    @MainActor func testProbeEdgeDetail() throws {
+        try XCTSkipUnless(testEnvironment("PI_PROBE") == "1")
+        let text = TranscriptNativePaneParityTests.longError
+        for width in [276, 416, 436, 300] as [CGFloat] {
+            SizeProbe.size = .zero
+            Self.measureInWindow(SizeProbe { Text(text).font(.system(size: 10.5)).multilineTextAlignment(.center).lineLimit(3) }.frame(width: width))
+            let view = TranscriptPlainTextView(); view.centred = true; view.maximumLines = 3
+            view.update(text: text, face: TranscriptEdgeProblemView.detailFace, environment: TranscriptRowEnvironment(), swiftUILines: true)
+            FileHandle.standardError.write(Data("PROBE detail \(width): SwiftUI \(SizeProbe.size) native \(view.usedWidth(width: width)) x \(view.exactHeight(width: width))\n".utf8))
+        }
+    }
     @MainActor func testProbeQuoteBarParts() throws {
         try XCTSkipUnless(testEnvironment("PI_PROBE") == "1")
         let parts: [(String, AnyView, CGFloat, CGFloat)] = [
@@ -279,6 +290,7 @@ final class TranscriptTextCalibrationTests: XCTestCase {
         for (symbol, height) in TranscriptPillButton.swiftUILabelHeights {
             SizeProbe.size = .zero
             Self.measureInWindow(SizeProbe { Label("Retry request", systemImage: symbol).font(.system(size: 11.5, weight: .medium)) })
+            FileHandle.standardError.write(Data("CALIBRATE pill label \(symbol): SwiftUI \(SizeProbe.size)\n".utf8))
             if abs(SizeProbe.size.height - height) > 0.0001 { failures.append("\(symbol): SwiftUI \(SizeProbe.size.height), table \(height)") }
         }
         XCTAssertTrue(failures.isEmpty, failures.joined(separator: "; "))

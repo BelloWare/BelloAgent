@@ -568,7 +568,7 @@ extension NSView {
     /// is, unrounded (measured, `TranscriptTextCalibrationTests.testPillLabelsMatchSwiftUI`):
     /// a symbol taller than the title's line makes it taller by a fraction.
     nonisolated static let swiftUILabelHeights: [String: CGFloat] = [
-        "arrow.clockwise": 15.0513916015625, "arrow.up.circle": 14.0513916015625, "play.fill": 14]
+        "arrow.clockwise": 15.0513916015625, "arrow.up.circle": 14.0513916015625, "play.fill": 14, "arrow.up.to.line": 14.0513916015625]
     private let symbolName: String?
     private var labelHeight: CGFloat {
         let line = label.intrinsicSize.height
@@ -815,6 +815,17 @@ extension NSView {
         return true
     }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func isAccessibilityEnabled() -> Bool { enabled }
+    /// A button the keyboard reaches and presses, as SwiftUI's was; a
+    /// click presses it and leaves the keyboard where it was.
+    override var acceptsFirstResponder: Bool { enabled && NSApp.currentEvent?.type != .leftMouseDown }
+    override var canBecomeKeyView: Bool { enabled && NSApp.isFullKeyboardAccessEnabled }
+    override func keyDown(with event: NSEvent) {
+        guard enabled, [" ", "\r"].contains(event.charactersIgnoringModifiers ?? "") else { return super.keyDown(with: event) }
+        _ = accessibilityPerformPress()
+    }
+    override var focusRingMaskBounds: NSRect { bounds }
+    override func drawFocusRingMask() { NSBezierPath(roundedRect: bounds, xRadius: 5, yRadius: 5).fill() }
 }
 
 /// A row's hover pills (Edit, Copy, Details…): built only while the pointer
