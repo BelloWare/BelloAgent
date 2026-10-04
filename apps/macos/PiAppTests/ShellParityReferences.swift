@@ -654,3 +654,171 @@ private struct RefShellState: View {
         }
     }
 }
+
+// MARK: - The tab strip (Tabs/TabStrip.swift before batch 6; pointer and drop views left out)
+
+struct RefTabStrip: View {
+    @ObservedObject var host: TabHost
+    @ObservedObject var container: TabContainer
+    /// The chat's side, in the pane when the chat has one.
+    let side: SideTabItem?
+    /// Room before the first tab: a window's buttons.
+    var leadingInset: CGFloat = PiSpacing.sm
+    static let height: CGFloat = 36
+    @State private var frames: [String: CGRect] = [:]
+    @State private var insertion: Int?
+
+    private static let sideID = "side"
+    private var shownID: String? {
+        container.shownTab(sideAvailable: side != nil).map { $0.id.uuidString } ?? (side != nil ? Self.sideID : nil)
+    }
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 3) {
+                    if let side {
+                        RefTabStripItem(title: side.title, symbol: "arrow.triangle.branch", help: side.help, selected: shownID == Self.sideID, closable: false,
+                                     events: RefTabItemEvents(select: { host.showSide() }))
+                            .id(Self.sideID)
+                    }
+                    ForEach(Array(container.tabs.enumerated()), id: \.element.id) { index, tab in
+                        RefTabStripTabItem(tab: tab, selected: shownID == tab.id.uuidString, insertionBefore: insertion == index,
+                                        events: events(for: tab))
+                            .id(tab.id.uuidString)
+                            .background(GeometryReader { geometry in
+                                Color.clear.preference(key: RefTabFramesKey.self, value: [tab.id.uuidString: geometry.frame(in: .global)])
+                            })
+                    }
+                    if insertion == container.tabs.count { RefTabInsertionMark() }
+                }
+                .padding(.leading, leadingInset).padding(.trailing, PiSpacing.sm)
+                .frame(height: Self.height)
+            }
+            .onAppear { if let shownID { proxy.scrollTo(shownID) } }
+            .onChange(of: shownID) { _, shown in if let shown { proxy.scrollTo(shown) } }
+        }
+        .onPreferenceChange(RefTabFramesKey.self) { frames = $0 }
+        .frame(height: Self.height)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.piContent)
+        .overlay(alignment: .bottom) { Rectangle().fill(Color.piHairline).frame(height: 1) }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(container.isPane ? "Tabs beside the chat" : "Tabs")
+    }
+
+    private func events(for tab: HostedTab) -> RefTabItemEvents {
+        RefTabItemEvents(select: { host.activate(tab) }, close: { host.close(tab) }, menu: { [weak host] in
+            guard let host else { return [] }
+            var entries: [PiMenuEntry] = [.button("Close Tab", identifier: "tab-close") { host.close(tab) }]
+            if tab.container?.tabs.count ?? 0 > 1 { entries.append(.button("Close Other Tabs", identifier: "tab-close-others") { host.closeOthers(than: tab) }) }
+            entries.append(.separator)
+            if tab.container?.isPane == true { entries.append(.button("Open in Window", identifier: "tab-pop-out") { host.popOut(tab) }) }
+            else { entries.append(.button("Move to Pane", identifier: "tab-to-pane") { host.moveToPane(tab) }) }
+            let own = tab.menuEntries()
+            if !own.isEmpty { entries.append(.separator); entries.append(contentsOf: own) }
+            return entries
+        }, drag: { tab.id.uuidString }, poppedOut: { [weak host] point in host?.popOut(tab, at: point) })
+    }
+    /// Where a tab dropped at a point along the strip goes: before the first
+    /// tab whose middle is right of it.
+    private func index(atWindowX x: CGFloat) -> Int {
+        for (index, tab) in container.tabs.enumerated() {
+            if let frame = frames[tab.id.uuidString], x < frame.midX { return index }
+        }
+        return container.tabs.count
+    }
+}
+
+private struct RefTabFramesKey: PreferenceKey {
+    static let defaultValue: [String: CGRect] = [:]
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) { value.merge(nextValue()) { $1 } }
+}
+
+/// Where a dragged tab would go.
+private struct RefTabInsertionMark: View {
+    var body: some View { Capsule().fill(Color.piAccent).frame(width: 2, height: 20) }
+}
+
+/// A hosted tab, following its title and symbol as they change.
+private struct RefTabStripTabItem: View {
+    @ObservedObject var tab: HostedTab
+    let selected: Bool
+    let insertionBefore: Bool
+    let events: RefTabItemEvents
+    var body: some View {
+        HStack(spacing: 3) {
+            if insertionBefore { RefTabInsertionMark() }
+            RefTabStripItem(title: tab.title, symbol: tab.symbol, help: tab.help, selected: selected, closable: true, events: events)
+        }
+    }
+}
+
+/// What a tab does with the pointer: shown on a click, closed by a middle
+/// click, its menu on a secondary click, and dragged.
+struct RefTabItemEvents {
+    var select: () -> Void
+    var close: (() -> Void)? = nil
+    var menu: (() -> [PiMenuEntry])? = nil
+    /// What a drag carries: the tab's id; nil for a tab that stays put.
+    var drag: (() -> String)? = nil
+    /// Let go of outside every strip: a window of its own, there.
+    var poppedOut: ((NSPoint) -> Void)? = nil
+}
+
+struct RefTabStripItem: View {
+    let title: String
+    let symbol: String
+    let help: String
+    let selected: Bool
+    let closable: Bool
+    let events: RefTabItemEvents
+    @State private var hovering = false
+    @State private var closeHovering = false
+    private var shape: RoundedRectangle { RoundedRectangle(cornerRadius: 7, style: .continuous) }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            HStack(spacing: 6) {
+                Image(systemName: symbol)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(selected ? Color.piAccent : Color.piInkTertiary)
+                Text(title)
+                    .font(.system(size: 12.5, weight: selected ? .medium : .regular))
+                    .foregroundStyle(selected ? Color.piInk : Color.piInkSecondary)
+                    .lineLimit(1).truncationMode(.middle)
+            }
+            .padding(.leading, 10).padding(.trailing, closable ? 4 : 10)
+            .frame(height: 26)
+            .contentShape(Rectangle())
+            
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(title)
+            .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+            .accessibilityAction { events.select() }
+            if closable, let close = events.close {
+                Button(action: close) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 8.5, weight: .bold))
+                        .foregroundStyle(closeHovering ? Color.piInk : Color.piInkTertiary)
+                        .frame(width: 16, height: 16)
+                        .background(closeHovering ? Color.piFillStrong : Color.clear, in: Circle())
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain).piPointer()
+                .onHover { closeHovering = $0 }
+                .opacity(selected || hovering ? 1 : 0)
+                .padding(.trailing, 6)
+                .help("Close Tab (⌘W)")
+                .accessibilityLabel("Close \(title)")
+            }
+        }
+        .frame(maxWidth: 240)
+        .background(selected ? Color.piSurface : hovering ? Color.piFill : Color.clear, in: shape)
+        .overlay(shape.stroke(selected ? Color.piHairlineStrong : Color.clear, lineWidth: 1))
+        .onHover { hovering = $0 }
+        .piAnimation(PiMotion.quick, value: hovering)
+        .help(help)
+    }
+}
+

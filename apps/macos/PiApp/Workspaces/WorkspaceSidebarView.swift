@@ -76,6 +76,7 @@ import Combine
         filterField.field.setAccessibilityIdentifier("sidebarFilter")
 
         scroll.drawsBackground = false
+        scroll.automaticallyAdjustsContentInsets = false
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
         scroll.borderType = .noBorder

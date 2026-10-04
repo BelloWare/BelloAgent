@@ -167,4 +167,23 @@ import XCTest
             }
         }
     }
+
+    /// The strip of tabs: the side and three tabs in the pane, one chosen;
+    /// the same tabs in a window, after its buttons.
+    func testTabStrip() async throws {
+        let host = TabHost(defaults: nil)
+        host.showsWindows = false
+        defer { host.tearDown() }
+        for (key, title) in [("a", "README.md"), ("b", "Changes in bello-agent"), ("c", "a-rather-long-file-name-that-is-cut-in-the-middle-of-it.swift")] {
+            host.open(kind: TabHostTests.Probe.kind, key: key) { let tab = TabHostTests.Probe(key); tab.title = title; return tab }
+        }
+        if let second = host.pane.tabs.dropFirst().first { host.activate(second) }
+        let side = SideTabItem(title: "Side conversation", help: "The side conversation")
+        try await check("tabstrip-pane", canvas: .piContent, width: 760, RefTabStrip(host: host, container: host.pane, side: side)) {
+            TabStripView(host: host, container: host.pane, side: side)
+        }
+        try await check("tabstrip-window", canvas: .piContent, width: 760, RefTabStrip(host: host, container: host.pane, side: nil, leadingInset: 78)) {
+            TabStripView(host: host, container: host.pane, side: nil, leadingInset: 78)
+        }
+    }
 }

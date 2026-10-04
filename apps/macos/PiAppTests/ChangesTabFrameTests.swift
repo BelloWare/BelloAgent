@@ -472,7 +472,7 @@ final class ChangesTabFrameTests: GitPanelTestCase, SerialTestLane {
         host.showsWindows = false
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: height), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: TabWindowRoot(host: host, container: host.pane).piTabRoot())
+        window.contentView = TabWindowRootView(host: host, container: host.pane)
         window.makeKeyAndOrderFront(nil)
     }
     /// Opens a project's Changes tab over one folder, or shows it.

@@ -285,6 +285,7 @@ import Combine
         tabsScroll.drawsBackground = false; tabsScroll.hasHorizontalScroller = false; tabsScroll.hasVerticalScroller = false
         tabsScroll.horizontalScrollElasticity = .none; tabsScroll.verticalScrollElasticity = .none
         tabsScroll.contentView.drawsBackground = false
+        tabsScroll.automaticallyAdjustsContentInsets = false
         tabsScroll.wantsLayer = true
         fade.startPoint = CGPoint(x: 0, y: 0.5); fade.endPoint = CGPoint(x: 1, y: 0.5)
         title.truncation = .end; project.truncation = .middle

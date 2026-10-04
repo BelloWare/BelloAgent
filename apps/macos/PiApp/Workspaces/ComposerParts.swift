@@ -310,7 +310,7 @@ enum SlashCompletionMetrics {
         card.shadowColor = .piShadow; card.shadowRadius = 10; card.shadowOffsetY = 3
         card.content = body
         addSubview(card)
-        scroll.drawsBackground = false; scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true
+        scroll.drawsBackground = false; scroll.automaticallyAdjustsContentInsets = false; scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true
         scroll.documentView = document
         body.addSubview(scroll); body.addSubview(footer); body.addSubview(notice)
         body.wantsLayer = true; body.layer?.addSublayer(divider)

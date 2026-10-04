@@ -9,38 +9,58 @@ import SwiftUI
 /// without closing; and brought back after a relaunch, windows where they
 /// were, kinds unknown left out.
 final class TabHostTests: XCTestCase {
-    /// Ask the actual representable through SwiftUI, including partial
-    /// proposals, without measuring its nested hosting view's content.
-    private struct TabSizeProbe: Layout {
-        let proposed: ProposedViewSize
-        let measured: (CGSize) -> Void
-        func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-            measured(subviews[0].sizeThatFits(proposed))
-            return proposal.replacingUnspecifiedDimensions()
-        }
-        func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-            subviews[0].place(at: bounds.origin, anchor: .topLeading, proposal: proposed)
+    /// A tab's content fills the room its pane or window gives it, whatever
+    /// size its own content asks for, and never sizes the pane.
+    @MainActor func testTabContentFillsItsRoomWithoutItsContentsIntrinsicSize() throws {
+        let host = host()
+        let tab = open(host, "sizing")
+        for size in [NSSize(width: 580, height: 800), NSSize(width: 240, height: 120), NSSize(width: 1200, height: 900)] {
+            let root = TabWindowRootView(host: host, container: host.pane)
+            root.frame = NSRect(origin: .zero, size: size)
+            root.layoutSubtreeIfNeeded()
+            let content = tab.contentView
+            XCTAssertTrue(content.isDescendant(of: root), "the shown tab's content is in its window")
+            XCTAssertEqual(content.convert(content.bounds, to: root),
+                           NSRect(x: 0, y: TabStripView.height, width: size.width, height: size.height - TabStripView.height))
+            XCTAssertEqual(root.frame.size, size, "the content did not size its window")
         }
     }
 
-    @MainActor func testTabContentAcceptsThePaneProposalWithoutItsContentsIntrinsicSize() throws {
+    /// A tab's close button is a button to the keyboard and VoiceOver, named
+    /// for its tab, and takes a press only while it shows.
+    @MainActor func testTheCloseButtonIsAButtonNamedForItsTab() throws {
         let host = host()
-        let tab = open(host, "sizing")
-        let cases: [(ProposedViewSize, CGSize)] = [
-            (ProposedViewSize(width: 580, height: 800), CGSize(width: 580, height: 800)),
-            (ProposedViewSize(width: nil, height: 240), CGSize(width: 10, height: 240)),
-            (ProposedViewSize(width: 420, height: nil), CGSize(width: 420, height: 10)),
-            (.zero, .zero), (.unspecified, CGSize(width: 10, height: 10)),
-        ]
-        for (proposal, expected) in cases {
-            var measured: CGSize?
-            let view = NSHostingView(rootView: TabSizeProbe(proposed: proposal, measured: { measured = $0 }) {
-                TabContentHost(tab: tab, owner: host.pane, placement: tab.placement)
-            }.frame(width: 600, height: 820))
-            view.frame = NSRect(x: 0, y: 0, width: 600, height: 820)
-            view.layoutSubtreeIfNeeded()
-            XCTAssertEqual(try XCTUnwrap(measured), expected)
-        }
+        let a = open(host, "first"), b = open(host, "second")
+        let strip = TabStripView(host: host, container: host.pane, side: nil)
+        strip.frame = NSRect(x: 0, y: 0, width: 600, height: TabStripView.height)
+        strip.layoutSubtreeIfNeeded()
+        func closeButtons(_ view: NSView) -> [TabCloseButton] { ((view as? TabCloseButton).map { [$0] } ?? []) + view.subviews.flatMap { closeButtons($0) } }
+        let closes = closeButtons(strip)
+        XCTAssertEqual(closes.count, 2)
+        XCTAssertTrue(closes.allSatisfy { ($0 as NSView) is NSButton }, "a real button, which the keyboard can reach")
+        let shownClose = try XCTUnwrap(closes.first { $0.accessibilityLabel() == "Close second" })
+        XCTAssertEqual(host.pane.activeTab?.id, b.id)
+        shownClose.performClick(nil)
+        XCTAssertFalse(host.pane.tabs.contains { $0 === b }, "the shown tab's close button closes it")
+        XCTAssertTrue(host.pane.tabs.contains { $0 === a })
+        // Disabled with the window, no tab or side is chosen, even by VoiceOver.
+        let c = open(host, "third")
+        let paneStrip = TabStripView(host: host, container: host.pane, side: SideTabItem(title: "Side conversation", help: ""))
+        paneStrip.frame = NSRect(x: 0, y: 0, width: 600, height: TabStripView.height)
+        paneStrip.layoutSubtreeIfNeeded()
+        paneStrip.inheritedEnabled = false
+        func labels(_ view: NSView) -> [TabItemLabelView] { ((view as? TabItemLabelView).map { [$0] } ?? []) + view.subviews.flatMap { labels($0) } }
+        let all = labels(paneStrip)
+        XCTAssertEqual(all.count, 3, "the side and two tabs")
+        XCTAssertTrue(all.allSatisfy { !$0.isAccessibilityEnabled() })
+        let first = try XCTUnwrap(all.first { $0.accessibilityLabel() == "first" })
+        XCTAssertFalse(first.accessibilityPerformPress())
+        XCTAssertEqual(host.pane.activeTab?.id, c.id, "nothing was chosen")
+        XCTAssertFalse(try XCTUnwrap(all.first { $0.accessibilityLabel() == "Side conversation" }).accessibilityPerformPress())
+        XCTAssertFalse(host.pane.sideShown)
+        paneStrip.inheritedEnabled = true
+        XCTAssertTrue(first.accessibilityPerformPress())
+        XCTAssertEqual(host.pane.activeTab?.id, a.id)
     }
 
     /// A kind of tab for the tests: counts what the host tells it.

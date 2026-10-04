@@ -85,6 +85,12 @@ final class TabPaneTests: XCTestCase {
         let container = try XCTUnwrap(descendants(TabContentContainer.self, in: hosted).first)
         model.openReport()
         try await eventually("covered by the report") { container.isHidden }
+        // Something else changing under the report does not show it again.
+        model.chats[0].title = "Renamed under the report"
+        _ = model.openFile(try file(root, "b2.txt")); model.tabs.activate(tab)
+        hosted.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertTrue(container.isHidden, "still covered")
         model.closeReport()
         try await eventually("shown again") { !container.isHidden }
         XCTAssertTrue(tab.contentView.superview === container)

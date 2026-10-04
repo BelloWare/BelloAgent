@@ -309,6 +309,7 @@ enum QueueRowAction { case detail, steer, edit, resumeEdit, cancelEdit, remove }
         table = QueueTableView(panel: panel)
         super.init(frame: .zero)
         drawsBackground = false
+        automaticallyAdjustsContentInsets = false
         borderType = .noBorder
         hasVerticalScroller = true
         autohidesScrollers = true
@@ -657,7 +658,7 @@ enum QueueLine: Equatable {
         super.init(frame: CGRect(x: 0, y: 0, width: Self.width, height: 100))
         text.setAccessibilityIdentifier("queue-detail-text")
         gone.setAccessibilityIdentifier("queue-detail-gone")
-        scroll.drawsBackground = false; scroll.borderType = .noBorder; scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true
+        scroll.drawsBackground = false; scroll.automaticallyAdjustsContentInsets = false; scroll.borderType = .noBorder; scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true
         let document = FlippedDocument(); document.addSubview(text)
         scroll.documentView = document
         divider.wantsLayer = true

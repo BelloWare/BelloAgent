@@ -76,3 +76,11 @@ struct TerminalPanelBridge: NSViewRepresentable {
     override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: 200) }
     override func layout() { super.layout(); panel.frame = bounds }
 }
+
+/// A window of tabs where a fixture hosts SwiftUI.
+struct TabWindowRootBridge: NSViewRepresentable {
+    let host: TabHost
+    let container: TabContainer
+    func makeNSView(context: Context) -> TabWindowRootView { TabWindowRootView(host: host, container: container) }
+    func updateNSView(_ view: TabWindowRootView, context: Context) {}
+}
