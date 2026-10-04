@@ -39,7 +39,7 @@ struct ComposerTokenLayout: Equatable {
     /// Tokens flow like words: left to right, a token that does not fit
     /// starts the next row, and one wider than the line is cut to the line.
     static func place(widths: [CGFloat], containerWidth: CGFloat, padding: CGFloat,
-                      tokenHeight: CGFloat = SkillPillFace.height) -> ComposerTokenLayout {
+                      tokenHeight: CGFloat = SkillPillFaceView.height) -> ComposerTokenLayout {
         guard !widths.isEmpty else { return ComposerTokenLayout() }
         let usable = max(1, containerWidth - padding * 2)
         let right = padding + usable

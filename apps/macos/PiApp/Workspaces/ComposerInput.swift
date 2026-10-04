@@ -64,7 +64,7 @@ struct ComposerInput: View {
                         .transition(AnyTransition.move(edge: .top).combined(with: .opacity))
                 }
                 if !session.attachments.isEmpty { chips.padding(.horizontal, PiSpacing.md).padding(.top, PiSpacing.md).transition(.opacity) }
-                NativeComposer(text: $draft.text, send: { submit(intent: $0) }, sessionID: session.id, completion: { _ in },
+                NativeComposerHost(composer: NativeComposer(text: draft.text, textChanged: { [draft] in draft.text = $0 }, send: { submit(intent: $0) }, sessionID: session.id, completion: { _ in },
                     locationChanged: { model.composerMoved($0, editor: $1, view: session) },
                     directSlash: { if !session.directCommand { session.directCommand = true } }, pasted: { session.directCommand = false; session.completionVisible = false },
                     completionKey: { model.completionKey($0, modifiers: $1, view: session) }, focused: { model.focusPane(session.id); model.prewarm(session.id) }, accessibilityLabel: model.side(session.id) == nil ? "Main message composer" : "Side message composer", inputRejected: { session.notice = $0 },
@@ -79,7 +79,7 @@ struct ComposerInput: View {
                     skillHovered: { chip, token, inside in
                         SkillPopovers.shared.hoverComposer(inside, chip: chip, anchor: token, session: session, reduceMotion: reduceMotion)
                     },
-                    describeSkill: { chip in .composer(chip, catalog: session.skillCatalog) }, maximumFieldHeight: maximumFieldHeight, editable: !session.queueEditResolving)
+                    describeSkill: { chip in .composer(chip, catalog: session.skillCatalog) }, maximumFieldHeight: maximumFieldHeight, editable: !session.queueEditResolving))
                     // Its height is its own (`ComposerScrollView`), in step with the text.
                     // While the helper answers a queued Save or Cancel, the
                     // rewrite holds still: nothing typed then could be lost.
@@ -301,4 +301,18 @@ private struct SlashCompletionRow: View {
         .buttonStyle(.plain).piPointer().help(choice.detail)
         .onHover { hovering = $0 }
     }
+}
+
+/// The native editor inside the still-SwiftUI composer card, until the card
+/// itself is AppKit.
+private struct NativeComposerHost: NSViewRepresentable {
+    let composer: NativeComposer
+    func makeNSView(context: Context) -> ComposerScrollView { composer.makeView() }
+    /// The field is as tall as its text, between its floor and ceiling. An
+    /// intrinsic height alone let it grow but never shrink back: SwiftUI
+    /// took it as a minimum, so a cleared draft kept the tall field.
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView scroll: ComposerScrollView, context: Context) -> CGSize? {
+        CGSize(width: proposal.width ?? scroll.frame.width, height: scroll.fieldHeight)
+    }
+    func updateNSView(_ scroll: ComposerScrollView, context: Context) { composer.apply(to: scroll) }
 }
