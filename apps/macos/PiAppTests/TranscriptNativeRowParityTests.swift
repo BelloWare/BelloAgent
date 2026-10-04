@@ -178,6 +178,30 @@ final class TranscriptNativeRowParityTests: XCTestCase {
                     expectNative: TranscriptNativeVersionBannerRow.self, widths: [792, 520, 380, 240])
     }
 
+    /// Messages standing as rows of their own — a reply outside any block,
+    /// and messages of a kind no row knows — read as `MessageRowView`'s
+    /// plain message did: an assistant's words with their usage in the band,
+    /// a status, a bubble.
+    @MainActor func testMessagesOfTheirOwnMatchTheirSwiftUIRows() throws {
+        func message(_ id: String, _ role: String, _ text: String, kind: String? = nil, accounting: GatewayTotals? = nil,
+                     stop: String? = nil) -> TranscriptItem {
+            var message = TranscriptMessage(id: id, role: role, text: text)
+            message.at = 1_790_000_000_000; message.kind = kind; message.accounting = accounting; message.stopReason = stop
+            message.state = "complete"
+            return .message(message)
+        }
+        let words = "The retry budget is **per turn**, not shared with queued follow-ups.\n\n- one\n- two"
+        try compare([Fixture(name: "alone", item: message("alone", "assistant", words)),
+                     Fixture(name: "alone-usage", item: message("alone-usage", "assistant", words, accounting: Self.totals())),
+                     Fixture(name: "alone-length", item: message("alone-length", "assistant", words, stop: "length")),
+                     Fixture(name: "custom-assistant", item: message("custom-a", "assistant", words, kind: "custom", accounting: Self.totals()))],
+                    expectNative: TranscriptNativeReplyRow.self)
+        try compare([Fixture(name: "custom-system", item: message("custom-s", "system", "Model changed", kind: "custom"))],
+                    expectNative: TranscriptNativeStatusRow.self)
+        try compare([Fixture(name: "custom-user", item: message("custom-u", "user", "A question of its own kind.", kind: "custom"))],
+                    expectNative: TranscriptNativeUserRow.self)
+    }
+
     @MainActor func testStatusRowsMatchTheirSwiftUIRows() throws {
         try compare(Self.statusFixtures, expectNative: TranscriptNativeStatusRow.self)
     }

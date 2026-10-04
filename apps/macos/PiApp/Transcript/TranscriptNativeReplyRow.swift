@@ -61,9 +61,17 @@ import AppKit
     override var isFlipped: Bool { true }
 
     static func reply(of item: TranscriptItem) -> TranscriptMessage? {
+        // A message of no kind a row knows, from someone other than the
+        // reader or the app, reads as plain words too (`MessageRowView`'s default).
+        if case .message(let message) = item, message.kind == nil, message.role != "user", message.role != "system" { return message }
         guard case .block(let block) = item, block.presentation == .body, let message = block.message else { return nil }
         return message
     }
+    /// Drawn as a message row of its own rather than as a reply's body: four
+    /// points above it, its usage in its band, and no reply menu.
+    private var standsAlone: Bool { if case .message = inputs.item { return true }; return false }
+    private var top: CGFloat { standsAlone ? 4 : 0 }
+    private var accounting: TranscriptNativeAccounting?
     /// Whether this row can draw `item`: a reply's body with none of the
     /// parts not ported yet.
     static func draws(_ item: TranscriptItem) -> Bool {
@@ -163,7 +171,14 @@ import AppKit
         }
         // A row a fold has emptied draws nothing and says nothing.
         setAccessibilityElement(!drawsNothing)
-        setAccessibilityLabel("assistant message")
+        setAccessibilityLabel(standsAlone ? "\(message.role) message" : "assistant message")
+        if standsAlone, let totals = message.accounting, totals.requests > 0 {
+            let view = accounting ?? { let view = TranscriptNativeAccounting(); view.lineLimit = 1; addSubview(view); accounting = view; return view }()
+            let actions = inputs.actions, id = message.id
+            view.update(totals, environment: inputs.environment) { actions.inspect(id) }
+        } else if let accounting {
+            accounting.removeFromSuperview(); self.accounting = nil
+        }
         setAccessibilityCustomActions(TranscriptRowAction.all(message, inputs.actions, forks: inputs.environment.forks, source: sourceToggle)
             .map { action in NSAccessibilityCustomAction(name: action.name) { [weak self] in
                 // A row in a pane that takes no input acts on nothing, as its pills do.
@@ -202,10 +217,14 @@ import AppKit
         let wanted = hovering && !drawsNothing
             ? TranscriptRowPills.pills(message, actions: inputs.actions, forks: inputs.environment.forks, source: sourceToggle) : []
         band.show(wanted, enabled: inputs.environment.isEnabled)
+        // The usage shares the band with the pills.
+        if accounting != nil { needsLayout = true }
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
-        TranscriptNativeMenus.offered(PiMenus.menu(ReplyMenu.entries(message, actions: inputs.actions, forks: inputs.environment.forks, fold: fold, source: sourceToggle)),
+        // A message row of its own offered no reply menu.
+        if standsAlone { return nil }
+        return TranscriptNativeMenus.offered(PiMenus.menu(ReplyMenu.entries(message, actions: inputs.actions, forks: inputs.environment.forks, fold: fold, source: sourceToggle)),
                                       enabled: inputs.environment.isEnabled)
     }
 
@@ -223,13 +242,13 @@ import AppKit
     }
     private func plan(width: CGFloat) -> Plan {
         guard !drawsNothing else { return Plan(markdown: .zero, source: .zero, sourceText: .zero, band: .zero, height: 0) }
-        var y: CGFloat = 0
+        var y: CGFloat = top
         var markdownFrame = CGRect.zero, sourceFrame = CGRect.zero, sourceText = CGRect.zero
         var failedFrame = CGRect.zero, truncatedFrame = CGRect.zero
         if let failedLabel {
             // The ending's word on a line of its own, above the words.
             let size = failedLabel.intrinsicSize
-            failedFrame = CGRect(x: 0, y: 0, width: size.width, height: size.height)
+            failedFrame = CGRect(x: 0, y: top, width: size.width, height: size.height)
             y = failedFrame.maxY + Self.gap
         }
         if drawsBody {
@@ -301,6 +320,14 @@ import AppKit
         }
         let rtl = inputs.environment.layoutDirection == .rightToLeft
         band.place(maxX: plan.band.maxX, midY: plan.band.midY, width: bounds.width, rightToLeft: rtl)
+        if let accounting, !accounting.isEmpty {
+            // Ten points to the spacer and ten to the pills, which take what they need.
+            accounting.isHidden = hidden
+            let pills = band.pills.reduce(0) { $0 + $1.pillSize.width } + 4 * CGFloat(max(0, band.pills.count - 1))
+            let room = max(0, plan.band.width - 20 - pills), height = accounting.height(width: room)
+            accounting.frame = TranscriptMotion.mirrored(CGRect(x: plan.band.minX, y: plan.band.midY - height / 2, width: room, height: height),
+                                                         width: bounds.width, rtl)
+        }
         if rtl {
             copy.map { $0.frame = TranscriptMotion.mirrored($0.frame, width: bounds.width, true) }
             for view in [noticeIcon, noticeText, dots, failedLabel, truncatedText] as [NSView?] { if let view { view.frame = TranscriptMotion.mirrored(view.frame, width: bounds.width, true) } }
@@ -308,7 +335,7 @@ import AppKit
     }
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        hover.update(rect: CGRect(x: 0, y: 0, width: bounds.width, height: max(0, bounds.height - bottom)))
+        hover.update(rect: CGRect(x: 0, y: top, width: bounds.width, height: max(0, bounds.height - top - bottom)))
         bodyHover.update(rect: plan(width: bounds.width).markdown)
     }
     override func mouseEntered(with event: NSEvent) { trackPointer(event) }
@@ -316,7 +343,7 @@ import AppKit
     override func mouseMoved(with event: NSEvent) { trackPointer(event) }
     private func trackPointer(_ event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
-        hover.set(CGRect(x: 0, y: 0, width: bounds.width, height: max(0, bounds.height - bottom)).contains(point))
+        hover.set(CGRect(x: 0, y: top, width: bounds.width, height: max(0, bounds.height - top - bottom)).contains(point))
         bodyHover.set(plan(width: bounds.width).markdown.contains(point))
     }
 }

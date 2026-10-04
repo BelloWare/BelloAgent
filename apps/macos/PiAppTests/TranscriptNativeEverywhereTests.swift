@@ -93,7 +93,16 @@ final class TranscriptNativeEverywhereTests: XCTestCase {
         reply.turn = TranscriptNativeTurnParityTests.turn()
         let summary = P.block("summary:none", .summary)
         let empty = P.block("empty", .reply)
-        return [.block(reply), .block(summary), .block(empty)]
+        // Messages standing as rows of their own: a reply outside any block,
+        // and messages of a kind no row knows, which read as plain messages.
+        var custom: [TranscriptItem] = []
+        for role in ["assistant", "user", "system"] {
+            var message = TranscriptMessage(id: "custom-" + role, role: role, text: "A \(role) message of its own kind.")
+            message.kind = "custom"
+            custom.append(.message(message))
+        }
+        let alone = TranscriptItem.message(TranscriptMessage(id: "alone", role: "assistant", text: "A reply on its own."))
+        return [.block(reply), .block(summary), .block(empty), alone] + custom
     }
 
     @MainActor func testEveryPlannedRowIsDrawnNatively() throws {
@@ -114,8 +123,9 @@ final class TranscriptNativeEverywhereTests: XCTestCase {
             case .block(let block): label = "block \(block.presentation)/\(block.part?.part.kind ?? "-")/\(block.message?.role ?? "-")"
             }
             kinds.insert(label)
-            let inputs = TranscriptRowInputs(item: item, fresh: false, actions: TranscriptActions(), width: 600, environment: TranscriptRowEnvironment())
-            let content = TranscriptRowRenderer.content(for: item, inputs: inputs)
+            let inputs = TranscriptRowInputs(item: item.drawnAs, fresh: false, actions: TranscriptActions(), width: 600, environment: TranscriptRowEnvironment())
+            // As the row container hands it over.
+            let content = TranscriptRowRenderer.content(for: item.drawnAs, inputs: inputs)
             // Drawn by no native row: through SwiftUI's reference row, or as nothing.
             if content is TranscriptHostedRowContent || content is TranscriptNativeEmptyRow { hosted.append(label + " (" + item.id + ")") }
         }
@@ -129,24 +139,35 @@ final class TranscriptNativeEverywhereTests: XCTestCase {
         XCTAssertTrue(hosted.isEmpty, "drawn by no native row: \(Set(hosted).sorted())")
     }
 
-    /// The transcript is AppKit through and through: no file in
-    /// apps/macos/PiApp/Transcript imports SwiftUI, or names it.
+    /// The transcript is AppKit through and through: no source file under
+    /// apps/macos/PiApp/Transcript imports SwiftUI, in any form an import
+    /// takes (`import`, `internal import`, `@_spi(…) import`, `import struct
+    /// SwiftUI.…`), or names it. (Without an import, and with nothing in the
+    /// app re-exporting it, no SwiftUI type is in scope there.)
     func testNoTranscriptFileUsesSwiftUI() throws {
         let folder = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("PiApp/Transcript")
-        let files = try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil).filter { $0.pathExtension == "swift" }
+        let enumerator = try XCTUnwrap(FileManager.default.enumerator(at: folder, includingPropertiesForKeys: nil))
+        let files = enumerator.compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" }
         XCTAssertGreaterThan(files.count, 40, "the transcript's sources are where this test looks")
+        let importing = #"\bimport\s+((struct|class|enum|protocol|typealias|func|var|let)\s+)?SwiftUI\b"#
         var offenders: [String] = []
         for file in files {
             let source = try String(contentsOf: file, encoding: .utf8)
             for (index, line) in source.components(separatedBy: "\n").enumerated() {
-                let code = line.components(separatedBy: "//")[0].trimmingCharacters(in: .whitespaces)
-                if code.range(of: #"^(@\w+\s+)*import\s+(struct\s+|class\s+|enum\s+|func\s+)?SwiftUI\b"#, options: .regularExpression) != nil
-                    || code.contains("SwiftUI.") {
-                    offenders.append("\(file.lastPathComponent):\(index + 1): \(code)")
+                let code = line.components(separatedBy: "//")[0]
+                if code.range(of: importing, options: .regularExpression) != nil || code.contains("SwiftUI.") {
+                    offenders.append("\(file.lastPathComponent):\(index + 1): \(code.trimmingCharacters(in: .whitespaces))")
                 }
             }
         }
         XCTAssertTrue(offenders.isEmpty, "SwiftUI in Transcript/: \(offenders.joined(separator: "; "))")
+        // Nothing in the app hands SwiftUI to every file of the module.
+        let app = folder.deletingLastPathComponent()
+        let all = try XCTUnwrap(FileManager.default.enumerator(at: app, includingPropertiesForKeys: nil)).compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" }
+        for file in all {
+            let source = try String(contentsOf: file, encoding: .utf8)
+            XCTAssertNil(source.range(of: #"@_exported\s+import\s+SwiftUI"#, options: .regularExpression), "\(file.lastPathComponent) re-exports SwiftUI")
+        }
     }
 }
