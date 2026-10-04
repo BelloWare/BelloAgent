@@ -65,10 +65,10 @@ class GitPanelTestCase: XCTestCase {
             return Int32(fields[0]).map { Child(pid: $0, state: fields[2]) }
         }
     }
-    @MainActor func host(_ view: some View, width: CGFloat = 1180, height: CGFloat = 780) -> NSWindow {
+    @MainActor func host(_ view: NSView, width: CGFloat = 1180, height: CGFloat = 780) -> NSWindow {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: height), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: view)
+        window.contentView = view
         window.makeKeyAndOrderFront(nil)
         return window
     }
@@ -622,3 +622,52 @@ final class GitRenameTests: GitPanelTestCase {
 // click would have changed. Shared by every Git* file split out of this one.
 @MainActor final class DiffHolder { var expanded: String? }
 @MainActor final class ChipHolder { var selected: String?; var shown = GitCommitFileChips.step }
+
+/// A diff view as the app shows one, with its "whole diff" gate held by
+/// `holder`: pressing "Show the whole diff" shows it again opened.
+@MainActor func makeDiffView(files: [GitDiffFile], title: String?, subtitle: String?, identity: String, split: Bool, holder: DiffHolder,
+                             openFile: ((String, Int) -> Void)? = nil) -> DiffView {
+    let view = DiffView()
+    func show(_ view: DiffView) {
+        view.show(files: files, title: title, subtitle: subtitle, identity: identity, split: split, setSplit: { _ in },
+                  expanded: holder.expanded, setExpanded: { [weak view] in holder.expanded = $0; if let view { show(view) } }, openFile: openFile)
+    }
+    show(view)
+    return view
+}
+
+/// A commit's chips as the app shows them, their choice and step held by `holder`.
+@MainActor func makeChipsView(_ detail: GitCommitDetail, holder: ChipHolder, showHistory: @escaping (String) -> Void = { _ in }) -> GitFileChipsView {
+    let view = GitFileChipsView()
+    func show(_ view: GitFileChipsView) {
+        GitCommitFileChips.show(detail, selected: holder.selected, shown: holder.shown, in: view,
+                                select: { [weak view] in holder.selected = $0; if let view { show(view) } },
+                                showMore: { [weak view] in holder.shown += GitCommitFileChips.step; if let view { show(view) } },
+                                showHistory: showHistory)
+    }
+    show(view)
+    return view
+}
+
+/// A plain heading for a bare diff table.
+@MainActor final class TestDiffHeading: NSTextField, GitDiffAccessory {
+    convenience init(_ text: String) { self.init(labelWithString: text) }
+    func gitDiffHeight(forWidth width: CGFloat) -> CGFloat { intrinsicContentSize.height }
+}
+
+/// A view at a fixed width, its height its content's at that width (`.frame(width:)`).
+@MainActor final class FixedWidthHost: NSView {
+    let content: NSView
+    let width: CGFloat
+    init(_ content: NSView, width: CGFloat) {
+        self.content = content; self.width = width
+        super.init(frame: .zero)
+        addSubview(content)
+    }
+    required init?(coder: NSCoder) { nil }
+    override var isFlipped: Bool { true }
+    override func layout() {
+        super.layout()
+        content.frame = CGRect(x: max(0, (bounds.width - width) / 2), y: 0, width: width, height: PiKit.height(of: content, width: width))
+    }
+}

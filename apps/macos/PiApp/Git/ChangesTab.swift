@@ -1,5 +1,5 @@
 import AppKit
-import SwiftUI
+import Combine
 import GitView
 
 // A project's changes and history, as a tab beside the chats or in a window
@@ -9,7 +9,7 @@ import GitView
 // and watches only while the panel is on screen (`GitController.setShown`).
 // Closed, the tab lets go of everything it read.
 
-@MainActor final class ChangesTab: HostedTab {
+@MainActor final class ChangesTab: AppKitHostedTab {
     override class var kind: String { "changes" }
     override var preferredWindowSize: NSSize { NSSize(width: 1040, height: 720) }
     let projectID: String
@@ -72,7 +72,7 @@ import GitView
     }
     var hasController: Bool { madeController != nil }
 
-    override func makeContent() -> AnyView { AnyView(ChangesTabContent(tab: self)) }
+    override func makeAppKitContent() -> NSView { ChangesTabContent(tab: self) }
     override class func restore(key: String, state: Data?) -> HostedTab? {
         guard let project = resolveProject(key) else { return nil }
         return ChangesTab(projectID: key, name: project.name, roots: project.roots)
@@ -117,37 +117,63 @@ import GitView
 
 /// A Changes tab's content: the panel over the tab's controller, or what it
 /// says once its project was removed.
-struct ChangesTabContent: View {
-    @ObservedObject var tab: ChangesTab
-    var body: some View {
-        if tab.removed {
-            VStack(spacing: PiSpacing.md) {
-                Image(systemName: "questionmark.folder").font(.system(size: 30, weight: .light)).foregroundStyle(Color.piInkTertiary)
-                Text("Missing").font(PiFont.heading).foregroundStyle(Color.piInk)
-                Text("Its project, \(tab.name), was removed from Bello Agent.").font(PiFont.body).foregroundStyle(Color.piInkSecondary)
-                    .multilineTextAlignment(.center).frame(maxWidth: 360)
-            }
-            .padding(PiSpacing.xl)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color.piContent)
-            .accessibilityElement(children: .combine)
-        } else {
-            VStack(spacing: 0) {
-                if let name = tab.returnName, tab.canGoBack {
-                    HStack(spacing: PiSpacing.sm) {
-                        Button { tab.goBack() } label: { Label("Back to \(name)", systemImage: "chevron.left") }
-                            .buttonStyle(.piSecondaryCompact).fixedSize()
-                            .accessibilityIdentifier("changes-back-to-file")
-                        Text("Opened from its blame").font(PiFont.micro).foregroundStyle(Color.piInkTertiary)
-                            .lineLimit(1).truncationMode(.tail).layoutPriority(-1)
-                        Spacer()
-                    }
-                    .padding(.horizontal, PiSpacing.md).padding(.vertical, 6)
-                    .overlay(alignment: .bottom) { Rectangle().fill(Color.piHairline).frame(height: 1) }
-                }
-                GitPanelView(controller: tab.controller, place: tab.place, questions: tab.questions, project: tab.name,
+@MainActor final class ChangesTabContent: NSView, PiKit.SizeObserver {
+    private weak var tab: ChangesTab?
+    private let notice: NoticeView
+    private let backBar = FlippedView()
+    private let backButton = PiKit.Button("", symbol: "chevron.left", style: .secondary, compact: true)
+    private let backNote = PiKit.TextLine(PiKit.Line("Opened from its blame", font: PiKit.Font.micro, color: .piInkTertiary))
+    private let backRule = HairlineView()
+    let panel: GitPanelView
+    private var observation: AnyCancellable?
+
+    init(tab: ChangesTab) {
+        self.tab = tab
+        notice = NoticeView(symbol: PiKit.Symbol("questionmark.folder", size: 30, weight: .light), title: "Missing", detail: "")
+        panel = GitPanelView(controller: tab.controller, place: tab.place, questions: tab.questions, project: tab.name,
                              openFile: { [weak tab] path, line in tab?.openFile(path: path, line: line) })
-            }
+        super.init(frame: .zero)
+        wantsLayer = true
+        backButton.setAccessibilityIdentifier("changes-back-to-file")
+        backButton.onPress = { [weak tab] in tab?.goBack() }
+        for view in [backButton, backNote, backRule] as [NSView] { backBar.addSubview(view) }
+        for view in [notice, backBar, panel] as [NSView] { addSubview(view) }
+        observation = tab.objectWillChange.sink { [weak self] _ in
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.refresh() } }
         }
+        refresh()
+    }
+    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    override var isFlipped: Bool { true }
+    override var wantsUpdateLayer: Bool { true }
+    override func updateLayer() { layer?.backgroundColor = piCGColor(.piContent) }
+
+    func contentSizeChanged() { needsLayout = true }
+    private var showsBack: Bool { tab.map { $0.returnName != nil && $0.canGoBack } ?? false }
+    func refresh() {
+        guard let tab else { return }
+        notice.set(title: "Missing", detail: "Its project, \(tab.name), was removed from Bello Agent.")
+        notice.isHidden = !tab.removed
+        panel.isHidden = tab.removed
+        backBar.isHidden = tab.removed || !showsBack
+        if let name = tab.returnName { backButton.title = "Back to \(name)" }
+        panel.setProject(tab.name)
+        needsLayout = true
+    }
+    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); refresh() }
+    override func layout() {
+        super.layout()
+        notice.frame = bounds
+        var y: CGFloat = 0
+        if !backBar.isHidden {
+            let button = backButton.intrinsicContentSize
+            let height = max(button.height, backNote.intrinsicContentSize.height) + 12
+            backBar.frame = CGRect(x: 0, y: 0, width: bounds.width, height: height)
+            StackLayout.place([.fixed(backButton), .view(backNote, .line(backNote, priority: -1)), .spacer()], spacing: PiSpacing.sm,
+                              in: CGRect(x: PiSpacing.md, y: 6, width: bounds.width - PiSpacing.md * 2, height: height - 12), scale: piScale)
+            backRule.frame = CGRect(x: 0, y: height - 1, width: bounds.width, height: 1)
+            y = height
+        }
+        panel.frame = CGRect(x: 0, y: y, width: bounds.width, height: max(0, bounds.height - y))
     }
 }

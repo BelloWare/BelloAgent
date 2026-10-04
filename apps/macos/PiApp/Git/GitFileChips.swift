@@ -1,33 +1,18 @@
-import SwiftUI
 import AppKit
 import GitView
 
 /// The commit's files as chips; one narrows the diff to that file, "All"
 /// widens it again. The chips are drawn by one native view: two hundred
-/// SwiftUI buttons, each with its tooltip, menu and pointer, took a fifth of a
-/// second to build every time a commit that touched them opened. The first
-/// two hundred are shown, then a chip that adds the next step.
-struct GitCommitFileChips: NSViewRepresentable {
-    let detail: GitCommitDetail
-    @Binding var selected: String?
-    @Binding var shown: Int
-    var showHistory: (String) -> Void
+/// buttons, each with its tooltip, menu and pointer, took a fifth of a second
+/// to build every time a commit that touched them opened. The first two
+/// hundred are shown, then a chip that adds the next step.
+@MainActor enum GitCommitFileChips {
     static var step: Int { GitController.commitFilesStep }
 
-    func makeNSView(context: Context) -> GitFileChipsView {
-        let view = GitFileChipsView()
-        update(view)
-        return view
-    }
-    func updateNSView(_ view: GitFileChipsView, context: Context) { update(view) }
-
-    /// The view has been updated before it is asked its size.
-    func sizeThatFits(_ proposal: ProposedViewSize, nsView: GitFileChipsView, context: Context) -> CGSize? {
-        let width = proposal.width.map { $0.isFinite ? $0 : nsView.naturalWidth } ?? nsView.naturalWidth
-        return CGSize(width: width, height: nsView.height(forWidth: width))
-    }
-
-    private func update(_ view: GitFileChipsView) {
+    /// Shows `detail`'s files in `view`: `selected` is the file the diff is
+    /// narrowed to, `shown` how many are listed.
+    static func show(_ detail: GitCommitDetail, selected: String?, shown: Int, in view: GitFileChipsView,
+                     select: @escaping (String?) -> Void, showMore: @escaping () -> Void, showHistory: @escaping (String) -> Void) {
         let files = detail.files.count <= shown ? detail.files[...] : detail.files[..<shown]
         var chips: [GitFileChip] = [GitFileChip(kind: .all, text: "All \(detail.files.count) files", icon: selected == nil ? "checkmark" : nil)]
         for file in files {
@@ -40,12 +25,11 @@ struct GitCommitFileChips: NSViewRepresentable {
         if detail.files.count > shown {
             chips.append(GitFileChip(kind: .more, text: "\(detail.files.count - shown) more files", icon: "ellipsis"))
         }
-        let selected = $selected, shown = $shown, showHistory = showHistory
         view.show(chips) { chip in
             switch chip.kind {
-            case .all: selected.wrappedValue = nil
-            case .file(let path): selected.wrappedValue = selected.wrappedValue == path ? nil : path
-            case .more: shown.wrappedValue += Self.step
+            case .all: select(nil)
+            case .file(let path): select(selected == path ? nil : path)
+            case .more: showMore()
             }
         } history: { showHistory($0) }
     }
@@ -74,7 +58,7 @@ struct GitFileChip: Equatable {
 /// The chips, laid out as `PiFlow` lays them out: left to right, 6 points
 /// apart, a new row 6 points down when the next does not fit, each row as tall
 /// as its tallest chip and every chip at its top.
-final class GitFileChipsView: NSView, NSViewToolTipOwner {
+final class GitFileChipsView: NSView, NSViewToolTipOwner, PiKit.WidthSizing {
     private var chips: [GitFileChip] = []
     private var press: (GitFileChip) -> Void = { _ in }
     private var history: (String) -> Void = { _ in }
@@ -106,6 +90,7 @@ final class GitFileChipsView: NSView, NSViewToolTipOwner {
         guard next != chips else { return }
         chips = next; sizes = []; framesWidth = -1; elements = []
         needsDisplay = true
+        invalidateIntrinsicContentSize()
         window?.invalidateCursorRects(for: self)
         removeAllToolTips()
         needsLayout = true

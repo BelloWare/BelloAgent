@@ -27,8 +27,8 @@ final class GitPanelTimingTests: GitPanelTestCase, SerialTestLane {
         for (label, width) in [("wide", CGFloat(1_180)), ("narrow", CGFloat(420))] {
             for split in [false, true] {
                 let holder = DiffHolder()
-                let view = DiffView(files: files, title: "long.txt", subtitle: "Working tree versus index", identity: "audit",
-                                    split: Binding(get: { split }, set: { _ in }), expanded: Binding(get: { holder.expanded }, set: { holder.expanded = $0 }))
+                let view = makeDiffView(files: files, title: "long.txt", subtitle: "Working tree versus index", identity: "audit",
+                                        split: split, holder: holder)
                 var window: NSWindow!
                 let building = milliseconds { window = host(view, width: width, height: 700) }
                 let cost = milliseconds {
@@ -92,8 +92,7 @@ final class GitPanelTimingTests: GitPanelTestCase, SerialTestLane {
         // And all four render in one pane without stalling.
         let files = crlf + latin + long + tail
         let holder = DiffHolder()
-        let view = DiffView(files: files, title: "Four awkward files", subtitle: nil, identity: "bytes",
-                            split: Binding(get: { true }, set: { _ in }), expanded: Binding(get: { holder.expanded }, set: { holder.expanded = $0 }))
+        let view = makeDiffView(files: files, title: "Four awkward files", subtitle: nil, identity: "bytes", split: true, holder: holder)
         var window: NSWindow!
         let cost = milliseconds {
             window = host(view, width: 520, height: 600)
