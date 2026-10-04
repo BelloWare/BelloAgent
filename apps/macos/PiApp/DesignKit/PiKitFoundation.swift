@@ -108,13 +108,12 @@ extension PiKit {
         func draw(in rect: CGRect, color: NSColor? = nil, truncation: CTLineTruncationType = .end, scale: CGFloat = 2) {
             guard !text.isEmpty else { return }
             let line = CTLineCreateWithAttributedString(coreText(color))
-            var shown = line
-            if CTLineGetTypographicBounds(line, nil, nil, nil) > rect.width + 0.01,
-               let truncated = CTLineCreateTruncatedLine(line, Double(rect.width), truncation,
-                                                         CTLineCreateWithAttributedString(NSAttributedString(string: "…", attributes: coreTextAttributes(color)))) {
-                shown = truncated
-            }
-            draw(shown, at: rect.origin, scale: scale)
+            guard CTLineGetTypographicBounds(line, nil, nil, nil) > rect.width + 0.01 else { draw(line, at: rect.origin, scale: scale); return }
+            // Too narrow for even the ellipsis: nothing is drawn, rather than
+            // the whole line running past its room.
+            guard let truncated = CTLineCreateTruncatedLine(line, Double(rect.width), truncation,
+                                                            CTLineCreateWithAttributedString(NSAttributedString(string: "…", attributes: coreTextAttributes(color)))) else { return }
+            draw(truncated, at: rect.origin, scale: scale)
         }
         private func draw(_ line: CTLine, at origin: CGPoint, scale: CGFloat) {
             guard let context = NSGraphicsContext.current?.cgContext else { return }

@@ -285,16 +285,24 @@ import XCTest
         XCTAssertEqual(rows(list).count, 0)
     }
 
-    func testATwoLineCaptionDrawsAtAnyWidth() {
-        // Drawing must not fail however narrow, with right-to-left shaping too.
-        let image = NSImage(size: NSSize(width: 60, height: 40), flipped: true) { rect in
-            for width in [0, 1, 6, 40] as [CGFloat] {
-                PiKit.drawWrapped(String(repeating: "لا", count: 7) + "XYZQ\nmore\nlines", font: PiKit.Font.caption, color: .black,
-                                  in: CGRect(x: 0, y: 0, width: width, height: rect.height), maximumLines: 2)
-            }
-            return true
+    func testATwoLineCaptionStaysInsideItsWidthAtAnyWidth() throws {
+        // However narrow, and with right-to-left shaping, nothing is drawn
+        // past the caption's width.
+        for width in [0, 1, 6, 40] as [CGFloat] {
+            let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 120, pixelsHigh: 40, bitsPerSample: 8, samplesPerPixel: 4,
+                                                        hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
+            let context = try XCTUnwrap(NSGraphicsContext.current?.cgContext)
+            context.translateBy(x: 0, y: 40); context.scaleBy(x: 1, y: -1)
+            NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: true)
+            PiKit.drawWrapped(String(repeating: "لا", count: 7) + "XYZQ\nmore\nlines", font: PiKit.Font.caption, color: .black,
+                              in: CGRect(x: 0, y: 0, width: width, height: 40), maximumLines: 2)
+            NSGraphicsContext.restoreGraphicsState()
+            var outside = 0
+            for y in 0..<40 { for x in Int(width.rounded(.up))..<120 where (bitmap.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.02 { outside += 1 } }
+            XCTAssertEqual(outside, 0, "ink past a \(width)-point caption")
         }
-        XCTAssertNotNil(image.cgImage(forProposedRect: nil, context: nil, hints: nil))
     }
 
     func testAnUnchangedTextAssignmentDoesNotLayOutAgain() {

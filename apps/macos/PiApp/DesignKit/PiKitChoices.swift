@@ -431,7 +431,8 @@ extension PiKit {
             // original text from there, its first paragraph cut with "…".
             var y = rect.minY
             for line in lines.prefix(maximumLines - 1) {
-                let drawn = Line(line, font: font, color: color); drawn.draw(at: CGPoint(x: rect.minX, y: y), scale: scale); y += drawn.lineHeight
+                let drawn = Line(line, font: font, color: color)
+                drawn.draw(in: CGRect(x: rect.minX, y: y, width: rect.width, height: drawn.lineHeight), scale: scale); y += drawn.lineHeight
             }
             let start = wrappedRanges(text, font: font, width: rect.width)[maximumLines - 1].location
             let rest = (text as NSString).substring(from: start)
@@ -445,7 +446,7 @@ extension PiKit {
         var y = rect.minY
         for line in lines {
             let drawn = Line(line, font: font, color: color)
-            drawn.draw(at: CGPoint(x: rect.minX, y: y), scale: scale)
+            drawn.draw(in: CGRect(x: rect.minX, y: y, width: rect.width, height: drawn.lineHeight), scale: scale)
             y += drawn.lineHeight
         }
         return y - rect.minY
