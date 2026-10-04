@@ -108,7 +108,8 @@ import SwiftUI
     /// A native popover's document: its content at the popover's width, as
     /// tall as it needs. It measures again on every layout, so content that
     /// grows after opening grows the panel, up to its room, then scrolls.
-    final class NativeDocument: NSView {
+    final class NativeDocument: NSView, PiKit.SizeObserver {
+        func contentSizeChanged() { needsLayout = true }
         let content: NSView
         let width: CGFloat, room: CGFloat
         weak var controller: NSViewController?

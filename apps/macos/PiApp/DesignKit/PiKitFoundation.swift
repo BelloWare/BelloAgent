@@ -136,6 +136,8 @@ extension PiKit {
         private static func metrics(_ font: NSFont) -> Metrics {
             lock.lock(); defer { lock.unlock() }
             if let metrics = known[font] { return metrics }
+            // Shrunk figures make fonts at every size; the table stays bounded.
+            if known.count >= 256 { known.removeAll(keepingCapacity: true) }
             let metrics = Metrics(height: ("Ag" as NSString).size(withAttributes: [.font: font]).height,
                                   baseline: NSLayoutManager().defaultBaselineOffset(for: font))
             known[font] = metrics

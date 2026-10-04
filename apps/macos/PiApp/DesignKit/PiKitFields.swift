@@ -100,6 +100,18 @@ extension PiKit {
         return view.fittingSize.height
     }
 
+    /// A container that wants to know when something inside it changed its
+    /// size (a popover's document, which grows the panel).
+    @MainActor protocol SizeObserver: AnyObject { func contentSizeChanged() }
+    /// Tells the nearest container watching for it that `view` changed size.
+    @MainActor static func sizeChanged(_ view: NSView) {
+        var ancestor = view.superview
+        while let current = ancestor {
+            if let observer = current as? SizeObserver { observer.contentSizeChanged(); return }
+            ancestor = current.superview
+        }
+    }
+
     /// A view whose height depends on the width it is given.
     @MainActor protocol WidthSizing: AnyObject { func height(forWidth width: CGFloat) -> CGFloat }
 

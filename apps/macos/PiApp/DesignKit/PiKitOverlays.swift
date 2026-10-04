@@ -124,10 +124,15 @@ extension PiKit {
         var width: CGFloat = 468
         var maximumHeight: CGFloat = 600
         var willOpen: () -> Void = {}
+        /// Whether the dialog has what it needs to open whole; it waits up to
+        /// `readyWithin` for it, as the SwiftUI pill does.
+        var isReady: @MainActor () -> Bool = { true }
+        var readyWithin: Duration = .milliseconds(250)
         var dialog: (@MainActor () -> NSView)?
+        private let help: String
         init(symbol: String, label: String, warningTail: String? = nil, accessibility: String? = nil, identifier: String? = nil,
              help: String = "", presenter: PiPopoverPresenter, dialog: @escaping @MainActor () -> NSView) {
-            self.presenter = presenter; self.dialog = dialog
+            self.presenter = presenter; self.dialog = dialog; self.help = help
             super.init(symbol: symbol, label: label, warningTail: warningTail)
             accessibilityName = accessibility
             // Its highlight follows the popover however it closes: Escape, a
@@ -141,7 +146,12 @@ extension PiKit {
         private func toggle() {
             guard let dialog else { return }
             if !presenter.isShown && !presenter.isOpening { willOpen() }
-            presenter.toggle(from: self, width: width, maximumHeight: maximumHeight, animates: !Motion.reduced, view: dialog)
+            presenter.toggle(from: self, width: width, maximumHeight: maximumHeight, animates: !Motion.reduced,
+                             within: readyWithin, isReady: isReady, view: dialog)
+        }
+        override func update(glyph: Glyph? = nil, label: String, warningTail: String? = nil, scope: AnyHashable?) {
+            super.update(glyph: glyph, label: label, warningTail: warningTail, scope: scope)
+            if help.isEmpty { toolTip = label }
         }
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()

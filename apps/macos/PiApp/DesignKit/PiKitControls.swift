@@ -368,7 +368,7 @@ extension PiKit {
 
     /// One line of text as a view: `Text`, without selection or wrapping.
     @MainActor final class TextLine: NSView {
-        var line: Line { didSet { invalidateIntrinsicContentSize(); needsDisplay = true; setAccessibilityLabel(line.text) } }
+        var line: Line { didSet { invalidateIntrinsicContentSize(); needsDisplay = true; setAccessibilityLabel(line.text); PiKit.sizeChanged(self) } }
         /// How it ends when it is narrower than its text.
         var truncation: CTLineTruncationType = .end
         init(_ line: Line = Line("", font: PiKit.Font.body, color: .piInk)) {

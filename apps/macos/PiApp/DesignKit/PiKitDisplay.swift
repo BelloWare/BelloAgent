@@ -34,7 +34,7 @@ extension PiKit {
     /// A small capsule label: a dot or a turning spinner, an optional
     /// symbol and the text, quiet ink on a fill, or the tone's own ink on its tint.
     @MainActor final class Badge: NSView {
-        var text: String { didSet { invalidateIntrinsicContentSize(); needsDisplay = true; setAccessibilityLabel(text) } }
+        var text: String { didSet { invalidateIntrinsicContentSize(); needsDisplay = true; setAccessibilityLabel(text); PiKit.sizeChanged(self) } }
         var tone: PiTone { didSet { needsDisplay = true; needsLayout = true } }
         var icon: String? { didSet { invalidateIntrinsicContentSize(); needsDisplay = true } }
         var dot: Bool { didSet { invalidateIntrinsicContentSize(); needsDisplay = true } }
@@ -278,7 +278,7 @@ extension PiKit {
 
     /// A note: a small tone symbol and caption text that wraps; danger reads in its tone.
     @MainActor final class Note: NSView, WidthSizing {
-        var text: String { didSet { label.set(text); invalidateIntrinsicContentSize(); needsLayout = true } }
+        var text: String { didSet { label.set(text); invalidateIntrinsicContentSize(); needsLayout = true; PiKit.sizeChanged(self) } }
         let tone: PiTone
         private let icon: SymbolView
         private let label: SelectableText

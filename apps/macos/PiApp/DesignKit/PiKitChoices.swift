@@ -312,15 +312,27 @@ extension PiKit {
         /// and the keyboard's row stays where it was while that is offered.
         func update(selection: Tag?, choices: [Choice<Tag>]) {
             self.selection = selection; self.choices = choices
-            for row in rows { row.removeFromSuperview() }
+            // Rows are matched by choice: one that is unchanged keeps its
+            // view (and its accessibility element); others are made anew.
+            var old: [Tag: Row] = [:]
+            for row in rows { old[row.choice.id] = row }
             rows = choices.map { choice in
+                if let row = old.removeValue(forKey: choice.id), row.choice == choice, row.chosen == (choice.id == selection) { return row }
+                old[choice.id]?.removeFromSuperview(); old[choice.id] = nil
                 let row = Row(choice, chosen: choice.id == selection)
                 row.onPress = { [weak self] in self?.commit(choice.id) }
                 stack.addSubview(row)
                 return row
             }
+            for row in old.values { row.removeFromSuperview() }
+            // The empty message follows whether there is anything to choose.
+            if choices.isEmpty, empty == nil {
+                empty = TextLine(Line("No available choices", font: PiKit.Font.body, color: .piInkTertiary))
+                stack.addSubview(empty!)
+            } else if !choices.isEmpty, let shown = empty { shown.removeFromSuperview(); empty = nil }
+            let before = highlighted
             if !choices.contains(where: { $0.id == highlighted && $0.enabled }) { highlighted = Self.initialChoice(choices, selection: selection) }
-            layoutList(); refreshHighlight(); invalidateIntrinsicContentSize()
+            layoutList(); refreshHighlight(scroll: highlighted != before); invalidateIntrinsicContentSize()
         }
 
         static func initialChoice(_ choices: [Choice<Tag>], selection: Tag?) -> Tag? {
@@ -332,9 +344,11 @@ extension PiKit {
             guard let index = enabled.firstIndex(where: { $0 == current }) else { return delta < 0 ? enabled.last : enabled.first }
             return enabled[min(enabled.count - 1, max(0, index + delta))]
         }
-        private func refreshHighlight() {
+        /// Outlines the keyboard's row; scrolls to it only when the keyboard
+        /// moved, so an update does not undo the reader's own scrolling.
+        private func refreshHighlight(scroll: Bool = true) {
             for row in rows { row.focused = row.choice.id == highlighted && hasKeys }
-            if let row = rows.first(where: { $0.choice.id == highlighted }) { row.scrollToVisible(row.bounds) }
+            if scroll, let row = rows.first(where: { $0.choice.id == highlighted }) { row.scrollToVisible(row.bounds) }
         }
         func commit(_ id: Tag) {
             guard choices.contains(where: { $0.id == id && $0.enabled }) else { return }
@@ -366,20 +380,26 @@ extension PiKit {
         override func updateLayer() { layer?.backgroundColor = piCGColor(.piSurface) }
     }
 
-    /// The lines `text` breaks into in `font` at `width`, as `Text` wraps it.
-    static func wrappedLines(_ text: String, font: NSFont, width: CGFloat) -> [String] {
+    /// Where `text` breaks into lines in `font` at `width`, as `Text` wraps it.
+    static func wrappedRanges(_ text: String, font: NSFont, width: CGFloat) -> [NSRange] {
         let string = NSAttributedString(string: text, attributes: [.font: font])
         let typesetter = CTTypesetterCreateWithAttributedString(string)
-        var lines: [String] = [], start = 0
-        let length = string.length
-        let ns = text as NSString
-        while start < length {
+        var ranges: [NSRange] = [], start = 0
+        while start < string.length {
             let count = CTTypesetterSuggestLineBreak(typesetter, start, Double(max(1, width)))
             guard count > 0 else { break }
-            var line = ns.substring(with: NSRange(location: start, length: count))
-            while line.hasSuffix(" ") || line.hasSuffix("\n") { line.removeLast() }
-            lines.append(line)
+            ranges.append(NSRange(location: start, length: count))
             start += count
+        }
+        return ranges
+    }
+    /// The lines `text` breaks into in `font` at `width`, without their trailing spaces.
+    static func wrappedLines(_ text: String, font: NSFont, width: CGFloat) -> [String] {
+        let ns = text as NSString
+        let lines = wrappedRanges(text, font: font, width: width).map { range -> String in
+            var line = ns.substring(with: range)
+            while line.hasSuffix(" ") || line.hasSuffix("\n") { line.removeLast() }
+            return line
         }
         return lines.isEmpty ? [""] : lines
     }
@@ -387,6 +407,16 @@ extension PiKit {
     /// height per line, as `Text` stacks its lines.
     static func wrappedHeight(_ text: String, font: NSFont, width: CGFloat) -> CGFloat {
         CGFloat(wrappedLines(text, font: font, width: width).count) * Line(text, font: font, color: .black).lineHeight
+    }
+    /// `text` cut with "…" at its end to fit `width`.
+    static func fit(_ text: String, font: NSFont, width: CGFloat) -> String {
+        var cut = text
+        while !cut.isEmpty, Line(cut, font: font, color: .black).width > width {
+            cut.removeLast(cut.hasSuffix("…") ? 2 : 1)
+            cut = cut.trimmingCharacters(in: .whitespaces) + "…"
+            if cut == "…" { break }
+        }
+        return cut
     }
     /// Draws one line shrunk to fit `rect`'s width, down to `minimumScale`
     /// of its size and cut with "…" past that, as `.minimumScaleFactor`.
@@ -403,15 +433,20 @@ extension PiKit {
     /// Draws `text` wrapped in `rect` (flipped), up to `maximumLines` (the
     /// last cut with "…"); returns the height it took.
     @discardableResult static func drawWrapped(_ text: String, font: NSFont, color: NSColor, in rect: CGRect, scale: CGFloat = 2, maximumLines: Int = .max) -> CGFloat {
-        var lines = wrappedLines(text, font: font, width: rect.width)
+        let lines = wrappedLines(text, font: font, width: rect.width)
         if lines.count > maximumLines {
-            let kept = lines.prefix(maximumLines - 1)
-            let rest = lines.dropFirst(maximumLines - 1).joined(separator: " ")
-            lines = Array(kept)
+            // The kept lines as they wrap; the last line is the rest of the
+            // original text from there, its first paragraph cut with "…".
             var y = rect.minY
-            for line in lines { let drawn = Line(line, font: font, color: color); drawn.draw(at: CGPoint(x: rect.minX, y: y), scale: scale); y += drawn.lineHeight }
-            let last = Line(rest, font: font, color: color)
-            last.draw(in: CGRect(x: rect.minX, y: y, width: rect.width, height: last.lineHeight), scale: scale)
+            for line in lines.prefix(maximumLines - 1) {
+                let drawn = Line(line, font: font, color: color); drawn.draw(at: CGPoint(x: rect.minX, y: y), scale: scale); y += drawn.lineHeight
+            }
+            let start = wrappedRanges(text, font: font, width: rect.width)[maximumLines - 1].location
+            let rest = (text as NSString).substring(from: start)
+            let paragraph = rest.components(separatedBy: "\n").first ?? rest
+            let shown = paragraph.count < rest.count ? fit(paragraph + "…", font: font, width: rect.width) : fit(paragraph, font: font, width: rect.width)
+            let last = Line(shown, font: font, color: color)
+            last.draw(at: CGPoint(x: rect.minX, y: y), scale: scale)
             return y + last.lineHeight - rect.minY
         }
         var y = rect.minY
@@ -453,7 +488,7 @@ extension PiKit {
 
     /// Wrapping, selectable-free text as a view: `Text` that takes the lines it needs.
     @MainActor final class WrappedText: NSView, WidthSizing {
-        var text: String { didSet { needsDisplay = true; invalidateIntrinsicContentSize(); setAccessibilityLabel(text) } }
+        var text: String { didSet { needsDisplay = true; invalidateIntrinsicContentSize(); setAccessibilityLabel(text); PiKit.sizeChanged(self) } }
         var font: NSFont, color: NSColor
         init(_ text: String, font: NSFont, color: NSColor) {
             self.text = text; self.font = font; self.color = color

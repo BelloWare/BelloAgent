@@ -148,6 +148,18 @@ Swift) and stay as they are.
 - **Rolling digits.** A stat pill's reading rolls as a whole, not digit by
   digit as SwiftUI's numeric text transition did; the scope rule (no roll
   across chats) is the same.
-- **Press and focus states** are not compared with the SwiftUI twins (they
-  cannot be forced into those states without changing them); they are covered
-  by `PiKitControlTests` and by the hover cases, which use real pointer events.
+- **How close the pictures are.** `PiKitParityTests` allows no pixel more
+  than 8 channels apart, except symbols (3 per cent of a capture) and three
+  path shapes (0.6 per cent: a badge's dot, a stacked bar's ends, a legend
+  swatch). Those allowances cover the whole capture: they are not masked to
+  the symbol or shape, so the test cannot prove a difference lies only there.
+- **Hover, press and focus** are not compared with the SwiftUI twins in this
+  environment: posting real pointer events needs Accessibility permission for
+  the test runner, so `testHoverStates` skips here. Each style's hover fill,
+  and keyboard and accessibility behaviour, are checked in `PiKitControlTests`.
+- **A disabled selectable row** dims its content and takes all its clicks, but
+  leaves each control inside it with its own enabled state (SwiftUI disabled
+  them through the environment): to VoiceOver they still read as enabled.
+- **Native popover growth.** A popover with AppKit content grows when a Pi
+  component inside it changes size (`PiKit.sizeChanged`); other views must call
+  that themselves.

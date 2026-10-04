@@ -251,15 +251,44 @@ import XCTest
         XCTAssertEqual(handle.accessibilityRole(), .splitter)
     }
 
-    func testADisabledRowDimsAndDisablesItsContent() {
+    func testADisabledRowDimsItsContentAndTakesItsClicks() {
         let toggle = PiKit.Switch(isOn: true)
-        let content = PiKit.Box.ClipView(); content.addSubview(toggle)
+        let content = PiKit.Box.ClipView(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
+        toggle.frame = NSRect(x: 0, y: 0, width: 38, height: 22); content.addSubview(toggle)
         let row = PiKit.SelectableRow(content: content)
+        row.frame = NSRect(x: 0, y: 0, width: 240, height: 40); row.layoutSubtreeIfNeeded()
+        let onToggle = row.convert(NSPoint(x: 10 + 19, y: 8 + 11), to: nil)
+        XCTAssertTrue(row.hitTest(onToggle) === toggle, "an enabled row's control keeps its clicks")
         row.isEnabled = false
-        XCTAssertFalse(toggle.isEnabled, "a control inside a disabled row is disabled")
+        XCTAssertTrue(row.hitTest(onToggle) !== toggle, "nothing inside a disabled row can be used")
         XCTAssertEqual(content.alphaValue, CGFloat(PiKit.plainDisabledDimming), accuracy: 0.001)
+        XCTAssertTrue(toggle.isEnabled, "the control's own state stays the app's")
         row.isEnabled = true
-        XCTAssertTrue(toggle.isEnabled)
+        XCTAssertTrue(row.hitTest(onToggle) === toggle)
+    }
+
+    func testAnOpenChoiceListFollowsItsChoices() {
+        let list = PiKit.ChoiceList<Int>(title: "Model", selection: nil, choices: [], choose: { _ in }, cancel: {})
+        XCTAssertTrue(PiKit.spokenText(of: list).contains("No available choices"))
+        list.update(selection: 1, choices: [PiKit.Choice(id: 1, title: "A"), PiKit.Choice(id: 2, title: "B")])
+        XCTAssertFalse(PiKit.spokenText(of: list).contains("No available choices"), "the empty message goes when there are choices")
+        func rows(_ view: NSView) -> [PiKit.ChoiceList<Int>.Row] { ((view as? PiKit.ChoiceList<Int>.Row).map { [$0] } ?? []) + view.subviews.flatMap { rows($0) } }
+        let rowB = rows(list).first { $0.choice.id == 2 }
+        list.update(selection: 1, choices: [PiKit.Choice(id: 1, title: "A"), PiKit.Choice(id: 2, title: "B"), PiKit.Choice(id: 3, title: "C")])
+        let again = rows(list).first { $0.choice.id == 2 }
+        XCTAssertTrue(rowB != nil && rowB === again, "an unchanged choice keeps its row")
+        list.update(selection: nil, choices: [])
+        XCTAssertTrue(PiKit.spokenText(of: list).contains("No available choices"))
+    }
+
+    func testANativePopoverGrowsWithItsContent() {
+        let note = PiKit.Note("Short.")
+        let document = PiPopoverPresenter.NativeDocument(content: note, width: 200, room: 600)
+        let before = document.frame.height
+        note.text = String(repeating: "A longer note that wraps onto more lines. ", count: 6)
+        XCTAssertTrue(document.needsLayout, "a size change inside asks the document to measure again")
+        document.layoutSubtreeIfNeeded()
+        XCTAssertGreaterThan(document.frame.height, before)
     }
 
     func testAnOpenDropdownOnlyCommitsAChoiceStillOffered() async throws {
@@ -368,18 +397,6 @@ import XCTest
         tabs.items = [(2, "Two")]
         XCTAssertTrue(tabs.tab(2) === two)
         XCTAssertNil(tabs.tab(1)?.superview)
-    }
-
-    func testEnablingARowRestoresOnlyWhatItDisabled() {
-        let off = PiKit.Switch(isOn: true); off.isEnabled = false
-        let on = PiKit.Switch(isOn: true)
-        let content = PiKit.Box.ClipView(); content.addSubview(off); content.addSubview(on)
-        let row = PiKit.SelectableRow(content: content)
-        row.isEnabled = false
-        XCTAssertFalse(on.isEnabled)
-        row.isEnabled = true
-        XCTAssertTrue(on.isEnabled)
-        XCTAssertFalse(off.isEnabled, "a control that was off before stays off")
     }
 
     func testAnOpenDropdownFollowsItsItemsInPlace() async throws {

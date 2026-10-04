@@ -18,7 +18,6 @@ extension PiKit {
     /// `doubleClick`. Controls inside it stay their own.
     @MainActor final class SelectableRow: ButtonBase, WidthSizing {
         let contentView: NSView
-        private var disabledByRow: [NSControl] = []
         var selected: Bool { didSet { if oldValue != selected { selectionChanged() } } }
         var marked: Bool { didSet { refreshFace() } }
         var doubleClick: (() -> Void)?
@@ -42,19 +41,12 @@ extension PiKit {
         override func isAccessibilitySelected() -> Bool { selected }
         override func cornerRadius(for size: CGSize) -> CGFloat { PiRadius.sm }
         /// Disabled, the row's content dims as a disabled plain button's label
-        /// does, and the controls inside it are disabled too.
+        /// does and takes no clicks: nothing inside it can be used. Each control
+        /// keeps its own enabled state, which stays the app's to set.
         override var isEnabled: Bool {
             didSet {
                 guard oldValue != isEnabled else { return }
                 contentView.alphaValue = isEnabled ? 1 : CGFloat(PiKit.plainDisabledDimming)
-                if isEnabled {
-                    // Only what the row turned off comes back on.
-                    for control in disabledByRow { control.isEnabled = true }
-                    disabledByRow = []
-                } else {
-                    disabledByRow = PiKit.controls(in: contentView).filter(\.isEnabled)
-                    for control in disabledByRow { control.isEnabled = false }
-                }
             }
         }
 
@@ -92,15 +84,15 @@ extension PiKit {
             if event.clickCount == 2 { doubleClick?() }
         }
         override func hitTest(_ point: NSPoint) -> NSView? {
-            // A control inside the row keeps its own clicks while enabled.
-            if let hit = super.hitTest(point), hit !== self, hit !== contentView, let control = hit as? NSControl, control.isEnabled { return hit }
+            // A control inside an enabled row keeps its own clicks.
+            if isEnabled, let hit = super.hitTest(point), hit !== self, hit !== contentView, let control = hit as? NSControl, control.isEnabled { return hit }
             return frame.contains(point) && shape(in: bounds).contains(convert(point, from: superview)) ? self : nil
         }
     }
 
     /// Every control in `view`'s tree, `view` included.
     @MainActor static func controls(in view: NSView) -> [NSControl] {
-        (view as? NSControl).map { [$0] } ?? [] + view.subviews.flatMap { controls(in: $0) }
+        ((view as? NSControl).map { [$0] } ?? []) + view.subviews.flatMap { controls(in: $0) }
     }
 
     /// The words a view shows, joined, for an accessibility name.

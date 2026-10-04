@@ -67,7 +67,11 @@ extension PiKit {
             return tallest + (windowChrome ? PiSpacing.md : PiSpacing.lg) + PiSpacing.lg
         }
         private var footerHeight: CGFloat {
-            footer.map { PiKit.height(of: $0, width: max(0, (bounds.width > 0 ? bounds.width : width ?? 480) - PiSpacing.xl * 2)) + PiSpacing.md * 2 + 1 } ?? 0
+            footer.map { PiKit.height(of: $0, width: max(0, sheetWidth - PiSpacing.xl * 2)) + PiSpacing.md * 2 + 1 } ?? 0
+        }
+        /// The width it is, or will be once laid out.
+        private var sheetWidth: CGFloat {
+            bounds.width > 0 ? bounds.width : width ?? max(minWidth ?? 0, content.fittingSize.width)
         }
         override var intrinsicContentSize: NSSize {
             let content = self.content.fittingSize
