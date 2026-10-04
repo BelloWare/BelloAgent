@@ -17,13 +17,13 @@ extension PiKit {
         var shadowOffsetY: CGFloat = 0 { didSet { needsDisplay = true } }
         /// Clips the content to the shape, as `.clipShape`.
         var clipsContent = false { didSet { needsLayout = true } }
-        var padding = NSEdgeInsets() { didSet { invalidateIntrinsicContentSize(); needsLayout = true } }
+        var padding = NSEdgeInsets() { didSet { invalidateIntrinsicContentSize(); needsLayout = true; PiKit.sizeChanged(self) } }
         /// The content, laid out inside the padding at its full width.
         var content: NSView? {
             didSet {
                 oldValue?.removeFromSuperview()
                 if let content { contentHolder.addSubview(content) }
-                invalidateIntrinsicContentSize(); needsLayout = true
+                invalidateIntrinsicContentSize(); needsLayout = true; PiKit.sizeChanged(self)
             }
         }
         private let fillLayer = CALayer(), strokeLayer = CALayer()
@@ -104,9 +104,12 @@ extension PiKit {
     /// size (a popover's document, which grows the panel).
     @MainActor protocol SizeObserver: AnyObject { func contentSizeChanged() }
     /// Tells the nearest container watching for it that `view` changed size.
+    /// Every container on the way lays out again (a flow moves its other
+    /// items even when its own height stays the same).
     @MainActor static func sizeChanged(_ view: NSView) {
         var ancestor = view.superview
         while let current = ancestor {
+            current.invalidateIntrinsicContentSize(); current.needsLayout = true
             if let observer = current as? SizeObserver { observer.contentSizeChanged(); return }
             ancestor = current.superview
         }

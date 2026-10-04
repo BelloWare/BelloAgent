@@ -277,13 +277,28 @@ import XCTest
         list.update(selection: 1, choices: [PiKit.Choice(id: 1, title: "A"), PiKit.Choice(id: 2, title: "B"), PiKit.Choice(id: 3, title: "C")])
         let again = rows(list).first { $0.choice.id == 2 }
         XCTAssertTrue(rowB != nil && rowB === again, "an unchanged choice keeps its row")
+        list.update(selection: 1, choices: [PiKit.Choice(id: 1, title: "A"), PiKit.Choice(id: 2, title: "B, renamed"), PiKit.Choice(id: 3, title: "C")])
+        XCTAssertEqual(rows(list).filter { $0.choice.id == 2 }.count, 1, "a changed choice replaces its row, leaving no old one behind")
+        XCTAssertEqual(rows(list).first { $0.choice.id == 2 }?.choice.title, "B, renamed")
         list.update(selection: nil, choices: [])
         XCTAssertTrue(PiKit.spokenText(of: list).contains("No available choices"))
+        XCTAssertEqual(rows(list).count, 0)
+    }
+
+    func testCuttingTextNeverFailsAndKeepsTheLongestStart() {
+        let font = PiKit.Font.caption
+        XCTAssertEqual(PiKit.fit("Short", font: font, width: 500), "Short")
+        let cut = PiKit.fit("A long caption that does not fit", font: font, width: 80)
+        XCTAssertTrue(cut.hasSuffix("…")); XCTAssertLessThanOrEqual(PiKit.Line(cut, font: font, color: .black).width, 80)
+        XCTAssertEqual(PiKit.fit("Anything", font: font, width: 1), "", "not even the ellipsis fits")
+        XCTAssertEqual(PiKit.fit("", font: font, width: 0), "")
     }
 
     func testANativePopoverGrowsWithItsContent() {
         let note = PiKit.Note("Short.")
         let document = PiPopoverPresenter.NativeDocument(content: note, width: 200, room: 600)
+        document.layoutSubtreeIfNeeded()
+        XCTAssertFalse(document.needsLayout, "settled before the change")
         let before = document.frame.height
         note.text = String(repeating: "A longer note that wraps onto more lines. ", count: 6)
         XCTAssertTrue(document.needsLayout, "a size change inside asks the document to measure again")

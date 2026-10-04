@@ -47,6 +47,11 @@ extension PiKit {
             didSet {
                 guard oldValue != isEnabled else { return }
                 contentView.alphaValue = isEnabled ? 1 : CGFloat(PiKit.plainDisabledDimming)
+                // Nor the keys: a control inside that had them gives them up.
+                if !isEnabled, let window, let responder = window.firstResponder as? NSView,
+                   responder === contentView || responder.isDescendant(of: contentView) || (responder as? NSText)?.delegate.map({ ($0 as? NSView)?.isDescendant(of: contentView) == true }) == true {
+                    window.makeFirstResponder(nil)
+                }
             }
         }
 

@@ -160,6 +160,8 @@ Swift) and stay as they are.
 - **A disabled selectable row** dims its content and takes all its clicks, but
   leaves each control inside it with its own enabled state (SwiftUI disabled
   them through the environment): to VoiceOver they still read as enabled.
+  Disabling the row takes the keys from a control inside it, but Tab can still
+  move into one.
 - **Native popover growth.** A popover with AppKit content grows when a Pi
   component inside it changes size (`PiKit.sizeChanged`); other views must call
   that themselves.

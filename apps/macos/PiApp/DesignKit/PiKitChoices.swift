@@ -317,8 +317,10 @@ extension PiKit {
             var old: [Tag: Row] = [:]
             for row in rows { old[row.choice.id] = row }
             rows = choices.map { choice in
-                if let row = old.removeValue(forKey: choice.id), row.choice == choice, row.chosen == (choice.id == selection) { return row }
-                old[choice.id]?.removeFromSuperview(); old[choice.id] = nil
+                if let row = old.removeValue(forKey: choice.id) {
+                    if row.choice == choice, row.chosen == (choice.id == selection) { return row }
+                    row.removeFromSuperview()
+                }
                 let row = Row(choice, chosen: choice.id == selection)
                 row.onPress = { [weak self] in self?.commit(choice.id) }
                 stack.addSubview(row)
@@ -408,15 +410,21 @@ extension PiKit {
     static func wrappedHeight(_ text: String, font: NSFont, width: CGFloat) -> CGFloat {
         CGFloat(wrappedLines(text, font: font, width: width).count) * Line(text, font: font, color: .black).lineHeight
     }
-    /// `text` cut with "…" at its end to fit `width`.
+    /// `text` cut with "…" at its end to fit `width`: the longest start
+    /// that fits with its ellipsis, found in a few measurements; "" when not
+    /// even the ellipsis fits.
     static func fit(_ text: String, font: NSFont, width: CGFloat) -> String {
-        var cut = text
-        while !cut.isEmpty, Line(cut, font: font, color: .black).width > width {
-            cut.removeLast(cut.hasSuffix("…") ? 2 : 1)
-            cut = cut.trimmingCharacters(in: .whitespaces) + "…"
-            if cut == "…" { break }
+        func measured(_ value: String) -> CGFloat { Line(value, font: font, color: .black).width }
+        guard measured(text) > width else { return text }
+        let characters = Array(text)
+        func cut(_ count: Int) -> String { String(characters.prefix(count)).trimmingCharacters(in: .whitespaces) + "…" }
+        guard measured("…") <= width else { return "" }
+        var low = 0, high = characters.count - 1
+        while low < high {
+            let middle = (low + high + 1) / 2
+            if measured(cut(middle)) <= width { low = middle } else { high = middle - 1 }
         }
-        return cut
+        return cut(low)
     }
     /// Draws one line shrunk to fit `rect`'s width, down to `minimumScale`
     /// of its size and cut with "…" past that, as `.minimumScaleFactor`.
