@@ -149,6 +149,31 @@ struct NativePlainText: NSViewRepresentable {
         }
         update(text: next, face: face, environment: environment)
     }
+    /// The language the text is code in, coloured as the transcript colours
+    /// code (`SyntaxHighlighter`); nil for text that is not code.
+    var codeLanguage: String? { didSet { if codeLanguage != oldValue { face = nil } } }
+    /// Colours `code`'s tokens in `storage`, as `SyntaxHighlighter.attributed` colours them.
+    static func colour(_ storage: NSTextStorage, code: String, language name: String, font: NSFont) {
+        guard let grammar = SyntaxHighlighter.language(named: name), code.utf8.count <= SyntaxHighlighter.limit,
+              storage.length == (code as NSString).length else { return }
+        // Where each scalar begins in the storage.
+        var utf16 = [0]
+        utf16.reserveCapacity(code.unicodeScalars.count + 1)
+        for scalar in code.unicodeScalars { utf16.append(utf16[utf16.count - 1] + (scalar.value > 0xffff ? 2 : 1)) }
+        for token in SyntaxHighlighter.tokens(code, language: grammar) where token.range.upperBound < utf16.count {
+            let range = NSRange(location: utf16[token.range.lowerBound], length: utf16[token.range.upperBound] - utf16[token.range.lowerBound])
+            let color: NSColor
+            switch token.kind {
+            case .keyword: color = TranscriptNSPalette.keyword
+            case .string: color = TranscriptNSPalette.string
+            case .number, .title: color = TranscriptNSPalette.number
+            case .comment:
+                color = TranscriptNSPalette.comment
+                storage.addAttribute(.font, value: NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask), range: range)
+            }
+            storage.addAttribute(.foregroundColor, value: color, range: range)
+        }
+    }
     /// SwiftUI's line box for a font: its whole line, rounded up to a point.
     static func swiftUILine(_ font: NSFont) -> (height: CGFloat, baseline: CGFloat) {
         // A face whose line SwiftUI sets taller than its metrics give (11
@@ -187,6 +212,7 @@ struct NativePlainText: NSViewRepresentable {
                 paragraph.lineBreakStrategy = .standard
             }
             storage.setAttributedString(NSAttributedString(string: Self.limited(next, lines: maximumLines), attributes: attributes))
+            if let codeLanguage { Self.colour(storage, code: next, language: codeLanguage, font: face.nsFont) }
             text = next; self.face = face
             setAccessibilityLabel(face.label)
         }
@@ -258,7 +284,19 @@ struct NativePlainText: NSViewRepresentable {
         let previous = container.containerSize
         container.containerSize = NSSize(width: width, height: CGFloat.greatestFiniteMagnitude)
         var widest: CGFloat = 0
-        manager.enumerateLineFragments(forGlyphRange: manager.glyphRange(for: container)) { _, used, _, _, _ in widest = max(widest, used.width) }
+        // A line set from the right leaves its trailing spaces out of its
+        // used rect; SwiftUI counts them, as it does for a line set from the left.
+        let fromRight = environment?.layoutDirection == .rightToLeft && !centred
+        let storage = textStorage
+        manager.enumerateLineFragments(forGlyphRange: manager.glyphRange(for: container)) { _, used, _, glyphs, _ in
+            var line = used.width
+            if fromRight, let storage {
+                let characters = manager.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
+                let typeset = CTLineCreateWithAttributedString(storage.attributedSubstring(from: characters))
+                line = CGFloat(CTLineGetTypographicBounds(typeset, nil, nil, nil))
+            }
+            widest = max(widest, line)
+        }
         container.containerSize = previous
         // Up to a whole pixel, as SwiftUI sizes a text; set at that width, the
         // text wraps where it did.

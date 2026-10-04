@@ -259,9 +259,11 @@ final class ReplySourceTests: XCTestCase {
             XCTAssertEqual(value.raw, parts.contains(row), "row \(row.itemID) reads the reply's view only if it draws the reply's text")
         }
         for part in parts {
-            XCTAssertEqual(views(NSTextField.self, in: part).filter(\.isSelectable).count, 1, "part \(part.itemID) is one selectable text")
-            XCTAssertTrue(views(NSTextField.self, in: part).contains { $0.stringValue.contains("**part**") || $0.stringValue.contains("`code`") },
-                          "part \(part.itemID) reads as its source")
+            // The part is drawn natively: its source is one selectable TextKit text.
+            let sources = views(TranscriptPlainTextView.self, in: part).filter { $0.isSelectable && !$0.isHiddenOrHasHiddenAncestor }
+            XCTAssertEqual(sources.count, 1, "part \(part.itemID) is one selectable text")
+            XCTAssertTrue(sources.contains { $0.string.contains("**part**") || $0.string.contains("`code`") }, "part \(part.itemID) reads as its source")
+            XCTAssertEqual(sources.first?.accessibilityIdentifier(), "reply-source")
         }
         for row in others {
             XCTAssertEqual(row.frame.height, heights[row.itemID] ?? -1, accuracy: 0.5, "row \(row.itemID) is not re-measured for another row's view")

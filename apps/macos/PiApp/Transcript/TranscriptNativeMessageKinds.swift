@@ -526,6 +526,12 @@ import AppKit
 /// muted colour, the label itself the button.
 @MainActor final class TranscriptNativeLabelButton: TranscriptNativeToggle {
     static let font = NSFont.systemFont(ofSize: 12.5)
+    /// The label's weight: an execution record's line is medium.
+    var weight: NSFont.Weight = .regular {
+        didSet { guard weight != oldValue else { return }; title.font = font; wrapped?.removeFromSuperview(); wrapped = nil; needsLayout = true }
+    }
+    var font: NSFont { weight == .regular ? Self.font : .systemFont(ofSize: 12.5, weight: weight) }
+    private var face: TranscriptPlainTextFace { var face = Self.face; face.weight = weight.rawValue; return face }
     private let icon = TranscriptSymbol()
     private let title = TranscriptLabel()
     private var symbol = ""
@@ -542,9 +548,9 @@ import AppKit
         if text != title.text || symbol != self.symbol { needsLayout = true }
         self.symbol = symbol
         title.text = text; title.color = TranscriptNSPalette.muted
-        icon.show(symbol, size: Self.font.pointSize, weight: .regular)
+        icon.show(symbol, size: font.pointSize, weight: weight)
         icon.contentTintColor = TranscriptNSPalette.muted
-        wrapped?.update(text: text, face: Self.face, environment: environment, swiftUILines: true, color: TranscriptNSPalette.muted)
+        wrapped?.update(text: text, face: face, environment: environment, swiftUILines: true, color: TranscriptNSPalette.muted)
         set(environment: environment, toggle: toggle)
         setAccessibilityLabel(text)
     }
@@ -561,7 +567,7 @@ import AppKit
         if let wrapped { return wrapped }
         let text = TranscriptPlainTextView(); text.isSelectable = false; text.setAccessibilityElement(false)
         var environment = TranscriptRowEnvironment(); environment.layoutDirection = rightToLeft ? .rightToLeft : .leftToRight
-        text.update(text: title.text, face: Self.face, environment: environment, swiftUILines: true, color: TranscriptNSPalette.muted)
+        text.update(text: title.text, face: face, environment: environment, swiftUILines: true, color: TranscriptNSPalette.muted)
         addSubview(text); wrapped = text
         return text
     }
@@ -587,7 +593,7 @@ import AppKit
             title.frame = titleFrame
         }
         if let image = icon.image {
-            let line = wraps ? TranscriptLabel.lineHeight(Self.font) : bounds.height
+            let line = wraps ? TranscriptLabel.lineHeight(font) : bounds.height
             let top = wraps ? titleFrame.minY : 0
             icon.frame = CGRect(x: -glyph.minX, y: top + (line - glyph.height) / 2 - (image.size.height - glyph.maxY),
                                 width: image.size.width, height: image.size.height)

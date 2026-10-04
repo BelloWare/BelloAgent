@@ -214,12 +214,16 @@ private struct NativeWorkListItem: Equatable {
         laidOutWidth = nil
         needsLayout = true
         invalidateIntrinsicContentSize()
+        if let sizeChanged { sizeChanged(); return }
         var ancestor = superview
         while let view = ancestor {
             if let row = view as? TranscriptHostedRowContent { row.invalidateIntrinsicContentSize(); break }
             ancestor = view.superview
         }
     }
+    /// Told when a card changed the list's height from inside, where the
+    /// list is drawn by a native row rather than through SwiftUI.
+    var sizeChanged: (() -> Void)?
     /// One closed card's height at this width, measured once for the turn.
     private func closedRowHeight(width: CGFloat) -> CGFloat {
         if let known = closedHeight[width] { return known }
@@ -341,5 +345,6 @@ private struct NativeWorkListItem: Equatable {
         laidOutWidth = nil
         needsLayout = true
         invalidateIntrinsicContentSize()
+        sizeChanged?()
     }
 }

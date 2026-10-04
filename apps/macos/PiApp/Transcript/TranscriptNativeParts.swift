@@ -144,7 +144,7 @@ import AppKit
         "13.0/0": (16, 0), "12.5/0": (15, -0.375), "11.5/0": (14, -0.375), "12.0/0": (15, 0),
         "11.0/0.23m": (14, 0.125), "11.5/0m": (14, -0.375), "12.0/0m": (15, 0),
         "12.0/0.3": (15, 0), "13.0/0.3s": (16, -0.5), "11.0/0": (14, 0.125),
-        "9.5/0": (12, -0.375), "10.0/0": (13, 0.125)]
+        "9.5/0": (12, -0.375), "10.0/0": (13, 0.125), "13.0/0.23": (16, 0), "12.5/0.23": (15, -0.375)]
     static func measured(_ font: NSFont) -> (height: CGFloat, baseline: CGFloat)? {
         let weight = (font.fontDescriptor.object(forKey: .traits) as? [NSFontDescriptor.TraitKey: Any])?[.weight] as? CGFloat ?? 0
         // A monospaced face has its own line box: its key ends in "m"; a
@@ -174,13 +174,14 @@ import AppKit
     /// left: a whole text ends where its own width ends, as SwiftUI places it.
     func mirrored(_ rect: CGRect, width: CGFloat) -> CGRect {
         let whole = rect.width + 0.25 >= intrinsicSize.width
-        // A text cut in its middle ends where the line it keeps ends, as a whole one does.
-        let cut = !whole && truncation == .middle
-        // SwiftUI draws such a text where its width puts it, between pixels.
+        // A text cut short ends where the line it keeps ends, as a whole one
+        // does: SwiftUI sets the cut line from the right edge of its frame.
+        let cut = !whole && truncation != nil
+        // A text wider than its frame and not cut is set where its width puts it, between pixels.
         snapsX = !whole && !cut
         // Set from the right, the line's trailing spaces hang past its end.
         hangsTrailingSpace = whole
-        let end = whole ? exactWidth : cut ? CGFloat(CTLineGetTypographicBounds(middleCut(rect.width), nil, nil, nil)) : rect.width
+        let end = whole ? exactWidth : cut ? CGFloat(CTLineGetTypographicBounds(cutLine(rect.width), nil, nil, nil)) : rect.width
         return CGRect(x: width - rect.minX - end, y: rect.minY, width: rect.width, height: rect.height)
     }
     /// How wide the text is once cut short to fit `width`, as SwiftUI sizes
@@ -227,6 +228,13 @@ import AppKit
         return line
     }
     private var middleCache: (width: CGFloat, line: CTLine)?
+    /// The line as it is drawn cut short to `width`.
+    private func cutLine(_ width: CGFloat) -> CTLine {
+        if truncation == .middle { return middleCut(width) }
+        let line = CTLineCreateWithAttributedString(string)
+        let ellipsis = CTLineCreateWithAttributedString(NSAttributedString(string: "…", attributes: string.attributes(at: 0, effectiveRange: nil)))
+        return CTLineCreateTruncatedLine(line, Double(width), ctTruncation, ellipsis) ?? line
+    }
     override func draw(_ dirtyRect: NSRect) {
         guard !text.isEmpty, let context = NSGraphicsContext.current?.cgContext else { return }
         let font = resolvedFont
@@ -314,6 +322,19 @@ extension NSView {
         "checkmark.circle/11.0/\(NSFont.Weight.medium.rawValue)": CGSize(width: 13.5, height: 13.5),
         "exclamationmark.circle/11.0/\(NSFont.Weight.medium.rawValue)": CGSize(width: 13.5, height: 13.5),
         "doc.on.doc/11.0/\(NSFont.Weight.regular.rawValue)": CGSize(width: 14, height: 16),
+        // A response part's and a legacy reply's work icons, a reply's model mark,
+        // an execution record's chevrons.
+        "brain/12.0/\(NSFont.Weight.medium.rawValue)": CGSize(width: 18, height: 15.5),
+        "hammer/12.0/\(NSFont.Weight.medium.rawValue)": CGSize(width: 17.5, height: 17),
+        "info.circle/12.0/\(NSFont.Weight.medium.rawValue)": CGSize(width: 14.5, height: 14.5),
+        "arrow.uturn.backward/12.0/\(NSFont.Weight.medium.rawValue)": CGSize(width: 14.5, height: 13.5),
+        "list.bullet/12.0/\(NSFont.Weight.medium.rawValue)": CGSize(width: 15.5, height: 11),
+        "info.circle/11.0/\(NSFont.Weight.regular.rawValue)": CGSize(width: 13, height: 13),
+        "chevron.right/12.5/\(NSFont.Weight.medium.rawValue)": CGSize(width: 10, height: 13),
+        "chevron.down/12.5/\(NSFont.Weight.medium.rawValue)": CGSize(width: 14, height: 8.5),
+        // A response's fold button.
+        "arrow.down.left.and.arrow.up.right/10.0/\(NSFont.Weight.semibold.rawValue)": CGSize(width: 11.5, height: 11.5),
+        "arrow.up.right.and.arrow.down.left/10.0/\(NSFont.Weight.semibold.rawValue)": CGSize(width: 12, height: 12),
     ]
     /// How far from the middle of SwiftUI's frame SwiftUI draws the symbol,
     /// measured (`TranscriptTextCalibrationTests.testSymbolsDrawAsSwiftUI`).
@@ -326,6 +347,12 @@ extension NSView {
         "point.3.connected.trianglepath.dotted/12.0/\(NSFont.Weight.medium.rawValue)": CGPoint(x: 0, y: -0.875),
         "circle/12.0/\(NSFont.Weight.medium.rawValue)": CGPoint(x: 0.125, y: -1),
         "chevron.down/11.0/\(NSFont.Weight.semibold.rawValue)": CGPoint(x: 0, y: -0.375),
+        // Swept in the response's rows (TranscriptNativeRowParityTests.testSweepTimelineSymbolOffsets).
+        "brain/12.0/\(NSFont.Weight.medium.rawValue)": CGPoint(x: 0, y: -1),
+        "hammer/12.0/\(NSFont.Weight.medium.rawValue)": CGPoint(x: 0.5, y: -0.375),
+        "info.circle/12.0/\(NSFont.Weight.medium.rawValue)": CGPoint(x: 0.125, y: -1),
+        "arrow.uturn.backward/12.0/\(NSFont.Weight.medium.rawValue)": CGPoint(x: 0.375, y: -0.875),
+        "list.bullet/12.0/\(NSFont.Weight.medium.rawValue)": CGPoint(x: 0, y: -0.125),
         // Swept in testSymbolsDrawAsSwiftUI.
         "chevron.down/10.0/\(NSFont.Weight.semibold.rawValue)": CGPoint(x: 0, y: -1),
         "chevron.left/9.5/\(NSFont.Weight.semibold.rawValue)": CGPoint(x: 0, y: -0.875),
@@ -802,7 +829,9 @@ extension NSView {
     }
     override func mouseEntered(with event: NSEvent) { hovering = true }
     override func mouseExited(with event: NSEvent) { hovering = false }
-    override func cursorUpdate(with event: NSEvent) { NSCursor.pointingHand.set() }
+    /// A plain button without `piPointer` keeps the arrow.
+    var pointsOnHover = true
+    override func cursorUpdate(with event: NSEvent) { (pointsOnHover ? NSCursor.pointingHand : NSCursor.arrow).set() }
     /// Who had the keyboard when the pointer came down: a click acts and
     /// leaves focus where it was, as a SwiftUI button's click does.
     private weak var responderBeforeClick: NSResponder?

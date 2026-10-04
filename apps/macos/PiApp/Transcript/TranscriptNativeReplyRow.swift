@@ -13,6 +13,16 @@ import AppKit
     static let sourcePadding = CGSize(width: 14, height: 12)
 
     weak var owner: TranscriptRowContainer?
+    /// Told when the reply's own height changed, where it is drawn inside
+    /// another row rather than as a row of its own.
+    var sizeChanged: (() -> Void)?
+    /// Whether the reply offers to switch to its source: not where the row
+    /// it is drawn in cannot reach the conversation's disclosure.
+    var offersSource = true
+    /// The response's fold, first in the menu, where the reply is one part of a response.
+    var fold: (title: String, perform: () -> Void)?
+    /// Room under the band; nothing where the row it is drawn in spaces it.
+    var bottom = TranscriptNativeReplyRow.bottom
     private var inputs: TranscriptRowInputs
     private let markdown = NativeMarkdownContainer()
     private let quoteRegion = TranscriptQuoteRegionView()
@@ -71,7 +81,7 @@ import AppKit
         noticeIcon.image = NSImage(systemSymbolName: "exclamationmark.triangle", accessibilityDescription: nil)?
             .withSymbolConfiguration(.init(pointSize: 11, weight: .medium))
         noticeIcon.setAccessibilityElement(false)
-        markdown.onSizeInvalidated = { [weak self] in self?.owner?.contentSizeChanged() }
+        markdown.onSizeInvalidated = { [weak self] in self?.owner?.contentSizeChanged(); self?.sizeChanged?() }
         hover = TranscriptHoverTracker(view: self) { [weak self] inside in self?.hovering = inside; self?.refreshBand() }
         bodyHover = TranscriptHoverTracker(view: self) { [weak self] _ in self?.refreshCopy() }
         setAccessibilityElement(true)
@@ -86,6 +96,7 @@ import AppKit
     override func invalidateIntrinsicContentSize() {
         super.invalidateIntrinsicContentSize()
         owner?.contentSizeChanged()
+        sizeChanged?()
     }
 
     private var message: TranscriptMessage { Self.reply(of: inputs.item) ?? TranscriptMessage(id: "", role: "assistant", text: "") }
@@ -183,7 +194,7 @@ import AppKit
 
     private var sourceToggle: ReplySourceToggle? {
         let message = message
-        guard ReplySource.offered(message) else { return nil }
+        guard offersSource, ReplySource.offered(message) else { return nil }
         let id = message.id, toggle = inputs.toggle
         return ReplySourceToggle(raw: inputs.disclosure.raw) { toggle(.source(id)) }
     }
@@ -194,7 +205,7 @@ import AppKit
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
-        PiMenus.menu(ReplyMenu.entries(message, actions: inputs.actions, forks: inputs.environment.forks, source: sourceToggle))
+        PiMenus.menu(ReplyMenu.entries(message, actions: inputs.actions, forks: inputs.environment.forks, fold: fold, source: sourceToggle))
     }
 
     // MARK: Geometry
@@ -250,13 +261,15 @@ import AppKit
             y = noticeFrame.maxY + Self.gap
         }
         let band = CGRect(x: 0, y: y, width: width, height: Self.bandHeight)
-        return Plan(failed: failedFrame, truncated: truncatedFrame, notice: noticeFrame, markdown: markdownFrame, source: sourceFrame, sourceText: sourceText, band: band, height: band.maxY + Self.bottom)
+        return Plan(failed: failedFrame, truncated: truncatedFrame, notice: noticeFrame, markdown: markdownFrame, source: sourceFrame, sourceText: sourceText, band: band, height: band.maxY + bottom)
     }
     func settle() -> (height: CGFloat, passes: Int) {
         let plan = plan(width: bounds.width > 0 ? bounds.width : inputs.width)
         layoutSubtreeIfNeeded()
         return (max(1, ceil(plan.height)), 1)
     }
+    /// The reply's height at `width`, unrounded.
+    func height(width: CGFloat) -> CGFloat { plan(width: width).height }
     func confirmHeight() -> CGFloat { max(1, ceil(plan(width: bounds.width > 0 ? bounds.width : inputs.width).height)) }
 
     override func layout() {
@@ -294,7 +307,7 @@ import AppKit
     }
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        hover.update(rect: CGRect(x: 0, y: 0, width: bounds.width, height: max(0, bounds.height - Self.bottom)))
+        hover.update(rect: CGRect(x: 0, y: 0, width: bounds.width, height: max(0, bounds.height - bottom)))
         bodyHover.update(rect: plan(width: bounds.width).markdown)
     }
     override func mouseEntered(with event: NSEvent) { trackPointer(event) }
@@ -302,7 +315,7 @@ import AppKit
     override func mouseMoved(with event: NSEvent) { trackPointer(event) }
     private func trackPointer(_ event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
-        hover.set(CGRect(x: 0, y: 0, width: bounds.width, height: max(0, bounds.height - Self.bottom)).contains(point))
+        hover.set(CGRect(x: 0, y: 0, width: bounds.width, height: max(0, bounds.height - bottom)).contains(point))
         bodyHover.set(plan(width: bounds.width).markdown.contains(point))
     }
 }

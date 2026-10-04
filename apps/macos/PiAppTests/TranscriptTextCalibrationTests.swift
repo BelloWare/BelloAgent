@@ -35,7 +35,10 @@ final class TranscriptTextCalibrationTests: XCTestCase {
             ("detail11", .systemFont(ofSize: 11), .system(size: 11)),
             // A turn report's legends and note, and its AI and tool time.
             ("legend9.5", .systemFont(ofSize: 9.5), .system(size: 9.5)),
-            ("split10", .systemFont(ofSize: 10), .system(size: 10))]
+            ("split10", .systemFont(ofSize: 10), .system(size: 10)),
+            // A turn's fold line and a response's header line.
+            ("fold13m", .systemFont(ofSize: 13, weight: .medium), .system(size: 13, weight: .medium)),
+            ("header12.5m", .systemFont(ofSize: 12.5, weight: .medium), .system(size: 12.5, weight: .medium))]
         let sweeping = testEnvironment("PI_TEXT_CALIBRATION") == "1"
         defer { TranscriptLabel.baselineOverride = nil }
         var failures: [String] = []

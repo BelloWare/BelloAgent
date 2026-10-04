@@ -27,15 +27,14 @@ final class TranscriptNativeRowParityTests: XCTestCase {
     }
 
     /// Pairs that still differ, each an open item of the port rather than a
-    /// tolerance. Right to left only (0.1.120 batch A): a compaction's detail
-    /// cut short sits 0.5–2.5 points from SwiftUI's (1.7% at 380, 1.0% at 520);
-    /// the incomplete-fragment note under a sent message 3.5 points (3.1%), and
-    /// a sent message's usage cut short in its band half a pixel (0.7%).
+    /// tolerance. Right to left only: at 380 a compaction's title, wrapped
+    /// onto two lines, is 74.5 points wide in SwiftUI's right-to-left layout
+    /// and 71.5 in its left-to-right one (and natively in both), so the
+    /// detail beside it sits 3 points over (1.6%). Batch C removed the other
+    /// six (a cut line set from its frame's right edge; a wrapped text's
+    /// trailing spaces counted in its width when set from the right).
     static let knownDeviations: Set<String> = [
-        "compaction-long-detail-rtl-380-light", "compaction-long-detail-rtl-380-dark",
-        "compaction-long-detail-rtl-520-light", "compaction-long-detail-rtl-520-dark",
-        "user-everything-rtl-380-light", "user-everything-rtl-380-dark",
-        "user-accounting-rtl-380-light", "user-accounting-rtl-380-dark"]
+        "compaction-long-detail-rtl-380-light", "compaction-long-detail-rtl-380-dark"]
 
     static var userFixtures: [Fixture] {
         let at = 1_790_000_000_000.0
@@ -344,7 +343,7 @@ final class TranscriptNativeRowParityTests: XCTestCase {
 
     // MARK: Drawing a row both ways
 
-    @MainActor private func compare<T: NSView>(_ fixtures: [Fixture], expectNative: T.Type, widths: [CGFloat] = [792, 520, 380]) throws {
+    @MainActor func compare<T: NSView>(_ fixtures: [Fixture], expectNative: T.Type, widths: [CGFloat] = [792, 520, 380]) throws {
         let out = testEnvironment("PI_PARITY_OUT").map { URL(fileURLWithPath: $0, isDirectory: true) }
         if let out { try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true) }
         var failures: [String] = []
@@ -377,7 +376,7 @@ final class TranscriptNativeRowParityTests: XCTestCase {
     /// clock (a turning ring), in pixels; both captures skip it.
     struct Rendered { let height: CGFloat; let image: NSBitmapImageRep; let content: NSView?; var animated: [CGRect] = [] }
 
-    @MainActor private func render(_ fixture: Fixture, width: CGFloat, dark: Bool, native: Bool) -> Rendered {
+    @MainActor func render(_ fixture: Fixture, width: CGFloat, dark: Bool, native: Bool) -> Rendered {
         let item = fixture.item
         let previous = TranscriptRowRenderer.native
         if testEnvironment("PI_PARITY_TRACE") == "1" { FileHandle.standardError.write(Data("RENDER \(fixture.name) \(Int(width)) \(native ? "native" : "swiftui")\n".utf8)) }

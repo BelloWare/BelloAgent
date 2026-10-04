@@ -79,8 +79,12 @@ import AppKit
         place(in: CGRect(x: 0, y: top, width: bounds.width, height: contentHeight(width: bounds.width)))
         // A pill fading out keeps the place it was given; only what was just placed mirrors.
         // A whole label ends where its own width ends, as SwiftUI sets it.
-        for view in subviews where view.identifier != TranscriptMotion.leaving { view.frame = TranscriptMotion.mirrored(view.frame, of: view, width: bounds.width, rightToLeft) }
+        for view in subviews where view.identifier != TranscriptMotion.leaving && !keepsPlace(view) { view.frame = TranscriptMotion.mirrored(view.frame, of: view, width: bounds.width, rightToLeft) }
     }
+    /// Whether a piece stays where it was placed for a right-to-left reader
+    /// too: something centred on the row, which mirroring would only move
+    /// to the other side of a pixel.
+    func keepsPlace(_ view: NSView) -> Bool { false }
     /// `rect` on the pixel grid, as SwiftUI places a shape.
     func pixelAligned(_ rect: CGRect) -> CGRect {
         TranscriptMotion.pixelAligned(rect, scale: window?.backingScaleFactor ?? 2)
@@ -191,12 +195,13 @@ import AppKit
     private let capsule = TranscriptPanel()
     private let words = TranscriptPlainTextView()
     private let truncated = TranscriptPlainTextView()
+    /// What the status's request cost, at the band's leading edge.
+    private var accounting: TranscriptNativeAccounting?
     private lazy var band = TranscriptPillBand(host: self)
     private var hover: TranscriptHoverTracker!
     private var hovering = false
     override class func message(of item: TranscriptItem) -> TranscriptMessage? {
-        guard case .message(let message) = item, message.role == "system", message.kind == nil,
-              (message.accounting?.requests ?? 0) == 0 else { return nil }
+        guard case .message(let message) = item, message.role == "system", message.kind == nil else { return nil }
         return message
     }
     override init(inputs: TranscriptRowInputs) {
@@ -205,6 +210,8 @@ import AppKit
         failed.font = Self.failedFont
         capsule.cornerRadius = nil
         words.isSelectable = false; words.centred = true
+        // The header's words sit together in the middle; mirrored, they swap by their frames.
+        header.mirrorsByFrame = true; failed.mirrorsByFrame = true
         truncated.isSelectable = false
         for view in [header, failed, capsule, words, truncated] as [NSView] { addSubview(view) }
         hover = TranscriptHoverTracker(view: self) { [weak self] inside in self?.hovering = inside; self?.refreshBand() }
@@ -220,6 +227,13 @@ import AppKit
         words.update(text: message.text, face: Self.face, environment: inputs.environment, swiftUILines: true, color: TranscriptNSPalette.muted)
         truncated.update(text: TranscriptNativeReplyRow.truncatedNote, face: TranscriptNativeReplyRow.truncatedFace, environment: inputs.environment,
                          swiftUILines: true, color: TranscriptNSPalette.muted)
+        if let totals = message.accounting, totals.requests > 0 {
+            let view = accounting ?? { let view = TranscriptNativeAccounting(); view.lineLimit = 1; addSubview(view); accounting = view; return view }()
+            let actions = inputs.actions, id = message.id
+            view.update(totals, environment: inputs.environment) { actions.inspect(id) }
+        } else if let accounting {
+            accounting.removeFromSuperview(); self.accounting = nil
+        }
         setAccessibilityLabel("\(message.role) message")
         setAccessibilityCustomActions(TranscriptRowAction.all(message, inputs.actions, forks: inputs.environment.forks)
             .map { action in NSAccessibilityCustomAction(name: action.name) { [weak self] in
@@ -231,9 +245,13 @@ import AppKit
     override func hides(_ view: NSView) -> Bool {
         (view === failed && message.failedEnd == nil) || (view === truncated && message.truncated != true)
     }
+    override func keepsPlace(_ view: NSView) -> Bool { view === capsule || view === words || (view === header && message.failedEnd == nil) }
     private func refreshBand() {
         let wanted = hovering && !drawsNothing ? RowActionsView.pills(message, actions: inputs.actions, forks: inputs.environment.forks, source: nil) : []
+        let changed = band.pills.map(\.title) != wanted.map(\.title)
         band.show(wanted, enabled: inputs.environment.isEnabled)
+        // The accounting shares the band with the pills.
+        if changed, accounting != nil { needsLayout = true }
     }
     private struct Plan { var header: CGFloat; var capsule: CGSize; var words: CGSize; var truncated: CGFloat; var height: CGFloat }
     private func plan(width: CGFloat) -> Plan {
@@ -268,6 +286,12 @@ import AppKit
         }
         // Placed left to right like the rest; the row mirrors them with it.
         band.place(maxX: rect.maxX, midY: y + Self.bandHeight / 2, width: bounds.width, rightToLeft: false)
+        if let accounting, !accounting.isEmpty {
+            // Ten points to the spacer and ten to the pills, which take what they need.
+            let pills = band.pills.reduce(0) { $0 + $1.pillSize.width } + 4 * CGFloat(max(0, band.pills.count - 1))
+            let room = max(0, rect.width - 20 - pills), height = accounting.height(width: room)
+            accounting.frame = CGRect(x: rect.minX, y: y + (Self.bandHeight - height) / 2, width: room, height: height)
+        }
     }
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
