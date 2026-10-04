@@ -114,8 +114,11 @@ private struct NativeWorkListItem: Equatable {
     /// What this card measures if it has already been measured at this width.
     func measured(width: CGFloat) -> CGFloat? { sizes.last(where: { $0.width == width })?.height }
     func place(in container: NSView) {
+        let moved = view.frame != frame || view.superview !== container
         if view.frame != frame { view.frame = frame }
         if view.superview !== container { container.addSubview(view) }
+        // A card that moved shows other lines than it did.
+        if moved { view.refreshVisibleLines() }
     }
 }
 

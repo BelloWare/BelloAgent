@@ -284,6 +284,51 @@ final class TranscriptNativeWorkBehaviourTests: XCTestCase {
         XCTAssertTrue(spoken.contains("Sources/App.swift"), "spoken: \(spoken)")
     }
 
+    /// An expanded diff out of any window that keeps streaming measures
+    /// only what its capped scroll needs, not every row, on each update.
+    @MainActor func testADetachedStreamingDiffMeasuresOnlyItsCap() throws {
+        func card(_ count: Int) -> ActionRowView.Card {
+            let rows = (1...count).map { DiffRow(kind: .added, text: "line \($0)") }
+            return .diff(TranscriptActivity.EditRequest(before: "", after: "", mode: "write", rows: rows, hiddenRows: 0, complete: true, tooLarge: false, lines: count),
+                         path: nil, outcome: .running, added: nil, removed: nil)
+        }
+        let view = try XCTUnwrap(TranscriptNativeCard.make(card(600)) as? TranscriptNativeDiffCard)
+        view.update(card(600), link: nil, environment: TranscriptRowEnvironment())
+        view.setExpanded(true)
+        _ = view.height(width: 600)
+        let before = TranscriptCardLines.rowsMeasured
+        view.update(card(601), link: nil, environment: TranscriptRowEnvironment())
+        _ = view.height(width: 600)
+        XCTAssertLessThan(TranscriptCardLines.rowsMeasured - before, 60, "one streamed delta measured \(TranscriptCardLines.rowsMeasured - before) rows")
+    }
+
+    /// An open card that moves without scrolling (a card above it closed)
+    /// builds the lines that came into view.
+    @MainActor func testAMovedCardBuildsTheLinesNowInView() throws {
+        let tool = ToolView(id: "r", name: "read", state: "completed", input: "{\"path\":\"A.swift\"}",
+                            output: (1...400).map { "line \($0)" }.joined(separator: "\n"), durationMs: 10, truncated: false, path: "A.swift")
+        let row = TranscriptNativeActionRow()
+        row.update(tool: tool, open: true, fetched: nil, environment: TranscriptRowEnvironment(), toggle: {}, openFile: nil)
+        let card = try XCTUnwrap(row.card as? TranscriptNativeReadCard)
+        card.setExpanded(true)
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 600, height: 300), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.contentView = nil; window.close() }
+        let scroll = NSScrollView(frame: CGRect(x: 0, y: 0, width: 600, height: 300))
+        let height = ceil(row.height(width: 600))
+        let document = TranscriptNativeRowParityTests.ParityCanvas(frame: CGRect(x: 0, y: 0, width: 600, height: height + 3000))
+        scroll.documentView = document
+        window.contentView = scroll
+        document.addSubview(row)
+        row.frame = CGRect(x: 0, y: 3000, width: 600, height: height)
+        scroll.layoutSubtreeIfNeeded(); row.layoutSubtreeIfNeeded()
+        let lines = try XCTUnwrap(views(TranscriptCardLines.self, in: row).first { $0.lines.count == 400 })
+        XCTAssertEqual(lines.builtCount, 0, "nothing of it is in view")
+        row.setFrameOrigin(CGPoint(x: 0, y: 0))
+        row.refreshVisibleLines()
+        XCTAssertGreaterThan(lines.builtCount, 5, "moved into view, its first lines are built")
+    }
+
     /// A card out of any window builds none of its lines, however it is updated.
     @MainActor func testADetachedCardBuildsNoLines() throws {
         let card = ActionRowView.Card.read(text: (1...100).map { "line \($0)" }.joined(separator: "\n"), firstLine: 1, path: nil, failed: false)

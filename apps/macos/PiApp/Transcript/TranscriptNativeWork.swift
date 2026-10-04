@@ -438,6 +438,16 @@ import AppKit
         needsLayout = true
         sizeChanged()
     }
+    /// Builds the lines of the open card that came into view, after the
+    /// row moved without scrolling (a card above it closed).
+    func refreshVisibleLines() {
+        guard let card else { return }
+        func walk(_ view: NSView) {
+            if let lines = view as? TranscriptCardLines { lines.mountVisibleRows(); return }
+            for child in view.subviews { walk(child) }
+        }
+        walk(card)
+    }
     /// The row's height at `width`, unrounded: the line and its open card.
     func height(width: CGFloat) -> CGFloat {
         TranscriptRowChrome.height + (card?.height(width: width) ?? 0)

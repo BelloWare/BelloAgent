@@ -416,10 +416,30 @@ enum TranscriptCardFaces {
     private static let measurer: TranscriptPlainTextView = { let view = TranscriptPlainTextView(); view.isSelectable = false; return view }()
     private func rowHeights(width: CGFloat) -> [CGFloat] {
         if let known = heights.first(where: { $0.width == width }) { return known.rows }
+        let rows = lines.map { rowHeight($0, width: width) }
+        if heights.count == 4 { heights.removeFirst() }
+        heights.append((width, rows))
+        return rows
+    }
+    /// The lines' height at `width`, or `limit` once they reach it: what a
+    /// capped scroll needs, without measuring the rows past its cap.
+    func height(width: CGFloat, upTo limit: CGFloat) -> CGFloat {
+        if let known = heights.first(where: { $0.width == width }) { return min(limit, known.rows.reduce(0, +)) }
+        var total: CGFloat = 0
+        for line in lines {
+            total += rowHeight(line, width: width)
+            if total >= limit { return limit }
+        }
+        return total
+    }
+    /// How many rows have been measured, as evidence for the checks.
+    nonisolated(unsafe) static var rowsMeasured = 0
+    private func rowHeight(_ line: Line, width: CGFloat) -> CGFloat {
+        Self.rowsMeasured += 1
         let textWidth = max(1, width - 32 - markWidth - gap)
         let markHeight = TranscriptLabel.lineHeight(markFont)
         let measurer = Self.measurer
-        let rows = lines.map { line -> CGFloat in
+        return { () -> CGFloat in
             var mark = markHeight
             if style == .numbered {
                 // A number wider than its gutter wraps there.
@@ -428,10 +448,7 @@ enum TranscriptCardFaces {
             }
             measurer.update(text: line.text.isEmpty ? " " : line.text, face: TranscriptCardFaces.code, environment: environment, swiftUILines: true)
             return max(mark, measurer.exactHeight(width: textWidth))
-        }
-        if heights.count == 4 { heights.removeFirst() }
-        heights.append((width, rows))
-        return rows
+        }()
     }
     func height(width: CGFloat) -> CGFloat { rowHeights(width: width).reduce(0, +) }
     override func layout() {
@@ -507,11 +524,15 @@ enum TranscriptCardFaces {
         documentView = lines
     }
     required init?(coder: NSCoder) { nil }
-    /// Fits the lines' new height, once they changed.
-    func refresh() { tile() }
-    func height(width: CGFloat) -> CGFloat { min(lines.height(width: width), cap) }
+    /// Fits the lines' new height, once they changed and can be seen.
+    func refresh() { if window != nil { tile() } else { needsLayout = true } }
+    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); if window != nil { tile() } }
+    func height(width: CGFloat) -> CGFloat { lines.height(width: width, upTo: cap) }
     override func tile() {
         super.tile()
+        // Out of any window the lines wait: every row is measured only to
+        // scroll through them.
+        guard window != nil else { return }
         let width = contentView.bounds.width
         guard width > 0 else { return }
         let frame = CGRect(x: 0, y: 0, width: width, height: lines.height(width: width))
