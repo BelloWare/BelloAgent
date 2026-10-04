@@ -52,7 +52,9 @@ final class TranscriptSurfaceMarker: NSView {
     /// Back to bottom, and the marker behind it, in a box of their own that
     /// arrives and leaves as one.
     let latestBox = TranscriptLatestBox()
-    private let liveBar = TranscriptNativeTurnReport()
+    /// The live bar while a run shows one; let go when the run settles, so
+    /// it holds no chat's actions once it is gone.
+    private var liveBar: TranscriptNativeTurnReport?
     private var liveShown = false
     private var liveArrivalPending = false
     private var liveKey: LiveKey?
@@ -69,6 +71,9 @@ final class TranscriptSurfaceMarker: NSView {
     private var earlierTimer: Timer?, newerTimer: Timer?
     private var shownEarlier: TranscriptEdge = .quiet, shownNewerBeside: TranscriptEdge = .quiet, shownNewerAbove: TranscriptEdge = .quiet
     private var shownPartial: String?, shownTurnInput: String?
+    private var shownSession: ObjectIdentifier?
+    private var shownDirection = NSUserInterfaceLayoutDirection.leftToRight
+    private var rightToLeft: Bool { environment.layoutDirection == .rightToLeft }
     private var latestShown = false
 
     override var isFlipped: Bool { true }
@@ -179,6 +184,7 @@ final class TranscriptSurfaceMarker: NSView {
                         disclosure: page.disclosure, toolInputs: page.toolInputs)
         updateNote()
         updateEdges(session)
+        applyEnabled()
         updateLiveBar(session)
         needsLayout = true
     }
@@ -228,7 +234,22 @@ final class TranscriptSurfaceMarker: NSView {
 
     private var animates: Bool { !reduceMotion }
 
+    /// A pane that takes no input (Reports in front) presses nothing at its
+    /// edges, as its SwiftUI buttons were disabled with it.
+    private func applyEnabled() {
+        let enabled = environment.isEnabled
+        for slot in [earlierSlot, partialSlot, besideSlot, aboveSlot] { slot.setEnabled(enabled) }
+        latestBox.setEnabled(enabled)
+    }
+
     private func updateEdges(_ session: SessionDisplay) {
+        // Another chat in the pane, or the other writing direction: its edges
+        // are made again, whatever they show.
+        if shownSession != ObjectIdentifier(session) || shownDirection != environment.layoutDirection {
+            shownSession = ObjectIdentifier(session); shownDirection = environment.layoutDirection
+            shownEarlier = .quiet; shownTurnInput = nil; shownPartial = nil; shownNewerBeside = .quiet; shownNewerAbove = .quiet
+            for slot in [earlierSlot, partialSlot, besideSlot, aboveSlot] { slot.show(nil, animated: false) }
+        }
         let earlier = earlierEdge, turnInput = session.presentation.partialTurnInput
         if earlier != shownEarlier || turnInput != shownTurnInput {
             earlierSlot.show(earlierControl(earlier, partialTurnInput: turnInput), animated: animates && earlier.name != shownEarlier.name)
@@ -241,12 +262,12 @@ final class TranscriptSurfaceMarker: NSView {
         }
         let beside = newerBeside
         if beside != shownNewerBeside {
-            besideSlot.show(newerControl(beside, session: session), animated: animates)
+            besideSlot.show(newerControl(beside), animated: animates)
             shownNewerBeside = beside
         }
         let above = newerAbove
         if above != shownNewerAbove {
-            aboveSlot.show(newerControl(above, session: session), animated: animates && above.name != shownNewerAbove.name)
+            aboveSlot.show(newerControl(above), animated: animates && above.name != shownNewerAbove.name)
             shownNewerAbove = above
         }
         // Whenever the reader is not standing at the bottom — however they
@@ -254,9 +275,9 @@ final class TranscriptSurfaceMarker: NSView {
         // the end of the conversation. An older window offers the rows after
         // it beside that circle.
         let wanted = (!page.atBottom || session.newerPage.available) && page.snapshot?.items.isEmpty == false
-        latestBox.action = { [weak session, weak page, onLatest] in
-            guard let session else { return }
-            if session.browsingHistory || session.newerPage.available { onLatest(session.id) } else { page?.jumpToLatest() }
+        latestBox.action = { [weak self] in
+            guard let self, let session = self.session else { return }
+            if session.browsingHistory || session.newerPage.available { self.onLatest(session.id) } else { self.page.jumpToLatest() }
         }
         if wanted != latestShown {
             // It springs in and out as the reader leaves and reaches the
@@ -268,9 +289,13 @@ final class TranscriptSurfaceMarker: NSView {
     }
     private var latestAtBottom = true
 
+    /// Inspecting a message, through the actions the pane holds when it is
+    /// pressed: a control kept across updates (and chats) never calls the
+    /// actions, or holds the chat, it was made with.
+    private var inspectNow: (String) -> Void { { [weak self] id in self?.actions.inspect(id) } }
     func earlierControl(_ state: TranscriptEdge, partialTurnInput: String?) -> TranscriptEdgeSlot.Shown? {
         let load = { [weak self] in guard let self, let session = self.session else { return }; self.onLoadEarlier(session.id) }
-        let inspect = actions.inspect
+        let inspect = inspectNow
         let marker = TranscriptEdgeMarkerView()
         switch state {
         case .quiet: return nil
@@ -280,25 +305,28 @@ final class TranscriptSurfaceMarker: NSView {
             return .init(key: state.name, view: spinner, marker: marker, size: { _ in spinner.size })
         case .waiting:
             let view = TranscriptEdgeWaitingView(load: load, partial: partialTurnInput.map { input in { inspect(input) } })
+            view.rightToLeft = rightToLeft
             marker.mark(edge: "earlier", kind: state.name, text: "Load earlier messages", action: load)
             return .init(key: state.name, view: view, marker: marker, size: { view.size(offered: $0) })
         case .failed(let error), .changed(let error):
             let view = TranscriptEdgeProblemView(title: "Couldn’t load earlier messages", detail: error, action: "Retry", perform: load,
                                                  partial: partialTurnInput.map { input in { inspect(input) } })
+            view.rightToLeft = rightToLeft
             marker.mark(edge: "earlier", kind: state.name, text: error, action: load)
             return .init(key: state.name, view: view, marker: marker, size: { view.size(offered: $0) })
         }
     }
     func partialChip(_ input: String) -> TranscriptEdgeSlot.Shown {
-        let inspect = actions.inspect
+        let inspect = inspectNow
         let view = TranscriptPartialTurnChipView(inspect: { inspect(input) })
+        view.rightToLeft = rightToLeft
         let marker = TranscriptEdgeMarkerView()
         marker.mark(edge: "earlier", kind: "partial", text: "Earlier work in this turn", action: { inspect(input) })
         return .init(key: "partial", view: view, marker: marker, size: { view.size(offered: $0) })
     }
-    func newerControl(_ state: TranscriptEdge, session: SessionDisplay) -> TranscriptEdgeSlot.Shown? {
-        let load = { [weak self, weak session] in guard let self, let session else { return }; self.onLoadNewer(session.id) }
-        let reload = { [weak self, weak session] in guard let self, let session else { return }; self.onLatest(session.id) }
+    func newerControl(_ state: TranscriptEdge) -> TranscriptEdgeSlot.Shown? {
+        let load = { [weak self] in guard let self, let session = self.session else { return }; self.onLoadNewer(session.id) }
+        let reload = { [weak self] in guard let self, let session = self.session else { return }; self.onLatest(session.id) }
         let marker = TranscriptEdgeMarkerView()
         switch state {
         // The rows after the window are read as the reader reaches its end;
@@ -310,11 +338,13 @@ final class TranscriptSurfaceMarker: NSView {
             return .init(key: state.name, view: spinner, marker: marker, size: { _ in spinner.size })
         case .failed(let error):
             let view = TranscriptEdgeProblemView(title: "Couldn’t load newer messages", detail: error, action: "Retry", perform: load)
+            view.rightToLeft = rightToLeft
             marker.mark(edge: "newer", kind: state.name, text: error, action: load)
             return .init(key: state.name, view: view, marker: marker, size: { view.size(offered: $0) })
         case .changed(let message):
             let view = TranscriptEdgeProblemView(title: "Changed outside this window", detail: message, action: "Reload", perform: reload,
                                                  icon: "arrow.triangle.branch")
+            view.rightToLeft = rightToLeft
             marker.mark(edge: "newer", kind: state.name, text: message, action: reload)
             return .init(key: state.name, view: view, marker: marker, size: { view.size(offered: $0) })
         }
@@ -349,9 +379,11 @@ final class TranscriptSurfaceMarker: NSView {
         liveKey = key
         RedrawCounter.note("liveTurnBar")
         guard let turn else {
-            if liveShown { liveBar.removeFromSuperview(); liveShown = false; liveArrivalPending = false; needsLayout = true }
+            if liveShown { liveBar?.removeFromSuperview(); liveBar = nil; liveShown = false; liveArrivalPending = false; needsLayout = true }
             return
         }
+        let liveBar = self.liveBar ?? TranscriptNativeTurnReport()
+        self.liveBar = liveBar
         liveBar.reduceMotion = reduceMotion
         liveBar.update(turn: turn, actions: actions, status: TurnInfoPresentation.workingLabel(turn, state: page.state), environment: environment)
         if !liveShown {
@@ -383,6 +415,7 @@ final class TranscriptSurfaceMarker: NSView {
     /// How tall the live bar's slot is at `width`.
     private func liveSlotHeight(width: CGFloat) -> CGFloat {
         guard liveShown else { return 0 }
+        guard let liveBar else { return 0 }
         return PiKit.ceil(liveBar.height(width: max(1, width - 32)), scale) + 8
     }
     private var scale: CGFloat { window?.backingScaleFactor ?? 2 }
@@ -402,7 +435,7 @@ final class TranscriptSurfaceMarker: NSView {
         let live = liveSlotHeight(width: width)
         let surface = CGRect(x: 0, y: top, width: width, height: max(0, bounds.height - top - live))
         if scrollView.frame != surface { scrollView.frame = surface }
-        if liveShown {
+        if liveShown, let liveBar {
             liveBar.frame = TranscriptMotion.pixelAligned(CGRect(x: 16, y: surface.maxY, width: max(1, width - 32), height: live - 8), scale: scale)
             if liveArrivalPending { liveArrivalPending = false; arrive(liveBar) }
         }
@@ -419,7 +452,8 @@ final class TranscriptSurfaceMarker: NSView {
         earlierSlot.place(offered: earlierRoom)
         // The turn's question: top trailing, ten down and eighteen in.
         let partial = partialSlot.size(offered: surface.width)
-        partialSlot.frame = TranscriptMotion.pixelAligned(CGRect(x: surface.maxX - 18 - partial.width, y: surface.minY + 10,
+        let partialX = rightToLeft ? surface.minX + 18 : surface.maxX - 18 - partial.width
+        partialSlot.frame = TranscriptMotion.pixelAligned(CGRect(x: partialX, y: surface.minY + 10,
                                                                  width: partial.width, height: partial.height), scale: scale)
         partialSlot.place(offered: surface.width)
         // Back to bottom: centred twelve points above the foot.
@@ -429,7 +463,7 @@ final class TranscriptSurfaceMarker: NSView {
         // Beside it, not in a row with it: its trailing edge eight points
         // before the circle, centred on it.
         let beside = besideSlot.size(offered: .greatestFiniteMagnitude)
-        besideSlot.frame = TranscriptMotion.pixelAligned(CGRect(x: -8 - beside.width, y: (diameter - beside.height) / 2,
+        besideSlot.frame = TranscriptMotion.pixelAligned(CGRect(x: rightToLeft ? diameter + 8 : -8 - beside.width, y: (diameter - beside.height) / 2,
                                                                 width: beside.width, height: beside.height), scale: scale)
         besideSlot.place(offered: .greatestFiniteMagnitude)
         // A newer read that failed: above the circle, at most 440 wide.
@@ -455,11 +489,16 @@ final class TranscriptSurfaceMarker: NSView {
         didSet { marker.mark(edge: "newer", kind: "latest", text: "Jump to the latest message", action: action) }
     }
     private(set) var shown = false
+    private(set) var enabled = true
     override var isFlipped: Bool { true }
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
         isHidden = true
+    }
+    func setEnabled(_ value: Bool) {
+        enabled = value
+        if pill?.isEnabled != value { pill?.isEnabled = value }
     }
     required init?(coder: NSCoder) { nil }
     override func hitTest(_ point: NSPoint) -> NSView? {
@@ -470,8 +509,13 @@ final class TranscriptSurfaceMarker: NSView {
         guard wanted != shown else { return }
         shown = wanted
         if wanted {
+            // A circle that left with the spring may come back in one step:
+            // nothing of its exit stays on it.
+            layer?.removeAnimation(forKey: "latestMove"); layer?.removeAnimation(forKey: "latestFade")
+            layer?.sublayerTransform = CATransform3DIdentity; layer?.opacity = 1
             if pill == nil {
                 let pill = PiKit.BackToBottomPill { [weak self] in self?.action() }
+                pill.isEnabled = enabled
                 addSubview(marker, positioned: .below, relativeTo: nil)
                 addSubview(pill)
                 self.pill = pill

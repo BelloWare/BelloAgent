@@ -72,6 +72,92 @@ import XCTest
         XCTAssertEqual(inspected, ["u1", "u2"])
     }
 
+    /// A pane that takes no input presses nothing at its edges or Back to bottom.
+    func testAPaneThatTakesNoInputPressesNothingAtItsEdges() throws {
+        let session = SessionDisplay(id: "off")
+        session.olderPage = ConversationPageBoundary(cursor: ConversationCursor(incarnation: "r", lineage: "root", entry: "m1"), loading: false, error: "Connection reset")
+        let pane = NativeTranscriptPane(frame: CGRect(x: 0, y: 0, width: 600, height: 400))
+        var loads = 0
+        pane.onLoadEarlier = { _ in loads += 1 }
+        var off = TranscriptRowEnvironment(); off.isEnabled = false
+        pane.update(session: session, state: "idle", actions: TranscriptActions(), environment: off, reduceMotion: true)
+        let problem = try XCTUnwrap(pane.earlierSlot.shown?.view as? TranscriptEdgeProblemView)
+        XCTAssertFalse(problem.action.accessibilityPerformPress())
+        XCTAssertEqual(loads, 0)
+        pane.latestBox.setShown(true, animated: false)
+        XCTAssertEqual(pane.latestBox.pill?.isEnabled, false)
+        pane.update(session: session, state: "idle", actions: TranscriptActions(), environment: TranscriptRowEnvironment(), reduceMotion: true)
+        XCTAssertTrue(problem.action.accessibilityPerformPress())
+        XCTAssertEqual(loads, 1)
+        XCTAssertEqual(pane.latestBox.pill?.isEnabled, true)
+    }
+
+    /// The edges act on the chat on screen now, whichever chat they were made for.
+    func testEdgesActOnTheChatOnScreen() throws {
+        let error = "Connection reset", cursor = ConversationCursor(incarnation: "r", lineage: "root", entry: "m1")
+        let first = SessionDisplay(id: "first"), second = SessionDisplay(id: "second")
+        for session in [first, second] { session.newerPage = ConversationPageBoundary(cursor: cursor, loading: false, error: error) }
+        let pane = NativeTranscriptPane(frame: CGRect(x: 0, y: 0, width: 600, height: 400))
+        var asked: [String] = []
+        pane.onLoadNewer = { asked.append($0) }
+        pane.update(session: first, state: "idle", actions: TranscriptActions(), environment: TranscriptRowEnvironment(), reduceMotion: true)
+        let before = try XCTUnwrap(pane.aboveSlot.shown?.view)
+        pane.update(session: second, state: "idle", actions: TranscriptActions(), environment: TranscriptRowEnvironment(), reduceMotion: true)
+        let after = try XCTUnwrap(pane.aboveSlot.shown?.view as? TranscriptEdgeProblemView)
+        XCTAssertFalse(before === after, "another chat's edge is made again")
+        XCTAssertTrue(after.action.accessibilityPerformPress())
+        XCTAssertEqual(asked, ["second"])
+    }
+
+    /// Back to bottom that sprang away comes back whole in one step.
+    func testBackToBottomComesBackWholeAfterSpringingAway() throws {
+        let box = TranscriptLatestBox(frame: CGRect(x: 0, y: 0, width: 34, height: 34))
+        box.setShown(true, animated: false)
+        box.setShown(false, animated: true)
+        box.setShown(true, animated: false)
+        XCTAssertFalse(box.isHidden)
+        XCTAssertNil(box.layer?.animation(forKey: "latestFade"), "nothing of its exit stays on it")
+        XCTAssertEqual(box.layer?.opacity, 1)
+    }
+
+    /// Right to left, the turn's question stands at the leading (left) edge
+    /// and the newer read's spinner after Back to bottom.
+    func testRightToLeftTheEdgesMirror() throws {
+        let session = SessionDisplay(id: "rtl")
+        session.messages = TranscriptStreamingStressTests.history(turns: 2)
+        session.newerPage = ConversationPageBoundary(cursor: ConversationCursor(incarnation: "r", lineage: "root", entry: "m1"), loading: true, error: nil)
+        let pane = NativeTranscriptPane(frame: CGRect(x: 0, y: 0, width: 600, height: 400))
+        var rtl = TranscriptRowEnvironment(); rtl.layoutDirection = .rightToLeft
+        pane.update(session: session, state: "idle", actions: TranscriptActions(), environment: rtl, reduceMotion: true)
+        pane.partialSlot.show(pane.partialChip("u1"), animated: false)
+        pane.besideSlot.show(pane.newerControl(.loading), animated: false)
+        pane.layoutSubtreeIfNeeded()
+        XCTAssertEqual(pane.partialSlot.frame.minX, 18, accuracy: 0.5, "the question's way at the leading edge")
+        XCTAssertEqual(pane.besideSlot.frame.minX, PiKit.BackToBottomPill.diameter + 8, accuracy: 0.5, "the spinner after the circle")
+        XCTAssertTrue((pane.partialSlot.shown?.view as? TranscriptEdgeSurfaceView)?.rightToLeft == true)
+    }
+
+    /// A run that settles lets its live bar go, and the actions it held.
+    func testTheLiveBarIsLetGoWhenItsRunSettles() async throws {
+        let session = SessionDisplay(id: "release")
+        session.messages = TranscriptStreamingStressTests.history(turns: 2)
+        let pane = NativeTranscriptPane(frame: CGRect(x: 0, y: 0, width: 600, height: 400))
+        let window = NSWindow(contentRect: pane.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = pane
+        defer { window.contentView = nil }
+        weak var report: TranscriptNativeTurnReport?
+        session.state = "running"
+        pane.update(session: session, state: "running", actions: TranscriptActions(), environment: TranscriptRowEnvironment(), reduceMotion: true)
+        try await eventually("the live bar", timeout: .seconds(5)) {
+            pane.layoutSubtreeIfNeeded()
+            report = pane.subviews.compactMap { $0 as? TranscriptNativeTurnReport }.first
+            return report != nil
+        }
+        session.state = "idle"
+        pane.update(session: session, state: "idle", actions: TranscriptActions(), environment: TranscriptRowEnvironment(), reduceMotion: true)
+        try await eventually("the live bar let go", timeout: .seconds(5)) { pane.layoutSubtreeIfNeeded(); return report == nil }
+    }
+
     func testAnEdgeComingAndGoingFadesAndTheSameKindUpdatesInPlace() throws {
         let slot = TranscriptEdgeSlot()
         let pane = NativeTranscriptPane()

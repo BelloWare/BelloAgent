@@ -20,6 +20,11 @@ import AppKit
     private let label = TranscriptLabel()
     private let icon = TranscriptSymbol()
     private let symbolName: String?
+    /// The words over several lines, when the link is offered less than its
+    /// one line: SwiftUI's button label wraps rather than truncates.
+    private var wrapped: TranscriptPlainTextView?
+    /// Laid out right to left: the words before the symbol.
+    var rightToLeft = false { didSet { if rightToLeft != oldValue { wrapped = nil; needsLayout = true } } }
     private var hovering = false { didSet { if hovering != oldValue { refresh() } } }
     private var pressed = false { didSet { alphaValue = pressed ? 0.7 : 1 } }
     override var isFlipped: Bool { true }
@@ -50,19 +55,61 @@ import AppKit
     }
     var size: CGSize { CGSize(width: iconWidth + label.intrinsicSize.width + 16, height: labelHeight + 8) }
     override var intrinsicContentSize: NSSize { size }
+    private var face11: TranscriptPlainTextFace { TranscriptPillButton.wrappedFace(label.font) }
+    private var wrappedText: TranscriptPlainTextView {
+        if let wrapped { return wrapped }
+        let text = TranscriptPlainTextView(); text.isSelectable = false; text.setAccessibilityElement(false)
+        var environment = TranscriptRowEnvironment(); environment.layoutDirection = rightToLeft ? .rightToLeft : .leftToRight
+        text.update(text: title, face: face11, environment: environment, swiftUILines: true, color: label.color)
+        addSubview(text); wrapped = text
+        return text
+    }
+    /// The link's size when offered `width`: its one line when that fits,
+    /// else its words wrapped in what is left beside the symbol.
+    func size(offered width: CGFloat) -> CGSize {
+        let ideal = size
+        guard width < ideal.width else { return ideal }
+        let room = max(1, width - 16 - iconWidth), text = wrappedText
+        let overhang = labelHeight - label.intrinsicSize.height
+        return CGSize(width: 16 + iconWidth + text.usedWidth(width: room), height: ceil(text.exactHeight(width: room)) + overhang + 8)
+    }
     override func layout() {
         super.layout()
         face.frame = bounds
-        let text = label.intrinsicSize
-        if let image = icon.image, let glyph {
-            icon.frame = CGRect(x: 8 - glyph.minX, y: (bounds.height - glyph.height) / 2 - (image.size.height - glyph.maxY),
-                                width: image.size.width, height: image.size.height)
+        let wraps = bounds.width + 0.25 < size.width
+        label.isHidden = wraps
+        wrapped?.isHidden = !wraps
+        if wraps {
+            let text = wrappedText, room = max(1, bounds.width - 16 - iconWidth)
+            let height = ceil(text.exactHeight(width: room))
+            text.frame = CGRect(x: 8 + iconWidth, y: (bounds.height - height) / 2, width: room, height: height)
+            if let image = icon.image, let glyph {
+                // Beside the first line.
+                let line = TranscriptLabel.lineHeight(label.font)
+                icon.frame = CGRect(x: 8 - glyph.minX, y: text.frame.minY + (line - glyph.height) / 2 - (image.size.height - glyph.maxY),
+                                    width: image.size.width, height: image.size.height)
+            }
+        } else {
+            let text = label.intrinsicSize
+            if let image = icon.image, let glyph {
+                icon.frame = CGRect(x: 8 - glyph.minX, y: (bounds.height - glyph.height) / 2 - (image.size.height - glyph.maxY),
+                                    width: image.size.width, height: image.size.height)
+            }
+            label.frame = CGRect(x: 8 + iconWidth, y: (bounds.height - text.height) / 2, width: text.width, height: text.height)
         }
-        label.frame = CGRect(x: 8 + iconWidth, y: (bounds.height - text.height) / 2, width: text.width, height: text.height)
+        if rightToLeft {
+            for view in [icon, label, wrapped] as [NSView?] {
+                if let view { view.frame = TranscriptMotion.mirrored(view.frame, of: view, width: bounds.width, true) }
+            }
+        }
     }
     private func refresh() {
         label.color = quiet && !hovering ? TranscriptNSPalette.muted : TranscriptNSPalette.accent
         icon.contentTintColor = label.color
+        if let wrapped {
+            var environment = TranscriptRowEnvironment(); environment.layoutDirection = rightToLeft ? .rightToLeft : .leftToRight
+            wrapped.update(text: title, face: face11, environment: environment, swiftUILines: true, color: label.color)
+        }
         face.fill = hovering ? TranscriptNSPalette.accentSoft : nil
     }
     override func updateTrackingAreas() {
@@ -103,6 +150,8 @@ import AppKit
 /// soft shadow, four points around its content and three above and below.
 @MainActor class TranscriptEdgeSurfaceView: NSView {
     let panel = TranscriptPanel()
+    /// Laid out right to left, as SwiftUI mirrors its stacks.
+    var rightToLeft = false { didSet { if rightToLeft != oldValue { needsLayout = true } } }
     override var isFlipped: Bool { true }
     init(radius: CGFloat = 14) {
         super.init(frame: .zero)
@@ -133,13 +182,75 @@ import AppKit
     }
 }
 
-/// A run of edge links (and the faint dot between two) on one line, centred
-/// on it, `spacing` apart.
-@MainActor private func placeInLine(_ views: [NSView], sizes: [CGSize], in rect: CGRect, spacing: CGFloat, scale: CGFloat) {
-    var x = rect.minX
-    for (view, size) in zip(views, sizes) {
-        view.frame = TranscriptMotion.pixelAligned(CGRect(x: x, y: rect.midY - size.height / 2, width: size.width, height: size.height), scale: scale)
-        x += size.width + spacing
+/// Words that stand on one line while they fit and wrap when they do not,
+/// as a `Text` in an `HStack` does: an edge problem's title.
+@MainActor final class TranscriptEdgeWords: NSView {
+    let label = TranscriptLabel()
+    private var wrapped: TranscriptPlainTextView?
+    private let face: TranscriptPlainTextFace
+    var rightToLeft = false { didSet { if rightToLeft != oldValue { wrapped?.removeFromSuperview(); wrapped = nil; needsLayout = true } } }
+    override var isFlipped: Bool { true }
+    init(_ text: String, font: NSFont, color: NSColor) {
+        face = TranscriptPillButton.wrappedFace(font)
+        super.init(frame: .zero)
+        label.text = text; label.font = font; label.color = color
+        addSubview(label)
+        setAccessibilityElement(false)
+    }
+    required init?(coder: NSCoder) { nil }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    private var wrappedText: TranscriptPlainTextView {
+        if let wrapped { return wrapped }
+        let text = TranscriptPlainTextView(); text.isSelectable = false; text.setAccessibilityElement(false)
+        var environment = TranscriptRowEnvironment(); environment.layoutDirection = rightToLeft ? .rightToLeft : .leftToRight
+        text.update(text: label.text, face: face, environment: environment, swiftUILines: true, color: label.color)
+        addSubview(text); wrapped = text
+        return text
+    }
+    var ideal: CGSize { label.intrinsicSize }
+    func size(offered width: CGFloat) -> CGSize {
+        guard width < ideal.width else { return ideal }
+        let text = wrappedText, room = max(1, width)
+        return CGSize(width: text.usedWidth(width: room), height: ceil(text.exactHeight(width: room)))
+    }
+    override func layout() {
+        super.layout()
+        let wraps = bounds.width + 0.25 < ideal.width
+        label.isHidden = wraps; wrapped?.isHidden = !wraps
+        if wraps { wrappedText.frame = bounds }
+        else { label.frame = TranscriptMotion.mirrored(CGRect(origin: .zero, size: ideal), of: label, width: bounds.width, rightToLeft) }
+    }
+}
+
+/// One line of an edge control as SwiftUI's `HStack` shares it out: each
+/// piece's size when the line is offered `width`, `spacing` apart.
+@MainActor struct TranscriptEdgeLine {
+    var views: [NSView]
+    var pieces: [TranscriptLinePiece]
+    var spacing: CGFloat
+    func sizes(_ width: CGFloat) -> [CGSize] {
+        TranscriptLineLayout.sizes(pieces, spacing: Array(repeating: spacing, count: max(0, pieces.count - 1)), width: width)
+    }
+    func size(_ width: CGFloat) -> CGSize {
+        let sizes = self.sizes(width)
+        return CGSize(width: sizes.reduce(0) { $0 + $1.width } + CGFloat(max(0, sizes.count - 1)) * spacing, height: sizes.map(\.height).max() ?? 0)
+    }
+    /// Lays the line out at `width`, its pieces centred on it, in `rect`
+    /// (which it fills from its leading edge), mirrored right to left.
+    func place(width: CGFloat, in rect: CGRect, rightToLeft: Bool, scale: CGFloat) {
+        let sizes = self.sizes(width)
+        let frames = TranscriptLineLayout.frames(sizes, spacing: Array(repeating: spacing, count: max(0, sizes.count - 1)), x: rect.minX, midY: rect.midY)
+        for (view, frame) in zip(views, frames) {
+            var frame = frame
+            if rightToLeft { frame.origin.x = rect.minX + rect.maxX - frame.maxX }
+            view.frame = TranscriptMotion.pixelAligned(frame, scale: scale)
+        }
+    }
+    static func link(_ link: TranscriptEdgeLinkButton) -> TranscriptLinePiece {
+        TranscriptLinePiece(minWidth: 0, maxWidth: link.size.width, size: { link.size(offered: $0) })
+    }
+    static func words(_ words: TranscriptEdgeWords) -> TranscriptLinePiece {
+        TranscriptLinePiece(minWidth: 0, maxWidth: words.ideal.width, size: { words.size(offered: $0) })
     }
 }
 
@@ -166,18 +277,19 @@ import AppKit
         for view in [self.load, dot, self.partial] as [NSView?] { if let view { addSubview(view) } }
     }
     required init?(coder: NSCoder) { nil }
-    private var pieces: [(NSView, CGSize)] {
-        var pieces: [(NSView, CGSize)] = [(load, load.size)]
-        if let dot, let partial { pieces += [(dot, dot.intrinsicSize), (partial, partial.size)] }
-        return pieces
+    override var rightToLeft: Bool { didSet { load.rightToLeft = rightToLeft; partial?.rightToLeft = rightToLeft } }
+    private var line: TranscriptEdgeLine {
+        var line = TranscriptEdgeLine(views: [load], pieces: [TranscriptEdgeLine.link(load)], spacing: 2)
+        if let dot, let partial {
+            line.views += [dot, partial]
+            line.pieces += [.fixed(dot.intrinsicSize), TranscriptEdgeLine.link(partial)]
+        }
+        return line
     }
-    override func contentSize(width: CGFloat) -> CGSize {
-        let pieces = self.pieces
-        return CGSize(width: pieces.reduce(0) { $0 + $1.1.width } + CGFloat(pieces.count - 1) * 2, height: pieces.map(\.1.height).max() ?? 0)
-    }
+    private var offered: CGFloat?
+    override func contentSize(width: CGFloat) -> CGSize { offered = width; return line.size(width) }
     override func layoutContent(in rect: CGRect) {
-        let pieces = self.pieces
-        placeInLine(pieces.map(\.0), sizes: pieces.map(\.1), in: rect, spacing: 2, scale: window?.backingScaleFactor ?? 2)
+        line.place(width: offered ?? rect.width, in: rect, rightToLeft: rightToLeft, scale: window?.backingScaleFactor ?? 2)
     }
 }
 
@@ -191,9 +303,12 @@ import AppKit
         toolTip = "Show the question this turn began with"
     }
     required init?(coder: NSCoder) { nil }
-    override func contentSize(width: CGFloat) -> CGSize { link.size }
+    override var rightToLeft: Bool { didSet { link.rightToLeft = rightToLeft } }
+    private var offered: CGFloat?
+    override func contentSize(width: CGFloat) -> CGSize { offered = width; return link.size(offered: width) }
     override func layoutContent(in rect: CGRect) {
-        link.frame = TranscriptMotion.pixelAligned(CGRect(origin: rect.origin, size: link.size), scale: window?.backingScaleFactor ?? 2)
+        let size = link.size(offered: offered ?? rect.width)
+        link.frame = TranscriptMotion.pixelAligned(CGRect(origin: rect.origin, size: size), scale: window?.backingScaleFactor ?? 2)
     }
 }
 
@@ -207,56 +322,66 @@ import AppKit
     let action: TranscriptEdgeLinkButton
     let partial: TranscriptEdgeLinkButton?
     private let icon = TranscriptSymbol()
-    private let title = TranscriptLabel()
+    private let title: TranscriptEdgeWords
     private let dot: TranscriptLabel?
     let detail = TranscriptPlainTextView()
+    private let message: String
     init(title text: String, detail message: String, action name: String, perform: @escaping () -> Void,
          partial: (() -> Void)? = nil, icon symbol: String = "exclamationmark.circle") {
         action = TranscriptEdgeLinkButton(title: name, perform: perform)
         self.partial = partial.map { TranscriptEdgeLinkButton(title: "Earlier work in this turn", quiet: true, perform: $0) }
         dot = partial == nil ? nil : edgeDot()
+        title = TranscriptEdgeWords(text, font: Self.titleFont, color: TranscriptNSPalette.text)
+        self.message = message
         super.init(radius: 12)
         icon.show(symbol, size: 11, weight: .semibold); icon.contentTintColor = TranscriptNSPalette.warning
-        title.text = text; title.font = Self.titleFont; title.color = TranscriptNSPalette.text
         detail.centred = true; detail.maximumLines = 3
-        detail.update(text: message, face: Self.detailFace, environment: TranscriptRowEnvironment(), swiftUILines: true, color: TranscriptNSPalette.muted)
+        updateDetail()
         for view in [icon, title, action, dot, self.partial, detail] as [NSView?] { if let view { addSubview(view) } }
         setAccessibilityElement(true); setAccessibilityRole(.group)
         setAccessibilityLabel(text + ". " + message)
     }
     required init?(coder: NSCoder) { nil }
-    private var iconSize: CGSize { icon.swiftUIFrame ?? icon.image?.size ?? .zero }
-    private var line: [(NSView, CGSize)] {
-        var pieces: [(NSView, CGSize)] = [(icon, iconSize), (title, title.intrinsicSize), (action, action.size)]
-        if let dot, let partial { pieces += [(dot, dot.intrinsicSize), (partial, partial.size)] }
-        return pieces
+    private func updateDetail() {
+        var environment = TranscriptRowEnvironment(); environment.layoutDirection = rightToLeft ? .rightToLeft : .leftToRight
+        detail.update(text: message, face: Self.detailFace, environment: environment, swiftUILines: true, color: TranscriptNSPalette.muted)
     }
-    private var lineSize: CGSize {
-        let pieces = line
-        return CGSize(width: pieces.reduce(0) { $0 + $1.1.width } + CGFloat(pieces.count - 1) * 4, height: pieces.map(\.1.height).max() ?? 0)
+    override var rightToLeft: Bool {
+        didSet { title.rightToLeft = rightToLeft; action.rightToLeft = rightToLeft; partial?.rightToLeft = rightToLeft; updateDetail() }
+    }
+    private var iconSize: CGSize { icon.swiftUIFrame ?? icon.image?.size ?? .zero }
+    private var line: TranscriptEdgeLine {
+        var line = TranscriptEdgeLine(views: [icon, title, action], pieces: [.fixed(iconSize), TranscriptEdgeLine.words(title), TranscriptEdgeLine.link(action)], spacing: 4)
+        if let dot, let partial {
+            line.views += [dot, partial]
+            line.pieces += [.fixed(dot.intrinsicSize), TranscriptEdgeLine.link(partial)]
+        }
+        return line
     }
     /// The error's room: what the surface was offered, less its padding.
     private func detailRoom(_ width: CGFloat) -> CGFloat { max(1, width - 4 - 12) }
     override func size(offered width: CGFloat) -> CGSize { super.size(offered: min(width, Self.maximumWidth)) }
-    /// The error's room when the surface was last sized: the error is set
-    /// in what it was offered, not in what it then took.
-    private var offeredRoom: CGFloat?
+    /// What the content was last offered: the error is set and the line
+    /// shared out in that, not in what they then took.
+    private var offered: CGFloat?
     override func contentSize(width: CGFloat) -> CGSize {
-        let line = lineSize, room = detailRoom(width)
-        offeredRoom = room
+        offered = width
+        let line = self.line.size(max(0, width - 4)), room = detailRoom(width)
         let text = CGSize(width: detail.usedWidth(width: room), height: detail.exactHeight(width: room))
         return CGSize(width: 4 + max(line.width, text.width + 12), height: line.height + 1 + text.height + 3)
     }
     override func layoutContent(in rect: CGRect) {
         let scale = window?.backingScaleFactor ?? 2
-        let inner = CGRect(x: rect.minX + 4, y: rect.minY, width: rect.width - 4, height: rect.height)
-        let line = lineSize
-        let lineRect = CGRect(x: inner.midX - line.width / 2, y: inner.minY, width: line.width, height: line.height)
-        let pieces = self.line
-        placeInLine(pieces.map(\.0), sizes: pieces.map(\.1), in: lineRect, spacing: 4, scale: scale)
+        let width = offered ?? rect.width
+        // The stack stands four points in from the leading edge; its rows are centred in it.
+        let inner = rightToLeft ? CGRect(x: rect.minX, y: rect.minY, width: rect.width - 4, height: rect.height)
+            : CGRect(x: rect.minX + 4, y: rect.minY, width: rect.width - 4, height: rect.height)
+        let lineSize = line.size(max(0, width - 4))
+        let lineRect = CGRect(x: inner.midX - lineSize.width / 2, y: inner.minY, width: lineSize.width, height: lineSize.height)
+        line.place(width: max(0, width - 4), in: lineRect, rightToLeft: rightToLeft, scale: scale)
         // The image drawn whole, centred where SwiftUI lays the symbol out.
         icon.place(in: icon.frame)
-        let room = offeredRoom ?? detailRoom(bounds.width - 8)
+        let room = detailRoom(width)
         let used = detail.usedWidth(width: room), height = detail.exactHeight(width: room)
         detail.frame = TranscriptMotion.pixelAligned(CGRect(x: inner.midX - used / 2, y: lineRect.maxY + 1, width: used, height: ceil(height)), scale: scale)
     }
@@ -371,4 +496,12 @@ final class TranscriptEdgeMarkerView: NSView {
         }
     }
     var isEmpty: Bool { all.isEmpty }
+    /// Every link it shows presses, or not.
+    func setEnabled(_ enabled: Bool) {
+        func walk(_ view: NSView) {
+            if let link = view as? TranscriptEdgeLinkButton { link.enabled = enabled }
+            for child in view.subviews { walk(child) }
+        }
+        for item in all { walk(item.view) }
+    }
 }

@@ -56,13 +56,16 @@ import XCTest
 
     /// One edge control, the SwiftUI view in a frame `width` wide and the
     /// AppKit one in the slot the pane gives it, centred the same way.
-    private func checkEdge<V: View>(_ name: String, width: CGFloat = 520, _ swiftUI: V, _ shown: (NativeTranscriptPane) -> TranscriptEdgeSlot.Shown?,
+    private func checkEdge<V: View>(_ name: String, width: CGFloat = 520, rightToLeft: Bool = false, _ swiftUI: V, _ shown: (NativeTranscriptPane) -> TranscriptEdgeSlot.Shown?,
                                     file: StaticString = #filePath, line: UInt = #line) async throws {
         for (suffix, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
             let label = "edge-\(name)-\(suffix)"
-            let host = NSHostingView(rootView: swiftUI.frame(width: width).environment(\.piReduceMotion, true))
+            let host = NSHostingView(rootView: swiftUI.frame(width: width).environment(\.piReduceMotion, true)
+                .environment(\.layoutDirection, rightToLeft ? .rightToLeft : .leftToRight))
             host.sizingOptions = [.intrinsicContentSize]; host.safeAreaRegions = []
             let pane = NativeTranscriptPane()
+            var environment = TranscriptRowEnvironment(); environment.layoutDirection = rightToLeft ? .rightToLeft : .leftToRight
+            pane.update(session: SessionDisplay(id: "edge"), state: "idle", actions: TranscriptActions(), environment: environment, reduceMotion: true)
             let slot = TranscriptEdgeSlot()
             slot.show(shown(pane), animated: false)
             let size = slot.size(offered: width)
@@ -117,6 +120,22 @@ import XCTest
                 $0.earlierControl(state, partialTurnInput: partial)
             }
         }
+        // Narrow: the line's words wrap as SwiftUI's did.
+        for (name, state) in [("waiting-partial", TranscriptEdge.waiting), ("failed-partial", .failed("Connection reset"))] {
+            for width in [268, 220] as [CGFloat] {
+                try await checkEdge("earlier-\(name)-\(Int(width))", width: width,
+                                    TranscriptEarlierEdge(state: state, partialTurnInput: "u1", load: {}, inspect: { _ in })) {
+                    $0.earlierControl(state, partialTurnInput: "u1")
+                }
+            }
+        }
+        // Right to left: the stacks mirror.
+        for (name, state) in [("waiting-partial", TranscriptEdge.waiting), ("failed-partial", .failed("Connection reset"))] {
+            try await checkEdge("earlier-\(name)-rtl", rightToLeft: true,
+                                TranscriptEarlierEdge(state: state, partialTurnInput: "u1", load: {}, inspect: { _ in })) {
+                $0.earlierControl(state, partialTurnInput: "u1")
+            }
+        }
         try await checkEdge("earlier-failed-narrow", width: 300, TranscriptEarlierEdge(state: .failed(Self.longError), partialTurnInput: nil, load: {}, inspect: { _ in })) {
             $0.earlierControl(.failed(Self.longError), partialTurnInput: nil)
         }
@@ -124,16 +143,20 @@ import XCTest
 
     func testPartialTurnChipsMatchSwiftUI() async throws {
         try await checkEdge("partial", TranscriptPartialTurnChip(input: "What changed?", inspect: { _ in })) { $0.partialChip("What changed?") }
+        try await checkEdge("partial-rtl", rightToLeft: true, TranscriptPartialTurnChip(input: "What changed?", inspect: { _ in })) { $0.partialChip("What changed?") }
+        try await checkEdge("partial-narrow", width: 120, TranscriptPartialTurnChip(input: "What changed?", inspect: { _ in })) { $0.partialChip("What changed?") }
     }
 
     func testNewerEdgesMatchSwiftUI() async throws {
-        let session = SessionDisplay(id: "edges")
         let states: [(String, TranscriptEdge)] = [("loading", .loading), ("failed", .failed("Connection reset")),
                                                   ("changed", .changed("This chat changed in another window.")), ("failed-long", .failed(Self.longError))]
         for (name, state) in states {
             try await checkEdge("newer-\(name)", width: 440, TranscriptNewerEdge(state: state, load: {}, reload: {})) {
-                $0.newerControl(state, session: session)
+                $0.newerControl(state)
             }
+        }
+        try await checkEdge("newer-changed-rtl", width: 440, rightToLeft: true, TranscriptNewerEdge(state: .changed("This chat changed in another window."), load: {}, reload: {})) {
+            $0.newerControl(.changed("This chat changed in another window."))
         }
     }
 
