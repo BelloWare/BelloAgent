@@ -216,8 +216,8 @@ struct NativePlainText: NSViewRepresentable {
     static func glyphOffset(_ font: NSFont, height: CGFloat, scale: CGFloat) -> CGFloat {
         if let glyphOffsetOverride { return glyphOffsetOverride }
         // The faces whose glyphs SwiftUI sets lower by a fixed amount, in
-        // either design (10.5 to 11.5 pt, a read's wrapped line number too).
-        if let fixed = [10.5: 1.0, 11: 1.0, 11.5: 1.0][Double(font.pointSize)] { return CGFloat(fixed) }
+        // either design (9.5 to 11.5 pt, a read's wrapped line number too).
+        if let fixed = [9.5: 1.0, 10: 1.0, 10.5: 1.0, 11: 1.0, 11.5: 1.0][Double(font.pointSize)] { return CGFloat(fixed) }
         guard !font.isFixedPitch else { return 0 }
         // The serif design (New York) a point lower too.
         if font.fontName.lowercased().contains("newyork") { return 1 }

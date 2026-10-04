@@ -143,7 +143,8 @@ import AppKit
         "11.5/0.23": (14, -0.375), "11.0/0.4": (14, 0.125), "12.0/0.23": (15, 0),
         "13.0/0": (16, 0), "12.5/0": (15, -0.375), "11.5/0": (14, -0.375), "12.0/0": (15, 0),
         "11.0/0.23m": (14, 0.125), "11.5/0m": (14, -0.375), "12.0/0m": (15, 0),
-        "12.0/0.3": (15, 0), "13.0/0.3s": (16, -0.5), "11.0/0": (14, 0.125)]
+        "12.0/0.3": (15, 0), "13.0/0.3s": (16, -0.5), "11.0/0": (14, 0.125),
+        "9.5/0": (12, -0.375), "10.0/0": (13, 0.125)]
     static func measured(_ font: NSFont) -> (height: CGFloat, baseline: CGFloat)? {
         let weight = (font.fontDescriptor.object(forKey: .traits) as? [NSFontDescriptor.TraitKey: Any])?[.weight] as? CGFloat ?? 0
         // A monospaced face has its own line box: its key ends in "m"; a
@@ -173,17 +174,23 @@ import AppKit
     /// left: a whole text ends where its own width ends, as SwiftUI places it.
     func mirrored(_ rect: CGRect, width: CGFloat) -> CGRect {
         let whole = rect.width + 0.25 >= intrinsicSize.width
+        // A text cut in its middle ends where the line it keeps ends, as a whole one does.
+        let cut = !whole && truncation == .middle
         // SwiftUI draws such a text where its width puts it, between pixels.
-        snapsX = !whole
+        snapsX = !whole && !cut
         // Set from the right, the line's trailing spaces hang past its end.
         hangsTrailingSpace = whole
-        return CGRect(x: width - rect.minX - (whole ? exactWidth : rect.width), y: rect.minY, width: rect.width, height: rect.height)
+        let end = whole ? exactWidth : cut ? CGFloat(CTLineGetTypographicBounds(middleCut(rect.width), nil, nil, nil)) : rect.width
+        return CGRect(x: width - rect.minX - end, y: rect.minY, width: rect.width, height: rect.height)
     }
     /// How wide the text is once cut short to fit `width`, as SwiftUI sizes
     /// a truncated text: the line it draws, not the room it was offered.
     func width(truncatedTo width: CGFloat) -> CGFloat {
         let full = intrinsicSize.width
         guard width < full else { return full }
+        if truncation == .middle {
+            return ceil(CGFloat(CTLineGetTypographicBounds(middleCut(width), nil, nil, nil)) * 2) / 2
+        }
         let line = CTLineCreateWithAttributedString(string)
         let ellipsis = CTLineCreateWithAttributedString(NSAttributedString(string: "…", attributes: string.attributes(at: 0, effectiveRange: nil)))
         // CoreText may hand back a line a fraction wider than asked; SwiftUI
@@ -197,6 +204,27 @@ import AppKit
         }
         return width
     }
+    /// The line cut in its middle to fit `width`, as SwiftUI cuts it: by a
+    /// frame whose paragraph truncates in the middle, which keeps characters
+    /// `CTLineCreateTruncatedLine` drops (measured against SwiftUI's `Text`,
+    /// `TranscriptNativeTurnParityTests.testProbeMiddleTruncation`).
+    private func middleCut(_ width: CGFloat) -> CTLine {
+        if let cut = middleCache, cut.width == width, cut.text == text, cut.font == resolvedFont { return cut.line }
+        var mode = CTLineBreakMode.byTruncatingMiddle
+        let line: CTLine = withUnsafeBytes(of: &mode) { bytes in
+            let setting = CTParagraphStyleSetting(spec: .lineBreakMode, valueSize: MemoryLayout<CTLineBreakMode>.size, value: bytes.baseAddress!)
+            let paragraph = CTParagraphStyleCreate([setting], 1)
+            let source = NSMutableAttributedString(attributedString: string)
+            source.addAttribute(NSAttributedString.Key(kCTParagraphStyleAttributeName as String), value: paragraph, range: NSRange(location: 0, length: source.length))
+            let setter = CTFramesetterCreateWithAttributedString(source)
+            let frame = CTFramesetterCreateFrame(setter, CFRange(location: 0, length: 0),
+                                                 CGPath(rect: CGRect(x: 0, y: 0, width: max(1, width), height: 10_000), transform: nil), nil)
+            return (CTFrameGetLines(frame) as? [CTLine])?.first ?? CTLineCreateWithAttributedString(string)
+        }
+        middleCache = (width, text, resolvedFont, line)
+        return line
+    }
+    private var middleCache: (width: CGFloat, text: String, font: NSFont, line: CTLine)?
     override func draw(_ dirtyRect: NSRect) {
         guard !text.isEmpty, let context = NSGraphicsContext.current?.cgContext else { return }
         let font = resolvedFont
@@ -207,7 +235,9 @@ import AppKit
         var line = CTLineCreateWithAttributedString(string)
         // A line cut too short for even its ellipsis is clipped, as SwiftUI clips it.
         if truncation != nil { context.clip(to: bounds) }
-        if truncation != nil, bounds.width + 0.25 < intrinsicSize.width {
+        if truncation == .middle, bounds.width + 0.25 < intrinsicSize.width {
+            line = middleCut(bounds.width)
+        } else if truncation != nil, bounds.width + 0.25 < intrinsicSize.width {
             let ellipsis = CTLineCreateWithAttributedString(NSAttributedString(string: "…", attributes: string.attributes(at: 0, effectiveRange: nil)))
             line = CTLineCreateTruncatedLine(line, Double(bounds.width), ctTruncation, ellipsis) ?? line
         }
@@ -278,6 +308,10 @@ extension NSView {
         "chevron.down/10.0/\(NSFont.Weight.semibold.rawValue)": CGSize(width: 11, height: 7.5),
         "chevron.right/12.5/\(NSFont.Weight.regular.rawValue)": CGSize(width: 9.5, height: 13),
         "chevron.down/12.5/\(NSFont.Weight.regular.rawValue)": CGSize(width: 14, height: 8),
+        // A turn report's outcome and its Copy.
+        "checkmark.circle/11.0/\(NSFont.Weight.medium.rawValue)": CGSize(width: 13.5, height: 13.5),
+        "exclamationmark.circle/11.0/\(NSFont.Weight.medium.rawValue)": CGSize(width: 13.5, height: 13.5),
+        "doc.on.doc/11.0/\(NSFont.Weight.regular.rawValue)": CGSize(width: 14, height: 16),
     ]
     /// How far from the middle of SwiftUI's frame SwiftUI draws the symbol,
     /// measured (`TranscriptTextCalibrationTests.testSymbolsDrawAsSwiftUI`).

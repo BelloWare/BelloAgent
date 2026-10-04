@@ -32,7 +32,10 @@ final class TranscriptTextCalibrationTests: XCTestCase {
             ("skill12sb", .systemFont(ofSize: 12, weight: .semibold), .system(size: 12, weight: .semibold)),
             ("serif13sb", TranscriptNativeCompactionRow.titleFont, .system(size: 13, weight: .semibold, design: .serif)),
             ("figure11m", .systemFont(ofSize: 11, weight: .medium), .system(size: 11, weight: .medium)),
-            ("detail11", .systemFont(ofSize: 11), .system(size: 11))]
+            ("detail11", .systemFont(ofSize: 11), .system(size: 11)),
+            // A turn report's legends and note, and its AI and tool time.
+            ("legend9.5", .systemFont(ofSize: 9.5), .system(size: 9.5)),
+            ("split10", .systemFont(ofSize: 10), .system(size: 10))]
         let sweeping = testEnvironment("PI_TEXT_CALIBRATION") == "1"
         defer { TranscriptLabel.baselineOverride = nil }
         var failures: [String] = []
@@ -74,7 +77,8 @@ final class TranscriptTextCalibrationTests: XCTestCase {
             ("number11.5mono", TranscriptCardFaces.number), ("usage10.5", TranscriptNativeAccounting.face),
             ("detail11", TranscriptNativeRequestInfoRow.detailFace), ("label12.5", TranscriptNativeLabelButton.face),
             ("pill11m", TranscriptPillButton.wrappedFace(TranscriptPillButton.font)),
-            ("serif13sb", TranscriptNativeCompactionRow.titleFace), ("model10.5", TranscriptNativeAccounting.modelFace)]
+            ("serif13sb", TranscriptNativeCompactionRow.titleFace), ("model10.5", TranscriptNativeAccounting.modelFace),
+            ("note9.5", TranscriptTurnFaces.noteFace), ("split10", TranscriptTurnFaces.splitFace)]
         var failures: [String] = []
         for (name, face) in faces {
             for n in [0, 1, 2, 3, 5] {

@@ -39,26 +39,33 @@ struct TurnDurationReading: Equatable {
     let toolMs: Double
 }
 
-/// A periodic TimelineView also redraws on every parent update. Sampling into
+/// A periodic redraw also comes with every parent update. Sampling into
 /// owned state prevents those redraws from turning a millisecond label into a
 /// high-frequency timer. Terminal readings and new tasks apply immediately.
-@MainActor final class TurnDurationClock: ObservableObject {
+/// A plain object: whoever draws the reading is told through `changed`, and
+/// the clock ticks (`start`) only while its turn runs.
+@MainActor final class TurnDurationClock {
     static let intervalMs: Double = 500
-    @Published private(set) var reading: TurnDurationReading
+    private(set) var reading: TurnDurationReading
+    /// Told of every new reading, a tick's or an update's.
+    var changed: ((TurnDurationReading) -> Void)?
     private var input: TurnDurationInput
     private var lastSampleUptimeMs: Double
+    private var timer: Timer?
 
     init(input: TurnDurationInput, date: Date = .now,
          uptimeMs: Double = ProcessInfo.processInfo.systemUptime * 1000) {
         self.input = input; reading = input.reading(at: date, uptimeMs: uptimeMs)
         lastSampleUptimeMs = uptimeMs
     }
+    var live: Bool { input.live }
     func update(_ next: TurnDurationInput, date: Date = .now,
                 uptimeMs: Double = ProcessInfo.processInfo.systemUptime * 1000) {
         guard !(input.terminal && next.live && next.isSameTask(as: input)) else { return }
         let immediate = !next.live || next.live != input.live || !next.isSameTask(as: input)
         input = next
         if immediate { publish(at: date, uptimeMs: uptimeMs) }
+        if !input.live { stop() }
     }
     func sample(date: Date = .now, uptimeMs: Double = ProcessInfo.processInfo.systemUptime * 1000) {
         guard input.live, uptimeMs - lastSampleUptimeMs >= Self.intervalMs else { return }
@@ -67,8 +74,26 @@ struct TurnDurationReading: Equatable {
     private func publish(at date: Date, uptimeMs: Double) {
         lastSampleUptimeMs = uptimeMs
         let next = input.reading(at: date, uptimeMs: uptimeMs)
-        if next != reading { reading = next }
+        if next != reading { reading = next; changed?(next) }
     }
+    /// Ticks every `intervalMs` while the turn runs; a settled turn's clock
+    /// never schedules anything.
+    func start() {
+        guard input.live, timer == nil else { return }
+        let timer = Timer(timeInterval: Self.intervalMs / 1_000, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                guard self.input.live else { self.stop(); return }
+                self.sample()
+            }
+        }
+        // Ticks on while the reader scrolls or holds a menu open.
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
+    }
+    func stop() { timer?.invalidate(); timer = nil }
+    /// Whether the clock is ticking, for tests.
+    var ticking: Bool { timer != nil }
     func run() async {
         while !Task.isCancelled, input.live {
             do { try await Task.sleep(for: .milliseconds(Int(Self.intervalMs))) }
@@ -81,12 +106,15 @@ struct TurnDurationReading: Equatable {
 
 struct TurnDurationMetrics: View {
     private let input: TurnDurationInput
-    @StateObject private var clock: TurnDurationClock
+    @State private var clock: TurnDurationClock
+    @State private var reading: TurnDurationReading
 
     init(turn: TurnSummary) {
         let input = TurnDurationInput(turn)
         self.input = input
-        _clock = StateObject(wrappedValue: TurnDurationClock(input: input))
+        let clock = TurnDurationClock(input: input)
+        _clock = State(initialValue: clock)
+        _reading = State(initialValue: clock.reading)
     }
     /// A running clock counts whole seconds, as every running clock in the
     /// app does: a live reading with milliseconds changed its digits — and,
@@ -102,10 +130,10 @@ struct TurnDurationMetrics: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 5) {
                 Text("Duration").foregroundStyle(TranscriptPalette.faint)
-                Text(clock.reading.elapsedMs.map { Self.label($0, live: live) } ?? "—")
+                Text(reading.elapsedMs.map { Self.label($0, live: live) } ?? "—")
                     .foregroundStyle(TranscriptPalette.text).accessibilityIdentifier("elapsedClock")
             }.font(.system(size: 11, weight: .medium))
-            Text("AI \(Self.label(clock.reading.modelMs, live: live)) · Tools \(Self.label(clock.reading.toolMs, live: live))")
+            Text("AI \(Self.label(reading.modelMs, live: live)) · Tools \(Self.label(reading.toolMs, live: live))")
                 .font(.system(size: 10)).foregroundStyle(TranscriptPalette.muted)
                 .help("Recorded AI and tool time, rounded. The Session Inspector has each request's exact time.")
         // Live, the readings keep one line each, so a tick can never wrap the
@@ -113,7 +141,8 @@ struct TurnDurationMetrics: View {
         }.monospacedDigit().lineLimit(live ? 1 : nil).fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
             .transaction { $0.animation = nil }
-            .onChange(of: input) { _, next in clock.update(next) }
+            .onAppear { clock.changed = { [$reading] next in $reading.wrappedValue = next }; reading = clock.reading }
+            .onChange(of: input) { _, next in clock.update(next); reading = clock.reading }
             .task(id: input.live) { if input.live { await clock.run() } }
     }
 }

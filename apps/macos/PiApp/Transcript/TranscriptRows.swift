@@ -1176,18 +1176,24 @@ struct BlockRowView: View {
 }
 
 /// Docked above the composer: current work and reported usage, with a
-/// shimmering label and a stable slot for duration and token shares.
-
-struct LiveTurnBar: View {
+/// shimmering label and a stable slot for duration and token shares. The
+/// report is AppKit's (`TranscriptNativeTurnReport`); the slot that holds it
+/// is still SwiftUI's.
+struct LiveTurnBar: NSViewRepresentable {
     let turn: TurnSummary
     var state = "running"
     var actions = TranscriptActions()
     private var label: String {
         TurnInfoPresentation.workingLabel(turn, state: state)
     }
-    var body: some View {
-        CompactTurnReport(turn: turn, actions: actions, status: label)
-            .accessibilityElement(children: .contain)
+    func makeNSView(context: Context) -> TranscriptNativeTurnReport { TranscriptNativeTurnReport() }
+    func updateNSView(_ report: TranscriptNativeTurnReport, context: Context) {
+        report.reduceMotion = context.environment.piReduceMotion
+        report.update(turn: turn, actions: actions, status: label, environment: TranscriptRowEnvironment(context.environment))
+    }
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView report: TranscriptNativeTurnReport, context: Context) -> CGSize? {
+        let width = proposal.width.flatMap { $0.isFinite ? $0 : nil } ?? 560
+        return CGSize(width: width, height: report.height(width: width))
     }
 }
 

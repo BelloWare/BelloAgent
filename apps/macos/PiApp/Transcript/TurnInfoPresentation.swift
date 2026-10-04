@@ -206,30 +206,31 @@ enum TurnInfoPresentation {
 
 /// The turn report's info button: opens the Session Inspector at this turn.
 /// An AppKit button of a fixed size, so the transcript row that holds it
-/// never re-measures for it.
+/// never re-measures for it. The native report holds one directly; SwiftUI
+/// views hold it through `TurnInfoButton`.
+@MainActor final class TurnInfoNSButton: NSButton {
+    static let size = CGSize(width: 20, height: 20)
+    var turn: TurnSummary?
+    var actions = TranscriptActions()
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        image = NSImage(systemSymbolName: "info.circle", accessibilityDescription: "Open this turn in the Session Inspector")?
+            .withSymbolConfiguration(.init(pointSize: 11, weight: .regular))
+        target = self; action = #selector(open(_:))
+        isBordered = false; imagePosition = .imageOnly; contentTintColor = .tertiaryLabelColor
+        // Rows never draw the system's focus ring.
+        focusRingType = .none
+        toolTip = "Open this turn in the Session Inspector"; setAccessibilityLabel("Open this turn in the Session Inspector")
+        setAccessibilityIdentifier("turn-info-button")
+    }
+    required init?(coder: NSCoder) { nil }
+    @objc private func open(_ sender: Any?) { if let turn { actions.inspectTurn?(turn) } }
+}
+
 struct TurnInfoButton: NSViewRepresentable {
     let turn: TurnSummary
     let actions: TranscriptActions
-    func makeCoordinator() -> Coordinator { Coordinator(turn: turn, actions: actions) }
-    func makeNSView(context: Context) -> NSButton {
-        let button = NSButton()
-        button.image = NSImage(systemSymbolName: "info.circle", accessibilityDescription: "Open this turn in the Session Inspector")?
-            .withSymbolConfiguration(.init(pointSize: 11, weight: .regular))
-        button.target = context.coordinator; button.action = #selector(Coordinator.open(_:))
-        button.isBordered = false; button.imagePosition = .imageOnly; button.contentTintColor = .tertiaryLabelColor
-        // Rows never draw the system's focus ring.
-        button.focusRingType = .none
-        button.toolTip = "Open this turn in the Session Inspector"; button.setAccessibilityLabel("Open this turn in the Session Inspector")
-        button.setAccessibilityIdentifier("turn-info-button")
-        return button
-    }
-    func updateNSView(_ button: NSButton, context: Context) { context.coordinator.turn = turn; context.coordinator.actions = actions }
-    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSButton, context: Context) -> CGSize? { CGSize(width: 20, height: 20) }
-
-    @MainActor final class Coordinator: NSObject {
-        var turn: TurnSummary
-        var actions: TranscriptActions
-        init(turn: TurnSummary, actions: TranscriptActions) { self.turn = turn; self.actions = actions }
-        @objc func open(_ button: NSButton) { actions.inspectTurn?(turn) }
-    }
+    func makeNSView(context: Context) -> TurnInfoNSButton { TurnInfoNSButton() }
+    func updateNSView(_ button: TurnInfoNSButton, context: Context) { button.turn = turn; button.actions = actions }
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: TurnInfoNSButton, context: Context) -> CGSize? { TurnInfoNSButton.size }
 }
