@@ -173,7 +173,7 @@ struct NativePlainText: NSViewRepresentable {
                 // word down rather than leave one alone on the last line.
                 paragraph.lineBreakStrategy = .standard
             }
-            storage.setAttributedString(NSAttributedString(string: next, attributes: attributes))
+            storage.setAttributedString(NSAttributedString(string: Self.limited(next, lines: maximumLines), attributes: attributes))
             text = next; self.face = face
             setAccessibilityLabel(face.label)
         }
@@ -257,7 +257,18 @@ struct NativePlainText: NSViewRepresentable {
             textContainer?.maximumNumberOfLines = maximumLines
             textContainer?.lineBreakMode = maximumLines > 0 ? .byTruncatingTail : .byWordWrapping
             sizes.removeAll(); exactSizes.removeAll(); ideal = nil
+            face = nil
         }
+    }
+    /// `text` cut to `lines` written lines, the last ending in an ellipsis
+    /// when anything was cut, as `lineLimit` shows a text with more line
+    /// breaks than it allows (a trailing break counts). Lines that wrap are
+    /// cut by TextKit itself.
+    static func limited(_ text: String, lines: Int) -> String {
+        guard lines > 0 else { return text }
+        let parts = text.split(separator: "\n", omittingEmptySubsequences: false)
+        guard parts.count > lines else { return text }
+        return parts.prefix(lines).joined(separator: "\n") + "…"
     }
     /// How wide the text is with all the room it wants: its widest line.
     private var ideal: CGFloat?
@@ -294,7 +305,16 @@ struct NativePlainText: NSViewRepresentable {
         layoutPasses += 1
         // The used rect ends at the last line's own box: TextKit puts line
         // spacing between lines, and a trailing line break is a line.
-        let height = max(manager.usedRect(for: container).maxY, manager.extraLineFragmentRect.maxY)
+        var height = max(manager.usedRect(for: container).maxY, manager.extraLineFragmentRect.maxY)
+        if maximumLines > 0 {
+            // No more than the lines allowed, a trailing line break's empty
+            // line included, as SwiftUI's `lineLimit` counts them.
+            var lines = 0, bottom: CGFloat = 0
+            manager.enumerateLineFragments(forGlyphRange: manager.glyphRange(for: container)) { rect, _, _, _, stop in
+                lines += 1; bottom = rect.maxY; if lines == self.maximumLines { stop.pointee = true }
+            }
+            height = min(height, bottom)
+        }
         if exactSizes.count == 4 { exactSizes.removeFirst() }; exactSizes.append(CGSize(width: width, height: height))
         let result = CGSize(width: width, height: max(1, ceil(height)))
         if sizes.count == 4 { sizes.removeFirst() }; sizes.append(result)

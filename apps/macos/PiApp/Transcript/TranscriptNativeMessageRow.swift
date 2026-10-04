@@ -77,7 +77,8 @@ import AppKit
         guard !drawsNothing else { return }
         let (_, top) = height(width: bounds.width)
         place(in: CGRect(x: 0, y: top, width: bounds.width, height: contentHeight(width: bounds.width)))
-        if rightToLeft { for view in subviews { view.frame = TranscriptMotion.mirrored(view.frame, width: bounds.width, true) } }
+        // A pill fading out keeps the place it was given; only what was just placed mirrors.
+        if rightToLeft { for view in subviews where view.identifier != TranscriptMotion.leaving { view.frame = TranscriptMotion.mirrored(view.frame, width: bounds.width, true) } }
     }
     /// `rect` on the pixel grid, as SwiftUI places a shape.
     func pixelAligned(_ rect: CGRect) -> CGRect {
@@ -213,6 +214,7 @@ import AppKit
         let message = message
         header.color = TranscriptNSPalette.muted
         failed.text = message.failedEnd ?? ""; failed.color = TranscriptNSPalette.danger
+        failed.speak(message.failedEnd)
         capsule.fill = TranscriptNSPalette.statusBackground
         words.update(text: message.text, face: Self.face, environment: inputs.environment, swiftUILines: true, color: TranscriptNSPalette.muted)
         truncated.update(text: TranscriptNativeReplyRow.truncatedNote, face: TranscriptNativeReplyRow.truncatedFace, environment: inputs.environment,

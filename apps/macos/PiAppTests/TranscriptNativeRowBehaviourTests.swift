@@ -214,4 +214,37 @@ final class TranscriptNativeRowBehaviourTests: XCTestCase {
             XCTAssertTrue(content.subviews.allSatisfy(\.isHidden), "\(message.id) draws nothing")
         }
     }
+
+    /// VoiceOver hears a control as enabled while it acts, and disabled while
+    /// the pane takes no input.
+    @MainActor func testControlsReportWhetherTheyAct() {
+        let pill = TranscriptPillButton(title: "Retry request", accent: true, perform: {})
+        let link = TranscriptLinkButton()
+        XCTAssertTrue(pill.isAccessibilityEnabled()); XCTAssertTrue(link.isAccessibilityEnabled())
+        pill.enabled = false; link.enabled = false
+        XCTAssertFalse(pill.isAccessibilityEnabled()); XCTAssertFalse(link.isAccessibilityEnabled())
+    }
+
+    /// A status message that failed says how it ended to VoiceOver.
+    @MainActor func testAFailedStatusSaysHowItEnded() throws {
+        var message = TranscriptMessage(id: "s1", role: "system", text: "The request stopped")
+        message.state = "error"
+        let (row, window) = mounted(.message(message))
+        defer { window.contentView = nil }
+        let content = try XCTUnwrap(row.subviews.first as? TranscriptNativeStatusRow)
+        let spoken = content.subviews.filter { $0.isAccessibilityElement() }.compactMap { $0.accessibilityLabel() }
+        XCTAssertTrue(spoken.contains("error"), "spoken: \(spoken)")
+    }
+
+    /// The notice's ring turns clockwise, as SwiftUI's did.
+    @MainActor func testTheNoticeRingTurnsClockwise() throws {
+        var notice = TranscriptMessage(id: "n1", role: "system", text: "Retrying")
+        notice.kind = "notice"
+        let (row, window) = mounted(.message(notice))
+        defer { window.contentView = nil }
+        let spinner = try XCTUnwrap(row.subviews.first?.subviews.compactMap { $0 as? TranscriptSpinner }.first)
+        spinner.layoutSubtreeIfNeeded(); spinner.displayIfNeeded()
+        let spin = try XCTUnwrap(spinner.layer?.sublayers?.compactMap { $0.animation(forKey: "turn") as? CABasicAnimation }.first)
+        XCTAssertGreaterThan((spin.toValue as? Double) ?? 0, 0, "a rising angle turns clockwise in the flipped layer")
+    }
 }

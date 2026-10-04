@@ -147,7 +147,7 @@ enum TranscriptLineLayout {
         guard !PiMotion.reducesMotion, window != nil, turn.animation(forKey: "turn") == nil else { return }
         let spin = CABasicAnimation(keyPath: "transform.rotation.z")
         // Clockwise on screen, a turn every 0.8 s.
-        spin.fromValue = 0; spin.toValue = -Double.pi * 2
+        spin.fromValue = 0; spin.toValue = Double.pi * 2
         spin.duration = 0.8; spin.repeatCount = .infinity
         spin.isRemovedOnCompletion = false
         turn.add(spin, forKey: "turn")

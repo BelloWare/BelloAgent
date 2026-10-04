@@ -42,8 +42,11 @@ import AppKit
         }
     }
     /// A pill leaving: it fades out and falls the 2 points it rose, then goes.
+    /// Marks a view on its way out, so a row's layout leaves it where it is.
+    static let leaving = NSUserInterfaceItemIdentifier("transcript-leaving")
     static func leave(_ view: NSView) {
         view.setAccessibilityElement(false)
+        view.identifier = leaving
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = Double(PiMotion.quickMilliseconds) / 1_000
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
@@ -478,6 +481,7 @@ extension NSView {
         guard enabled else { return false }
         perform(); return true
     }
+    override func isAccessibilityEnabled() -> Bool { enabled }
 
     // MARK: The keyboard
 
@@ -673,6 +677,7 @@ extension NSView {
         perform(); return true
     }
     override func accessibilityLabel() -> String? { super.accessibilityLabel() ?? label.text }
+    override func isAccessibilityEnabled() -> Bool { enabled }
     override var acceptsFirstResponder: Bool { enabled }
     override var canBecomeKeyView: Bool { enabled && NSApp.isFullKeyboardAccessEnabled }
     override func keyDown(with event: NSEvent) {

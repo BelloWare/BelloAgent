@@ -135,6 +135,7 @@ final class TranscriptNativeRowParityTests: XCTestCase {
             Fixture(name: "notice", item: row("n1", kind: "notice", "Retrying in 4 s (attempt 2 of 5)")),
             Fixture(name: "branch", item: row("b1", kind: "branch", "")),
             Fixture(name: "branch-detail", item: row("b2", kind: "branch", "", detail: "You changed the question")),
+            Fixture(name: "branch-lines", item: row("b4", kind: "branch", "", detail: "first\nsecond\n")),
             Fixture(name: "branch-long", item: row("b3", kind: "branch", String(repeating: "The edit replaced the earlier question with a longer one. ", count: 4))),
         ]
     }
