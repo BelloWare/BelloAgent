@@ -1,4 +1,3 @@
-import SwiftUI
 import AppKit
 
 // Side panels are durable child chats. A recovery intent precedes journal
@@ -647,46 +646,4 @@ extension WorkspaceModel {
         if let index = chats.firstIndex(where: { $0.id == id }) { chats[index].toolMode = ChatRecord.editingTools }
         displays[id]?.notice = "Editing tools apply to the next turn."
     }
-}
-
-struct SidePane: View {
-    @ObservedObject var model: WorkspaceModel
-    @ObservedObject var session: SessionDisplay
-    let info: SideRecord
-    /// The share of the content column this side has, for the composer bar.
-    let paneWidth: CGFloat
-    @State private var handoff = false
-    var body: some View {
-        // The hairline that used to start this pane is the split's draggable
-        // divider now, drawn once by the workspace between the two panes.
-        ConversationPane(model: model, session: session, chat: model.record(info.id) ?? info.chat, paneWidth: paneWidth, side: info,
-                         sideActions: SideActions(bringBack: { handoff = true }, keep: { model.keepSide(info.id) }, close: { model.closeSide(info.id) }))
-        .piSheetWindow(isPresented: $handoff) { SideHandoff(model: model, session: session) }
-    }
-}
-struct SideHandoff: View {
-    @ObservedObject var model: WorkspaceModel
-    @ObservedObject var session: SessionDisplay
-    @State private var text = ""
-    @State private var error = ""
-    @PiDismiss private var dismiss
-    var body: some View {
-        PiSheet("Bring back to parent draft", subtitle: "Edit this summary or selection. Bringing it back only changes the parent draft; review it before sending.", symbol: "arrow.uturn.backward", width: 720, height: 480) {
-            VStack(alignment: .leading, spacing: PiSpacing.sm) {
-                NativeCodeEditor(text: $text, accessibilityLabel: "Editable side summary").piInset().frame(maxHeight: .infinity)
-                PiStatusLine(text: error, tone: .danger)
-            }.padding(PiSpacing.xl)
-        } actions: {
-            Button("Cancel") { dismiss() }
-        } footer: {
-            HStack {
-                Button { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string) } label: { Label("Copy", systemImage: "doc.on.doc") }
-                Spacer()
-                Button("Replace Parent Draft") { insert(replace: true) }
-                Button("Insert in Parent Draft") { insert(replace: false) }.buttonStyle(.piPrimary)
-            }.disabled(text.isEmpty)
-        }
-        .onAppear { text = session.messages.last(where: { $0.role == "assistant" && !$0.isStreaming })?.text ?? "" }
-    }
-    private func insert(replace: Bool) { do { try model.bringBack(text, from: session.id, replace: replace); dismiss() } catch { self.error = error.localizedDescription } }
 }

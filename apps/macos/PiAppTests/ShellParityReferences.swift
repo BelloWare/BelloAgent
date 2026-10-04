@@ -822,3 +822,329 @@ struct RefTabStripItem: View {
     }
 }
 
+
+// MARK: - TopicSheet.swift before batch 7
+
+/// A topic is local organization within a project; creating one neither opens
+/// a session nor changes a session's working directory or model.
+struct RefTopicSheet: View {
+    @ObservedObject var model: WorkspaceModel
+    let target: TopicEditorTarget
+    @State private var title = ""
+    @State private var saving = false
+    @State private var notice = ""
+    @PiDismiss private var dismiss
+    private var editing: Bool { target.topicID != nil }
+    private var trimmedTitle: String { title.trimmingCharacters(in: .whitespacesAndNewlines) }
+    var body: some View {
+        PiSheet(editing ? "Rename topic" : "New topic", subtitle: "Group related chats inside this project.", symbol: "folder", width: 480, height: 260, cancelDisabled: saving) {
+            VStack(alignment: .leading, spacing: PiSpacing.md) {
+                PiTextField(placeholder: "Topic name", text: $title, icon: "folder", onSubmit: save)
+                    .accessibilityLabel("Topic name").accessibilityIdentifier("topicTitle")
+                Text("Topics keep chats together without changing their context or project folders.")
+                    .font(PiFont.caption).foregroundStyle(Color.piInkSecondary).fixedSize(horizontal: false, vertical: true)
+                PiStatusLine(text: notice, tone: .danger)
+            }.padding(PiSpacing.xl)
+        } actions: {
+            Button("Cancel") { dismiss() }.disabled(saving)
+        } footer: {
+            HStack {
+                Spacer()
+                Button(saving ? "Saving…" : editing ? "Rename" : "Create Topic", action: save)
+                    .buttonStyle(.piPrimary).disabled(saving || trimmedTitle.isEmpty)
+                    .accessibilityIdentifier("saveTopic")
+            }
+        }
+        .onAppear { if let id = target.topicID { title = model.topics.first { $0.id == id }?.title ?? "" } }
+    }
+    private func save() {
+        guard !saving, !trimmedTitle.isEmpty else { return }
+        saving = true; notice = ""
+        let value = trimmedTitle
+        Task {
+            defer { saving = false }
+            do {
+                if let id = target.topicID { try await model.renameTopic(id, title: value) }
+                else { _ = try await model.createTopic(in: target.projectID, title: value) }
+                dismiss()
+            } catch { notice = error.localizedDescription }
+        }
+    }
+}
+
+// MARK: - RenameChatSheet.swift before batch 7
+
+/// Rename a chat by hand or from three mini-model suggestions drawn from its
+/// first message. Suggestions need the connection's mini model, like titles.
+struct RefRenameChatSheet: View {
+    @ObservedObject var model: WorkspaceModel
+    let chatID: String
+    @State private var title = ""
+    @State private var suggestions: [String] = []
+    @State private var suggesting = false
+    @State private var notice = ""
+    @State private var saving = false
+    /// A suggestion asked for with the button; it ends with the sheet.
+    @State private var requested: Task<Void, Never>?
+    @PiDismiss private var dismiss
+    private var chat: ChatRecord? { model.record(chatID) }
+    private var canSuggest: Bool { chat.flatMap { item in model.profiles.first { $0.id == item.profileID } }.map { model.titleSuggestionsAvailable(for: $0) } ?? false }
+
+    var body: some View {
+        PiSheet("Rename chat", subtitle: chat?.title, symbol: "pencil", width: 520, height: 400, cancelDisabled: saving) {
+            VStack(alignment: .leading, spacing: PiSpacing.md) {
+                PiTextField(placeholder: "Chat title", text: $title, icon: "text.cursor", onSubmit: { save() })
+                    .accessibilityIdentifier("sessionTitle")
+                HStack {
+                    Text("Suggestions").font(PiFont.micro).foregroundStyle(Color.piInkTertiary).textCase(.uppercase).tracking(0.4)
+                    Spacer()
+                    if suggesting { PiSpinner(controlSize: .small) }
+                    Button { requested?.cancel(); requested = Task { await suggest() } } label: { Label(suggestions.isEmpty ? "Suggest titles" : "Suggest again", systemImage: "sparkles") }
+                        .buttonStyle(.piSecondaryCompact).disabled(suggesting || !canSuggest)
+                        .help(canSuggest ? "Ask the connection's mini model for three titles" : "Suggestions need a mini model for this connection; choose one in Settings.")
+                }
+                if suggestions.isEmpty {
+                    Text(canSuggest ? (suggesting ? "Asking the mini model…" : "The mini model reads the first message and proposes three titles.") : "Choose a mini model for this connection in Settings to get suggestions.")
+                        .font(PiFont.caption).foregroundStyle(Color.piInkSecondary).fixedSize(horizontal: false, vertical: true)
+                } else {
+                    VStack(spacing: 4) {
+                        // The three titles arrive one after another.
+                        ForEach(Array(suggestions.enumerated()), id: \.element) { index, suggestion in
+                            PiSelectableRow(selected: title == suggestion, action: { title = suggestion }) {
+                                HStack { Text(suggestion).font(PiFont.body).foregroundStyle(Color.piInk).lineLimit(2); Spacer() }
+                            }.accessibilityIdentifier("title-suggestion").piStaggered(index)
+                        }
+                    }
+                    .transition(.opacity)
+                }
+                PiStatusLine(text: notice, tone: .danger)
+            }.padding(PiSpacing.xl)
+        } actions: {
+            Button("Cancel") { dismiss() }.disabled(saving)
+        } footer: {
+            HStack {
+                Spacer()
+                Button(saving ? "Renaming…" : "Rename") { save() }.buttonStyle(.piPrimary)
+                    .disabled(saving || title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .onAppear { title = chat?.title ?? "" }
+        // The suggestions are a request to the mini model that polls for its
+        // answer. They belong to the sheet: closing it cancels them, where an
+        // unowned task went on polling for up to 45 seconds.
+        .task { if canSuggest { await suggest() } }
+        .onDisappear { requested?.cancel() }
+    }
+
+    private func suggest() async {
+        guard !suggesting else { return }
+        suggesting = true; notice = ""
+        defer { suggesting = false }
+        do { suggestions = try await model.suggestTitles(for: chatID) }
+        catch { notice = error.localizedDescription }
+    }
+
+    private func save() {
+        let value = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty, !saving else { return }
+        saving = true
+        Task {
+            defer { saving = false }
+            do { try await model.setSessionTitle(chatID, title: value); dismiss() }
+            catch { notice = error.localizedDescription }
+        }
+    }
+}
+
+// MARK: - WebhookPreviewSheet.swift before batch 7
+
+/// Chat ⋯ ▸ Preview Webhook…: the request this chat sends when it finishes,
+/// made now from the chat as it is, the mini model's parameters included.
+/// Send Now tries it against the address.
+struct RefWebhookPreviewSheet: View {
+    @ObservedObject var model: WorkspaceModel
+    let chatID: String
+    @State private var preparation: WebhookPreparation?
+    @State private var preparing = false
+    @State private var sending = false
+    @State private var showsPrompt = false
+    @State private var notice = ""
+    @State private var tone: PiTone = .neutral
+    /// A request asked for with Ask Again; it ends with the sheet.
+    @State private var requested: Task<Void, Never>?
+    @PiDismiss private var dismiss
+    private var chat: ChatRecord? { model.chatRecord(chatID) }
+    private var settings: WebhookSettings? { model.activeWebhook }
+
+    var body: some View {
+        PiSheet("Webhook preview", subtitle: chat?.title, symbol: "paperplane", width: 640, height: 660, cancelDisabled: sending) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: PiSpacing.lg) {
+                    if settings == nil {
+                        PiNote("The webhook is off. Turn it on in Settings → Chats & notifications.", tone: .warning)
+                    } else if chat?.webhookOff == true {
+                        PiNote("This chat sends no webhook when it finishes; its ⋯ menu turns it back on. Send Now still sends this one.", tone: .warning)
+                    }
+                    if preparing {
+                        HStack(spacing: PiSpacing.sm) {
+                            PiSpinner(controlSize: .small)
+                            Text("Asking the mini model…").font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
+                        }
+                    }
+                    if let preparation { request(preparation) }
+                    PiStatusLine(text: notice, tone: tone)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(PiSpacing.xl)
+            }
+        } actions: {
+            Button("Close") { dismiss() }.disabled(sending)
+        } footer: {
+            HStack(spacing: PiSpacing.sm) {
+                Button { requested?.cancel(); requested = Task { await prepare() } } label: { Label("Ask Again", systemImage: "arrow.clockwise") }
+                    .buttonStyle(.piSecondaryCompact).fixedSize()
+                    .disabled(preparing || sending || settings == nil)
+                    .help("Ask the mini model again and rebuild the request")
+                Spacer(minLength: PiSpacing.md)
+                Button(sending ? "Sending…" : "Send Now") { Task { await send() } }.buttonStyle(.piPrimary).fixedSize()
+                    .disabled(preparation == nil || preparing || sending)
+                    .help("Send this request to the webhook's address now")
+                    .accessibilityIdentifier("webhook-preview-send")
+            }
+        }
+        // The mini model's request belongs to the sheet: closing it ends the request.
+        .task { await prepare() }
+        .onDisappear { requested?.cancel() }
+    }
+
+    @ViewBuilder private func request(_ preparation: WebhookPreparation) -> some View {
+        let request = preparation.request
+        section("Request") {
+            Text(request.method + " " + request.url.absoluteString).font(PiFont.mono).foregroundStyle(Color.piInk)
+                .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("webhook-preview-address")
+        }
+        if !request.headers.isEmpty {
+            section("Headers") {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(Array(request.headers.enumerated()), id: \.offset) { _, header in
+                        Text(header.name + ": " + header.value).font(PiFont.mono).foregroundStyle(Color.piInk)
+                            .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        }
+        if request.body != nil {
+            section("Body") {
+                Text(request.bodyText).font(PiFont.mono).foregroundStyle(Color.piInk)
+                    .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("webhook-preview-body")
+            }
+        }
+        if !request.unknown.isEmpty {
+            PiNote("Nothing fills " + request.unknown.map { "{{\($0)}}" }.joined(separator: ", ") + "; sent empty.", tone: .warning)
+        }
+        if !preparation.parameters.isEmpty {
+            section(preparation.model.map { "Written by the mini model · " + $0 } ?? "Written by the mini model") {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(Array(preparation.parameters.enumerated()), id: \.offset) { _, parameter in
+                        HStack(alignment: .firstTextBaseline, spacing: PiSpacing.md) {
+                            Text(parameter.name).font(PiFont.mono).foregroundStyle(Color.piInkSecondary).frame(width: 120, alignment: .leading)
+                            Text(parameter.value.isEmpty ? "—" : parameter.value).font(PiFont.caption).foregroundStyle(Color.piInk)
+                                .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                            Spacer(minLength: 0)
+                        }
+                    }
+                    if let note = preparation.modelNote {
+                        PiNote(note + " The chat's title stands in for title; other parameters are sent empty.", tone: .warning)
+                    } else if !preparation.missing.isEmpty {
+                        PiNote("The mini model left out " + preparation.missing.joined(separator: ", ") + "; the chat's title stands in for title, and the rest are sent empty.", tone: .warning)
+                    }
+                    if let prompt = preparation.prompt {
+                        Button { withAnimation(PiMotion.quick) { showsPrompt.toggle() } } label: {
+                            Label(showsPrompt ? "Hide what the mini model was asked" : "Show what the mini model was asked", systemImage: showsPrompt ? "chevron.down" : "chevron.right")
+                        }
+                        .buttonStyle(.piGhost).fixedSize()
+                        if showsPrompt {
+                            Text(prompt + (preparation.reply.map { "\n\n— Reply —\n" + $0 } ?? "")).font(PiFont.mono).foregroundStyle(Color.piInkSecondary)
+                                .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                                .padding(PiSpacing.md).frame(maxWidth: .infinity, alignment: .leading).piInset(sunken: true)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: PiSpacing.sm) {
+            Text(title).font(PiFont.micro).foregroundStyle(Color.piInkTertiary).textCase(.uppercase).tracking(0.4)
+            content().padding(PiSpacing.md).frame(maxWidth: .infinity, alignment: .leading).piInset(sunken: true)
+        }
+    }
+
+    private func prepare() async {
+        guard let settings, !preparing else { return }
+        preparing = true; notice = ""
+        defer { preparing = false }
+        do { preparation = try await model.prepareWebhook(for: chatID, settings: settings) }
+        catch is CancellationError {}
+        catch { notice = error.localizedDescription; tone = .danger }
+    }
+
+    private func send() async {
+        guard let request = preparation?.request, !sending else { return }
+        sending = true; notice = ""
+        defer { sending = false }
+        do {
+            let status = try await model.deliverWebhook(request)
+            notice = "Sent. \(request.url.host ?? "The address") answered HTTP \(status)."; tone = .success
+        } catch {
+            notice = "Not sent: " + error.localizedDescription; tone = .danger
+        }
+    }
+}
+
+// MARK: - SidePane and SideHandoff (WorkspaceSides.swift before batch 7)
+
+struct RefSidePane: View {
+    @ObservedObject var model: WorkspaceModel
+    @ObservedObject var session: SessionDisplay
+    let info: SideRecord
+    /// The share of the content column this side has, for the composer bar.
+    let paneWidth: CGFloat
+    @State private var handoff = false
+    var body: some View {
+        // The hairline that used to start this pane is the split's draggable
+        // divider now, drawn once by the workspace between the two panes.
+        ConversationPane(model: model, session: session, chat: model.record(info.id) ?? info.chat, paneWidth: paneWidth, side: info,
+                         sideActions: SideActions(bringBack: { handoff = true }, keep: { model.keepSide(info.id) }, close: { model.closeSide(info.id) }))
+        .piSheetWindow(isPresented: $handoff) { RefSideHandoff(model: model, session: session) }
+    }
+}
+struct RefSideHandoff: View {
+    @ObservedObject var model: WorkspaceModel
+    @ObservedObject var session: SessionDisplay
+    @State private var text = ""
+    @State private var error = ""
+    @PiDismiss private var dismiss
+    var body: some View {
+        PiSheet("Bring back to parent draft", subtitle: "Edit this summary or selection. Bringing it back only changes the parent draft; review it before sending.", symbol: "arrow.uturn.backward", width: 720, height: 480) {
+            VStack(alignment: .leading, spacing: PiSpacing.sm) {
+                NativeCodeEditor(text: $text, accessibilityLabel: "Editable side summary").piInset().frame(maxHeight: .infinity)
+                PiStatusLine(text: error, tone: .danger)
+            }.padding(PiSpacing.xl)
+        } actions: {
+            Button("Cancel") { dismiss() }
+        } footer: {
+            HStack {
+                Button { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string) } label: { Label("Copy", systemImage: "doc.on.doc") }
+                Spacer()
+                Button("Replace Parent Draft") { insert(replace: true) }
+                Button("Insert in Parent Draft") { insert(replace: false) }.buttonStyle(.piPrimary)
+            }.disabled(text.isEmpty)
+        }
+        .onAppear { text = session.messages.last(where: { $0.role == "assistant" && !$0.isStreaming })?.text ?? "" }
+    }
+    private func insert(replace: Bool) { do { try model.bringBack(text, from: session.id, replace: replace); dismiss() } catch { self.error = error.localizedDescription } }
+}

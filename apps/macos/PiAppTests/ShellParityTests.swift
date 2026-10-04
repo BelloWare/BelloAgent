@@ -186,4 +186,33 @@ import XCTest
             TabStripView(host: host, container: host.pane, side: nil, leadingInset: 78)
         }
     }
+
+    /// The workspace's own sheets: a new topic, renaming a chat, and the
+    /// webhook preview with the webhook off.
+    func testWorkspaceSheets() async throws {
+        let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("sheet-parity-" + UUID().uuidString)
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        defer { model.shutdown(); try? FileManager.default.removeItem(at: root) }
+        model.workspaces = [WorkspaceRecord(id: "p", path: root.path, trusted: true)]
+        model.chats = [ChatRecord(id: "c", workspaceID: "p", title: "Retry budget for the payment worker", path: nil, profileID: "none")]
+        let target = TopicEditorTarget(projectID: "p")
+        try await check("sheet-topic", canvas: .piWindow, width: TopicSheetView.size.width,
+                        RefTopicSheet(model: model, target: target).frame(width: TopicSheetView.size.width, height: TopicSheetView.size.height)) {
+            TopicSheetView(model: model, target: target, dismiss: {})
+        }
+        try await check("sheet-rename", canvas: .piWindow, width: RenameChatSheetView.size.width,
+                        RefRenameChatSheet(model: model, chatID: "c").frame(width: RenameChatSheetView.size.width, height: RenameChatSheetView.size.height)) {
+            RenameChatSheetView(model: model, chatID: "c", dismiss: {})
+        }
+        let side = SessionDisplay(id: "side-parity")
+        side.messages = [TranscriptMessage(id: "a1", role: "assistant", text: "The retry budget resets after each successful charge; the worker keeps at most three attempts.")]
+        try await check("sheet-handoff", canvas: .piWindow, width: SideHandoffView.size.width,
+                        RefSideHandoff(model: model, session: side).frame(width: SideHandoffView.size.width, height: SideHandoffView.size.height)) {
+            SideHandoffView(model: model, session: side, dismiss: {})
+        }
+        try await check("sheet-webhook", canvas: .piWindow, width: WebhookPreviewSheetView.size.width,
+                        RefWebhookPreviewSheet(model: model, chatID: "c").frame(width: WebhookPreviewSheetView.size.width, height: WebhookPreviewSheetView.size.height)) {
+            WebhookPreviewSheetView(model: model, chatID: "c", dismiss: {})
+        }
+    }
 }

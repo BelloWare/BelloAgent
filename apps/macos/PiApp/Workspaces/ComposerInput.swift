@@ -345,7 +345,7 @@ import AppKit
         pills.form = state.form.pills
         let symbol = state.queueEditing ? "checkmark" : state.queues ? "text.badge.plus" : state.editing ? "arrow.uturn.up" : "arrow.up"
         let name = state.queueEditing ? "Save Queued Message" : state.editing ? "Resend Edited Message" : state.queues ? "Queue Follow-up" : "Send"
-        send.symbol = symbol
+        if send.symbol != symbol { send.symbol = symbol }
         send.setAccessibilityLabel(name)
         send.toolTip = state.queueEditing ? "Save Queued Message" : state.editing ? (state.editBlocker ?? "Resend Edited Message") : name
         if before?.canSend != state.canSend || before == nil {

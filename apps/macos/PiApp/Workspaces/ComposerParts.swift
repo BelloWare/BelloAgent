@@ -87,7 +87,17 @@ import QuartzCore
     private var line: PiKit.Line { PiKit.Line(text, font: .systemFont(ofSize: 12, weight: .medium), color: .piInk) }
     private var textWidth: CGFloat { compact || maxTextWidth <= 0 ? 0 : min(maxTextWidth, line.size(scale: piScale).width) }
     private var hPadding: CGFloat { compact ? 7 : 9 }
+    /// Measured once per change of what it shows (and per display scale):
+    /// a bar lays its pills out on every change of the chat.
+    private var measured: (key: String, size: NSSize)?
     override var intrinsicContentSize: NSSize {
+        let key = "\(icon)|\(text)|\(loading)|\(maxTextWidth)|\(compact)|\(piScale)"
+        if let measured, measured.key == key { return measured.size }
+        let size = measure()
+        measured = (key, size)
+        return size
+    }
+    private func measure() -> NSSize {
         var pieces: [CGFloat] = [iconSymbol.layoutSize.width]
         var height = max(iconSymbol.layoutSize.height, chevron.layoutSize.height)
         if textWidth > 0 { pieces.append(textWidth); height = max(height, line.lineHeight) }

@@ -43,8 +43,7 @@ struct WorkspaceSidebar: NSViewRepresentable {
     }
 }
 
-/// `RightPaneView` where SwiftUI still lays the window out; the side inside
-/// it is still the SwiftUI `SidePane`.
+/// `RightPaneView` where SwiftUI still lays the window out.
 struct RightPane: NSViewRepresentable {
     let model: WorkspaceModel
     let host: TabHost
@@ -76,10 +75,70 @@ struct RightPane: NSViewRepresentable {
     private func install(_ view: RightPaneView, enabled: Bool) {
         view.inheritedEnabled = enabled
         view.makeSideView = { [model] info, session, width in
-            NSHostingView(rootView: AnyView(SidePane(model: model, session: session, info: info, paneWidth: width).disabled(!enabled)))
+            let side = SidePaneView(model: model, session: session, info: info, paneWidth: width)
+            side.inheritedEnabled = enabled
+            return side
         }
-        view.updateSideView = { [model] view, info, session, width in
-            (view as? NSHostingView<AnyView>)?.rootView = AnyView(SidePane(model: model, session: session, info: info, paneWidth: width).disabled(!enabled))
+        view.updateSideView = { view, info, _, width in
+            guard let side = view as? SidePaneView else { return }
+            side.update(info: info, paneWidth: width)
+            side.inheritedEnabled = enabled
         }
+    }
+}
+
+/// The sheets the workspace view presents (`piSheetWindow`), now AppKit.
+struct RenameChatSheet: View {
+    let model: WorkspaceModel
+    let chatID: String
+    @PiDismiss private var dismiss
+    var body: some View {
+        let dismiss = dismiss
+        AppKitSheet { RenameChatSheetView(model: model, chatID: chatID, dismiss: { dismiss() }) }
+            .frame(width: RenameChatSheetView.size.width, height: RenameChatSheetView.size.height)
+    }
+}
+struct TopicSheet: View {
+    let model: WorkspaceModel
+    let target: TopicEditorTarget
+    @PiDismiss private var dismiss
+    var body: some View {
+        let dismiss = dismiss
+        AppKitSheet { TopicSheetView(model: model, target: target, dismiss: { dismiss() }) }
+            .frame(width: TopicSheetView.size.width, height: TopicSheetView.size.height)
+    }
+}
+/// An AppKit sheet's view, made once, in a sheet SwiftUI presents.
+struct AppKitSheet<Sheet: NSView>: NSViewRepresentable {
+    let make: () -> Sheet
+    func makeNSView(context: Context) -> Sheet {
+        let view = make()
+        (view as? InheritsEnabled)?.inheritedEnabled = context.environment.isEnabled
+        return view
+    }
+    func updateNSView(_ view: Sheet, context: Context) { (view as? InheritsEnabled)?.inheritedEnabled = context.environment.isEnabled }
+}
+struct WebhookPreviewSheet: View {
+    let model: WorkspaceModel
+    let chatID: String
+    @PiDismiss private var dismiss
+    var body: some View {
+        let dismiss = dismiss
+        AppKitSheet { WebhookPreviewSheetView(model: model, chatID: chatID, dismiss: { dismiss() }) }
+            .frame(width: WebhookPreviewSheetView.size.width, height: WebhookPreviewSheetView.size.height)
+    }
+}
+
+/// Presents an AppKit sheet's view in the app's sheet window, which still
+/// takes SwiftUI content (`PiSheetWindow`, Application/).
+@MainActor enum AppKitSheets {
+    static func present(on parent: NSWindow, size: NSSize, enabled: Bool = true, make: @escaping (_ dismiss: @escaping () -> Void) -> NSView) -> PiSheetWindow {
+        weak var shown: PiSheetWindow?
+        let close: @MainActor () -> Void = { shown?.end(animated: true, requested: true) }
+        let sheet = PiSheetWindow(content: AnyView(AppKitSheet { make(close) }.frame(width: size.width, height: size.height)),
+                                  inherited: PiSheetWindowInherited(reduceMotion: PiKit.Motion.reduced, enabled: enabled), close: close)
+        shown = sheet
+        sheet.present(on: parent)
+        return sheet
     }
 }

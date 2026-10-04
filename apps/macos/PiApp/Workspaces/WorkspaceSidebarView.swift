@@ -174,7 +174,7 @@ import Combine
         newChat.label = model.selectedWorkspaceID == nil ? "Create or choose a project before starting a chat" : "New Chat (⌘N)"
         let onReport = model.page == .report, onBackground = model.page == .background
         report.label = onReport ? "Back to Chats" : "Usage Report (⇧⌘R)"
-        report.tone = onReport ? .accent : .neutral; report.filled = onReport
+        Self.set(report, tone: onReport ? .accent : .neutral, filled: onReport)
         inspector.isEnabled = model.selectedID != nil && enabled
         resources.isEnabled = model.selectedWorkspaceID != nil && enabled
         for button in [manage, report, background, archive, settings] { button.isEnabled = enabled }
@@ -184,10 +184,10 @@ import Combine
             button.isEnabled = enabled
         }
         background.label = onBackground ? "Back to Chats" : "Background requests · chat titles, title suggestions and webhooks (⇧⌘B)"
-        background.tone = onBackground ? .accent : .neutral; background.filled = onBackground
+        Self.set(background, tone: onBackground ? .accent : .neutral, filled: onBackground)
         let archived = model.sidebarShowsArchived
         archive.label = archived ? "Hide archived chats" : "Show archived chats"
-        archive.tone = archived ? .accent : .neutral; archive.filled = archived
+        Self.set(archive, tone: archived ? .accent : .neutral, filled: archived)
         // During first-run setup the setup's own last step adds the project:
         // a second way in beside it read as two paths.
         empty.isHidden = !(model.sidebarProjects.isEmpty && !model.presentsSetup)
@@ -197,6 +197,12 @@ import Combine
             barShown = marked
             showBar(marked)
         }
+    }
+
+    /// A button's look changed only when it changes: setting it redraws it.
+    private static func set(_ button: PiKit.IconButton, tone: PiTone, filled: Bool) {
+        if button.tone != tone { button.tone = tone }
+        if button.filled != filled { button.filled = filled }
     }
 
     /// Marking rows takes a strip above the list; the list moves down to
