@@ -81,7 +81,7 @@ import AppKit
 @MainActor final class TranscriptLabel: NSView {
     var text = "" { didSet { if text != oldValue { invalidate() } } }
     var font: NSFont = .systemFont(ofSize: 12) { didSet { if font != oldValue { invalidate() } } }
-    var color: NSColor = TranscriptNSPalette.muted { didSet { if color != oldValue { attributed = nil; needsDisplay = true } } }
+    var color: NSColor = TranscriptNSPalette.muted { didSet { if color != oldValue { attributed = nil; middleCache = nil; needsDisplay = true } } }
     var monospacedDigits = false { didSet { if monospacedDigits != oldValue { invalidate() } } }
     /// Cut short with an ellipsis when its frame is narrower than its line,
     /// as `lineLimit(1)` does; `head` cuts its beginning instead, `middle`
@@ -116,7 +116,7 @@ import AppKit
         setAccessibilityLabel(label)
         setAccessibilityIdentifier(identifier)
     }
-    private func invalidate() { attributed = nil; measured = nil; needsDisplay = true }
+    private func invalidate() { attributed = nil; measured = nil; middleCache = nil; needsDisplay = true }
     private var resolvedFont: NSFont {
         guard monospacedDigits else { return font }
         let descriptor = font.fontDescriptor.addingAttributes([.featureSettings: [[
@@ -209,7 +209,9 @@ import AppKit
     /// `CTLineCreateTruncatedLine` drops (measured against SwiftUI's `Text`,
     /// `TranscriptNativeTurnParityTests.testProbeMiddleTruncation`).
     private func middleCut(_ width: CGFloat) -> CTLine {
-        if let cut = middleCache, cut.width == width, cut.text == text, cut.font == resolvedFont { return cut.line }
+        // Kept for one width; anything that changes the string (its text, its
+        // font, its colour, its underline) drops it.
+        if let cut = middleCache, cut.width == width { return cut.line }
         var mode = CTLineBreakMode.byTruncatingMiddle
         let line: CTLine = withUnsafeBytes(of: &mode) { bytes in
             let setting = CTParagraphStyleSetting(spec: .lineBreakMode, valueSize: MemoryLayout<CTLineBreakMode>.size, value: bytes.baseAddress!)
@@ -221,10 +223,10 @@ import AppKit
                                                  CGPath(rect: CGRect(x: 0, y: 0, width: max(1, width), height: 10_000), transform: nil), nil)
             return (CTFrameGetLines(frame) as? [CTLine])?.first ?? CTLineCreateWithAttributedString(string)
         }
-        middleCache = (width, text, resolvedFont, line)
+        middleCache = (width, line)
         return line
     }
-    private var middleCache: (width: CGFloat, text: String, font: NSFont, line: CTLine)?
+    private var middleCache: (width: CGFloat, line: CTLine)?
     override func draw(_ dirtyRect: NSRect) {
         guard !text.isEmpty, let context = NSGraphicsContext.current?.cgContext else { return }
         let font = resolvedFont

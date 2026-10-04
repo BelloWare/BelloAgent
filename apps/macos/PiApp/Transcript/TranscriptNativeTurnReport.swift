@@ -124,7 +124,25 @@ import AppKit
         addTrackingArea(NSTrackingArea(rect: bounds, options: [.activeInActiveApp, .inVisibleRect, .cursorUpdate], owner: self))
     }
     override func cursorUpdate(with event: NSEvent) { NSCursor.pointingHand.set() }
-    override func mouseDown(with event: NSEvent) { pressed = true }
+    /// Who had the keyboard when the pointer came down: a click acts and
+    /// leaves focus where it was, as a SwiftUI button's click does.
+    private weak var responderBeforeClick: NSResponder?
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let hit = super.hitTest(point) == nil ? nil : self as NSView?
+        if hit === self, let current = window?.firstResponder, current !== self {
+            if let editor = current as? NSTextView, editor.isFieldEditor, let field = editor.delegate as? NSResponder {
+                responderBeforeClick = field
+            } else {
+                responderBeforeClick = current
+            }
+        }
+        return hit
+    }
+    override func mouseDown(with event: NSEvent) {
+        pressed = true
+        if window?.firstResponder === self, let before = responderBeforeClick, before !== self { window?.makeFirstResponder(before) }
+        responderBeforeClick = nil
+    }
     override func mouseUp(with event: NSEvent) {
         pressed = false
         if bounds.contains(convert(event.locationInWindow, from: nil)), enabled { perform() }
@@ -308,18 +326,23 @@ import AppKit
         let changedLines = split.text != text && !live
         title.color = TranscriptNSPalette.faint
         clockLabel.text = elapsed; clockLabel.color = TranscriptNSPalette.text
-        clockLabel.setAccessibilityLabel(elapsed)
+        clockLabel.speak(elapsed, identifier: "elapsedClock")
         split.text = text; split.color = TranscriptNSPalette.muted
-        split.setAccessibilityLabel(text); split.setAccessibilityElement(true); split.setAccessibilityRole(.staticText)
+        split.speak(text)
         for label in [title, clockLabel, split] { label.truncation = live ? .tail : nil }
         wrapped?.update(text: text, face: TranscriptTurnFaces.splitFace, environment: environment, swiftUILines: true, color: TranscriptNSPalette.muted)
+        wrapped?.setAccessibilityLabel(text)
         if changedLines { superview?.needsLayout = true }
         needsLayout = true
     }
     private var wrappedSplit: TranscriptPlainTextView {
         if let wrapped { return wrapped }
-        let text = TranscriptPlainTextView(); text.isSelectable = false; text.setAccessibilityElement(false)
+        // Read out in the line's place while it stands in for it.
+        let text = TranscriptPlainTextView(); text.isSelectable = false
+        text.setAccessibilityRole(.staticText)
+        text.toolTip = split.toolTip
         text.update(text: split.text, face: TranscriptTurnFaces.splitFace, environment: environment, swiftUILines: true, color: TranscriptNSPalette.muted)
+        text.setAccessibilityLabel(split.text)
         addSubview(text); wrapped = text
         return text
     }
@@ -459,8 +482,9 @@ import AppKit
         for bar in [input, output] { bar.rightToLeft = rightToLeft }
         if let note = TurnInfoPresentation.cardNote(turn) {
             noteLabel.text = note; noteLabel.color = TranscriptNSPalette.faint; noteLabel.toolTip = note
-            noteLabel.setAccessibilityLabel(note)
+            noteLabel.speak(note, identifier: "turn-coverage-notice")
             noteText?.update(text: note, face: TranscriptTurnFaces.noteFace, environment: environment, swiftUILines: true, color: TranscriptNSPalette.faint)
+            noteText?.toolTip = note; noteText?.setAccessibilityLabel(note)
         }
         needsLayout = true
     }
@@ -495,9 +519,13 @@ import AppKit
     /// The note's lines when the turn has settled: up to four, wrapped.
     private var wrappedNote: TranscriptPlainTextView {
         if let noteText { return noteText }
-        let text = TranscriptPlainTextView(); text.isSelectable = false; text.setAccessibilityElement(false)
+        // Read out, and its whole note shown under the pointer, as the line's is.
+        let text = TranscriptPlainTextView(); text.isSelectable = false
+        text.setAccessibilityRole(.staticText); text.setAccessibilityIdentifier("turn-coverage-notice")
+        text.toolTip = noteLabel.text
         text.maximumLines = 4
         text.update(text: noteLabel.text, face: TranscriptTurnFaces.noteFace, environment: environment, swiftUILines: true, color: TranscriptNSPalette.faint)
+        text.setAccessibilityLabel(noteLabel.text)
         addSubview(text); noteText = text
         return text
     }

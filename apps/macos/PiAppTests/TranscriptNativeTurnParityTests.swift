@@ -15,9 +15,9 @@ import SwiftUI
 /// both captures and a difference image for every pair.
 final class TranscriptNativeTurnParityTests: XCTestCase {
     /// The report's inner width is the row's less 20 points: its header takes
-    /// one line from 420, its readings three columns from 527 and a pair from
-    /// 384. Each switch is covered from both sides.
-    static let rowWidths: [CGFloat] = [792, 548, 546, 520, 442, 438, 406, 402, 380, 300, 240]
+    /// one line from 420, its readings three columns from 548 (150 + 2 × 185
+    /// + 2 × 14) and a pair from 384. Each switch is covered from both sides.
+    static let rowWidths: [CGFloat] = [792, 568, 566, 520, 442, 438, 406, 402, 380, 300, 240]
 
     static func accounting(requests: Int = 2) -> TurnAccounting {
         var a = TurnAccounting(requests: requests)
@@ -81,6 +81,8 @@ final class TranscriptNativeTurnParityTests: XCTestCase {
             Fixture(name: "empty", turn: turn("interrupted", accounting: TurnAccounting(), elapsed: nil, model: 0, tools: 0)),
             Fixture(name: "long-model", turn: turn(accounting: long)),
             Fixture(name: "slow", turn: turn(elapsed: 3_723_400, model: 3_662_345, tools: 37_655)),
+            // Its AI and tool time wraps in a column.
+            Fixture(name: "slower", turn: turn(elapsed: 73_723_400, model: 36_620_000, tools: 36_000_000)),
         ]
     }
 

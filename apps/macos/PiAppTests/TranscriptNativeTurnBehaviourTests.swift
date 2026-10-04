@@ -19,7 +19,7 @@ final class TranscriptNativeTurnBehaviourTests: XCTestCase {
         return window
     }
     @MainActor private func views<T: NSView>(_ type: T.Type, in view: NSView) -> [T] {
-        (view as? T).map { [$0] } ?? [] + view.subviews.flatMap { views(type, in: $0) }
+        ((view as? T).map { [$0] } ?? []) + view.subviews.flatMap { views(type, in: $0) }
     }
     private func environment(enabled: Bool = true) -> TranscriptRowEnvironment {
         var environment = TranscriptRowEnvironment(); environment.isEnabled = enabled
@@ -204,5 +204,77 @@ final class TranscriptNativeTurnBehaviourTests: XCTestCase {
             let copy = try XCTUnwrap(views(TranscriptIconButton.self, in: report).first)
             XCTAssertLessThanOrEqual(copy.frame.maxX, width - 10 + 0.01, "\(width): Copy stays inside the report")
         }
+    }
+
+    /// What the report says is read out wherever it is drawn: the clock, a
+    /// settled turn's note over several lines (with its whole text under the
+    /// pointer), and AI and tool time that wraps.
+    @MainActor func testTheReadingsAndTheNoteAreReadOut() throws {
+        var turn = Fixtures.settledFixtures.first { $0.name == "wordy" }!.turn
+        turn.modelMs = 36_620_000; turn.toolMs = 36_000_000
+        let report = TranscriptNativeTurnReport()
+        report.update(turn: turn, actions: TranscriptActions(), environment: environment())
+        let window = mounted(report, width: 580); defer { window.contentView = nil }
+        func shown(_ identifier: String) -> [NSView] {
+            views(NSView.self, in: report).filter { $0.accessibilityIdentifier() == identifier && !$0.isHiddenOrHasHiddenAncestor }
+        }
+        let clock = try XCTUnwrap(shown("elapsedClock").first)
+        XCTAssertTrue(clock.isAccessibilityElement())
+        XCTAssertEqual(clock.accessibilityLabel(), TurnDurationMetrics.label(turn.elapsedMs!, live: false))
+        let note = try XCTUnwrap(shown("turn-coverage-notice").first)
+        let expected = TurnInfoPresentation.cardNote(turn)
+        XCTAssertTrue(note is TranscriptPlainTextView, "a settled note wraps")
+        XCTAssertTrue(note.isAccessibilityElement())
+        XCTAssertEqual(note.accessibilityLabel(), expected)
+        XCTAssertEqual(note.toolTip, expected)
+        let split = "AI \(TurnDurationMetrics.label(turn.modelMs, live: false)) · Tools \(TurnDurationMetrics.label(turn.toolMs, live: false))"
+        let wrapped = try XCTUnwrap(views(TranscriptPlainTextView.self, in: report.duration).first { !$0.isHidden }, "the AI and tool time wraps here")
+        XCTAssertTrue(wrapped.isAccessibilityElement())
+        XCTAssertEqual(wrapped.accessibilityLabel(), split)
+    }
+
+    /// A click on Copy copies and leaves the keyboard where it was.
+    @MainActor func testClickingCopyLeavesTheKeyboardWhereItWas() throws {
+        let report = TranscriptNativeTurnReport()
+        report.update(turn: Fixtures.turn(), actions: TranscriptActions(), environment: environment())
+        let container = TranscriptNativeRowParityTests.ParityCanvas(frame: CGRect(x: 0, y: 0, width: 600, height: 300))
+        let window = NSWindow(contentRect: container.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = container
+        defer { window.contentView = nil; window.close() }
+        report.frame = CGRect(x: 0, y: 0, width: 600, height: report.height(width: 600))
+        container.addSubview(report)
+        let field = NSTextField(frame: CGRect(x: 0, y: 260, width: 200, height: 22))
+        container.addSubview(field)
+        window.makeKeyAndOrderFront(nil)
+        container.layoutSubtreeIfNeeded()
+        XCTAssertTrue(window.makeFirstResponder(field))
+        let copy = try XCTUnwrap(views(TranscriptIconButton.self, in: report).first)
+        NSPasteboard.general.clearContents()
+        let location = copy.convert(CGPoint(x: copy.bounds.midX, y: copy.bounds.midY), to: nil)
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            window.sendEvent(try XCTUnwrap(NSEvent.mouseEvent(with: type, location: location, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                                              windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)))
+        }
+        XCTAssertNotNil(NSPasteboard.general.string(forType: .string), "the click copied")
+        let responder = window.firstResponder
+        XCTAssertTrue(responder === field || (responder as? NSTextView)?.delegate === field, "the field keeps the keyboard: \(String(describing: responder))")
+    }
+
+    /// A line cut in its middle draws what it is now: an underline that comes
+    /// or goes (a file link under the pointer) shows.
+    @MainActor func testAMiddleCutRedrawsItsUnderline() throws {
+        let label = TranscriptLabel()
+        label.text = "Sources/App/Networking/Deeply/Nested/RetryPolicy.swift"; label.font = .systemFont(ofSize: 12); label.truncation = .middle
+        label.frame = CGRect(x: 0, y: 0, width: label.width(truncatedTo: 140), height: label.intrinsicSize.height)
+        func drawn() -> Data? {
+            let rep = label.bitmapImageRepForCachingDisplay(in: label.bounds)!
+            label.cacheDisplay(in: label.bounds, to: rep)
+            return rep.tiffRepresentation
+        }
+        let plain = drawn()
+        label.underlined = true
+        XCTAssertNotEqual(drawn(), plain, "the underline shows on the cut line")
+        label.underlined = false
+        XCTAssertEqual(drawn(), plain)
     }
 }
