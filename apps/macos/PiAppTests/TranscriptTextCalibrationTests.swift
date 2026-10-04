@@ -38,7 +38,12 @@ final class TranscriptTextCalibrationTests: XCTestCase {
             ("split10", .systemFont(ofSize: 10), .system(size: 10)),
             // A turn's fold line and a response's header line.
             ("fold13m", .systemFont(ofSize: 13, weight: .medium), .system(size: 13, weight: .medium)),
-            ("header12.5m", .systemFont(ofSize: 12.5, weight: .medium), .system(size: 12.5, weight: .medium))]
+            ("header12.5m", .systemFont(ofSize: 12.5, weight: .medium), .system(size: 12.5, weight: .medium)),
+            // A Copy button's title; an edge's links and its problem's title.
+            ("copy10.5m", .systemFont(ofSize: 10.5, weight: .medium), .system(size: 10.5, weight: .medium)),
+            ("edge11.5sb", .systemFont(ofSize: 11.5, weight: .semibold), .system(size: 11.5, weight: .semibold)),
+            // A fence's language.
+            ("language10.5mm", TranscriptNativeCodeBlock.languageFont, .system(size: 10.5, weight: .medium, design: .monospaced))]
         let sweeping = testEnvironment("PI_TEXT_CALIBRATION") == "1"
         defer { TranscriptLabel.baselineOverride = nil }
         var failures: [String] = []
@@ -180,6 +185,31 @@ final class TranscriptTextCalibrationTests: XCTestCase {
             if SizeProbe.size != expected { failures.append("\(key): SwiftUI \(SizeProbe.size), table \(expected)") }
         }
         XCTAssertTrue(failures.isEmpty, failures.joined(separator: "; "))
+    }
+    /// A Copy button (a fence's, a heading's) is as big as SwiftUI's
+    /// `CopyButton`, unrounded: the surface centres it by that size.
+    @MainActor func testCopyButtonSizeMatchesSwiftUI() throws {
+        SizeProbe.size = .zero
+        Self.measureInWindow(SizeProbe { CopyButton(target: MarkdownCopyTarget(kind: .code, label: "Copy code", text: "x"), visible: true) })
+        FileHandle.standardError.write(Data("CALIBRATE copy button: SwiftUI \(SizeProbe.size)\n".utf8))
+        XCTAssertEqual(SizeProbe.size, TranscriptCopyButton.size)
+    }
+    @MainActor func testProbeQuoteBarParts() throws {
+        try XCTSkipUnless(testEnvironment("PI_PROBE") == "1")
+        let parts: [(String, AnyView, CGFloat, CGFloat)] = [
+            ("symbol", AnyView(Image(systemName: "bubble.left.and.bubble.right").font(.system(size: 11.5, weight: .semibold))), 0, 0),
+            ("title", AnyView(Text("Ask in side chat").font(.system(size: 12.5, weight: .medium))),
+             QuoteActionBarView.title.width, QuoteActionBarView.title.lineHeight),
+            ("hint", AnyView(Text("↩").font(.system(size: 10.5, weight: .semibold))), QuoteActionBarView.hint.width, QuoteActionBarView.hint.lineHeight),
+            ("bar", AnyView(QuoteActionBar(ask: {}).environment(\.piReduceMotion, true)), 0, 0),
+            ("padded", AnyView(QuoteActionBar(ask: {}).padding(14).environment(\.piReduceMotion, true)), 0, 0)]
+        for (name, view, width, height) in parts {
+            SizeProbe.size = .zero
+            Self.measureInWindow(SizeProbe { view })
+            FileHandle.standardError.write(Data("PROBE quote \(name): SwiftUI \(SizeProbe.size) PiKit \(width) x \(height)\n".utf8))
+            let host = NSHostingView(rootView: view); host.sizingOptions = [.intrinsicContentSize]
+            FileHandle.standardError.write(Data("PROBE quote \(name): hosting fitting \(host.fittingSize)\n".utf8))
+        }
     }
     @MainActor func testProbeTextHeights() throws {
         try XCTSkipUnless(testEnvironment("PI_PROBE") == "1")

@@ -65,8 +65,8 @@ final class NestedFenceIdentityTests: XCTestCase {
             let event = try XCTUnwrap(NSEvent.mouseEvent(with: .mouseMoved, location: surface.convert(point, to: nil), modifierFlags: [], timestamp: 0,
                                                          windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 0, pressure: 0))
             surface.mouseMoved(with: event)
-            let bar = try XCTUnwrap(surface.subviews.compactMap { $0 as? NSHostingView<MarkdownCodeToolbar> }.first, "a toolbar over \(code)")
-            XCTAssertEqual(bar.rootView.code, code, "the toolbar over \(code) copies it")
+            let bar = try XCTUnwrap(surface.subviews.compactMap { $0 as? MarkdownCodeToolbarView }.first, "a toolbar over \(code)")
+            XCTAssertEqual(bar.code, code, "the toolbar over \(code) copies it")
         }
         withExtendedLifetime(window) {}
     }

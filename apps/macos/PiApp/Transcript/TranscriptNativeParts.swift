@@ -144,7 +144,8 @@ import AppKit
         "13.0/0": (16, 0), "12.5/0": (15, -0.375), "11.5/0": (14, -0.375), "12.0/0": (15, 0),
         "11.0/0.23m": (14, 0.125), "11.5/0m": (14, -0.375), "12.0/0m": (15, 0),
         "12.0/0.3": (15, 0), "13.0/0.3s": (16, -0.5), "11.0/0": (14, 0.125),
-        "9.5/0": (12, -0.375), "10.0/0": (13, 0.125), "13.0/0.23": (16, 0), "12.5/0.23": (15, -0.375)]
+        "9.5/0": (12, -0.375), "10.0/0": (13, 0.125), "13.0/0.23": (16, 0), "12.5/0.23": (15, -0.375),
+        "10.5/0.23": (13, -0.375), "11.5/0.3": (14, -0.375), "10.5/0.23m": (13, -0.375)]
     static func measured(_ font: NSFont) -> (height: CGFloat, baseline: CGFloat)? {
         let weight = (font.fontDescriptor.object(forKey: .traits) as? [NSFontDescriptor.TraitKey: Any])?[.weight] as? CGFloat ?? 0
         // A monospaced face has its own line box: its key ends in "m"; a
@@ -266,6 +267,18 @@ extension NSView {
     /// The point nearest this view's origin that lies on the window's pixel
     /// grid, in the view's own coordinates: where SwiftUI would have put it.
     var pixelSnappedOrigin: CGPoint { pixelSnapped(bounds.origin) }
+    /// Where a child laid out at `rect` (in this view's coordinates) lands
+    /// as SwiftUI places it: its origin worked out from where this view
+    /// stands unrounded (`offset` from its frame's origin) and rounded onto
+    /// the window's pixel grid, not onto this view's. Returns its frame and
+    /// how far its own unrounded origin lies from that frame's, for its
+    /// children in turn.
+    func pixelPlaced(_ rect: CGRect, offset: CGPoint = .zero) -> (frame: CGRect, offset: CGPoint) {
+        let exact = rect.offsetBy(dx: offset.x, dy: offset.y)
+        guard window != nil else { return (exact, .zero) }
+        let origin = pixelSnapped(exact.origin)
+        return (CGRect(origin: origin, size: exact.size), CGPoint(x: exact.minX - origin.x, y: exact.minY - origin.y))
+    }
     /// The point nearest `point` (in the view's coordinates) on the window's pixel grid.
     func pixelSnapped(_ point: CGPoint) -> CGPoint {
         guard let window else { return point }
@@ -335,6 +348,12 @@ extension NSView {
         // A response's fold button.
         "arrow.down.left.and.arrow.up.right/10.0/\(NSFont.Weight.semibold.rawValue)": CGSize(width: 11.5, height: 11.5),
         "arrow.up.right.and.arrow.down.left/10.0/\(NSFont.Weight.semibold.rawValue)": CGSize(width: 12, height: 12),
+        // A Copy button's icon; the quote bar's, the edges'.
+        "doc.on.doc/10.0/\(NSFont.Weight.medium.rawValue)": CGSize(width: 12.5, height: 14.5),
+        "exclamationmark.circle/11.0/\(NSFont.Weight.semibold.rawValue)": CGSize(width: 13.5, height: 13.5),
+        "arrow.triangle.branch/11.0/\(NSFont.Weight.semibold.rawValue)": CGSize(width: 14, height: 12),
+        "arrow.up.to.line/11.5/\(NSFont.Weight.medium.rawValue)": CGSize(width: 12, height: 14),
+        "bubble.left.and.bubble.right/11.5/\(NSFont.Weight.semibold.rawValue)": CGSize(width: 20, height: 15.5),
     ]
     /// How far from the middle of SwiftUI's frame SwiftUI draws the symbol,
     /// measured (`TranscriptTextCalibrationTests.testSymbolsDrawAsSwiftUI`).
@@ -358,6 +377,9 @@ extension NSView {
         "chevron.left/9.5/\(NSFont.Weight.semibold.rawValue)": CGPoint(x: 0, y: -0.875),
         "chevron.right/9.5/\(NSFont.Weight.semibold.rawValue)": CGPoint(x: 0.375, y: -1),
         "chevron.right/12.5/\(NSFont.Weight.regular.rawValue)": CGPoint(x: 0.375, y: -0.5),
+        // Swept over a heading's Copy and the quote bar (TranscriptNativeChromeParityTests.testSweepChromeSymbolOffsets).
+        "doc.on.doc/10.0/\(NSFont.Weight.medium.rawValue)": CGPoint(x: 0.375, y: -0.875),
+        "bubble.left.and.bubble.right/11.5/\(NSFont.Weight.semibold.rawValue)": CGPoint(x: 0, y: -1),
         // Swept in the bubble (TranscriptNativeRowParityTests.testSweepSkillGlyphOffset).
         "command/9.0/\(NSFont.Weight.bold.rawValue)": CGPoint(x: 0.125, y: -0.625),
     ]
@@ -429,6 +451,8 @@ extension NSView {
     /// SwiftUI's `Circle` and `Capsule` round with a circle's arc; its
     /// rounded rectangles here are continuous.
     var circular = false { didSet { needsDisplay = true } }
+    /// A shadow under the fill, as `.shadow(color:radius:y:)` casts one.
+    var castShadow: (color: NSColor, radius: CGFloat, y: CGFloat)? { didSet { needsDisplay = true } }
     override var isFlipped: Bool { true }
     override var wantsUpdateLayer: Bool { true }
     override init(frame: NSRect) {
@@ -452,10 +476,11 @@ extension NSView {
         guard let layer else { return }
         let radius = cornerRadius ?? bounds.height / 2
         let curve: CALayerCornerCurve = circular ? .circular : .continuous
-        var background: CGColor?, border: CGColor?
+        var background: CGColor?, border: CGColor?, shade: CGColor?
         effectiveAppearance.performAsCurrentDrawingAppearance {
             background = fill?.cgColor
             border = stroke?.cgColor
+            shade = castShadow?.color.cgColor
         }
         if body.superlayer == nil { layer.addSublayer(body) }
         if edge.superlayer == nil { layer.addSublayer(edge) }
@@ -464,6 +489,12 @@ extension NSView {
         body.cornerRadius = radius
         body.cornerCurve = curve
         body.backgroundColor = background
+        if let shadow = castShadow, let shade {
+            body.shadowColor = shade; body.shadowOpacity = 1
+            body.shadowRadius = PiKit.shadowRadius(shadow.radius); body.shadowOffset = CGSize(width: 0, height: shadow.y)
+        } else {
+            body.shadowOpacity = 0
+        }
         edge.frame = layer.bounds.insetBy(dx: -strokeWidth / 2, dy: -strokeWidth / 2)
         edge.cornerRadius = radius + strokeWidth / 2
         edge.cornerCurve = curve
@@ -691,7 +722,8 @@ extension NSView {
 /// Copies a markdown target and says so for two seconds, as `CopyButton`
 /// does: a 64-point face so "Copy" turning into "Copied" moves nothing.
 @MainActor final class TranscriptCopyButton: NSView {
-    static let size = CGSize(width: 64, height: 21)
+    /// SwiftUI's `CopyButton`, unrounded (`testCopyButtonSizeMatchesSwiftUI`).
+    static let size = CGSize(width: 64, height: 22.5)
     private let face = TranscriptPanel()
     private let icon = TranscriptSymbol()
     private let label = TranscriptLabel()
@@ -702,7 +734,16 @@ extension NSView {
     private var hovering = false { didSet { refresh() } }
     private var copied = false { didSet { refresh() } }
     private var reset: Timer?
+    /// How far the button's unrounded origin lies from its frame's, when
+    /// whoever placed it rounded it onto the pixel grid (`pixelPlaced`).
+    var layoutOffset = CGPoint.zero { didSet { if layoutOffset != oldValue { needsLayout = true } } }
     override var isFlipped: Bool { true }
+    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); needsLayout = true }
+    override func setFrameOrigin(_ newOrigin: NSPoint) {
+        // Its parts land on the window's pixel grid: a move lays them out again.
+        if newOrigin != frame.origin { needsLayout = true }
+        super.setFrameOrigin(newOrigin)
+    }
     override init(frame: NSRect) {
         super.init(frame: frame)
         face.cornerRadius = 5
@@ -716,9 +757,7 @@ extension NSView {
     private func refresh() {
         let tint = copied ? TranscriptNSPalette.accent : hovering ? TranscriptNSPalette.text : TranscriptNSPalette.muted
         label.text = copied ? "Copied" : "Copy"; label.color = tint
-        let symbol = NSImage(systemSymbolName: copied ? "checkmark" : "doc.on.doc", accessibilityDescription: nil)?
-            .withSymbolConfiguration(.init(pointSize: 10, weight: .medium))
-        icon.image = symbol; icon.contentTintColor = tint
+        icon.show(copied ? "checkmark" : "doc.on.doc", size: 10, weight: .medium); icon.contentTintColor = tint
         face.fill = hovering ? TranscriptNSPalette.panelStrong : TranscriptNSPalette.codeBackground
         face.stroke = copied ? TranscriptNSPalette.accent.withAlphaComponent(0.4) : hovering ? TranscriptNSPalette.hairStrong : nil
         needsLayout = true
@@ -726,14 +765,28 @@ extension NSView {
     override func layout() {
         super.layout()
         face.frame = bounds
-        let iconSize = icon.image?.size ?? CGSize(width: 10, height: 10)
+        // As SwiftUI lays out `CopyButton`'s HStack: the symbol in the frame
+        // SwiftUI gives it, four points, the title; the pair centred in the
+        // button. Each draws on the pixel grid of the window, not of the
+        // button, as SwiftUI rounds where a view lands on screen.
+        let iconSize = icon.swiftUIFrame ?? icon.image.map { CGSize(width: $0.alignmentRect.width, height: $0.size.height) } ?? CGSize(width: 10, height: 10)
         let text = label.intrinsicSize
         let width = iconSize.width + 4 + text.width
         let x = (bounds.width - width) / 2
-        icon.frame = TranscriptMotion.mirrored(CGRect(x: x, y: (bounds.height - iconSize.height) / 2, width: iconSize.width, height: iconSize.height),
-                                               width: bounds.width, rightToLeft)
-        label.frame = TranscriptMotion.mirrored(CGRect(x: x + iconSize.width + 4, y: (bounds.height - text.height) / 2, width: text.width, height: text.height),
-                                                width: bounds.width, rightToLeft)
+        let slot = CGRect(x: x, y: (bounds.height - iconSize.height) / 2, width: iconSize.width, height: iconSize.height)
+        icon.place(in: pixelPlaced(TranscriptMotion.mirrored(slot, width: bounds.width, rightToLeft), offset: layoutOffset).frame)
+        // A title set right to left lies against its frame's right edge, as SwiftUI's does.
+        let title = TranscriptMotion.mirrored(CGRect(x: x + iconSize.width + 4, y: (bounds.height - text.height) / 2, width: text.width, height: text.height),
+                                              of: label, width: bounds.width, rightToLeft)
+        var placed = pixelPlaced(title, offset: layoutOffset).frame
+        if rightToLeft {
+            // Set from the right, a title ends where its frame (on the pixel
+            // grid) ends, its own width before that, between pixels.
+            let frame = pixelPlaced(TranscriptMotion.mirrored(CGRect(x: x + iconSize.width + 4, y: 0, width: text.width, height: text.height),
+                                                              width: bounds.width, true), offset: layoutOffset).frame
+            placed.origin.x = frame.maxX - label.exactWidth
+        }
+        label.frame = placed
     }
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -742,6 +795,8 @@ extension NSView {
     }
     override func mouseEntered(with event: NSEvent) { hovering = true }
     override func mouseExited(with event: NSEvent) { hovering = false }
+    /// The pointer over it, or not, as its tracking area says (and a test can).
+    func setHovering(_ value: Bool) { hovering = value }
     override func cursorUpdate(with event: NSEvent) { NSCursor.pointingHand.set() }
     override func mouseDown(with event: NSEvent) {}
     override func mouseUp(with event: NSEvent) {

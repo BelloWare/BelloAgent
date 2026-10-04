@@ -1,5 +1,4 @@
 import AppKit
-import SwiftUI
 
 /// Large tables have a deliberately bounded inline preview. The full table is
 /// backed by NSTableView's visible-row reuse; source/copy never depend on views.
@@ -31,7 +30,12 @@ enum MarkdownTablePresentation {
     private let rows: [[String]]
     private let table = NSTableView()
     private let detail = NSTextView()
-    private var window: NSWindow!
+    /// The grid's and the cell text's scroll views, as the window lays them out.
+    let gridScroll = NSScrollView(), detailScroll = NSScrollView()
+    private(set) var window: NSWindow!
+    /// The table windows open now.
+    static var open: [NSWindow] { windows.values.map(\.window) }
+    static func controller(of window: NSWindow) -> MarkdownTableWindow? { windows.values.first { $0.window === window } }
 
     static func open(header: [AttributedString], rows: [[AttributedString]]) {
         let controller = MarkdownTableWindow(header: plain(header), rows: rows.map { MarkdownTablePresentation.plain($0) })
@@ -48,7 +52,7 @@ enum MarkdownTablePresentation {
         window.minSize = NSSize(width: 440, height: 300)
         window.applyPiWindowChrome()
         window.center()
-        let scroll = NSScrollView(); scroll.documentView = table; scroll.hasVerticalScroller = true; scroll.hasHorizontalScroller = true
+        let scroll = gridScroll; scroll.documentView = table; scroll.hasVerticalScroller = true; scroll.hasHorizontalScroller = true
         scroll.drawsBackground = false; scroll.borderType = .noBorder
         table.style = .plain; table.rowHeight = 26; table.usesAlternatingRowBackgroundColors = false; table.allowsMultipleSelection = false
         table.backgroundColor = .piSurface; table.gridColor = .piHairline; table.gridStyleMask = [.solidHorizontalGridLineMask, .solidVerticalGridLineMask]
@@ -68,14 +72,14 @@ enum MarkdownTablePresentation {
             column.width = CGFloat(max(120, min(420, length * 7 + 24))); column.minWidth = 60
             table.addTableColumn(column)
         }
-        let detailScroll = NSScrollView(); detailScroll.documentView = detail; detailScroll.hasVerticalScroller = true
+        detailScroll.documentView = detail; detailScroll.hasVerticalScroller = true
         detailScroll.drawsBackground = false; detailScroll.borderType = .noBorder
         detail.isEditable = false; detail.isSelectable = true; detail.drawsBackground = false; detail.font = .systemFont(ofSize: 13)
         detail.textContainerInset = NSSize(width: 8, height: 8); detail.isVerticallyResizable = true; detail.autoresizingMask = [.width]
         detail.textContainer?.widthTracksTextView = true
         show(Self.placeholder, placeholder: true)
-        window.contentView = NSHostingView(rootView: MarkdownTableWindowView(rows: rows.count, grid: scroll, detail: detailScroll,
-                                                                             copy: { [weak self] in self?.copyTable() }))
+        window.contentView = MarkdownTableWindowContent(rows: rows.count, grid: scroll, detail: detailScroll,
+                                                        copy: { [weak self] in self?.copyTable() })
         window.initialFirstResponder = table
     }
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
@@ -100,7 +104,7 @@ enum MarkdownTablePresentation {
         detail.textColor = placeholder ? .piInkSecondary : .piInk
     }
     func tableViewSelectionDidChange(_ notification: Notification) { selectCell() }
-    @objc private func copyTable() {
+    @objc func copyTable() {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(MarkdownTablePresentation.tsv(header: header, rows: rows), forType: .string)
     }
@@ -110,50 +114,93 @@ enum MarkdownTablePresentation {
     }
 }
 
-/// The window's layout: its bar, the grid on a Pi surface, and the chosen
-/// cell's whole text under it.
-private struct MarkdownTableWindowView: View {
-    let rows: Int
-    let grid: NSView, detail: NSView
-    let copy: () -> Void
-    var body: some View {
-        VStack(spacing: 0) {
-            ZStack(alignment: .leading) {
-                PiWindowBar()
-                HStack(spacing: PiSpacing.sm) {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text("Table").font(PiFont.title(14)).foregroundStyle(Color.piInk)
-                        Text("\(rows.formatted()) rows").font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
-                    }.allowsHitTesting(false)
-                    Spacer(minLength: 8)
-                    Button("Copy full table as TSV", action: copy).buttonStyle(.piSecondaryCompact)
-                        .accessibilityIdentifier("table-window-copy")
-                }
-                .padding(.leading, PiWindowBar.trafficLightInset).padding(.trailing, PiSpacing.md)
-            }
-            .frame(height: 48)
-            MarkdownTableHostedView(view: grid)
-                .clipShape(RoundedRectangle(cornerRadius: PiRadius.md, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: PiRadius.md, style: .continuous).strokeBorder(Color.piHairline))
-                .padding(.horizontal, PiSpacing.md)
-            MarkdownTableHostedView(view: detail)
-                .frame(height: 120)
-                .background(Color.piSurface, in: RoundedRectangle(cornerRadius: PiRadius.md, style: .continuous))
-                .clipShape(RoundedRectangle(cornerRadius: PiRadius.md, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: PiRadius.md, style: .continuous).strokeBorder(Color.piHairline))
-                .padding(PiSpacing.md)
-        }
-        .background(Color.piWindow)
-        .ignoresSafeArea(.container, edges: .top)
+/// The window's layout: its bar (the title, the row count and the Copy), the
+/// grid on a Pi surface, and the chosen cell's whole text under it, on the
+/// window's canvas from its very top.
+@MainActor final class MarkdownTableWindowContent: NSView {
+    static let barHeight: CGFloat = 48
+    static let detailHeight: CGFloat = 120
+    private let bar = PiWindowBarView(frame: .zero)
+    private let title = PiKit.TextLine(PiKit.Line("Table", font: PiKit.Font.title(14), color: .piInk))
+    private let count: PiKit.TextLine
+    let copy: PiKit.Button
+    private let gridFrame = MarkdownTableFrame(surface: false), detailFrame = MarkdownTableFrame(surface: true)
+    override var isFlipped: Bool { true }
+    init(rows: Int, grid: NSView, detail: NSView, copy action: @escaping () -> Void) {
+        count = PiKit.TextLine(PiKit.Line("\(rows.formatted()) rows", font: PiKit.Font.caption, color: .piInkSecondary))
+        copy = PiKit.Button("Copy full table as TSV", style: .secondary, compact: true, action: action)
+        super.init(frame: .zero)
+        wantsLayer = true
+        copy.setAccessibilityIdentifier("table-window-copy")
+        // The bar is the window's drag area behind the words and the Copy,
+        // which stand over it.
+        addSubview(bar)
+        for view in [title, count] { view.setAccessibilityElement(false); addSubview(view) }
+        addSubview(copy)
+        gridFrame.content = grid; detailFrame.content = detail
+        addSubview(gridFrame); addSubview(detailFrame)
+    }
+    required init?(coder: NSCoder) { nil }
+    override var wantsUpdateLayer: Bool { true }
+    override func updateLayer() { layer?.backgroundColor = piCGColor(.piWindow) }
+    override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); needsDisplay = true }
+    override func layout() {
+        super.layout()
+        let scale = window?.backingScaleFactor ?? 2
+        bar.frame = CGRect(x: 0, y: 0, width: bounds.width, height: Self.barHeight)
+        // The title over the count, one point apart, beside the Copy, centred
+        // on the bar's line.
+        let titleSize = title.intrinsicContentSize, countSize = count.intrinsicContentSize
+        let text = CGSize(width: max(titleSize.width, countSize.width), height: titleSize.height + 1 + countSize.height)
+        let button = copy.intrinsicContentSize
+        let right = bounds.width - PiSpacing.md
+        copy.frame = CGRect(x: right - button.width, y: PiKit.round((Self.barHeight - button.height) / 2, scale), width: button.width, height: button.height)
+        let top = PiKit.round((Self.barHeight - text.height) / 2, scale)
+        let room = max(0, copy.frame.minX - PiSpacing.sm - 8 - PiWindowBar.trafficLightInset)
+        title.frame = CGRect(x: PiWindowBar.trafficLightInset, y: top, width: min(titleSize.width, room), height: titleSize.height)
+        count.frame = CGRect(x: PiWindowBar.trafficLightInset, y: PiKit.round(top + titleSize.height + 1, scale), width: min(countSize.width, room), height: countSize.height)
+        let detailTop = bounds.height - PiSpacing.md - Self.detailHeight
+        gridFrame.frame = CGRect(x: PiSpacing.md, y: Self.barHeight, width: max(0, bounds.width - PiSpacing.md * 2),
+                                 height: max(0, detailTop - PiSpacing.md - Self.barHeight))
+        detailFrame.frame = CGRect(x: PiSpacing.md, y: detailTop, width: max(0, bounds.width - PiSpacing.md * 2), height: Self.detailHeight)
     }
 }
 
-/// The window's own AppKit views, kept as they are: nothing here makes,
-/// reloads or focuses them again.
-private struct MarkdownTableHostedView: NSViewRepresentable {
-    let view: NSView
-    func makeNSView(context: Context) -> NSView { view }
-    func updateNSView(_ nsView: NSView, context: Context) {}
+/// A rounded Pi frame around one of the window's AppKit views: the view
+/// clipped to it, a hairline just inside its edge, and the surface behind it
+/// when asked.
+@MainActor final class MarkdownTableFrame: NSView {
+    private let clip = NSView()
+    private let border = Border()
+    /// The hairline: drawn over the content, never in the way of a click.
+    private final class Border: NSView { override func hitTest(_ point: NSPoint) -> NSView? { nil } }
+    private let surface: Bool
+    var content: NSView? { didSet { oldValue?.removeFromSuperview(); if let content { clip.addSubview(content) } } }
+    init(surface: Bool) {
+        self.surface = surface
+        super.init(frame: .zero)
+        for view in [clip, border] {
+            view.wantsLayer = true
+            view.layer?.cornerRadius = PiRadius.md; view.layer?.cornerCurve = .continuous
+            addSubview(view)
+        }
+        clip.layer?.masksToBounds = true
+        border.layer?.borderWidth = 1
+    }
+    required init?(coder: NSCoder) { nil }
+    override func layout() {
+        super.layout()
+        clip.frame = bounds; border.frame = bounds
+        content?.frame = clip.bounds
+        updateColors()
+    }
+    override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); updateColors() }
+    private func updateColors() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            clip.layer?.backgroundColor = surface ? NSColor.piSurface.cgColor : nil
+            border.layer?.borderColor = NSColor.piHairline.cgColor
+        }
+    }
 }
 
 /// A cell: its text in body ink, 8 points in from either edge and centred in
