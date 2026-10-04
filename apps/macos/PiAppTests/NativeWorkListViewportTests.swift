@@ -17,7 +17,7 @@ final class NativeWorkListViewportTests: XCTestCase {
         let window: NSWindow
         var environment = TranscriptRowEnvironment()
 
-        init(tools: Int, width: CGFloat = 820, height: CGFloat = 560) {
+        init(tools: Int, width: CGFloat = 820, height: CGFloat = 560, edit: Int? = nil) {
             session = SessionDisplay(id: "work-list")
             var reply = TranscriptMessage(id: "a1", role: "assistant",
                                           text: String(repeating: "Here is what changed and why it matters. ", count: 8),
@@ -29,6 +29,13 @@ final class NativeWorkListViewportTests: XCTestCase {
                          output: (0..<6).map { "line \($0) of tool \(index) output that wraps across the card." }.joined(separator: "\n"),
                          durationMs: 12 + Double(index), truncated: false,
                          path: "apps/macos/PiApp/Sources/File\(index).swift")
+            }
+            if let edit {
+                // One call is a long edit, whose card caps its middle.
+                let rows = (1...30).map { "let value\($0) = \($0)" }
+                let input = String(decoding: try! JSONSerialization.data(withJSONObject: ["path": "V.swift", "oldText": rows.joined(separator: "\n"),
+                                                                                         "newText": rows.map { $0 + " // x" }.joined(separator: "\n")]), as: UTF8.self)
+                reply.tools?[edit] = ToolView(id: "t\(edit)", name: "edit", state: "completed", input: input, output: "ok", durationMs: 10, truncated: false, path: "V.swift")
             }
             session.messages = [TranscriptMessage(id: "u1", role: "user", text: "Work through the whole change.", at: 1_000, turn: "u1"), reply]
             // These viewport checks exercise explicitly expanded work.
@@ -84,16 +91,23 @@ final class NativeWorkListViewportTests: XCTestCase {
     @MainActor private func container(_ fixture: Fixture) throws -> NativeWorkListContainer {
         try XCTUnwrap(descendants(NativeWorkListContainer.self, in: fixture.document).first)
     }
-    @MainActor private func textFields(in view: NSView) -> [NSTextField] {
-        (view as? NSTextField).map { [$0] } ?? view.subviews.flatMap { textFields(in: $0) }
+    /// The selectable texts a card draws.
+    @MainActor private func selectableTexts(in view: NSView) -> [String] {
+        if let text = view as? NSTextView { return text.isSelectable ? [text.string] : [] }
+        if let field = view as? NSTextField { return field.isSelectable ? [field.stringValue] : [] }
+        return view.subviews.flatMap { selectableTexts(in: $0) }
     }
     /// Every card that is actually on screen holds no more than the space the
     /// list gave it. Overlap here is one tool call drawn over the next.
     @MainActor private func assertCardsFit(_ container: NativeWorkListContainer, _ what: String,
                                            file: StaticString = #filePath, line: UInt = #line) {
         for host in container.subviews {
-            XCTAssertLessThanOrEqual(ceil(host.fittingSize.height), host.frame.height + 0.5,
-                                     "\(what): a card holds \(host.fittingSize.height) points in a \(host.frame.height) point row",
+            let row = host as? TranscriptNativeActionRow
+            XCTAssertNotNil(row, "\(what): every card is a native row", file: file, line: line)
+            // What the card draws: its line and, open, its card, measured at the width it was given.
+            let needed = ceil(row?.height(width: host.frame.width) ?? .infinity)
+            XCTAssertLessThanOrEqual(needed, host.frame.height + 0.5,
+                                     "\(what): a card holds \(needed) points in a \(host.frame.height) point row",
                                      file: file, line: line)
         }
     }
@@ -143,7 +157,7 @@ final class NativeWorkListViewportTests: XCTestCase {
         assertCardsFit(list, "with one card open")
 
         // What the card shows is selectable native text, not a picture.
-        let selectable = textFields(in: list).filter(\.isSelectable).map(\.stringValue)
+        let selectable = selectableTexts(in: list)
         XCTAssertTrue(selectable.contains { $0.contains("line 0 of tool 1 output") },
                       "the open card's output must be selectable; found \(selectable.prefix(4))")
 
@@ -152,6 +166,26 @@ final class NativeWorkListViewportTests: XCTestCase {
         await fixture.settle()
         XCTAssertEqual(row.frame.height, tall, accuracy: 1, "closing the card returns the turn to its height")
         assertCardsFit(list, "after the card closed again")
+    }
+
+    /// A card that grows by itself — a diff the reader expands — makes its
+    /// turn taller, and no card is drawn over the next.
+    @MainActor func testExpandingADiffInsideTheListMakesTheTurnTaller() async throws {
+        let fixture = Fixture(tools: 60, edit: 1); defer { fixture.close() }
+        await fixture.settle()
+        let list = try container(fixture)
+        let row = try XCTUnwrap(fixture.blockRow)
+        row.toggleDisclosure(.tool(ToolOccurrence.key("a1", "t1")))
+        fixture.draw()
+        await fixture.settle()
+        await fixture.settle()
+        let open = row.frame.height, listOpen = list.frame.height
+        let more = try XCTUnwrap(descendants(TranscriptCardMoreLines.self, in: list).first, "the open diff caps its middle")
+        XCTAssertTrue(more.accessibilityPerformPress())
+        await fixture.settle()
+        XCTAssertGreaterThan(list.frame.height, listOpen + 40, "the expanded diff made the list taller")
+        XCTAssertEqual(row.frame.height - open, list.frame.height - listOpen, accuracy: 0.5, "and the turn with it")
+        assertCardsFit(list, "with the diff expanded")
     }
 
     @MainActor func testFoldingAndUnfoldingASixtyCallTurnDoesNotMeasureEveryCard() async throws {

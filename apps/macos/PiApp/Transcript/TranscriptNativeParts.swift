@@ -66,6 +66,13 @@ import AppKit
     static func mirrored(_ rect: CGRect, width: CGFloat, _ rightToLeft: Bool) -> CGRect {
         rightToLeft ? CGRect(x: width - rect.maxX, y: rect.minY, width: rect.width, height: rect.height) : rect
     }
+    /// `rect`, the frame of `view`, mirrored as SwiftUI mirrors it: a label
+    /// by its own width.
+    static func mirrored(_ rect: CGRect, of view: NSView, width: CGFloat, _ rightToLeft: Bool) -> CGRect {
+        guard rightToLeft else { (view as? TranscriptLabel)?.snapsX = true; return rect }
+        if let label = view as? TranscriptLabel { return label.mirrored(rect, width: width) }
+        return mirrored(rect, width: width, true)
+    }
 }
 
 /// One line of text, drawn as SwiftUI draws a `Text`: the font's own line box
@@ -77,12 +84,19 @@ import AppKit
     var color: NSColor = TranscriptNSPalette.muted { didSet { if color != oldValue { attributed = nil; needsDisplay = true } } }
     var monospacedDigits = false { didSet { if monospacedDigits != oldValue { invalidate() } } }
     /// Cut short with an ellipsis when its frame is narrower than its line,
-    /// as `lineLimit(1)` does; `head` cuts its beginning instead.
-    enum Truncation { case tail, head }
+    /// as `lineLimit(1)` does; `head` cuts its beginning instead, `middle`
+    /// its middle (`truncationMode(.middle)`, a path's).
+    enum Truncation { case tail, head, middle }
+    private var ctTruncation: CTLineTruncationType {
+        switch truncation { case .head: return .start; case .middle: return .middle; default: return .end }
+    }
     var truncation: Truncation? { didSet { if truncation != oldValue { needsDisplay = true } } }
     var underlined = false { didSet { if underlined != oldValue { invalidate() } } }
     private var attributed: NSAttributedString?
     private var measured: CGSize?
+    /// Whether the text stands on a whole pixel across; one laid out from
+    /// the right by its own width does not.
+    var snapsX = true { didSet { if snapsX != oldValue { needsDisplay = true } } }
     override var isFlipped: Bool { true }
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -121,10 +135,13 @@ import AppKit
     /// rule of the font's metrics gave all of them.
     private static let swiftUILines: [String: (height: CGFloat, baseline: CGFloat)] = [
         "12.5/0.3": (15, -0.375), "10.5/0": (13, -0.375), "11.0/0.23": (14, 0.125),
-        "11.5/0.23": (14, -0.375), "11.0/0.4": (14, 0.125), "12.0/0.23": (15, 0)]
+        "11.5/0.23": (14, -0.375), "11.0/0.4": (14, 0.125), "12.0/0.23": (15, 0),
+        "13.0/0": (16, 0), "12.5/0": (15, -0.375), "11.5/0": (14, -0.375), "12.0/0": (15, 0),
+        "11.0/0.23m": (14, 0.125), "11.5/0m": (14, -0.375), "12.0/0m": (15, 0)]
     static func measured(_ font: NSFont) -> (height: CGFloat, baseline: CGFloat)? {
         let weight = (font.fontDescriptor.object(forKey: .traits) as? [NSFontDescriptor.TraitKey: Any])?[.weight] as? CGFloat ?? 0
-        return swiftUILines[String(format: "%.1f/%.2g", font.pointSize, weight)]
+        // A monospaced face has its own line box: its key ends in "m".
+        return swiftUILines[String(format: "%.1f/%.2g", font.pointSize, weight) + (font.isFixedPitch ? "m" : "")]
     }
     /// The line box SwiftUI gives this font.
     static func lineHeight(_ font: NSFont) -> CGFloat {
@@ -139,6 +156,19 @@ import AppKit
         measured = size
         return size
     }
+    /// The text's own width on one line, unrounded: where SwiftUI ends its
+    /// frame when it lays a text out from the right.
+    var exactWidth: CGFloat {
+        CGFloat(CTLineGetTypographicBounds(CTLineCreateWithAttributedString(string), nil, nil, nil))
+    }
+    /// `rect` (this label's frame) in a line `width` wide laid out right to
+    /// left: a whole text ends where its own width ends, as SwiftUI places it.
+    func mirrored(_ rect: CGRect, width: CGFloat) -> CGRect {
+        let whole = rect.width + 0.25 >= intrinsicSize.width
+        // SwiftUI draws such a text where its width puts it, between pixels.
+        snapsX = !whole
+        return CGRect(x: width - rect.minX - (whole ? exactWidth : rect.width), y: rect.minY, width: rect.width, height: rect.height)
+    }
     /// How wide the text is once cut short to fit `width`, as SwiftUI sizes
     /// a truncated text: the line it draws, not the room it was offered.
     func width(truncatedTo width: CGFloat) -> CGFloat {
@@ -150,7 +180,7 @@ import AppKit
         // keeps the cut that fits whole pixels.
         var room = width
         while room > 0 {
-            guard let cut = CTLineCreateTruncatedLine(line, Double(room), truncation == .head ? .start : .end, ellipsis) else { return width }
+            guard let cut = CTLineCreateTruncatedLine(line, Double(room), ctTruncation, ellipsis) else { return width }
             let used = ceil(CGFloat(CTLineGetTypographicBounds(cut, nil, nil, nil)) * 2) / 2
             if used <= width { return used }
             room -= 0.5
@@ -167,12 +197,12 @@ import AppKit
         var line = CTLineCreateWithAttributedString(string)
         // A line cut too short for even its ellipsis is clipped, as SwiftUI clips it.
         if truncation != nil { context.clip(to: bounds) }
-        if let truncation, bounds.width + 0.25 < intrinsicSize.width {
+        if truncation != nil, bounds.width + 0.25 < intrinsicSize.width {
             let ellipsis = CTLineCreateWithAttributedString(NSAttributedString(string: "…", attributes: string.attributes(at: 0, effectiveRange: nil)))
-            line = CTLineCreateTruncatedLine(line, Double(bounds.width), truncation == .tail ? .end : .start, ellipsis) ?? line
+            line = CTLineCreateTruncatedLine(line, Double(bounds.width), ctTruncation, ellipsis) ?? line
         }
         // SwiftUI sets a text's origin on the pixel grid.
-        let origin = pixelSnappedOrigin
+        let origin = snapsX ? pixelSnappedOrigin : CGPoint(x: bounds.minX, y: pixelSnappedOrigin.y)
         context.textPosition = CGPoint(x: origin.x, y: origin.y + font.ascender + (Self.baselineOverride ?? Self.measured(font)?.baseline ?? 0))
         CTLineDraw(line, context)
         context.restoreGState()
@@ -184,12 +214,14 @@ import AppKit
 extension NSView {
     /// The point nearest this view's origin that lies on the window's pixel
     /// grid, in the view's own coordinates: where SwiftUI would have put it.
-    var pixelSnappedOrigin: CGPoint {
-        guard let window else { return bounds.origin }
+    var pixelSnappedOrigin: CGPoint { pixelSnapped(bounds.origin) }
+    /// The point nearest `point` (in the view's coordinates) on the window's pixel grid.
+    func pixelSnapped(_ point: CGPoint) -> CGPoint {
+        guard let window else { return point }
         let scale = window.backingScaleFactor
         // Rounded from the window's top, as SwiftUI's flipped layout rounds.
         let height = window.contentView?.bounds.height ?? 0
-        let inWindow = convert(bounds.origin, to: nil)
+        let inWindow = convert(point, to: nil)
         let top = ((height - inWindow.y) * scale).rounded() / scale
         return convert(CGPoint(x: (inWindow.x * scale).rounded() / scale, y: height - top), from: nil)
     }
@@ -200,7 +232,10 @@ extension NSView {
     /// The symbol `name` at `size` points and `weight`, as `Image(systemName:)`
     /// with `.font(.system(size:weight:))` draws it.
     func show(_ name: String, size: CGFloat, weight: NSFont.Weight) {
-        key = "\(name)/\(size)/\(weight.rawValue)"
+        let next = "\(name)/\(size)/\(weight.rawValue)"
+        // A row updated on every streamed delta keeps the image it has.
+        guard next != key || image == nil else { return }
+        key = next
         image = NSImage(systemSymbolName: name, accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: size, weight: weight))
     }
     private var key = ""
@@ -215,17 +250,45 @@ extension NSView {
         "arrow.clockwise/11.5/\(NSFont.Weight.medium.rawValue)": CGSize(width: 12.5, height: 14.5),
         "clock.arrow.circlepath/11.0/\(NSFont.Weight.medium.rawValue)": CGSize(width: 14.5, height: 13.5),
         "exclamationmark.triangle/11.0/\(NSFont.Weight.medium.rawValue)": CGSize(width: 13.5, height: 12.5),
+        // A work row's icons, and the chevron they turn into.
+        "terminal/12.0/\(NSFont.Weight.medium.rawValue)": CGSize(width: 17, height: 13),
+        "pencil/12.0/\(NSFont.Weight.medium.rawValue)": CGSize(width: 13, height: 12),
+        "doc.text/12.0/\(NSFont.Weight.medium.rawValue)": CGSize(width: 13.5, height: 15),
+        "folder/12.0/\(NSFont.Weight.medium.rawValue)": CGSize(width: 16.5, height: 13),
+        "magnifyingglass/12.0/\(NSFont.Weight.medium.rawValue)": CGSize(width: 15, height: 14),
+        "point.3.connected.trianglepath.dotted/12.0/\(NSFont.Weight.medium.rawValue)": CGSize(width: 16, height: 12.5),
+        "circle/12.0/\(NSFont.Weight.medium.rawValue)": CGSize(width: 14.5, height: 14.5),
+        "chevron.down/11.0/\(NSFont.Weight.semibold.rawValue)": CGSize(width: 13, height: 8),
     ]
     /// How far from the middle of SwiftUI's frame SwiftUI draws the symbol,
     /// measured (`TranscriptTextCalibrationTests.testSymbolsDrawAsSwiftUI`).
-    nonisolated static let swiftUIOffsets: [String: CGPoint] = [:]
+    nonisolated static let swiftUIOffsets: [String: CGPoint] = [
+        // Swept in the work row itself (TranscriptNativeWorkParityTests.testSweepWorkSymbolOffsets).
+        "pencil/12.0/\(NSFont.Weight.medium.rawValue)": CGPoint(x: 0.125, y: -0.25),
+        "doc.text/12.0/\(NSFont.Weight.medium.rawValue)": CGPoint(x: 0.125, y: -0.375),
+        "folder/12.0/\(NSFont.Weight.medium.rawValue)": CGPoint(x: 0.5, y: -0.125),
+        "magnifyingglass/12.0/\(NSFont.Weight.medium.rawValue)": CGPoint(x: 0.125, y: -0.25),
+        "point.3.connected.trianglepath.dotted/12.0/\(NSFont.Weight.medium.rawValue)": CGPoint(x: 0, y: -0.875),
+        "circle/12.0/\(NSFont.Weight.medium.rawValue)": CGPoint(x: 0.125, y: -1),
+        "chevron.down/11.0/\(NSFont.Weight.semibold.rawValue)": CGPoint(x: 0, y: -0.375),
+    ]
     /// For the calibration sweep only.
     nonisolated(unsafe) static var offsetOverride: CGPoint?
     /// The view's frame for SwiftUI's frame `rect` for the symbol: the image,
     /// whole, in its middle.
     func place(in rect: CGRect) {
         guard let image else { frame = rect; return }
-        frame = CGRect(x: rect.midX - image.size.width / 2, y: rect.midY - image.size.height / 2, width: image.size.width, height: image.size.height)
+        let side = square ? max(image.size.width, image.size.height) : 0
+        let size = square ? CGSize(width: side, height: side) : image.size
+        frame = CGRect(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2, width: size.width, height: size.height)
+    }
+    /// Drawn in the middle of square bounds, so it can turn inside them.
+    var square = false { didSet { if square != oldValue { needsDisplay = true } } }
+    /// How far the symbol is turned about its middle, in degrees, clockwise
+    /// on screen; animatable.
+    @objc dynamic var rotation: CGFloat = 0 { didSet { if rotation != oldValue { needsDisplay = true } } }
+    override class func defaultAnimation(forKey key: NSAnimatablePropertyKey) -> Any? {
+        key == "rotation" ? CABasicAnimation() : super.defaultAnimation(forKey: key)
     }
     /// Where SwiftUI's frame for the symbol is; nil for a symbol not measured.
     var swiftUIFrame: CGSize? { Self.swiftUIFrames[key] }
@@ -243,9 +306,16 @@ extension NSView {
         context.saveGState()
         context.beginTransparencyLayer(auxiliaryInfo: nil)
         // SwiftUI sets a symbol on the pixel grid, so its straight edges are crisp.
-        let snapped = pixelSnappedOrigin, nudge = Self.offsetOverride ?? Self.swiftUIOffsets[key] ?? .zero
+        let size = square ? image.size : bounds.size
+        let place = CGPoint(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2)
+        let snapped = pixelSnapped(place), nudge = Self.offsetOverride ?? Self.swiftUIOffsets[key] ?? .zero
         let origin = CGPoint(x: snapped.x + nudge.x, y: snapped.y + nudge.y)
-        image.draw(in: CGRect(origin: origin, size: bounds.size), from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+        if rotation != 0 {
+            context.translateBy(x: bounds.midX, y: bounds.midY)
+            context.rotate(by: rotation * .pi / 180)
+            context.translateBy(x: -bounds.midX, y: -bounds.midY)
+        }
+        image.draw(in: CGRect(origin: origin, size: size), from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
         context.setBlendMode(.sourceIn)
         context.setFillColor(tint.cgColor)
         context.fill(bounds)

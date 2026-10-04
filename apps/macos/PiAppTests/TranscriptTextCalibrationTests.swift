@@ -19,7 +19,15 @@ final class TranscriptTextCalibrationTests: XCTestCase {
             ("pill11m", .systemFont(ofSize: 11, weight: .medium), .system(size: 11, weight: .medium)),
             ("pill11.5m", .systemFont(ofSize: 11.5, weight: .medium), .system(size: 11.5, weight: .medium)),
             ("bang11b", .systemFont(ofSize: 11, weight: .bold), .system(size: 11, weight: .bold)),
-            ("ended12m", .systemFont(ofSize: 12, weight: .medium), .system(size: 12, weight: .medium))]
+            ("ended12m", .systemFont(ofSize: 12, weight: .medium), .system(size: 12, weight: .medium)),
+            // The work rows and their cards.
+            ("title13", .systemFont(ofSize: 13), .system(size: 13)),
+            ("summary12.5", .systemFont(ofSize: 12.5), .system(size: 12.5)),
+            ("figure11.5", .systemFont(ofSize: 11.5), .system(size: 11.5)),
+            ("figure12", .systemFont(ofSize: 12), .system(size: 12)),
+            ("gutter11mm", .monospacedSystemFont(ofSize: 11, weight: .medium), .system(size: 11, weight: .medium, design: .monospaced)),
+            ("number11.5mono", .monospacedSystemFont(ofSize: 11.5, weight: .regular), .system(size: 11.5, design: .monospaced)),
+            ("code12mono", .monospacedSystemFont(ofSize: 12, weight: .regular), .system(size: 12, design: .monospaced))]
         let sweeping = testEnvironment("PI_TEXT_CALIBRATION") == "1"
         defer { TranscriptLabel.baselineOverride = nil }
         var failures: [String] = []
@@ -55,7 +63,9 @@ final class TranscriptTextCalibrationTests: XCTestCase {
         let faces: [(String, TranscriptPlainTextFace)] = [
             ("detail11.5", TranscriptNativeBranchRow.detailFace), ("note12", TranscriptNativeReplyRow.truncatedFace),
             ("body13", TranscriptNativeFailureRow.bodyFace), ("status12", TranscriptNativeStatusRow.face),
-            ("title12.5sb", TranscriptNativeFailureRow.titleFace), ("pill11.5m", TranscriptPillButton.wrappedFace(.systemFont(ofSize: 11.5, weight: .medium)))]
+            ("title12.5sb", TranscriptNativeFailureRow.titleFace), ("pill11.5m", TranscriptPillButton.wrappedFace(.systemFont(ofSize: 11.5, weight: .medium))),
+            ("code12mono", TranscriptCardFaces.code), ("banner11.5m", TranscriptCardFaces.banner),
+            ("note11.5", TranscriptCardFaces.note), ("message12", TranscriptCardFaces.message)]
         var failures: [String] = []
         for (name, face) in faces {
             for n in [0, 1, 2, 3, 5] {
@@ -193,9 +203,9 @@ final class TranscriptTextCalibrationTests: XCTestCase {
             let swift = image(NSHostingView(rootView: Image(systemName: name).font(.system(size: size, weight: weights[weight] ?? .regular))
                 .foregroundStyle(Color.black).padding(.leading, 10).padding(.top, 10).frame(width: 60, height: 40, alignment: .topLeading)), width: 60)
             var results: [(CGPoint, Int)] = []
-            let steps = sweeping ? Array(-3...3) : [0]
+            let steps = sweeping ? Array(-8...8) : [0]
             for dx in steps { for dy in steps {
-                TranscriptSymbol.offsetOverride = sweeping ? CGPoint(x: CGFloat(dx) * 0.25, y: CGFloat(dy) * 0.25) : nil
+                TranscriptSymbol.offsetOverride = sweeping ? CGPoint(x: CGFloat(dx) * 0.125, y: CGFloat(dy) * 0.125) : nil
                 let canvas = TranscriptNativeRowParityTests.ParityCanvas(frame: CGRect(x: 0, y: 0, width: 60, height: 40))
                 let symbol = TranscriptSymbol()
                 symbol.show(name, size: size, weight: NSFont.Weight(weight)); symbol.contentTintColor = .black

@@ -279,6 +279,15 @@ struct TranscriptDiffCard: View {
     }
 }
 
+extension TranscriptDiffCard {
+    /// A card that starts with every line shown, as one the reader expanded.
+    init(request: TranscriptActivity.EditRequest, path: String? = nil, outcome: ActionOutcome = .done, added: Int? = nil,
+         removed: Int? = nil, open: (() -> Void)? = nil, expanded: Bool) {
+        self.init(request: request, path: path, outcome: outcome, added: added, removed: removed, open: open)
+        _expanded = State(initialValue: expanded)
+    }
+}
+
 /// A file read: the window that came back, numbered as the file numbers it,
 /// and how much of the result the card is showing.
 struct TranscriptReadCard: View {
@@ -295,8 +304,9 @@ struct TranscriptReadCard: View {
     /// Opens the file the card read, at the lines it read.
     var open: (() -> Void)? = nil
 
-    init(text: String, firstLine: Int = 1, path: String? = nil, failed: Bool = false, open: (() -> Void)? = nil) {
+    init(text: String, firstLine: Int = 1, path: String? = nil, failed: Bool = false, open: (() -> Void)? = nil, expanded: Bool = false) {
         self.firstLine = max(1, firstLine); self.path = path; self.failed = failed; self.open = open
+        _expanded = State(initialValue: expanded)
         let window = Self.window(of: text)
         lines = window.lines; note = window.note
     }

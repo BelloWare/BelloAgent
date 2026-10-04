@@ -684,7 +684,7 @@ private struct NoticeRowView: View {
 
 // MARK: - Work: action rows, diffs, reasoning
 
-private func actionSymbol(_ kind: ActionKind) -> String {
+nonisolated func actionSymbol(_ kind: ActionKind) -> String {
     switch kind {
     case .command: return "terminal"
     case .write: return "pencil"
@@ -762,68 +762,109 @@ struct ActionRowView: View {
         guard TranscriptActivity.outcome(of: tool) == .unknown else { return change }
         return [change, "· outcome unknown"].compactMap { $0 }.joined(separator: " ")
     }
-    var body: some View {
-        // The call's arguments are read once per drawing: while a write
-        // streams they are the whole file so far, and the title, the summary
-        // and the help each reading them again was three reads per delta.
+    /// What one call's row says and opens, worked out once, for the SwiftUI
+    /// row and the native one alike. The call's arguments are read once: while
+    /// a write streams they are the whole file so far, and the title, the
+    /// summary and the help each reading them again was three reads per delta.
+    struct Model: Equatable {
+        let icon: String
+        let title: String
+        let summary: String
+        let suffix: String?
+        let state: TranscriptRowState
+        let trailing: String?
+        let help: String
+        /// Only a summary that is the path is its link: a failure's words are
+        /// not, though the row opens the file.
+        let linksSummary: Bool
+        let description: ActionDescription
+        let outcome: ActionOutcome
+        /// The call's file, when it has one: what the link opens.
+        let file: TranscriptActivity.FileLink?
+    }
+    nonisolated static func model(of tool: ToolView) -> Model {
         let parts = TranscriptActivity.actionParts(tool)
         let outcome = TranscriptActivity.outcome(of: tool)
         let description = TranscriptActivity.describe(parts, outcome: outcome)
-        let rowState = Self.state(of: tool)
-        let summary = Self.summary(of: tool, object: description.object)
-        let link = self.link
-        TranscriptWorkRow(icon: actionSymbol(description.kind), title: Self.title(parts, outcome: outcome),
-                          summary: summary, suffix: Self.suffix(of: tool),
-                          state: rowState, open: open,
-                          // Only a summary that is the path is its link: a
-                          // failure's words are not, though the row opens the file.
-                          link: link, linksSummary: summary == description.object,
+        let summary = summary(of: tool, object: description.object)
+        return Model(icon: actionSymbol(description.kind), title: title(parts, outcome: outcome), summary: summary,
+                     suffix: suffix(of: tool), state: state(of: tool), trailing: elapsed(of: tool),
+                     help: description.path ?? description.object, linksSummary: summary == description.object,
+                     description: description, outcome: outcome, file: TranscriptActivity.fileLink(tool))
+    }
+    /// What an open row's card is: a diff for a change, a numbered window for
+    /// a read, a terminal for a command, the IN/OUT card for everything else.
+    enum Card: Equatable {
+        case diff(TranscriptActivity.EditRequest, path: String?, outcome: ActionOutcome, added: Int?, removed: Int?)
+        case terminal(command: String, output: String, failed: Bool)
+        case read(text: String, firstLine: Int, path: String?, failed: Bool)
+        /// `path` only when the card opens the file.
+        case io(path: String?, input: String, output: String?, failed: Bool, note: String?)
+    }
+    /// The card for `tool`, from the fetched document when the host has
+    /// answered for the call and the inline one until then: both parse, so a
+    /// card is never a fragment of JSON. `linked`: whether the row opens a file.
+    nonisolated static func card(of tool: ToolView, fetched: ToolInputDocument?, model: Model, linked: Bool) -> Card {
+        let shown = requested(tool, fetched: fetched)
+        let description = model.description, outcome = model.outcome
+        let notes = [truncationNote(shown), tool.truncated ? "Preview truncated. The full result is retained in context." : nil]
+            .compactMap { $0 }.joined(separator: " · ")
+        if let edit = TranscriptActivity.editRequest(shown) {
+            return .diff(edit, path: description.path, outcome: outcome, added: tool.added, removed: tool.removed)
+        } else if description.kind == .command {
+            return .terminal(command: TranscriptActivity.parseCommand(shown.input) ?? description.object,
+                             output: tool.output, failed: outcome == .failed)
+        } else if description.kind == .read, !tool.output.isEmpty {
+            return .read(text: tool.output, firstLine: TranscriptReadCard.firstLine(of: shown.input),
+                         path: description.path, failed: outcome == .failed)
+        }
+        let arguments = TranscriptActivity.argumentsText(shown)
+        // A file call whose arguments did not read as a request (a write
+        // with no content, say) still opens its file from the card.
+        return .io(path: linked ? description.path : nil,
+                   input: arguments.text.isEmpty
+                       ? "The host bounded this call's arguments and none of them could be read."
+                       : arguments.text,
+                   output: tool.output.isEmpty ? nil : tool.output,
+                   failed: outcome == .failed,
+                   note: [notes.isEmpty ? nil : notes,
+                          arguments.complete ? nil : "The host bounded this call's arguments. This is the part that arrived, not the whole request."]
+                       .compactMap { $0 }.joined(separator: " · ").nilIfEmpty)
+    }
+    var body: some View {
+        let model = Self.model(of: tool)
+        let link = self.link(model.file)
+        TranscriptWorkRow(icon: model.icon, title: model.title,
+                          summary: model.summary, suffix: model.suffix,
+                          state: model.state, open: open,
+                          link: link, linksSummary: model.linksSummary,
                           toggle: toggle,
-                          trailing: Self.elapsed(of: tool),
-                          help: description.path ?? description.object) {
-            card(description: description, outcome: outcome, link: link)
+                          trailing: model.trailing,
+                          help: model.help) {
+            card(Self.card(of: tool, fetched: fetched, model: model, linked: link != nil), link: link)
         }
     }
     /// What opens the call's file, if it has one and files open here.
-    private var link: (() -> Void)? {
-        guard opensFiles, let openFile, let file = TranscriptActivity.fileLink(tool) else { return nil }
+    private func link(_ file: TranscriptActivity.FileLink?) -> (() -> Void)? {
+        guard opensFiles, let openFile, let file else { return nil }
         return { openFile(file.path, file.lines) }
     }
     @Environment(\.transcriptOpensFiles) private var opensFiles
-    /// What the row opens. The fetched document when the host has answered for
-    /// the call, the inline one until then: both parse, so a card is never a
-    /// fragment of JSON.
-    @ViewBuilder private func card(description: ActionDescription, outcome: ActionOutcome, link: (() -> Void)?) -> some View {
-        let shown = requested
-        let notes = [truncationNote, tool.truncated ? "Preview truncated. The full result is retained in context." : nil]
-            .compactMap { $0 }.joined(separator: " · ")
-        if let edit = TranscriptActivity.editRequest(shown) {
-            TranscriptDiffCard(request: edit, path: description.path, outcome: outcome,
-                               added: tool.added, removed: tool.removed, open: link)
-        } else if description.kind == .command {
-            TranscriptTerminalCard(command: TranscriptActivity.parseCommand(shown.input) ?? description.object,
-                                   output: tool.output, failed: outcome == .failed)
-        } else if description.kind == .read, !tool.output.isEmpty {
-            TranscriptReadCard(text: tool.output, firstLine: TranscriptReadCard.firstLine(of: shown.input),
-                               path: description.path, failed: outcome == .failed, open: link)
-        } else {
-            let arguments = TranscriptActivity.argumentsText(shown)
-            // A file call whose arguments did not read as a request (a write
-            // with no content, say) still opens its file from the card.
-            TranscriptIOCard(path: link == nil ? nil : description.path, open: link,
-                             input: arguments.text.isEmpty
-                                ? "The host bounded this call's arguments and none of them could be read."
-                                : arguments.text,
-                             output: tool.output.isEmpty ? nil : tool.output,
-                             failed: outcome == .failed,
-                             note: [notes.isEmpty ? nil : notes,
-                                    arguments.complete ? nil : "The host bounded this call's arguments. This is the part that arrived, not the whole request."]
-                                .compactMap { $0 }.joined(separator: " · ").nilIfEmpty)
+    @ViewBuilder private func card(_ card: Card, link: (() -> Void)?) -> some View {
+        switch card {
+        case let .diff(edit, path, outcome, added, removed):
+            TranscriptDiffCard(request: edit, path: path, outcome: outcome, added: added, removed: removed, open: link)
+        case let .terminal(command, output, failed):
+            TranscriptTerminalCard(command: command, output: output, failed: failed)
+        case let .read(text, firstLine, path, failed):
+            TranscriptReadCard(text: text, firstLine: firstLine, path: path, failed: failed, open: link)
+        case let .io(path, input, output, failed, note):
+            TranscriptIOCard(path: path, open: link, input: input, output: output, failed: failed, note: note)
         }
     }
     /// The call as the card should read it: the fetched document when one has
     /// arrived, otherwise the inline one.
-    private var requested: ToolView {
+    nonisolated private static func requested(_ tool: ToolView, fetched: ToolInputDocument?) -> ToolView {
         guard let fetched else { return tool }
         var copy = tool
         copy.input = fetched.input
@@ -832,8 +873,7 @@ struct ActionRowView: View {
         return copy
     }
     /// What the card says when even what it is showing is short of the request.
-    private var truncationNote: String? {
-        let current = requested
+    nonisolated private static func truncationNote(_ current: ToolView) -> String? {
         guard current.inputTruncated == true else { return nil }
         guard let bytes = current.inputBytes, bytes > 0 else { return "Preview truncated" }
         return "Preview truncated · \(ToolInputDisplay.shortSize(bytes))"
