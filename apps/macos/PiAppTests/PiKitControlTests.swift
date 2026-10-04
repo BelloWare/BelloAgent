@@ -484,4 +484,122 @@ import XCTest
         bar.total = 0
         XCTAssertEqual(bar.fraction, 0, "no total reads as nothing done")
     }
+
+    // MARK: Parity gaps closed in 0.1.120 (kitfix)
+
+    /// Text reads as SwiftUI's `Text`: its words are the static text's value,
+    /// with no name, so a control named after the same words is the only
+    /// element named so.
+    func testTextIsAValueNotAName() async throws {
+        let stack = PiKit.Box.ClipView(frame: NSRect(x: 0, y: 0, width: 300, height: 80))
+        let line = PiKit.TextLine(PiKit.Line("Include untracked", font: PiKit.Font.body, color: .piInk))
+        let wrapped = PiKit.WrappedText("Checks once a day", font: PiKit.Font.caption, color: .piInk)
+        let tick = PiKit.Checkbox(isOn: true, label: "Include untracked")
+        line.frame = NSRect(x: 0, y: 0, width: 160, height: 18); wrapped.frame = NSRect(x: 0, y: 20, width: 160, height: 18)
+        tick.frame = NSRect(x: 0, y: 44, width: 200, height: 22)
+        for view in [line, wrapped, tick] as [NSView] { stack.addSubview(view) }
+        let window = try await hosted(stack, size: CGSize(width: 340, height: 120))
+        _ = try await AXClient.find(in: window) { $0.role == "AXCheckBox" }
+        let nodes = try await AXClient.all(in: window)
+        XCTAssertEqual(nodes.filter { $0.label == "Include untracked" }.map(\.role), ["AXCheckBox"], "only the checkbox is named so")
+        let texts = nodes.filter { $0.role == "AXStaticText" }
+        XCTAssertEqual(Set(texts.map(\.value)), ["Include untracked", "Checks once a day"])
+        XCTAssertTrue(texts.allSatisfy { $0.label.isEmpty }, "text has no name of its own: \(texts.map(\.label))")
+        line.line = PiKit.Line("Include ignored", font: PiKit.Font.body, color: .piInk)
+        wrapped.text = "Checks twice a day"
+        XCTAssertEqual(line.accessibilityValue() as? String, "Include ignored")
+        XCTAssertEqual(wrapped.accessibilityValue() as? String, "Checks twice a day")
+        XCTAssertNil(line.accessibilityLabel()); XCTAssertNil(wrapped.accessibilityLabel())
+    }
+
+    /// Within a chat only the characters that changed roll; what stayed the
+    /// same stays put (SwiftUI's numeric text transition).
+    func testAStatPillRollsOnlyTheCharactersThatChanged() async throws {
+        PiKit.Motion.reducedOverride = false
+        defer { PiKit.Motion.reducedOverride = true }
+        let pill = PiKit.StatPill(symbol: "chart.pie", label: "1.0K tok · $0.005", scope: "a")
+        _ = try await hosted(pill)
+        pill.update(label: "1.2K tok · $0.005", scope: "a")
+        XCTAssertEqual(pill.rollingChange?.from, "0"); XCTAssertEqual(pill.rollingChange?.to, "2")
+        pill.update(glyph: .ring(0.4), label: "1.2K tok · $0.005", scope: "a")
+        XCTAssertEqual(pill.rollingChange?.to, "2", "an unchanged reading leaves the roll going")
+        pill.update(label: "1.2K tok · $0.012", scope: "a")
+        XCTAssertEqual(pill.rollingChange?.from, "05"); XCTAssertEqual(pill.rollingChange?.to, "12", "a second change rolls from the first's end")
+        pill.update(label: "12.2K tok · $0.012", scope: "a")
+        XCTAssertEqual(pill.rollingChange?.from, ""); XCTAssertEqual(pill.rollingChange?.to, "2", "a new digit rolls in; what follows slides")
+        pill.update(label: "3.1K tok · $0.001", scope: "b")
+        XCTAssertNil(pill.rollingChange, "another chat's figures replace these at once")
+        pill.update(label: "3.1K tok · $0.001", warningTail: "92%", scope: "b")
+        XCTAssertEqual(pill.rollingChange?.to, " · 92%", "a tail that appears rolls in")
+    }
+
+    /// Inside a disabled selectable row, the controls read disabled to
+    /// VoiceOver and leave the key-view loop, as SwiftUI's environment
+    /// disabled them; their own state stays the app's.
+    func testADisabledRowsControlsReadDisabledAndTakeNoKeys() async throws {
+        let toggle = PiKit.Switch(isOn: true, label: "Pinned")
+        let field = PiKit.TextField(placeholder: "Alias", text: "gpt")
+        let content = PiKit.Box.ClipView(frame: NSRect(x: 0, y: 0, width: 280, height: 30))
+        toggle.frame = NSRect(x: 0, y: 4, width: 90, height: 22); field.frame = NSRect(x: 100, y: 0, width: 170, height: 30)
+        let remove = PiKit.IconButton(symbol: "xmark", label: "Remove", size: 20)
+        remove.frame = NSRect(x: 260, y: 5, width: 20, height: 20)
+        content.addSubview(toggle); content.addSubview(field); content.addSubview(remove)
+        let row = PiKit.SelectableRow(content: content)
+        row.frame = NSRect(x: 0, y: 0, width: 300, height: 46)
+        let window = try await hosted(row, size: CGSize(width: 360, height: 100))
+        // The row is one button to VoiceOver; each control still says what it is.
+        XCTAssertTrue(toggle.isAccessibilityEnabled() && field.field.isAccessibilityEnabled())
+        XCTAssertTrue(field.field.canBecomeKeyView)
+        row.isEnabled = false
+        let rowNode = try await AXClient.find(in: window) { $0.role == "AXButton" }
+        XCTAssertFalse(rowNode.enabled, "the row reads disabled")
+        XCTAssertFalse(toggle.isAccessibilityEnabled(), "the switch reads disabled")
+        XCTAssertFalse(field.field.isAccessibilityEnabled(), "the field reads disabled")
+        XCTAssertFalse(field.field.canBecomeKeyView, "Tab skips the field")
+        XCTAssertFalse(toggle.acceptsFirstResponder, "nor can the switch take the keys")
+        XCTAssertFalse(toggle.canBecomeKeyView)
+        XCTAssertTrue(toggle.isEnabled && field.field.isEnabled, "their own state stays the app's")
+        XCTAssertFalse(toggle.isEffectivelyEnabled, "the switch draws itself disabled")
+        XCTAssertEqual(remove.face.opacity, remove.disabledOpacity, accuracy: 0.001, "and they look disabled")
+        row.isEnabled = true
+        XCTAssertTrue(toggle.isAccessibilityEnabled() && field.field.isAccessibilityEnabled())
+        XCTAssertTrue(field.field.canBecomeKeyView)
+        XCTAssertTrue(toggle.isEffectivelyEnabled)
+        XCTAssertEqual(remove.face.opacity, 1, accuracy: 0.001)
+    }
+
+    /// Tabs can move their choice at once, as the Git panel's commit scope
+    /// did with SwiftUI's animations switched off; by default it glides.
+    func testTabsCanMoveTheirChoiceWithoutAnimation() async throws {
+        PiKit.Motion.reducedOverride = false
+        defer { PiKit.Motion.reducedOverride = true }
+        let gliding = PiKit.Tabs(selection: 1, items: [(1, "Checked files"), (2, "Staged changes")])
+        let still = PiKit.Tabs(selection: 1, items: [(1, "Checked files"), (2, "Staged changes")])
+        still.animatesSelection = false
+        let stack = PiKit.Box.ClipView(frame: NSRect(x: 0, y: 0, width: 300, height: 80))
+        gliding.frame = NSRect(origin: .zero, size: gliding.intrinsicContentSize)
+        still.frame = NSRect(origin: CGPoint(x: 0, y: 40), size: still.intrinsicContentSize)
+        stack.addSubview(gliding); stack.addSubview(still)
+        _ = try await hosted(stack, size: CGSize(width: 340, height: 120))
+        func highlight(_ tabs: PiKit.Tabs<Int>) -> CALayer? { tabs.layer?.sublayers?.first { $0.shadowOpacity == 1 } }
+        gliding.selection = 2; still.selection = 2
+        XCTAssertFalse(highlight(gliding)?.animationKeys()?.isEmpty ?? true, "the default glides")
+        XCTAssertTrue(highlight(still)?.animationKeys()?.isEmpty ?? true, "no animation moves it")
+        XCTAssertEqual(highlight(still)?.frame, still.tab(2)?.frame)
+    }
+
+    /// A note's line limit bounds its height.
+    func testANotesLineLimitBoundsItsHeight() {
+        let text = String(repeating: "The helper restarted after an update. ", count: 6)
+        let free = PiKit.Note(text), limited = PiKit.Note(text, lineLimit: 2)
+        let line = PiKit.Line(text, font: PiKit.Font.caption, color: .black).lineHeight
+        XCTAssertGreaterThan(free.height(forWidth: 200), line * 3)
+        XCTAssertEqual(limited.height(forWidth: 200), line * 2, accuracy: 0.01)
+        // Laid out with its limit, then freed: it measures the whole text, not the cut it showed.
+        limited.frame = NSRect(x: 0, y: 0, width: 200, height: line * 2); limited.layoutSubtreeIfNeeded()
+        limited.lineLimit = nil
+        XCTAssertEqual(limited.height(forWidth: 200), free.height(forWidth: 200), accuracy: 0.01)
+        XCTAssertEqual(limited.height(forWidth: 400), free.height(forWidth: 400), accuracy: 0.01)
+    }
+
 }

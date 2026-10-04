@@ -37,12 +37,12 @@ final class GitPanelDiffCaptureTests: GitPanelTestCase {
         for split in [false, true] {
             for (name, appearance) in [("light", NSAppearance.Name.aqua), ("dark", NSAppearance.Name.darkAqua)] {
                 let holder = DiffHolder()
-                let view = DiffView(files: files, title: "Sources/Engine/Router.swift", subtitle: "Working tree versus index", identity: "capture",
-                                    split: Binding(get: { split }, set: { _ in }), expanded: Binding(get: { holder.expanded }, set: { holder.expanded = $0 }))
+                let view = makeDiffView(files: files, title: "Sources/Engine/Router.swift", subtitle: "Working tree versus index", identity: "capture",
+                                        split: split, holder: holder)
                 let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 820, height: 420), styleMask: [.titled], backing: .buffered, defer: false)
                 window.isReleasedWhenClosed = false
                 window.appearance = NSAppearance(named: appearance)
-                window.contentView = NSHostingView(rootView: view)
+                window.contentView = view
                 window.makeKeyAndOrderFront(nil)
                 defer { window.contentView = nil; window.close() }
                 let content = try XCTUnwrap(window.contentView)

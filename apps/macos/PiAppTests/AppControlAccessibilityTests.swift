@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import XCTest
+import Combine
 import FileView
 @testable import GitView
 @testable import PiApp
@@ -241,9 +242,39 @@ import FileView
     }
 }
 
-private struct CommitBoxHost: View {
-    @ObservedObject var controller: GitController
-    var body: some View {
-        GitCommitBox(controller: controller, inputs: GitCommitBox.Inputs(controller), discard: { _ in }).padding().frame(width: 380)
+/// The commit box alone, 380 points wide with 16 around it, following its controller.
+@MainActor private final class CommitBoxHost: NSView {
+    let box: GitCommitBox
+    private var observation: AnyCancellable?
+    init(controller: GitController) {
+        box = GitCommitBox(controller: controller, inputs: GitCommitBox.Inputs(controller), discard: { _ in })
+        super.init(frame: .zero)
+        addSubview(box)
+        // The hosting group the accessibility client reads from.
+        setAccessibilityElement(true); setAccessibilityRole(.group)
+        observation = controller.objectWillChange.sink { [weak self, controller] _ in
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.box.apply(GitCommitBox.Inputs(controller)); self?.needsLayout = true } }
+        }
+    }
+    required init?(coder: NSCoder) { nil }
+    override var isFlipped: Bool { true }
+    override func layout() {
+        super.layout()
+        box.frame = CGRect(x: (bounds.width - 380) / 2 + 16, y: 16, width: 380 - 32, height: box.height(forWidth: 380 - 32))
+    }
+}
+
+extension XCTestCase {
+    /// An AppKit view in a window of its own, read once by the accessibility client.
+    @MainActor func hostedWindow(_ view: NSView, width: CGFloat, height: CGFloat) async throws -> NSWindow {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: height), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.title = "ax-" + UUID().uuidString
+        window.contentView = view
+        window.orderFront(nil)
+        view.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+        addTeardownBlock { @MainActor in window.orderOut(nil); window.contentView = nil }
+        _ = try await AXClient.content(of: window)
+        return window
     }
 }

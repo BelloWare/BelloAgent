@@ -156,7 +156,7 @@ final class LazyListAppKitControlTests: XCTestCase {
         }
         let changes = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1180, height: 780), styleMask: [.titled], backing: .buffered, defer: false)
         changes.isReleasedWhenClosed = false
-        let panelView = NSHostingView(rootView: GitPanelView(controller: GitController(roots: [repository.path])))
+        let panelView = GitPanelView(controller: GitController(roots: [repository.path]))
         changes.contentView = panelView; changes.orderFront(nil)
         defer { changes.contentView = nil; changes.close() }
         for _ in 0..<40 {
@@ -167,7 +167,10 @@ final class LazyListAppKitControlTests: XCTestCase {
             let popUps = descendants(view).filter { $0 is NSPopUpButton }.map { String(describing: type(of: $0)) }
             XCTAssertEqual(popUps, [], "Live pop-up menus in the \(name): \(popUps)")
         }
-        let triggers = (descendants(popup) + descendants(panelView)).compactMap { $0 as? PiPopoverTriggerButton }.compactMap { $0.accessibilityIdentifier() }
+        // A menu control: SwiftUI's trigger button in the menu bar panel, the
+        // AppKit menu button (a menu-button role, its menu built on the press) in the Changes panel.
+        let triggers = (descendants(popup).compactMap { $0 as? PiPopoverTriggerButton }.map { $0 as NSView }
+                        + descendants(panelView).compactMap { $0 as? PiKit.MenuButton }.map { $0 as NSView }).compactMap { $0.accessibilityIdentifier() }
         for identifier in ["monitorOptions", "git-branch-menu", "git-stash-menu"] {
             XCTAssertTrue(triggers.contains(identifier), "\(identifier) is a menu control: \(triggers)")
         }

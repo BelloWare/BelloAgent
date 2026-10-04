@@ -278,25 +278,67 @@ extension PiKit {
 
     /// A note: a small tone symbol and caption text that wraps; danger reads in its tone.
     @MainActor final class Note: NSView, WidthSizing {
-        var text: String { didSet { guard oldValue != text else { return }; label.set(text); invalidateIntrinsicContentSize(); needsLayout = true; PiKit.sizeChanged(self) } }
+        var text: String { didSet { guard oldValue != text else { return }; label.set(text); shownWidth = nil; invalidateIntrinsicContentSize(); needsLayout = true; PiKit.sizeChanged(self) } }
         let tone: PiTone
+        /// At most this many lines, the last cut with "…" (`.lineLimit(_:)`
+        /// on the SwiftUI note); nil, as many as the text needs.
+        var lineLimit: Int? {
+            didSet {
+                guard oldValue != lineLimit else { return }
+                applyLineLimit(); invalidateIntrinsicContentSize(); needsLayout = true; PiKit.sizeChanged(self)
+            }
+        }
         private let icon: SymbolView
         private let label: SelectableText
-        init(_ text: String, tone: PiTone = .neutral) {
-            self.text = text; self.tone = tone
+        init(_ text: String, tone: PiTone = .neutral, lineLimit: Int? = nil) {
+            self.text = text; self.tone = tone; self.lineLimit = lineLimit
             let name = tone == .danger ? "exclamationmark.triangle.fill" : tone == .warning ? "exclamationmark.circle" : "info.circle"
             icon = SymbolView(Symbol(name, size: 11), color: tone == .neutral ? .piInkTertiary : tone.nsColor)
             label = SelectableText(text, font: PiKit.Font.caption, color: tone == .danger ? tone.nsColor : .piInkSecondary)
             super.init(frame: .zero)
             addSubview(icon); addSubview(label)
+            applyLineLimit()
         }
         required init?(coder: NSCoder) { fatalError("Not used from a nib") }
         override var isFlipped: Bool { true }
+        private func applyLineLimit() {
+            shownWidth = nil
+            if lineLimit == nil, label.stringValue != text { label.set(text) }
+        }
+        /// The width `label` shows the text cut for, nil when it shows all of it.
+        private var shownWidth: CGFloat?
+        /// What the note shows at `width`: the whole text, or, past its line
+        /// limit, the lines that fit with the last ending in "…" as SwiftUI
+        /// ends it: one line is cut where the room ends; of several, the last
+        /// is the line as it wraps, then "…", cut further only when the
+        /// ellipsis does not fit.
+        func shownText(width: CGFloat) -> String {
+            guard let lineLimit, lineLimit > 0 else { return text }
+            let lines = PiKit.wrappedLines(text, font: PiKit.Font.caption, width: width)
+            guard lines.count > lineLimit else { return text }
+            let candidate = Array(lineLimit == 1 ? text.components(separatedBy: "\n")[0] : lines[lineLimit - 1])
+            func fits(_ count: Int) -> Bool { Line(String(candidate[0..<count]) + "…", font: PiKit.Font.caption, color: .black).width <= width + 0.01 }
+            // The most characters that fit with the ellipsis (widths grow with the count).
+            var low = 0, high = candidate.count
+            while low < high { let mid = (low + high + 1) / 2; if fits(mid) { low = mid } else { high = mid - 1 } }
+            // Joined scripts can make a longer prefix narrower: look a few further.
+            for count in stride(from: min(candidate.count, low + 8), to: low, by: -1) where fits(count) { low = count; break }
+            var last = Array(candidate[0..<low])
+            while last.last?.isWhitespace == true { last.removeLast() }
+            return (lines.prefix(lineLimit - 1) + [String(last) + "…"]).joined(separator: "\n")
+        }
+        /// The text's height in `width`, no more than its line limit allows.
+        private func labelHeight(_ width: CGFloat) -> CGFloat {
+            // The whole text's lines, whatever the field shows now.
+            let height = PiKit.wrappedHeight(text, font: PiKit.Font.caption, width: width)
+            guard let lineLimit else { return height }
+            return min(height, Line(text, font: PiKit.Font.caption, color: .black).lineHeight * CGFloat(max(1, lineLimit)))
+        }
         private var iconWidth: CGFloat { icon.symbol.layoutSize.width }
         /// Its width on one line; it takes no more than that, as `Text` does not.
         var naturalWidth: CGFloat { iconWidth + 6 + Line(text, font: PiKit.Font.caption, color: .black).size(scale: piScale).width }
         func height(forWidth width: CGFloat) -> CGFloat {
-            max(label.height(forWidth: width - iconWidth - 6), 1 + icon.symbol.layoutSize.height)
+            max(labelHeight(width - iconWidth - 6), 1 + icon.symbol.layoutSize.height)
         }
         override var intrinsicContentSize: NSSize {
             let width = bounds.width > 0 ? bounds.width : naturalWidth
@@ -308,7 +350,15 @@ extension PiKit {
             icon.frame = CGRect(x: 0, y: 1, width: box.width, height: box.height)
             let width = max(0, bounds.width - box.width - 6)
             // A field's cell insets its text two points; the field sits that far out.
-            label.frame = CGRect(x: box.width + 6 - PiKit.fieldInset, y: 0, width: width + PiKit.fieldInset * 2, height: label.height(forWidth: width))
+            // Past its line limit the field shows the text already cut (an
+            // `NSTextField` cuts its last line mid-word, SwiftUI after it).
+            if lineLimit != nil, shownWidth != width {
+                shownWidth = width
+                label.set(shownText(width: width))
+            } else if lineLimit == nil, label.stringValue != text {
+                label.set(text)
+            }
+            label.frame = CGRect(x: box.width + 6 - PiKit.fieldInset, y: 0, width: width + PiKit.fieldInset * 2, height: labelHeight(width))
         }
     }
 

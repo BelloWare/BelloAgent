@@ -1,4 +1,5 @@
-import SwiftUI
+import AppKit
+import Combine
 import PDFKit
 import ImageIO
 
@@ -18,6 +19,7 @@ import ImageIO
     private var fingerprint: Fingerprint?
     private var token = 0
     private var madePDFView: PDFView?
+    var hasPDFView: Bool { madePDFView != nil }
     var pdfView: PDFView {
         if let madePDFView { return madePDFView }
         let view = PDFView(frame: .zero)
@@ -89,34 +91,3 @@ import ImageIO
     func close() { suspend(); image = nil; pdf = nil; madePDFView?.document = nil; madePDFView = nil; fingerprint = nil }
 }
 
-struct FilePreviewContent: View {
-    @ObservedObject var preview: FilePreview
-    var body: some View {
-        Group {
-            if let error = preview.error {
-                Text(error).font(PiFont.body).foregroundStyle(Color.piInkSecondary).padding(PiSpacing.lg)
-            } else if let pdf = preview.pdf {
-                FilePDFHost(view: preview.pdfView, document: pdf)
-            } else if let image = preview.image {
-                Image(nsImage: image).resizable().scaledToFit().padding(PiSpacing.lg)
-                    .accessibilityLabel(preview.url.lastPathComponent)
-            } else { PiSpinner(size: 18) }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.piContent)
-        .onAppear { preview.load() }
-    }
-}
-
-private struct FilePDFHost: NSViewRepresentable {
-    let view: PDFView
-    let document: PDFDocument
-    func makeNSView(context: Context) -> TabContentContainerPlain {
-        if view.document !== document { view.document = document }
-        let container = TabContentContainerPlain(); container.place(view); return container
-    }
-    func updateNSView(_ container: TabContentContainerPlain, context: Context) {
-        if view.document !== document { view.document = document }
-        if view.superview !== container { container.place(view) }
-    }
-}

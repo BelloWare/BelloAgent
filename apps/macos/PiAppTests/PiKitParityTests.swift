@@ -258,6 +258,121 @@ import XCTest
         }
     }
 
+    // MARK: Parity gaps closed in 0.1.120 (kitfix)
+
+    /// The ink's centre (x, y), in pixels, of a capture: every pixel weighted
+    /// by how far it is from the canvas's colour.
+    static func inkCentre(_ image: NSBitmapImageRep) -> CGPoint {
+        var pixel = [Int](repeating: 0, count: 4), canvas = [Int](repeating: 0, count: 4)
+        image.getPixel(&canvas, atX: 0, y: 0)
+        var x = 0.0, y = 0.0, total = 0.0
+        for row in 0..<image.pixelsHigh {
+            for column in 0..<image.pixelsWide {
+                image.getPixel(&pixel, atX: column, y: row)
+                let weight = Double((0..<3).map { abs(pixel[$0] - canvas[$0]) }.max() ?? 0)
+                guard weight > 4 else { continue }
+                x += Double(column) * weight; y += Double(row) * weight; total += weight
+            }
+        }
+        return total == 0 ? .zero : CGPoint(x: x / total, y: y / total)
+    }
+
+    /// A symbol sits where SwiftUI puts it: its ink's centre within a
+    /// quarter point (half a pixel) of SwiftUI's, across and down, at every
+    /// icon-button size (they sat up to half a point low).
+    func testSymbolsSitWhereSwiftUIPutsThem() async throws {
+        for name in ["xmark", "plus", "trash", "info.circle", "chevron.left", "gearshape"] {
+            for size in [20, 24, 26, 28] as [CGFloat] {
+                let result = try await PiKitParity.compare("symbol-\(name)-\(Int(size))", swiftUI: PiIconButton(symbol: name, label: "x", size: size) {},
+                                                           appKit: PiKit.IconButton(symbol: name, label: "x", size: size))
+                let swiftUI = Self.inkCentre(result.swiftUIImage), appKit = Self.inkCentre(result.appKitImage)
+                print(String(format: "PARITY symbol %@ %.0f: ink centre off by %.2f, %.2f px", name, size, appKit.x - swiftUI.x, appKit.y - swiftUI.y))
+                XCTAssertEqual(appKit.y, swiftUI.y, accuracy: 0.5, "\(name) at \(size): down")
+                XCTAssertEqual(appKit.x, swiftUI.x, accuracy: 0.5, "\(name) at \(size): across")
+            }
+        }
+    }
+
+    /// A long label is offered half the row, as `PiRow`'s `HStack` offers
+    /// it, not all the control leaves.
+    func testALongRowLabelWrapsWhereSwiftUIWrapsIt() async throws {
+        let label = "Keep finished helper processes running for a while so the next chat in this project starts at once"
+        try await check("row-long-label", width: 520, PiRow(label: label, detail: "Applies to every project", last: true) { Toggle("", isOn: .constant(true)).toggleStyle(.piSwitch) }) {
+            PiKit.Row(label: label, detail: "Applies to every project", last: true, control: PiKit.Switch(isOn: true))
+        }
+        let medium = "Keep finished helper processes running for a while"
+        try await check("row-medium-label", width: 520, PiRow(label: medium, last: true) { Toggle("", isOn: .constant(true)).toggleStyle(.piSwitch) }) {
+            PiKit.Row(label: medium, last: true, control: PiKit.Switch(isOn: true))
+        }
+        try await check("row-long-label-stepper", width: 600, share: Self.symbolShare,
+                        PiRow(label: label, last: true) { PiStepper(name: "Grace", unit: "seconds", value: .constant(30), range: 10...600, step: 10) }) {
+            PiKit.Row(label: label, last: true, control: PiKit.Stepper(name: "Grace", unit: "seconds", value: 30, range: 10...600, step: 10))
+        }
+    }
+
+    /// A sheet's subtitle wraps where SwiftUI's does: the `Spacer()` before
+    /// the actions keeps its room.
+    func testASheetSubtitleWrapsWhereSwiftUIWrapsIt() async throws {
+        let subtitle = "Where requests go: the gateway, its key, and the model each new chat starts with"
+        // Ten points narrower than the subtitle's line, beside a badge: it
+        // wraps only when the spacer's room is kept.
+        let line = PiKit.Line(subtitle, font: PiKit.Font.caption, color: .black).size().width
+        let fits = (line + PiSpacing.xl * 2 + 30 + PiSpacing.md * 2 + 8 - 10).rounded()
+        for width in [fits, 400] as [CGFloat] {
+            try await check("sheet-subtitle-\(Int(width))", share: Self.symbolShare,
+                            PiSheet("Connections", subtitle: subtitle, symbol: "network", width: width, height: 160) { Color.clear }) {
+                let sheet = PiKit.Sheet("Connections", subtitle: subtitle, symbol: "network", content: NSView())
+                sheet.width = width; sheet.height = 160
+                return sheet
+            }
+            try await check("sheet-subtitle-action-\(Int(width))", share: Self.symbolShare,
+                            PiSheet("Connections", subtitle: subtitle, width: width + 120, height: 160) { Color.clear } actions: { SwiftUI.Button("Done") {}.buttonStyle(.piPrimary) }) {
+                let sheet = PiKit.Sheet("Connections", subtitle: subtitle, content: NSView(), actions: [PiKit.Button("Done", style: .primary)])
+                sheet.width = width + 120; sheet.height = 160
+                return sheet
+            }
+        }
+    }
+
+    /// A note given a line limit stops there with "…", as `PiNote(…).lineLimit(2)`.
+    func testANoteStopsAtItsLineLimit() async throws {
+        let text = "The helper restarted after an update; earlier output is kept in the journal, and the chat can be resumed from its last saved turn."
+        // Leading in its frame, as a note sits in a form (a frame would centre the narrower SwiftUI note).
+        try await check("note-limit", width: 220, share: Self.symbolShare, PiNote(text).lineLimit(2).frame(width: 220, alignment: .leading)) { PiKit.Note(text, lineLimit: 2) }
+        try await check("note-limit-one", width: 220, share: Self.symbolShare, PiNote(text, tone: .danger).lineLimit(1).frame(width: 220, alignment: .leading)) { PiKit.Note(text, tone: .danger, lineLimit: 1) }
+    }
+
+    /// A disabled row's controls look disabled, as SwiftUI's environment drew them.
+    func testADisabledRowsControlsLookDisabled() async throws {
+        try await check("row-disabled-controls", width: 240, share: Self.symbolShare,
+                        PiSelectableRow(selected: false, action: {}) {
+                            HStack { Text("claude").font(PiFont.body).foregroundStyle(Color.piInk); Spacer(); PiIconButton(symbol: "plus", label: "Add", size: 20) {} }
+                        }.disabled(true)) {
+            let content = RowContent(label: "claude", button: PiKit.IconButton(symbol: "plus", label: "Add", size: 20))
+            let row = PiKit.SelectableRow(content: content)
+            row.isEnabled = false
+            return row
+        }
+    }
+
+    /// A label cut in the middle keeps what SwiftUI keeps (Core Text kept a
+    /// character more or fewer at about half of these widths).
+    func testMiddleTruncationKeepsWhatSwiftUIKeeps() async throws {
+        let cases: [(String, NSFont, Font, [CGFloat])] = [
+            ("A very long connection name that is cut", PiKit.Font.body, PiFont.body, [70, 90, 100, 120, 150, 180]),
+            (".agents/skills/release-checklist/agents", PiKit.Font.micro, PiFont.micro, [40, 65, 100, 110, 140, 150, 185]),
+        ]
+        for (text, font, swiftFont, widths) in cases {
+            for width in widths {
+                try await check("middle-\(text.prefix(6))-\(Int(width))", width: width,
+                                Text(text).font(swiftFont).foregroundStyle(Color.piInk).lineLimit(1).truncationMode(.middle).frame(width: width, alignment: .leading)) {
+                    let line = PiKit.TextLine(PiKit.Line(text, font: font, color: .piInk)); line.truncation = .middle
+                    return Fixed(line, CGSize(width: width, height: line.intrinsicContentSize.height))
+                }
+            }
+        }
+    }
+
     // MARK: Hover
 
     /// Under a real pointer. Posting the pointer's events needs the test
@@ -289,4 +404,23 @@ private final class Fixed: NSView {
     init(_ view: NSView, _ size: CGSize) { self.size = size; super.init(frame: NSRect(origin: .zero, size: size)); view.frame = bounds; view.autoresizingMask = [.width, .height]; addSubview(view) }
     required init?(coder: NSCoder) { fatalError() }
     override var intrinsicContentSize: NSSize { size }
+}
+
+/// A selectable row's content for a parity check: a label and an icon
+/// button at its trailing edge, as `HStack { Text; Spacer(); PiIconButton }`.
+private final class RowContent: NSView {
+    let label: PiKit.TextLine, button: PiKit.IconButton
+    init(label: String, button: PiKit.IconButton) {
+        self.label = PiKit.TextLine(PiKit.Line(label, font: PiKit.Font.body, color: .piInk)); self.button = button
+        super.init(frame: .zero); addSubview(self.label); addSubview(button)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    override var isFlipped: Bool { true }
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: 20) }
+    override func layout() {
+        super.layout()
+        let size = label.intrinsicContentSize
+        label.frame = CGRect(x: 0, y: PiKit.round((bounds.height - size.height) / 2, 2), width: size.width, height: size.height)
+        button.frame = CGRect(x: bounds.width - 20, y: PiKit.round((bounds.height - 20) / 2, 2), width: 20, height: 20)
+    }
 }

@@ -52,6 +52,7 @@ let spinner = PiKit.spinner(controlSize: .small)
 // Tabs (PiTabs)
 let scope = PiKit.Tabs(selection: Scope.checked, items: [(.checked, "Checked"), (.staged, "Staged")],
                        accessibilityName: "Commit scope") { model.scope = $0 }
+scope.animatesSelection = false                 // a SwiftUI call site with animations switched off
 
 // Stepper (PiStepper / PiStepper64): Int64 covers both
 let grace = PiKit.Stepper(name: "Idle helper grace", unit: "seconds", value: 30, range: 10...600, step: 10) { … }
@@ -106,6 +107,7 @@ let inset = PiKit.inset(list)
 let raised = PiKit.elevated(panel)
 let heading = PiKit.SectionHeader("Connections", subtitle: "Where requests go", accessory: addButton)
 let note = PiKit.Note("Could not save.", tone: .danger)      // PiStatusLine: hide it when the text is empty
+let status = PiKit.Note(message, tone: .danger, lineLimit: 2) // PiNote(…).lineLimit(2)
 let row2 = PiKit.KeyValue(key: "Model", value: "claude-opus-5-5")
 let tile = PiKit.statTile(title: "Requests", value: "1,284", caption: "Last 7 days", symbol: "arrow.up.arrow.down")
 
@@ -138,16 +140,26 @@ Swift) and stay as they are.
 
 ## What is not identical
 
-- **Symbol edges.** Symbols are placed and sized exactly as SwiftUI places
-  them, but AppKit rasterizes their edges differently: a few pixels along a
-  glyph's outline differ in antialiasing. The parity tests allow that much for
-  symbols (`PiKitParityTests.symbolShare`) and nothing for anything else.
+- **Symbol edges and placement.** An `NSImage` symbol is rounded up to whole
+  points and its glyph set on the pixel grid; SwiftUI draws the same glyph at
+  its exact, often fractional, place. Centred in a taller frame (an icon
+  button, a checkbox, a pill) a symbol is lifted a quarter point
+  (`PiKit.Symbol.lift`), which puts each one's ink within a quarter point of
+  SwiftUI's (it sat 0.02 to 0.48 points low). The exact offset differs from
+  symbol to symbol and is not public, so a few pixels along a glyph's outline
+  still differ. The parity tests allow that much for symbols
+  (`PiKitParityTests.symbolShare`) and check the ink's centre separately.
 - **Middle truncation.** A label cut in the middle (`Dropdown`, `MenuButton`
-  with `maxLabelWidth`) keeps one character more or fewer than SwiftUI at
-  some widths: Core Text's truncation, not SwiftUI's.
-- **Rolling digits.** A stat pill's reading rolls as a whole, not digit by
-  digit as SwiftUI's numeric text transition did; the scope rule (no roll
-  across chats) is the same.
+  with `maxLabelWidth`, `TextLine` with `.middle`) keeps what SwiftUI keeps
+  at about two widths in three (Core Text's own cut matched at about one in
+  three): the head as many characters as fit in half the room the ellipsis
+  leaves, the tail the rest, no space beside the ellipsis
+  (`PiKit.Line.middleCut`). At the other widths SwiftUI keeps one character
+  more or fewer; its rule is not public.
+- **Rolling digits.** A stat pill rolls only the characters that changed, up
+  and out, the new ones up and in, and what follows them slides, as SwiftUI's
+  `contentTransition(.numericText())`; SwiftUI's blur on the rolling glyphs
+  is left out. The scope rule (no roll across chats) is the same.
 - **How close the pictures are.** `PiKitParityTests` allows no pixel more
   than 8 channels apart, except symbols (3 per cent of a capture) and three
   path shapes (0.6 per cent: a badge's dot, a stacked bar's ends, a legend
@@ -157,11 +169,14 @@ Swift) and stay as they are.
   environment: posting real pointer events needs Accessibility permission for
   the test runner, so `testHoverStates` skips here. Each style's hover fill,
   and keyboard and accessibility behaviour, are checked in `PiKitControlTests`.
-- **A disabled selectable row** dims its content and takes all its clicks, but
-  leaves each control inside it with its own enabled state (SwiftUI disabled
-  them through the environment): to VoiceOver they still read as enabled.
-  Disabling the row takes the keys from a control inside it, but Tab can still
-  move into one.
+- **A disabled selectable row** dims its content, takes all its clicks, and
+  its Pi controls (and Pi fields) read disabled to VoiceOver, look disabled
+  and leave the key-view loop, as SwiftUI's environment disabled them; each
+  keeps its own `isEnabled`. A control that is not a Pi control keeps its own
+  accessibility and focus.
+- **A note's line limit** (`PiKit.Note(…, lineLimit:)`): past the limit the
+  selectable text shows the text already cut, so a copy of it is the shown
+  words.
 - **Native popover growth.** A popover with AppKit content grows when a Pi
   component inside it changes size (`PiKit.sizeChanged`); other views must call
   that themselves.

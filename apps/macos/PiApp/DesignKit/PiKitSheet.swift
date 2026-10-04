@@ -27,7 +27,7 @@ extension PiKit {
 
         private let header = Box.ClipView(), body = Box.ClipView(), foot = Box.ClipView()
         private let titleView: TextLine
-        private let subtitleView: NSTextField?
+        private let subtitleView: SelectableText?
         private let badge: IconBadge?
         private let topLine = CALayer(), bottomLine = CALayer()
         private let windowBar = PiWindowBarView(frame: .zero)
@@ -38,9 +38,10 @@ extension PiKit {
             self.content = content; self.actions = actions; self.footer = footer
             titleView = TextLine(Line(title, font: PiKit.Font.title(17), color: .piInk))
             subtitleView = subtitle.map { text in
-                let field = NSTextField(wrappingLabelWithString: text)
-                field.font = PiKit.Font.caption; field.textColor = .piInkSecondary
-                field.maximumNumberOfLines = 2; field.isSelectable = true
+                // Selectable, at most two lines, cut at the end (`lineLimit(2)`).
+                let field = SelectableText(text, font: PiKit.Font.caption, color: .piInkSecondary)
+                field.maximumNumberOfLines = 2
+                field.cell?.truncatesLastVisibleLine = true
                 return field
             }
             badge = symbol.map { IconBadge(symbol: $0, size: 30) }
@@ -61,8 +62,21 @@ extension PiKit {
         override var isFlipped: Bool { true }
 
         private var leading: CGFloat { windowChrome ? Self.trafficLightInset : PiSpacing.xl }
+        /// The subtitle's lines in `room`, at most two.
+        private func subtitleHeight(_ room: CGFloat) -> CGFloat {
+            guard let subtitleView, let subtitle else { return 0 }
+            return min(subtitleView.height(forWidth: room), Line(subtitle, font: PiKit.Font.caption, color: .black).lineHeight * 2)
+        }
+        /// The room the title and subtitle have in a header `width` wide: what
+        /// the badge and the actions leave, less the `Spacer()` between them
+        /// (its least length, 8, and the stack's spacing on its far side).
+        private func textRoom(_ width: CGFloat) -> CGFloat {
+            var room = width - leading - PiSpacing.xl - (badge == nil ? 0 : 30 + PiSpacing.md)
+            for action in actions { room -= action.fittingSize.width + PiSpacing.md }
+            return max(0, room - PiSpacing.md - 8)
+        }
         private var headerHeight: CGFloat {
-            let text = titleView.intrinsicContentSize.height + (subtitleView.map { 3 + $0.intrinsicContentSize.height } ?? 0)
+            let text = titleView.intrinsicContentSize.height + (subtitleView == nil ? 0 : 3 + subtitleHeight(textRoom(sheetWidth)))
             let tallest = max(text, badge == nil ? 0 : 30, actions.map(\.fittingSize.height).max() ?? 0)
             return tallest + (windowChrome ? PiSpacing.md : PiSpacing.lg) + PiSpacing.lg
         }
@@ -94,13 +108,14 @@ extension PiKit {
                 action.frame = CGRect(x: right - size.width, y: top + PiKit.round((inner - size.height) / 2, piScale), width: size.width, height: size.height)
                 right -= size.width + PiSpacing.md
             }
-            let textHeight = titleView.intrinsicContentSize.height + (subtitleView.map { 3 + $0.intrinsicContentSize.height } ?? 0)
+            let room = textRoom(bounds.width)
+            let textHeight = titleView.intrinsicContentSize.height + (subtitleView == nil ? 0 : 3 + subtitleHeight(room))
             var y = top + PiKit.round((inner - textHeight) / 2, piScale)
             titleView.frame = CGRect(x: x, y: y, width: min(titleView.intrinsicContentSize.width, right - x), height: titleView.intrinsicContentSize.height)
             y += titleView.frame.height + 3
             if let subtitleView {
-                subtitleView.preferredMaxLayoutWidth = max(0, right - x)
-                subtitleView.frame = CGRect(x: x - PiKit.fieldInset, y: y, width: max(0, right - x) + PiKit.fieldInset * 2, height: subtitleView.intrinsicContentSize.height)
+                // A field's cell insets its text two points; the field sits that far out.
+                subtitleView.frame = CGRect(x: x - PiKit.fieldInset, y: y, width: room + PiKit.fieldInset * 2, height: subtitleHeight(room))
             }
             let footerHeight = self.footerHeight
             body.frame = CGRect(x: 0, y: headerHeight + 1, width: bounds.width, height: max(0, bounds.height - headerHeight - 1 - footerHeight))

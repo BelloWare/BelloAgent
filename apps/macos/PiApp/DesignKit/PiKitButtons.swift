@@ -112,6 +112,13 @@ extension PiKit {
         override var isEnabled: Bool {
             didSet { if oldValue != isEnabled { refreshFace(); window?.invalidateCursorRects(for: self) } }
         }
+        /// Enabled, and not inside a disabled selectable row: SwiftUI disabled
+        /// a row's controls with the row, so they read disabled, look it, and
+        /// leave the key-view loop. Its own `isEnabled` stays the app's.
+        var isEffectivelyEnabled: Bool { isEnabled && !piInDisabledRow }
+        override func isAccessibilityEnabled() -> Bool { isEffectivelyEnabled }
+        override var acceptsFirstResponder: Bool { super.acceptsFirstResponder && !piInDisabledRow }
+        override var canBecomeKeyView: Bool { super.canBecomeKeyView && !piInDisabledRow }
 
         /// Sets every layer for the current state; eased unless `animated` is false.
         func refreshFace(animated: Bool = true) {
@@ -121,7 +128,7 @@ extension PiKit {
             effectiveAppearance.performAsCurrentDrawingAppearance {
                 Motion.layers(Motion.quick, animated: animated && window != nil) {
                     styleFace()
-                    face.opacity = isEnabled ? 1 : disabledOpacity
+                    face.opacity = isEffectivelyEnabled ? 1 : disabledOpacity
                     let scale: CGFloat = pressedNow && pressScales && !Motion.reduced ? 0.97 : 1
                     if changedPress || !animated { face.setAffineTransform(CGAffineTransform(scaleX: scale, y: scale)) }
                 }
@@ -193,7 +200,7 @@ extension PiKit {
             refreshFace()
         }
         override func resetCursorRects() {
-            if showsPointer && isEnabled { addCursorRect(bounds, cursor: .pointingHand) }
+            if showsPointer && isEffectivelyEnabled { addCursorRect(bounds, cursor: .pointingHand) }
         }
 
         /// Clicks land inside the control's shape only, as SwiftUI's

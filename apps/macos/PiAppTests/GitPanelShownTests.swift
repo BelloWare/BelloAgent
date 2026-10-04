@@ -147,11 +147,11 @@ final class GitPanelShownTests: GitPanelTestCase {
         addTeardownBlock { try? FileManager.default.removeItem(at: first); try? FileManager.default.removeItem(at: second) }
         let controller = GitController(roots: [first.path, second.path])
         defer { controller.letGo() }
-        let panel = NSHostingView(rootView: GitPanelView(controller: controller))
+        let panel = GitPanelView(controller: controller)
         let holder = NSView(frame: NSRect(x: 0, y: 0, width: 1180, height: 780))
         panel.frame = holder.bounds; holder.addSubview(panel)
         holder.isHidden = true
-        let window = host(Color.clear)
+        let window = host(NSView())
         defer { window.close() }
         window.contentView?.addSubview(holder)
         try await eventually("told it is hidden") { controller.suspended }
@@ -172,10 +172,10 @@ final class GitPanelShownTests: GitPanelTestCase {
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         let controller = GitController(roots: [root.path])
         defer { controller.letGo() }
-        let panel = NSHostingView(rootView: GitPanelView(controller: controller))
+        let panel = GitPanelView(controller: controller)
         let holder = NSView(frame: NSRect(x: 0, y: 0, width: 1180, height: 780))
         panel.frame = holder.bounds; holder.addSubview(panel)
-        let window = host(Color.clear), other = host(Color.clear)
+        let window = host(NSView()), other = host(NSView())
         defer { window.close(); other.close() }
         window.contentView?.addSubview(holder)
         try await eventually("shown, and read") { controller.isShown && controller.statusRead && !controller.loading }
@@ -234,10 +234,10 @@ final class GitPanelShownTests: GitPanelTestCase {
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         let controller = GitController(roots: [root.path]), place = GitPanelPlace()
         defer { controller.letGo() }
-        let panel = NSHostingView(rootView: GitPanelView(controller: controller, place: place))
+        let panel = GitPanelView(controller: controller, place: place)
         let holder = NSView(frame: NSRect(x: 0, y: 0, width: 1180, height: 780))
         panel.frame = holder.bounds; holder.addSubview(panel)
-        let window = host(Color.clear), other = host(Color.clear)
+        let window = host(NSView()), other = host(NSView())
         defer { window.close(); other.close() }
         window.contentView?.addSubview(holder)
         try await eventually("shown, and read") { controller.isShown && controller.statusRead && !controller.loading }
