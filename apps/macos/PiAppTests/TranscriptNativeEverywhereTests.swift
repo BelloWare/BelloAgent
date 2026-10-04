@@ -182,6 +182,7 @@ final class TranscriptNativeEverywhereTests: XCTestCase {
         XCTAssertTrue(imports("/* a /* nested */ comment */ internal import SwiftUI"))
         XCTAssertTrue(imports("let s = \"// not a comment\"\nimport SwiftUI"))
         XCTAssertTrue(imports("let r = #\"a \" quote\"#\nimport struct SwiftUI.Color"))
+        XCTAssertTrue(imports("let s = #\"\\#\"#\"#\nimport SwiftUI"))
         XCTAssertFalse(imports("// import SwiftUI"))
         XCTAssertFalse(imports("/* import SwiftUI */"))
         XCTAssertFalse(imports("let s = \"import SwiftUI\""))
@@ -217,7 +218,8 @@ final class TranscriptNativeEverywhereTests: XCTestCase {
                 index += hashes + (triple ? 3 : 1)
                 let quotes = triple ? 3 : 1
                 while index < text.count {
-                    if hashes == 0, text[index] == "\\" { index += 2; continue }
+                    // An escape: a backslash and the literal's hashes, then the escaped character.
+                    if text[index] == "\\", (0..<hashes).allSatisfy({ at(1 + $0) == "#" }) { index += 2 + hashes; continue }
                     if (0..<quotes).allSatisfy({ at($0) == "\"" }), (0..<hashes).allSatisfy({ at(quotes + $0) == "#" }) {
                         index += quotes + hashes; break
                     }
