@@ -1,0 +1,23 @@
+[package]
+name = "bello-agent-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+thiserror.workspace = true
+url = "2"
+sha2 = "0.10"
+fs2 = "0.4"
+zeroize = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "net", "io-util"] }
+tokio-util = "0.7"
+futures-util = "0.3"
+
+[dev-dependencies]
+tempfile = "3"

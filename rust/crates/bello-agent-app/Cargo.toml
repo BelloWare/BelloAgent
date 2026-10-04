@@ -1,0 +1,20 @@
+[package]
+name = "bello-agent-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+bello-agent-core = { path = "../bello-agent-core" }
+bello-workbench = { git = "https://github.com/BelloWare/BelloBox.git", rev = "3dc2fa3c585927aca0493018c3830d7d1cffedbb" }
+bello-workbench-ui = { git = "https://github.com/BelloWare/BelloBox.git", rev = "3dc2fa3c585927aca0493018c3830d7d1cffedbb" }
+gpui = { workspace = true, default-features = false, features = ["x11", "wayland", "font-kit"] }
+libc = "=0.2.186"
+serde_json.workspace = true
+serde.workspace = true
+uuid.workspace = true
+
+[[bin]]
+name = "bello-agent"
+path = "src/main.rs"

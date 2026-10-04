@@ -1,0 +1,9 @@
+{
+  "id": "local-fixture",
+  "api": "openai-responses",
+  "providerId": "litellm",
+  "modelId": "local-test-fixture",
+  "baseUrl": "http://127.0.0.1:47831",
+  "contextWindow": 32000,
+  "maxOutputTokens": 4096
+}

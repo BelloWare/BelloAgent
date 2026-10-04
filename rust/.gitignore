@@ -1,0 +1,7 @@
+/target/
+/perf/results/
+/perf/raw/
+/perf/evidence/*
+!/perf/evidence/README.md
+*.tmp
+__pycache__/

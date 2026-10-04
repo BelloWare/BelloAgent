@@ -1,0 +1,39 @@
+name: Rust Linux checks
+on:
+  push:
+    branches: [rust]
+    paths: ['rust/**', '.github/workflows/rust.yml']
+  pull_request:
+    paths: ['rust/**', '.github/workflows/rust.yml']
+permissions:
+  contents: read
+concurrency:
+  group: rust-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: rust
+    env:
+      CARGO_BUILD_JOBS: '4'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config curl ca-certificates libfontconfig1-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libasound2-dev libzstd-dev libssl-dev libvulkan-dev cmake clang lld
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.99.0 --profile minimal --component rustfmt --component clippy
+          rustup override set 1.99.0
+      - name: Formatting
+        run: cargo fmt --all -- --check
+      - name: Core and integration tests
+        run: cargo test --locked --workspace
+      - name: Lints
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Build native applications
+        run: cargo build --locked --workspace
