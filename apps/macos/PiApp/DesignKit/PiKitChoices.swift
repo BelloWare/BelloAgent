@@ -291,18 +291,38 @@ extension PiKit {
         override func updateLayer() { layer?.backgroundColor = piCGColor(.piSurface) }
     }
 
-    /// The height `text` wraps to in `font` at `width`.
+    /// The lines `text` breaks into in `font` at `width`, as `Text` wraps it.
+    static func wrappedLines(_ text: String, font: NSFont, width: CGFloat) -> [String] {
+        let string = NSAttributedString(string: text, attributes: [.font: font])
+        let typesetter = CTTypesetterCreateWithAttributedString(string)
+        var lines: [String] = [], start = 0
+        let length = string.length
+        let ns = text as NSString
+        while start < length {
+            let count = CTTypesetterSuggestLineBreak(typesetter, start, Double(max(1, width)))
+            guard count > 0 else { break }
+            var line = ns.substring(with: NSRange(location: start, length: count))
+            while line.hasSuffix(" ") || line.hasSuffix("\n") { line.removeLast() }
+            lines.append(line)
+            start += count
+        }
+        return lines.isEmpty ? [""] : lines
+    }
+    /// The height `text` wraps to in `font` at `width`: one text-system line
+    /// height per line, as `Text` stacks its lines.
     static func wrappedHeight(_ text: String, font: NSFont, width: CGFloat) -> CGFloat {
-        let bounds = NSAttributedString(string: text, attributes: [.font: font])
-            .boundingRect(with: CGSize(width: max(1, width), height: 10_000), options: [.usesLineFragmentOrigin, .usesFontLeading])
-        return Swift.max(Line(text, font: font, color: .black).lineHeight, PiKit.ceil(bounds.height, 2))
+        CGFloat(wrappedLines(text, font: font, width: width).count) * Line(text, font: font, color: .black).lineHeight
     }
     /// Draws `text` wrapped in `rect` (flipped); returns the height it took.
-    @discardableResult static func drawWrapped(_ text: String, font: NSFont, color: NSColor, in rect: CGRect) -> CGFloat {
-        let height = wrappedHeight(text, font: font, width: rect.width)
-        NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: color])
-            .draw(with: CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: height), options: [.usesLineFragmentOrigin, .usesFontLeading])
-        return height
+    @discardableResult static func drawWrapped(_ text: String, font: NSFont, color: NSColor, in rect: CGRect, scale: CGFloat = 2) -> CGFloat {
+        let lines = wrappedLines(text, font: font, width: rect.width)
+        var y = rect.minY
+        for line in lines {
+            let drawn = Line(line, font: font, color: color)
+            drawn.draw(at: CGPoint(x: rect.minX, y: y), scale: scale)
+            y += drawn.lineHeight
+        }
+        return y - rect.minY
     }
 
     /// Wrapping, selectable-free text as a view: `Text` that takes the lines it needs.

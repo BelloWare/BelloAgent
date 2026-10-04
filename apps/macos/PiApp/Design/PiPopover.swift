@@ -64,16 +64,43 @@ import SwiftUI
     }
 
     func show(from anchor: NSView, width: CGFloat, maximumHeight: CGFloat, animates: Bool, content: () -> AnyView) {
+        present(from: anchor, maximumHeight: maximumHeight, animates: animates) { height in
+            // The panel is as tall as its content up to the room it was given; a
+            // scroll view inside reports that height, so it never grows past it.
+            let host = NSHostingController(rootView: AnyView(content().frame(width: width).frame(maxHeight: height, alignment: .top)))
+            host.sizingOptions = [.preferredContentSize]
+            return host
+        }
+    }
+
+    /// The same for AppKit content: `view` at `width`, as tall as it needs
+    /// up to the room there is, scrolling inside past that.
+    func toggle(from anchor: NSView, width: CGFloat, maximumHeight: CGFloat, animates: Bool, view: @escaping @MainActor () -> NSView) {
+        if isShown || pending != nil { close(); return }
+        present(from: anchor, maximumHeight: maximumHeight, animates: animates) { room in
+            let content = view()
+            let height = min(room, PiKit.height(of: content, width: width))
+            let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: width, height: height))
+            scroll.drawsBackground = false; scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true
+            let document = PiKit.Box.ClipView(frame: NSRect(x: 0, y: 0, width: width, height: PiKit.height(of: content, width: width)))
+            content.frame = document.bounds; content.autoresizingMask = [.width]
+            document.addSubview(content)
+            scroll.documentView = document
+            let controller = NSViewController()
+            controller.view = scroll
+            controller.preferredContentSize = scroll.frame.size
+            return controller
+        }
+    }
+
+    private func present(from anchor: NSView, maximumHeight: CGFloat, animates: Bool, controller: (CGFloat) -> NSViewController) {
         guard let window = anchor.window else { return }
         if let current = Self.current, current !== self { current.close() }
         close()
         let onScreen = window.convertToScreen(anchor.convert(anchor.bounds, to: nil))
         let visible = (window.screen ?? NSScreen.main)?.visibleFrame ?? onScreen.insetBy(dx: -2_000, dy: -2_000)
         let placement = Self.placement(anchor: onScreen, visible: visible, maximumHeight: maximumHeight)
-        // The panel is as tall as its content up to the room it was given; a
-        // scroll view inside reports that height, so it never grows past it.
-        let host = NSHostingController(rootView: AnyView(content().frame(width: width).frame(maxHeight: placement.height, alignment: .top)))
-        host.sizingOptions = [.preferredContentSize]
+        let host = controller(placement.height)
         let popover = NSPopover()
         popover.behavior = .transient
         popover.animates = animates
@@ -134,7 +161,7 @@ final class PiPopoverSurface: NSView {
     }
     required init?(coder: NSCoder) { super.init(coder: coder); wantsLayer = true }
     override var wantsUpdateLayer: Bool { true }
-    override func updateLayer() { layer?.backgroundColor = NSColor(Color.piSurface).cgColor }
+    override func updateLayer() { layer?.backgroundColor = piCGColor(.piSurface) }
     override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); needsDisplay = true }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }

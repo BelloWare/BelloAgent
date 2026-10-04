@@ -13,6 +13,8 @@ import XCTest
     /// Pixels allowed past the channel tolerance, as a share of the capture:
     /// a glyph edge or a curve antialiased a fraction of a pixel apart.
     static let allowedShare = 0.004
+    /// The most a channel may differ in a capture without symbols.
+    static let largestChannel = 48
     private var results: [PiKitParity.Result] = []
 
     override func setUp() async throws { PiKit.Motion.reducedOverride = true }
@@ -34,6 +36,11 @@ import XCTest
             XCTAssertEqual(result.swiftUIFit.width, result.appKitFit.width.rounded(.up), accuracy: 1.01, "\(result.name) width", file: file, line: line)
             XCTAssertEqual(result.swiftUIFit.height, result.appKitFit.height.rounded(.up), accuracy: 1.01, "\(result.name) height", file: file, line: line)
             XCTAssertLessThanOrEqual(Double(result.differing), Double(result.total) * share, result.description, file: file, line: line)
+            // Without symbols the pictures are the same: no pixel further
+            // apart than antialiasing of the same edge.
+            if share == Self.allowedShare {
+                XCTAssertLessThanOrEqual(result.largest, Self.largestChannel, result.description, file: file, line: line)
+            }
         }
     }
 
@@ -174,4 +181,72 @@ import XCTest
             PiKit.Pager(center: PiKit.TextLine(PiKit.Line("Page 2 of 5", font: PiKit.Font.caption, color: .piInkSecondary)), canPrevious: false, canNext: true, previous: {}, next: {})
         }
     }
+
+    // MARK: Display pieces
+
+    func testBadgesAndChips() async throws {
+        let share = Self.symbolShare
+        try await check("badge", PiBadge(text: "Draft")) { PiKit.Badge(text: "Draft") }
+        try await check("badge-dot", PiBadge(text: "Running", tone: .success, dot: true)) { PiKit.Badge(text: "Running", tone: .success, dot: true) }
+        try await check("badge-icon", share: share, PiBadge(text: "Pinned", tone: .accent, icon: "pin.fill")) { PiKit.Badge(text: "Pinned", tone: .accent, icon: "pin.fill") }
+        try await check("badge-empty", PiBadge(text: "", tone: .warning, dot: true)) { PiKit.Badge(text: "", tone: .warning, dot: true) }
+        try await check("iconbadge", share: share, PiIconBadge(symbol: "gearshape", tone: .info)) { PiKit.IconBadge(symbol: "gearshape", tone: .info) }
+        try await check("iconbadge-filled", share: share, PiIconBadge(symbol: "bolt.fill", size: 30, filled: true)) { PiKit.IconBadge(symbol: "bolt.fill", size: 30, filled: true) }
+        try await check("chip", share: share, PiChip(text: "README.md", icon: "doc.text", remove: {})) { PiKit.Chip(text: "README.md", icon: "doc.text", remove: {}) }
+    }
+
+    func testSurfacesAndText() async throws {
+        let text = { (value: String) in PiKit.TextLine(PiKit.Line(value, font: PiKit.Font.body, color: .piInk)) }
+        try await check("card", width: 260, PiCard { Text("Inside a card").font(PiFont.body).foregroundStyle(Color.piInk) }) { PiKit.card(text("Inside a card")) }
+        try await check("card-sunken", width: 260, PiCard(padding: 12, sunken: true) { Text("Sunken").font(PiFont.body).foregroundStyle(Color.piInk) }) { PiKit.card(text("Sunken"), padding: 12, sunken: true) }
+        try await check("note", width: 260, share: Self.symbolShare, PiNote("The helper restarted after an update; earlier output is kept in the journal.")) {
+            PiKit.Note("The helper restarted after an update; earlier output is kept in the journal.")
+        }
+        try await check("note-danger", share: Self.symbolShare, PiNote("Could not save.", tone: .danger)) { PiKit.Note("Could not save.", tone: .danger) }
+        try await check("keyvalue", width: 320, PiKeyValue(key: "Model", value: "claude-opus-5-5")) { PiKit.KeyValue(key: "Model", value: "claude-opus-5-5") }
+        try await check("section", width: 320, PiSectionHeader("Connections", subtitle: "Where requests go")) { PiKit.SectionHeader("Connections", subtitle: "Where requests go") }
+        try await check("stattile", width: 160, share: Self.symbolShare, PiStatTile(title: "Requests", value: "1,284", caption: "Last 7 days", symbol: "arrow.up.arrow.down")) {
+            PiKit.statTile(title: "Requests", value: "1,284", caption: "Last 7 days", symbol: "arrow.up.arrow.down")
+        }
+    }
+
+    func testGaugesAndCharts() async throws {
+        try await check("sharebar", width: 120, UsageShareBar(fraction: 0.35).frame(height: 6)) { let bar = PiKit.ShareBar(fraction: 0.35); bar.setFrameSize(NSSize(width: 120, height: 6)); return Fixed(bar, CGSize(width: 120, height: 6)) }
+        try await check("ring", PiRing(fraction: 0.62, size: 14)) { PiKit.Ring(fraction: 0.62, size: 14) }
+        try await check("contextring", ContextRing(fraction: 0.86, size: 14)) { PiKit.Ring.context(0.86, size: 14) }
+        try await check("statpill", share: Self.symbolShare, PiStatPillFace(symbol: "chart.pie", label: "7.3K tok · $0.005")) { PiKit.StatPill(symbol: "chart.pie", label: "7.3K tok · $0.005") }
+        try await check("statpill-warning", share: Self.symbolShare, PiStatPillFace(symbol: "dollarsign.circle", label: "$4.10", warningTail: "92%")) {
+            PiKit.StatPill(symbol: "dollarsign.circle", label: "$4.10", warningTail: "92%")
+        }
+        try await check("figure", width: 160, PiFigure(value: "$12.40", title: "Spend", caption: "3/5 requests reported", partial: true)) {
+            PiKit.Figure(value: "$12.40", title: "Spend", caption: "3/5 requests reported", partial: true)
+        }
+        try await check("chartheader", width: 300, PiChartHeader("Tokens per turn", subtitle: "Last 40 turns")) { PiKit.ChartHeader("Tokens per turn", subtitle: "Last 40 turns") }
+        let segments = [PiBarSegment(id: "a", fraction: 0.6), PiBarSegment(id: "b", fraction: 0.3), PiBarSegment(id: "c", fraction: 0.005)]
+        try await check("segmented", width: 240, PiSegmentedBar(segments: segments, color: { $0 == "a" ? .piAccent : $0 == "b" ? .piInfo : .piSuccess })) {
+            PiKit.SegmentedBar(segments: segments.map { PiKit.BarSegment(id: $0.id, fraction: $0.fraction) }, color: { $0 == "a" ? .piAccent : $0 == "b" ? .piInfo : .piSuccess })
+        }
+        try await check("legend", width: 300, PiLegendRow(color: .piAccent, title: "Output", value: "12,400", share: "41%", detail: "reasoning 3,100")) {
+            PiKit.LegendRow(color: .piAccent, title: "Output", value: "12,400", share: "41%", detail: "reasoning 3,100")
+        }
+    }
+
+    func testIndicatorsAndSheet() async throws {
+        try await check("backtobottom", share: Self.symbolShare, PiBackToBottomPill {}) { PiKit.BackToBottomPill {} }
+        try await check("shimmer-still", PiShimmerText(text: "Generating response…")) { PiKit.ShimmerText("Generating response…") }
+        try await check("sheet", share: Self.symbolShare,
+                        PiSheet("Connections", subtitle: "Where requests go", symbol: "network", width: 480, height: 200) { Color.clear } footer: { Text("Footer").font(PiFont.caption) }) {
+            let sheet = PiKit.Sheet("Connections", subtitle: "Where requests go", symbol: "network", content: NSView(), footer: PiKit.TextLine(PiKit.Line("Footer", font: PiKit.Font.caption, color: .piInk)))
+            sheet.width = 480; sheet.height = 200
+            return sheet
+        }
+    }
+}
+
+/// A view at a fixed size, for a parity check of something sized by its container.
+private final class Fixed: NSView {
+    let size: CGSize
+    init(_ view: NSView, _ size: CGSize) { self.size = size; super.init(frame: NSRect(origin: .zero, size: size)); view.frame = bounds; view.autoresizingMask = [.width, .height]; addSubview(view) }
+    required init?(coder: NSCoder) { fatalError() }
+    override var intrinsicContentSize: NSSize { size }
 }

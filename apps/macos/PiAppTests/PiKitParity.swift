@@ -47,7 +47,11 @@ import XCTest
         let swiftUIFit = NSHostingController(rootView: root).sizeThatFits(in: CGSize(width: 10_000, height: 10_000))
         let intrinsic = appKit.intrinsicContentSize
         var appKitFit = intrinsic.width == NSView.noIntrinsicMetric || intrinsic.height == NSView.noIntrinsicMetric ? appKit.fittingSize : intrinsic
-        if let width { appKitFit.width = width; if intrinsic.height != NSView.noIntrinsicMetric { appKitFit.height = intrinsic.height } }
+        if let width {
+            appKitFit.width = width
+            if let sized = appKit as? PiKit.WidthSizing { appKitFit.height = sized.height(forWidth: width) }
+            else if intrinsic.height != NSView.noIntrinsicMetric { appKitFit.height = intrinsic.height }
+        }
         let size = CGSize(width: ceil(max(swiftUIFit.width, appKitFit.width) + margin * 2),
                           height: ceil(max(swiftUIFit.height, appKitFit.height) + margin * 2))
         let first = try await capture(host, fit: nil, size: size, appearance: appearance, hover: hover, canvas: canvas)
