@@ -29,17 +29,15 @@ final class PlainTextCopyTests: XCTestCase {
         return NSPasteboard.general.string(forType: .string)
     }
 
-    /// A short message: SwiftUI's own selectable text, through the field
-    /// editor that holds its selection.
+    /// A short message: the same selectable TextKit text a long paste is,
+    /// drawn natively since the AppKit transcript.
     @MainActor func testCopyingAcrossTheLinesOfATypedMessage() async throws {
         let typed = ReplySourceTests.typed
         let stage = await stage([TranscriptMessage(id: "u1", role: "user", text: typed, at: 1_000, turn: "u1"),
                                  TranscriptMessage(id: "a1", role: "assistant", text: "Answer.", state: "complete", at: 2_000, turn: "u1")])
         defer { stage.close() }
         let row = try XCTUnwrap(stage.row("u1"))
-        let field = try XCTUnwrap(views(NSTextField.self, in: row).first { $0.isSelectable && $0.stringValue == typed })
-        field.selectText(nil)
-        let editor = try XCTUnwrap(field.currentEditor() as? NSTextView)
+        let editor = try XCTUnwrap(views(TranscriptPlainTextView.self, in: row).first { $0.isSelectable && $0.string == typed })
         let start = (typed as NSString).range(of: "**not bold**").location
         let end = NSMaxRange((typed as NSString).range(of: "two  spaces"))
         editor.setSelectedRange(NSRange(location: start, length: end - start))
