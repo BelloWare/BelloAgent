@@ -111,6 +111,29 @@ pub(crate) fn list_height(rows: usize, sections: usize, room: f32) -> f32 {
     content.min((ROW_HEIGHT + SECTION_HEIGHT).max(cap.min(room)))
 }
 
+/// Exact existing queue furniture: 16pt outer margins, 12pt padding and
+/// 1pt borders on both sides, a 20pt collapse control and 8pt HStack gaps.
+/// Inputs are shaped natural text widths, not character-count estimates.
+pub(crate) fn header_label_widths(
+    pane: f32,
+    status: f32,
+    hint: Option<f32>,
+    action: Option<f32>,
+) -> (f32, f32) {
+    let safe = |value: f32| if value.is_finite() { value.max(0.) } else { 0. };
+    let gaps = 2. + f32::from(hint.is_some()) + f32::from(action.is_some());
+    let available = (safe(pane) - 58. - 20. - gaps * 8. - safe(action.unwrap_or(0.))).max(0.);
+    let status = safe(status);
+    let hint = safe(hint.unwrap_or(0.));
+    let natural = status + hint;
+    let scale = if natural > available && natural > 0. {
+        available / natural
+    } else {
+        1.
+    };
+    (status * scale, hint * scale)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,5 +273,19 @@ mod tests {
         assert_eq!(list_height(64, 2, f32::NAN), 149.);
         assert_eq!(list_height(1, 1, f32::NAN), 52.);
         assert_eq!(list_height(0, 0, f32::NAN), 0.);
+    }
+    #[test]
+    fn header_label_allocation_preserves_natural_width_and_counts_furniture_once() {
+        assert_eq!(
+            header_label_widths(800., 55., Some(80.), Some(82.)),
+            (55., 80.)
+        );
+        let (status, hint) = header_label_widths(308., 55., Some(80.), Some(82.));
+        assert!((status + hint - (308. - 58. - 20. - 32. - 82.)).abs() < 0.001);
+        assert!((status / hint - 55. / 80.).abs() < 0.001);
+        assert_eq!(header_label_widths(308., 55., None, Some(82.)), (55., 0.));
+        assert_eq!(header_label_widths(308., 55., Some(80.), None), (55., 80.));
+        assert_eq!(header_label_widths(0., 55., Some(80.), Some(82.)), (0., 0.));
+        assert_eq!(header_label_widths(f32::NAN, 55., None, None), (0., 0.));
     }
 }

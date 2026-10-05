@@ -958,7 +958,7 @@ impl AgentView {
         ));
         cx.notify();
     }
-    fn queue(&mut self, cx: &mut Context<Self>) -> Div {
+    fn queue(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
         let p = self.palette;
         let timing = queue_presentation::QueueTiming::new(
             self.session.edit.is_some(),
@@ -990,44 +990,147 @@ impl AgentView {
             .bg(rgb(p.sunken))
             .flex()
             .flex_col()
-            .gap(px(8.));
+            .gap(px(6.));
         if self.session.pending.is_empty() {
             return div();
         }
+        let resume_enabled = self.session.edit.is_none()
+            && self.queue_operation.is_none()
+            && !self.busy
+            && !self.loading
+            && !self.load_failed
+            && !self.shutting_down;
+        let chat_id = self.record.id.clone();
+        // The same source micro weight is used for shaping and both labels.
+        let micro_weight = FontWeight::MEDIUM;
+        let status_text = timing.header(self.session.pending.len());
+        let has_hint = self.queue_open && follow_up_count > 1 && self.session.edit.is_none();
+        let has_resume = queue_actions::offers_resume(&self.chat);
+        let measure = |text: &str, size: f32, weight: FontWeight| {
+            let mut font = gpui::font(if cfg!(target_os = "macos") {
+                ".SystemUIFont"
+            } else {
+                "DejaVu Sans"
+            });
+            font.weight = weight;
+            let run = TextRun {
+                len: text.len(),
+                font,
+                color: rgb(p.ink).into(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            f32::from(
+                window
+                    .text_system()
+                    .shape_line(text.to_owned().into(), px(size), &[run], None)
+                    .width,
+            )
+            .ceil()
+        };
+        let action_width = measure(
+            queue_actions::resume_label(&self.chat),
+            12.,
+            FontWeight::MEDIUM,
+        ) + 12.
+            + 4.
+            + 22.;
+        let (status_width, hint_width) = queue_presentation::header_label_widths(
+            self.queue_geometry.map_or(self.pane_width, |geometry| {
+                geometry.pane_width.min(self.pane_width)
+            }),
+            measure(&status_text, 10.5, micro_weight),
+            has_hint.then(|| measure("Drag to reorder", 10.5, micro_weight)),
+            has_resume.then_some(action_width),
+        );
         panel = panel.child(
             div()
                 .flex()
                 .items_center()
-                .justify_between()
-                .child(
-                    div()
-                        .text_size(px(11.5))
-                        .text_color(rgb(p.secondary))
-                        .child(timing.header(self.session.pending.len())),
-                )
-                .when(
-                    self.queue_open && follow_up_count > 1 && self.session.edit.is_none(),
-                    |header| {
-                        header.child(
-                            div()
-                                .text_size(px(10.5))
-                                .text_color(rgb(p.tertiary))
-                                .child("Drag to reorder"),
-                        )
-                    },
-                )
+                .gap(px(8.))
+                .debug_selector(|| "queue-header".to_string())
                 .child(
                     self.icon_button(
                         "toggle-queue",
                         if self.queue_open { "down" } else { "chevron" },
-                        22.,
+                        20.,
                     )
+                    .flex_shrink_0()
                     .on_click(cx.listener(|view, _, window, cx| {
                         view.queue_open = !view.queue_open;
                         view.cancel_queue_drag(window, cx);
                         cx.notify();
                     })),
-                ),
+                )
+                .child(
+                    div()
+                        .w(px(status_width))
+                        .flex_shrink_0()
+                        .debug_selector(|| "queue-status-label".to_string())
+                        .text_size(px(10.5))
+                        .font_weight(micro_weight)
+                        .text_color(rgb(p.secondary))
+                        .child(status_text),
+                )
+                .when(has_hint, |header| {
+                    header.child(
+                        div()
+                            .w(px(hint_width))
+                            .flex_shrink_0()
+                            .debug_selector(|| "queue-reorder-label".to_string())
+                            .text_size(px(10.5))
+                            .font_weight(micro_weight)
+                            .text_color(rgb(p.tertiary))
+                            .child("Drag to reorder"),
+                    )
+                })
+                .child(div().flex_1())
+                .when(has_resume, |header| {
+                    header.child(
+                        div()
+                            .id("resume-queue")
+                            .debug_selector(|| "queue-resume".to_string())
+                            .w(px(action_width))
+                            .relative()
+                            .flex_shrink_0()
+                            .flex()
+                            .items_center()
+                            .gap(px(4.))
+                            .px(px(11.))
+                            .py(px(5.))
+                            .rounded_full()
+                            .bg(p.fill())
+                            .text_size(px(12.))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(rgb(p.ink))
+                            .opacity(if resume_enabled { 1. } else { 0.4 })
+                            .when(resume_enabled, |button| {
+                                button.cursor_pointer().hover(move |d| {
+                                    d.bg(rgba(if p.dark { 0xffffff17 } else { 0x00000013 }))
+                                })
+                            })
+                            .when(self.session.edit.is_some(), |button| {
+                                button.tooltip(move |_, cx| {
+                                    cx.new(|_| queue_actions::ResumeEditHint(p)).into()
+                                })
+                            })
+                            .child(self.icon("play", 12.))
+                            .child(queue_actions::resume_label(&self.chat))
+                            .child(
+                                div()
+                                    .absolute()
+                                    .inset_0()
+                                    .rounded_full()
+                                    .border_1()
+                                    .border_color(p.hairline()),
+                            )
+                            .on_click(cx.listener(move |view, _, _, cx| {
+                                view.resume_queued(&chat_id, cx);
+                                cx.stop_propagation();
+                            })),
+                    )
+                }),
         );
         if !self.queue_open {
             return panel;
@@ -1552,7 +1655,7 @@ impl AgentView {
                     .child(actions),
             );
         }
-        let queue = self.queue(cx);
+        let queue = self.queue(window, cx);
         let field_height = self
             .composer
             .update(cx, |editor, _| {
@@ -1638,11 +1741,6 @@ impl AgentView {
                 .on_click(cx.listener(|v, _, _, cx| v.submit(Lane::Steering, cx))),
             );
         }
-        if self.session.queue_paused {
-            bar = bar.child(self.button("resume", "Resume").on_click(cx.listener(
-                |v, _, _, cx| v.command(cx, |controller| controller.resume(), |_, (), _| {}),
-            )));
-        }
         if self.session.retry.is_some() && self.session.state != RunState::Running {
             bar = bar.child(
                 self.button("retry", "Retry")
@@ -1717,6 +1815,7 @@ impl AgentView {
         bar = bar.child(
             div()
                 .id("send")
+                .debug_selector(|| "composer-send".to_string())
                 .size(px(30.))
                 .flex()
                 .items_center()

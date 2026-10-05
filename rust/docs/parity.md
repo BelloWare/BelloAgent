@@ -343,6 +343,81 @@ nonempty draft persistence, Dock reopen, cancellable Quit, or Sparkle behavior.
 Probe code and its feature-gated hooks count as test-support LOC, not shipped
 production code. No macOS lifecycle parity is claimed by adding this diagnostic.
 
+## Queue-header Resume / Send queued
+
+Implemented the original `QueuePanel.swift:125–137` entry point, using
+`SessionDisplay.swift:339` availability and the compact play-label pill from
+`Design/PiButtons.swift:77–93`. A nonrunning, nonempty queue shows **Resume** when
+paused and **Send queued** otherwise; an edit hold keeps the action visible but
+disabled with the original finish/cancel help. Collapse precedes status, the
+reorder hint and trailing action. The misplaced composer Resume was removed.
+The panel's vertical gap is the original 6pt; status and reorder hint use the
+original 10.5pt medium micro font, sharing the same shaping/rendering weight. Status/hint/action labels are shaped with the actual
+platform font, size and weight; explicit widths preserve natural text size when
+space permits and proportionally wrap the labels in a constrained header.
+Available width subtracts existing panel margins/padding/borders, collapse control,
+action and source gaps exactly once from measured pane width. The allocator has
+no character-count estimate, truncation or fixed row height. GPUI supplies font
+fallback; failure to resolve every font remains the framework's existing fatal
+rendering condition. Empty queue panels remain absent, as before.
+
+The callback revalidates chat identity and current state, shares the existing
+per-chat queue-operation ownership token, and uses the existing Controller Resume
+transaction. It does not make the composer read-only or replace its marked text.
+Completion addresses the original chat/project/controller/operation identity;
+Close waits for the operation, and errors stay visible without selecting a chat
+or replacing its draft. Production core dispatch/persistence semantics are
+unchanged. Resume consumes remaining pending work, not the interrupted turn that
+belongs to the separate Retry action.
+
+Five new fake-platform tests cover visibility/labels/edit hold, duplicate/stale
+callbacks, disconnected failure, marked Unicode draft/focus/revision retention,
+navigated-away completion and Close barriers. Geometry checks cover expanded and
+collapsed headers with multiple follow-ups, long held/error labels and **Send
+queued**, and prove the ordinary paused Send button fits the previously clipped
+920×600 half-width pane. Error+Retry checks prove header bounds only; the broader
+composer-width ladder remains incomplete.
+
+Six new gated loopback actor tests cover captured IDs/text/order/model/effort,
+exactly-once dispatch, active/held/disconnected rejection, provider EOF failure,
+active close/reopen, and resuming remaining work without silently retrying an
+interrupted turn. A disposable snapshot-path collision additionally verifies failed writes leave the snapshot/publication and
+backup bytes unchanged, make no request, and allow the same Controller to resume
+once after storage is restored. All 133 core tests pass, including 16 runtime
+tests; 700 focused executions and eleven isolated mutation checks also pass.
+No mutation touched the canonical production build cache. The complete workspace has 226 default and 233
+optional native-probe tests passing, with strict all-feature Clippy, build and
+format checks. Independent review reran all 40 queue UI/policy tests and seven
+Resume runtime tests, then checked the final shared micro-font shaping/rendering
+weight and reran the 40 UI/policy tests. These are headless/loopback observations;
+macOS Resume/IME/accessibility validation remains separate.
+
+Initial Linux candidates `021f9070` and `6d790ca6` passed fake-platform outer-bounds
+checks but rendered status/hint text in near-character-wide columns after
+Stop/reopen. Those candidates are superseded; their screenshots are not evidence
+for the corrected binary. Explicit font-shaped widths fix the native rendering
+failure that flexible intrinsic sizing and outer-bounds tests missed. The added
+readable-label regression checks width, normal/constrained header height and
+resize/snapshot refresh, while actual Linux screenshots remain necessary proof.
+
+Linux candidate `f434223a1c2f0249156f8a280e299f895a92c200ee1c9fbe69a40d6a024e2567`
+passed stopped-state startup at normal/minimum/split sizes, collapsed Resume
+sending remaining B,C exactly once, and idle **Send queued** sending A,B,C exactly
+once only after clicking. Composer typing/focus/Undo and the exact Unicode draft
+survived; disconnected Resume showed a visible error without removing queued
+work, and edit hold/Cancel/close/reopen checks passed. Ordinary paused 920×600
+half-pane Send is fully visible. A transient Close while Cancel remained in flight
+correctly waited for chat operations; retry closed cleanly. This does not establish
+all composer widths, native macOS menu/input behavior or OS IME parity.
+
+Final binary `fe94bb94d7db59cedc897cc4db8563d8e34bdaa2a2c43e13a523bd9ca61518e9`
+aligns the retained reorder-hint weight with the original medium micro font,
+sharing one weight for shaping and rendering. Fresh targeted 1180×812 and
+920×600 half-pane screenshots show readable labels and the ordinary paused Send
+fully visible. The app closed cleanly and all disposable gateways stopped.
+The broader functional observations above retain their `f434223a` provenance;
+these final screenshots are a distinct font/geometry check.
+
 ## Measured adaptive queue height
 
 `QueuePanel.swift:101–117` budgets the list after actual pane/composer geometry,

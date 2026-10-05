@@ -305,7 +305,9 @@ struct PromotionGateway {
 }
 impl PromotionGateway {
     fn new(count: usize) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        Self::from_listener(TcpListener::bind("127.0.0.1:0").unwrap(), count)
+    }
+    fn from_listener(listener: TcpListener, count: usize) -> Self {
         let url = format!("http://{}", listener.local_addr().unwrap());
         let (captured, requests) = mpsc::channel();
         let (release, wait_release) = mpsc::channel();
@@ -919,4 +921,431 @@ fn rejected_reorder_without_a_worker_preserves_publication_counter() {
         false,
         PublicationObservation::Quiescent,
     );
+}
+
+fn paused_resume_fixture(path: &std::path::Path) -> (SessionStore, Vec<Submission>) {
+    let items = vec![
+        Submission {
+            id: "resume-first".into(),
+            text: "first persisted follow-up".into(),
+            lane: Lane::FollowUp,
+            model: Some("captured-first".into()),
+            effort: Some("low".into()),
+        },
+        Submission {
+            id: "resume-middle".into(),
+            text: format!("{}\nfull persisted follow-up 🦋", "x".repeat(2048)),
+            lane: Lane::FollowUp,
+            model: Some("captured-middle".into()),
+            effort: Some("medium".into()),
+        },
+        Submission {
+            id: "resume-last".into(),
+            text: "last persisted follow-up".into(),
+            lane: Lane::FollowUp,
+            model: Some("captured-last".into()),
+            effort: Some("high".into()),
+        },
+    ];
+    let mut store = SessionStore::open(path).unwrap();
+    store
+        .transact(|session| {
+            for item in &items {
+                session.submit(item.clone())?;
+            }
+            session.state = RunState::Paused;
+            session.queue_paused = true;
+            Ok(())
+        })
+        .unwrap();
+    (store, items)
+}
+
+fn resume_controller(path: &std::path::Path, gateway: &PromotionGateway) -> Arc<Controller> {
+    let mut profile = gateway.profile();
+    // Resume must use each accepted item's choices, not today's composer profile.
+    profile.model_id = "different-current-model".into();
+    profile.thinking_level = "xhigh".into();
+    Controller::new(
+        SessionStore::open(path).unwrap(),
+        Some((profile, Credential::new("fake-only".into()).unwrap())),
+    )
+    .unwrap()
+}
+
+fn assert_rejected_resume(
+    controller: &Arc<Controller>,
+    path: &std::path::Path,
+    expected_error: &str,
+    publication: PublicationObservation,
+) {
+    let before = serde_json::to_vec(&controller.snapshot()).unwrap();
+    let bytes = std::fs::read(path).unwrap();
+    // As in assert_rejected_reorder, a gated stream has stable snapshot/disk
+    // contents but its most recent publication counter can still be advancing.
+    let revision = match publication {
+        PublicationObservation::Quiescent => Some(controller.revision()),
+        PublicationObservation::Streaming => None,
+    };
+    assert!(
+        matches!(controller.resume(), Err(Error::Invalid(message)) if message == expected_error)
+    );
+    assert_eq!(serde_json::to_vec(&controller.snapshot()).unwrap(), before);
+    assert_eq!(std::fs::read(path).unwrap(), bytes);
+    if let Some(revision) = revision {
+        assert_eq!(controller.revision(), revision);
+    }
+}
+
+fn assert_resumed_request(gateway: &PromotionGateway, items: &[Submission], index: usize) {
+    let item = &items[index];
+    gateway.assert_request_with_choices(
+        &item.id,
+        &items[..=index]
+            .iter()
+            .map(|item| item.text.as_str())
+            .collect::<Vec<_>>(),
+        item.model.as_deref().unwrap(),
+        item.effort.as_deref().unwrap(),
+    );
+}
+
+fn assert_resumed_user_messages(snapshot: &Session, items: &[Submission]) {
+    let users = snapshot
+        .messages
+        .iter()
+        .filter(|message| message.role == "user")
+        .collect::<Vec<_>>();
+    assert_eq!(users.len(), items.len());
+    for (message, item) in users.into_iter().zip(items) {
+        assert_eq!(message.id, item.id);
+        assert_eq!(message.text, item.text);
+        assert_eq!(message.model, item.model);
+        assert!(message.replay_eligible);
+    }
+}
+
+#[test]
+fn resume_persisted_followups_once_with_captured_choices_and_reject_active_resume() {
+    let gateway = PromotionGateway::new(3);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("resume.json");
+    let (store, items) = paused_resume_fixture(&path);
+    let saved = store.snapshot();
+    drop(store);
+    let controller = resume_controller(&path, &gateway);
+    assert_eq!(
+        serde_json::to_value(controller.snapshot()).unwrap(),
+        serde_json::to_value(saved).unwrap()
+    );
+    controller.resume().unwrap();
+    assert_resumed_request(&gateway, &items, 0);
+    await_state(&controller, |session| {
+        session
+            .messages
+            .last()
+            .is_some_and(|message| message.text == "blocked partial")
+    });
+    let active = controller.snapshot();
+    assert_eq!(active.state, RunState::Running);
+    assert!(!active.queue_paused);
+    assert_eq!(
+        serde_json::to_value(active.active).unwrap(),
+        serde_json::to_value(&items[0]).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(active.pending).unwrap(),
+        serde_json::to_value(&items[1..]).unwrap()
+    );
+    assert_rejected_resume(
+        &controller,
+        &path,
+        "Finish the current run or queued edit first",
+        PublicationObservation::Streaming,
+    );
+    // The same gated request must finish, with no cancellation or relaunch.
+    gateway.release.send(true).unwrap();
+    for index in 1..items.len() {
+        assert_resumed_request(&gateway, &items, index);
+    }
+    await_state(&controller, |session| {
+        session.state == RunState::Idle && session.pending.is_empty()
+    });
+    shutdown_fixture(&controller);
+    let completed = controller.snapshot();
+    assert_resumed_user_messages(&completed, &items);
+    assert_eq!(completed.messages.len(), 2 * items.len());
+    assert_eq!(completed.messages[1].text, "reply 0");
+    assert!(
+        completed
+            .messages
+            .iter()
+            .all(|message| message.replay_eligible)
+    );
+    assert!(completed.retry.is_none());
+    drop(controller);
+    assert_eq!(
+        serde_json::to_value(SessionStore::open(path).unwrap().snapshot()).unwrap(),
+        serde_json::to_value(completed).unwrap()
+    );
+    gateway.finish();
+}
+
+#[test]
+fn resume_without_connection_rejects_atomically_and_preserves_reopened_queue() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("disconnected-resume.json");
+    let (store, _) = paused_resume_fixture(&path);
+    let controller = Controller::new(store, None).unwrap();
+    let saved = controller.snapshot();
+    assert_rejected_resume(
+        &controller,
+        &path,
+        "No connection configured",
+        PublicationObservation::Quiescent,
+    );
+    shutdown_fixture(&controller);
+    drop(controller);
+    let reopened = Controller::new(SessionStore::open(&path).unwrap(), None).unwrap();
+    assert_eq!(
+        serde_json::to_value(reopened.snapshot()).unwrap(),
+        serde_json::to_value(saved).unwrap()
+    );
+    assert_rejected_resume(
+        &reopened,
+        &path,
+        "No connection configured",
+        PublicationObservation::Quiescent,
+    );
+    shutdown_fixture(&reopened);
+}
+
+#[test]
+fn resume_checkpoint_failure_preserves_queue_and_retries_once_after_storage_is_restored() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let profile: Profile = serde_json::from_value(json!({"id":"resume-write-failure","api":"openai-responses","providerId":"litellm","modelId":"different-current-model","reasoning":true,"thinkingLevel":"xhigh","baseUrl":url,"contextWindow":32000,"maxOutputTokens":4096})).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("resume.json");
+    let backup = dir.path().join("resume-backup.json");
+    let (store, items) = paused_resume_fixture(&path);
+    let controller = Controller::new(
+        store,
+        Some((profile, Credential::new("fake-only".into()).unwrap())),
+    )
+    .unwrap();
+    let before = serde_json::to_vec(&controller.snapshot()).unwrap();
+    let bytes = std::fs::read(&path).unwrap();
+    let revision = controller.revision();
+    // Only this disposable fixture is obstructed. Renaming a checkpoint file
+    // onto a directory fails before commit, without relying on chmod or root.
+    std::fs::rename(&path, &backup).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    assert!(matches!(controller.resume(), Err(Error::Io(_))));
+    shutdown_fixture(&controller);
+    // No worker can still publish or connect after the shutdown barrier.
+    assert_eq!(serde_json::to_vec(&controller.snapshot()).unwrap(), before);
+    assert_eq!(controller.revision(), revision);
+    assert_eq!(std::fs::read(&backup).unwrap(), bytes);
+    assert!(path.is_dir());
+    assert_eq!(std::fs::read_dir(&path).unwrap().count(), 0);
+    listener.set_nonblocking(true).unwrap();
+    assert!(
+        matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+    );
+    listener.set_nonblocking(false).unwrap();
+    let gateway = PromotionGateway::from_listener(listener, items.len());
+
+    std::fs::remove_dir(&path).unwrap();
+    std::fs::rename(&backup, &path).unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    // Retry Resume on the same controller: a failed checkpoint must not latch
+    // a fatal state, discard accepted work, or require re-submitting its text.
+    controller.resume().unwrap();
+    assert_resumed_request(&gateway, &items, 0);
+    await_state(&controller, |session| {
+        session
+            .messages
+            .last()
+            .is_some_and(|message| message.text == "blocked partial")
+    });
+    gateway.release.send(true).unwrap();
+    for index in 1..items.len() {
+        assert_resumed_request(&gateway, &items, index);
+    }
+    await_state(&controller, |session| {
+        session.state == RunState::Idle && session.pending.is_empty()
+    });
+    shutdown_fixture(&controller);
+    let completed = controller.snapshot();
+    assert_resumed_user_messages(&completed, &items);
+    assert_eq!(completed.messages.len(), 2 * items.len());
+    assert!(
+        completed
+            .messages
+            .iter()
+            .all(|message| message.replay_eligible)
+    );
+    assert!(completed.retry.is_none());
+    drop(controller);
+    assert_eq!(
+        serde_json::to_value(SessionStore::open(path).unwrap().snapshot()).unwrap(),
+        serde_json::to_value(completed).unwrap()
+    );
+    gateway.finish();
+}
+
+#[test]
+fn resume_held_edit_rejects_atomically_after_reopen_and_cancel_keeps_queue_paused() {
+    let gateway = PromotionGateway::new(0);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("held-resume.json");
+    let (store, items) = paused_resume_fixture(&path);
+    drop(store);
+    let controller = resume_controller(&path, &gateway);
+    assert_eq!(
+        controller.begin_edit(&items[1].id, "resume-hold").unwrap(),
+        items[1].text
+    );
+    let held = controller.snapshot();
+    assert_rejected_resume(
+        &controller,
+        &path,
+        "Finish the current run or queued edit first",
+        PublicationObservation::Quiescent,
+    );
+    shutdown_fixture(&controller);
+    drop(controller);
+    let reopened = resume_controller(&path, &gateway);
+    let recovered = reopened.snapshot();
+    assert_eq!(recovered.state, RunState::Paused);
+    assert!(recovered.queue_paused);
+    assert_eq!(
+        serde_json::to_value(recovered.edit).unwrap(),
+        serde_json::to_value(held.edit).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(recovered.pending).unwrap(),
+        serde_json::to_value(&items).unwrap()
+    );
+    assert_rejected_resume(
+        &reopened,
+        &path,
+        "Finish the current run or queued edit first",
+        PublicationObservation::Quiescent,
+    );
+    reopened
+        .resolve_edit("resume-hold", "cancelled", None)
+        .unwrap();
+    shutdown_fixture(&reopened);
+    let cancelled = reopened.snapshot();
+    assert!(cancelled.edit.is_none());
+    assert!(cancelled.queue_paused);
+    assert_eq!(cancelled.state, RunState::Paused);
+    assert!(cancelled.messages.is_empty());
+    assert_eq!(
+        serde_json::to_value(&cancelled.pending).unwrap(),
+        serde_json::to_value(items).unwrap()
+    );
+    drop(reopened);
+    assert_eq!(
+        serde_json::to_value(SessionStore::open(path).unwrap().snapshot()).unwrap(),
+        serde_json::to_value(cancelled).unwrap()
+    );
+    gateway.finish();
+}
+
+fn assert_resume_recovers_remaining_queue_after_interruption(close_while_active: bool) {
+    let gateway = PromotionGateway::new(3);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("interrupted-resume.json");
+    let (store, items) = paused_resume_fixture(&path);
+    drop(store);
+    let controller = resume_controller(&path, &gateway);
+    controller.resume().unwrap();
+    assert_resumed_request(&gateway, &items, 0);
+    await_state(&controller, |session| {
+        session
+            .messages
+            .last()
+            .is_some_and(|message| message.text == "blocked partial")
+    });
+    if close_while_active {
+        // Closing awaits cancellation while the provider is still gated.
+        shutdown_fixture(&controller);
+        gateway.release.send(false).unwrap();
+    } else {
+        // EOF without a terminal event is a provider failure, not completion.
+        gateway.release.send(false).unwrap();
+        await_state(&controller, |session| session.state == RunState::Error);
+        shutdown_fixture(&controller);
+    }
+    let interrupted = controller.snapshot();
+    assert_eq!(
+        interrupted.state,
+        if close_while_active {
+            RunState::Paused
+        } else {
+            RunState::Error
+        }
+    );
+    assert!(interrupted.queue_paused);
+    assert!(interrupted.active.is_none());
+    assert!(interrupted.active_reply.is_none());
+    assert!(interrupted.error.is_some());
+    assert_eq!(
+        serde_json::to_value(&interrupted.retry).unwrap(),
+        serde_json::to_value(&items[0]).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(&interrupted.pending).unwrap(),
+        serde_json::to_value(&items[1..]).unwrap()
+    );
+    assert_eq!(interrupted.messages.len(), 2);
+    assert_eq!(interrupted.messages[1].text, "blocked partial");
+    assert_eq!(interrupted.messages[1].state, "interrupted");
+    assert!(!interrupted.messages[1].replay_eligible);
+    drop(controller);
+    let reopened = resume_controller(&path, &gateway);
+    assert_eq!(
+        serde_json::to_value(reopened.snapshot()).unwrap(),
+        serde_json::to_value(interrupted).unwrap()
+    );
+    // Resume consumes only the remaining queue; Retry is a separate operation.
+    reopened.resume().unwrap();
+    for index in 1..items.len() {
+        assert_resumed_request(&gateway, &items, index);
+    }
+    await_state(&reopened, |session| {
+        session.state == RunState::Idle && session.pending.is_empty()
+    });
+    shutdown_fixture(&reopened);
+    let completed = reopened.snapshot();
+    assert_resumed_user_messages(&completed, &items);
+    assert_eq!(completed.messages.len(), 2 * items.len());
+    assert_eq!(
+        completed
+            .messages
+            .iter()
+            .filter(|message| message.state == "interrupted")
+            .count(),
+        1
+    );
+    assert!(completed.retry.is_none());
+    drop(reopened);
+    assert_eq!(
+        serde_json::to_value(SessionStore::open(path).unwrap().snapshot()).unwrap(),
+        serde_json::to_value(completed).unwrap()
+    );
+    gateway.finish();
+}
+
+#[test]
+fn resume_after_provider_failure_and_reopen_keeps_remaining_queue_without_retrying() {
+    assert_resume_recovers_remaining_queue_after_interruption(false);
+}
+
+#[test]
+fn resume_after_active_close_and_reopen_keeps_remaining_queue_without_retrying() {
+    assert_resume_recovers_remaining_queue_after_interruption(true);
 }

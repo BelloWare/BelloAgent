@@ -1,4 +1,4 @@
-//! Source queue.steer action. Persistence never owns composer or navigation.
+//! Source queue actions. Persistence never owns composer or navigation.
 use crate::{AgentView, ChatState};
 use bello_agent_core::{Controller, Lane, RunState};
 use gpui::{Context, SharedString};
@@ -14,7 +14,56 @@ pub(crate) fn offers_promotion(chat: &ChatState, turn_id: &str) -> bool {
             .any(|item| item.id == turn_id && item.lane == Lane::FollowUp)
 }
 
+/// SessionDisplay.canResumeQueue, within the existing nonempty queue panel.
+pub(crate) fn offers_resume(chat: &ChatState) -> bool {
+    chat.session.state != RunState::Running
+        && (!chat.session.pending.is_empty()
+            || chat.session.queue_paused
+            || matches!(chat.session.state, RunState::Paused | RunState::Error))
+}
+
+pub(crate) fn resume_label(chat: &ChatState) -> &'static str {
+    if chat.session.queue_paused {
+        "Resume"
+    } else {
+        "Send queued"
+    }
+}
+
 impl AgentView {
+    pub(crate) fn resume_queued(&mut self, chat_id: &str, cx: &mut Context<Self>) {
+        if self.record.id != chat_id
+            || self.shutting_down
+            || self.busy
+            || self.loading
+            || self.load_failed
+            || self.queue_operation.is_some()
+            || self.session.edit.is_some()
+            || !offers_resume(&self.chat)
+        {
+            return;
+        }
+        let operation = uuid::Uuid::new_v4();
+        self.queue_operation = Some(operation);
+        let controller = self.controller.clone();
+        let worker = controller.clone();
+        let chat_id = chat_id.to_owned();
+        let project = self.project.clone();
+        let task = cx.background_executor().spawn(async move {
+            worker
+                .resume()
+                .map_err(|error| format!("Queued messages could not be resumed: {error}"))
+        });
+        cx.spawn(async move |view, cx| {
+            let result = task.await;
+            let _ = view.update(cx, |view, cx| {
+                view.finish_queue_operation(&chat_id, &project, &controller, operation, result, cx)
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
     pub(crate) fn promote_queued(&mut self, chat_id: &str, turn_id: &str, cx: &mut Context<Self>) {
         // A rendered row belongs to one chat, even if its callback outlives a
         // selection change. Completion below still addresses its original chat.
@@ -166,6 +215,21 @@ impl gpui::Render for PromotionHint {
             .text_color(rgb(self.0.ink))
             .text_size(px(11.5))
             .child("Deliver after the current response, before follow-ups")
+    }
+}
+
+pub(crate) struct ResumeEditHint(pub(crate) crate::theme::Palette);
+impl gpui::Render for ResumeEditHint {
+    fn render(&mut self, _: &mut gpui::Window, _: &mut Context<Self>) -> impl gpui::IntoElement {
+        use gpui::{prelude::*, *};
+        div()
+            .px(px(8.))
+            .py(px(5.))
+            .rounded(px(6.))
+            .bg(rgb(self.0.surface))
+            .text_color(rgb(self.0.ink))
+            .text_size(px(11.5))
+            .child("Finish or cancel the queued edit first")
     }
 }
 

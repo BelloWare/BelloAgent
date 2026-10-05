@@ -48,6 +48,7 @@ impl AssetSource for Assets {
                 r#"<path d="M8 8h8v8H8zM8 8H5a3 3 0 1 1 3-3v14a3 3 0 1 1-3-3h14a3 3 0 1 1-3 3V5a3 3 0 1 1 3 3z"/>"#
             }
             "send" => r#"<path d="M12 20V4m-6 6 6-6 6 6"/>"#,
+            "play" => r#"<path d="m8 4 12 8-12 8z" fill="black" stroke="none"/>"#,
             "stop" => r#"<rect x="6" y="6" width="12" height="12" rx="1" fill="black"/>"#,
             "close" => r#"<path d="m6 6 12 12M6 18 18 6"/>"#,
             "terminal" => {
