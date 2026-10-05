@@ -565,7 +565,9 @@ final class UIScreenshotTests: XCTestCase {
         model.error = nil; try await settle(0.5)
 
         // 16 · The window at its smallest, and wide.
-        window.setContentSize(NSSize(width: 920, height: 620)); window.center(); try await settle(1.0)
+        // Programmatic sizing can bypass the minimum imposed during a drag.
+        // Capture the shipped content minimum, including title-bar space.
+        window.setContentSize(WorkspaceRootView.minimumWindowSize); window.center(); try await settle(1.0)
         try await pair("16-window-narrow")
         window.setContentSize(NSSize(width: 1760, height: 1000)); window.center(); try await settle(1.0)
         try await pair("16b-window-wide")
@@ -675,7 +677,7 @@ final class UIScreenshotTests: XCTestCase {
     @MainActor private func captureBlameScenes(model: WorkspaceModel, window: NSWindow, gallery: URL, appearances: [(String, NSAppearance.Name)],
                                                workspaceID: String, folder: URL) async throws {
         let frame = window.frame
-        window.setContentSize(NSSize(width: 920, height: 600)); try await settle(0.8)
+        window.setContentSize(WorkspaceRootView.minimumWindowSize); try await settle(0.8)
         let tab = model.openFile(folder.appendingPathComponent("PaymentClient.swift"), project: workspaceID)
         try await settle(1.5)
         tab.blame.show()
@@ -1411,7 +1413,7 @@ final class UIScreenshotTests: XCTestCase {
         settings.close(); try await settle(0.6)
     }
 
-    /// 26 · At the smallest window, 920×600: Settings with unsaved edits and
+    /// 26 · At the shipped minimum window size: Settings with unsaved edits and
     /// the question closing it asks (26a), a project's several terminals
     /// (26b) and the questions before restarting or closing a live shell
     /// (26c, 26d), and the question before removing a project's MCP servers
@@ -1419,7 +1421,7 @@ final class UIScreenshotTests: XCTestCase {
     @MainActor private func captureSettingsTerminalMCPScenes(model: WorkspaceModel, window: NSWindow, gallery: URL,
                                                             appearances: [(String, NSAppearance.Name)], workspace: WorkspaceRecord) async throws {
         let size = window.frame.size
-        window.setContentSize(NSSize(width: 920, height: 600)); window.center(); try await settle(1.0)
+        window.setContentSize(WorkspaceRootView.minimumWindowSize); window.center(); try await settle(1.0)
         defer { window.setContentSize(size); window.center() }
         /// Waits for `host` to wear a question, photographs it, then answers it.
         func question(on host: @escaping () -> NSWindow?, _ name: String, answer: NSApplication.ModalResponse) async throws {
