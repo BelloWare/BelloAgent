@@ -213,15 +213,15 @@ struct InspectorFigure: Identifiable, Equatable {
     init(symbol: String, text: String, notes: [String] = [], tone: PiTone = .accent) {
         let icon = PiKit.SymbolView(PiKit.Symbol(symbol, size: 12, weight: .semibold), color: tone.nsColor)
         let words = inspectorColumn([inspectorSelectableText(text, font: .systemFont(ofSize: 12.5, weight: .medium), lines: .max)] + notes.map { inspectorSelectableText($0, color: .piInkSecondary, lines: .max) }, spacing: 3)
-        let row = inspectorRow([.view(icon, insets: NSEdgeInsets(top: 1, left: 0, bottom: 0, right: 0)), .view(words, .fill), .spacer(0)], spacing: 8, alignment: .top)
+        let row = inspectorRow([.view(icon, insets: NSEdgeInsets(top: 1, left: 0, bottom: 0, right: 0)), .view(words, .flexible), .spacer(0)], spacing: 8, alignment: .top)
         box = PiKit.Box(fill: tone == .accent ? .piAccentSoft : tone.nsColor.piOpacity(0.1), cornerRadius: 10, padding: NSEdgeInsets(top: 9, left: 12, bottom: 9, right: 12), content: row)
         super.init(frame: .zero); addSubview(box)
         setAccessibilityElement(true); setAccessibilityRole(.group); setAccessibilityLabel(([text] + notes).joined(separator: ". "))
         setAccessibilityIdentifier("inspector-banner")
     }
     required init?(coder: NSCoder) { nil }
-    func height(forWidth width: CGFloat) -> CGFloat { box.height(forWidth: width) }
-    override var intrinsicContentSize: NSSize { box.intrinsicContentSize }
+    func height(forWidth width: CGFloat) -> CGFloat { ceil(box.height(forWidth: width)) }
+    override var intrinsicContentSize: NSSize { let size = box.intrinsicContentSize; return NSSize(width: size.width, height: ceil(size.height)) }
     override func layout() { super.layout(); box.frame = bounds }
 }
 
