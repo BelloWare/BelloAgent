@@ -155,8 +155,23 @@ The live request still offers no tools and its completion handler still fails
 visibly on unexpected calls without executing them. Eighteen synthetic tests cover
 text compatibility, identities/order, missing/incomplete records, provider binding,
 large/invalid data, snapshot v3 reopen, and the existing rejection boundary.
-Atomic-write fault cuts and live loopback Controller regression are the next
-validation slice. Output retention, source trust/mode UI, immutable project tool
+The foundation is backed up at `4a9732bcc8df1319abc5e7572829cc9bff0edff4`;
+its [Linux CI](https://github.com/BelloWare/BelloAgent/actions/runs/37266217199)
+and [native macOS build/core checks](https://github.com/BelloWare/BelloAgent/actions/runs/37266217184)
+both pass. Those macOS checks compile/link test targets, execute core tests and
+build the app; they do not establish macOS desktop or IME interaction.
+
+The separate regression follow-up adds nine checks without changing production
+behavior: pre/post-rename result cuts, atomic v3 upgrade/pair publication,
+malformed transaction rollback, torn stream-tail recovery and torn snapshot
+preservation; live loopback Controller rejection/cancellation with no second
+request after worker shutdown; real HTTP replay projection with no offered tool
+schema; and opaque-policy failure before an HTTP connection is made.
+All **123 workspace tests**, strict all-target Clippy, formatting and native Linux
+build pass locally for this follow-up. Previous CI validates the first checkpoint,
+not these newer test bytes; the new checkpoint needs its own CI run.
+
+Output retention, source trust/mode UI, immutable project tool
 policy, instructions/resources, cost/context controls, multi-round execution and
 tool cards remain missing. No external model service was contacted; the production
 path still invokes no filesystem tools. Existing tool tests use disposable fixtures.

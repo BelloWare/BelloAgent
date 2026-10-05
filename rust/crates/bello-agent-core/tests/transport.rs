@@ -10,6 +10,35 @@ use tokio_util::sync::CancellationToken;
 fn profile(url: String) -> Profile {
     serde_json::from_value(json!({"id":"fixture","api":"openai-responses","providerId":"litellm","modelId":"fixture-model","baseUrl":url,"contextWindow":32000,"maxOutputTokens":4096})).unwrap()
 }
+
+fn typed_fixture_history(profile: &Profile) -> Vec<bello_agent_core::Message> {
+    use bello_agent_core::{
+        Message,
+        provider::ToolCall,
+        tool_history::{
+            AssistantRecord, Completion, ReplayBinding, ResultRecord, ToolOutcome, ToolRecord,
+        },
+    };
+    let mut assistant: Message = serde_json::from_value(json!({"id":"fixture-assistant","role":"assistant","text":"","reasoning":"","replay_eligible":true,"state":"completed","usage":null,"model":null})).unwrap();
+    assistant.tool_record = Some(ToolRecord::Assistant(AssistantRecord {
+        completion: Completion::Complete,
+        calls: vec![ToolCall {
+            id: "fixture-call".into(),
+            name: "ls".into(),
+            arguments: json!({"path":"fixture-only"}),
+        }],
+        binding: ReplayBinding::from_profile(profile).unwrap(),
+        provider_items: vec![],
+    }));
+    let mut result: Message = serde_json::from_value(json!({"id":"fixture-result","role":"toolResult","text":"世界\n😀","reasoning":"","replay_eligible":true,"state":"completed","usage":null,"model":null})).unwrap();
+    result.tool_record = Some(ToolRecord::Result(ResultRecord {
+        assistant_id: "fixture-assistant".into(),
+        call_id: "fixture-call".into(),
+        is_error: false,
+        outcome: ToolOutcome::Completed,
+    }));
+    vec![assistant, result]
+}
 async fn server(
     body: String,
     content_type: &'static str,
@@ -55,6 +84,81 @@ async fn server(
         }
     });
     (url, rx)
+}
+
+#[tokio::test]
+async fn typed_history_reaches_loopback_as_ordered_wire_data_without_tool_schema() {
+    let response = json!({"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"fixture answer"}]}]}).to_string();
+    let (url, captured) = server(response, "application/json", "200 OK").await;
+    let profile = profile(url);
+    let history = typed_fixture_history(&profile);
+    let before = serde_json::to_value(&history).unwrap();
+    let reply = ResponsesClient::new()
+        .unwrap()
+        .complete(
+            &profile,
+            &Credential::new("fake-only".into()).unwrap(),
+            &history,
+            "",
+            "fixture-session",
+            "fixture-turn",
+            CancellationToken::new(),
+            |_| Ok(()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(reply.text, "fixture answer");
+    assert!(reply.calls.is_empty());
+    let request = String::from_utf8(captured.await.unwrap()).unwrap();
+    let body: Value = serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    assert!(body.get("tools").is_none());
+    assert_eq!(
+        body["input"],
+        json!([
+            {"type":"function_call","call_id":"fixture-call","name":"ls","arguments":"{\"path\":\"fixture-only\"}"},
+            {"type":"function_call_output","call_id":"fixture-call","output":"世界\n😀"}
+        ])
+    );
+    assert_eq!(serde_json::to_value(history).unwrap(), before);
+}
+
+#[tokio::test]
+async fn same_profile_opaque_replay_fails_before_any_http_connection() {
+    use bello_agent_core::tool_history::ToolRecord;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let profile = profile(format!("http://{}", listener.local_addr().unwrap()));
+    let mut history = typed_fixture_history(&profile);
+    if let Some(ToolRecord::Assistant(record)) = &mut history[0].tool_record {
+        record.provider_items = vec![
+            json!({"type":"reasoning","encrypted_content":"synthetic opaque bytes"}),
+            json!({"type":"function_call","call_id":"fixture-call","name":"ls","arguments":"{\"path\":\"fixture-only\"}"}),
+        ];
+    }
+    let before = serde_json::to_value(&history).unwrap();
+    let error = ResponsesClient::new()
+        .unwrap()
+        .complete(
+            &profile,
+            &Credential::new("fake-only".into()).unwrap(),
+            &history,
+            "",
+            "fixture-session",
+            "fixture-turn",
+            CancellationToken::new(),
+            |_| Ok(()),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("Provider-specific reasoning requires")
+    );
+    assert!(
+        matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+    );
+    assert_eq!(serde_json::to_value(history).unwrap(), before);
 }
 #[tokio::test]
 async fn real_loopback_stream_and_request_contract() {

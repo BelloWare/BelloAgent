@@ -850,6 +850,234 @@ fn encode_snapshot(session: &Session) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn typed_fixture_profile() -> crate::Profile {
+        serde_json::from_value(serde_json::json!({"id":"fixture","api":"openai-responses","providerId":"litellm","modelId":"fixture-model","baseUrl":"http://127.0.0.1:12345","contextWindow":32000,"maxOutputTokens":4096})).unwrap()
+    }
+    fn typed_fixture_pair() -> Vec<Message> {
+        use crate::tool_history::{
+            AssistantRecord, Completion, ReplayBinding, ResultRecord, ToolOutcome, ToolRecord,
+        };
+        let mut assistant = Message::new(
+            "tool-assistant".into(),
+            "assistant",
+            String::new(),
+            true,
+            "completed",
+            None,
+        );
+        assistant.tool_record = Some(ToolRecord::Assistant(AssistantRecord {
+            completion: Completion::Complete,
+            calls: vec![crate::provider::ToolCall {
+                id: "fixture-call".into(),
+                name: "ls".into(),
+                arguments: serde_json::json!({"path":"fixture-only"}),
+            }],
+            binding: ReplayBinding::from_profile(&typed_fixture_profile()).unwrap(),
+            provider_items: vec![],
+        }));
+        let mut result = Message::new(
+            "tool-result".into(),
+            "toolResult",
+            "fixture result".into(),
+            true,
+            "completed",
+            None,
+        );
+        result.tool_record = Some(ToolRecord::Result(ResultRecord {
+            assistant_id: "tool-assistant".into(),
+            call_id: "fixture-call".into(),
+            is_error: false,
+            outcome: ToolOutcome::Completed,
+        }));
+        vec![assistant, result]
+    }
+
+    #[test]
+    fn typed_result_rename_failures_preserve_prior_or_committed_pair_exactly() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("typed.json");
+        let mut store = SessionStore::open(&path).unwrap();
+        store
+            .transact(|s| {
+                s.messages.push(typed_fixture_pair().remove(0));
+                Ok(())
+            })
+            .unwrap();
+        let before = serde_json::to_value(store.snapshot()).unwrap();
+        let bytes = fs::read(&path).unwrap();
+        store.fault = WriteFault::BeforeRename;
+        assert!(
+            store
+                .transact(|s| {
+                    s.messages.push(typed_fixture_pair().remove(1));
+                    Ok(())
+                })
+                .is_err()
+        );
+        assert_eq!(serde_json::to_value(store.snapshot()).unwrap(), before);
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        store.fault = WriteFault::AfterRename;
+        assert!(matches!(
+            store.transact(|s| {
+                s.messages.push(typed_fixture_pair().remove(1));
+                Ok(())
+            }),
+            Err(Error::PersistenceUncertain(_))
+        ));
+        assert_eq!(serde_json::to_value(store.snapshot()).unwrap(), before);
+        store.fault = WriteFault::None;
+        assert!(
+            store
+                .transact(|s| {
+                    s.messages.clear();
+                    Ok(())
+                })
+                .is_err()
+        );
+        drop(store);
+        let reopened = SessionStore::open(&path).unwrap();
+        let snapshot = reopened.snapshot();
+        assert_eq!(snapshot.version, 3);
+        assert_eq!(snapshot.messages.len(), 2);
+        let projection =
+            crate::tool_history::project(&snapshot.messages, &typed_fixture_profile()).unwrap();
+        assert_eq!(projection.len(), 2);
+        assert_eq!(projection[1]["output"], "fixture result");
+        drop(reopened);
+        assert_eq!(
+            serde_json::to_value(SessionStore::open(&path).unwrap().snapshot()).unwrap(),
+            serde_json::to_value(snapshot).unwrap()
+        );
+    }
+
+    #[test]
+    fn typed_version_upgrade_and_pair_are_one_atomic_checkpoint() {
+        for (fault, committed) in [
+            (WriteFault::BeforeRename, false),
+            (WriteFault::AfterRename, true),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("typed.json");
+            let mut store = SessionStore::open(&path).unwrap();
+            let before = fs::read(&path).unwrap();
+            store.fault = fault;
+            assert!(
+                store
+                    .transact(|s| {
+                        s.messages.extend(typed_fixture_pair());
+                        Ok(())
+                    })
+                    .is_err()
+            );
+            assert_eq!(store.snapshot().version, 2);
+            assert!(store.snapshot().messages.is_empty());
+            if !committed {
+                assert_eq!(fs::read(&path).unwrap(), before);
+            }
+            drop(store);
+            let recovered = SessionStore::open(&path).unwrap().snapshot();
+            assert_eq!(recovered.version, if committed { 3 } else { 2 });
+            assert_eq!(recovered.messages.len(), if committed { 2 } else { 0 });
+        }
+    }
+
+    #[test]
+    fn malformed_typed_transaction_never_changes_memory_or_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("typed.json");
+        let mut store = SessionStore::open(&path).unwrap();
+        store
+            .transact(|s| {
+                s.messages.extend(typed_fixture_pair());
+                Ok(())
+            })
+            .unwrap();
+        let before = serde_json::to_value(store.snapshot()).unwrap();
+        let bytes = fs::read(&path).unwrap();
+        assert!(
+            store
+                .transact(|s| {
+                    if let Some(crate::tool_history::ToolRecord::Result(result)) =
+                        &mut s.messages[1].tool_record
+                    {
+                        result.assistant_id = "wrong-owner".into();
+                    }
+                    Ok(())
+                })
+                .is_err()
+        );
+        assert_eq!(serde_json::to_value(store.snapshot()).unwrap(), before);
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        store
+            .transact(|s| {
+                s.title = "still writable".into();
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn typed_history_survives_torn_stream_tail_without_replaying_partial_reply() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("typed.json");
+        let mut store = SessionStore::open(&path).unwrap();
+        store
+            .transact(|s| {
+                s.messages.extend(typed_fixture_pair());
+                s.submit(Submission::new("next".into(), Lane::FollowUp))?;
+                s.start_next()?;
+                Ok(())
+            })
+            .unwrap();
+        let reply = store.snapshot().active_reply.unwrap();
+        store
+            .append_delta(&reply, Delta::Text("retained partial".into()))
+            .unwrap();
+        let journal =
+            crate::stream_journal::path(&path, &store.snapshot().stream_generation).unwrap();
+        drop(store);
+        OpenOptions::new()
+            .append(true)
+            .open(&journal)
+            .unwrap()
+            .write_all(b"{torn")
+            .unwrap();
+        let original = fs::read(&journal).unwrap();
+        let snapshot = SessionStore::open(&path).unwrap().snapshot();
+        assert_eq!(snapshot.version, 3);
+        assert_eq!(snapshot.state, RunState::Paused);
+        assert_eq!(snapshot.messages.last().unwrap().text, "retained partial");
+        assert!(!snapshot.messages.last().unwrap().replay_eligible);
+        assert_eq!(fs::read(&journal).unwrap(), original);
+        let projected =
+            crate::tool_history::project(&snapshot.messages, &typed_fixture_profile()).unwrap();
+        assert_eq!(projected.len(), 3);
+        assert_eq!(projected[1]["output"], "fixture result");
+        assert!(
+            !serde_json::to_string(&projected)
+                .unwrap()
+                .contains("retained partial")
+        );
+    }
+
+    #[test]
+    fn torn_typed_snapshot_is_preserved_and_never_reset_to_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("typed.json");
+        let mut store = SessionStore::open(&path).unwrap();
+        store
+            .transact(|s| {
+                s.messages.extend(typed_fixture_pair());
+                Ok(())
+            })
+            .unwrap();
+        drop(store);
+        let mut bytes = fs::read(&path).unwrap();
+        bytes.truncate(bytes.len() / 2);
+        fs::write(&path, &bytes).unwrap();
+        assert!(SessionStore::open(&path).is_err());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+    }
     #[test]
     fn pending_chat_accepts_nothing_until_materialized_and_keeps_identity() {
         let dir = tempfile::tempdir().unwrap();
