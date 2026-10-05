@@ -207,6 +207,9 @@ impl AgentView {
                 view.reconcile_intents(&id, cx);
             });
         });
+        // Match WorkspaceSelection's selected-chat composer focus. The source
+        // Open File command is window-wide; it must work before any mouse click.
+        chat.composer.read(cx).focus(window);
         Self {
             chat,
             inactive: BTreeMap::new(),
