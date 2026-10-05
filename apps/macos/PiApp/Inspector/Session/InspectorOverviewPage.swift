@@ -28,6 +28,7 @@ import AppKit
     }
     required init?(coder: NSCoder) { nil }
     func refresh() {
+        let focus = InspectorButtonFocus(in: self); defer { focus?.restore(in: self) }
         SessionStatsRenderCount.panelBuilt()
         let inset = compact ? PiSpacing.lg : PiSpacing.xl
         scroll.insets = NSEdgeInsets(top: PiSpacing.lg, left: inset, bottom: PiSpacing.lg, right: inset)

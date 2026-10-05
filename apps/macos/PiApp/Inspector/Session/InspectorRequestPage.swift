@@ -37,6 +37,7 @@ import AppKit
     }
     required init?(coder: NSCoder) { nil }
     func refresh() {
+        let focus = InspectorButtonFocus(in: self); defer { focus?.restore(in: self) }
         guard let row = request.row else {
             showContent(InspectorPlaceholder(symbol: "arrow.up.arrow.down", title: "Choose a request", message: "Every request of this session is in the list on the left."))
             header?.removeFromSuperview(); header = nil; tabs?.removeFromSuperview(); tabs = nil; rule.removeFromSuperview(); summary?.removeFromSuperview(); summary = nil
@@ -86,8 +87,10 @@ import AppKit
         if row.running { badges.append(PiKit.ShimmerText((request.metadata["response"]?.object?["observedBytes"]?.number ?? 0) == 0 ? "Awaiting response…" : "Streaming…", size: 11)) }
         else if row.outcome != "completed" { badges.append(PiKit.Badge(text: row.outcomeLabel, tone: row.outcomeTone, dot: true)) }
         let previous = PiKit.IconButton(symbol: "chevron.left", label: "Previous request (⌘[)", size: 26) { [weak inspector] in inspector?.step(-1) }
+        previous.setAccessibilityIdentifier("inspector-previous-request")
         previous.isEnabled = inspector.index.adjacent(to: row.id, step: -1) != nil
         let next = PiKit.IconButton(symbol: "chevron.right", label: "Next request (⌘])", size: 26) { [weak inspector] in inspector?.step(1) }
+        next.setAccessibilityIdentifier("inspector-next-request")
         next.isEnabled = inspector.index.adjacent(to: row.id, step: 1) != nil
         var actions: [NSView] = [previous, next, InspectorShowInChat { [weak inspector] in inspector?.showInChat() }]
         if row.purpose == "turn", !row.running, inspector.workspace?.canForkFromReply(inspector.scope.sessionID) == true { actions.append(InspectorForkFromHere { [weak inspector] in inspector?.forkFromRequest(row.id) }) }
@@ -106,7 +109,9 @@ import AppKit
         return result
     }
     private func disclosure(_ title: String, open: Bool, action: @escaping () -> Void) -> InspectorInlineDisclosure {
-        InspectorInlineDisclosure(title, expanded: open, action: action)
+        let button = InspectorInlineDisclosure(title, expanded: open, action: action)
+        button.setAccessibilityIdentifier(title == "More" ? "inspector-request-more-toggle" : "inspector-request-evidence-toggle")
+        return button
     }
     private func moreDetails(_ row: InspectorRequestRow) -> NSView {
         let gateway = GatewayObservation(metadata: request.metadata)

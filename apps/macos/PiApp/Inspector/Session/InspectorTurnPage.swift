@@ -24,6 +24,7 @@ import Combine
         DispatchQueue.main.async { [weak self] in guard let self else { return }; self.promptCard.scrollToVisible(self.promptCard.bounds) }
     }
     func refresh() {
+        let focus = InspectorButtonFocus(in: self); defer { focus?.restore(in: self) }
         let inset = compact ? PiSpacing.lg : PiSpacing.xl
         scroll.insets = NSEdgeInsets(top: PiSpacing.lg, left: inset, bottom: PiSpacing.lg, right: inset)
         guard let turn else { column.items = [.view(InspectorPlaceholder(symbol: "text.bubble", title: "This turn has no retained requests", message: "Its requests may have expired from the request log, or capture was off."), .fill)]; needsLayout = true; return }
@@ -166,6 +167,7 @@ import Combine
     }
     required init?(coder: NSCoder) { nil }
     private func refresh() {
+        let focus = InspectorButtonFocus(in: self); defer { focus?.restore(in: self) }
         let expansion = model.expansion
         if observedExpansion !== expansion { expansionObserver.reset(); if let expansion { expansionObserver.observe(expansion) }; observedExpansion = expansion; block.show(expansion) }
         let toggle = PiKit.Button(expansion == nil ? "Show all" : "Show less", style: .ghost) { [weak self] in guard let self else { return }; if self.model.expansion == nil { self.showAll() } else { self.model.collapse() } }

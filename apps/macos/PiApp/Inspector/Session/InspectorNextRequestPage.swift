@@ -19,11 +19,13 @@ import AppKit
     }
     required init?(coder: NSCoder) { nil }
     func refresh() {
+        let focus = InspectorButtonFocus(in: self); defer { focus?.restore(in: self) }
         let refresh = PiKit.IconButton(symbol: "arrow.clockwise", label: "Prepare it again", size: 26) { [weak inspector, weak next] in
             guard let inspector else { return }
             let latest = inspector.index.latestRequestID.flatMap(inspector.index.request)
             next?.refresh(previous: latest, previousLabel: latest.map { inspector.label(of: $0, from: nil) })
         }
+        refresh.setAccessibilityIdentifier("inspector-prepare-next")
         var views: [NSView] = [InspectorPageHeader("Next request", subtitle: "As the helper would send it now, with your draft. Nothing is sent to the model.", actions: [refresh, InspectorShowInChat { [weak inspector] in inspector?.showInChat() }])]
         if let display = inspector.display { views.append(InspectorContextSummary(workspace: inspector.workspace, display: display, preview: next.summary)) }
         let inset = compact ? PiSpacing.lg : PiSpacing.xl

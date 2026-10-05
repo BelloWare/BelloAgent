@@ -99,6 +99,26 @@ import XCTest
         XCTAssertTrue(fixture.window.firstResponder === headers, "Resizing the toolbar retains tab focus")
     }
 
+    func testRequestDisclosureCanBeToggledAgainFromItsKeptKeyboardFocus() async throws {
+        let fixture = try await InspectorExpandFixture(body: InspectorExpandBodies.request(result: "short tool result"))
+        defer { fixture.close() }
+        let page = try XCTUnwrap(fixture.window.contentView as? InspectorRequestPage)
+        let more = try XCTUnwrap(InspectorExpandFixture.descendants(PiKit.ButtonBase.self, in: page).first { $0.accessibilityIdentifier() == "inspector-request-more-toggle" })
+        XCTAssertTrue(fixture.window.makeFirstResponder(more))
+        more.performClick(nil)
+        try await eventually("More did not keep keyboard focus after opening its details") {
+            let focused = fixture.window.firstResponder as? PiKit.ButtonBase
+            return focused?.accessibilityIdentifier() == "inspector-request-more-toggle" && (focused?.accessibilityValue() as? String) == "Expanded"
+        }
+        XCTAssertTrue(InspectorExpandFixture.descendants(NSView.self, in: page).contains { $0.accessibilityIdentifier() == "inspector-request-more" })
+        (fixture.window.firstResponder as? PiKit.ButtonBase)?.performClick(nil)
+        try await eventually("The focused disclosure did not collapse its details") {
+            let focused = fixture.window.firstResponder as? PiKit.ButtonBase
+            return focused?.accessibilityIdentifier() == "inspector-request-more-toggle" && (focused?.accessibilityValue() as? String) == "Collapsed"
+        }
+        XCTAssertFalse(InspectorExpandFixture.descendants(NSView.self, in: page).contains { $0.accessibilityIdentifier() == "inspector-request-more" })
+    }
+
     func testSessionViewSourcesContainNoSwiftUIHostsOrImports() throws {
         let tests = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let session = tests.deletingLastPathComponent().appendingPathComponent("PiApp/Inspector/Session")

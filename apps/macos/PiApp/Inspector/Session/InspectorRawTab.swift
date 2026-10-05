@@ -72,6 +72,7 @@ import AppKit
     }
     private func show(_ view: NSView) { if displayed !== view { displayed?.removeFromSuperview(); displayed = view; addSubview(view) } }
     private func refreshContent() {
+        let focus = InspectorButtonFocus(in: self); defer { focus?.restore(in: self) }
         footer?.removeFromSuperview(); footer = nil
         guard let row else { return }
         switch request.raw {
