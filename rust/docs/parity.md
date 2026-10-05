@@ -322,10 +322,21 @@ the main native GPUIWindow with the expected title; unexpected visible/main/key
 windows, GPUI panels, duplicate targets or identity mismatches still fail. It
 emits only bounded numeric category counts, never raw titles or pointers. Local
 checks passed: 141 default Rust tests, 148 feature-enabled tests, strict Clippy/build
-for both configurations, and five Python harness tests. This corrected native
-probe awaits its own exact-commit macOS CI result; the first runtime result remains
-failed until a successor actually passes. Even a successful probe establishes
-only empty-workspace native lifecycle traversal. It does not prove pixels, desktop input, IME, accessibility,
+for both configurations, and five Python harness tests.
+
+The corrected probe at `6d4ce698c92342f99cfc1d93a08475f2e6af42b8` then
+[passed the actual native run](https://github.com/BelloWare/BelloAgent/actions/runs/37277806197):
+two native entries, one expected GPUI window, no GPUI panels, one visible and one
+hidden entry, and the expected main/key/active identity. All five ordered lifecycle
+markers and clean process exit passed. The hidden entry's concrete class/title
+was not collected or inferred. [Its Linux run also passed](https://github.com/BelloWare/BelloAgent/actions/runs/37277806206).
+The std-locking successor `8ccf5a52c33d55b8ab16af4e8f4f0f24b7040a2f` passed
+[both native compilation and the own-window probe](https://github.com/BelloWare/BelloAgent/actions/runs/37278353020)
+and [Linux checks](https://github.com/BelloWare/BelloAgent/actions/runs/37278353013).
+The first failed run remains historical evidence, not a skipped success.
+
+This establishes only empty-workspace native lifecycle traversal. It does not
+prove pixels, desktop input, IME, accessibility,
 nonempty draft persistence, Dock reopen, cancellable Quit, or Sparkle behavior.
 Probe code and its feature-gated hooks count as test-support LOC, not shipped
 production code. No macOS lifecycle parity is claimed by adding this diagnostic.
