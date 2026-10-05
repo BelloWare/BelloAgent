@@ -183,6 +183,7 @@ impl AgentView {
         };
         chat.draft_revision = next;
         let draft = chat.saved_draft(cx);
+        let captured_revision = draft.revision;
         let key = Key {
             token: Uuid::new_v4(),
             chat: id.into(),
@@ -224,6 +225,7 @@ impl AgentView {
                 }
                 Err(_) => (Err("Workspace is unavailable".into()), None),
             };
+            let confirmed_revision = prepared.as_ref().ok().map(|()| captured_revision);
             let result = prepared.and_then(|()| {
                 let QueuedCancelState::Pending { edit_id, turn_id } = &pending.state else {
                     unreachable!()
@@ -232,11 +234,17 @@ impl AgentView {
                     .cancel_edit_certain(edit_id, turn_id)
                     .map_err(|e| e.to_string())
             });
-            (observed, result)
+            (observed, confirmed_revision, result)
         });
         cx.spawn(async move |view, cx| {
-            let (observed, result) = task.await;
+            let (observed, confirmed_revision, result) = task.await;
             let _ = view.update(cx, |view, cx| {
+                if let Some(revision) = confirmed_revision
+                    && view.accept_cancel_key(&key)
+                {
+                    let chat = view.chat_mut(&key.chat).unwrap();
+                    chat.draft_save_status.confirm(revision, &mut chat.error);
+                }
                 view.finish_cancel_read(key, observed, result, cx)
             });
         })
@@ -448,6 +456,10 @@ impl AgentView {
             }
         };
         let chat = self.chat_mut(&key.chat).unwrap();
+        if applied {
+            chat.draft_save_status
+                .confirm(reconciled.revision, &mut chat.error);
+        }
         let recheck = chat.cancel_operation.as_ref().unwrap().recheck;
         let receipt = chat.cancel_operation.as_ref().unwrap().receipt.clone();
         let unchanged = chat.saved_draft(cx) == source;

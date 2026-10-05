@@ -540,10 +540,49 @@ unproven, consistent with the separately recorded intermittent paint observation
 Typing during the obstruction can produce a newer,
 separately owned draft-save warning. That warning remains stale after a successful
 Cancel until restart; it does not block typing, retry, Close or durable recovery.
-Revision-tagged draft-error ownership is a separate follow-up, not fixed by clearing
-arbitrary message prefixes. Begin still uses the earlier frozen-composer command path. There is no generalized operation
+At `fc9e530`, revision-tagged draft-error ownership remained a separate follow-up;
+the next section records its bounded fix. No arbitrary message prefix is cleared. Begin still uses the earlier frozen-composer command path. There is no generalized operation
 journal, outcome retention policy or live reload added here; provider/tool behavior
 and native lifecycle policy are unchanged.
+
+## Draft-save warning ownership
+
+Status: **implemented app-only safety correction; headless Linux validated**.
+The preceding recovery QA exposed a stale warning: a failed debounce could replace
+Cancel's error, then survive even after a later exact draft save had succeeded.
+This is a Rust error-reporting correction, not a new claim of Swift feature parity.
+
+Each chat now tracks the last confirmed durable draft revision and its latest
+unconfirmed draft-save failure. Successful debounce writes, exact Save/Remove
+flushes, Cancel preparation and applied settlement advance confirmation monotonically.
+Only the matching displayed failure covered by that revision is cleared. A delayed
+older failure cannot resurrect a warning after newer persistence; newer failures
+and unrelated notices are preserved. Catalog-level debounce completion checks
+project/chat/snapshot identity, while actor-dependent operations retain their
+controller/operation fences. No-op debounce or stale settlement results remain
+conservatively unconfirmed. Exact flush confirmation is retained even if the later
+actor operation fails, so its new error is not overwritten by an older save failure.
+No schema, controller lifecycle, queue policy or persistence ordering changed.
+
+Fifteen pure ownership tests and eight isolated mutation checks cover monotonic
+confirmation, delayed/out-of-order callbacks, equal-revision ordering, hidden
+failures, maximum revisions and exact-message ownership. Four additional headless
+GPUI tests reproduce real disposable catalog-path errors: typing after failed
+Cancel then retry, ordinary debounce recovery without Cancel, an unrelated newer
+warning, and an exact successful flush followed by an actor failure. Tests advance
+the fake clock through the actual 150ms debounce rather than assuming idle callbacks
+have persisted text. **319 default workspace tests / 326 native-feature tests**,
+strict all-target Clippy in both modes, formatting and Linux workspace build pass.
+Actual Linux collision/retry validation passed on immutable candidate
+`2dd806b1dc3fc6950ba974e81d658d84f6277e8c0d616d36109d1fe2483f0307`.
+The matching warning cleared immediately after restoring the disposable catalog
+and retrying Cancel, and separately after successful debounced autosave without
+Cancel. Exact ordinary/rewrite drafts survived Close/reopen; typing/Undo at 920×600
+worked. The unrelated recovery notice remained visible. Every fixture obstruction
+was restored and the app closed cleanly. Fresh 1180×812 captures show failure,
+Cancel-cleared, autosave-cleared and reopened states. Newer/unrelated-error callback
+races remain headless-only proof. Native macOS interaction/IME, accessibility and
+new-checkpoint CI remain unverified.
 
 ## Queue-header Resume / Send queued
 

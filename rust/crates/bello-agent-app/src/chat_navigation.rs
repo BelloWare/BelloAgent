@@ -22,6 +22,7 @@ impl AgentView {
             return;
         }
         let workspace = self.workspace.clone();
+        let project = self.project.clone();
         let Some(chat) = self.chat_mut(id) else {
             return;
         };
@@ -36,6 +37,8 @@ impl AgentView {
         }
         let submitting = chat.inflight_submission.clone();
         let record = chat.record.clone();
+        let snapshot_path = record.snapshot.clone();
+        let expected_error = chat.error.clone();
         let draft = chat.saved_draft(cx);
         let id = id.to_owned();
         let timer = cx.background_executor().timer(Duration::from_millis(150));
@@ -55,14 +58,28 @@ impl AgentView {
         });
         let id = chat.record.id.clone();
         chat.draft_task = Some(cx.spawn(async move |view, cx| {
-            if let Err(error) = task.await {
-                let _ = view.update(cx, |view, cx| {
-                    if let Some(chat) = view.chat_mut(&id) {
-                        chat.error = Some(format!("Draft could not be saved: {error}"));
+            let result = task.await;
+            let _ = view.update(cx, |view, cx| {
+                if view.project != project {
+                    return;
+                }
+                if let Some(chat) = view.chat_mut(&id) {
+                    if chat.record.snapshot != snapshot_path {
+                        return;
                     }
-                    cx.notify();
-                });
-            }
+                    match result {
+                        Ok(true) => chat.draft_save_status.confirm(revision, &mut chat.error),
+                        Ok(false) => {}
+                        Err(error) => chat.draft_save_status.fail(
+                            revision,
+                            error,
+                            &mut chat.error,
+                            &expected_error,
+                        ),
+                    }
+                }
+                cx.notify();
+            });
         }));
     }
     pub(super) fn remember_selection(&mut self, cx: &mut Context<Self>) {

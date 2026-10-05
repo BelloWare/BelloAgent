@@ -653,3 +653,191 @@ fn durable_cancel_generic_remove_flushes_even_when_cached_hold_is_missing(cx: &m
     std::fs::remove_dir(&catalog).unwrap();
     std::fs::rename(&backup, &catalog).unwrap();
 }
+
+#[gpui::test]
+fn draft_save_warning_cancel_retry_clears_only_covered_failure(cx: &mut TestAppContext) {
+    let (dir, _window, root, id) =
+        fixture(cx, false, false, "ordinary".into(), "rewrite".into(), 5);
+    cx.run_until_parked();
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(200));
+    cx.run_until_parked();
+    let catalog = dir.path().join("workspace.json");
+    let backup = dir.path().join("catalog-backup.json");
+    std::fs::rename(&catalog, &backup).unwrap();
+    std::fs::create_dir(&catalog).unwrap();
+    root.update(cx, |v, cx| v.cancel_owned_edit(&id, cx));
+    cx.run_until_parked();
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(200));
+    cx.run_until_parked();
+    root.update(cx, |v, cx| {
+        v.composer
+            .update(cx, |editor, cx| editor.set_text("typed rewrite".into(), cx))
+    });
+    cx.run_until_parked();
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(200));
+    cx.run_until_parked();
+    let failed_revision = root.update(cx, |v, _| {
+        assert!(
+            v.error
+                .as_deref()
+                .unwrap()
+                .starts_with("Draft could not be saved:")
+        );
+        v.draft_revision
+    });
+    std::fs::remove_dir(&catalog).unwrap();
+    std::fs::rename(&backup, &catalog).unwrap();
+    root.update(cx, |v, cx| v.cancel_owned_edit(&id, cx));
+    cx.run_until_parked();
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(200));
+    cx.run_until_parked();
+    root.update(cx, |v, cx| {
+        assert_eq!(v.composer.read(cx).text(), "ordinary");
+        assert!(v.error.is_none());
+        let chat = &mut v.chat;
+        chat.draft_save_status.fail(
+            failed_revision,
+            "delayed old failure".into(),
+            &mut chat.error,
+            &None,
+        );
+        assert!(chat.error.is_none());
+        assert!(!v.has_pending_cancel(&id));
+    });
+}
+
+#[gpui::test]
+fn draft_save_warning_successful_debounce_clears_error_without_cancel(cx: &mut TestAppContext) {
+    let (dir, _window, root, _) = fixture(cx, false, false, "ordinary".into(), "rewrite".into(), 5);
+    cx.run_until_parked();
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(200));
+    cx.run_until_parked();
+    let catalog = dir.path().join("workspace.json");
+    let backup = dir.path().join("catalog-backup.json");
+    std::fs::rename(&catalog, &backup).unwrap();
+    std::fs::create_dir(&catalog).unwrap();
+    root.update(cx, |v, cx| {
+        v.composer
+            .update(cx, |editor, cx| editor.set_text("first edit".into(), cx))
+    });
+    cx.run_until_parked();
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(200));
+    cx.run_until_parked();
+    root.update(cx, |v, _| {
+        assert!(
+            v.error
+                .as_deref()
+                .unwrap()
+                .starts_with("Draft could not be saved:")
+        )
+    });
+    std::fs::remove_dir(&catalog).unwrap();
+    std::fs::rename(&backup, &catalog).unwrap();
+    root.update(cx, |v, cx| {
+        v.composer
+            .update(cx, |editor, cx| editor.set_text("second edit".into(), cx))
+    });
+    cx.run_until_parked();
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(200));
+    cx.run_until_parked();
+    root.update(cx, |v, cx| {
+        assert!(v.error.is_none());
+        assert_eq!(v.composer.read(cx).text(), "second edit");
+        assert_eq!(
+            v.workspace.lock().unwrap().snapshot().drafts[&v.record.id]
+                .queued_edit
+                .as_ref()
+                .unwrap()
+                .rewrite,
+            "second edit"
+        );
+    });
+}
+
+#[gpui::test]
+fn draft_save_warning_cancel_confirmation_preserves_newer_unrelated_error(cx: &mut TestAppContext) {
+    let (_dir, _window, root, id) =
+        fixture(cx, false, false, "ordinary".into(), "rewrite".into(), 5);
+    cx.run_until_parked();
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(200));
+    cx.run_until_parked();
+    root.update(cx, |v, cx| {
+        v.draft_revision += 1;
+        let revision = v.draft_revision;
+        let chat = &mut v.chat;
+        chat.draft_save_status.fail(
+            revision,
+            "synthetic prior draft failure".into(),
+            &mut chat.error,
+            &None,
+        );
+        assert!(
+            v.error
+                .as_deref()
+                .unwrap()
+                .starts_with("Draft could not be saved:")
+        );
+        v.cancel_owned_edit(&id, cx);
+        v.error = Some("A newer unrelated warning".into());
+    });
+    cx.run_until_parked();
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(200));
+    cx.run_until_parked();
+    root.update(cx, |v, cx| {
+        assert_eq!(v.error.as_deref(), Some("A newer unrelated warning"));
+        assert_eq!(v.composer.read(cx).text(), "ordinary");
+    });
+}
+
+#[gpui::test]
+fn draft_save_warning_exact_flush_confirms_before_later_actor_failure(cx: &mut TestAppContext) {
+    let (_dir, _window, root, _) =
+        fixture(cx, false, false, "ordinary".into(), "rewrite".into(), 5);
+    cx.run_until_parked();
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(200));
+    cx.run_until_parked();
+    let failed_revision = root.update(cx, |v, cx| {
+        v.draft_revision += 1;
+        let revision = v.draft_revision;
+        let chat = &mut v.chat;
+        chat.draft_save_status
+            .fail(revision, "old failed save".into(), &mut chat.error, &None);
+        v.command(
+            cx,
+            Some("edit-fixture".into()),
+            true,
+            |_| {
+                Err::<(), _>(bello_agent_core::Error::Invalid(
+                    "later actor failure".into(),
+                ))
+            },
+            |_, (), _| panic!("failed actor must not apply"),
+        );
+        revision
+    });
+    cx.run_until_parked();
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(200));
+    cx.run_until_parked();
+    root.update(cx, |v, _| {
+        assert_eq!(v.error.as_deref(), Some("later actor failure"));
+        let chat = &mut v.chat;
+        chat.draft_save_status.fail(
+            failed_revision,
+            "delayed old failure".into(),
+            &mut chat.error,
+            &Some("later actor failure".into()),
+        );
+        assert_eq!(chat.error.as_deref(), Some("later actor failure"));
+    });
+}

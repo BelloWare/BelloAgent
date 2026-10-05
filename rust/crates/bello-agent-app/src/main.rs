@@ -1,6 +1,7 @@
 mod assets;
 mod chat;
 mod chat_navigation;
+mod draft_status;
 mod file_tab;
 mod layout;
 #[cfg(any(target_os = "macos", test))]
@@ -426,18 +427,25 @@ impl AgentView {
         self.composer
             .update(cx, |editor, cx| editor.set_read_only(true, cx));
         let task = cx.background_executor().spawn(async move {
-            if let Some(draft) = flush {
-                workspace
+            let flushed = if let Some(draft) = flush {
+                let revision = draft.revision;
+                let saved = workspace
                     .lock()
                     .map_err(|_| {
                         bello_agent_core::Error::Invalid("Workspace is unavailable".into())
-                    })?
-                    .flush_draft_exact(&flush_id, draft)?;
-            }
-            command(controller)
+                    })
+                    .and_then(|mut store| store.flush_draft_exact(&flush_id, draft));
+                if let Err(error) = saved {
+                    return (None, Err(error));
+                }
+                Some(revision)
+            } else {
+                None
+            };
+            (flushed, command(controller))
         });
         cx.spawn(async move |view, cx| {
-            let result = task.await;
+            let (flushed, result) = task.await;
             let failed = result.is_err();
             let _ = view.update(cx, move |view, cx| {
                 if view.project != identity_project
@@ -448,6 +456,9 @@ impl AgentView {
                     return;
                 }
                 if let Some(chat) = view.chat_mut(&id) {
+                    if let Some(revision) = flushed {
+                        chat.draft_save_status.confirm(revision, &mut chat.error);
+                    }
                     chat.busy = false;
                     chat.composer
                         .update(cx, |editor, cx| editor.set_read_only(false, cx));
