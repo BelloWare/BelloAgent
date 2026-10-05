@@ -1,5 +1,9 @@
 import SwiftUI
 import AppKit
+@testable import PiApp
+
+// The SwiftUI views of Transcript/CostLimitNoticeRow.swift before the transcript was AppKit,
+// kept as they were for the parity tests to draw against.
 
 /// Where a chat stopped at its cost limit, or refused a message because it
 /// was there: the helper's own words, what happens to what was waiting, and

@@ -1,5 +1,4 @@
 import Foundation
-import SwiftUI
 
 // Syntax colouring for code blocks, written here rather than taken from a
 // library: a small scanner per language family that finds comments, strings,
@@ -312,49 +311,5 @@ enum SyntaxHighlighter {
             if scalar == "\n", !grammar.declarations.contains(previousWord) { checkpoints.append(index) }
         }
         return Scan(tokens: tokens, checkpoints: checkpoints)
-    }
-
-    /// The code as styled text: a monospaced base with the palette's colours on
-    /// each token. Unknown languages and oversized code come back plain.
-    private final class CachedText: Sendable {
-        let value: AttributedString
-        init(_ value: AttributedString) { self.value = value }
-    }
-    nonisolated(unsafe) private static let cache: NSCache<NSString, CachedText> = {
-        let cache = NSCache<NSString, CachedText>(); cache.countLimit = 1_000; cache.totalCostLimit = 32 << 20; return cache
-    }()
-    static func attributed(_ code: String, language name: String?, size: CGFloat = 12.5) -> AttributedString {
-        let key = "\(name ?? "")\u{0}\(size)\u{0}\(code)" as NSString
-        if let cached = cache.object(forKey: key) { return cached.value }
-        let value = colour(code, language: name, size: size)
-        cache.setObject(CachedText(value), forKey: key, cost: code.utf8.count)
-        return value
-    }
-    private static func colour(_ code: String, language name: String?, size: CGFloat) -> AttributedString {
-        var result = AttributedString(code)
-        result.font = .system(size: size, design: .monospaced)
-        result.foregroundColor = TranscriptPalette.text
-        guard let name, let language = language(named: name), code.utf8.count <= limit else { return result }
-        // Tokens arrive in scalar order. Walk forward once instead of rebuilding
-        // and counting the entire source prefix for every coloured run. Large
-        // code fences used to spend quadratic time here before their first draw.
-        var cursor = result.startIndex
-        var scalarOffset = 0
-        for token in tokens(code, language: language) {
-            guard token.range.lowerBound >= scalarOffset,
-                  let lower = result.unicodeScalars.index(cursor, offsetBy: token.range.lowerBound - scalarOffset, limitedBy: result.endIndex),
-                  let upper = result.unicodeScalars.index(lower, offsetBy: token.range.count, limitedBy: result.endIndex) else { continue }
-            cursor = upper; scalarOffset = token.range.upperBound
-            let range = lower..<upper
-            switch token.kind {
-            case .keyword: result[range].foregroundColor = TranscriptPalette.keyword
-            case .string: result[range].foregroundColor = TranscriptPalette.string
-            case .number, .title: result[range].foregroundColor = TranscriptPalette.number
-            case .comment:
-                result[range].foregroundColor = TranscriptPalette.comment
-                result[range].font = .system(size: size, design: .monospaced).italic()
-            }
-        }
-        return result
     }
 }

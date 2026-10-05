@@ -363,7 +363,7 @@ enum TranscriptActivity {
         }
         if let first = tool.line, first > 0 { return FileLink(path: path, lines: first...max(first, tool.lastLine ?? first)) }
         guard tool.name == "read" else { return FileLink(path: path, lines: nil) }
-        let first = TranscriptReadCard.firstLine(of: tool.input), shown = TranscriptReadCard.window(of: tool.output).lines.count
+        let first = TranscriptReadCardText.firstLine(of: tool.input), shown = TranscriptReadCardText.window(of: tool.output).lines.count
         return FileLink(path: path, lines: shown > 0 ? first...(first + shown - 1) : nil)
     }
 

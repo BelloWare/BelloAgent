@@ -59,8 +59,8 @@ final class TranscriptQuoteSelectionTests: XCTestCase {
         let stage = TranscriptStreamingStressTests.Stage(parent); defer { stage.close() }
         var emitted: [TranscriptQuote] = []
         stage.actions.quoteReply = { emitted.append($0) }; stage.refresh(); await stage.settle()
-        let user = try XCTUnwrap(views(NSTextField.self, in: stage.document).first { $0.isSelectable && $0.stringValue == "Question" })
-        user.selectText(nil); stage.document.quoteSelection.presentSelection()
+        let user = try XCTUnwrap(views(TranscriptPlainTextView.self, in: stage.document).first { $0.string == "Question" })
+        stage.window.makeFirstResponder(user); user.selectAll(nil); stage.document.quoteSelection.presentSelection()
         XCTAssertNil(stage.document.quoteSelection.bar)
         let editor = try answer(in: stage)
         editor.setSelectedRange(NSRange(location: 0, length: 0)); stage.document.quoteSelection.presentSelection()

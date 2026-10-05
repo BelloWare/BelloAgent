@@ -1,5 +1,9 @@
 import SwiftUI
 import AppKit
+@testable import PiApp
+
+// The SwiftUI views of Transcript/TranscriptSkillPills.swift before the transcript was AppKit,
+// kept as they were for the parity tests to draw against.
 
 /// The skills a sent message used, as pills at the start of its bubble —
 /// ahead of the text, where the model received them. They look like the

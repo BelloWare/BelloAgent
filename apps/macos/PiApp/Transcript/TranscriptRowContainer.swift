@@ -1,96 +1,32 @@
-import SwiftUI
 import AppKit
 
 /// Values affecting the row's own rendering must cross the hosting boundary.
 /// Reduce Motion remains a system accessibility environment in both hosts.
+/// Whether a row is painted light or dark.
+enum TranscriptColorScheme: Equatable { case light, dark }
+
+/// What a row is drawn under, in AppKit's own terms. The pane's SwiftUI
+/// wrapper (`NativeTranscriptHost`) reads it from its environment.
 struct TranscriptRowEnvironment: Equatable {
-    var colorScheme: ColorScheme
-    var contrast: ColorSchemeContrast
-    var dynamicTypeSize: DynamicTypeSize
-    var layoutDirection: LayoutDirection
-    var locale: Locale
-    var isEnabled: Bool
+    var colorScheme = TranscriptColorScheme.light
+    /// The system's Increase Contrast.
+    var increasedContrast = false
+    var layoutDirection = NSUserInterfaceLayoutDirection.leftToRight
+    /// SwiftUI's own default: a locale with no identifier.
+    var locale = Locale(identifier: "")
+    var isEnabled = true
     /// Whether the chat's replies offer "Fork from here" (`transcriptForks`).
-    var forks: Bool
+    var forks = false
     /// Whether file tools' paths open their files (`transcriptOpensFiles`).
-    var opensFiles: Bool
-    init(_ values: EnvironmentValues = EnvironmentValues()) {
-        colorScheme = values.colorScheme; contrast = values.colorSchemeContrast
-        dynamicTypeSize = values.dynamicTypeSize; layoutDirection = values.layoutDirection; locale = values.locale
-        isEnabled = values.isEnabled; forks = values.transcriptForks; opensFiles = values.transcriptOpensFiles
-    }
+    var opensFiles = false
+    init() {}
     /// Whether a row measured under these values is as tall under those.
-    /// The type size, the writing direction and the locale decide how text
-    /// wraps; the colour scheme, the contrast and whether the pane takes input
-    /// only decide how it is painted. The pane is disabled while Reports is
-    /// in front, and that must not cost every row its measurement.
+    /// The writing direction and the locale decide how text wraps; the
+    /// colour scheme, the contrast and whether the pane takes input only
+    /// decide how it is painted. The pane is disabled while Reports is in
+    /// front, and that must not cost every row its measurement.
     func hasSameGeometry(as other: TranscriptRowEnvironment) -> Bool {
-        return dynamicTypeSize == other.dynamicTypeSize && layoutDirection == other.layoutDirection && locale == other.locale
-    }
-}
-
-private struct TranscriptHostedRow: View {
-    let item: TranscriptItem
-    let fresh: Bool
-    let actions: TranscriptActions
-    let width: CGFloat
-    let environment: TranscriptRowEnvironment
-    /// Plain values, not observed state: the row host knows what the reader
-    /// opened, so it can re-measure this row in the same pass as the click.
-    var disclosure = TranscriptRowDisclosure.default
-    var toggle: (TranscriptDisclosure.Part) -> Void = { _ in }
-    /// What this turn's work list measured last time it was open, kept by the
-    /// row container so a fold costs a frame change rather than sixty rows of
-    /// native layout.
-    var workListHeight: CGFloat? = nil
-    var workListMeasured: (CGFloat) -> Void = { _ in }
-    /// True while the document is moving this row between two measured
-    /// heights, so a folding work list stays on screen and slides away.
-    var foldInMotion = false
-    /// Whether this message draws nothing at all: its turn has folded behind
-    /// one line, or its response has folded and this is the header line's own
-    /// figures, which that line already carries.
-    private func drawsNothing(_ message: TranscriptMessage) -> Bool {
-        disclosure.foldedAway || (message.kind == "requestInfo" && disclosure.responseFolded)
-    }
-    var body: some View {
-        Group {
-            switch item {
-            case .message(let message):
-                // A row a fold has emptied must take up nothing: the paragraph
-                // spacing reserved around every message would otherwise leave
-                // fourteen points of blank where the fold swallowed the row.
-                let blank = drawsNothing(message)
-                MessageRowView(message: message, actions: actions, disclosure: disclosure, toggle: toggle, switchesSource: true).equatable()
-                    .padding(.top, blank ? 0 : (message.role == "user" ? 14 : 4))
-                    .padding(.bottom, blank ? 0 : (message.role == "user" ? 4 : 10))
-            case .block(let block):
-                BlockRowView(block: block, actions: actions, fresh: fresh, disclosure: disclosure, toggle: toggle,
-                             workListHeight: workListHeight, workListMeasured: workListMeasured,
-                             foldInMotion: foldInMotion).equatable()
-            }
-        }
-        .frame(width: width, alignment: .leading)
-        .fixedSize(horizontal: false, vertical: true)
-        .environment(\.colorScheme, environment.colorScheme)
-        .environment(\.dynamicTypeSize, environment.dynamicTypeSize)
-        .environment(\.layoutDirection, environment.layoutDirection)
-        .environment(\.locale, environment.locale)
-        .environment(\.transcriptForks, environment.forks)
-        .environment(\.transcriptOpensFiles, environment.opensFiles)
-        .disabled(!environment.isEnabled)
-        // No control in a row draws the system's focus ring; the ones that
-        // take focus on purpose draw their own (`TranscriptFocusRing`).
-        .focusEffectDisabled()
-        .piStableLayout()
-    }
-}
-
-private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow> {
-    weak var owner: TranscriptRowContainer?
-    override func invalidateIntrinsicContentSize() {
-        super.invalidateIntrinsicContentSize()
-        owner?.contentSizeChanged()
+        return layoutDirection == other.layoutDirection && locale == other.locale
     }
 }
 
@@ -103,7 +39,7 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
     /// hundred hosting views, which is most of what opening or leaving a long
     /// chat used to cost. The row keeps what it is, what it measured and what
     /// the reader opened in it either way.
-    private var hosted: TranscriptRowHostingView?
+    private var hosted: (NSView & TranscriptRowContent)?
     private(set) var item: TranscriptItem
     private var fresh: Bool
     private var actions: TranscriptActions
@@ -174,7 +110,7 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
     var renderingEnvironment: TranscriptRowEnvironment { environment }
     /// What the hosted content actually needs at this width, for checks that a
     /// row never draws more than its own frame holds.
-    var hostedFittingHeight: CGFloat { ceil(host().fittingSize.height) }
+    var hostedFittingHeight: CGFloat { host().confirmHeight() }
     /// Whether this row is holding a SwiftUI tree right now.
     var isHosted: Bool { hosted != nil }
     /// Set while this row's tree has not been laid out since it was built or
@@ -346,17 +282,15 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
         clipsToBounds = true
     }
     /// The row's SwiftUI tree, built if this is the first time it is needed.
-    @discardableResult private func host() -> TranscriptRowHostingView {
+    @discardableResult private func host() -> NSView & TranscriptRowContent {
         if let hosted { return hosted }
         let started = TranscriptLayoutClock.recording ? TranscriptLayoutClock.now : 0
         defer { if TranscriptLayoutClock.recording {
             TranscriptLayoutClock.hostBuildSeconds += TranscriptLayoutClock.now - started
             TranscriptLayoutClock.hostBuilds += 1
         } }
-        let view = TranscriptRowHostingView(rootView: hostedRow())
+        let view = TranscriptRowRenderer.content(for: item, inputs: inputs())
         view.owner = self
-        view.sizingOptions = [.intrinsicContentSize]
-        view.safeAreaRegions = []
         hosted = view
         awaitingViewportLayout = true
         view.frame = bounds.width > 0 ? bounds : CGRect(x: 0, y: 0, width: width, height: 1)
@@ -613,14 +547,14 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
     func validateSharedMeasurementAfterMount() {
         if restoredMeasurementNeedsValidation, window != nil, hosted != nil { contentSizeChanged() }
     }
-    private func hostedRow() -> TranscriptHostedRow {
+    private func inputs() -> TranscriptRowInputs {
         // The relay reads the latest callbacks without replacing unchanged
         // SwiftUI text fields merely because their parent's closures changed.
         let relay = TranscriptActions.forwarding { [weak self] in self?.actions }
         let key = workListKey
         let known = workList?.key == key ? workList?.height : nil
         if known != nil { workListReuses += 1 }
-        return TranscriptHostedRow(item: item, fresh: fresh, actions: relay, width: width, environment: environment,
+        return TranscriptRowInputs(item: item, fresh: fresh, actions: relay, width: width, environment: environment,
                                    disclosure: disclosure, toggle: { [weak self] part in self?.toggleDisclosure(part) },
                                    workListHeight: known,
                                    workListMeasured: { [weak self] height in
@@ -639,7 +573,19 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
             TranscriptLayoutClock.rootUpdateSeconds += TranscriptLayoutClock.now - started
             TranscriptLayoutClock.rootUpdates += 1
         } }
-        hosted.rootView = hostedRow()
+        if !hosted.accepts(item) {
+            // The item became something this content cannot draw: build the
+            // content that can, in the same place.
+            let replacement = TranscriptRowRenderer.content(for: item, inputs: inputs())
+            replacement.owner = self
+            replacement.frame = hosted.frame
+            hosted.owner = nil
+            replaceSubview(hosted, with: replacement)
+            self.hosted = replacement
+            awaitingViewportLayout = true
+            return
+        }
+        hosted.apply(inputs())
     }
     /// A click on a disclosure: record it, rebuild this row's content and drop
     /// its measurements, then let the document lay out now. Nothing waits for a
@@ -714,14 +660,10 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
         // root is vertically fixed, so the frame's own height never moves it.
         if hosted.frame.width != target { hosted.frame = CGRect(x: 0, y: 0, width: target, height: max(1, hosted.frame.height)) }
         let sizingStart = TranscriptLayoutClock.recording ? TranscriptLayoutClock.now : 0
-        hosted.layoutSubtreeIfNeeded()
-        let intrinsic = hosted.intrinsicContentSize.height
-        // A host that has not published one yet is asked directly; that is a
-        // second pass, and the count is what says how often it happens.
-        let height = intrinsic > 0 ? max(1, ceil(intrinsic)) : max(1, ceil(hosted.fittingSize.height))
-        nativeSizingPasses += intrinsic > 0 ? 1 : 2
+        let (height, passes) = hosted.settle()
+        nativeSizingPasses += passes
         if TranscriptLayoutClock.recording {
-            TranscriptLayoutClock.rowSizingPasses += intrinsic > 0 ? 1 : 2
+            TranscriptLayoutClock.rowSizingPasses += passes
             TranscriptLayoutClock.rowSizingSeconds += TranscriptLayoutClock.now - sizingStart
         }
         // Leave the tree at the size the row is about to be given, so the
@@ -778,7 +720,7 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
         }
         guard let hosted else { return false }; return prepared(hosted)
     }
-    fileprivate func contentSizeChanged() {
+    func contentSizeChanged() {
         if TranscriptLayoutClock.recording { TranscriptLayoutClock.intrinsicInvalidations += 1 }
         // The host also invalidates while answering fittingSize. That call
         // supplies the new exact measurement; it need not schedule itself.
@@ -822,7 +764,7 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
                 // One native pass, as in `measure`: laying the host out and
                 // then asking its fitting size runs SwiftUI's sizing twice.
                 let started = TranscriptLayoutClock.recording ? TranscriptLayoutClock.now : 0
-                let height = max(1, ceil(hosted.fittingSize.height))
+                let height = hosted.confirmHeight()
                 if TranscriptLayoutClock.recording { TranscriptLayoutClock.validationSeconds += TranscriptLayoutClock.now - started }
                 self.intrinsicValidationCount += 1
                 self.measuring = false

@@ -1,19 +1,9 @@
 import AppKit
-import SwiftUI
 
 struct TranscriptQuote: Equatable, Sendable {
     let messageID: String
     /// The selected rendered text, with native UTF-16 selection boundaries.
     let text: String
-}
-
-/// A geometry-only marker behind assistant prose (including its code blocks).
-/// User text, reasoning/tool details and accounting labels have no marker.
-/// It neither intercepts input nor introduces another text/hosting surface.
-struct TranscriptQuoteRegion: NSViewRepresentable {
-    let messageID: String
-    func makeNSView(context: Context) -> TranscriptQuoteRegionView { TranscriptQuoteRegionView() }
-    func updateNSView(_ view: TranscriptQuoteRegionView, context: Context) { view.messageID = messageID }
 }
 
 final class TranscriptQuoteRegionView: NSView {
@@ -195,10 +185,9 @@ final class TranscriptQuoteRegionView: NSView {
         isOpaque = false; backgroundColor = .clear; hasShadow = false
         isReleasedWhenClosed = false; animationBehavior = .none
         becomesKeyOnlyIfNeeded = true; hidesOnDeactivate = true
-        let host = NSHostingView(rootView: QuoteActionBar(ask: ask).padding(Self.margin))
-        host.sizingOptions = [.intrinsicContentSize]
-        contentView = host
-        setContentSize(host.fittingSize)
+        let bar = QuoteActionBarView(margin: Self.margin, ask: ask)
+        contentView = bar
+        setContentSize(bar.fittingSize)
     }
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
@@ -220,36 +209,145 @@ final class TranscriptQuoteRegionView: NSView {
 }
 
 /// The bar's face: the bubble glyph in the accent, the action in the app's
-/// ink, and a quiet key hint. The press, the pointer, the tooltip and the
-/// accessibility action belong to the app's AppKit press target over it.
-private struct QuoteActionBar: View {
-    let ask: () -> Void
-    @State private var hovering = false
-    @State private var arrived = false
-    @Environment(\.piReduceMotion) private var reduceMotion
-    var body: some View {
-        HStack(spacing: 7) {
-            Image(systemName: "bubble.left.and.bubble.right")
-                .font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Color.piAccent)
-            Text("Ask in side chat").font(.system(size: 12.5, weight: .medium)).foregroundStyle(Color.piInk)
-            Text("↩").font(.system(size: 10.5, weight: .semibold)).foregroundStyle(Color.piInkTertiary)
-                .padding(.horizontal, 5).padding(.vertical, 1)
-                .background(Color.piFill, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+/// ink, and a quiet key hint, on the app's surface with its hairline and
+/// shadow, `margin` points of room around it for the shadow. The press, the
+/// pointer, the tooltip and the accessibility action belong to the app's
+/// AppKit press target over it. It arrives growing from 96% as it fades in.
+@MainActor final class QuoteActionBarView: NSView {
+    static let title = PiKit.Line("Ask in side chat", font: .systemFont(ofSize: 12.5, weight: .medium), color: .piInk)
+    static let hint = PiKit.Line("↩", font: .systemFont(ofSize: 10.5, weight: .semibold), color: .piInkTertiary)
+    let margin: CGFloat
+    let trigger = PiPopoverTriggerButton(frame: .zero)
+    private let surface = PiKit.Box(fill: .piSurface, stroke: .piHairlineStrong, cornerRadius: 10)
+    private let highlight = QuoteActionHighlight()
+    private let icon = TranscriptSymbol()
+    private let label = PiKit.TextLine(QuoteActionBarView.title)
+    private let key = PiKit.Box(fill: .piFill, cornerRadius: 4)
+    private let keyLabel = PiKit.TextLine(QuoteActionBarView.hint)
+    private(set) var hovering = false
+    override var isFlipped: Bool { true }
+
+    init(margin: CGFloat, ask: @escaping () -> Void) {
+        self.margin = margin
+        super.init(frame: .zero)
+        wantsLayer = true
+        icon.show("bubble.left.and.bubble.right", size: 11.5, weight: .semibold)
+        icon.contentTintColor = .piAccent
+        surface.shadowColor = .piShadow; surface.shadowRadius = 10; surface.shadowOffsetY = 3
+        for view in [label, keyLabel] { view.setAccessibilityElement(false) }
+        addSubview(surface); addSubview(highlight); addSubview(icon); addSubview(label); addSubview(key); addSubview(keyLabel)
+        trigger.setAccessibilityLabel("Ask in side chat")
+        trigger.setAccessibilityIdentifier("quoteInSideChat")
+        trigger.toolTip = "Ask about the selected text in a side chat (Return)"
+        trigger.onHover = { [weak self] in self?.setHovering($0) }
+        trigger.onPress = { _ in ask() }
+        addSubview(trigger)
+    }
+    required init?(coder: NSCoder) { nil }
+
+    private var iconSize: CGSize { icon.swiftUIFrame ?? icon.image?.size ?? .zero }
+    /// A `Text`'s size: its width rounded up to the pixel.
+    private var titleSize: CGSize { Self.title.size(scale: scale) }
+    private var keySize: CGSize { let text = Self.hint.size(scale: scale); return CGSize(width: text.width + 10, height: text.height + 2) }
+    private var scale: CGFloat { window?.backingScaleFactor ?? 2 }
+    /// The line inside the highlight: the glyph, the words and the key, seven apart.
+    private var lineSize: CGSize {
+        CGSize(width: iconSize.width + 7 + titleSize.width + 7 + keySize.width,
+               height: max(iconSize.height, titleSize.height, keySize.height))
+    }
+    /// The bar, its surface's outer edge.
+    private var barSize: CGSize { CGSize(width: lineSize.width + 20 + 6, height: lineSize.height + 12 + 6) }
+    /// What the panel holds: the bar and the room around it, rounded up to
+    /// whole points as the hosting view it replaces rounded it.
+    override var fittingSize: NSSize {
+        CGSize(width: ceil(barSize.width + margin * 2), height: ceil(barSize.height + margin * 2))
+    }
+    override var intrinsicContentSize: NSSize { fittingSize }
+
+    override func layout() {
+        super.layout()
+        let scale = self.scale
+        func snap(_ rect: CGRect) -> CGRect { TranscriptMotion.pixelAligned(rect, scale: scale) }
+        let bar = barSize
+        let barRect = snap(CGRect(x: (bounds.width - bar.width) / 2, y: (bounds.height - bar.height) / 2, width: bar.width, height: bar.height))
+        surface.frame = barRect
+        trigger.frame = barRect
+        let lit = barRect.insetBy(dx: 3, dy: 3)
+        highlight.frame = lit
+        let line = lineSize
+        var x = lit.minX + 10
+        let midY = lit.minY + 6 + line.height / 2
+        func place(_ view: NSView, _ size: CGSize) {
+            view.frame = snap(CGRect(x: x, y: midY - size.height / 2, width: size.width, height: size.height))
+            x += size.width + 7
         }
-        .padding(.horizontal, 10).padding(.vertical, 6)
-        .background(hovering ? Color.piFillStrong : Color.clear, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-        .padding(3)
-        .background(Color.piSurface, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(Color.piHairlineStrong, lineWidth: 1))
-        .shadow(color: Color.piShadow, radius: 10, y: 3)
-        .overlay {
-            PiPopoverTrigger(label: "Ask in side chat", identifier: "quoteInSideChat",
-                             help: "Ask about the selected text in a side chat (Return)",
-                             onHover: { hovering = $0 }, onPress: { _ in ask() })
-        }
-        .piAnimation(PiMotion.quick, value: hovering)
-        .scaleEffect(arrived || reduceMotion ? 1 : 0.96)
-        .opacity(arrived || reduceMotion ? 1 : 0)
-        .onAppear { if reduceMotion { arrived = true } else { withAnimation(PiMotion.quick) { arrived = true } } }
+        let slot = x
+        place(icon, iconSize)
+        icon.place(in: snap(CGRect(x: slot, y: midY - iconSize.height / 2, width: iconSize.width, height: iconSize.height)))
+        place(label, titleSize)
+        place(key, keySize)
+        let hint = Self.hint.size(scale: scale)
+        keyLabel.frame = snap(CGRect(x: key.frame.minX + 5, y: key.frame.minY + 1, width: hint.width, height: hint.height))
+    }
+
+    private func setHovering(_ inside: Bool) {
+        guard inside != hovering else { return }
+        hovering = inside
+        highlight.set(lit: inside, animated: !PiKit.Motion.reduced)
+    }
+
+    /// Arrives as the SwiftUI bar did: from 96% and transparent to whole.
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard window != nil, let layer, !PiKit.Motion.reduced else { return }
+        layoutSubtreeIfNeeded()
+        let centre = CGPoint(x: bounds.midX, y: bounds.midY)
+        var shrink = CATransform3DMakeTranslation(centre.x, centre.y, 0)
+        shrink = CATransform3DScale(shrink, 0.96, 0.96, 1)
+        shrink = CATransform3DTranslate(shrink, -centre.x, -centre.y, 0)
+        let scale = CABasicAnimation(keyPath: "sublayerTransform")
+        scale.fromValue = shrink; scale.toValue = CATransform3DIdentity
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = 0; fade.toValue = 1
+        let group = CAAnimationGroup()
+        group.animations = [scale, fade]
+        group.duration = PiKit.Motion.quick
+        group.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        layer.add(group, forKey: "arrive")
+    }
+}
+
+/// The quote bar's hover fill: the strong fill under the pointer, fading in
+/// and out over the quick ease.
+@MainActor final class QuoteActionHighlight: NSView {
+    private(set) var lit = false
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.cornerRadius = 7; layer?.cornerCurve = .continuous
+        setAccessibilityElement(false)
+    }
+    required init?(coder: NSCoder) { nil }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    private var color: CGColor {
+        var color = CGColor.clear
+        if lit { effectiveAppearance.performAsCurrentDrawingAppearance { color = NSColor.piFillStrong.cgColor } }
+        return color
+    }
+    func set(lit: Bool, animated: Bool) {
+        guard lit != self.lit, let layer else { return }
+        self.lit = lit
+        let from = layer.presentation()?.backgroundColor ?? layer.backgroundColor
+        layer.backgroundColor = color
+        guard animated else { return }
+        let fade = CABasicAnimation(keyPath: "backgroundColor")
+        fade.fromValue = from; fade.toValue = layer.backgroundColor
+        fade.duration = PiKit.Motion.quick
+        fade.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        layer.add(fade, forKey: "backgroundColor")
+    }
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        layer?.backgroundColor = color
     }
 }

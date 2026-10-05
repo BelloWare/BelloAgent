@@ -1,42 +1,4 @@
 import AppKit
-import SwiftUI
-
-/// A turn's tool calls, drawn natively. A turn that ran sixty of them retains
-/// every card and its exact height, while only the cards near the outer
-/// conversation viewport participate in native layout, drawing and tracking.
-/// This is not another scroll view and it truncates nothing: every card is
-/// still there, still openable, still selectable once it is on screen.
-///
-/// The reason a long turn can be folded and unfolded inside a frame is that a
-/// card the reader has not opened is one line high whatever it says — the
-/// header truncates to a single line and every badge on it is shorter than
-/// that line. So measuring one closed card measures all of them, and only the
-/// cards the reader has actually opened are laid out individually. The
-/// assumption is not taken on trust: every card that mounts is checked against
-/// the height it was placed at, and a card that disagrees keeps its own.
-struct NativeWorkListSurface: NSViewRepresentable {
-    /// Below this a turn is short enough that the plain SwiftUI stack is both
-    /// simpler and cheaper than a hosting view per card.
-    static let minimumRowCount = 8
-    let tools: [ToolView]
-    let openTools: Set<String>
-    let fetched: [String: ToolInputDocument]
-    let toggle: (String) -> Void
-    var openFile: ((String, ClosedRange<Int>?) -> Void)? = nil
-
-    func makeNSView(context: Context) -> NativeWorkListContainer {
-        let view = NativeWorkListContainer()
-        updateNSView(view, context: context)
-        return view
-    }
-    func updateNSView(_ view: NativeWorkListContainer, context: Context) {
-        view.update(tools: tools, openTools: openTools, fetched: fetched, toggle: toggle, openFile: openFile,
-                    environment: TranscriptRowEnvironment(context.environment))
-    }
-    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NativeWorkListContainer, context: Context) -> CGSize? {
-        nsView.measure(width: proposal.width)
-    }
-}
 
 /// What one card is, as a value the container can compare.
 private struct NativeWorkListItem: Equatable {
@@ -47,37 +9,32 @@ private struct NativeWorkListItem: Equatable {
 }
 
 /// The relay a card's button talks to, so replacing the turn's callbacks never
-/// replaces a card's hosting view.
+/// replaces a card's view.
 @MainActor private final class WorkListToggleRelay {
     var current: (String) -> Void = { _ in }
     var openFile: ((String, ClosedRange<Int>?) -> Void)?
 }
 
-private struct NativeHostedActionRow: View {
-    let item: NativeWorkListItem
-    let width: CGFloat
-    let toggle: (String) -> Void
-    let openFile: (String, ClosedRange<Int>?) -> Void
-    var body: some View {
-        ActionRowView(tool: item.tool, open: item.open, fetched: item.fetched, toggle: { toggle(item.tool.id) }, openFile: openFile)
-            .equatable()
-            .frame(width: width, alignment: .leading)
-            .fixedSize(horizontal: false, vertical: true)
-            .environment(\.colorScheme, item.environment.colorScheme)
-            .environment(\.dynamicTypeSize, item.environment.dynamicTypeSize)
-            .environment(\.layoutDirection, item.environment.layoutDirection)
-            .environment(\.locale, item.environment.locale)
-            .environment(\.transcriptOpensFiles, item.environment.opensFiles)
-            .disabled(!item.environment.isEnabled)
-            .focusEffectDisabled()
-            .piStableLayout()
-    }
-}
-
+/// One card of the list: its call, the native row once it is needed, and
+/// what it was last measured at. A closed card nobody has scrolled to is
+/// never built: the shared closed height stands for it.
 @MainActor private final class NativeWorkListRowHost {
-    let view: NSHostingView<NativeHostedActionRow>
+    private(set) var built: TranscriptNativeActionRow?
+    /// Called when the built row changed its own height.
+    var sizeChanged: () -> Void = {}
+    var view: TranscriptNativeActionRow {
+        if let built { return built }
+        let view = TranscriptNativeActionRow()
+        // A card never paints outside the space the list gave it, so a height
+        // that turns out to be wrong is a short card, never one drawn over
+        // the next.
+        view.clipsToBounds = true
+        view.sizeChanged = { [weak self] in self?.sizeChanged() }
+        built = view
+        apply()
+        return view
+    }
     private(set) var item: NativeWorkListItem
-    private var width: CGFloat = TranscriptMetrics.pageWidth
     private var sizes: [CGSize] = []
     private let relay: WorkListToggleRelay
     var frame = CGRect.zero
@@ -90,43 +47,27 @@ private struct NativeHostedActionRow: View {
     init(item: NativeWorkListItem, relay: WorkListToggleRelay) {
         self.item = item
         self.relay = relay
-        view = NSHostingView(rootView: NativeHostedActionRow(item: item, width: TranscriptMetrics.pageWidth,
-                                                             toggle: { [weak relay] id in relay?.current(id) },
-                                                             openFile: { [weak relay] path, lines in relay?.openFile?(path, lines) }))
-        view.safeAreaRegions = []
-        view.sizingOptions = [.intrinsicContentSize]
-        // A card never paints outside the space the list gave it, so a height
-        // that turns out to be wrong is a short card, never one drawn over
-        // the next.
-        view.clipsToBounds = true
-        applyAppearance()
     }
     @discardableResult func update(_ item: NativeWorkListItem) -> Bool {
         guard self.item != item else { return false }
         self.item = item
-        sizes.removeAll(keepingCapacity: true)
-        ownHeight = nil
-        rebuildRoot()
-        applyAppearance()
+        forgetSizes()
+        apply()
         return true
     }
-    private func rebuildRoot() {
-        view.rootView = NativeHostedActionRow(item: item, width: width, toggle: { [weak relay] id in relay?.current(id) },
-                                              openFile: { [weak relay] path, lines in relay?.openFile?(path, lines) })
-    }
-    private func applyAppearance() {
-        // colorSchemeContrast is read-only in SwiftUI's public environment.
-        // The native appearance carries contrast across this hosting boundary.
-        let dark = item.environment.colorScheme == .dark
-        let increased = item.environment.contrast == .increased
-        let name: NSAppearance.Name = increased ? (dark ? .accessibilityHighContrastDarkAqua : .accessibilityHighContrastAqua) : (dark ? .darkAqua : .aqua)
-        view.appearance = NSAppearance(named: name)
+    /// What the card measured no longer holds: it changed its own height.
+    func forgetSizes() { sizes.removeAll(keepingCapacity: true); ownHeight = nil }
+    private func apply() {
+        guard let view = built else { return }
+        let id = item.tool.id
+        view.update(tool: item.tool, open: item.open, fetched: item.fetched, environment: item.environment,
+                    toggle: { [weak relay] in relay?.current(id) },
+                    openFile: { [weak relay] path, lines in relay?.openFile?(path, lines) })
     }
     func measure(width: CGFloat) -> CGFloat {
         if let cached = sizes.last(where: { $0.width == width }) { return cached.height }
         if TranscriptLayoutClock.recording { TranscriptLayoutClock.workListCardsMeasured += 1 }
-        setWidth(width)
-        let height = max(1, ceil(view.fittingSize.height))
+        let height = max(1, ceil(view.height(width: width)))
         if sizes.count == 4 { sizes.removeFirst() }
         sizes.append(CGSize(width: width, height: height))
         measurementCount += 1
@@ -134,19 +75,18 @@ private struct NativeHostedActionRow: View {
     }
     /// What this card measures if it has already been measured at this width.
     func measured(width: CGFloat) -> CGFloat? { sizes.last(where: { $0.width == width })?.height }
-    func setWidth(_ width: CGFloat) {
-        guard self.width != width else { return }
-        self.width = width
-        rebuildRoot()
-    }
     func place(in container: NSView) {
-        setWidth(frame.width)
+        let moved = view.frame != frame || view.superview !== container
         if view.frame != frame { view.frame = frame }
         if view.superview !== container { container.addSubview(view) }
+        // A card that moved shows other lines than it did.
+        if moved { view.refreshVisibleLines() }
     }
 }
 
 @MainActor final class NativeWorkListContainer: NSView {
+    /// From this many calls a turn's work is one list rather than a row each.
+    static let minimumRowCount = 8
     private struct Layout {
         var width: CGFloat
         var heights: [CGFloat]
@@ -177,9 +117,11 @@ private struct NativeHostedActionRow: View {
     /// of cards, not all of them, and scrolling must measure none.
     var rowMeasurementCount: Int { rows.reduce(0) { $0 + $1.measurementCount } }
     var retainedRowCount: Int { rows.count }
-    var mountedRowCount: Int { rows.reduce(0) { $0 + ($1.view.superview === self ? 1 : 0) } }
+    var mountedRowCount: Int { rows.reduce(0) { $0 + ($1.built?.superview === self ? 1 : 0) } }
+    /// How many cards have a native row at all: the ones ever near the viewport, or measured.
+    var builtRowCount: Int { rows.reduce(0) { $0 + ($1.built == nil ? 0 : 1) } }
     /// The card at an index, for fixtures that check what is drawn where.
-    func mountedRowIDs() -> [String] { rows.filter { $0.view.superview === self }.map(\.id) }
+    func mountedRowIDs() -> [String] { rows.filter { $0.built?.superview === self }.map(\.id) }
 
     deinit { if let boundsObserver { NotificationCenter.default.removeObserver(boundsObserver) } }
 
@@ -196,10 +138,20 @@ private struct NativeHostedActionRow: View {
                                           fetched: openTools.contains(tool.id) ? fetched[tool.id] : nil,
                                           environment: environment)
             if rows.indices.contains(index) { if rows[index].update(item) { changed = true } }
-            else { rows.append(NativeWorkListRowHost(item: item, relay: relay)) }
+            else {
+                let host = NativeWorkListRowHost(item: item, relay: relay)
+                // A card that changes its own height (a diff expanded) is
+                // measured again, and the list laid out around it.
+                host.sizeChanged = { [weak self, weak host] in
+                    guard let self, let host else { return }
+                    host.forgetSizes()
+                    self.relayout()
+                }
+                rows.append(host)
+            }
         }
         if rows.count > tools.count {
-            for row in rows.dropFirst(tools.count) { row.view.removeFromSuperview() }
+            for row in rows.dropFirst(tools.count) { row.built?.removeFromSuperview() }
             rows.removeLast(rows.count - tools.count)
         }
         guard changed else { return }
@@ -218,6 +170,26 @@ private struct NativeHostedActionRow: View {
         }
     }
 
+    /// Lays the list out again after a card changed its own height, and
+    /// tells the transcript row it is drawn in to measure itself again: the
+    /// change came from inside, not from anything SwiftUI was given.
+    private func relayout() {
+        layouts.removeAll(keepingCapacity: true)
+        laidOutWidth = nil
+        needsLayout = true
+        invalidateIntrinsicContentSize()
+        if let sizeChanged { sizeChanged(); return }
+        var ancestor = superview
+        while let view = ancestor {
+            // The row content it is drawn in (a SwiftUI one, in the parity
+            // tests' reference rows) sizes itself from its intrinsic size.
+            if let row = view as? TranscriptRowContent { row.invalidateIntrinsicContentSize(); break }
+            ancestor = view.superview
+        }
+    }
+    /// Told when a card changed the list's height from inside, where the
+    /// list is drawn by a native row rather than through SwiftUI.
+    var sizeChanged: (() -> Void)?
     /// One closed card's height at this width, measured once for the turn.
     private func closedRowHeight(width: CGFloat) -> CGFloat {
         if let known = closedHeight[width] { return known }
@@ -264,6 +236,16 @@ private struct NativeHostedActionRow: View {
         bindViewport()
         mountVisibleRows()
     }
+    /// The list moved inside the row it is drawn in (a section above it
+    /// opened or closed): other cards, and other lines of the open ones,
+    /// are in view now.
+    override func setFrameOrigin(_ newOrigin: NSPoint) {
+        let moved = newOrigin != frame.origin
+        super.setFrameOrigin(newOrigin)
+        guard moved, laidOutWidth != nil else { return }
+        mountVisibleRows()
+        for row in rows { if let view = row.built, view.superview === self { view.refreshVisibleLines() } }
+    }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         bindViewport()
@@ -282,9 +264,10 @@ private struct NativeHostedActionRow: View {
     }
     private func containsSelection(_ row: NativeWorkListRowHost) -> Bool {
         guard let responder = window?.firstResponder as? NSView else { return false }
-        if responder === row.view || responder.isDescendant(of: row.view) { return true }
+        guard let view = row.built else { return false }
+        if responder === view || responder.isDescendant(of: view) { return true }
         if let editor = responder as? NSTextView, editor.isFieldEditor, let owner = editor.delegate as? NSView {
-            return owner === row.view || owner.isDescendant(of: row.view)
+            return owner === view || owner.isDescendant(of: view)
         }
         return false
     }
@@ -319,8 +302,8 @@ private struct NativeHostedActionRow: View {
                         corrected = true
                     }
                 }
-            } else if row.view.superview === self {
-                row.view.removeFromSuperview()
+            } else if let view = row.built, view.superview === self {
+                view.removeFromSuperview()
             }
         }
         guard corrected else { return }
@@ -328,5 +311,6 @@ private struct NativeHostedActionRow: View {
         laidOutWidth = nil
         needsLayout = true
         invalidateIntrinsicContentSize()
+        sizeChanged?()
     }
 }
