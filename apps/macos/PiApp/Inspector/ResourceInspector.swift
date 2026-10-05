@@ -95,6 +95,7 @@ import AppKit
         filterField.onChange = { [weak self] value in self?.query = value; self?.reconcileSelection(); self?.refreshSkills() }
         managementToggle.labelFont = PiKit.Font.caption
         managementToggle.onChange = { [weak self] value in self?.management = value; self?.reconcileSelection(); self?.refreshSkills() }
+        skillList.scrollerStyle = .overlay
         skillList.spacing = 2; skillList.insets = NSEdgeInsets(top: PiSpacing.sm, left: PiSpacing.sm, bottom: PiSpacing.sm, right: PiSpacing.sm)
         homeField.onChange = { [weak self] in self?.home = $0 }; fallbacksField.onChange = { [weak self] in self?.fallbacks = $0 }
         budgetToggle.setAccessibilityLabel("Override instruction byte budget")
@@ -464,6 +465,7 @@ import AppKit
         toolField.onChange = { [weak self] value in self?.tool = value; self?.refreshUI() }
         configurationEditor.onChange = { [weak self] in self?.configuration = $0 }
         targetsEditor.onChange = { [weak self] in self?.targets = $0 }; argumentsEditor.onChange = { [weak self] in self?.arguments = $0 }
+        list.scrollerStyle = .overlay
         list.spacing = 2; list.insets = NSEdgeInsets(top: PiSpacing.sm, left: PiSpacing.sm, bottom: PiSpacing.sm, right: PiSpacing.sm)
         startObserving()
         refreshUI()

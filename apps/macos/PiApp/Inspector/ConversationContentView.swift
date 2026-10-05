@@ -86,6 +86,7 @@ enum ConversationSearchPaging {
         copyAll.onPress = { [weak self] in guard let self else { return }; self.copy(first: 1, last: self.result.total) }
         exportButton.onPress = { [weak self] in self?.export() }
         exportButton.toolTip = "Save the whole retained conversation as a Markdown text file"
+        list.scrollerStyle = .overlay
         list.spacing = 2; list.insets = NSEdgeInsets(top: PiSpacing.sm, left: PiSpacing.sm, bottom: PiSpacing.sm, right: PiSpacing.sm)
         list.setAccessibilityLabel("Retained conversation search results")
         refresh()
