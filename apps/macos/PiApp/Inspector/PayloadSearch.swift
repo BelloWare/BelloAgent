@@ -129,7 +129,17 @@ struct PayloadSearchResult: Sendable {
         pendingScroll = nil
         // Realize the selected match, leaving a large body's other text to
         // noncontiguous layout instead of laying out the whole container.
-        editor.layoutManager?.ensureLayout(forCharacterRange: range)
+        if let manager = editor.layoutManager, let container = editor.textContainer {
+            manager.ensureLayout(forCharacterRange: range)
+            let glyphs = manager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+            let glyph = manager.boundingRect(forGlyphRange: glyphs, in: container)
+            let rect = contentView.convert(glyph.offsetBy(dx: editor.textContainerOrigin.x,
+                                                         dy: editor.textContainerOrigin.y), from: editor)
+            // Revealing an already visible first match can make AppKit
+            // consume the leading text inset in an overflowing document.
+            // Keep the viewport, and scroll only for a match outside it.
+            if contentView.bounds.contains(rect) { return }
+        }
         editor.scrollRangeToVisible(range)
     }
     func update(result: PayloadSearchResult, selected: Int) {
