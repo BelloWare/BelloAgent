@@ -63,17 +63,22 @@ import XCTest
         var bytes = Data(#"{"nested":{"old":1},"text":"first"}"#.utf8)
         let view = CapturedBodyView(source: body({ bytes }), sessionID: "s", attemptID: "a", kind: "request", retained: false)
         _ = attach(view)
-        try await eventually("The initial JSON outline is ready", timeout: .seconds(3)) { view.controller.document != nil }
-        view.layoutSubtreeIfNeeded()
         func outline(in view: NSView) -> NSOutlineView? { if let value = view as? NSOutlineView { return value }; return view.subviews.compactMap { outline(in: $0) }.first }
+        try await eventually("The initial JSON outline is ready", timeout: .seconds(3)) {
+            view.layoutSubtreeIfNeeded()
+            return (outline(in: view)?.item(atRow: 0) as? JSONOutlineNode)?.count == 2
+        }
         let original = try XCTUnwrap(outline(in: view))
         let firstRoot = try XCTUnwrap(original.item(atRow: 0) as? JSONOutlineNode)
         original.expandItem(firstRoot.child(0))
         let id = try XCTUnwrap(view.controller.document?.id)
         bytes = Data(#"{"nested":{"new":2,"old":1},"text":"first"}"#.utf8)
         view.update(revision: 1)
-        try await eventually("The same body's newer read is installed", timeout: .seconds(3)) { view.controller.document?.replaces == id && !view.controller.loading }
-        view.layoutSubtreeIfNeeded()
+        try await eventually("The same body's newer read is installed", timeout: .seconds(3)) {
+            view.layoutSubtreeIfNeeded()
+            return view.controller.document?.replaces == id && !view.controller.loading
+                && (outline(in: view)?.item(atRow: 0) as? JSONOutlineNode)?.child(0).count == 2
+        }
         let updated = try XCTUnwrap(outline(in: view)), root = try XCTUnwrap(updated.item(atRow: 0) as? JSONOutlineNode)
         XCTAssertTrue(updated === original)
         XCTAssertTrue(updated.isItemExpanded(root.child(0)))
