@@ -21,7 +21,7 @@ import AppKit
     ShellStack(.horizontal, spacing: spacing, alignment: alignment, items)
 }
 
-/// A refreshed card can replace a button while its action is running. Keep
+/// A refreshed card can replace or temporarily detach its button. Keep
 /// keyboard focus on the same accessible action after the new layout lands.
 @MainActor struct InspectorButtonFocus {
     private weak var window: NSWindow?
@@ -36,9 +36,9 @@ import AppKit
         self.window = window; previous = button; self.identifier = identifier.isEmpty ? nil : identifier; self.label = label
     }
     func restore(in view: NSView) {
-        guard let window, previous.window !== window, view.window === window else { return }
+        guard let window, window.firstResponder !== previous, view.window === window else { return }
         DispatchQueue.main.async { [weak view, weak window, previous = self.previous, identifier = self.identifier, label = self.label] in
-            guard let view, let window, view.window === window, previous.window !== window else { return }
+            guard let view, let window, view.window === window, window.firstResponder !== previous else { return }
             // A different control may have deliberately taken focus meanwhile.
             if let focused = window.firstResponder as? NSView, focused !== previous,
                focused is NSControl || focused is NSText { return }
