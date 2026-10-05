@@ -32,7 +32,7 @@ import AppKit
         guard let window = view.window, let button = window.firstResponder as? PiKit.ButtonBase,
               button.isDescendant(of: view) else { return nil }
         let identifier = button.accessibilityIdentifier(), label = button.accessibilityLabel()
-        guard identifier?.isEmpty == false || label?.isEmpty == false else { return nil }
+        guard identifier?.isEmpty == false || !label.isEmpty else { return nil }
         self.window = window; previous = button; self.identifier = identifier; self.label = label
     }
     func restore(in view: NSView) {
