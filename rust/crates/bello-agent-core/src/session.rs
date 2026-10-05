@@ -53,6 +53,8 @@ pub struct Message {
     pub state: String,
     pub usage: Value,
     pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_record: Option<crate::tool_history::ToolRecord>,
 }
 impl Message {
     fn new(
@@ -72,6 +74,7 @@ impl Message {
             state: state.into(),
             usage: Value::Null,
             model,
+            tool_record: None,
         }
     }
 }
@@ -369,7 +372,21 @@ impl Session {
         self.error = None;
         Ok(())
     }
+    fn validate_tool_history(&self) -> Result<()> {
+        if self.version < 3
+            && self
+                .messages
+                .iter()
+                .any(|message| message.tool_record.is_some())
+        {
+            return Err(invalid(
+                "Typed tool history requires Rust snapshot version 3",
+            ));
+        }
+        crate::tool_history::validate(&self.messages)
+    }
     fn validate_checkpoint(&self) -> Result<()> {
+        self.validate_tool_history()?;
         let active = self.active.is_some();
         let reply = self.active_reply.is_some();
         if self.state == RunState::Running {
@@ -558,7 +575,7 @@ impl SessionStore {
         {
             return Err(invalid("The session file belongs to another chat"));
         }
-        if ![1, 2].contains(&session.version) {
+        if ![1, 2, 3].contains(&session.version) {
             return Err(invalid(
                 "Unsupported Rust session format. Swift journals are not imported automatically.",
             ));
@@ -621,6 +638,13 @@ impl SessionStore {
         }
         let mut next = self.session.clone();
         let result = change(&mut next)?;
+        if next
+            .messages
+            .iter()
+            .any(|message| message.tool_record.is_some())
+        {
+            next.version = 3;
+        }
         next.revision = next
             .revision
             .checked_add(1)
@@ -812,6 +836,7 @@ fn sync_committed_directory(parent: &Path) -> Result<()> {
 }
 
 fn encode_snapshot(session: &Session) -> Result<Vec<u8>> {
+    session.validate_tool_history()?;
     let mut bytes = serde_json::to_vec(session)?;
     bytes.push(b'\n');
     if bytes.len() > MAX_SNAPSHOT_BYTES {

@@ -125,6 +125,42 @@ Native UI paths begin `apps/macos/PiApp/` (abbreviated `App/`).
 
 ## Latest incremental slice
 
+### Non-executing typed tool-history foundation
+
+Optional typed assistant-call and result records now have validation at snapshot
+write/load and Responses projection boundaries. Identity is scoped by assistant
+message plus call ID, allowing a later assistant to reuse a provider call ID
+without borrowing its earlier result. Supplied results must follow call order;
+missing results project as the source's explicit “No result provided” placeholder.
+No placeholder schedules execution. Incomplete/cancelled typed assistants and
+their results stay out of replay; full Swift incomplete-call continuation is
+deferred with the production multi-round loop.
+
+Existing text-only messages keep their serialized and wire shapes and use Rust
+snapshot v2. A transaction adding typed history upgrades to v3 so old Rust builds
+fail rather than silently discard unfamiliar metadata. The new loader accepts
+old text histories, rejects mislabeled/malformed typed histories without rewriting
+their bytes, and validates unknown fields, owner/order, payload bounds and binding.
+
+Binding retains profile ID, API, provider, model and the source-style endpoint
+SHA256; it contains no credentials, headers or credential hashes. Opaque provider
+reasoning is retained but **not enabled for same-profile replay**. `Routing.swift`
+requires a configuration revision, pinned-route contract fingerprint and observed
+effective model that Rust does not yet implement. Default-ask ordering fails closed
+even on a same-profile model change. A different saved profile uses the source's
+portable early path; no opaque bytes or foreign provider item IDs are sent.
+
+This is **implemented/partially validated foundation, not production tools**.
+The live request still offers no tools and its completion handler still fails
+visibly on unexpected calls without executing them. Eighteen synthetic tests cover
+text compatibility, identities/order, missing/incomplete records, provider binding,
+large/invalid data, snapshot v3 reopen, and the existing rejection boundary.
+Atomic-write fault cuts and live loopback Controller regression are the next
+validation slice. Output retention, source trust/mode UI, immutable project tool
+policy, instructions/resources, cost/context controls, multi-round execution and
+tool cards remain missing. No external model service was contacted; the production
+path still invokes no filesystem tools. Existing tool tests use disposable fixtures.
+
 ### Literal user-message width correction
 
 Linux desktop validation found that short user messages collapsed to one glyph

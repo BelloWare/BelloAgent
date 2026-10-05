@@ -19,6 +19,7 @@ pub enum Delta {
     },
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct ToolCall {
     pub id: String,
     pub name: String,
@@ -35,7 +36,8 @@ pub struct Reply {
 }
 
 /// The request preserves the source app's Responses correlation and budget rules.
-/// This vertical slice intentionally offers no tools and replays portable text.
+/// This vertical slice intentionally offers no tools. Typed tool-history replay
+/// is non-executing groundwork; the live Controller still rejects tool calls.
 pub fn request_body(
     profile: &Profile,
     messages: &[Message],
@@ -47,13 +49,7 @@ pub fn request_body(
     if !instructions.is_empty() {
         input.push(json!({"role":if profile.reasoning && profile.compat.supports_developer_role!=Some(false) {"developer"} else {"system"},"content":instructions}));
     }
-    for message in messages.iter().filter(|m| m.replay_eligible) {
-        match message.role.as_str() {
-            "user"=>input.push(json!({"role":"user","content":[{"type":"input_text","text":message.text}]})),
-            "assistant"=>input.push(json!({"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":message.text,"annotations":[]}]})),
-            _=>return Err(invalid("Unsupported replay role in Rust session")),
-        }
-    }
+    input.extend(crate::tool_history::project(messages, profile)?);
     let mut body = json!({"model":profile.model_id,"stream":true,"store":false,"metadata":{"session_id":correlation_value(session_id)},"prompt_cache_key":session_id.chars().take(64).collect::<String>(),"input":input});
     if !profile.compat.allow_fallbacks {
         body["disable_fallbacks"] = json!(true);

@@ -6,6 +6,7 @@ pub mod runtime;
 pub mod session;
 pub mod sse;
 mod stream_journal;
+pub mod tool_history;
 pub mod tools;
 pub mod workspace;
 
