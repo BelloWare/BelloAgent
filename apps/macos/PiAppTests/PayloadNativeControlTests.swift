@@ -52,6 +52,8 @@ import XCTest
         let skill = SkillDescriptor(id: "skill", name: "review-code", path: "/skills/review-code/SKILL.md", description: "Review code", scope: "project", contentHash: "hash", metadataHash: "meta", policy: "explicitOnly", reasons: [], missingDependencies: [])
         var presses = 0
         let view = ResourceSkillRow(skill: skill, glide: PiKit.SelectionGlide()) { presses += 1 }
+        let window = attach(view, size: CGSize(width: 380, height: ResourceSkillRow.height(skill, width: 380)))
+        view.layoutSubtreeIfNeeded(); window.displayIfNeeded()
         XCTAssertEqual(view.row.accessibilityRole(), .button)
         XCTAssertEqual(view.row.accessibilityLabel(), "/review-code, Only when you ask, project, /skills/review-code/SKILL.md")
         XCTAssertFalse(view.row.isAccessibilitySelected())
@@ -60,7 +62,10 @@ import XCTest
     }
     func testMCPToolSelectionButtonNamesTheToolAndExposesSelectionAndPress() {
         var presses = 0
-        let view = MCPToolRow(entry: ["name": .string("read_file"), "description": .string("Read a retained file.")], glide: PiKit.SelectionGlide()) { presses += 1 }
+        let entry: [String: WireValue] = ["name": .string("read_file"), "description": .string("Read a retained file.")]
+        let view = MCPToolRow(entry: entry, glide: PiKit.SelectionGlide()) { presses += 1 }
+        let window = attach(view, size: CGSize(width: 380, height: MCPToolRow.height(entry, width: 380)))
+        view.layoutSubtreeIfNeeded(); window.displayIfNeeded()
         XCTAssertEqual(view.row.accessibilityRole(), .button)
         XCTAssertEqual(view.row.accessibilityLabel(), "read_file, Read a retained file.")
         XCTAssertFalse(view.row.isAccessibilitySelected())
