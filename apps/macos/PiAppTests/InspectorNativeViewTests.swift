@@ -189,6 +189,28 @@ import XCTest
         }
     }
 
+    func testReusedConversationReturnsToPreviewAfterItsWholeTextWorkersStop() async throws {
+        let result = InspectorExpandBodies.toolResult(lines: 400)
+        let fixture = try await InspectorExpandFixture(body: InspectorExpandBodies.request(result: result))
+        defer { fixture.close() }
+        let outline = fixture.outline
+        let coordinator = fixture.coordinator
+        try await fixture.showAll("item:3")
+        XCTAssertEqual(fixture.textView("item:3")?.string, result)
+        fixture.request.tab = .response
+        try await eventually("Leaving Conversation did not stop its whole-text controllers") {
+            outline.window == nil && coordinator.expansions.isEmpty
+        }
+        fixture.request.tab = .conversation
+        try await eventually("The reused Conversation kept stale whole-text rows") {
+            fixture.window.contentView?.layoutSubtreeIfNeeded()
+            return fixture.outlineView === outline && outline.window === fixture.window && fixture.children("item:3").last == "item:3:more" && fixture.row("item:3:text") < 0
+        }
+        XCTAssertEqual(fixture.children("item:3").count, RequestDocument.wrap(RequestDocument.prefix(result as NSString, limit: RequestDocument.previewLimit)).count + 1)
+        try await fixture.showAll("item:3")
+        XCTAssertEqual(fixture.textView("item:3")?.string, result, "The reused outline can read and display the complete text again")
+    }
+
     func testSessionViewSourcesContainNoSwiftUIHostsOrImports() throws {
         let tests = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let session = tests.deletingLastPathComponent().appendingPathComponent("PiApp/Inspector/Session")

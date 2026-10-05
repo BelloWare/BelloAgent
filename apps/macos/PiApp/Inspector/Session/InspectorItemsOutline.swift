@@ -46,6 +46,7 @@ typealias InspectorWholeText = @Sendable () throws -> String
 @MainActor final class InspectorItemsOutline: NSScrollView {
     let coordinator: Coordinator
     let outline: InspectorOutlineView
+    private var resetClosedExpansions = false
 
     init(content: InspectorOutlineContent = .empty,
          wholeText: @escaping (InspectorOutlineTarget) -> InspectorWholeText? = { _ in nil }) {
@@ -80,10 +81,19 @@ typealias InspectorWholeText = @Sendable () throws -> String
         coordinator.wholeText = wholeText
         coordinator.schedule(content)
     }
-    func close() { coordinator.closeAll() }
+    func close() {
+        resetClosedExpansions = resetClosedExpansions || !coordinator.expansions.isEmpty
+        coordinator.closeAll()
+    }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if window == nil { close() }
+        else if resetClosedExpansions {
+            // A reused tab returns to previews after its whole-text workers
+            // stop. Its cached text/link nodes cannot outlive the controllers.
+            resetClosedExpansions = false
+            if let content = coordinator.content { coordinator.show(content) }
+        }
     }
 
     // MARK: - Rows
