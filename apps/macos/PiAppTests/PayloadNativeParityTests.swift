@@ -7,9 +7,25 @@ import XCTest
     override func setUp() async throws { PiKit.Motion.reducedOverride = true }
     override func tearDown() async throws { PiKit.Motion.reducedOverride = nil }
     private func check<V: View>(_ name: String, _ reference: V, _ native: NSView, width: CGFloat,
-                               appearance: NSAppearance.Name) async throws {
+                               appearance: NSAppearance.Name, splitGeometry: Bool = false) async throws {
+        let frames = PayloadSplitFrames()
+        let measurement = splitGeometry ? Task { @MainActor in
+            while !Task.isCancelled {
+                frames.recordVisibleSplits()
+                try? await Task.sleep(for: .milliseconds(20))
+            }
+        } : nil
+        defer { measurement?.cancel() }
         let result = try await PiKitParity.compare(name + (appearance == .aqua ? "-light" : "-dark"), appearance: appearance,
                                                    swiftUI: reference, appKit: native, width: width)
+        if splitGeometry {
+            print("SPLIT \(name) \(appearance.rawValue): " + frames.description)
+            if let old = frames.reference, let current = frames.native {
+                XCTAssertEqual(old.width, current.width, accuracy: 0.5, "\(name): split viewport width")
+                XCTAssertEqual(old.leading.width, current.leading.width, accuracy: 0.5, "\(name): initial leading pane width")
+                XCTAssertEqual(old.trailing.width, current.trailing.width, accuracy: 0.5, "\(name): initial trailing pane width")
+            } else { XCTFail("\(name): both visible split layouts must be measured") }
+        }
         XCTAssertEqual(result.swiftUIFit.height, result.appKitFit.height, accuracy: 0.5, result.description)
         XCTAssertLessThanOrEqual(result.differing, Int(Double(result.total) * 0.012), result.description)
         let strong = PiKitParity.difference(result.swiftUIImage, result.appKitImage, tolerance: 64)
@@ -55,8 +71,39 @@ import XCTest
             defer { model.shutdown() }
             try await check("payload-conversation", ConversationContentReference(model: model, sessionID: "missing"), ConversationContentView(model: model, sessionID: "missing"), width: 900, appearance: appearance)
             for tab in ["skills", "instructions", "settings", "mcp"] {
-                try await check("payload-resources-" + tab, ResourceInspectorReference(model: model, initialTab: tab), ResourceInspector(model: model, initialTab: tab), width: 1100, appearance: appearance)
+                try await check("payload-resources-" + tab, ResourceInspectorReference(model: model, initialTab: tab), ResourceInspector(model: model, initialTab: tab), width: 1100, appearance: appearance, splitGeometry: tab == "skills" || tab == "mcp")
             }
         }
+    }
+}
+
+/// Read native HSplitView geometry while the existing comparison windows
+/// are visible. This does not add a view or alter the frozen reference's
+/// layout; it explains divider differences independently of rasterization.
+@MainActor private final class PayloadSplitFrames {
+    struct Frame {
+        let width: CGFloat
+        let divider: CGFloat
+        let leading: NSRect, trailing: NSRect
+        let leadingFit: NSSize, trailingFit: NSSize
+        var description: String { "width=\(width) divider=\(divider) panes=\(leading) / \(trailing) fits=\(leadingFit) / \(trailingFit)" }
+    }
+    var reference: Frame?, native: Frame?
+    var description: String { "SwiftUI \(reference?.description ?? "missing"); AppKit \(native?.description ?? "missing")" }
+    func recordVisibleSplits() {
+        for window in NSApp.windows where window.isVisible && window.styleMask.isEmpty {
+            if let root = window.contentView { record(root) }
+        }
+    }
+    private func record(_ view: NSView) {
+        if let split = view as? NSSplitView, split.isVertical, split.arrangedSubviews.count == 2,
+           abs(split.bounds.width - 1052) < 1 {
+            let left = split.arrangedSubviews[0], right = split.arrangedSubviews[1]
+            let frame = Frame(width: split.bounds.width, divider: split.dividerThickness,
+                              leading: left.frame, trailing: right.frame,
+                              leadingFit: left.fittingSize, trailingFit: right.fittingSize)
+            if split is PayloadSplit { native = frame } else { reference = frame }
+        }
+        for child in view.subviews { record(child) }
     }
 }
