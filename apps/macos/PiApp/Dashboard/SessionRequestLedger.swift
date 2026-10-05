@@ -1,4 +1,4 @@
-import SwiftUI
+import AppKit
 
 /// One retained request as the ledger writes it: what it was, where it went,
 /// what it consumed and how fast it decoded. Every cell is a reported figure
@@ -91,102 +91,214 @@ struct SessionRequestLedger: Equatable {
     }
 }
 
-/// Every retained request of the session, oldest first, in the order it ran.
-/// The figures that the pills fold into one number, one row at a time. In the
-/// Inspector a row opens its request.
-struct SessionRequestLedgerView: View {
-    let ledger: SessionRequestLedger
-    /// Opens a row's request; nil where rows are read only.
-    var open: ((String) -> Void)? = nil
-    /// Shows only the latest rows, and says how many there are.
-    var limit: Int? = nil
-    private var shown: ArraySlice<SessionRequestLedgerRow> { limit.map { ledger.rows.suffix($0) } ?? ledger.rows[...] }
-
-    private static let columns: [(String, CGFloat?)] = [
-        ("#", 30), ("Status", 88), ("Model", nil), ("Input", 122), ("Output", 108),
-        ("TTFT", 64), ("Generation", 82), ("Throughput", 86), ("Cost", 92),
-    ]
-
-    var body: some View {
-        PiCard(padding: PiSpacing.md) {
-            VStack(alignment: .leading, spacing: PiSpacing.sm) {
-                PiSectionHeader("Requests", subtitle: shown.count < ledger.rows.count ? "Latest \(shown.count) of \(ledger.rows.count) · every request is in the list on the left" : ledger.subtitle) {
-                    Button {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(ledger.copyText, forType: .string)
-                    } label: { Label("Copy", systemImage: "doc.on.doc") }
-                        .buttonStyle(.piSecondaryCompact).accessibilityIdentifier("session-ledger-copy")
-                }
-                if ledger.rows.isEmpty {
-                    Text("No requests with retained metrics yet.").font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
-                        .frame(maxWidth: .infinity, minHeight: 60)
-                } else {
-                    header
-                    // Built as they scroll into view. The ledger sits under the
-                    // charts, off screen as the Overview opens, and building its
-                    // forty rows was most of what opening the page cost.
-                    LazyVStack(alignment: .leading, spacing: PiSpacing.sm) {
-                        ForEach(shown) { row in
-                            Rectangle().fill(Color.piHairline).frame(height: 1)
-                            if let open {
-                                Button { open(row.id) } label: { line(row).contentShape(Rectangle()) }
-                                    .buttonStyle(SessionLedgerRowStyle()).help("Open request \(row.number)")
-                            } else { line(row) }
-                        }
-                    }
-                }
-                Text(ledger.coverageNote).font(PiFont.micro).foregroundStyle(Color.piInkTertiary)
-                    .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("session-ledger-coverage")
-            }
-        }.accessibilityIdentifier("session-request-ledger")
+/// Every retained request, oldest first. Row views are created only where
+/// this ledger meets its page's viewport, preserving the lazy Overview.
+@MainActor final class SessionRequestLedgerView: DashView, PiKit.WidthSizing {
+    private(set) var ledger: SessionRequestLedger
+    let open: ((String) -> Void)?
+    let limit: Int?
+    let rows: SessionLedgerRows
+    private let content: ShellStack
+    private let box: PiKit.Box
+    private let heading: DashSectionHeader
+    private let coverage: ShellText
+    init(ledger: SessionRequestLedger, open: ((String) -> Void)? = nil, limit: Int? = nil) {
+        self.ledger = ledger; self.open = open; self.limit = limit
+        let shown = Array(limit.map { ledger.rows.suffix(max(0, $0)) } ?? ledger.rows[...])
+        rows = SessionLedgerRows(rows: shown, open: open)
+        let content = ShellStack(.vertical, spacing: PiSpacing.sm)
+        self.content = content
+        box = PiKit.card(content, padding: PiSpacing.md)
+        let copy = PiKit.Button("Copy", symbol: "doc.on.doc", style: .secondary, compact: true)
+        copy.setAccessibilityIdentifier("session-ledger-copy")
+        let subtitle = shown.count < ledger.rows.count ? "Latest \(shown.count) of \(ledger.rows.count) · every request is in the list on the left" : ledger.subtitle
+        heading = DashSectionHeader("Requests", subtitle: subtitle, accessory: copy)
+        coverage = ShellText(ledger.coverageNote, font: PiKit.Font.micro, color: .piInkTertiary)
+        super.init(frame: .zero); addSubview(box)
+        copy.onPress = { [weak self] in
+            guard let self else { return }
+            NSPasteboard.general.clearContents(); NSPasteboard.general.setString(self.ledger.copyText, forType: .string)
+        }
+        var items: [ShellItem] = [.view(heading, .fill)]
+        if shown.isEmpty { items.append(.view(SessionStatsEmptyLine("No requests with retained metrics yet.", color: .piInkSecondary), .fill)) }
+        else { items += [.view(SessionStatsTableHeader(SessionLedgerRows.columns), .fill), .view(rows, .fill)] }
+        coverage.setAccessibilityIdentifier("session-ledger-coverage")
+        items.append(.view(coverage, .fill)); content.items = items
+        setAccessibilityIdentifier("session-request-ledger")
     }
+    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    /// A settled request updates values without replacing the scroll document.
+    func update(ledger: SessionRequestLedger) {
+        guard self.ledger != ledger else { return }
+        self.ledger = ledger
+        let shown = Array(limit.map { ledger.rows.suffix(max(0, $0)) } ?? ledger.rows[...])
+        rows.reload(shown)
+        heading.setSubtitle(shown.count < ledger.rows.count ? "Latest \(shown.count) of \(ledger.rows.count) · every request is in the list on the left" : ledger.subtitle)
+        coverage.set(ledger.coverageNote, color: .piInkTertiary)
+        if shown.isEmpty {
+            content.items = [.view(heading, .fill), .view(SessionStatsEmptyLine("No requests with retained metrics yet.", color: .piInkSecondary), .fill), .view(coverage, .fill)]
+        } else if !content.items.contains(where: { $0.view === rows }) {
+            content.items = [.view(heading, .fill), .view(SessionStatsTableHeader(SessionLedgerRows.columns), .fill), .view(rows, .fill), .view(coverage, .fill)]
+        }
+        PiKit.sizeChanged(self)
+    }
+    func height(forWidth width: CGFloat) -> CGFloat { box.height(forWidth: width) }
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: height(forWidth: bounds.width > 0 ? bounds.width : 1_080)) }
+    override func layout() { super.layout(); box.frame = bounds }
+}
 
-    private var header: some View {
-        HStack(spacing: PiSpacing.sm) {
-            ForEach(Array(Self.columns.enumerated()), id: \.offset) { _, column in
-                Text(column.0).font(PiFont.micro).foregroundStyle(Color.piInkTertiary).textCase(.uppercase).tracking(0.4).lineLimit(1)
-                    .frame(width: column.1, alignment: .leading).frame(maxWidth: column.1 == nil ? .infinity : nil, alignment: .leading)
+/// A lazy column inside the outer scroll document, without another scroll
+/// view. Sizes are cheap values; the actual rows are retained only in view.
+@MainActor final class SessionLedgerRows: DashView, PiKit.WidthSizing {
+    static let columns: [(String, CGFloat?)] = [("#", 30), ("Status", 88), ("Model", nil), ("Input", 122), ("Output", 108), ("TTFT", 64), ("Generation", 82), ("Throughput", 86), ("Cost", 92)]
+    private(set) var rows: [SessionRequestLedgerRow]
+    let open: ((String) -> Void)?
+    private var measuredWidth: CGFloat = -1
+    private var offsets: [CGFloat] = [], heights: [CGFloat] = []
+    private var totalHeight: CGFloat = 0
+    private(set) var made: [Int: SessionLedgerRowView] = [:]
+    private var boundsObserver: NSObjectProtocol?
+    private weak var observedClip: NSClipView?
+    private var accessible: [NSAccessibilityElement]?
+    init(rows: [SessionRequestLedgerRow], open: ((String) -> Void)?) {
+        self.rows = rows; self.open = open; super.init(frame: .zero)
+        setAccessibilityElement(true); setAccessibilityRole(.list); setAccessibilityLabel("Requests")
+    }
+    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    deinit { if let boundsObserver { NotificationCenter.default.removeObserver(boundsObserver) } }
+    func reload(_ rows: [SessionRequestLedgerRow]) {
+        guard self.rows != rows else { return }
+        let old = Dictionary(uniqueKeysWithValues: made.values.map { ($0.row.id, $0) })
+        var next: [Int: SessionLedgerRowView] = [:]
+        for (index, row) in rows.enumerated() {
+            if let view = old[row.id], view.row == row { next[index] = view }
+        }
+        for view in made.values where !next.values.contains(where: { $0 === view }) { view.removeFromSuperview() }
+        made = next; self.rows = rows; measuredWidth = -1; accessible = nil
+        invalidateIntrinsicContentSize(); needsLayout = true; PiKit.sizeChanged(self)
+        tileRows()
+    }
+    private func measure(_ width: CGFloat) {
+        guard width != measuredWidth else { return }
+        measuredWidth = width; offsets = []; heights = []; var y: CGFloat = 0
+        for row in rows {
+            let height = 1 + PiSpacing.sm + SessionLedgerRowView.height(row)
+            offsets.append(y); heights.append(height); y += height + PiSpacing.sm
+        }
+        totalHeight = rows.isEmpty ? 0 : y - PiSpacing.sm
+    }
+    func height(forWidth width: CGFloat) -> CGFloat { measure(width); return totalHeight }
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: height(forWidth: bounds.width)) }
+    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); observeClip(); tileRows() }
+    override func viewDidMoveToSuperview() { super.viewDidMoveToSuperview(); observeClip() }
+    private func observeClip() {
+        let clip = enclosingScrollView?.contentView
+        guard observedClip !== clip else { return }
+        if let boundsObserver { NotificationCenter.default.removeObserver(boundsObserver) }; boundsObserver = nil; observedClip = clip
+        if let clip {
+            clip.postsBoundsChangedNotifications = true
+            boundsObserver = NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: clip, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.tileRows() }
             }
         }
     }
-
-    private func line(_ row: SessionRequestLedgerRow) -> some View {
-        SessionStatsRenderCount.ledgerRowBuilt()
-        return HStack(alignment: .top, spacing: PiSpacing.sm) {
-            Text("\(row.number)").font(PiFont.caption.monospacedDigit()).foregroundStyle(Color.piInkTertiary).frame(width: 30, alignment: .leading)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(row.status).font(PiFont.caption).foregroundStyle(row.status == "completed" ? Color.piInk : Color.piWarning).lineLimit(1)
-                Text(row.wall.formatted(date: .omitted, time: .standard)).font(PiFont.micro).monospacedDigit().foregroundStyle(Color.piInkTertiary)
-            }.frame(width: 88, alignment: .leading)
-            Text(row.model).font(PiFont.caption).foregroundStyle(Color.piInk).lineLimit(1).truncationMode(.middle).help(row.model)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            cell(row.input, row.inputDetail, width: 122)
-            cell(row.output, row.outputDetail, width: 108)
-            cell(row.ttft, nil, width: 64)
-            cell(row.generation, nil, width: 82)
-            cell(row.throughput, row.unmeasured ? "not measured" : nil, width: 86)
-            cell(row.cost, nil, width: 92)
+    override func layout() { super.layout(); observeClip(); tileRows() }
+    func tileRows() {
+        guard window != nil, bounds.width > 0 else { return }
+        measure(bounds.width)
+        let visible = visibleRect
+        var keep: Set<Int> = []
+        if !visible.isEmpty {
+            let extent = visible.insetBy(dx: 0, dy: -80)
+            for index in rows.indices where offsets[index] <= extent.maxY && offsets[index] + heights[index] >= extent.minY {
+                let view = made[index] ?? SessionLedgerRowView(row: rows[index], open: open)
+                if made[index] == nil { made[index] = view; addSubview(view) }
+                view.frame = CGRect(x: 0, y: offsets[index], width: bounds.width, height: heights[index]); keep.insert(index)
+            }
         }
-        .padding(.vertical, 5)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(row.line)
+        // Keep a focused row until focus leaves it; resize/scroll must not drop the keyboard.
+        if let focused = window?.firstResponder as? NSView {
+            for (index, view) in made where focused === view || focused.isDescendant(of: view) { keep.insert(index) }
+        }
+        for (index, view) in made where !keep.contains(index) { view.removeFromSuperview(); made[index] = nil }
     }
-
-    private func cell(_ value: String, _ detail: String?, width: CGFloat) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text(value).font(PiFont.caption.monospacedDigit()).foregroundStyle(Color.piInk).lineLimit(1)
-            if let detail { Text(detail).font(PiFont.micro).monospacedDigit().foregroundStyle(Color.piInkTertiary).lineLimit(2) }
-        }.frame(width: width, alignment: .leading)
+    override func accessibilityChildren() -> [Any]? {
+        if let accessible { return accessible }
+        let elements: [NSAccessibilityElement] = rows.indices.map { index in
+            let row = SessionLedgerAccessibleRow(owner: self, index: index)
+            row.setAccessibilityRole(open == nil ? .group : .button)
+            row.setAccessibilityLabel(rows[index].line); row.setAccessibilityParent(self)
+            measure(bounds.width)
+            row.setAccessibilityFrameInParentSpace(CGRect(x: 0, y: offsets[index], width: bounds.width, height: heights[index]))
+            return row
+        }
+        accessible = elements; return elements
     }
 }
 
-/// A ledger row that opens its request: a soft fill under the pointer.
-private struct SessionLedgerRowStyle: ButtonStyle {
-    @State private var hovering = false
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .background((hovering || configuration.isPressed) ? Color.piFill : Color.clear, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-            .onHover { hovering = $0 }
-            .piPointer()
+@MainActor private final class SessionLedgerAccessibleRow: NSAccessibilityElement {
+    weak var owner: SessionLedgerRows?
+    let index: Int
+    init(owner: SessionLedgerRows, index: Int) { self.owner = owner; self.index = index; super.init() }
+    override func accessibilityPerformPress() -> Bool {
+        guard let owner, let open = owner.open, owner.rows.indices.contains(index) else { return false }
+        open(owner.rows[index].id); return true
+    }
+}
+
+/// One row's whole press target, with a separator above it. The figures are
+/// drawn as text rather than 20 cells; only the pointer fill is a layer.
+@MainActor final class SessionLedgerRowView: PiKit.ButtonBase {
+    let row: SessionRequestLedgerRow
+    init(row: SessionRequestLedgerRow, open: ((String) -> Void)?) {
+        self.row = row; super.init(frame: .zero)
+        SessionStatsRenderCount.ledgerRowBuilt(); pressScales = false; showsPointer = open != nil
+        onPress = { open?(row.id) }; isEnabled = true
+        setAccessibilityRole(open == nil ? .group : .button); setAccessibilityLabel(row.line)
+        toolTip = open == nil ? row.model : "Open request \(row.number)"
+        refreshFace(animated: false)
+    }
+    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    override var isFlipped: Bool { true }
+    override var acceptsFirstResponder: Bool { showsPointer && super.acceptsFirstResponder }
+    override var canBecomeKeyView: Bool { showsPointer && super.canBecomeKeyView }
+    override func cornerRadius(for size: CGSize) -> CGFloat { 6 }
+    override func styleFace() { fill.backgroundColor = showsPointer && (hovering || isPressedDown) ? piCGColor(.piFill) : CGColor.clear; stroke.borderColor = CGColor.clear }
+    override func layout() {
+        super.layout()
+        // The separator and its eight-point gap are outside the row's hover fill.
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        fill.frame = CGRect(x: 0, y: 1 + PiSpacing.sm, width: bounds.width, height: max(0, bounds.height - 1 - PiSpacing.sm))
+        CATransaction.commit()
+    }
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let local = convert(point, from: superview)
+        return local.y >= 1 + PiSpacing.sm ? super.hitTest(point) : nil
+    }
+    static func height(_ row: SessionRequestLedgerRow) -> CGFloat {
+        let font = PiKit.Font.monospacedDigits(PiKit.Font.micro)
+        func cell(_ detail: String?, _ width: CGFloat) -> CGFloat {
+            let caption = PiKit.Line("Ag", font: PiKit.Font.caption, color: .piInk).lineHeight
+            return caption + (detail.map { 1 + CGFloat(min(2, ShellWrap.ranges($0, font: font, width: width).count)) * PiKit.Line("Ag", font: font, color: .piInk).lineHeight } ?? 0)
+        }
+        return max(cell(row.wall.formatted(date: .omitted, time: .standard), 88), cell(row.inputDetail, 122), cell(row.outputDetail, 108), cell(row.unmeasured ? "not measured" : nil, 86)) + 10
+    }
+    override func drawContent(in rect: CGRect) {
+        NSColor.piHairline.setFill(); CGRect(x: 0, y: 0, width: rect.width, height: 1).fill()
+        let widths = SessionStatsTableHeader.widths(SessionLedgerRows.columns, total: rect.width)
+        let texts = [String(row.number), row.status, row.model, row.input, row.output, row.ttft, row.generation, row.throughput, row.cost]
+        let details: [String?] = [nil, row.wall.formatted(date: .omitted, time: .standard), nil, row.inputDetail, row.outputDetail, nil, nil, row.unmeasured ? "not measured" : nil, nil]
+        var x: CGFloat = 0; let y: CGFloat = 1 + PiSpacing.sm + 5
+        for index in texts.indices {
+            let font = index == 1 || index == 2 ? PiKit.Font.caption : PiKit.Font.monospacedDigits(PiKit.Font.caption)
+            let tone: NSColor = index == 0 ? .piInkTertiary : (index == 1 && row.status != "completed" ? .piWarning : .piInk)
+            let line = PiKit.Line(texts[index], font: font, color: tone)
+            line.draw(in: CGRect(x: x, y: y, width: widths[index], height: line.lineHeight), truncation: index == 2 ? .middle : .end, scale: piScale)
+            if let detail = details[index] {
+                let font = PiKit.Font.monospacedDigits(PiKit.Font.micro)
+                PiKit.drawWrapped(detail, font: font, color: .piInkTertiary, in: CGRect(x: x, y: y + line.lineHeight + 1, width: widths[index], height: 100), maximumLines: index == 1 ? 1 : 2)
+            }
+            x += widths[index] + PiSpacing.sm
+        }
     }
 }

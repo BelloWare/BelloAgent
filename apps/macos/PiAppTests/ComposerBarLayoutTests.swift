@@ -388,7 +388,7 @@ struct TrialLayoutBar: View {
             }
             if let chat = model.record(session.id) {
                 PiIconButton(symbol: "arrow.triangle.branch", label: "Changes", size: 28, filled: true) {}
-                SessionUsageButton(model: model, chat: chat, footer: session.footer)
+                SessionUsageButtonReference(model: model, chat: chat, footer: session.footer)
                 Color.clear.frame(width: 28, height: 28)
             }
             ViewThatFits(in: .horizontal) {
@@ -421,7 +421,7 @@ struct MeasuredBar: View {
             TrialRunControls(compactSteer: form.runControls.steerIsCompact, showsHint: form.runControls.showsHint, round: round)
             if let chat = model.record(session.id) {
                 PiIconButton(symbol: "arrow.triangle.branch", label: "Changes", size: 28, filled: true) {}
-                SessionUsageButton(model: model, chat: chat, footer: session.footer)
+                SessionUsageButtonReference(model: model, chat: chat, footer: session.footer)
                 Color.clear.frame(width: 28, height: 28)
             }
             ReferencePills(model: model, session: session, form: form.pills).padding(.trailing, 2)
