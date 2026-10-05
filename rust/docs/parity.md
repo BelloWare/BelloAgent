@@ -98,7 +98,7 @@ Native UI paths begin `apps/macos/PiApp/` (abbreviated `App/`).
 | Follow-up and steering queue | Core/SessionQueue.swift | Partial. Separate lanes, steering at response boundaries, queue limits, captured model/effort, pause/resume, reorder core API. All-at-once mode not ported |
 | Durable queued editing | Core/SessionQueueEdit.swift | Implemented hold/save/cancel/remove and idempotent identity subset. Both lanes held, restart retains hold; tests. Source revision-basis/outcome pruning not ported |
 | Queued follow-up promotion | Core/SessionQueue.swift steerQueued; App/Workspaces/QueuePanel.swift | Implemented pending follow-up → steering action, same identity/payload/choices and durable lane order. Active worker, edit-hold and persistence guards apply. Rust delivery remains at the current response boundary; production tool-batch parity is still missing. Validation recorded below |
-| Queue presentation | App/Workspaces/QueuePanel.swift | Partial. Bounded/collapsible panel, truthful timing, stable lane grouping, full-text editing, and per-chat full-message/model-choice popover. Durable follow-up drag reorder is implemented below; adaptive room budgeting and native macOS interaction validation remain pending |
+| Queue presentation | App/Workspaces/QueuePanel.swift | Partial. Bounded/collapsible panel, truthful timing, stable lane grouping, full-text editing, and per-chat full-message/model-choice popover. Durable follow-up drag reorder and measured adaptive room budgeting are implemented below; source 52pt floor and wrapped-footer adaptation are explicit. Native macOS interaction validation remains pending |
 | Images/attachments/image-only submissions | Core/PiImage.swift; App/Composer/Attachments.swift; Core/SessionQueue.swift validate | Unported. Attachment control unavailable; transport currently accepts text only |
 | Built-in tool definitions/execution | Core/Tools.swift; Core/SessionTools.swift; Core/SessionRun.swift | Production unported. Fixture-only ls module + bounded/cancellable executor now implemented; no tool definitions sent or executed by Controller, no fabricated result |
 | MCP lifecycle/invocation | Core/MCP.swift; Core/HostService.swift mcp.* | Unported |
@@ -343,6 +343,67 @@ nonempty draft persistence, Dock reopen, cancellable Quit, or Sparkle behavior.
 Probe code and its feature-gated hooks count as test-support LOC, not shipped
 production code. No macOS lifecycle parity is claimed by adding this diagnostic.
 
+## Measured adaptive queue height
+
+`QueuePanel.swift:101–117` budgets the list after actual pane/composer geometry,
+150pt transcript reserve, 66pt panel chrome and 36pt footer allowance. The list is
+bounded by its content and three-and-a-half rows plus headings, with the source
+52pt one-row-and-heading floor taking priority when space is insufficient.
+`ConversationPane.swift:176,193,290–298` supplies the measured dimensions.
+
+Rust now observes the real GPUI pane and composer border box after layout, adding
+only the same 8pt top/6pt bottom composer spacing used by rendering (matching
+`ComposerInput.swift:156`). A nonpainting, out-of-flow pane probe avoids guessing
+from whole-window height or double-subtracting chrome. Deferred measurement
+completion checks chat/window-generation identity and notifies only when dimensions
+change. The list retains its source computed height and the status footer remains
+visible; the composer preserves baseline safe flex shrinking when space is tight.
+Terminal height is zero because no terminal is implemented.
+
+The current Rust footer can wrap in a narrow split, unlike the assumed source
+36pt line. Only measured overflow beyond that already-reserved 36pt is additionally
+subtracted; footer layout is preserved. With a tall draft and wrapped footer at
+920×600, the 52pt queue floor can still leave less than 150pt of transcript. This
+is an explicit constrained-layout result, not a universal reading-space guarantee.
+Footer compaction, composer-cap redesign and broader native fidelity remain outside
+this slice.
+
+Nine pure presentation checks and four GPUI fake-platform geometry checks pass.
+They verify exact source policy/floor, nonfinite initial measurements, one-time
+composer margins and footer overflow, short/tall drafts, edit/recovery banners,
+collapse, normal/minimum/split widths, stale callbacks and last-row reachability.
+The exact combined tall-draft/recovery/minimum-split regression also checks visible
+status, an input viewport of at least 44pt, unchanged active focus/draft/revision,
+and stable repeated-layout measurements. Independent review inspects accounting,
+lifecycle ordering and reruns the focused checks.
+
+The full run exposed an existing test observation race: a stream snapshot can be
+visible before its separate publication counter increments. Test-only checkpoint
+`916cd712cf479453aa947a4bc393e1b5f5e02f8b` keeps exact snapshot/disk invariants
+and requires counter equality only for quiescent callers, adding a no-worker
+regression. Production runtime behavior is unchanged. With that correction,
+all 214 default and 221 diagnostic-feature workspace tests, strict Clippy/build in
+both configurations, formatting and diff checks pass. Independent final review
+reran all 13 geometry/presentation checks on the corrected candidate.
+
+Fresh Linux candidate `d3be781e7f6d3fc22e01ce6fcc5aef6bf0d1f0649f704a2f05151b0e483d7863`
+passed ordinary short/tall, edit/cancel, collapse and scrolling checks, but introduced
+a combined recovery+tall+920×600 half-pane regression: a new non-shrink flag on the
+composer pushed the status strip below the viewport. Same-fixture baseline
+`7e5fa1ab38e80b4b6a3133790af3c0759616d965acdaf5db361f4b59d2550c40`
+kept the status visible by shrinking the composer. That one flag was removed
+before publication; no new composer cap or footer redesign was introduced.
+
+Final Linux binary `e0a60720982664cb5002ac357320042766b0c94189e246b633284b8fe7e5b97f`
+passed the exact combined regression with visible status, last queued row and
+last draft line reachable, typing/Undo, collapse/expand and close/reopen preserving
+the exact 1529-character synthetic draft. Ordinary tall/minimum checks also pass;
+the app closed cleanly. Earlier screenshots retain their own candidate identity.
+The same pre-height baseline reproduced horizontal Send clipping in the narrowest
+tested split; that separate responsive-control gap is not fixed by this height
+slice. No universal 150pt transcript guarantee, arbitrary multi-recovery coverage,
+macOS interaction, native IME or measured frame-performance claim is made.
+
 ## Durable follow-up drag reorder
 
 `QueuePanel.swift:98–99,131,153–155,352–360` supplies the original row drag and
@@ -392,8 +453,9 @@ The desktop tool provides an atomic drag operation, so timed edge dwell,
 mid-drag Escape and concurrent stale races remain headless/core checks rather
 than live desktop proof. Persistence fault cuts also remain core-test evidence.
 Native macOS drag, accessibility and real OS IME interaction remain unvalidated.
-This does not close the source adaptive queue room-budget gap or resolve the
-previously recorded intermittent startup-paint observation. Exact new-checkpoint
+The adaptive room-budget gap is addressed in the subsequent measured-height
+slice; this drag checkpoint did not resolve the previously recorded intermittent
+startup-paint observation. Exact new-checkpoint
 CI remains to be observed after publication.
 
 ## Durable queued follow-up promotion

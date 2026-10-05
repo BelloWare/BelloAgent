@@ -10,6 +10,7 @@ mod native_smoke;
 mod queue_actions;
 mod queue_detail;
 mod queue_drag;
+mod queue_geometry;
 mod queue_presentation;
 mod quick_open;
 mod shutdown_barrier;
@@ -263,6 +264,7 @@ impl AgentView {
     }
     fn bind_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.cancel_queue_drag(window, cx);
+        self.queue_geometry = None;
         self.sidebar_menu = None;
         let binding = workspace_lifetime::WindowBinding::new(window.window_handle().window_id());
         self.window_binding = Some(binding);
@@ -978,6 +980,7 @@ impl AgentView {
             && !self.load_failed
             && !self.shutting_down;
         let mut panel = div()
+            .flex_shrink_0()
             .mx(px(16.))
             .mb(px(8.))
             .p(px(12.))
@@ -1055,7 +1058,14 @@ impl AgentView {
                     cx.stop_propagation();
                 }),
             )
-            .max_h(px(queue_presentation::list_height(ordered.len(), sections)))
+            .flex_shrink_0()
+            .h(px(queue_presentation::list_height(
+                ordered.len(),
+                sections,
+                self.queue_geometry
+                    .map(|geometry| geometry.room())
+                    .unwrap_or(f32::INFINITY),
+            )))
             .overflow_y_scroll()
             .flex()
             .flex_col();
@@ -1425,6 +1435,7 @@ impl AgentView {
         let p = self.palette;
         let mut transcript = div()
             .id("transcript")
+            .debug_selector(|| "queue-measured-transcript".into())
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
@@ -1549,6 +1560,7 @@ impl AgentView {
             })
             .clamp(44., 240.);
         let mut field = div()
+            .debug_selector(|| "queue-measured-field".into())
             .relative()
             .h(px(field_height))
             .child(self.composer.clone())
@@ -1748,9 +1760,10 @@ impl AgentView {
             );
         }
         let mut composer = div()
+            .debug_selector(|| "queue-measured-composer".into())
             .mx(px(16.))
-            .mt(px(8.))
-            .mb(px(6.))
+            .mt(px(queue_geometry::COMPOSER_TOP))
+            .mb(px(queue_geometry::COMPOSER_BOTTOM))
             .rounded(px(16.))
             .border_1()
             .border_color(p.hairline())
@@ -1800,13 +1813,29 @@ impl AgentView {
             );
         }
         composer = composer.child(field).child(bar);
+        let geometry_owner = cx.weak_entity();
+        let geometry_chat = self.record.id.clone();
+        let geometry_binding = self.window_binding;
         let view = div()
+            .relative()
+            .debug_selector(|| "queue-measured-pane".into())
             .flex_1()
             .min_w_0()
             .min_h_0()
             .flex()
             .flex_col()
             .bg(rgb(p.content))
+            .on_children_prepainted(move |bounds, window, cx| {
+                if let Some(geometry) = queue_geometry::QueueGeometry::from_children(&bounds) {
+                    let owner = geometry_owner.clone();
+                    let chat = geometry_chat.clone();
+                    window.defer(cx, move |_, cx| {
+                        let _ = owner.update(cx, |view, cx| {
+                            view.record_queue_geometry(&chat, geometry_binding, geometry, cx)
+                        });
+                    });
+                }
+            })
             .child(transcript)
             .child(queue);
         let reported: Vec<_> = self
@@ -1830,26 +1859,30 @@ impl AgentView {
                     .sum::<u64>()
             )
         };
-        view.child(composer).child(
-            div()
-                .px(px(16.))
-                .pt(px(2.))
-                .pb(px(6.))
-                .flex()
-                .items_center()
-                .gap(px(12.))
-                .text_size(px(11.5))
-                .text_color(rgb(p.secondary))
-                .flex_wrap()
-                .child(self.badge(tokens, "chart"))
-                .child(self.badge("Cost n/a".into(), "chart"))
-                .child(self.badge("Context n/a".into(), "cpu"))
-                .child(div().flex_1())
-                .when(self.session.state == RunState::Running, |d| {
-                    d.child("Working · Generating response…")
-                })
-                .child(self.badge("Capture off".into(), "bug")),
-        )
+        view.child(composer)
+            .child(
+                div()
+                    .debug_selector(|| "queue-measured-footer".into())
+                    .flex_shrink_0()
+                    .px(px(16.))
+                    .pt(px(2.))
+                    .pb(px(6.))
+                    .flex()
+                    .items_center()
+                    .gap(px(12.))
+                    .text_size(px(11.5))
+                    .text_color(rgb(p.secondary))
+                    .flex_wrap()
+                    .child(self.badge(tokens, "chart"))
+                    .child(self.badge("Cost n/a".into(), "chart"))
+                    .child(self.badge("Context n/a".into(), "cpu"))
+                    .child(div().flex_1())
+                    .when(self.session.state == RunState::Running, |d| {
+                        d.child("Working · Generating response…")
+                    })
+                    .child(self.badge("Capture off".into(), "bug")),
+            )
+            .child(div().absolute().inset_0())
     }
     fn sidebar(&self, cx: &mut Context<Self>) -> Div {
         let p = self.palette;

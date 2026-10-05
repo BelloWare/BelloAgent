@@ -84,10 +84,31 @@ pub(crate) fn grouped_rows(steering: impl IntoIterator<Item = bool>) -> Vec<Queu
 
 pub(crate) const ROW_HEIGHT: f32 = 30.;
 pub(crate) const SECTION_HEIGHT: f32 = 22.;
+const VISIBLE_ROWS: f32 = 3.5;
+const TRANSCRIPT_RESERVE: f32 = 150.;
+// QueuePanel.chrome is 58 + PiSpacing.sm; DesignSystem.swift defines sm as 8.
+const CHROME_HEIGHT: f32 = 58. + 8.;
+pub(crate) const FOOTER_HEIGHT: f32 = 36.;
 
-pub(crate) fn list_height(rows: usize, sections: usize) -> f32 {
-    // Match the original three-and-a-half row cap. The half row signals scroll.
-    (rows as f32).min(3.5) * ROW_HEIGHT + sections as f32 * SECTION_HEIGHT
+/// Room left for the list after the measured composer, optional terminal,
+/// transcript reserve, queue chrome, and footer. Zero terminal height means
+/// no terminal. An unmeasured pane keeps the original unbounded initial layout.
+/// Nonfinite measurements are likewise treated as unavailable.
+pub(crate) fn room(pane: f32, composer: f32, terminal: f32) -> f32 {
+    if pane <= 0. || !pane.is_finite() || !composer.is_finite() || !terminal.is_finite() {
+        return f32::INFINITY;
+    }
+    pane - composer - terminal - TRANSCRIPT_RESERVE - CHROME_HEIGHT - FOOTER_HEIGHT
+}
+
+pub(crate) fn list_height(rows: usize, sections: usize, room: f32) -> f32 {
+    let headings = sections as f32 * SECTION_HEIGHT;
+    let content = rows as f32 * ROW_HEIGHT + headings;
+    // The half row signals scroll. Even with no available room, retain one
+    // row and heading, but never grow a shorter list beyond its content.
+    let cap = VISIBLE_ROWS * ROW_HEIGHT + headings;
+    let room = if room.is_nan() { f32::INFINITY } else { room };
+    content.min((ROW_HEIGHT + SECTION_HEIGHT).max(cap.min(room)))
 }
 
 #[cfg(test)]
@@ -172,10 +193,62 @@ mod tests {
 
     #[test]
     fn list_cap_matches_original_row_and_section_geometry() {
-        assert_eq!(list_height(0, 0), 0.);
-        assert_eq!(list_height(1, 1), 52.);
-        assert_eq!(list_height(2, 2), 104.);
-        assert_eq!(list_height(4, 1), 127.);
-        assert_eq!(list_height(64, 2), 149.);
+        assert_eq!(ROW_HEIGHT, 30.);
+        assert_eq!(SECTION_HEIGHT, 22.);
+        assert_eq!(VISIBLE_ROWS, 3.5);
+        assert_eq!(list_height(0, 0, f32::INFINITY), 0.);
+        assert_eq!(list_height(1, 1, f32::INFINITY), 52.);
+        assert_eq!(list_height(2, 2, f32::INFINITY), 104.);
+        assert_eq!(list_height(4, 1, f32::INFINITY), 127.);
+        assert_eq!(list_height(64, 2, f32::INFINITY), 149.);
+    }
+
+    #[test]
+    fn room_preserves_the_original_transcript_chrome_and_footer_reserves() {
+        assert_eq!(TRANSCRIPT_RESERVE, 150.);
+        assert_eq!(CHROME_HEIGHT, 66.);
+        assert_eq!(FOOTER_HEIGHT, 36.);
+        assert_eq!(room(600., 0., 0.), 348.);
+        assert_eq!(room(600., 96., 0.), 252.);
+        assert_eq!(room(600., 220., 0.), 128.);
+        assert_eq!(room(600., 220., 130.), -2.);
+    }
+
+    #[test]
+    fn measured_room_limits_the_list_below_its_three_and_a_half_row_cap() {
+        assert_eq!(list_height(64, 1, 500.), 127.);
+        assert_eq!(list_height(64, 2, 500.), 149.);
+        assert_eq!(list_height(64, 2, 128.), 128.);
+        assert_eq!(list_height(64, 2, 100.), 100.);
+        assert_eq!(list_height(64, 2, 52.), 52.);
+        assert_eq!(list_height(64, 2, room(600., 220., 0.)), 128.);
+    }
+
+    #[test]
+    fn tight_room_retains_a_row_and_heading_without_exceeding_content() {
+        for room in [51., 0., -2., f32::NEG_INFINITY] {
+            assert_eq!(list_height(64, 2, room), 52.);
+            assert_eq!(list_height(1, 1, room), 52.);
+            assert_eq!(list_height(1, 0, room), 30.);
+            assert_eq!(list_height(0, 1, room), 22.);
+            assert_eq!(list_height(0, 0, room), 0.);
+        }
+        assert_eq!(list_height(2, 1, 100.), 82.);
+        assert_eq!(list_height(2, 2, 128.), 104.);
+    }
+
+    #[test]
+    fn unmeasured_or_nonfinite_geometry_keeps_the_bounded_initial_list() {
+        for pane in [0., -1., f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(room(pane, 96., 0.), f32::INFINITY);
+            assert_eq!(list_height(64, 2, room(pane, 96., 0.)), 149.);
+        }
+        for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(room(600., invalid, 0.), f32::INFINITY);
+            assert_eq!(room(600., 96., invalid), f32::INFINITY);
+        }
+        assert_eq!(list_height(64, 2, f32::NAN), 149.);
+        assert_eq!(list_height(1, 1, f32::NAN), 52.);
+        assert_eq!(list_height(0, 0, f32::NAN), 0.);
     }
 }
