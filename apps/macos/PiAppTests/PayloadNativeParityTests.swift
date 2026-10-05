@@ -122,6 +122,21 @@ import XCTest
             }
         }
     }
+    func testCompleteBodySearchCountChevronsAndPanelMatch() async throws {
+        let bytes = Data(#"{"path":"README.md","content":"Read the retained README before editing."}"#.utf8)
+        let headers: [String: WireValue] = ["accept": .string("text/event-stream")]
+        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            for query in ["README", "missing-query"] {
+                let value = source(bytes)
+                let reference = CapturedBodyViewReference(source: value, sessionID: "s", attemptID: "search", kind: "request", retained: false,
+                                                         searchQuery: query, searchHeaders: headers).frame(width: 700, height: 500)
+                let view = CapturedBodyView(source: value, sessionID: "s", attemptID: "search", kind: "request", retained: false,
+                                            searchQuery: query, searchHeaders: headers)
+                try await check("payload-complete-search-" + (query == "README" ? "matches" : "none"), reference,
+                                PayloadViewport(view, height: 500), width: 700, appearance: appearance)
+            }
+        }
+    }
     func testWrappingDocumentsMatchWithShortAndVisibleLegacyScrollers() async throws {
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
             for overflowing in [false, true] {
