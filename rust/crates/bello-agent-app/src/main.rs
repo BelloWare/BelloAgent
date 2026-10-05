@@ -2171,7 +2171,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .expect("Could not create native GPUI window");
             cx.on_window_closed(|cx| {
                 if cx.windows().is_empty() {
-                    cx.quit();
+                    // Leave the native close callback before quitting. X11
+                    // still owns a backend borrow during this notification.
+                    cx.spawn(async move |cx| {
+                        let _ = cx.update(|cx| {
+                            if cx.windows().is_empty() {
+                                cx.quit();
+                            }
+                        });
+                    })
+                    .detach();
                 }
             })
             .detach();
