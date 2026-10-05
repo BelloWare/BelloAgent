@@ -58,7 +58,10 @@ import AppKit
         previous: { [weak self] in self?.bodyOffset = 0; self?.loadBody() }, next: { [weak self] in guard let self else { return }; self.bodyOffset = Int(self.nextBody ?? 0); self.loadBody() })
     private lazy var skillsPage: NSView = {
         let left = PayloadEmptyOverlay(content: skillList, empty: skillEmpty)
-        let split = PayloadSplit(leading: PiKit.inset(left), trailing: skillDetails, minimum: 290, ideal: 340, maximum: 430, trailingMinimum: 480)
+        // HSplitView's first allocation in the standard sheet was wider
+        // than its idealWidth. Seed that visible size and retain the same
+        // limits when the reader drags the divider or resizes the sheet.
+        let split = PayloadSplit(leading: PiKit.inset(left), trailing: skillDetails, minimum: 290, ideal: 340, maximum: 430, trailingMinimum: 480, initial: 390.5)
         let row = ShellStack(.horizontal, spacing: PiSpacing.md, [.view(filterField, .fill), .view(managementToggle)])
         return PayloadColumn(items: [.view(row), .flexible(split)])
     }()
@@ -432,7 +435,7 @@ import AppKit
         let row = ShellStack(.horizontal, spacing: PiSpacing.sm, padding: NSEdgeInsets(top: PiSpacing.sm, left: PiSpacing.sm, bottom: PiSpacing.sm, right: PiSpacing.sm), [.view(icon), .view(words, .flexible), .spacer(8), .view(acknowledgeButton)])
         return PiKit.Box(fill: NSColor.piWarning.piOpacity(0.10), cornerRadius: PiRadius.sm, content: row)
     }()
-    private lazy var split = PayloadSplit(leading: PiKit.inset(PayloadEmptyOverlay(content: list, empty: empty)), trailing: detailColumn, minimum: 250, ideal: 300, maximum: 380, trailingMinimum: 500)
+    private lazy var split = PayloadSplit(leading: PiKit.inset(PayloadEmptyOverlay(content: list, empty: empty)), trailing: detailColumn, minimum: 250, ideal: 300, maximum: 380, trailingMinimum: 500, initial: 346)
     init(model: WorkspaceModel, source: ResourceInspectorSource? = nil) {
         self.model = model; self.source = source ?? .workspace(model)
         super.init(frame: .zero); addSubview(column)
