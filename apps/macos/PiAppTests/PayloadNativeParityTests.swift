@@ -162,6 +162,8 @@ import XCTest
                     var controller: CapturedBodyController?
                     var search: PayloadSearchController?
                     var frames: [String: CGRect] = [:]
+                    var frozenReadyFrames: [String: CGRect] = [:]
+                    var nativeReadyFrames: [String: CGRect] = [:]
                 }
                 let mounted = MountedReference()
                 let value = source(bytes)
@@ -199,6 +201,7 @@ import XCTest
                             "reader": box.convert(box.bounds, to: native),
                             "previous": native.previousMatch.convert(native.previousMatch.bounds, to: native),
                             "next": native.nextMatch.convert(native.nextMatch.bounds, to: native)]
+                        mounted.nativeReadyFrames = frames
                         print("SEARCH-FRAMES native \(query): " + frames.keys.sorted().map { "\($0)=\(frames[$0]!)" }.joined(separator: " "))
                         let symbol = PiKit.Symbol("chevron.up", size: 12.5, weight: .medium)
                         print("SEARCH-SYMBOL native: layout=\(symbol.layoutSize) image=\(symbol.imageSize)")
@@ -209,9 +212,18 @@ import XCTest
                             }
                         }
                     } else {
+                        mounted.frozenReadyFrames = mounted.frames
                         print("SEARCH-FRAMES frozen \(query): " + mounted.frames.keys.sorted().map { "\($0)=\(mounted.frames[$0]!)" }.joined(separator: " "))
                     }
                 })
+                for key in ["bar", "reader", "previous", "next"] {
+                    let expected = try XCTUnwrap(mounted.frozenReadyFrames[key])
+                    let actual = try XCTUnwrap(mounted.nativeReadyFrames[key])
+                    XCTAssertEqual(actual.minX, expected.minX, accuracy: 0.25, "\(key) complete-search leading edge")
+                    XCTAssertEqual(actual.minY, expected.minY, accuracy: 0.25, "\(key) complete-search top edge")
+                    XCTAssertEqual(actual.width, expected.width, accuracy: 0.25, "\(key) complete-search width")
+                    XCTAssertEqual(actual.height, expected.height, accuracy: 0.25, "\(key) complete-search height")
+                }
             }
         }
     }
