@@ -4,6 +4,7 @@ import AppKit
 @MainActor final class SessionInspectorView: DashView {
     let inspector: SessionInspectorModel
     static let compactWidth: CGFloat = 900
+    private let topInset: CGFloat
     private let bar = PiWindowBarView(frame: .zero)
     private let title = inspectorText("Session Inspector", font: PiKit.Font.title(14))
     private let sessionTitle: ShellText
@@ -14,8 +15,9 @@ import AppKit
     private var shownPage: InspectorPage?
     private var isCompact = false
     private lazy var observer = ShellObserver { [weak self] in self?.refresh() }
-    init(inspector: SessionInspectorModel) {
+    init(inspector: SessionInspectorModel, topInset: CGFloat = 0) {
         self.inspector = inspector
+        self.topInset = topInset
         sessionTitle = inspectorText(inspector.title, color: .piInkSecondary); sessionTitle.truncation = .middle
         refreshButton = PiKit.IconButton(symbol: "arrow.clockwise", label: "Read this session's requests again", size: 24) { [weak inspector] in inspector?.refresh() }
         navigator = InspectorNavigator(inspector: inspector)
@@ -64,25 +66,27 @@ import AppKit
             (pageView as? InspectorTurnPage)?.compact = compact
             (pageView as? InspectorRequestPage)?.compact = compact
         }
-        bar.frame = CGRect(x: 0, y: 0, width: bounds.width, height: 48)
-        refreshButton.frame = CGRect(x: max(0, bounds.width - PiSpacing.md - 24), y: 12, width: 24, height: 24)
+        bar.frame = CGRect(x: 0, y: topInset, width: bounds.width, height: 48)
+        refreshButton.frame = CGRect(x: max(0, bounds.width - PiSpacing.md - 24), y: topInset + 12, width: 24, height: 24)
         let width = max(0, refreshButton.frame.minX - 8 - PiKit.Sheet.trafficLightInset)
         let top = PiKit.round((48 - title.intrinsicContentSize.height - 1 - sessionTitle.intrinsicContentSize.height) / 2, piScale)
-        title.frame = CGRect(x: PiKit.Sheet.trafficLightInset, y: top, width: width, height: title.intrinsicContentSize.height)
+        title.frame = CGRect(x: PiKit.Sheet.trafficLightInset, y: topInset + top, width: width, height: title.intrinsicContentSize.height)
         sessionTitle.frame = CGRect(x: PiKit.Sheet.trafficLightInset, y: title.frame.maxY + 1, width: width, height: sessionTitle.intrinsicContentSize.height)
         let navWidth: CGFloat = compact ? 214 : 262
-        navigator.frame = CGRect(x: 0, y: 49, width: navWidth, height: max(0, bounds.height - 49))
+        let bodyTop = topInset + 49
+        navigator.frame = CGRect(x: 0, y: bodyTop, width: navWidth, height: max(0, bounds.height - bodyTop))
         let pageX = navWidth + 1, pageWidth = max(0, bounds.width - pageX)
-        var y: CGFloat = 49
+        var y = bodyTop
         if let notice { let height = PiKit.height(of: notice, width: pageWidth); notice.frame = CGRect(x: pageX, y: y, width: pageWidth, height: height); y += height }
         pageView?.frame = CGRect(x: pageX, y: y, width: pageWidth, height: max(0, bounds.height - y))
     }
     override func draw(_ dirtyRect: NSRect) {
         NSColor.piContent.setFill(); bounds.fill()
-        NSColor.piWindow.setFill(); CGRect(x: 0, y: 0, width: bounds.width, height: 48).fill()
+        NSColor.piWindow.setFill(); CGRect(x: 0, y: 0, width: bounds.width, height: topInset + 48).fill()
         let navWidth: CGFloat = isCompact ? 214 : 262
-        CGRect(x: 0, y: 49, width: navWidth, height: max(0, bounds.height - 49)).fill()
-        NSColor.piHairline.setFill(); CGRect(x: 0, y: 48, width: bounds.width, height: 1).fill(); CGRect(x: navWidth, y: 49, width: 1, height: max(0, bounds.height - 49)).fill()
+        let bodyTop = topInset + 49
+        CGRect(x: 0, y: bodyTop, width: navWidth, height: max(0, bounds.height - bodyTop)).fill()
+        NSColor.piHairline.setFill(); CGRect(x: 0, y: topInset + 48, width: bounds.width, height: 1).fill(); CGRect(x: navWidth, y: bodyTop, width: 1, height: max(0, bounds.height - bodyTop)).fill()
     }
 }
 
@@ -185,6 +189,8 @@ import AppKit
             let cost = group.requests.compactMap(\.cost)
             let face = InspectorCompactLine(symbol: "arrow.down.right.and.arrow.up.left", number: nil, kind: group.title, model: nil, flow: cost.isEmpty ? nil : compactGatewayUSD(cost.reduce(0, +)), kindColor: .piInk, symbolColor: group.requests.contains(where: \.failed) ? .piDanger : .piInkSecondary)
             let row = PiKit.SelectableRow(content: face, selected: selected && !expanded, glide: glide) { [weak inspector] in if let first = group.requests.first { inspector?.select(.request(first.id)) } }
+            row.setAccessibilityIdentifier("inspector-compaction-open")
+            row.setAccessibilityLabel(group.title + (cost.isEmpty ? "" : ", " + compactGatewayUSD(cost.reduce(0, +))))
             let toggle = InspectorDisclosure(expanded: expanded, symbolSize: 8.5, width: 16, height: 30, label: expanded ? "Hide this compaction's requests" : "Show this compaction's requests") { [weak inspector] in inspector?.toggle(group.id) }
             let content = inspectorRow([.view(toggle, .fixed(16)), .view(row, .fill)], spacing: 0); content.setAccessibilityIdentifier("inspector-compaction-row"); content.setAccessibilityLabel(group.title); return InspectorInset(content, insets: NSEdgeInsets(top: 0, left: indent - 16, bottom: 0, right: 0))
         case .request(let request, let number, let kind, let indent, let selected):

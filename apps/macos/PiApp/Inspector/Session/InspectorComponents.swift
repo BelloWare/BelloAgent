@@ -208,14 +208,18 @@ struct InspectorFigure: Identifiable, Equatable {
     var tone: PiTone = .neutral
 }
 
-@MainActor final class InspectorFigureStrip: DashView, PiKit.WidthSizing {
+@MainActor final class InspectorFigureStrip: DashView, PiKit.WidthSizing, ShellBaselined {
     private let flow = PiKit.FlowView()
+    private var textBaseline: CGFloat = 0
     init(figures: [InspectorFigure]) {
         super.init(frame: .zero); flow.spacing = 16; flow.rowSpacing = 6; addSubview(flow)
         for figure in figures {
             var items: [ShellItem] = [.view(inspectorText(figure.label, color: .piInkTertiary)), .view(inspectorText(figure.value, font: PiKit.Font.monospacedDigits(.systemFont(ofSize: 13, weight: .semibold)), color: figure.tone == .neutral ? .piInk : figure.tone.nsColor))]
             if let detail = figure.detail { items.append(.view(inspectorText(detail, font: PiKit.Font.monospacedDigits(PiKit.Font.caption), color: .piInkSecondary))) }
             let row = inspectorRow(items, spacing: 5, alignment: .firstBaseline)
+            if flow.subviews.isEmpty {
+                textBaseline = items.compactMap(\.view).map { shellBaseline($0, height: shellNaturalSize($0).height) }.max() ?? 0
+            }
             row.setAccessibilityElement(true); row.setAccessibilityRole(.group)
             row.setAccessibilityLabel([figure.label, figure.value, figure.detail].compactMap { $0 }.joined(separator: ", "))
             flow.addSubview(row)
@@ -223,6 +227,9 @@ struct InspectorFigure: Identifiable, Equatable {
     }
     required init?(coder: NSCoder) { nil }
     func height(forWidth width: CGFloat) -> CGFloat { flow.height(forWidth: width) }
+    /// A wrapped strip keeps its first line aligned with the disclosures
+    /// beside it; using the flow's bottom would align them to its last line.
+    var firstBaseline: CGFloat { textBaseline }
     override var intrinsicContentSize: NSSize { flow.intrinsicContentSize }
     override func layout() { super.layout(); flow.frame = bounds }
 }
@@ -332,7 +339,7 @@ extension InspectorRequestRow {
 
 /// Disclosure copy is drawn with its own small chevron, rather than a
 /// Label's full-size symbol. Plain form is used by the methodology footer.
-@MainActor final class InspectorInlineDisclosure: PiKit.ButtonBase {
+@MainActor final class InspectorInlineDisclosure: PiKit.ButtonBase, ShellBaselined {
     let text: String, expanded: Bool, plain: Bool
     init(_ text: String, expanded: Bool, plain: Bool = false, action: @escaping () -> Void) {
         self.text = text; self.expanded = expanded; self.plain = plain
@@ -343,6 +350,9 @@ extension InspectorRequestRow {
     private var line: PiKit.Line { PiKit.Line(text, font: .systemFont(ofSize: plain ? PiKit.Font.captionSize : 12.5, weight: .medium), color: .piInkSecondary) }
     private var glyph: PiKit.Symbol { PiKit.Symbol(plain ? (expanded ? "chevron.down" : "chevron.right") : (expanded ? "chevron.up" : "chevron.down"), size: plain ? 9 : 8.5, weight: .semibold) }
     override var intrinsicContentSize: NSSize { let label = line.size(scale: piScale); return NSSize(width: label.width + glyph.layoutSize.width + (plain ? 6 : 4) + (plain ? 0 : 20), height: max(label.height, glyph.layoutSize.height) + (plain ? 0 : 12)) }
+    var firstBaseline: CGFloat {
+        PiKit.round((intrinsicContentSize.height - line.size(scale: piScale).height) / 2, piScale) + line.baseline(scale: piScale)
+    }
     override func styleFace() { fill.backgroundColor = piCGColor(plain ? .clear : isPressedDown ? .piFillStrong : hovering ? .piFill : .clear); stroke.borderColor = CGColor.clear }
     override func drawContent(in rect: CGRect) {
         let label = line.size(scale: piScale), icon = glyph.layoutSize
