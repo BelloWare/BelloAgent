@@ -86,7 +86,7 @@ Native UI paths begin `apps/macos/PiApp/` (abbreviated `App/`).
 | Swift/Pi journal import/portable preview | Core/HostService.swift session.import / recover; Core/SessionReplay.swift | Unported. Explicitly refuses automatic journal migration |
 | Follow-up and steering queue | Core/SessionQueue.swift | Partial. Separate lanes, steering at response boundaries, queue limits, captured model/effort, pause/resume, reorder core API. All-at-once mode not ported |
 | Durable queued editing | Core/SessionQueueEdit.swift | Implemented hold/save/cancel/remove and idempotent identity subset. Both lanes held, restart retains hold; tests. Source revision-basis/outcome pruning not ported |
-| Queue presentation | App/Workspaces/QueuePanel.swift | Partial. Bounded/collapsible panel, timing labels and full-text editing. Drag reorder and all detail controls not ported |
+| Queue presentation | App/Workspaces/QueuePanel.swift | Partial. Bounded/collapsible panel, truthful timing, stable lane grouping, full-text editing, and per-chat full-message/model-choice popover. Drag reorder, adaptive room budgeting, and native interaction validation remain pending |
 | Images/attachments/image-only submissions | Core/PiImage.swift; App/Composer/Attachments.swift; Core/SessionQueue.swift validate | Unported. Attachment control unavailable; transport currently accepts text only |
 | Built-in tool definitions/execution | Core/Tools.swift; Core/SessionTools.swift; Core/SessionRun.swift | Production unported. Fixture-only ls module + bounded/cancellable executor now implemented; no tool definitions sent or executed by Controller, no fabricated result |
 | MCP lifecycle/invocation | Core/MCP.swift; Core/HostService.swift mcp.* | Unported |
@@ -113,6 +113,31 @@ Native UI paths begin `apps/macos/PiApp/` (abbreviated `App/`).
 | Performance vs Swift | README.md prior validation; docs/validation/ | Measurement hooks implemented; same-hardware baseline and sustained latency comparison pending. CPU callback timing is not frame presentation |
 
 ## Latest incremental slice
+
+### Queue full-message detail
+
+The existing queue row now has the source information control. It opens a
+queue-anchored, window-bounded 340pt popover with a selectable, read-only text
+viewport capped at 220pt, captured Model/Reasoning values, and the source's
+default labels. Rust already retains full queued text, so this performs no
+asynchronous preview read, acquires no edit hold, changes no composer draft,
+and sends no request. Source context/output capacity rows are not fabricated
+because Rust submissions do not yet capture those fields.
+
+Disclosure state belongs to each chat. Rendering looks up the original chat
+and turn identity afresh, so reorders keep the target, rewrites update its text,
+and removed/delivered messages show “This message is no longer waiting.”
+Escape restores focus only if the read-only detail still owns it; outside clicks
+close without stealing the new focus. Dismissal callbacks are scoped to a unique
+presentation identity, so an old popup cannot close another chat or a reopened
+popup. Opening Quick Open dismisses the detail before transferring focus.
+
+Six new deterministic tests cover full Unicode text/choices without mutation,
+reorder/rewrite/removal, cross-chat isolation, repeated missing-message reads,
+defaults/geometry, and fresh presentation identities. **95 workspace tests**,
+full strict Clippy and formatting pass in the local candidate. These are
+headless tests; actual popover placement, text selection, Escape/outside-click
+and macOS behavior still require desktop validation.
 
 [Two-chat/durable-draft and ls-groundwork scope](multichat-and-tools-checkpoint.md)
 records the newest implementation and its limits. Production model tools remain

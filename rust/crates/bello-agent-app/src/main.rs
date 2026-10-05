@@ -3,6 +3,7 @@ mod chat;
 mod chat_navigation;
 mod file_tab;
 mod layout;
+mod queue_detail;
 mod queue_presentation;
 mod quick_open;
 mod theme;
@@ -498,6 +499,11 @@ impl AgentView {
         }
         let mods = &event.keystroke.modifiers;
         let command = mods.platform || (cfg!(target_os = "linux") && mods.control);
+        if self.queue_detail.is_some() && event.keystroke.key == "escape" {
+            self.close_queue_detail(true, window, cx);
+            cx.stop_propagation();
+            return;
+        }
         if self.close_dialog {
             if matches!(event.keystroke.key.as_str(), "escape" | "enter") {
                 self.close_dialog = false;
@@ -519,6 +525,7 @@ impl AgentView {
             self.new_chat(window, cx);
             cx.stop_propagation();
         } else if command && event.keystroke.key == "p" {
+            self.close_queue_detail(true, window, cx);
             self.quick_open.update(cx, |view, cx| view.show(window, cx));
             cx.stop_propagation();
             cx.notify();
@@ -897,6 +904,7 @@ impl AgentView {
             }
             let id = item.id.clone();
             let remove = id.clone();
+            let detail = id.clone();
             rows = rows.child(
                 div()
                     .flex()
@@ -933,6 +941,24 @@ impl AgentView {
                             ),
                     )
                     .child(
+                        self.icon_button(
+                            SharedString::from(format!("detail-{detail}")),
+                            "info",
+                            22.,
+                        )
+                        .on_click(cx.listener(
+                            move |view, event: &ClickEvent, window, cx| {
+                                view.open_queue_detail(
+                                    detail.clone(),
+                                    event.position(),
+                                    window,
+                                    cx,
+                                );
+                                cx.stop_propagation();
+                            },
+                        )),
+                    )
+                    .child(
                         self.icon_button(SharedString::from(format!("edit-{id}")), "pencil", 22.)
                             .on_click(cx.listener(move |v, _, _, cx| v.edit(&id, cx))),
                     )
@@ -949,6 +975,59 @@ impl AgentView {
             );
         }
         panel.child(rows)
+    }
+    fn open_queue_detail(
+        &mut self,
+        turn_id: String,
+        anchor: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_queue_detail(true, window, cx);
+        self.queue_detail = Some(queue_detail::QueueDetail::new(
+            &self.session,
+            turn_id,
+            anchor,
+            self.palette,
+            window,
+            cx,
+        ));
+        cx.notify();
+    }
+    fn close_queue_detail(
+        &mut self,
+        restore_focus: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(key) = self.queue_detail.as_ref().map(|detail| detail.key.clone()) {
+            self.close_queue_detail_if(&key, restore_focus, window, cx);
+        }
+    }
+    fn close_queue_detail_if(
+        &mut self,
+        key: &queue_detail::DetailKey,
+        restore_focus: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let detail = self.chat_mut(&key.chat_id).and_then(|chat| {
+            if chat
+                .queue_detail
+                .as_ref()
+                .is_some_and(|detail| &detail.key == key)
+            {
+                chat.queue_detail.take()
+            } else {
+                None
+            }
+        });
+        if let Some(detail) = detail {
+            if restore_focus {
+                detail.restore_focus(window, cx);
+            }
+            cx.notify();
+        }
     }
     fn starter(&self, cx: &mut Context<Self>) -> Div {
         let p = self.palette;
@@ -1876,6 +1955,28 @@ impl Render for AgentView {
                 MouseButton::Left,
                 cx.listener(|view, _, _, cx| view.finish_resize(cx)),
             );
+        if let Some(mut detail) = self.queue_detail.take() {
+            let key = detail.key.clone();
+            let body = detail
+                .render(&self.session, p, window, cx)
+                .id("queue-detail-popover")
+                .occlude()
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_mouse_down_out(cx.listener(move |view, _, window, cx| {
+                    view.close_queue_detail_if(&key, false, window, cx);
+                }));
+            element = element.child(
+                deferred(
+                    anchored()
+                        .position(detail.anchor)
+                        .anchor(Corner::BottomRight)
+                        .snap_to_window_with_margin(px(8.))
+                        .child(body),
+                )
+                .with_priority(10),
+            );
+            self.queue_detail = Some(detail);
+        }
         if self.quick_open.read(cx).is_open() {
             element = element.child(
                 div()
