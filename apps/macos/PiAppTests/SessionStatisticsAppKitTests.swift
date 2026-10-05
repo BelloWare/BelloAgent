@@ -9,15 +9,18 @@ import XCTest
     override func tearDown() async throws { PiKit.Motion.reducedOverride = nil }
 
     private func compare<V: View>(_ name: String, width: CGFloat, share: Double = 0.012, strongShare: Double = 0.002,
-                                  _ reference: V, _ native: NSView, file: StaticString = #filePath, line: UInt = #line) async throws {
+                                  _ reference: V, _ native: NSView, comparisonHeight: CGFloat? = nil, file: StaticString = #filePath, line: UInt = #line) async throws {
         for (suffix, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
             let result = try await PiKitParity.compare("stats-\(name)-\(Int(width))-\(suffix)", appearance: appearance,
-                swiftUI: reference.frame(width: width), appKit: native, canvas: .piSurface, width: width)
+                swiftUI: reference.frame(width: width, alignment: .leading), appKit: native, canvas: .piSurface, width: width)
             print("STATSPARITY " + result.description)
             XCTAssertEqual(result.swiftUIFit.height, result.appKitFit.height, accuracy: 0.5, "\(result.name) height", file: file, line: line)
-            XCTAssertLessThanOrEqual(Double(result.differing), Double(result.total) * share, result.description, file: file, line: line)
+            // A lazy fixture's viewport supplies layout, not extra blank
+            // pixels that could dilute the component's parity allowance.
+            let total = comparisonHeight.map { Double(result.total) * Double(ceil($0 + PiKitParity.margin * 2) / result.size.height) } ?? Double(result.total)
+            XCTAssertLessThanOrEqual(Double(result.differing), total * share, result.description, file: file, line: line)
             let strong = PiKitParity.difference(result.swiftUIImage, result.appKitImage, tolerance: 64).0
-            XCTAssertLessThanOrEqual(Double(strong), Double(result.total) * strongShare, "\(result.name): \(strong) strong pixels", file: file, line: line)
+            XCTAssertLessThanOrEqual(Double(strong), total * strongShare, "\(result.name): \(strong) strong pixels", file: file, line: line)
         }
     }
 
@@ -57,7 +60,17 @@ import XCTest
         let history = SessionStatsFixture.session(requests: 3)
         let ledger = SessionRequestLedger(history: SessionTimingHistory(samples: history.requests, completedRequests: history.requests.count))
         for width in [1080.0, 1260.0] {
-            try await compare("ledger", width: width, SessionRequestLedgerViewReference(ledger: ledger), SessionRequestLedgerView(ledger: ledger))
+            // The original ledger is lazy inside the Overview's scroll view.
+            // An unconstrained sizeThatFits probe only lays out its first two
+            // rows. A real viewport lets every fixture row be measured first.
+            let measured = SessionStatsMeasuredHeight()
+            let native = SessionRequestLedgerView(ledger: ledger)
+            try await compare("ledger", width: width,
+                SessionStatsLedgerCaptureReference(ledger: ledger, width: width, measured: measured),
+                SessionStatsLedgerCaptureViewport(native, width: width), comparisonHeight: native.height(forWidth: width))
+            XCTAssertEqual(try XCTUnwrap(measured.height), native.height(forWidth: width), accuracy: 0.5, "The complete ledger card keeps its own height inside the viewport")
+            XCTAssertEqual(native.rows.rows.count, ledger.rows.count)
+            XCTAssertEqual(native.rows.made.count, ledger.rows.count, "Every fixture row is actually in the visible viewport")
         }
         for loading in [false, true] {
             try await compare(loading ? "loading" : "empty", width: 436, SessionStatsLoadingNoteReference(loading: loading, failure: nil), SessionStatsLoadingNote(loading: loading, failure: nil))
@@ -122,7 +135,7 @@ import XCTest
         }
     }
 
-    func testHoverDrawsOnlyOverlayAndCaptionAndKeepsTheCardHeight() throws {
+    func testHoverDrawsOnlyOverlayAndCaptionAndKeepsTheCardHeight() async throws {
         PiKit.Motion.reducedOverride = true
         defer { PiKit.Motion.reducedOverride = nil }
         let history = SessionStatsFixture.session(), inputs = SessionStatsFixture.inputs(history)
@@ -131,11 +144,18 @@ import XCTest
         let height = card.height(forWidth: 436)
         let window = window(card, size: CGSize(width: 436, height: height))
         render(card)
+        try await eventually("the chart's initial marks", timeout: .seconds(5), poll: .milliseconds(10)) {
+            self.render(card); CATransaction.flush()
+            return card.surface.chart.markDraws > 0
+        }
         let before = card.surface.chart.markDraws, geometry = card.surface.chart.resolved()
         SessionStatsRenderCount.reset()
-        for index in [0, 3, 8, 1] {
+        for (step, index) in [0, 3, 8, 1].enumerated() {
             card.surface.select(at: geometry.point(speed.points[index].x, speed.points[index].rate))
-            render(card); window.displayIfNeeded()
+            try await eventually("selection \(index) drawing its overlay and caption", timeout: .seconds(5), poll: .milliseconds(10)) {
+                self.render(card); CATransaction.flush()
+                return SessionStatsRenderCount.pointers >= step + 1 && SessionStatsRenderCount.captions >= step + 1
+            }
         }
         XCTAssertEqual(card.surface.chart.markDraws, before, "Pointer selection cannot redraw the marks")
         XCTAssertEqual(SessionStatsRenderCount.marks, 0); XCTAssertEqual(SessionStatsRenderCount.panels, 0)
@@ -176,4 +196,40 @@ import XCTest
         XCTAssertTrue(accessible.accessibilityPerformPress())
         XCTAssertEqual(opened, "r101", "VoiceOver opens the updated request represented by its row")
     }
+}
+
+@MainActor private final class SessionStatsMeasuredHeight {
+    var height: CGFloat?
+}
+
+@MainActor private struct SessionStatsLedgerCaptureReference: View {
+    let ledger: SessionRequestLedger
+    let width: CGFloat
+    let measured: SessionStatsMeasuredHeight
+    var body: some View {
+        ScrollView(.vertical) {
+            SessionRequestLedgerViewReference(ledger: ledger)
+                .frame(width: width)
+                .background(GeometryReader { geometry in
+                    let _ = { measured.height = geometry.size.height }()
+                    Color.clear
+                })
+        }
+        .scrollIndicators(.hidden)
+        .frame(width: width, height: 400)
+    }
+}
+
+@MainActor private final class SessionStatsLedgerCaptureViewport: DashView {
+    private let scroll: PageScrollView
+    private let size: CGSize
+    init(_ ledger: SessionRequestLedgerView, width: CGFloat) {
+        scroll = PageScrollView(column: ledger); size = CGSize(width: width, height: 400)
+        super.init(frame: CGRect(origin: .zero, size: size))
+        scroll.hasVerticalScroller = false
+        addSubview(scroll)
+    }
+    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    override var intrinsicContentSize: NSSize { size }
+    override func layout() { super.layout(); scroll.frame = bounds }
 }
