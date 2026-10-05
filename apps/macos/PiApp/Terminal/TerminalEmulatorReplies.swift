@@ -35,7 +35,7 @@ extension TerminalEmulator {
     }
     func windowOperation(_ operation: Int) {
         switch operation {
-        case 14: respond("\u{1b}[4;\(rows * cellPixelSize.height);\(columns * cellPixelSize.width)t")
+        case 14: respond("\u{1b}[4;\(Int((Double(rows) * cellPixelSize.height).rounded()));\(Int((Double(columns) * cellPixelSize.width).rounded()))t")
         case 18: respond("\u{1b}[8;\(rows);\(columns)t")
         default: break
         }
