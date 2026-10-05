@@ -48,6 +48,26 @@ This is **implemented presentation policy / partial queue UI**. Actual pixels,
 minimum-window overflow, drag reorder, queue details and native interactions
 remain unvalidated or missing; adaptive room budgeting is not yet ported.
 
+### Verified integration checkpoint
+
+Queue commit `899b047cd810202aa5c735daf1444b290fa6ee28` is published on `rust`
+and its exact [Linux CI run](https://github.com/BelloWare/BelloAgent/actions/runs/37260181436)
+passed. Local linking was subsequently recovered using workspace-local linker
+aliases for the preinstalled runtime libraries; no system settings or packages
+were changed. All **89 workspace tests**, strict all-target Clippy, formatting
+and native Linux build pass. These app tests are headless presentation/lifecycle
+tests, not desktop interactions; macOS and screenshots remain unverified.
+
+Both shared dependencies now pin the published BelloBox commit
+`db679011ced3dd5f5c73a577d9f938fd44d9294b`, whose exact
+[Linux CI run](https://github.com/BelloWare/BelloBox/actions/runs/37260219509)
+passed. Compared with the previous pin, the shared-crate source delta is only
+`bello-workbench/src/editor.rs`: unselected Backspace/Delete treat CRLF as one
+newline, preserve Unicode neighbors, restore original bytes/caret through undo,
+and leave read-only text/caret unchanged. Explicit selected ranges stay literal.
+The shared UI crate is unchanged. The lockfile changes only these two Git pins;
+no registry versions, workflows, release artifacts or source Swift code change.
+
 Paths in the source column are relative to the repository root. Core source
 paths begin `packages/swift-host/Sources/PiAgentCore/` (abbreviated `Core/` below).
 Native UI paths begin `apps/macos/PiApp/` (abbreviated `App/`).

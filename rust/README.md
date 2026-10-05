@@ -9,7 +9,8 @@ This is **not feature parity** or a release replacement. The source-backed
 Rust 1.88+ (tested with 1.99.0), Cargo, and GPUI Linux build dependencies are
 required. GPUI is pinned to 0.2.2; libc is pinned to 0.2.186 for its transitive
 xattr compatibility. Both shared workbench crates are pinned to BelloBox Git
-revision `3dc2fa3c585927aca0493018c3830d7d1cffedbb`. A standalone checkout needs no
+revision `db679011ced3dd5f5c73a577d9f938fd44d9294b`. This includes atomic CRLF
+deletion and byte-preserving undo in the shared editor. A standalone checkout needs no
 sibling BelloBox directory; Cargo fetches that exact published revision.
 
 ```sh
