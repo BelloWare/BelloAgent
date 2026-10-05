@@ -47,6 +47,8 @@ final class TranscriptNativeRowParityTests: XCTestCase {
             Fixture(name: "user-short", item: user("u1", "Please read fixture README.md")),
             Fixture(name: "user-lines", item: user("u2", "First line\nSecond line, a little longer\n\nAfter a blank line")),
             Fixture(name: "user-long", item: user("u3", String(repeating: "A long question that wraps across the bubble's width, word after word. ", count: 6))),
+            // The screenshot gallery's question: paragraphs, blank lines, indented code.
+            Fixture(name: "user-gallery", item: user("u9", "Here is the loop I want to harden:\n\n```swift\nfunc charge(_ order: Order) async throws -> Receipt {\n    for attempt in 1...3 {\n        if let receipt = try? await gateway.charge(order) { return receipt }\n    }\n    throw PaymentError.exhausted\n}\n```\n\nPlease:\n1. add **exponential backoff with jitter**\n2. cap attempts at `5` and surface the last error\n3. keep the cancellation path intact")),
             Fixture(name: "user-literal", item: user("u4", "**not bold** `not code` # not a heading\n- not a list")),
             Fixture(name: "user-sending", item: user("u5", "Just sent", state: TranscriptMessage.sendingState)),
         ]
@@ -460,9 +462,12 @@ final class TranscriptNativeRowParityTests: XCTestCase {
         window.contentView = canvas
         canvas.addSubview(row)
         let height = row.measure(width: width).height
-        window.setContentSize(CGSize(width: width, height: height))
-        canvas.frame = CGRect(x: 0, y: 0, width: width, height: height)
-        row.frame = CGRect(x: 0, y: 0, width: width, height: height)
+        // Rows sit at whatever offset the document's scroll leaves them;
+        // `PI_PARITY_YOFFSET` draws one off the point grid to check that.
+        let offset = CGFloat(Double(testEnvironment("PI_PARITY_YOFFSET") ?? "") ?? 0)
+        window.setContentSize(CGSize(width: width, height: height + ceil(offset)))
+        canvas.frame = CGRect(x: 0, y: 0, width: width, height: height + ceil(offset))
+        row.frame = CGRect(x: 0, y: offset, width: width, height: height)
         row.layoutForViewport()
         canvas.layoutSubtreeIfNeeded()
         canvas.display()

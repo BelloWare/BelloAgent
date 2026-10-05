@@ -220,8 +220,16 @@ struct TranscriptPlainTextFace: Equatable, Sendable {
     /// its exact place: its glyph offsets (`glyphOffset`) were measured so.
     var snapsToPixels = true
     override func setFrameOrigin(_ newOrigin: NSPoint) {
-        guard snapsToPixels else { return super.setFrameOrigin(newOrigin) }
         let scale = window?.backingScaleFactor ?? 2
+        guard snapsToPixels else {
+            // The view itself stands on the pixel grid — a layer between
+            // pixels is drawn by the window shifted onto it — and the text
+            // keeps its exact place inside it.
+            let snapped = NSPoint(x: (newOrigin.x * scale).rounded(.down) / scale, y: (newOrigin.y * scale).rounded(.down) / scale)
+            let inset = NSSize(width: newOrigin.x - snapped.x, height: newOrigin.y - snapped.y)
+            if textContainerInset != inset { textContainerInset = inset }
+            return super.setFrameOrigin(snapped)
+        }
         super.setFrameOrigin(NSPoint(x: (newOrigin.x * scale).rounded() / scale, y: (newOrigin.y * scale).rounded() / scale))
     }
     /// Lines centred, as `multilineTextAlignment(.center)` sets them.
