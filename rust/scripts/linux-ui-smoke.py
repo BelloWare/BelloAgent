@@ -122,10 +122,8 @@ def main():
                 process = launch(extra_args=("--project", str(project), "--session", str(root / "session.json")))
                 ident = window(process, "^Bello Agent$")
                 capture(process, ident, "01-disconnected-shell", ["No connection", "Tools unavailable"])
-                # Native window activation alone does not focus a GPUI editor.
-                # Click the composer in our explicitly fixed 1280x840 fixture.
-                command("xdotool", "mousemove", "--sync", "--window", ident, "400", "740")
-                command("xdotool", "click", "1")
+                # Assert the startup shortcut works before any click. A focus
+                # regression must fail visibly, not be hidden by the harness.
                 command("xdotool", "key", "--clearmodifiers", "ctrl+p")
                 capture(process, ident, "02-file-picker-open", ["Find a file"])
                 command("xdotool", "type", "--clearmodifiers", "--delay", "70", "fixture")
