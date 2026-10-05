@@ -121,7 +121,7 @@ Native UI paths begin `apps/macos/PiApp/` (abbreviated `App/`).
 | Helper JSON protocol / process supervision | Core/HostService.swift; packages/swift-host/Sources/PiHost/Main.swift; App/Host/ | Unported. Rust in-process single-session actor, no Swift-compatible IPC claim |
 | Accessibility / shortcut parity | NEXT-RELEASE.md A1; App/Design/; App/Application/ | Partial GPUI keyboard/text handling. AX tree, VoiceOver, app-wide shortcut audit not validated |
 | macOS distribution / Sparkle update / signing | project.yml; docs/Release.md; App/Application/UpdateController.swift | Missing/unverified. Original Sparkle 2.8.1 includes configured check policy, active-work/install barriers and draft-flush failure handling; Rust has no updater integration. cfg-selected macOS storage path only; no release/tag/feed/assets changed |
-| macOS last-window close, Dock reopen and cancellable Quit | App/Application/ApplicationLifecycle.swift; WindowActivityGuard.swift; PiApp.swift | Missing. Source keeps one app-owned workspace alive, refuses last-close with active work, and separately resolves true Quit. Rust currently shuts down its window-owned workspace and quits after final close on every platform. Verified Linux deferred-quit repair is not macOS lifecycle parity |
+| macOS last-window close, Dock reopen and cancellable Quit | App/Application/ApplicationLifecycle.swift; WindowActivityGuard.swift; PiApp.swift | Partial prerequisite. App-owned entity retention and guarded window rebinding are implemented at `2048dac`; production Close still shuts down the workspace and quits after final close on every platform. Source last-close refusal, idle detach/Dock reopen and cancellable true Quit remain unwired. Linux QA and six headless lifecycle tests do not establish macOS lifecycle parity |
 | Performance vs Swift | README.md prior validation; docs/validation/ | Measurement hooks implemented; same-hardware baseline and sustained latency comparison pending. CPU callback timing is not frame presentation |
 
 ## Latest incremental slice
@@ -283,10 +283,26 @@ The original app deliberately separates three actions:
 
 Rust `AgentView::request_close` currently routes close into `begin_shutdown`,
 which flushes drafts, stops controllers and removes the window. Its global
-last-window callback then quits. Simply skipping that final quit on macOS would
-leave no supported restoration owner or reopen path. Keeping/recreating an entity
-also needs explicit rebinding of window-scoped subscriptions and close/focus
-handlers; reloading solely from disk does not preserve unsaved file buffers/undo.
+last-window callback then quits. Checkpoint `2048dac43ec47437da8d29260576f645bd33c21e`
+now retains the actual workspace entity graph at app scope and rebinds
+window-scoped subscriptions/close/focus handlers with a generation guard.
+Production idle detach and Dock reopen are not connected: simply skipping the
+final quit would still leave the workspace already shut down. Disk reconstruction
+alone would not preserve unsaved file buffers/undo.
+
+Six real GPUI headless tests cover retained parent/editor/controller identity,
+draft and file undo, one-window/stale callback protection, rebound subscriptions,
+existing close/save-failure retry, and actual `App::shutdown` release timing.
+The quit observer synchronously removes only the retention owner so the existing
+release cleanup runs at its previous boundary; it performs no new save or veto.
+Fresh Linux desktop QA of immutable candidate `b09c31b67c3fe46e75b48177469dc8c03a65b2291f5bee5627ea47c46a670803`
+verified two initial paints before input, no-click Quick Open, composer typing,
+draft save/relaunch and clean close. An extra startup activation found by QA was
+removed before publication. All 129 workspace tests, strict Clippy, formatting
+and Linux build passed. Exact `2048dac` CI also passed:
+[Linux tests/Clippy/build/live smoke](https://github.com/BelloWare/BelloAgent/actions/runs/37270031171)
+and [macOS test-target compile/link, selected pure tests and app build](https://github.com/BelloWare/BelloAgent/actions/runs/37270031142).
+These are ownership groundwork and Linux evidence, not macOS lifecycle validation.
 
 Pinned GPUI **0.2.2** source was inspected: `Application::on_reopen` is supported
 (`src/app.rs`), but `App::on_app_quit` explicitly cannot veto termination. The
@@ -296,16 +312,17 @@ macOS delegate registers `applicationWillTerminate:`, not
 dispatches `NSApplication.terminate:` on the main queue. An asynchronous cleanup
 observer must not be presented as a cancellable save-failure barrier.
 
-The next proposed implementation boundary is app-owned workspace lifetime plus
-distinct CloseWindow/Reopen/Quit coordination, followed by reviewed native
+The next proposed implementation boundary is extracting the existing save/stop
+barrier from window removal into distinct CloseWindow/Quit coordination, followed
+by reviewed native
 termination-veto integration. Preserve active work, chat drafts, unsaved editors
 and undo; recreate only window-scoped bindings. A native delegate bridge must
 retain/forward GPUI's existing delegate behavior, including reopen and quit
 notifications; no unreviewed delegate replacement or implicit veto is acceptable.
 Pure state/flush tests and macOS compilation are groundwork only. Actual Dock
 reopen, repeated Quit/Cancel/save-failure and editor restoration still require
-native macOS desktop validation. No production lifecycle change is made by this
-audit, and the existing safe Linux final-window quit remains unchanged.
+native macOS desktop validation. The retention prerequisite does not activate
+new close/quit policy, and the existing safe Linux final-window quit remains unchanged.
 
 1. Preserve the existing UI before extending it: equivalent-state dark/light,
    minimum-size and responsive split/composer checks; close gaps recorded in the
