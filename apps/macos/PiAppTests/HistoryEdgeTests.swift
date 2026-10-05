@@ -182,6 +182,66 @@ final class HistoryEdgeTests: HistoryEdgeTestCase {
 /// spinner: moments measured on the wall clock, so this runs in the serial
 /// lane (`scripts/test-lanes.py`).
 final class HistoryEdgeTimingTests: HistoryEdgeTestCase, SerialTestLane {
+    /// Closing a live bar can make the existing page short without changing
+    /// any row. The earlier edge must reconsider the settled viewport.
+    @MainActor func testAFullPageOffersEarlierRowsWhenOnlyItsViewportGrows() async throws {
+        let caps = TranscriptPaging.residentCaps
+        TranscriptPaging.residentCaps = (rows: 8, bytes: caps.bytes)
+        defer { TranscriptPaging.residentCaps = caps }
+        let session = SessionDisplay(id: "viewport-only-earlier-edge")
+        session.messages = (0..<8).map { index in
+            TranscriptMessage(id: "m\(index)", role: index % 2 == 0 ? "user" : "assistant", text: "row \(index)")
+        }
+        session.historyState = .ready
+        session.presentation.readyAt = PerformanceProbe.now
+        session.olderPage.cursor = .init(incarnation: "fixture", lineage: "root", entry: "before-m0")
+        session.scrollAnchor = TranscriptAnchor(id: "", offset: 0, followsBottom: true)
+        let page = TranscriptPage()
+        var automaticReads: [String] = []
+        page.onLoadEarlier = { automaticReads.append($0); session.olderPage.loading = true }
+        page.bind(session)
+
+        // An offscreen native viewport lets the page's deferred settle land
+        // its real clip origin, without a window or a synthetic scroll action.
+        let scroll = NSScrollView(frame: CGRect(x: 0, y: 0, width: 700, height: 600))
+        scroll.borderType = .noBorder
+        scroll.hasVerticalScroller = false; scroll.hasHorizontalScroller = false
+        let document = NSView(frame: CGRect(x: 0, y: 0, width: 700, height: 900))
+        scroll.documentView = document
+        page.attach(scroll, host: document)
+        defer { page.attach(nil, host: document); scroll.documentView = nil }
+        let items = try XCTUnwrap(page.snapshot?.items)
+        for (index, item) in items.enumerated() {
+            page.rowFrame(item.id, CGRect(x: 0, y: CGFloat(index) * 112.5, width: 700, height: 112.5))
+        }
+        page.viewportChanged(scroll.contentView.bounds.size)
+        page.contentChanged(ContentGeometry(top: 0, height: 900))
+        try await eventually("The initial page settles at its newest row", timeout: .seconds(1)) {
+            abs(scroll.contentView.bounds.minY - 300) <= 0.5 && page.pinsNewestRow
+        }
+        XCTAssertFalse(page.earlierWaitsForReader)
+        XCTAssertFalse(TranscriptPaging.takesAnotherPage(session.messages))
+        XCTAssertTrue(automaticReads.isEmpty)
+
+        // Only the viewport changes; no contentChanged call or row update
+        // can accidentally rearm the offer on behalf of the resize path.
+        scroll.setFrameSize(CGSize(width: 700, height: 800))
+        page.viewportChanged(scroll.contentView.bounds.size)
+        try await eventually("The enlarged viewport settles at the same newest row", timeout: .seconds(1)) {
+            abs(scroll.contentView.bounds.minY - 100) <= 0.5 && page.pinsNewestRow
+        }
+        XCTAssertEqual(document.frame.height, 900, accuracy: 0.5)
+        XCTAssertEqual(scroll.contentView.bounds.height, 800, accuracy: 0.5)
+        XCTAssertEqual(page.snapshot?.items, items)
+        try await eventually("The full resident page offers earlier rows after its viewport grows", timeout: .seconds(1)) {
+            page.earlierWaitsForReader
+        }
+        XCTAssertTrue(page.followsBottom)
+        XCTAssertFalse(session.browsingHistory)
+        XCTAssertFalse(session.olderPage.loading)
+        XCTAssertTrue(automaticReads.isEmpty, "Offering earlier rows must preserve the resident live tail")
+    }
+
     /// A page that is slow to arrive shows no more than it needs to: for the
     /// first moments nothing at all, and then only the small spinner at the
     /// edge. The transcript's frame never moves, and when the page lands the
