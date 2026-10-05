@@ -7,7 +7,8 @@ import XCTest
     override func setUp() async throws { PiKit.Motion.reducedOverride = true }
     override func tearDown() async throws { PiKit.Motion.reducedOverride = nil }
     private func check<V: View>(_ name: String, _ reference: V, _ native: NSView, width: CGFloat,
-                               appearance: NSAppearance.Name, splitGeometry: Bool = false) async throws {
+                               appearance: NSAppearance.Name, splitGeometry: Bool = false,
+                               ready: (@MainActor (NSView) async throws -> Void)? = nil) async throws {
         let frames = PayloadSplitFrames()
         let scrolls = PayloadScrollFrames()
         let scrollGeometry = name == "payload-resources-settings"
@@ -20,7 +21,7 @@ import XCTest
         } : nil
         defer { measurement?.cancel() }
         let result = try await PiKitParity.compare(name + (appearance == .aqua ? "-light" : "-dark"), appearance: appearance,
-                                                   swiftUI: reference, appKit: native, width: width)
+                                                   swiftUI: reference, appKit: native, width: width, ready: ready)
         if scrollGeometry {
             print("SCROLL \(name) \(appearance.rawValue): " + scrolls.description)
             if let old = scrolls.reference, let current = scrolls.native {
@@ -127,13 +128,35 @@ import XCTest
         let headers: [String: WireValue] = ["accept": .string("text/event-stream")]
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
             for query in ["README", "missing-query"] {
+                @MainActor final class MountedReference {
+                    var controller: CapturedBodyController?
+                    var search: PayloadSearchController?
+                }
+                let mounted = MountedReference()
                 let value = source(bytes)
-                let reference = CapturedBodyViewReference(source: value, sessionID: "s", attemptID: "search", kind: "request", retained: false,
-                                                         searchQuery: query, searchHeaders: headers).frame(width: 700, height: 500)
+                var reference = CapturedBodyViewReference(source: value, sessionID: "s", attemptID: "search", kind: "request", retained: false,
+                                                          searchQuery: query, searchHeaders: headers)
+                reference.onControllers = { mounted.controller = $0; mounted.search = $1 }
                 let view = CapturedBodyView(source: value, sessionID: "s", attemptID: "search", kind: "request", retained: false,
                                             searchQuery: query, searchHeaders: headers)
-                try await check("payload-complete-search-" + (query == "README" ? "matches" : "none"), reference,
-                                PayloadViewport(view, height: 500), width: 700, appearance: appearance)
+                func findNative(in root: NSView) -> CapturedBodyView? {
+                    if let native = root as? CapturedBodyView { return native }
+                    return root.subviews.lazy.compactMap { findNative(in: $0) }.first
+                }
+                let expectedMatches = query == "README" ? 2 : 0
+                try await check("payload-complete-search-" + (query == "README" ? "matches" : "none"), reference.frame(width: 700, height: 500),
+                                PayloadViewport(view, height: 500), width: 700, appearance: appearance, ready: { root in
+                    try await eventually("The mounted body and \(query) search are complete before capture", timeout: .seconds(5)) {
+                        root.layoutSubtreeIfNeeded()
+                        let native = findNative(in: root)
+                        let controller = native?.controller ?? mounted.controller
+                        let search = native?.search ?? mounted.search
+                        guard let controller, let search, let document = controller.document, let result = search.result else { return false }
+                        return !controller.loading && document.bytes == bytes && !search.loading
+                            && result.matches.count == expectedMatches && result.text.contains("README")
+                            && result.text.hasPrefix("Request headers\naccept: text/event-stream\n\nRequest body\n")
+                    }
+                })
             }
         }
     }
