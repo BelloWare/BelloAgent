@@ -1,5 +1,4 @@
 use crate::{Delta, Error, Reply, Result, invalid};
-use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -557,7 +556,7 @@ impl SessionStore {
             options.mode(0o600);
         }
         let lock = options.open(path.with_extension("lock"))?;
-        lock.try_lock_exclusive()
+        lock.try_lock()
             .map_err(|_| invalid("This Rust session is already open elsewhere"))?;
         let exists = path.exists();
         let mut session: Session = if exists {

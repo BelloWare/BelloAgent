@@ -1,7 +1,6 @@
 //! Rust-only chat catalog and small draft records. This is intentionally separate
 //! from streamed transcripts: typing never rewrites a whole conversation.
 use crate::{Error, Lane, Result, invalid};
-use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -225,7 +224,7 @@ impl WorkspaceStore {
             options.mode(0o600);
         }
         let lock = options.open(path.with_extension("workspace.lock"))?;
-        lock.try_lock_exclusive()
+        lock.try_lock()
             .map_err(|_| invalid("This Rust workspace is already open elsewhere"))?;
         let state = if path.exists() {
             if fs::metadata(&path)?.len() > MAX_BYTES as u64 {

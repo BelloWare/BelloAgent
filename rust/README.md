@@ -6,8 +6,8 @@ This is **not feature parity** or a release replacement. The source-backed
 
 ## Build and test
 
-Rust 1.88+ (tested with 1.99.0), Cargo, and GPUI Linux build dependencies are
-required. GPUI is pinned to 0.2.2; libc is pinned to 0.2.186 for its transitive
+Rust 1.89+ (tested with 1.89.0 and 1.99.0 on Linux), Cargo, and GPUI Linux build
+dependencies are required. GPUI is pinned to 0.2.2; libc is pinned to 0.2.186 for its transitive
 xattr compatibility. Both shared workbench crates are pinned to BelloBox Git
 revision `ee0d27a89aa52524c29b2be5937716b5e799e748`. This includes atomic CRLF
 deletion, composed-character navigation, selection collapse and guarded IME
