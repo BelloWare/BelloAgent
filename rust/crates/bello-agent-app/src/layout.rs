@@ -9,6 +9,14 @@ use std::{
         atomic::{AtomicU64, Ordering},
     },
 };
+
+/// TranscriptRows.swift: 840pt page, 48pt gutter, 40pt leading user space,
+/// and a 640pt prose cap. Plain user text fills that proposed width; leaving
+/// it intrinsic lets GPUI's percentage child collapse to a single glyph.
+pub(crate) fn user_bubble_width(pane: f32) -> f32 {
+    let pane = if pane.is_finite() { pane } else { 0. };
+    ((pane - 48.).clamp(0., 840.) - 40.).clamp(1., 640.)
+}
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct Layout {
     pub sidebar: f32,
@@ -98,6 +106,30 @@ impl LayoutStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn user_bubble_has_a_finite_source_width_at_normal_and_minimum_sizes() {
+        assert_eq!(user_bubble_width(979.), 640.);
+        assert_eq!(user_bubble_width(619.), 531.);
+        // Minimum-size half pane and supported 30% split retain usable width.
+        assert_eq!(user_bubble_width(309.), 221.);
+        assert_eq!(user_bubble_width(185.), 97.);
+        let narrowest = Layout {
+            sidebar: 420.,
+            fraction: 0.3,
+        }
+        .panes(920.)
+        .0;
+        assert_eq!(user_bubble_width(narrowest), 61.);
+        assert_eq!(user_bubble_width(0.), 1.);
+        assert_eq!(user_bubble_width(f32::NAN), 1.);
+        // Short and multiline text use the same source width, not min-content.
+        for pane in [979., 619., 309., 185.] {
+            let width = user_bubble_width(pane);
+            assert!(width > 28.); // Source horizontal padding cannot consume it.
+            assert!(width <= 640.);
+            assert!(width + 40. <= (pane - 48.).min(840.));
+        }
+    }
     #[test]
     fn source_geometry_and_bounds() {
         assert_eq!(Layout::default().panes(1280.), (489., 490.));

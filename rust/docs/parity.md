@@ -114,6 +114,25 @@ Native UI paths begin `apps/macos/PiApp/` (abbreviated `App/`).
 
 ## Latest incremental slice
 
+### Literal user-message width correction
+
+Linux desktop validation found that short user messages collapsed to one glyph
+per line. The user body had no proposed width while its text child had a
+percentage maximum, allowing minimum-content sizing. `TranscriptRows.swift`
+defines the 840pt page, 48pt gutter, 40pt leading user spacer and 640pt prose
+cap; `TranscriptPlainText.swift` explicitly expands literal text to its available
+width. Rust now proposes that same capped width, accounting for the sidebar
+divider once. Font, right alignment, padding and colors are unchanged.
+
+The geometry regression covers normal, minimum-window, half-pane and narrowest
+supported split widths, plus invalid-width defense. All **96 workspace tests**,
+strict all-target Clippy, formatting and native Linux build pass. Fresh native
+Linux screenshots confirm horizontal short messages at 1180×812 and literal
+multiline text at 1270×900. The current window manager did not honor the requested
+920×600 bounds; exact minimum-size desktop and Unicode-paste validation remain
+pending. Geometry tests cover those layout bounds but do not replace desktop QA.
+This corrects a real UI defect, not a claim of full Swift pixel or macOS parity.
+
 ### Queue full-message detail
 
 The existing queue row now has the source information control. It opens a

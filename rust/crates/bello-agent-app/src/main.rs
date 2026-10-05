@@ -1221,7 +1221,11 @@ impl AgentView {
                 .flex_col()
                 .gap(px(6.))
                 .when(user, |d| {
-                    d.px(px(14.)).py(px(9.)).rounded(px(14.)).bg(rgb(p.user))
+                    d.w(px(layout::user_bubble_width(self.pane_width)))
+                        .px(px(14.))
+                        .py(px(9.))
+                        .rounded(px(14.))
+                        .bg(rgb(p.user))
                 });
             if !message.reasoning.is_empty() {
                 body = body.child(
@@ -1836,7 +1840,7 @@ impl Render for AgentView {
         self.pane_width = if self.show_files {
             self.layout.panes(width).0
         } else {
-            (width - self.layout.sidebar).max(0.)
+            (width - self.layout.sidebar - 1.).max(0.)
         };
         let sidebar = self.sidebar(cx);
         let conversation = self.conversation(window, cx);
