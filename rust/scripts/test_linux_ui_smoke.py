@@ -12,6 +12,15 @@ spec.loader.exec_module(smoke)
 
 
 class HarnessTests(unittest.TestCase):
+    def test_ocr_resamples_only_temporary_copy(self):
+        with patch.object(smoke, "command", side_effect=["", "Tools unavailable"]) as command:
+            text = smoke.visible_text(Path("evidence.png"), Path("scratch.png"))
+        self.assertEqual(text, "tools unavailable")
+        self.assertEqual(command.call_args_list[0].args,
+                         ("convert", "evidence.png", "-resize", "200%", "scratch.png"))
+        self.assertEqual(command.call_args_list[1].args,
+                         ("tesseract", "scratch.png", "stdout", "--psm", "11"))
+
     def test_poll_returns_actual_value(self):
         self.assertEqual(smoke.wait_for(lambda: "window-id", "window"), "window-id")
 

@@ -28,6 +28,13 @@ def wait_for(predicate, description, seconds=30):
     raise RuntimeError(f"Timed out: {description}")
 
 
+def visible_text(capture, scratch):
+    # Small UI labels are unreliable OCR at 1x. Scale only a disposable OCR
+    # input, never the original screenshot delivered as evidence.
+    command("convert", str(capture), "-resize", "200%", str(scratch))
+    return command("tesseract", str(scratch), "stdout", "--psm", "11").lower()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("app", choices=["box", "agent"])
@@ -94,7 +101,7 @@ def main():
                     if process.poll() is not None:
                         raise RuntimeError("Application exited during UI smoke")
                     command("import", "-window", ident, str(path))
-                    text = command("tesseract", str(path), "stdout", "--psm", "11").lower()
+                    text = visible_text(path, root / "ocr-only.png")
                     return all(token.lower() in text for token in expected)
                 wait_for(rendered, f"{name}: visible text {expected}")
                 report["checks"].append({"capture": path.name, "visible_text": expected,
