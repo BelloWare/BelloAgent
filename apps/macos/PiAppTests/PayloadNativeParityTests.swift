@@ -18,6 +18,7 @@ import XCTest
         defer { measurement?.cancel() }
         let result = try await PiKitParity.compare(name + (appearance == .aqua ? "-light" : "-dark"), appearance: appearance,
                                                    swiftUI: reference, appKit: native, width: width)
+        if name == "payload-resources-settings" { checkSettingsGeometry(in: native) }
         if splitGeometry {
             print("SPLIT \(name) \(appearance.rawValue): " + frames.description)
             if let old = frames.reference, let current = frames.native {
@@ -30,6 +31,17 @@ import XCTest
         XCTAssertLessThanOrEqual(result.differing, Int(Double(result.total) * 0.012), result.description)
         let strong = PiKitParity.difference(result.swiftUIImage, result.appKitImage, tolerance: 64)
         XCTAssertLessThanOrEqual(strong.0, Int(Double(strong.1) * 0.002), result.description)
+    }
+    private func checkSettingsGeometry(in view: NSView) {
+        if let group = view as? PiKit.SettingsGroup {
+            for row in group.rows {
+                let controlEdge = row.control?.frame.maxX ?? row.bounds.maxX
+                print("SETTINGS \(group.title) / \(row.label): group=\(group.bounds.width) row=\(row.bounds.width) controlRight=\(controlEdge) needsLayout=\(row.needsLayout)")
+                XCTAssertEqual(row.bounds.width, group.bounds.width, accuracy: 0.5, "A settings row must fill its card after the scroll viewport changes")
+                if row.control != nil { XCTAssertEqual(controlEdge, row.bounds.maxX - PiSpacing.lg, accuracy: 0.5, "A settings control must remain at its row's trailing inset") }
+            }
+        }
+        for child in view.subviews { checkSettingsGeometry(in: child) }
     }
     private func source(_ bytes: Data) -> CapturedBodySource {
         CapturedBodySource(metadata: { CapturedBodyMetadata(body: ["state": .string("complete"), "retainedBytes": .number(Double(bytes.count)), "observedBytes": .number(Double(bytes.count))], hash: nil) },
