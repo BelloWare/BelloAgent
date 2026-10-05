@@ -125,6 +125,93 @@ import XCTest
         XCTAssertTrue(fixture.window.firstResponder === headers)
     }
 
+    func testRawSearchAfterExpandedTextAndResponseKeepsTheInitialHeaderInset() async throws {
+        // Synthetic loopback request from the gallery that exposed the
+        // offset. Preserve its wrapped prompt and all eight tool schemas.
+        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "InspectorRawSearchRequest", withExtension: "json"))
+        let bytes = try Data(contentsOf: url)
+        let response = InspectorRequestModelTests.stream(2, finished: true)
+        let stateRoot = scratchRoot("inspector-raw-search-flow")
+        defer { try? FileManager.default.removeItem(at: stateRoot) }
+        let archive = PayloadArchive(root: stateRoot)
+        try await archive.configure(quota: 8_388_608, bodyRetention: 1_000_000, metricRetention: 400_000_000)
+        let session = "raw-gallery-flow", requestID = UUID().uuidString
+        let identifier = "00000000-0000-0000-0000-000000000000"
+        let headers: [String: WireValue] = [
+            "accept": .string("text/event-stream"), "authorization": .string("Bearer ********-key"),
+            "content-type": .string("application/json"), "session_id": .string(identifier),
+            "x-client-request-id": .string(identifier), "x-session-id": .string(identifier), "x-turn-id": .string(identifier),
+        ]
+        var metadata = SessionStatsPopoverTests.metadata(for: SessionStatsFixture.request(1), session: session)
+        let now = Date().timeIntervalSince1970
+        metadata["attemptId"] = .string(requestID); metadata["mode"] = .string("persist")
+        metadata["wallTimestamp"] = .number(now); metadata["dispatchWallTimestamp"] = .number(now)
+        metadata["status"] = .number(200); metadata["requestHeaders"] = .object(headers)
+        try await archive.begin(metadata, workspace: "project")
+        try await archive.append(attempt: requestID, kind: "request", offset: 0, bytes: bytes)
+        try await archive.append(attempt: requestID, kind: "response", offset: 0, bytes: response)
+        metadata["request"] = .object(["observedBytes": .number(Double(bytes.count))])
+        metadata["response"] = .object(["observedBytes": .number(Double(response.count))])
+        try await archive.finish(metadata)
+
+        let inspector = SessionInspectorModel(scope: SessionUsageScope(sessionID: session, workspaceID: "project"), title: "Raw gallery flow", archive: archive, workspace: nil,
+                                              usageLoader: { _, _, _ in throw CaptureFailure.unavailable }, cache: InspectorDocumentCache())
+        let controller = SessionInspectorWindowController(inspector: inspector)
+        let window = try XCTUnwrap(controller.window), root = try XCTUnwrap(window.contentView)
+        defer { controller.close() }
+        window.setContentSize(NSSize(width: 1_200, height: 860))
+        controller.present(.overview)
+        try await eventually("The retained gallery request enters the Inspector's index") { inspector.indexLoaded && inspector.index.request(requestID) != nil }
+        inspector.select(.request(requestID)); inspector.request.tab = .conversation
+        try await eventually("The gallery conversation outline mounts") {
+            root.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            return inspector.request.conversation.value != nil && InspectorExpandFixture.descendants(InspectorOutlineView.self, in: root).first?.coordinator != nil
+        }
+        let outline = try XCTUnwrap(InspectorExpandFixture.descendants(InspectorOutlineView.self, in: root).first)
+        let coordinator = try XCTUnwrap(outline.coordinator)
+        coordinator.showWhole(.section(.system)); coordinator.showWhole(.section(.tools))
+        try await eventually("The whole system prompt and tool schemas mount before raw search") {
+            root.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            return [RequestDocument.Section.Kind.system, .tools].allSatisfy { coordinator.expansion(for: .section($0))?.textView?.window === window }
+        }
+        let system = try XCTUnwrap(coordinator.expansion(for: .section(.system))?.textView)
+        system.setSelectedRange(NSRange(location: 0, length: min(140, (system.string as NSString).length)))
+        XCTAssertTrue(window.makeFirstResponder(system), "The gallery leaves keyboard focus in its expanded system text")
+        coordinator.showLess(.section(.tools)); coordinator.showLess(.section(.system))
+        if let scroll = outline.enclosingScrollView {
+            scroll.contentView.scroll(to: .zero); scroll.reflectScrolledClipView(scroll.contentView)
+        }
+        inspector.request.tab = .response
+        try await eventually("The response tab is ready before switching to Raw") {
+            root.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            return inspector.request.response.value != nil && InspectorExpandFixture.descendants(InspectorOutlineView.self, in: root)
+                .contains { $0.coordinator?.content?.key.hasPrefix(requestID + ":response:") == true }
+        }
+        // Same-turn assignments match the gallery's real mounted flow.
+        inspector.request.tab = .raw; inspector.request.raw = .request; inspector.request.query = "README"
+        try await eventually("The mounted raw body search completes") {
+            root.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            guard let body = InspectorExpandFixture.descendants(CapturedBodyView.self, in: root).first else { return false }
+            return body.controller.document?.bytes == bytes && !body.controller.loading && !body.search.loading
+                && body.search.result?.matches.count == 2 && !InspectorExpandFixture.descendants(PayloadSearchTextView.self, in: body).isEmpty
+        }
+        let body = try XCTUnwrap(InspectorExpandFixture.descendants(CapturedBodyView.self, in: root).first)
+        let result = try XCTUnwrap(body.search.result), first = try XCTUnwrap(result.matches.first)
+        let reader = try XCTUnwrap(InspectorExpandFixture.descendants(PayloadSearchTextView.self, in: body).first)
+        let editor = reader.editor, manager = try XCTUnwrap(editor.layoutManager), container = try XCTUnwrap(editor.textContainer)
+        let glyphs = manager.glyphRange(forCharacterRange: first, actualCharacterRange: nil)
+        let glyph = manager.boundingRect(forGlyphRange: glyphs, in: container)
+        let match = reader.contentView.convert(glyph.offsetBy(dx: editor.textContainerOrigin.x, dy: editor.textContainerOrigin.y), from: editor)
+        let line = manager.lineFragmentRect(forGlyphAt: 0, effectiveRange: nil, withoutAdditionalLayout: true)
+        let header = reader.contentView.convert(NSPoint(x: 0, y: line.minY + editor.textContainerOrigin.y), from: editor)
+        print("INSPECTOR-RAW-FLOW clip=\(reader.contentView.bounds) editor=\(editor.frame) inset=\(editor.textContainerInset) origin=\(editor.textContainerOrigin) selected=\(editor.selectedRange()) match=\(match) header=\(header) responder=\(String(describing: window.firstResponder))")
+        XCTAssertGreaterThan(editor.frame.height, reader.contentView.bounds.height, "The actual gallery request overflows its reader")
+        XCTAssertTrue(reader.contentView.bounds.contains(match), "Its initially selected first match is already visible")
+        XCTAssertEqual(editor.selectedRange(), first)
+        XCTAssertEqual(reader.contentView.bounds.minY, 0, accuracy: 0.25, "The mounted tab/query transition must preserve the initial header position")
+        XCTAssertEqual(header.y - reader.contentView.bounds.minY, 10, accuracy: 0.25, "The real raw-search flow keeps its leading text inset")
+    }
+
     func testCompactionGroupHasItsSemanticNameAndCanOpenItsRequestThroughAccessibility() async throws {
         let archiveRoot = scratchRoot("inspector-compaction-accessibility")
         defer { try? FileManager.default.removeItem(at: archiveRoot) }
