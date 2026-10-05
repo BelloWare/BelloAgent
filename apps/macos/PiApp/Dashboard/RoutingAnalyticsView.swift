@@ -336,10 +336,16 @@ extension MonitorDistribution {
         override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); needsDisplay = true }
         /// `Text` takes its lines' height rounded up to the point (14 for one caption line).
         private func textHeight(_ width: CGFloat) -> CGFloat { Foundation.ceil(min(name.height(forWidth: width - 18), PiKit.Line("Ag", font: .systemFont(ofSize: PiKit.Font.captionSize, weight: .medium), color: .black).lineHeight * 3) - 0.01) }
-        func height(forWidth width: CGFloat) -> CGFloat { 9 + symbol.intrinsicContentSize.height + 5 + textHeight(width) + 9 }
+        /// This image's VStack slot also takes a whole-point height. Keeping
+        /// its fractional symbol height made the centred alias box shorter.
+        private var imageSize: CGSize {
+            let size = symbol.intrinsicContentSize
+            return CGSize(width: size.width, height: Foundation.ceil(size.height - 0.01))
+        }
+        func height(forWidth width: CGFloat) -> CGFloat { 9 + imageSize.height + 5 + textHeight(width) + 9 }
         override func layout() {
             super.layout()
-            let size = symbol.intrinsicContentSize
+            let size = imageSize
             symbol.frame = CGRect(x: PiKit.round((bounds.width - size.width) / 2, piScale), y: 9, width: size.width, height: size.height)
             let textWidth = min(bounds.width - 18, name.intrinsicContentSize.width)
             name.frame = CGRect(x: PiKit.round((bounds.width - textWidth) / 2, piScale), y: 9 + size.height + 5, width: textWidth, height: textHeight(bounds.width))
