@@ -346,8 +346,17 @@ and `git-narrow-after` saved frames/captures.
 
 The read-only review through `5cdff8e8` reports no findings in the correct
 saved-origin raw search, toolbar, viewport paging and native fixture repairs.
-Evidence: `native-final-layout-review.txt`. The final covered-side delta is
-receiving its separate review before the source freeze.
+Evidence: `native-final-layout-review.txt`. The final covered-side delta
+`5cdff8e8..9ae46afc` also reports no findings in its minimum calculation,
+size propagation, state transitions, proposal and removal paths. Evidence:
+`native-right-pane-review.txt`. That pass excludes the later root commit;
+the root commit's source/test changes were already reviewed as identical
+working changes in the preceding pass. Together with the whole-change
+review from `e59e41a7`, this covers the frozen source candidate `8a27e5b3`.
+The candidate is committed and pushed to `dev/next`; its working tree is
+clean. Debug executable and implementation dylib have no direct SwiftUI or
+Charts linkage. Release compilation is in progress, followed by the quiet
+gate, final gallery and measured Release validation.
 
 ## Still required
 
