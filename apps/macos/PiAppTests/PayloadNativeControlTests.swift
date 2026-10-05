@@ -116,7 +116,7 @@ import XCTest
         let manager = try XCTUnwrap(view.editor.layoutManager)
         let container = try XCTUnwrap(view.editor.textContainer)
         XCTAssertTrue(manager.allowsNonContiguousLayout)
-        XCTAssertLessThan(manager.firstUnlaidCharacterIndex, result.matches[1].location,
+        XCTAssertLessThan(manager.firstUnlaidCharacterIndex(), result.matches[1].location,
                           "Revealing an early match must not force layout of the complete large body")
         view.update(result: result, selected: 1)
         try await eventually("Choosing the final match realizes and reveals it", timeout: .seconds(3)) {
