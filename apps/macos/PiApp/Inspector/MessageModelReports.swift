@@ -67,15 +67,18 @@ import AppKit
     override func drawContent(in rect: CGRect) {
         effectiveAppearance.performAsCurrentDrawingAppearance {
             let tint = NSColor.tertiaryLabelColor.usingColorSpace(.deviceRGB) ?? .piInkTertiary
-            let context = NSGraphicsContext.current?.cgContext
             // The symbol tinting surface is opaque. Apply the system label
             // alpha when compositing it, rather than tinting black with a
             // translucent black sourceAtop fill.
-            context?.saveGState(); context?.setAlpha(tint.alphaComponent)
-            glyph.draw(centredIn: CGRect(x: 0, y: 0, width: 8, height: rect.height), color: tint.withAlphaComponent(1), scale: piScale)
-            context?.restoreGState()
+            if let image = glyph.image(tint.withAlphaComponent(1)) {
+                let box = glyph.layoutSize
+                let x = PiKit.roundUpHalf(3.5 - box.width / 2, piScale)
+                let y = rect.midY - image.size.height / 2 - (rect.height > image.size.height ? PiKit.Symbol.lift : 0)
+                image.draw(in: CGRect(x: x, y: y, width: image.size.width, height: image.size.height), from: .zero,
+                           operation: .sourceOver, fraction: tint.alphaComponent, respectFlipped: true, hints: nil)
+            }
             let height = line.size(scale: piScale).height
-            line.draw(in: CGRect(x: 12, y: PiKit.round((rect.height - height) / 2, piScale), width: max(0, rect.width - 12), height: height), scale: piScale)
+            line.draw(in: CGRect(x: 11.5, y: PiKit.round((rect.height - height) / 2, piScale), width: max(0, rect.width - 11.5), height: height), scale: piScale)
         }
     }
 }
