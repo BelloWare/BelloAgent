@@ -1,0 +1,47 @@
+name: Rust macOS native checks
+on:
+  push:
+    branches: [rust]
+    paths: ['rust/**', '.github/workflows/rust-macos.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  # Finish the running native build; only the newest pending checkpoint waits.
+  group: rust-macos-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  apple-silicon:
+    # Standard runners are free for public repos; never consume paid private minutes.
+    if: github.event.repository.private == false
+    runs-on: macos-26
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: rust
+    env:
+      CARGO_BUILD_JOBS: '2'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify native Apple toolchain
+        run: |
+          test "$(uname -s)" = Darwin
+          test "$(uname -m)" = arm64
+          xcodebuild -version
+          xcrun --sdk macosx --show-sdk-version
+          xcrun --find clang
+          xcrun --find metal
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.99.0 --profile minimal
+          rustup override set 1.99.0
+          rustc --version
+      - name: Compile and link all native test targets
+        run: cargo test --locked --workspace --no-run
+      - name: Run pure domain and filesystem tests
+        # No GPUI application launch, permissions, keychain, capture or updater actions.
+        run: cargo test --locked -p bello-agent-core
+      - name: Build native applications without launching
+        run: cargo build --locked --workspace
