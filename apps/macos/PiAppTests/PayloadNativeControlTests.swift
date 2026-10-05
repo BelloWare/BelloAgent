@@ -32,6 +32,22 @@ import XCTest
         XCTAssertFalse(view.editor.isEditable); XCTAssertTrue(view.editor.isSelectable)
         XCTAssertEqual(view.editor.accessibilityLabel(), "Read-only payload text")
     }
+    func testReaderSplitKeepsTheDraggedDividerAndItsLimitsWhileResizing() {
+        let split = PayloadSplit(leading: NSView(), trailing: NSView(), minimum: 290, ideal: 340, maximum: 430, trailingMinimum: 480)
+        func resize(_ width: CGFloat) {
+            split.frame = NSRect(x: 0, y: 0, width: width, height: 400)
+            split.needsLayout = true; split.layoutSubtreeIfNeeded()
+        }
+        resize(1052)
+        split.setPosition(380, ofDividerAt: 0)
+        split.needsLayout = true; split.layoutSubtreeIfNeeded()
+        XCTAssertEqual(split.arrangedSubviews[0].frame.width, 380, accuracy: 0.5, "Refreshing layout must preserve the reader's divider")
+        resize(3200)
+        XCTAssertLessThanOrEqual(split.arrangedSubviews[0].frame.width, 438.5, "The list must keep its maximum width as the sheet grows")
+        resize(800)
+        XCTAssertGreaterThanOrEqual(split.arrangedSubviews[0].frame.width, 297.5, "The list must retain its minimum width")
+        XCTAssertGreaterThanOrEqual(split.arrangedSubviews[1].frame.width, 487.5, "The payload must retain its minimum width")
+    }
     func testRefinedSearchReplacesHighlightsWithoutReplacingTextStorage() throws {
         let initial = try PayloadSearchResult.find(text: "answer and another", query: "a")
         let view = PayloadSearchTextView(result: initial, selected: 0)

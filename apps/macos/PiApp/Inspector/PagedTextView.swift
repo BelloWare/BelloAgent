@@ -175,13 +175,15 @@ import AppKit
 /// original HSplitView and a stable divider position while content updates.
 @MainActor final class PayloadSplit: NSSplitView, NSSplitViewDelegate {
     let minimum: CGFloat, ideal: CGFloat, maximum: CGFloat, trailingMinimum: CGFloat
+    private let initial: CGFloat
     private var started = false
-    init(leading: NSView, trailing: NSView, minimum: CGFloat, ideal: CGFloat, maximum: CGFloat, trailingMinimum: CGFloat) {
+    init(leading: NSView, trailing: NSView, minimum: CGFloat, ideal: CGFloat, maximum: CGFloat, trailingMinimum: CGFloat, initial: CGFloat? = nil) {
         // The original HSplitView put an eight-point gutter outside each
         // pane's width limit. Keep that gutter beside the native divider.
         let gutter = PiSpacing.sm
         self.minimum = minimum + gutter; self.ideal = ideal + gutter
         self.maximum = maximum + gutter; self.trailingMinimum = trailingMinimum + gutter
+        self.initial = (initial ?? ideal) + gutter
         super.init(frame: .zero); isVertical = true; dividerStyle = .thin; delegate = self
         addArrangedSubview(PayloadColumn(spacing: 0, padding: NSEdgeInsets(top: 0, left: 0, bottom: 0, right: gutter), items: [.flexible(leading)]))
         addArrangedSubview(PayloadColumn(spacing: 0, padding: NSEdgeInsets(top: 0, left: gutter, bottom: 0, right: 0), items: [.flexible(trailing)]))
@@ -189,8 +191,12 @@ import AppKit
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
     override func layout() {
         super.layout()
-        guard !started, bounds.width > 0 else { return }; started = true
-        setPosition(min(ideal, max(minimum, bounds.width - trailingMinimum - dividerThickness)), ofDividerAt: 0)
+        guard bounds.width > 0, let leading = arrangedSubviews.first else { return }
+        let preferred = started ? leading.frame.width : initial
+        let upper = min(maximum, max(minimum, bounds.width - trailingMinimum - dividerThickness))
+        let position = max(minimum, min(preferred, upper))
+        started = true
+        if abs(leading.frame.width - position) > 0.001 { setPosition(position, ofDividerAt: 0) }
     }
     func splitView(_ splitView: NSSplitView, constrainMinCoordinate proposedMinimumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat { minimum }
     func splitView(_ splitView: NSSplitView, constrainMaxCoordinate proposedMaximumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat { min(maximum, max(minimum, bounds.width - trailingMinimum - dividerThickness)) }
