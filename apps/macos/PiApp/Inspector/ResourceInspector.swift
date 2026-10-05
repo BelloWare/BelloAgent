@@ -71,7 +71,7 @@ import AppKit
         super.init(frame: NSRect(origin: .zero, size: Self.size))
         sheet = PiKit.Sheet("Skills, instructions and MCP", subtitle: "Discovered skills, the applied instruction chain, discovery settings and MCP servers for the selected project.", symbol: "book.closed", content: column, actions: [refreshButton, done], footer: footer)
         sheet.width = Self.size.width; sheet.height = Self.size.height
-        sheet.dismiss = { [weak self] in self?.dismiss() }; addSubview(sheet)
+        sheet.dismiss = { @MainActor @Sendable [weak self] in self?.dismiss() }; addSubview(sheet)
         done.onPress = { [weak self] in self?.dismiss() }; refreshButton.onPress = { [weak self] in self?.requestRefresh() }
         filterField.onChange = { [weak self] value in self?.query = value; self?.reconcileSelection(); self?.refreshSkills() }
         managementToggle.labelFont = PiKit.Font.caption

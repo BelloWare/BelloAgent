@@ -53,7 +53,7 @@ enum ConversationSearchPaging {
         let foot = ShellStack(.horizontal, spacing: PiSpacing.sm, [.view(ShellText("Copy limit: 8 MiB. Larger conversations can be copied in explicit ranges.", font: PiKit.Font.caption, color: .piInkSecondary), .flexible), .spacer(8), .view(exportButton), .view(copyRange), .view(copyAll)])
         sheet = PiKit.Sheet("Search and copy conversation", subtitle: "Completed retained messages, including exposed reasoning and tool results. Opaque provider state and image bytes are omitted. Search covers the full retained branch; the transcript stays paged.", symbol: "magnifyingglass", content: column, actions: [done], footer: foot)
         sheet.width = Self.size.width; sheet.height = Self.size.height
-        sheet.dismiss = { [weak self] in self?.dismiss() }
+        sheet.dismiss = { @MainActor @Sendable [weak self] in self?.dismiss() }
         addSubview(sheet)
         queryField.onChange = { [weak self] _ in self?.refresh() }; queryField.onSubmit = { [weak self] in self?.search() }
         searchButton.onPress = { [weak self] in self?.search() }
