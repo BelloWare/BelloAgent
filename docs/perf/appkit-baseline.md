@@ -59,3 +59,38 @@ The 60 s draw report (`PI_SOAK_DRAW_REPORT`) spent 449 ms of CPU drawing in
 3,012 draws while selecting chats, 149 ms launching and 62 ms switching; the
 two costliest places are 118×25 pt SwiftUI layers at the window's top right
 (960,0 and 970,0), drawn on the CPU.
+
+## After the transcript port (2026-10-05)
+
+`dev/appkit-transcript` at a3f0c205 (every transcript row and the pane in
+AppKit; later commits change no measured path), measured against the
+baseline's derived data back to back under the same load (one-minute load
+2.1–3.6), three rounds each, Release build-for-testing. Values are the
+three rounds' figures, baseline → port.
+
+| Measure | Baseline | AppKit transcript |
+|---|---|---|
+| Chat switch, main thread per switch, median (max) | 52.8 (93.6) / 53.4 (95.1) / 51.6 (96.6) ms | 35.5 (66.8) / 35.8 (56.4) / 37.8 (56.6) ms |
+| Chat switch, to ready, median (max) | 63.0 / 62.3 / 63.1 ms | 43.7 / 46.0 / 46.9 ms |
+| Switch to another 300-row chat, cold, first paint | 51 / 59 / 49 ms | 27 / 28 / 30 ms |
+| Switch back to a 300-row chat already read | 27 / 29 / 27 ms | 19 / 21 / 19 ms |
+| Same switch, pane rebuilt | 51 / 56 / 47 ms | 33 / 33 / 28 ms |
+| First open of a chat (three chats) | 265 / 267 / 191 … 314 / 319 / 206 ms | 205 / 221 / 170 … 175 / 178 / 125 ms |
+| Back to a chat already open | 170 / 149 / 153 ms … | 146 / 142 / 138 … 124 / 119 / 119 ms |
+| Open 300 rows: first paint / fully settled | 65 / 684, 66 / 701, 63 / 716 ms | 39 / 645, 36 / 624, 36 / 646 ms |
+| Streaming a 10 KB reply: main thread busy | 3.47 / 3.44 / 3.41 s (28%) | 2.07 / 1.97 / 1.98 s (16–17%) |
+| Streaming delta into 300 rows, mean | 6.8 / 6.8 / 7.3 ms | 4.8 / 5.1 / 5.0 ms |
+| Streaming delta, layout + display | 2.7 / 2.8 / 2.7 ms | 2.2 / 2.4 / 2.2 ms |
+| Scrolling 300 rich rows p50 / p95 / p99 | 2.6 / 17.5 / 46.8 ms | 1.1 / 8.2 / 21.5 ms |
+| Scrolling one 88 KB answer p50 / p95 / p99 | 0.50 / 1.92 / 5.22 ms | 0.17 / 0.39 / 0.60 ms |
+| Scrolling 400 rows, 2462 steps: mean / worst | 1.45–1.49 / 19–23 ms | 0.74–0.78 / 7.6–8.5 ms |
+| Folding / unfolding a 60-tool turn | 10.5–11.0 / 12.4–13.3 ms | 8.0–9.2 / 4.2–5.2 ms |
+| Typing in the composer, per key median / p90 / max | 3.6–4.2 / 5.3–6.2 / 8.8–9.2 ms | 3.6–3.8 / 5.2–5.4 / 9.2–10.0 ms |
+| Begin editing the first of 300 rows (8 more runs each) | 47–72 ms, mean 57.6 | 41–62 ms, mean 51.5 |
+| 122 s switch-aimed soak: answers over 100 / 150 / 200 ms | 8 / 0 / 0, 8 / 0 / 0, 14 / 1 / 0 | 1 / 0 / 0, 1 / 0 / 0, 3 / 0 / 0 |
+| Soak, longest main-thread answer | 150 / 133 / 168 ms | 123 / 124 / 125 ms |
+| 60 s draw report while selecting chats | 437 ms in 3,015 draws | 328 ms in 527 draws |
+
+Typing is the composer's (SwiftUI, another workstream) and stays within
+run-to-run noise. The begin-editing figure polls in 10 ms steps, so it was
+measured eight more times on each build.

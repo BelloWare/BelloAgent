@@ -23,7 +23,7 @@
 ## Wave 1
 - [x] **Baseline**: today's numbers on dev/next before any port — chat switch, opening a large chat, streaming a long reply, scrolling, typing latency, soak main-thread maxima. Recorded in `docs/perf/appkit-baseline.md`.
 - [x] **Pi components in AppKit** (`Design/`): buttons, toggles/switches, tabs, steppers, choice picker, menu, popover, hover card, sheet, question, badges, stat pill, surfaces, flow indicators, chart parts. Same look and API shape; gallery parity.
-- [ ] **Transcript** (`Transcript/`): rows, cards, chrome, pills, markdown/code surfaces, turn fold, versions, large table — all AppKit inside the existing AppKit scroll view. Chat switch measured against the baseline.
+- [x] **Transcript** (`Transcript/`): rows, cards, chrome, pills, markdown/code surfaces, turn fold, versions, large table — all AppKit inside the existing AppKit scroll view. Chat switch measured against the baseline.
 
 ## Wave 2 (after the components land)
 - [ ] **Workspace shell** (`Workspaces/`, `Composer/`, `Tabs/`, `Terminal/`): sidebar, conversation pane, footer, composer chrome, queue panel, tabs, terminal panel, sheets.
