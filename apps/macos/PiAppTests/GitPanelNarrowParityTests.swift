@@ -229,5 +229,37 @@ import XCTest
         try record("native-covered-side", frames: actual, window: nativeWindow)
         print("GIT-COVERED-SIDE originalControlsMinimum=\(sideMinimum) nativeComposerMinimum=\(self.views(SidePaneView.self, in: native).first?.pane.minimumWidth ?? 0)")
         try assertFrames(actual, expected, parts: children)
+        let mountedSide = try XCTUnwrap(views(SidePaneView.self, in: native).first)
+        let releasedBodyWidth = try XCTUnwrap(expected[.header]).width
+        XCTAssertEqual(native.bounds.width, pane.width, accuracy: 0.5, "The outer pane keeps its allocation")
+        XCTAssertEqual(try XCTUnwrap(native.strip).bounds.width, pane.width, accuracy: 0.5, "The strip keeps the same allocation")
+        XCTAssertEqual(mountedSide.minimumWidth, releasedBodyWidth, accuracy: 0.5, "The side's real controls supply the released body minimum")
+        XCTAssertEqual(mountedSide.pane.composer.paneWidth, pane.width, accuracy: 0.5, "Overflow does not change the composer's trial proposal")
+
+        // A covered side keeps running. Its own state notification, without
+        // a RightPane update from its parent, must propagate new controls'
+        // minimum to the tab over it, then relinquish that room when idle.
+        session.state = "running"
+        try await eventually("A covered running side's controls resize the body") {
+            native.layoutSubtreeIfNeeded()
+            return mountedSide.minimumWidth > releasedBodyWidth && content.panel.bounds.width >= mountedSide.minimumWidth
+                && self.views(PiKit.ButtonBase.self, in: mountedSide).contains { $0.accessibilityIdentifier() == "composerStopResponse" && !$0.isHidden }
+        }
+        session.state = "idle"
+        try await eventually("The covered side relinquishes its run controls' room") {
+            native.layoutSubtreeIfNeeded()
+            return abs(content.panel.bounds.width - releasedBodyWidth) <= 0.5
+        }
+        let wider = CGSize(width: 600, height: pane.height)
+        nativeWindow.setContentSize(wider); native.update(side: (side, session), width: wider.width)
+        try await eventually("A wider allocation replaces overflow without rebuilding the tab") {
+            native.layoutSubtreeIfNeeded()
+            return abs(content.panel.bounds.width - wider.width) <= 0.5 && mountedSide.pane.composer.paneWidth == wider.width
+        }
+        nativeWindow.setContentSize(pane); native.update(side: nil, width: pane.width)
+        try await eventually("Removing the side relinquishes its minimum for the same tab") {
+            native.layoutSubtreeIfNeeded()
+            return abs(content.panel.bounds.width - pane.width) <= 0.5 && self.views(SidePaneView.self, in: native).isEmpty
+        }
     }
 }

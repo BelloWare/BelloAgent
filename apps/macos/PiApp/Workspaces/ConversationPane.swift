@@ -163,8 +163,18 @@ struct SideActions {
             }
         }
     }
-    /// The narrowest the pane is: its composer's controls.
-    var minimumWidth: CGFloat { composer.isHidden ? 0 : composer.minimumWidth }
+    /// The narrowest the pane is: its composer's and side header's fixed controls.
+    var minimumWidth: CGFloat {
+        max(composer.isHidden ? 0 : composer.minimumWidth, sideHeader.superview === self ? sideHeader.minimumWidth : 0)
+    }
+    /// A side's enclosing pane proposal can be narrower than its overflowing
+    /// body. The composer's trial forms still use that enclosing proposal.
+    var composerProposalWidth: CGFloat? {
+        didSet {
+            guard oldValue != composerProposalWidth else { return }
+            composer.paneWidth = composerProposalWidth ?? bounds.width
+        }
+    }
 
     private func read(_ session: SessionDisplay, _ chat: ChatRecord) -> State {
         // The record its parent handed it: the parent hands it again as it changes.
@@ -409,7 +419,7 @@ struct SideActions {
     override func setFrameSize(_ newSize: NSSize) {
         let widthChanged = newSize.width != frame.width
         super.setFrameSize(newSize)
-        if widthChanged { composer.paneWidth = newSize.width }
+        if widthChanged { composer.paneWidth = composerProposalWidth ?? newSize.width }
         needsLayout = true
     }
     private func hostHeight(_ host: ShellHostingView?, width: CGFloat) -> CGFloat {

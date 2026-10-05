@@ -8,7 +8,7 @@ import Combine
 // (`ConversationPageVisibility` moves focus off it). With no tabs, the pane
 // is the side alone, as it always was.
 
-@MainActor final class RightPaneView: NSView {
+@MainActor final class RightPaneView: NSView, PiKit.SizeObserver {
     let model: WorkspaceModel
     let host: TabHost
     let pane: TabContainer
@@ -37,6 +37,7 @@ import Combine
     }
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
     override var isFlipped: Bool { true }
+    func contentSizeChanged() { needsLayout = true }
 
     /// The window's disabled state: no tab is chosen, closed or dragged.
     var inheritedEnabled = true { didSet { if oldValue != inheritedEnabled { strip?.inheritedEnabled = inheritedEnabled } } }
@@ -111,7 +112,11 @@ import Combine
         super.layout()
         var top: CGFloat = 0
         if let strip { strip.frame = CGRect(x: 0, y: 0, width: bounds.width, height: TabStripView.height); top = TabStripView.height }
-        let body = CGRect(x: 0, y: top, width: bounds.width, height: max(0, bounds.height - top))
+        // Opacity kept the side in the released ZStack's layout. Its fixed
+        // controls therefore keep their minimum for the covered tab too;
+        // the tab strip and outer pane still have their actual allocation.
+        let bodyWidth = max(bounds.width, (sideView as? SidePaneView)?.minimumWidth ?? 0)
+        let body = CGRect(x: (bounds.width - bodyWidth) / 2, y: top, width: bodyWidth, height: max(0, bounds.height - top))
         sideView?.frame = body
         content.frame = body
     }

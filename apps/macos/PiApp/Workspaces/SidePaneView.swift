@@ -3,12 +3,12 @@ import Combine
 
 /// A chat's side beside it: its own conversation pane, with the side's
 /// header (bring back, keep, close). Bring Back opens the handoff sheet.
-@MainActor final class SidePaneView: NSView {
+@MainActor final class SidePaneView: NSView, PiKit.SizeObserver {
     let model: WorkspaceModel
     let session: SessionDisplay
     private(set) var info: SideRecord
     /// The share of the content column this side has, for the composer bar.
-    var paneWidth: CGFloat
+    var paneWidth: CGFloat { didSet { pane.composerProposalWidth = paneWidth } }
     let pane: ConversationPaneView
     private var observer: ShellObserver!
     private var handoff: PiSheetWindow?
@@ -32,6 +32,7 @@ import Combine
         self.model = model; self.session = session; self.info = info; self.paneWidth = paneWidth
         pane = ConversationPaneView(model: model)
         super.init(frame: .zero)
+        pane.composerProposalWidth = paneWidth
         // The hairline that used to start this pane is the split's draggable
         // divider now, drawn once by the workspace between the two panes.
         addSubview(pane)
@@ -41,6 +42,8 @@ import Combine
     }
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
     override var isFlipped: Bool { true }
+    var minimumWidth: CGFloat { pane.minimumWidth }
+    func contentSizeChanged() { needsLayout = true; PiKit.sizeChanged(self) }
 
     func update(info: SideRecord, paneWidth: CGFloat) {
         self.info = info; self.paneWidth = paneWidth
