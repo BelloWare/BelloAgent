@@ -22,6 +22,8 @@ struct CapturedBodyViewReference: View {
     /// Retained bytes the owner's latest poll reported for a body that is
     /// still being written. Newer bytes are offered, never read on each poll.
     var growingBytes: Int? = nil
+    /// Test-only readiness observation; leaves the frozen load/search flow intact.
+    var onControllers: ((CapturedBodyController, PayloadSearchController) -> Void)? = nil
     @StateObject private var controller = CapturedBodyController()
     @StateObject private var search = PayloadSearchController()
     @State private var previousSelection: Selection?
@@ -149,6 +151,7 @@ struct CapturedBodyViewReference: View {
                 Text(controller.notice).font(PiFont.micro).foregroundStyle(Color.piWarning)
             }
         }
+        .onAppear { onControllers?(controller, search) }
         .task(id: identity) {
             let preserve = previousSelection.map { $0.session == identity.session && $0.attempt == identity.attempt && $0.kind == identity.kind } ?? false
             previousSelection = identity
