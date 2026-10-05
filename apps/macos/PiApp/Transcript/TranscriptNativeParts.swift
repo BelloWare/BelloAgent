@@ -47,6 +47,8 @@ import AppKit
     static func leave(_ view: NSView) {
         view.setAccessibilityElement(false)
         view.identifier = leaving
+        // A pill on its way out acts on nothing while it fades.
+        (view as? TranscriptPillButton)?.enabled = false
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = Double(PiMotion.quickMilliseconds) / 1_000
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)

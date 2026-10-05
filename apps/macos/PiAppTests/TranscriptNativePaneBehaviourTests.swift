@@ -109,6 +109,21 @@ import XCTest
         XCTAssertEqual(asked, ["second"])
     }
 
+    /// A chat that starts loading its history shows the read as slow on its
+    /// own clock, whatever the chat on screen before was waiting for.
+    func testASlowReadIsTimedForTheChatOnScreen() async throws {
+        let cursor = ConversationCursor(incarnation: "r", lineage: "root", entry: "m1")
+        let first = SessionDisplay(id: "first"), second = SessionDisplay(id: "second")
+        first.olderPage = ConversationPageBoundary(cursor: cursor, loading: true)
+        second.olderPage = ConversationPageBoundary(cursor: cursor, loading: true)
+        let pane = NativeTranscriptPane(frame: CGRect(x: 0, y: 0, width: 600, height: 400))
+        pane.update(session: first, state: "idle", actions: TranscriptActions(), environment: TranscriptRowEnvironment(), reduceMotion: true)
+        pane.update(session: second, state: "idle", actions: TranscriptActions(), environment: TranscriptRowEnvironment(), reduceMotion: true)
+        // The chat before finishes its read; this one is still waiting.
+        first.olderPage = ConversationPageBoundary(cursor: cursor, loading: false)
+        try await eventually("the waiting chat's read shows as slow", timeout: .seconds(5)) { pane.earlierSlow }
+    }
+
     /// Back to bottom that sprang away comes back whole in one step.
     func testBackToBottomComesBackWholeAfterSpringingAway() throws {
         let box = TranscriptLatestBox(frame: CGRect(x: 0, y: 0, width: 34, height: 34))

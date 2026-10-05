@@ -260,4 +260,33 @@ final class TranscriptNativeRowBehaviourTests: XCTestCase {
         one.update(text: "first", face: TranscriptNativeBranchRow.detailFace, environment: TranscriptRowEnvironment(), swiftUILines: true)
         XCTAssertEqual(text.exactHeight(width: 300), 2 * one.exactHeight(width: 300), "the empty second line is drawn")
     }
+
+    /// The waiting dots turn only while they can be seen: not out of a
+    /// window, not hidden with their row.
+    @MainActor func testWaitingDotsTickOnlyWhileSeen() {
+        let dots = TranscriptWaitingDots(frame: CGRect(x: 0, y: 0, width: 40, height: 22))
+        dots.running = true
+        XCTAssertFalse(dots.isTicking, "out of a window")
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 100, height: 40), styleMask: [.borderless], backing: .buffered, defer: false)
+        defer { window.contentView = nil }
+        let holder = NSView(frame: window.contentLayoutRect)
+        window.contentView = holder
+        holder.addSubview(dots)
+        XCTAssertTrue(dots.isTicking, "on screen")
+        holder.isHidden = true
+        XCTAssertFalse(dots.isTicking, "hidden with its row")
+        holder.isHidden = false
+        XCTAssertTrue(dots.isTicking)
+        dots.removeFromSuperview()
+        XCTAssertFalse(dots.isTicking, "let go of the window")
+    }
+
+    /// A pill on its way out acts on nothing while it fades.
+    @MainActor func testALeavingPillActsOnNothing() {
+        var pressed = 0
+        let pill = TranscriptPillButton(title: "Copy", accent: false, perform: { pressed += 1 })
+        TranscriptMotion.leave(pill)
+        XCTAssertFalse(pill.accessibilityPerformPress())
+        XCTAssertEqual(pressed, 0)
+    }
 }

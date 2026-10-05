@@ -69,6 +69,8 @@ final class TranscriptSurfaceMarker: NSView {
     private(set) var earlierSlow = false, newerSlow = false
     private var earlierLoading: Bool?, newerLoading: Bool?
     private var earlierTimer: Timer?, newerTimer: Timer?
+    /// The chat the slow-read clocks were started for.
+    private var slowReadsSession: ObjectIdentifier?
     private var shownEarlier: TranscriptEdge = .quiet, shownNewerBeside: TranscriptEdge = .quiet, shownNewerAbove: TranscriptEdge = .quiet
     private var shownPartial: String?, shownTurnInput: String?
     private var shownSession: ObjectIdentifier?
@@ -191,13 +193,21 @@ final class TranscriptSurfaceMarker: NSView {
 
     /// A read shows at its edge only once it has been slow for a moment.
     private func watchSlowReads(_ session: SessionDisplay) {
+        // Another chat starts its own clocks: a read slow in the chat before
+        // says nothing about this one's.
+        if slowReadsSession != ObjectIdentifier(session) {
+            slowReadsSession = ObjectIdentifier(session)
+            earlierTimer?.invalidate(); earlierTimer = nil; newerTimer?.invalidate(); newerTimer = nil
+            earlierSlow = false; newerSlow = false
+            earlierLoading = nil; newerLoading = nil
+        }
         if earlierLoading != session.olderPage.loading {
             earlierLoading = session.olderPage.loading
             earlierSlow = false; earlierTimer?.invalidate(); earlierTimer = nil
             if session.olderPage.loading {
                 earlierTimer = Timer.scheduledTimer(withTimeInterval: Self.seconds(TranscriptEdge.quietLoad), repeats: false) { [weak self, weak session] _ in
                     MainActor.assumeIsolated {
-                        guard let self, session?.olderPage.loading == true else { return }
+                        guard let self, let session, self.session === session, session.olderPage.loading else { return }
                         self.earlierSlow = true; self.refresh()
                     }
                 }
@@ -209,7 +219,7 @@ final class TranscriptSurfaceMarker: NSView {
             if session.newerPage.loading {
                 newerTimer = Timer.scheduledTimer(withTimeInterval: Self.seconds(TranscriptEdge.quietLoad), repeats: false) { [weak self, weak session] _ in
                     MainActor.assumeIsolated {
-                        guard let self, session?.newerPage.loading == true else { return }
+                        guard let self, let session, self.session === session, session.newerPage.loading else { return }
                         self.newerSlow = true; self.refresh()
                     }
                 }

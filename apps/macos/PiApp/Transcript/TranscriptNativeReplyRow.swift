@@ -363,16 +363,27 @@ import AppKit
     var running = false {
         didSet {
             guard running != oldValue else { return }
-            timer?.invalidate(); timer = nil
-            if running {
-                phase = Int(Date().timeIntervalSinceReferenceDate / 0.4) % 4
-                timer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { [weak self] _ in
-                    MainActor.assumeIsolated { guard let self else { return }; self.phase = (self.phase + 1) % 4; self.needsDisplay = true }
-                }
-            }
+            updateTicking()
             needsDisplay = true
         }
     }
+    /// The dots turn only while they can be seen: running, in a window, and
+    /// not hidden with a folded row. A kept or folded row costs no ticks.
+    private func updateTicking() {
+        let ticks = running && window != nil && !isHiddenOrHasHiddenAncestor
+        guard ticks != (timer != nil) else { return }
+        timer?.invalidate(); timer = nil
+        guard ticks else { return }
+        phase = Int(Date().timeIntervalSinceReferenceDate / 0.4) % 4
+        timer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { guard let self else { return }; self.phase = (self.phase + 1) % 4; self.needsDisplay = true }
+        }
+    }
+    /// Whether the dots are turning now, for checks.
+    var isTicking: Bool { timer != nil }
+    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); updateTicking() }
+    override func viewDidHide() { super.viewDidHide(); updateTicking() }
+    override func viewDidUnhide() { super.viewDidUnhide(); updateTicking() }
     override var isFlipped: Bool { true }
     override init(frame: NSRect) {
         super.init(frame: frame)
