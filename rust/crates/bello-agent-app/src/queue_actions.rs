@@ -37,6 +37,7 @@ impl AgentView {
             || self.busy
             || self.loading
             || self.load_failed
+            || self.edit_recovery.blocked
             || self.queue_operation.is_some()
             || self.session.edit.is_some()
             || !offers_resume(&self.chat)
@@ -72,6 +73,7 @@ impl AgentView {
             || self.busy
             || self.loading
             || self.load_failed
+            || self.edit_recovery.blocked
             || self.queue_operation.is_some()
             || !offers_promotion(&self.chat, turn_id)
         {
@@ -110,6 +112,7 @@ impl AgentView {
             || self.busy
             || self.loading
             || self.load_failed
+            || self.edit_recovery.blocked
             || self.shutting_down
         {
             return;
@@ -193,6 +196,7 @@ impl AgentView {
                 chat.error_expanded = false;
             }
         }
+        self.drain_edit_recheck(chat_id, cx);
         cx.notify();
     }
 }

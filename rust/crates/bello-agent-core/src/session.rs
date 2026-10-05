@@ -77,10 +77,27 @@ impl Message {
         }
     }
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct QueueEdit {
     pub edit_id: String,
     pub turn_id: String,
+}
+/// A certainty-checked answer for one edit identity. Cached Session snapshots
+/// are for presentation and cannot establish this answer after a failed write.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QueueEditStatus {
+    pub edit_id: String,
+    pub current_hold: Option<QueueEdit>,
+    pub session_revision: u64,
+    pub state: QueueEditState,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum QueueEditState {
+    Active { turn_id: String, text: String },
+    Saved { digest: String },
+    Cancelled,
+    Removed,
+    Unknown,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EditOutcome {
@@ -147,9 +164,9 @@ impl Session {
         Ok(())
     }
     pub fn begin_edit(&mut self, turn_id: &str, edit_id: &str) -> Result<String> {
-        if edit_id.is_empty() || edit_id.len() > 128 {
-            return Err(invalid("Invalid edit identity"));
-        }
+        validate_edit_identity(edit_id)?;
+        validate_turn_identity(turn_id)?;
+        self.validate_edits()?;
         if self.outcomes.iter().any(|v| v.edit_id == edit_id) {
             return Err(invalid("This edit was already resolved"));
         }
@@ -171,8 +188,15 @@ impl Session {
         Ok(text)
     }
     pub fn resolve_edit(&mut self, edit_id: &str, outcome: &str, text: Option<&str>) -> Result<()> {
+        validate_edit_identity(edit_id)?;
+        self.validate_edits()?;
         if !["saved", "cancelled", "removed"].contains(&outcome) {
             return Err(invalid("Invalid edit outcome"));
+        }
+        if outcome == "saved" {
+            validate_text(text.ok_or_else(|| invalid("Save requires text"))?)?;
+        } else if text.is_some() {
+            return Err(invalid("Cancel and Remove do not accept text"));
         }
         let digest = text.map(|text| format!("{:x}", Sha256::digest(text.as_bytes())));
         if let Some(previous) = self.outcomes.iter().find(|v| v.edit_id == edit_id) {
@@ -182,22 +206,26 @@ impl Session {
             return Err(invalid("This edit was resolved differently"));
         }
         let turn_id = match &self.edit {
-            Some(edit) if edit.edit_id == edit_id => edit.turn_id.clone(),
-            None if outcome == "cancelled" => String::new(),
+            Some(edit) if edit.edit_id == edit_id => Some(edit.turn_id.clone()),
+            _ if outcome == "cancelled" => None,
             _ => return Err(invalid("This queued edit is no longer open")),
         };
         if outcome == "saved" {
-            let text = text.ok_or_else(|| invalid("Save requires text"))?;
-            validate_text(text)?;
+            let text = text.expect("Save text validated");
             self.pending
                 .iter_mut()
-                .find(|v| v.id == turn_id)
+                .find(|v| Some(v.id.as_str()) == turn_id.as_deref())
                 .ok_or_else(|| invalid("Message is no longer pending"))?
                 .text = text.into();
         } else if outcome == "removed" {
-            self.pending.retain(|v| v.id != turn_id);
+            self.pending
+                .retain(|v| Some(v.id.as_str()) != turn_id.as_deref());
         }
-        self.edit = None;
+        // An unknown Cancel fences a delayed Begin for only this identity.
+        // It must never release a different edit's existing hold.
+        if turn_id.is_some() {
+            self.edit = None;
+        }
         self.outcomes.push(EditOutcome {
             edit_id: edit_id.into(),
             outcome: outcome.into(),
@@ -406,8 +434,77 @@ impl Session {
         }
         crate::tool_history::validate(&self.messages)
     }
+    fn validate_edits(&self) -> Result<()> {
+        let mut ids = std::collections::HashSet::new();
+        for outcome in &self.outcomes {
+            validate_edit_identity(&outcome.edit_id)?;
+            if !ids.insert(outcome.edit_id.as_str()) {
+                return Err(invalid("Duplicate edit outcome identity"));
+            }
+            match outcome.outcome.as_str() {
+                "saved" if outcome.digest.as_deref().is_some_and(valid_edit_digest) => {}
+                "cancelled" | "removed" if outcome.digest.is_none() => {}
+                _ => return Err(invalid("Invalid edit outcome or text digest")),
+            }
+        }
+        if let Some(held) = &self.edit {
+            validate_edit_identity(&held.edit_id)?;
+            validate_turn_identity(&held.turn_id)?;
+            if ids.contains(held.edit_id.as_str()) {
+                return Err(invalid("Held edit identity already has an outcome"));
+            }
+            let mut pending = self.pending.iter().filter(|item| item.id == held.turn_id);
+            let item = pending
+                .next()
+                .ok_or_else(|| invalid("Held edit has no pending message"))?;
+            if pending.next().is_some() {
+                return Err(invalid("Held edit has duplicate pending messages"));
+            }
+            validate_text(&item.text)?;
+        }
+        Ok(())
+    }
+    /// Pure model projection used by tests and draft comparison. Storage-backed
+    /// callers must use Controller::edit_status or SessionStore::edit_status.
+    pub(crate) fn queue_edit_status(&self, edit_id: &str) -> Result<QueueEditStatus> {
+        validate_edit_identity(edit_id)?;
+        self.validate_edits()?;
+        let state = if let Some(held) = self.edit.as_ref().filter(|held| held.edit_id == edit_id) {
+            let item = self
+                .pending
+                .iter()
+                .find(|item| item.id == held.turn_id)
+                .expect("held pending identity validated");
+            QueueEditState::Active {
+                turn_id: held.turn_id.clone(),
+                text: item.text.clone(),
+            }
+        } else if let Some(outcome) = self
+            .outcomes
+            .iter()
+            .find(|outcome| outcome.edit_id == edit_id)
+        {
+            match outcome.outcome.as_str() {
+                "saved" => QueueEditState::Saved {
+                    digest: outcome.digest.clone().expect("saved digest validated"),
+                },
+                "cancelled" => QueueEditState::Cancelled,
+                "removed" => QueueEditState::Removed,
+                _ => unreachable!("outcome validated"),
+            }
+        } else {
+            QueueEditState::Unknown
+        };
+        Ok(QueueEditStatus {
+            edit_id: edit_id.into(),
+            current_hold: self.edit.clone(),
+            session_revision: self.revision,
+            state,
+        })
+    }
     fn validate_checkpoint(&self) -> Result<()> {
         self.validate_tool_history()?;
+        self.validate_edits()?;
         let active = self.active.is_some();
         let reply = self.active_reply.is_some();
         if self.state == RunState::Running {
@@ -455,6 +552,24 @@ impl Default for Session {
         Self::new()
     }
 }
+fn validate_edit_identity(edit_id: &str) -> Result<()> {
+    if edit_id.is_empty() || edit_id.len() > 128 {
+        return Err(invalid("Invalid edit identity"));
+    }
+    Ok(())
+}
+fn validate_turn_identity(turn_id: &str) -> Result<()> {
+    if turn_id.is_empty() || turn_id.len() > 128 {
+        return Err(invalid("Invalid held turn identity"));
+    }
+    Ok(())
+}
+fn valid_edit_digest(digest: &str) -> bool {
+    digest.len() == 64
+        && digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
 fn validate_text(text: &str) -> Result<()> {
     if text.trim().is_empty() {
         return Err(invalid("Enter a message"));
@@ -469,7 +584,7 @@ fn validate_text(text: &str) -> Result<()> {
 /// in-memory mutation, and an uncertain post-rename sync blocks further writes.
 #[cfg(test)]
 #[derive(Clone, Copy, Default)]
-enum WriteFault {
+pub(crate) enum WriteFault {
     #[default]
     None,
     BeforeRename,
@@ -482,7 +597,7 @@ const MAX_SNAPSHOT_BYTES: usize = 256 * 1024 * 1024;
 const RECOVERY_RESERVE_BYTES: usize = 128 * 1024;
 pub struct SessionStore {
     #[cfg(test)]
-    fault: WriteFault,
+    pub(crate) fault: WriteFault,
     path: PathBuf,
     _lock: Option<File>,
     session: Session,
@@ -554,6 +669,13 @@ impl SessionStore {
         Self::open_seeded(path.as_ref(), None)
     }
     fn open_seeded(path: &Path, initial: Option<Session>) -> Result<Self> {
+        Self::open_seeded_with_confirmation(path, initial, confirm_existing_checkpoint)
+    }
+    fn open_seeded_with_confirmation(
+        path: &Path,
+        initial: Option<Session>,
+        confirm: impl FnOnce(&Path) -> Result<()>,
+    ) -> Result<Self> {
         let path = if path.is_absolute() {
             path.to_owned()
         } else {
@@ -608,6 +730,11 @@ impl SessionStore {
             session.stream_sequence = 0;
         }
         session.validate_checkpoint()?;
+        if exists {
+            // Reading bytes after an uncertain rename does not prove durability.
+            // Confirm the validated file and its directory without rewriting it.
+            confirm(&path)?;
+        }
         let old_generation = session.stream_generation.clone();
         let replay = crate::stream_journal::replay(&path, &mut session)?;
         let recovered = session.recover();
@@ -641,6 +768,20 @@ impl SessionStore {
             }
         }
         Ok(store)
+    }
+    /// Authoritative only while this store is certain. A pending, unmaterialized
+    /// empty chat is certain without a file; a failed commit is not.
+    pub fn edit_status(&self, edit_id: &str) -> Result<QueueEditStatus> {
+        self.require_certain()?;
+        self.session.queue_edit_status(edit_id)
+    }
+    pub(crate) fn require_certain(&self) -> Result<()> {
+        if self.uncertain {
+            return Err(Error::PersistenceUncertain(
+                "Reopen the session before checking or changing a queued edit".into(),
+            ));
+        }
+        Ok(())
     }
     pub fn snapshot_revision(&self) -> u64 {
         self.session.revision
@@ -856,8 +997,19 @@ fn sync_committed_directory(parent: &Path) -> Result<()> {
         .map_err(|error| Error::PersistenceUncertain(error.to_string()))
 }
 
+fn confirm_existing_checkpoint(path: &Path) -> Result<()> {
+    File::open(path)
+        .and_then(|file| file.sync_all())
+        .map_err(|error| Error::PersistenceUncertain(error.to_string()))?;
+    sync_committed_directory(
+        path.parent()
+            .ok_or_else(|| invalid("Session path has no parent"))?,
+    )
+}
+
 fn encode_snapshot(session: &Session) -> Result<Vec<u8>> {
     session.validate_tool_history()?;
+    session.validate_edits()?;
     let mut bytes = serde_json::to_vec(session)?;
     bytes.push(b'\n');
     if bytes.len() > MAX_SNAPSHOT_BYTES {
@@ -871,6 +1023,313 @@ fn encode_snapshot(session: &Session) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unknown_cancel_tombstone_is_atomic_before_begin_and_beside_another_hold() {
+        for unrelated_hold in [false, true] {
+            for post_rename in [false, true] {
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join("session.json");
+                let mut store = SessionStore::open(&path).unwrap();
+                let item = Submission::new("original".into(), Lane::FollowUp);
+                store
+                    .transact(|session| {
+                        session.submit(item.clone())?;
+                        if unrelated_hold {
+                            session.begin_edit(&item.id, "unrelated")?;
+                        }
+                        Ok(())
+                    })
+                    .unwrap();
+                let hold = store.snapshot().edit;
+                let bytes = fs::read(&path).unwrap();
+                store.fault = if post_rename {
+                    WriteFault::AfterRename
+                } else {
+                    WriteFault::BeforeRename
+                };
+                let result = store.transact(|session| {
+                    session.resolve_edit("cancel-before-begin", "cancelled", None)
+                });
+                assert!(result.is_err());
+                assert_eq!(store.snapshot().edit, hold);
+                assert!(store.snapshot().outcomes.is_empty());
+                if post_rename {
+                    assert!(matches!(result, Err(Error::PersistenceUncertain(_))));
+                    assert!(store.edit_status("cancel-before-begin").is_err());
+                } else {
+                    assert_eq!(fs::read(&path).unwrap(), bytes);
+                    assert_eq!(
+                        store.edit_status("cancel-before-begin").unwrap().state,
+                        QueueEditState::Unknown
+                    );
+                }
+                drop(store);
+                let mut reopened = SessionStore::open(&path).unwrap();
+                assert_eq!(reopened.snapshot().edit, hold);
+                if !post_rename {
+                    reopened
+                        .transact(|session| {
+                            session.resolve_edit("cancel-before-begin", "cancelled", None)
+                        })
+                        .unwrap();
+                }
+                let status = reopened.edit_status("cancel-before-begin").unwrap();
+                assert_eq!(status.state, QueueEditState::Cancelled);
+                assert_eq!(status.current_hold, hold);
+                assert!(
+                    reopened
+                        .transact(|session| session.begin_edit(&item.id, "cancel-before-begin"))
+                        .is_err()
+                );
+                reopened
+                    .transact(|session| {
+                        session.resolve_edit("cancel-before-begin", "cancelled", None)
+                    })
+                    .unwrap();
+                assert_eq!(reopened.snapshot().outcomes.len(), 1);
+                assert_eq!(reopened.snapshot().edit, hold);
+            }
+        }
+    }
+
+    #[test]
+    fn typed_edit_status_and_unknown_cancel_preserve_an_unrelated_hold() {
+        let mut session = Session::new();
+        let first = Submission::new("first".into(), Lane::FollowUp);
+        let second = Submission::new("second".into(), Lane::FollowUp);
+        session.submit(first.clone()).unwrap();
+        session.submit(second.clone()).unwrap();
+        session.begin_edit(&first.id, "held").unwrap();
+        let held = session.edit.clone();
+        session
+            .resolve_edit("late-begin", "cancelled", None)
+            .unwrap();
+        assert_eq!(session.edit, held);
+        assert_eq!(
+            session.queue_edit_status("late-begin").unwrap().state,
+            QueueEditState::Cancelled
+        );
+        assert_eq!(
+            session
+                .queue_edit_status("late-begin")
+                .unwrap()
+                .current_hold,
+            held
+        );
+        assert_eq!(
+            session.queue_edit_status("never-granted").unwrap().state,
+            QueueEditState::Unknown
+        );
+        session
+            .resolve_edit("late-begin", "cancelled", None)
+            .unwrap();
+        assert_eq!(session.outcomes.len(), 1);
+        assert!(session.begin_edit(&second.id, "late-begin").is_err());
+        assert!(session.start_next().unwrap().is_none());
+        session
+            .resolve_edit("held", "saved", Some("changed"))
+            .unwrap();
+        assert_eq!(
+            session.queue_edit_status("held").unwrap().state,
+            QueueEditState::Saved {
+                digest: format!("{:x}", Sha256::digest(b"changed"))
+            }
+        );
+        assert!(session.resolve_edit("held", "cancelled", None).is_err());
+        session.begin_edit(&second.id, "removed").unwrap();
+        session.resolve_edit("removed", "removed", None).unwrap();
+        assert_eq!(
+            session.queue_edit_status("removed").unwrap().state,
+            QueueEditState::Removed
+        );
+        assert_eq!(session.pending.len(), 1);
+        assert_eq!(session.pending[0].id, first.id);
+    }
+
+    #[test]
+    fn edit_commands_reject_invalid_identities_and_cancel_remove_text_without_mutation() {
+        let mut session = Session::new();
+        let item = Submission::new("original".into(), Lane::FollowUp);
+        session.submit(item.clone()).unwrap();
+        session.begin_edit(&item.id, "held").unwrap();
+        for (id, outcome, text) in [
+            ("", "cancelled", None),
+            ("held", "cancelled", Some("unexpected")),
+            ("held", "removed", Some("")),
+            ("held", "saved", None),
+            ("held", "saved", Some("  ")),
+            ("unknown", "saved", Some("rewrite")),
+            ("unknown", "removed", None),
+            ("unknown", "cancelled", Some("unexpected")),
+        ] {
+            let before = serde_json::to_value(&session).unwrap();
+            assert!(session.resolve_edit(id, outcome, text).is_err());
+            assert_eq!(serde_json::to_value(&session).unwrap(), before);
+        }
+        assert!(
+            session
+                .resolve_edit(&"x".repeat(129), "cancelled", None)
+                .is_err()
+        );
+        assert!(session.begin_edit("", "other").is_err());
+        assert!(session.begin_edit(&"x".repeat(129), "other").is_err());
+        session.resolve_edit("held", "cancelled", None).unwrap();
+        let before = serde_json::to_value(&session).unwrap();
+        assert!(
+            session
+                .resolve_edit("held", "cancelled", Some("unexpected"))
+                .is_err()
+        );
+        assert_eq!(serde_json::to_value(&session).unwrap(), before);
+    }
+
+    #[test]
+    fn malformed_edit_checkpoints_are_rejected_on_open_and_encode_without_changing_bytes() {
+        let item = Submission::new("original".into(), Lane::FollowUp);
+        let mut session = Session::new();
+        session.submit(item.clone()).unwrap();
+        session.begin_edit(&item.id, "held").unwrap();
+        let base = serde_json::to_value(&session).unwrap();
+        let mut invalid = Vec::new();
+        for id in ["".into(), "x".repeat(129)] {
+            let mut value = base.clone();
+            value["edit"]["edit_id"] = serde_json::json!(id);
+            invalid.push(value);
+        }
+        for id in ["".into(), "x".repeat(129), "missing-turn".into()] {
+            let mut value = base.clone();
+            value["edit"]["turn_id"] = serde_json::json!(id);
+            invalid.push(value);
+        }
+        let mut duplicate_pending = base.clone();
+        duplicate_pending["pending"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::to_value(item).unwrap());
+        invalid.push(duplicate_pending);
+        let mut blank_held = base.clone();
+        blank_held["pending"][0]["text"] = serde_json::json!("  ");
+        invalid.push(blank_held);
+        for (id, outcome, digest) in [
+            ("", "cancelled", None),
+            ("held", "cancelled", None),
+            ("settled", "unknown", None),
+            ("settled", "saved", None),
+            ("settled", "saved", Some("not-a-digest".into())),
+            ("settled", "saved", Some("A".repeat(64))),
+            ("settled", "saved", Some("g".repeat(64))),
+            ("settled", "cancelled", Some("0".repeat(64))),
+            ("settled", "removed", Some("0".repeat(64))),
+        ] {
+            let mut value = base.clone();
+            value["outcomes"] =
+                serde_json::json!([{ "edit_id": id, "outcome": outcome, "digest": digest }]);
+            invalid.push(value);
+        }
+        let mut duplicate_outcome = base.clone();
+        duplicate_outcome["outcomes"] = serde_json::json!([
+            { "edit_id": "settled", "outcome": "cancelled", "digest": null },
+            { "edit_id": "settled", "outcome": "cancelled", "digest": null }
+        ]);
+        invalid.push(duplicate_outcome);
+        for (index, value) in invalid.into_iter().enumerate() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("invalid.json");
+            let bytes = serde_json::to_vec_pretty(&value).unwrap();
+            fs::write(&path, &bytes).unwrap();
+            assert!(
+                SessionStore::open_seeded_with_confirmation(&path, None, |_| {
+                    panic!("invalid checkpoint {index} must be rejected before confirmation")
+                })
+                .is_err()
+            );
+            assert_eq!(fs::read(&path).unwrap(), bytes, "case {index}");
+            let malformed: Session = serde_json::from_value(value).unwrap();
+            assert!(encode_snapshot(&malformed).is_err(), "case {index}");
+        }
+    }
+
+    #[test]
+    fn invalid_edit_transaction_preserves_snapshot_and_remains_certain() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
+        let mut store = SessionStore::open(&path).unwrap();
+        let bytes = fs::read(&path).unwrap();
+        assert!(
+            store
+                .transact(|session| {
+                    session.outcomes.push(EditOutcome {
+                        edit_id: "bad".into(),
+                        outcome: "saved".into(),
+                        digest: None,
+                    });
+                    Ok(())
+                })
+                .is_err()
+        );
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert!(store.snapshot().outcomes.is_empty());
+        assert_eq!(
+            store.edit_status("bad").unwrap().state,
+            QueueEditState::Unknown
+        );
+    }
+
+    #[test]
+    fn reopen_confirms_existing_bytes_and_propagates_sync_failure_without_rewrite() {
+        for version in [2, 3] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("session.json");
+            let mut session = Session::new();
+            session.version = version;
+            session
+                .resolve_edit("cancelled-before-begin", "cancelled", None)
+                .unwrap();
+            let bytes =
+                format!(" \n{}\n  ", serde_json::to_string_pretty(&session).unwrap()).into_bytes();
+            fs::write(&path, &bytes).unwrap();
+            let confirmed = std::cell::Cell::new(false);
+            let store = SessionStore::open_seeded_with_confirmation(&path, None, |existing| {
+                assert_eq!(fs::read(existing).unwrap(), bytes);
+                confirm_existing_checkpoint(existing)?;
+                confirmed.set(true);
+                Ok(())
+            })
+            .unwrap();
+            assert!(confirmed.get());
+            assert_eq!(
+                store.edit_status("cancelled-before-begin").unwrap().state,
+                QueueEditState::Cancelled
+            );
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+            drop(store);
+            for failure in ["file fsync", "directory fsync"] {
+                let result = SessionStore::open_seeded_with_confirmation(&path, None, |existing| {
+                    if failure == "directory fsync" {
+                        File::open(existing)?.sync_all()?;
+                    }
+                    Err(Error::PersistenceUncertain(format!("injected {failure}")))
+                });
+                assert!(matches!(result, Err(Error::PersistenceUncertain(_))));
+                assert_eq!(fs::read(&path).unwrap(), bytes);
+            }
+            let reopened = SessionStore::open(&path).unwrap();
+            assert_eq!(
+                reopened
+                    .edit_status("cancelled-before-begin")
+                    .unwrap()
+                    .state,
+                QueueEditState::Cancelled
+            );
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+        }
+        let dir = tempfile::tempdir().unwrap();
+        assert!(matches!(
+            confirm_existing_checkpoint(&dir.path().join("missing.json")),
+            Err(Error::PersistenceUncertain(_))
+        ));
+    }
+
     fn typed_fixture_profile() -> crate::Profile {
         serde_json::from_value(serde_json::json!({"id":"fixture","api":"openai-responses","providerId":"litellm","modelId":"fixture-model","baseUrl":"http://127.0.0.1:12345","contextWindow":32000,"maxOutputTokens":4096})).unwrap()
     }

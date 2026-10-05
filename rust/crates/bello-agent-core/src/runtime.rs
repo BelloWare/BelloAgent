@@ -1,6 +1,6 @@
 use crate::{
-    Credential, Error, Lane, Profile, ResponsesClient, Result, RunState, Session, SessionStore,
-    Submission, invalid,
+    Credential, Error, Lane, Profile, QueueEditStatus, ResponsesClient, Result, RunState, Session,
+    SessionStore, Submission, invalid,
 };
 use std::sync::{
     Arc, Mutex, OnceLock, RwLock,
@@ -179,6 +179,18 @@ impl Controller {
         self.launch(Some(item));
         Ok(())
     }
+    /// Recovery reads serialize with edits and commits. Published snapshots may
+    /// remain stale after an uncertain write and are never used for this answer.
+    pub fn edit_status(&self, edit_id: &str) -> Result<QueueEditStatus> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| invalid("Session is unavailable"))?;
+        if let Some(error) = &inner.fatal {
+            return Err(invalid(error.clone()));
+        }
+        inner.store.edit_status(edit_id)
+    }
     pub fn begin_edit(&self, turn_id: &str, edit_id: &str) -> Result<String> {
         self.change(|s| s.begin_edit(turn_id, edit_id))
     }
@@ -235,6 +247,7 @@ impl Controller {
         if let Some(error) = &inner.fatal {
             return Err(invalid(error.clone()));
         }
+        inner.store.require_certain()?;
         check(&inner)?;
         let result = inner.store.transact(action);
         if result.is_ok() {
@@ -401,4 +414,115 @@ fn shared_runtime() -> Result<&'static tokio::runtime::Runtime> {
         })
         .as_ref()
         .map_err(|error| invalid(error.clone()))
+}
+
+#[cfg(test)]
+mod edit_status_tests {
+    use super::*;
+    use crate::{QueueEditState, session::WriteFault};
+
+    fn held_controller(path: &std::path::Path) -> (Arc<Controller>, String) {
+        let mut store = SessionStore::open(path).unwrap();
+        let item = Submission::new("original full text\nsecond line".into(), Lane::FollowUp);
+        let turn_id = item.id.clone();
+        store.transact(|session| session.submit(item)).unwrap();
+        let controller = Controller::new(store, None).unwrap();
+        controller.begin_edit(&turn_id, "edit").unwrap();
+        (controller, turn_id)
+    }
+
+    #[test]
+    fn status_reads_actor_state_instead_of_cached_presentation_and_rejects_fatal() {
+        let dir = tempfile::tempdir().unwrap();
+        let (controller, turn_id) = held_controller(&dir.path().join("session.json"));
+        let cached = controller.snapshot_shared();
+        let status = controller.edit_status("edit").unwrap();
+        assert_eq!(status.edit_id, "edit");
+        assert_eq!(status.session_revision, cached.revision);
+        assert_eq!(status.current_hold, cached.edit);
+        assert_eq!(
+            status.state,
+            QueueEditState::Active {
+                turn_id,
+                text: "original full text\nsecond line".into()
+            }
+        );
+        // A separately published UI value is presentation only, even when its
+        // revision and held identity appear plausible.
+        controller.published.send_replace(Arc::new(Session::new()));
+        assert!(controller.snapshot_shared().edit.is_none());
+        assert_eq!(controller.edit_status("edit").unwrap(), status);
+        controller.inner.lock().unwrap().fatal = Some("fixture fatal checkpoint".into());
+        assert!(controller.edit_status("edit").is_err());
+        assert!(controller.edit_status("unknown").is_err());
+        assert!(controller.begin_edit("other-turn", "other").is_err());
+        assert!(controller.resolve_edit("edit", "cancelled", None).is_err());
+    }
+
+    #[test]
+    fn uncertain_save_cannot_be_reconciled_from_stale_cached_hold_until_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
+        let (controller, turn_id) = held_controller(&path);
+        let cached = controller.snapshot_shared();
+        let bytes = std::fs::read(&path).unwrap();
+        controller.inner.lock().unwrap().store.fault = WriteFault::BeforeRename;
+        assert!(
+            controller
+                .resolve_edit("edit", "saved", Some("saved rewrite"))
+                .is_err()
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert!(matches!(
+            controller.edit_status("edit").unwrap().state,
+            QueueEditState::Active { .. }
+        ));
+        controller.inner.lock().unwrap().store.fault = WriteFault::AfterRename;
+        assert!(matches!(
+            controller.resolve_edit("edit", "saved", Some("saved rewrite")),
+            Err(Error::PersistenceUncertain(_))
+        ));
+        assert!(Arc::ptr_eq(&cached, &controller.snapshot_shared()));
+        assert_eq!(
+            controller.snapshot_shared().edit.as_ref().unwrap().turn_id,
+            turn_id
+        );
+        for id in ["edit", "unknown"] {
+            assert!(matches!(
+                controller.edit_status(id),
+                Err(Error::PersistenceUncertain(_))
+            ));
+        }
+        controller.inner.lock().unwrap().store.fault = WriteFault::None;
+        assert!(matches!(
+            controller.begin_edit(&turn_id, "edit"),
+            Err(Error::PersistenceUncertain(_))
+        ));
+        assert!(matches!(
+            controller.resolve_edit("edit", "cancelled", None),
+            Err(Error::PersistenceUncertain(_))
+        ));
+        let committed_bytes = std::fs::read(&path).unwrap();
+        drop(controller);
+        let reopened = Controller::new(SessionStore::open(&path).unwrap(), None).unwrap();
+        assert!(matches!(
+            reopened.edit_status("edit").unwrap().state,
+            QueueEditState::Saved { .. }
+        ));
+        assert!(reopened.edit_status("edit").unwrap().current_hold.is_none());
+        assert_eq!(reopened.snapshot_shared().pending[0].text, "saved rewrite");
+        assert_eq!(std::fs::read(path).unwrap(), committed_bytes);
+    }
+
+    #[test]
+    fn unmaterialized_empty_chat_has_certain_unknown_status() {
+        let controller = Controller::new(SessionStore::pending(), None).unwrap();
+        let status = controller.edit_status("not-granted").unwrap();
+        assert_eq!(status.state, QueueEditState::Unknown);
+        assert_eq!(status.session_revision, 0);
+        assert!(status.current_hold.is_none());
+        assert!(!controller.is_persistent());
+        assert!(controller.edit_status("").is_err());
+        assert!(controller.edit_status(&"x".repeat(129)).is_err());
+    }
 }

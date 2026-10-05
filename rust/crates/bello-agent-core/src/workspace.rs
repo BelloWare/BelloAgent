@@ -31,36 +31,43 @@ impl DraftRecord {
     pub fn is_empty(&self) -> bool {
         self.text.trim().is_empty() && self.queued_edit.is_none()
     }
-    /// A prior Save/Cancel/Remove may be durable while this draft still names
-    /// its old hold. Keep only genuinely unsaved rewriting, ahead of the draft
-    /// that the edit displaced, and never leave a resolved edit stuck open.
+    /// Pure-model comparison for callers that already own a certain model.
+    /// Never pass a cached UI snapshot here for persistence recovery; query
+    /// Controller::edit_status and use reconcile_queued_status instead.
     pub fn reconcile_queued(&mut self, session: &crate::Session) -> Result<bool> {
+        let Some(edit) = self.queued_edit.as_ref() else {
+            return Ok(false);
+        };
+        self.reconcile_queued_status(&session.queue_edit_status(&edit.edit_id)?)
+    }
+    /// A prior Save/Cancel/Remove may be durable while this draft still names
+    /// its old hold. Keep genuinely unsaved rewriting ahead of the displaced
+    /// draft. Identity conflicts or invalid merged drafts leave all text intact.
+    pub fn reconcile_queued_status(&mut self, status: &crate::QueueEditStatus) -> Result<bool> {
         let mut next = self.clone();
-        let changed = next.reconcile_queued_inner(session)?;
+        let changed = next.reconcile_queued_status_inner(status)?;
         if changed {
             *self = next;
         }
         Ok(changed)
     }
-    fn reconcile_queued_inner(&mut self, session: &crate::Session) -> Result<bool> {
+    fn reconcile_queued_status_inner(&mut self, status: &crate::QueueEditStatus) -> Result<bool> {
         let Some(edit) = self.queued_edit.as_ref() else {
             return Ok(false);
         };
-        if session
-            .edit
-            .as_ref()
-            .is_some_and(|held| held.edit_id == edit.edit_id && held.turn_id == edit.turn_id)
-        {
+        if status.edit_id != edit.edit_id {
+            return Err(invalid("Queued edit status belongs to another edit"));
+        }
+        if let crate::QueueEditState::Active { turn_id, .. } = &status.state {
+            if turn_id != &edit.turn_id {
+                return Err(invalid("Queued edit status belongs to another message"));
+            }
+            self.validate()?;
             return Ok(false);
         }
         use sha2::{Digest, Sha256};
-        let outcome = session
-            .outcomes
-            .iter()
-            .find(|outcome| outcome.edit_id == edit.edit_id);
-        let keep = if let Some(outcome) = outcome.filter(|outcome| outcome.outcome == "saved") {
-            outcome.digest.as_deref()
-                != Some(format!("{:x}", Sha256::digest(edit.rewrite.as_bytes())).as_str())
+        let keep = if let crate::QueueEditState::Saved { digest } = &status.state {
+            digest != &format!("{:x}", Sha256::digest(edit.rewrite.as_bytes()))
         } else {
             edit.original_text
                 .as_ref()

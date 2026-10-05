@@ -27,6 +27,8 @@ pub struct ChatState {
     pub queue_drag_task: Option<Task<()>>,
     pub queue_operation: Option<uuid::Uuid>,
     pub queue_operation_error: Option<String>,
+    pub edit_recovery: crate::queue_edit::EditRecovery,
+    pub _recovery_events: Subscription,
     pub queue_detail: Option<crate::queue_detail::QueueDetail>,
     pub last_revision: u64,
     pub busy: bool,
@@ -71,6 +73,10 @@ impl ChatState {
             }
             cx.notify();
         });
+        let recovery_id = record.id.clone();
+        let recovery_events = cx.observe(&composer, move |view, _, cx| {
+            view.resume_edit_reconciliation(&recovery_id, cx);
+        });
         let poll = Self::subscribe(&controller, record.id.clone(), cx);
         Self {
             last_revision: controller.revision(),
@@ -98,6 +104,8 @@ impl ChatState {
             queue_drag_task: None,
             queue_operation: None,
             queue_operation_error: None,
+            edit_recovery: crate::queue_edit::EditRecovery::new(draft.queued_edit.is_some()),
+            _recovery_events: recovery_events,
             queue_detail: None,
             busy: false,
             loading: false,
@@ -138,6 +146,7 @@ impl ChatState {
             self.queue_drag = None;
             self.queue_drag_task = None;
             self.queue_operation = None;
+            self.edit_recovery = crate::queue_edit::EditRecovery::new(self.editing.is_some());
             if self
                 .queue_operation_error
                 .as_ref()

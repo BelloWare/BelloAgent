@@ -60,6 +60,7 @@ impl AgentView {
             && Arc::ptr_eq(&self.controller, &drag.controller)
             && self.session.edit.is_none()
             && !self.shutting_down
+            && !self.edit_recovery.blocked
     }
 
     pub(crate) fn queue_drag_payload(&self, source: &str, number: usize, text: &str) -> QueueDrag {

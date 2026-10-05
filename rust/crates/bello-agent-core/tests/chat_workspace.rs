@@ -833,7 +833,11 @@ fn resolved_queue_edit_recovery_preserves_only_unsaved_rewriting_and_is_idempote
             }),
         };
         let mut live = held.clone();
-        assert!(!live.reconcile_queued(&session.snapshot()).unwrap());
+        assert!(
+            !live
+                .reconcile_queued_status(&session.edit_status("recover-edit").unwrap())
+                .unwrap()
+        );
         assert_eq!(live, held, "active hold changed for {outcome}");
         let mut workspace = WorkspaceStore::open(&catalog, dir.path()).unwrap();
         workspace.register(chat.clone(), held.clone()).unwrap();
@@ -854,13 +858,21 @@ fn resolved_queue_edit_recovery_preserves_only_unsaved_rewriting_and_is_idempote
         }
         let mut workspace = reopen_workspace(&catalog, dir.path());
         let mut recovered = workspace.snapshot().drafts[&chat.id].clone();
-        assert!(recovered.reconcile_queued(&snapshot).unwrap());
+        assert!(
+            recovered
+                .reconcile_queued_status(&restored.edit_status("recover-edit").unwrap())
+                .unwrap()
+        );
         assert_eq!(
             recovered,
             draft(12, expected_text),
             "wrong recovery for {outcome}"
         );
-        assert!(!recovered.reconcile_queued(&snapshot).unwrap());
+        assert!(
+            !recovered
+                .reconcile_queued_status(&restored.edit_status("recover-edit").unwrap())
+                .unwrap()
+        );
         assert!(workspace.save_draft(&chat.id, recovered.clone()).unwrap());
         assert!(!workspace.save_draft(&chat.id, held).unwrap());
         drop(workspace);
@@ -883,7 +895,15 @@ fn failed_queue_edit_reconciliation_keeps_the_entire_original_draft() {
             }),
         };
         let original = record.clone();
-        assert!(record.reconcile_queued(&Session::new()).is_err());
+        assert!(
+            record
+                .reconcile_queued_status(
+                    &SessionStore::pending()
+                        .edit_status("unresolved-after-crash")
+                        .unwrap()
+                )
+                .is_err()
+        );
         assert_eq!(
             record, original,
             "failed reconciliation destroyed saved text"
@@ -1000,4 +1020,55 @@ async fn cancelled_and_retained_submissions_never_automatically_resubmit_on_reop
     assert_eq!(restored.pending.len(), 2);
     assert!(restored.queue_paused);
     provider.finish().await;
+}
+
+#[test]
+fn typed_edit_status_reconciliation_preserves_identity_conflicts_and_unknown_rewrites() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = SessionStore::open(dir.path().join("session.json")).unwrap();
+    let item = Submission::new("original".into(), Lane::FollowUp);
+    store
+        .transact(|session| {
+            session.submit(item.clone())?;
+            session.begin_edit(&item.id, "held")?;
+            Ok(())
+        })
+        .unwrap();
+    let controller = Controller::new(store, None).unwrap();
+    let mut draft = DraftRecord {
+        revision: 9,
+        text: "displaced".into(),
+        queued_edit: Some(QueuedDraft {
+            edit_id: "held".into(),
+            turn_id: "different-turn".into(),
+            rewrite: "unsaved rewrite".into(),
+            original_text: Some("original".into()),
+        }),
+    };
+    let before = draft.clone();
+    assert!(
+        draft
+            .reconcile_queued_status(&controller.edit_status("held").unwrap())
+            .is_err()
+    );
+    assert_eq!(draft, before);
+    assert!(
+        draft
+            .reconcile_queued_status(&controller.edit_status("different-edit").unwrap())
+            .is_err()
+    );
+    assert_eq!(draft, before);
+    draft.queued_edit.as_mut().unwrap().edit_id = "never-granted".into();
+    assert!(
+        draft
+            .reconcile_queued_status(&controller.edit_status("never-granted").unwrap())
+            .unwrap()
+    );
+    assert_eq!(draft.text, "unsaved rewrite\n\ndisplaced");
+    assert_eq!(draft.revision, 10);
+    assert!(draft.queued_edit.is_none());
+    assert_eq!(
+        controller.snapshot_shared().edit.as_ref().unwrap().edit_id,
+        "held"
+    );
 }

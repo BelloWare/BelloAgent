@@ -210,6 +210,9 @@ impl AgentView {
             if self.load_failed {
                 self.load_chat(id, cx);
             }
+            if self.edit_recovery.blocked {
+                self.reconcile_edit(id, cx);
+            }
             return;
         }
         if let Some(chat) = self.inactive.remove(id) {
@@ -314,7 +317,12 @@ impl AgentView {
         cx.notify();
     }
     pub(super) fn submit_chat(&mut self, lane: Lane, cx: &mut Context<Self>) {
-        if self.busy || self.loading || self.load_failed || self.shutting_down {
+        if self.busy
+            || self.loading
+            || self.load_failed
+            || self.shutting_down
+            || self.edit_recovery.blocked
+        {
             return;
         }
         if self.editing.is_some() {
@@ -455,6 +463,7 @@ impl AgentView {
                                 view.recoveries.insert(receipt.id.clone(), receipt);
                             }
                             view.draft_changed(&settled_chat, cx);
+                            view.drain_edit_recheck(&settled_chat, cx);
                             if view.record.id == settled_chat {
                                 view.remember_selection(cx);
                             }
@@ -464,6 +473,7 @@ impl AgentView {
                     .detach();
                 }
                 view.draft_changed(&id, cx);
+                view.drain_edit_recheck(&id, cx);
                 if view.record.id == id {
                     view.remember_selection(cx);
                 }
@@ -519,32 +529,20 @@ impl AgentView {
             })
             .detach();
         }
+        let needs_status = self.chat_ref(id).is_some_and(|chat| {
+            !chat.edit_recovery.blocked
+                && chat.editing.as_ref().is_some_and(|edit_id| {
+                    chat.session
+                        .edit
+                        .as_ref()
+                        .is_none_or(|hold| &hold.edit_id != edit_id)
+                })
+        });
+        if needs_status {
+            self.reconcile_edit(id, cx);
+        }
         if notify {
             cx.notify();
-        }
-    }
-    pub(crate) fn reconcile_edit(&mut self, id: &str, cx: &mut Context<Self>) {
-        let mut changed = false;
-        if let Some(chat) = self.chat_mut(id) {
-            let mut draft = chat.saved_draft(cx);
-            match draft.reconcile_queued(&chat.session) {
-                Ok(true) => {
-                    chat.editing = None;
-                    chat.queued_turn_id = None;
-                    chat.queued_original = None;
-                    chat.draft_before_edit.clear();
-                    chat.draft_revision = draft.revision;
-                    chat.composer
-                        .update(cx, |editor, cx| editor.set_text(draft.text, cx));
-                    chat.error=Some("The previous queued edit has ended. Any unsaved rewrite was kept in the composer.".into());
-                    changed = true;
-                }
-                Ok(false) => {}
-                Err(error) => chat.error = Some(error.to_string()),
-            }
-        }
-        if changed {
-            self.draft_changed(id, cx);
         }
     }
     pub(crate) fn reconcile_intents(&mut self, id: &str, cx: &mut Context<Self>) {
@@ -662,6 +660,7 @@ impl AgentView {
                 if result.is_ok() {
                     view.recoveries.remove(&intent.id);
                 }
+                view.drain_edit_recheck(&intent.chat_id, cx);
                 cx.notify();
             });
         })

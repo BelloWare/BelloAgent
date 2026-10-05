@@ -10,6 +10,7 @@ mod native_smoke;
 mod queue_actions;
 mod queue_detail;
 mod queue_drag;
+mod queue_edit;
 mod queue_geometry;
 mod queue_presentation;
 mod quick_open;
@@ -351,16 +352,27 @@ impl AgentView {
         cx.notify();
     }
     fn result(&mut self, result: bello_agent_core::Result<()>, cx: &mut Context<Self>) {
+        let failed = result.is_err();
         self.error = result.err().map(|e| e.to_string());
         self.refresh(cx);
+        if failed {
+            let id = self.record.id.clone();
+            self.recheck_edit_after_failure(&id, None, cx);
+        }
     }
     fn command<R: Send + 'static>(
         &mut self,
         cx: &mut Context<Self>,
+        recovery_edit: Option<String>,
         command: impl FnOnce(Arc<Controller>) -> bello_agent_core::Result<R> + Send + 'static,
         apply: impl FnOnce(&mut ChatState, R, &mut Context<Self>) + 'static,
     ) {
-        if self.busy || self.loading || self.load_failed || self.shutting_down {
+        if self.busy
+            || self.loading
+            || self.load_failed
+            || self.shutting_down
+            || self.edit_recovery.blocked
+        {
             return;
         }
         self.busy = true;
@@ -376,6 +388,7 @@ impl AgentView {
             .spawn(async move { command(controller) });
         cx.spawn(async move |view, cx| {
             let result = task.await;
+            let failed = result.is_err();
             let _ = view.update(cx, move |view, cx| {
                 if let Some(chat) = view.chat_mut(&id) {
                     chat.busy = false;
@@ -389,6 +402,10 @@ impl AgentView {
                     chat.session = chat.controller.snapshot_shared();
                 }
                 view.draft_changed(&id, cx);
+                if failed && let Some(edit_id) = recovery_edit {
+                    view.recheck_edit_after_failure(&id, Some(edit_id), cx);
+                }
+                view.drain_edit_recheck(&id, cx);
                 cx.notify();
             });
         })
@@ -413,6 +430,7 @@ impl AgentView {
         let requested_edit = edit_id.clone();
         self.command(
             cx,
+            Some(edit_id.clone()),
             move |controller| controller.begin_edit(&turn_id, &requested_edit),
             move |view, text, cx| {
                 view.draft_before_edit = view.composer.read(cx).text().to_owned();
@@ -436,6 +454,7 @@ impl AgentView {
         let outcome = outcome.to_owned();
         self.command(
             cx,
+            Some(id.clone()),
             move |controller| {
                 controller.resolve_edit(
                     &id,
@@ -459,8 +478,15 @@ impl AgentView {
             .edit
             .as_ref()
             .is_some_and(|edit| edit.turn_id == id);
+        let recovery_edit = self
+            .session
+            .edit
+            .as_ref()
+            .filter(|edit| edit.turn_id == id)
+            .map(|edit| edit.edit_id.clone());
         self.command(
             cx,
+            recovery_edit,
             move |controller| controller.remove(&id),
             move |view, (), cx| {
                 if removes_edit && view.editing.is_some() {
@@ -978,6 +1004,7 @@ impl AgentView {
             && !self.busy
             && !self.loading
             && !self.load_failed
+            && !self.edit_recovery.blocked
             && !self.shutting_down;
         let mut panel = div()
             .flex_shrink_0()
@@ -999,6 +1026,7 @@ impl AgentView {
             && !self.busy
             && !self.loading
             && !self.load_failed
+            && !self.edit_recovery.blocked
             && !self.shutting_down;
         let chat_id = self.record.id.clone();
         // The same source micro weight is used for shaping and both labels.
@@ -1215,6 +1243,7 @@ impl AgentView {
                 && !self.busy
                 && !self.loading
                 && !self.load_failed
+                && !self.edit_recovery.blocked
                 && !self.shutting_down;
             rows = rows.child(
                 div()
@@ -1325,6 +1354,7 @@ impl AgentView {
                     })
                     .child(
                         self.icon_button(SharedString::from(format!("edit-{id}")), "pencil", 22.)
+                            .opacity(if self.edit_recovery.blocked { 0.45 } else { 1. })
                             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                             .on_click(cx.listener(move |v, _, _, cx| v.edit(&id, cx))),
                     )
@@ -1334,6 +1364,7 @@ impl AgentView {
                             "close",
                             22.,
                         )
+                        .opacity(if self.edit_recovery.blocked { 0.45 } else { 1. })
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .on_click(
                             cx.listener(move |v, _, _, cx| v.remove_queue(remove.clone(), cx)),
@@ -1725,6 +1756,7 @@ impl AgentView {
         if self.editing.is_some() {
             bar = bar.child(
                 self.button("cancel-edit", "Cancel")
+                    .opacity(if self.edit_recovery.blocked { 0.45 } else { 1. })
                     .on_click(cx.listener(|v, _, _, cx| v.resolve_edit("cancelled", cx))),
             );
         }
@@ -1744,8 +1776,9 @@ impl AgentView {
         if self.session.retry.is_some() && self.session.state != RunState::Running {
             bar = bar.child(
                 self.button("retry", "Retry")
+                    .opacity(if self.edit_recovery.blocked { 0.45 } else { 1. })
                     .on_click(cx.listener(|v, _, _, cx| {
-                        v.command(cx, |controller| controller.retry(), |_, (), _| {})
+                        v.command(cx, None, |controller| controller.retry(), |_, (), _| {})
                     })),
             );
         }
@@ -1809,6 +1842,7 @@ impl AgentView {
             .child(model_pill)
             .child(effort_pill.child(self.icon("down", 9.)));
         let can_send = !self.busy
+            && !self.edit_recovery.blocked
             && !self.loading
             && !self.shutting_down
             && !self.composer.read(cx).text().trim().is_empty();

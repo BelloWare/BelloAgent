@@ -13,7 +13,9 @@ pub mod workspace;
 pub use profile::{Credential, Profile};
 pub use provider::{Delta, Reply, ResponsesClient};
 pub use runtime::Controller;
-pub use session::{Lane, Message, RunState, Session, SessionStore, Submission};
+pub use session::{
+    Lane, Message, QueueEditState, QueueEditStatus, RunState, Session, SessionStore, Submission,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

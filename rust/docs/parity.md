@@ -343,6 +343,83 @@ nonempty draft persistence, Dock reopen, cancellable Quit, or Sparkle behavior.
 Probe code and its feature-gated hooks count as test-support LOC, not shipped
 production code. No macOS lifecycle parity is claimed by adding this diagnostic.
 
+## Certain queued-edit reconciliation (first recovery checkpoint)
+
+Implemented the first wired boundary in [the reviewed recovery design](held-edit-recovery.md).
+`SessionQueueEdit.swift:44–52` requires a certain journal before answering edit
+status. Rust now exposes typed, actor-locked Active/Saved/Cancelled/Removed/Unknown
+status, including edit identity, current hold and session revision. Fatal or
+uncertain storage cannot authorize recovery through an older published snapshot.
+Opening an existing validated checkpoint confirms its file and parent directory
+before any authoritative answer, without an extra rewrite. Edit/outcome validation
+rejects malformed identities, conflicting holds and invalid saved digests while
+preserving the original bytes. Unknown Cancel records only its own tombstone and
+preserves an unrelated current hold, matching the source helper's lines 132–146 behavior.
+
+The app uses this status at startup/load, on relevant live updates, and after
+queued command failures, including generic removal of a held row. Known later
+failures invalidate earlier pending or IME-deferred successful answers, even when
+an uncertain write did not advance the published revision. Chat/project/controller,
+operation and window-generation checks reject or requery stale completion. A
+confirmed, unchanged Active hold remains editable. Definitive failed Save/Remove
+can retry normally; an unconfirmed state leaves drafts intact and actions blocked.
+
+Reconciliation validates the whole candidate and checked next revision before
+changing live text or ownership. It uses the latest live rewrite/displaced draft,
+not a captured background copy. Actual replacement waits for marked composition;
+an entity observation catches unmark notifications, which do not emit a Changed
+event. The existing source distinction remains: an explicit owned Cancel discards
+its rewrite, whereas recovery preserves genuinely unsaved rewriting according to
+the saved digest/original-text comparison. The new v3 Cancel receipt, nonfreezing
+Begin adoption and source owned/unowned row controls are still pending, not implied
+by this checkpoint.
+
+Ten added core tests bring the core suite to 143. They cover reopen confirmation
+and failure, pre/post-rename errors, poisoned status versus old cached holds,
+malformed open/encode data, tombstones beside other holds, and typed reconciliation
+conflict/overflow rollback. Nine isolated safeguard mutations were detected.
+Twelve fake-platform app checks cover authority rather than cached presentation,
+latest rewrite merging, marked-text deferral, stale navigation/controller/window
+completion, oversized/overflow preservation, live updates, and later Stop failure
+invalidating deferred success. Every generic command/submission/recovery busy
+completion drains a requested recheck, including successful Save after a newer
+Stop failure and rejected submission settlement for an unowned hold. Disposable
+pre-rename collisions demonstrate that
+normal Save and held-row Remove preserve both disk and rewrite and retry safely.
+
+The complete workspace passes 248 default and 255 optional native-probe tests,
+strict all-feature Clippy, build, formatting and diff checks. Twenty repetitions
+of the twelve app recovery tests pass. Independent review ran 52 queue checks
+(including all twelve recovery tests), six shutdown checks, one rebind check,
+all 64 core unit tests and all ten workspace integration tests on verified binaries.
+
+Linux candidate `4f97c4c6e092d79cfa76f09b20a9bfd0e039af993bdfc7df71da8c58a40dd528`
+passed a real pre-rename Save failure/retry: an empty disposable snapshot-path
+directory caused a visible error, the rewrite stayed editable through typing/Undo,
+and restoring only the fixture snapshot allowed Return to save the exact rewrite
+and restore the ordinary Unicode draft. Startup of a settled Cancel preserved the
+unsaved rewrite ahead of the ordinary draft; a matching saved digest restored only
+the ordinary draft. These observations do not inject actual post-rename poisoning.
+
+Final binary `c7abd93facf835f2836515c8626ae28603c959728438222aec77c485bc3156d1`
+adds the reviewed completion-drain correction. Fresh Linux checks showed an unowned
+hold retaining the exact ordinary draft without automatic adoption, and owned
+Edit/type/Cancel at 920×600 restoring the ordinary draft and queued message.
+Close/reopen preserved exact text, and initial Ctrl+P focus routing worked.
+Earlier failure/reconciliation captures retain their 4f97 provenance; final
+screenshots prove the final candidate's targeted smoke checks only.
+
+Remaining limitations are explicit. There is no live-controller reload command:
+reopening while the existing controller still owns the file lock is not a recovery
+route. A truly poisoned controller can also reject the existing Close barrier's
+stop/checkpoint operation. The UI therefore says recovery is unconfirmed and text
+is preserved/blocked, rather than promising an available restart control. No forced
+quit, shutdown bypass or discarded draft was added. Separately, existing global
+typing/Close revision saturation at u64::MAX is not fixed here; this checkpoint's
+checked-overflow proof covers the recovery merge only. Broader checked protocol
+allocation and exact precommand draft flush belong to the next reviewed slice.
+Native macOS IME, pixels and poisoned-state lifecycle recovery remain unvalidated.
+
 ## Queue-header Resume / Send queued
 
 Implemented the original `QueuePanel.swift:125–137` entry point, using
