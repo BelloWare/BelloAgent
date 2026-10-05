@@ -2,6 +2,14 @@
 import SwiftUI
 @testable import PiApp
 
+/// Test-only access to the frozen navigator without changing its private
+/// original implementation or involving a page's independent statistics.
+struct InspectorNavigatorViewportReference: View {
+    let inspector: SessionInspectorModel
+    let compact: Bool
+    var body: some View { InspectorNavigatorReference(inspector: inspector, compact: compact) }
+}
+
 /// The Session Inspector: a navigator of the session's turns and requests on
 /// the left, the page it has open on the right.
 struct SessionInspectorViewReference: View {

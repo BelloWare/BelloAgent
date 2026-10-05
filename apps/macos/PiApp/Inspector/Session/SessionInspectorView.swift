@@ -176,7 +176,7 @@ import AppKit
             details.append(.view(inspectorText(turn.summary, font: PiKit.Font.monospacedDigits(PiKit.Font.micro), color: .piInkTertiary), .flexible))
             let number = InspectorTurnNumber(turn.isOther ? "·" : "\(turn.number)", selected: selected)
             let labels = inspectorColumn([inspectorText(heading, font: .systemFont(ofSize: 12.5, weight: .medium)), inspectorRow(details, spacing: 5)], spacing: 1)
-            let face = inspectorRow([.view(number), .view(labels, .fill), .spacer(0)], spacing: 8)
+            let face = inspectorRow([.view(number), .view(labels, .flexible), .spacer(0)], spacing: 8)
             let selectedRow = PiKit.SelectableRow(content: face, selected: selected, glide: glide) { [weak inspector] in inspector?.select(.turn(turn.id)) }
             let toggle = InspectorDisclosure(expanded: expanded, symbolSize: 9, width: 18, height: 40, label: expanded ? "Hide this turn's requests" : "Show this turn's requests") { [weak inspector] in inspector?.toggle(turn.id) }
             let row = inspectorRow([.view(toggle, .fixed(18)), .view(selectedRow, .fill)], spacing: 0)
@@ -184,7 +184,7 @@ import AppKit
         case .version(let version, let prompt, let selected):
             let label = version.version.map { "Version \($0.index) of \($0.count)" } ?? "Earlier version"
             let line = [Self.firstLine(prompt), version.summary].compactMap { $0?.isEmpty == false ? $0 : nil }.joined(separator: " · ")
-            let face = inspectorRow([.view(InspectorFixedSize(PiKit.SymbolView(PiKit.Symbol("clock.arrow.circlepath", size: 10.5, weight: .medium), color: selected ? .piAccent : .piInkTertiary), width: 16, height: 14)), .view(inspectorColumn([inspectorText(label, font: .systemFont(ofSize: 12, weight: .medium)), inspectorText(line, font: PiKit.Font.micro, color: .piInkTertiary)], spacing: 1), .fill), .spacer(0)], spacing: 7)
+            let face = inspectorRow([.view(InspectorFixedSize(PiKit.SymbolView(PiKit.Symbol("clock.arrow.circlepath", size: 10.5, weight: .medium), color: selected ? .piAccent : .piInkTertiary), width: 16, height: 14)), .view(inspectorColumn([inspectorText(label, font: .systemFont(ofSize: 12, weight: .medium)), inspectorText(line, font: PiKit.Font.micro, color: .piInkTertiary)], spacing: 1), .flexible), .spacer(0)], spacing: 7)
             let row = PiKit.SelectableRow(content: face, selected: selected, glide: glide) { [weak inspector] in inspector?.select(.turn(version.id)) }; row.setAccessibilityIdentifier("inspector-version-row"); row.setAccessibilityLabel("Earlier version: " + label + (line.isEmpty ? "" : ", " + line)); return InspectorInset(row, insets: NSEdgeInsets(top: 0, left: 26, bottom: 0, right: 0))
         case .compaction(let group, let indent, let expanded, let selected):
             let cost = group.requests.compactMap(\.cost)
@@ -203,7 +203,7 @@ import AppKit
     }
     private static func firstLine(_ prompt: String?) -> String? { prompt.flatMap { $0.split(separator: "\n", omittingEmptySubsequences: true).first.map(String.init) }?.trimmingCharacters(in: .whitespaces).nilIfEmpty }
     private func navigation(symbol: String, title: String, subtitle: String, selected: Bool, action: @escaping () -> Void) -> NSView {
-        let face = inspectorRow([.view(InspectorNavIcon(symbol: symbol, selected: selected)), .view(inspectorColumn([inspectorText(title, font: .systemFont(ofSize: 13, weight: .semibold)), inspectorText(subtitle, color: .piInkTertiary)], spacing: 1), .fill), .spacer(0)], spacing: 10)
+        let face = inspectorRow([.view(InspectorNavIcon(symbol: symbol, selected: selected)), .view(inspectorColumn([inspectorText(title, font: .systemFont(ofSize: 13, weight: .semibold)), inspectorText(subtitle, color: .piInkTertiary)], spacing: 1), .flexible), .spacer(0)], spacing: 10)
         let row = PiKit.SelectableRow(content: face, selected: selected, glide: glide, action: action); row.setAccessibilityLabel(title + ", " + subtitle); return row
     }
     override func layout() { super.layout(); list.frame = bounds }

@@ -140,8 +140,8 @@ import XCTest
     override func setUp() async throws { PiKit.Motion.reducedOverride = true }
     override func tearDown() async throws { PiKit.Motion.reducedOverride = nil }
 
-    private func check<V: View>(_ name: String, width: CGFloat, appearance: NSAppearance.Name, reference: V, native: NSView) async throws {
-        let comparison = try await PiKitParity.compare(name, appearance: appearance, swiftUI: reference.frame(width: width), appKit: native, width: width)
+    private func check<V: View>(_ name: String, width: CGFloat, appearance: NSAppearance.Name, reference: V, native: NSView, canvas: NSColor = .piContent) async throws {
+        let comparison = try await PiKitParity.compare(name, appearance: appearance, swiftUI: reference.frame(width: width), appKit: native, canvas: canvas, width: width)
         print(comparison.description)
         XCTAssertEqual(comparison.swiftUIFit.height, comparison.appKitFit.height, accuracy: 0.5, comparison.description)
         XCTAssertLessThanOrEqual(comparison.differing, Int(Double(comparison.total) * 0.03), comparison.description)
@@ -200,6 +200,19 @@ import XCTest
                     let native = InspectorFixedSize(InspectorRequestPage(inspector: fixture.inspector, request: fixture.request, compact: compact), width: width, height: 720)
                     try await check("inspector-request-\(tab.rawValue)-\(Int(width))-\(appearance.rawValue)", width: width, appearance: appearance, reference: reference, native: native)
                 }
+            }
+        }
+    }
+
+    func testNavigatorKeepsItsFullLabelsAtBothWidths() async throws {
+        let root = scratchRoot("inspector-navigator-parity")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let inspector = SessionInspectorModel(scope: SessionUsageScope(sessionID: "navigator", workspaceID: "project"), title: "Navigator parity", archive: PayloadArchive(root: root), workspace: nil, usageLoader: { _, _, _ in throw CaptureFailure.unavailable }, cache: InspectorDocumentCache())
+        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            for (width, compact) in [(CGFloat(262), false), (CGFloat(214), true)] {
+                let reference = InspectorNavigatorViewportReference(inspector: inspector, compact: compact).frame(width: width, height: 200)
+                let native = InspectorFixedSize(InspectorNavigator(inspector: inspector), width: width, height: 200)
+                try await check("inspector-navigator-\(Int(width))-\(appearance.rawValue)", width: width, appearance: appearance, reference: reference, native: native, canvas: .piWindow)
             }
         }
     }
