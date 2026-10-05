@@ -3,14 +3,26 @@ import AppKit
 /// Literal, sourced gateway names; routing verification remains independent
 /// of the response body's display name.
 @MainActor final class MessageModelReports: DashView, PiKit.WidthSizing {
-    let attempt: [String: WireValue]
+    private(set) var attempt: [String: WireValue] = [:]
     private let column = ShellStack(.vertical, spacing: 5)
     private let details = ShellStack(.vertical, spacing: 5, padding: NSEdgeInsets(top: 4, left: 17, bottom: 0, right: 0))
     let disclosure = MessageRoutingDisclosure()
+    private lazy var routing = ShellStack(.vertical, spacing: 0, [.view(disclosure), .view(details, .fill)])
     private var expanded = false
     init(attempt: [String: WireValue]) {
-        self.attempt = attempt
         super.init(frame: .zero); addSubview(column)
+        disclosure.setAccessibilityRole(.disclosureTriangle); disclosure.setAccessibilityValue(false)
+        disclosure.onPress = { [weak self] in self?.toggleDetails() }
+        details.isHidden = true
+        update(attempt: attempt)
+        setAccessibilityIdentifier("messageModelReports")
+    }
+    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    /// Live request metadata can change without resetting the reader's
+    /// disclosure or removing the focused disclosure control.
+    func update(attempt: [String: WireValue]) {
+        guard self.attempt != attempt || column.items.isEmpty else { return }
+        self.attempt = attempt
         let reports = GatewayModelIdentity(metadata: attempt)
         var rows: [ShellItem] = []
         if let response = reports.response { rows.append(.view(Self.report("Response body", response), .fill)) }
@@ -27,14 +39,10 @@ import AppKit
             if !old.isEmpty { details.items.append(.view(PiKit.KeyValue(key: "Legacy reports", value: old.joined(separator: ", "), mono: true), .fill)) }
         }
         details.items.append(.view(Self.micro("The displayed body name does not change routing verification or replay policy."), .fill))
-        disclosure.setAccessibilityRole(.disclosureTriangle); disclosure.setAccessibilityValue(false)
-        disclosure.onPress = { [weak self] in self?.toggleDetails() }
-        rows += [.view(ShellStack(.vertical, spacing: 0, [.view(disclosure), .view(details, .fill)]), .fill)]
-        details.isHidden = true; column.items = rows
-        setAccessibilityIdentifier("messageModelReports")
+        rows.append(.view(routing, .fill)); column.items = rows
+        column.relayoutAll(); PiKit.sizeChanged(self)
     }
-    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
-    private static func micro(_ text: String) -> PiKit.SelectableText { PiKit.SelectableText(text, font: PiKit.Font.micro, color: .piInkTertiary) }
+    private static func micro(_ text: String) -> ShellSelectableText { ShellSelectableText(text, font: PiKit.Font.micro, color: .piInkTertiary) }
     private static func report(_ title: String, _ value: GatewayModelIdentity.Report) -> NSView {
         ShellStack(.vertical, spacing: 1, [.view(PiKit.KeyValue(key: title, value: value.name, mono: true), .fill), .view(micro(value.source), .fill)])
     }
@@ -54,10 +62,10 @@ import AppKit
     private var glyph: PiKit.Symbol { PiKit.Symbol(expanded ? "chevron.down" : "chevron.right", size: 10, weight: .semibold) }
     init() { super.init(frame: .zero); pressScales = false; setAccessibilityLabel("Routing details") }
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
-    override var intrinsicContentSize: NSSize { let words = line.size(scale: piScale); return NSSize(width: 12 + words.width, height: max(glyph.layoutSize.height, words.height)) }
+    override var intrinsicContentSize: NSSize { let words = line.size(scale: piScale); return NSSize(width: 12 + words.width, height: max(glyph.layoutSize.height, words.height) + 8) }
     override func styleFace() { fill.backgroundColor = CGColor.clear; stroke.borderColor = CGColor.clear }
     override func drawContent(in rect: CGRect) {
-        glyph.draw(centredIn: CGRect(x: 0, y: 0, width: 8, height: rect.height), color: .piAccent, scale: piScale)
+        glyph.draw(centredIn: CGRect(x: 0, y: 0, width: 8, height: rect.height), color: .tertiaryLabelColor, scale: piScale)
         line.draw(in: CGRect(x: 12, y: 0, width: max(0, rect.width - 12), height: rect.height), scale: piScale)
     }
 }
@@ -111,7 +119,7 @@ enum MessageBodyReader {
     init(headers: [String: WireValue]) {
         self.headers = headers
         text = headers.keys.sorted().map { "\($0): \(headers[$0]?.string ?? headers[$0]?.pretty ?? "")" }.joined(separator: "\n")
-        let value = PiKit.SelectableText(text.isEmpty ? "No headers recorded" : text, font: PiKit.Font.mono, color: .piInkSecondary)
+        let value = ShellSelectableText(text.isEmpty ? "No headers recorded" : text, font: PiKit.Font.mono, color: .piInkSecondary)
         let scroll = PayloadScroll(value)
         let viewport = PayloadViewport(scroll, height: min(120, CGFloat(max(1, headers.count)) * 17 + 4))
         column = ShellStack(.vertical, spacing: 5, [.view(ShellStack(.horizontal, spacing: PiSpacing.sm, [.view(title), .spacer(8), .view(copy)]), .fill),

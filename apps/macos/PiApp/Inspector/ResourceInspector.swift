@@ -34,12 +34,14 @@ import AppKit
     private lazy var catalogObserver = ShellObserver { [weak self] in self?.catalogChanged() }
     private lazy var stateObserver = ShellObserver { [weak self] in self?.refreshUI() }
     private lazy var tabs = PiKit.Tabs(selection: "skills", items: [("skills", "Skills"), ("instructions", "Instruction chain"), ("settings", "Discovery settings"), ("mcp", "MCP servers")]) { [weak self] in self?.selectTab($0) }
+    private lazy var tabsRow = ShellStack(.horizontal, spacing: PiSpacing.sm, [.view(tabs), .spacer(0)])
     let done = PiKit.Button("Done", style: .secondary)
     let refreshButton = PiKit.Button("Refresh Sources", symbol: "arrow.clockwise", style: .secondary)
     private let column = PayloadColumn(spacing: PiSpacing.md, padding: NSEdgeInsets(top: PiSpacing.xl, left: PiSpacing.xl, bottom: PiSpacing.xl, right: PiSpacing.xl))
-    private let status = ShellNote("", tone: .danger)
+    private let status = ShellNote("", tone: .neutral)
     private let footerText = ShellText("", font: PiKit.Font.caption, color: .piInkTertiary)
     private lazy var footer = ShellStack(.vertical, spacing: 4, [.view(status, .fill), .view(footerText, .fill)])
+    private lazy var measuredFooter = PayloadHuggedFooter(footer, words: footerText, status: status)
     private var sheet: PiKit.Sheet!
     let filterField = PiKit.TextField(placeholder: "Filter by name, description or path", icon: "magnifyingglass")
     let managementToggle = PiKit.Checkbox(isOn: false, label: "Show disabled / needs attention")
@@ -51,7 +53,7 @@ import AppKit
     private var skillEnabled: PiKit.Switch?, selectSkill: PiKit.Button?, projectPolicy: PiKit.MenuButton?
     private let sourceText = PagedTextView(text: "")
     private lazy var sourceBox = PiKit.inset(sourceText)
-    private let sourceLabel = PiKit.TextLine(PiKit.Line("Skill file · from the start", font: PiKit.Font.body, color: .piInk))
+    private let sourceLabel = PiKit.TextLine(PiKit.Line("Skill file · from the start", font: PiKit.Font.caption, color: .piInkSecondary))
     private lazy var bodyPager = PiKit.Pager(previousLabel: "Start", nextLabel: "Next", center: sourceLabel, canPrevious: false, canNext: false,
         previous: { [weak self] in self?.bodyOffset = 0; self?.loadBody() }, next: { [weak self] in guard let self else { return }; self.bodyOffset = Int(self.nextBody ?? 0); self.loadBody() })
     private lazy var skillsPage: NSView = {
@@ -63,13 +65,13 @@ import AppKit
     private let instructionRows = ShellStack(.vertical, spacing: 0)
     private let instructionDetails = ShellStack(.vertical, spacing: 6)
     private let instructionEmpty = PiKit.TextLine(PiKit.Line("No instruction sources", font: PiKit.Font.caption, color: .piInkTertiary))
-    private let sourceCount = PiKit.TextLine(PiKit.Line("n/a sources", font: PiKit.Font.body, color: .piInk))
+    private lazy var instructionListBox = PiKit.inset(PayloadEmptyOverlay(content: PayloadScroll(instructionRows), empty: instructionEmpty))
+    private let sourceCount = PiKit.TextLine(PiKit.Line("n/a sources", font: PiKit.Font.caption, color: .piInkSecondary))
     private lazy var sourcesPager = PiKit.Pager(previousLabel: "Previous Sources", nextLabel: "Next Sources", center: sourceCount, canPrevious: false, canNext: false,
         previous: { [weak self] in guard let self else { return }; self.sourceOffset = max(0, self.sourceOffset - 32); self.requestRefresh() },
         next: { [weak self] in self?.sourceOffset += 32; self?.requestRefresh() })
     private lazy var instructionsPage: NSView = {
-        let list = PayloadEmptyOverlay(content: PayloadScroll(instructionRows), empty: instructionEmpty)
-        return PayloadColumn(items: [.view(PiKit.card(instructionDetails, padding: PiSpacing.md)), .flexible(PiKit.inset(list)), .view(sourcesPager),
+        return PayloadColumn(items: [.view(PiKit.card(instructionDetails, padding: PiSpacing.md)), .flexible(PayloadViewport(instructionListBox)), .view(sourcesPager),
             .view(PiKit.Note("A new user turn refreshes the chain. In-flight requests retain their revision. Descendant guidance is not injected indiscriminately into unrelated directories."))])
     }()
     private let settingsColumn = ShellStack(.vertical, spacing: PiSpacing.xl, padding: NSEdgeInsets(top: 2, left: 2, bottom: 2, right: 2))
@@ -83,7 +85,7 @@ import AppKit
     init(model: WorkspaceModel, initialTab: String = "skills", source: ResourceInspectorSource? = nil, dismiss: @escaping () -> Void = {}) {
         self.model = model; self.source = source ?? .workspace(model); self.dismiss = dismiss; tab = initialTab
         super.init(frame: NSRect(origin: .zero, size: Self.size))
-        sheet = PiKit.Sheet("Skills, instructions and MCP", subtitle: "Discovered skills, the applied instruction chain, discovery settings and MCP servers for the selected project.", symbol: "book.closed", content: column, actions: [refreshButton, done], footer: footer)
+        sheet = PiKit.Sheet("Skills, instructions and MCP", subtitle: "Discovered skills, the applied instruction chain, discovery settings and MCP servers for the selected project.", symbol: "book.closed", content: column, actions: [refreshButton, done], footer: measuredFooter)
         sheet.width = Self.size.width; sheet.height = Self.size.height
         sheet.dismiss = { @MainActor @Sendable [weak self] in self?.dismiss() }; addSubview(sheet)
         done.onPress = { [weak self] in self?.dismiss() }; refreshButton.onPress = { [weak self] in self?.requestRefresh() }
@@ -157,7 +159,7 @@ import AppKit
         tabs.selection = tab
         let page: NSView
         switch tab { case "instructions": page = instructionsPage; case "settings": page = settingsPage; case "mcp": page = mcpPage; default: page = skillsPage }
-        column.items = [.view(tabs), .flexible(page, ideal: 500)]
+        column.items = [.view(tabsRow), .flexible(page, ideal: 500)]
         let enabled = inheritedEnabled && work.isActive
         done.isEnabled = enabled; refreshButton.isEnabled = enabled; sheet?.cancelDisabled = !enabled
         managementToggle.isEnabled = enabled; filterField.field.isEnabled = enabled
@@ -230,6 +232,9 @@ import AppKit
             .view(PiKit.KeyValue(key: "Included", value: "\(snapshot["instructionBytes"]?.nonnegativeInteger.map(String.init) ?? "n/a") / \(snapshot["instructionLimit"]?.nonnegativeInteger.map(String.init) ?? "n/a") UTF-8 bytes"), .fill),
             .view(PiKit.KeyValue(key: "Applied revision", value: snapshot["appliedRevision"]?.string ?? "No turn yet", mono: true), .fill)]
         let sources = snapshot["sources"]?.array ?? []
+        // The former empty instruction scroll view had zero content width.
+        // Keep its spare vertical space without painting a full-width inset.
+        instructionListBox.isHidden = sources.isEmpty
         instructionEmpty.isHidden = !sources.isEmpty
         instructionRows.items = sources.enumerated().flatMap { index, source in [.view(InstructionSourceRow(position: sourceOffset + index + 1, source: source.object ?? [:]), .fill), .view(PayloadHairline(), .fill)] }
         sourceCount.line.text = "\(snapshot["sourceCount"]?.nonnegativeInteger.map(String.init) ?? "n/a") sources"
@@ -415,7 +420,7 @@ import AppKit
     private lazy var resultBox = PiKit.inset(resultText)
     private let column = PayloadColumn()
     private let detailColumn = PayloadColumn()
-    private let status = ShellNote("", tone: .danger)
+    private let status = ShellNote("", tone: .neutral)
     private let glide = PiKit.SelectionGlide()
     private lazy var configurationCard = PiKit.card(ShellStack(.vertical, spacing: PiSpacing.sm, [
         .view(PiKit.TextLine(PiKit.Line("Vault MCP configuration", font: PiKit.Font.heading, color: .piInk))),
