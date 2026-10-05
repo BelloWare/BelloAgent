@@ -3,9 +3,9 @@ import AppKit
 /// Complete retained-body presentation shared by both Inspector entry points.
 /// Expiry and prefix states remain visible; only "Load latest" reads growth.
 @MainActor final class CapturedBodyView: DashView, PiKit.WidthSizing {
-    let source: CapturedBodySource
+    private(set) var source: CapturedBodySource
     let sessionID: String, attemptID: String, kind: String
-    let retained: Bool
+    private(set) var retained: Bool
     private(set) var revision: Int
     private(set) var searchQuery: String
     private(set) var searchHeaders: [String: WireValue]
@@ -24,6 +24,7 @@ import AppKit
     private var hexDocument: UUID?, utf8Document: UUID?
     private var shown: FormatSelection?, searched: SearchSelection?
     private var latestRequests = 0
+    private var sourceRevision = 0
     private let column = PayloadColumn()
     private var outline: JSONOutlineView?
     private let text = PagedTextView(text: "", accessibilityLabel: "Complete retained HTTP body")
@@ -61,6 +62,7 @@ import AppKit
         let session: String, attempt: String, kind: String
         let retained: Bool
         let revision: Int, latest: Int
+        let source: Int
     }
     private struct FormatSelection: Equatable { let format: CapturedBodyFormat; let document: UUID? }
     private struct SearchSelection: Equatable {
@@ -104,7 +106,16 @@ import AppKit
         refresh()
     }
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
-    private var identity: Selection { Selection(session: sessionID, attempt: attemptID, kind: kind, retained: retained, revision: revision, latest: latestRequests) }
+    private var identity: Selection { Selection(session: sessionID, attempt: attemptID, kind: kind, retained: retained, revision: revision, latest: latestRequests, source: sourceRevision) }
+    /// A request can move from the helper to its durable archive without
+    /// changing the body identity. Call only when the route changes; a new
+    /// route reloads while the old document, format and search stay visible.
+    func update(source: CapturedBodySource, retained: Bool) {
+        loadTask?.cancel()
+        self.source = source; self.retained = retained; sourceRevision += 1
+        if window != nil { startLoad() }
+        refresh()
+    }
     private var activeFormat: CapturedBodyFormat { controller.document?.resolvedFormat(format, kind: kind) ?? .json }
     func update(revision: Int? = nil, searchQuery: String = "", searchHeaders: [String: WireValue] = [:], growingBytes: Int? = nil) {
         let changed = revision.map { $0 != self.revision } ?? false
@@ -138,10 +149,11 @@ import AppKit
             onDisplayedText?(""); onCopySource?(nil); selection = ""; hex = ""; utf8 = ""
             hexDocument = nil; utf8Document = nil; expandAll = false; expandRevision = 0; outlineCommand = nil
         }
+        let controller = controller, source = source, kind = kind, combine = preserve && activeFormat == .combined
         loadTask = Task { [weak self] in
-            guard let self else { return }
-            await self.controller.load(kind: self.kind, source: self.source, preservingDocument: preserve, combine: preserve && self.activeFormat == .combined)
-            guard !Task.isCancelled, self.identity == id else { return }
+            guard !Task.isCancelled else { return }
+            await controller.load(kind: kind, source: source, preservingDocument: preserve, combine: combine)
+            guard !Task.isCancelled, let self, self.identity == id else { return }
             self.refresh()
         }
     }
@@ -169,9 +181,10 @@ import AppKit
         guard !searchQuery.isEmpty else { search.cancel(); return }
         outline?.coordinator.cancelPendingSelection()
         guard activeFormat != .combined || controller.document?.combinationFinished != false else { return }
-        searchTask = Task { [weak self] in
-            guard let self else { return }
-            await self.search.search(document: self.controller.document, format: current.format, headers: current.headers, kind: self.kind, query: current.query)
+        let search = search, document = controller.document, kind = kind
+        searchTask = Task {
+            guard !Task.isCancelled else { return }
+            await search.search(document: document, format: current.format, headers: current.headers, kind: kind, query: current.query)
         }
     }
     private func refresh() {
