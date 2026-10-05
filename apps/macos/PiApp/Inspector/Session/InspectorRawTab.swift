@@ -12,6 +12,7 @@ import AppKit
     private var lastRow: String?
     private var lastFocus = 0
     private var bodyKey: String?
+    private var bodyRoute: InspectorBodyRoute?
     private var body: CapturedBodyView?
     private var displayed: NSView?
     private var textView: PagedTextView?
@@ -79,10 +80,15 @@ import AppKit
         case .request, .response:
             let kind = request.raw == .request ? "request" : "response"
             let key = row.id + ":" + kind
+            let route = InspectorBodyRoute.resolve(row: row, kind: kind, metadata: request.metadata, hasWorkspace: inspector.workspace != nil)
             if bodyKey != key {
-                bodyKey = key
-                body = CapturedBodyView(source: source(row, kind: kind), sessionID: inspector.scope.sessionID, attemptID: row.id, kind: kind, retained: row.source != .live, initialFormat: kind == "response" ? .combined : .json, searchQuery: request.query, searchHeaders: request.metadata[kind + "Headers"]?.object ?? [:], growingBytes: kind == "response" ? request.growingBytes : nil, onCopySource: { [weak self] in self?.copySource = $0; self?.refreshCopy() })
-            } else { body?.update(searchQuery: request.query, searchHeaders: request.metadata[kind + "Headers"]?.object ?? [:], growingBytes: kind == "response" ? request.growingBytes : nil) }
+                bodyKey = key; bodyRoute = route
+                body = CapturedBodyView(source: route.source(inspector: inspector, request: request, row: row, kind: kind), sessionID: inspector.scope.sessionID, attemptID: row.id, kind: kind, retained: route == .archive, initialFormat: kind == "response" ? .combined : .json, searchQuery: request.query, searchHeaders: request.metadata[kind + "Headers"]?.object ?? [:], growingBytes: kind == "response" ? request.growingBytes : nil, onCopySource: { [weak self] in self?.copySource = $0; self?.refreshCopy() })
+            } else if bodyRoute != route {
+                bodyRoute = route
+                body?.update(source: route.source(inspector: inspector, request: request, row: row, kind: kind), retained: route == .archive)
+            }
+            body?.update(searchQuery: request.query, searchHeaders: request.metadata[kind + "Headers"]?.object ?? [:], growingBytes: kind == "response" ? request.growingBytes : nil)
             if let body { show(body) }
         case .headers:
             let column = inspectorColumn([InspectorSectionTitle("Request headers", subtitle: "authentication values are masked"), CapturedHeadersView(headers: request.metadata["requestHeaders"]?.object ?? [:]), InspectorSectionTitle("Response headers"), CapturedHeadersView(headers: request.metadata["responseHeaders"]?.object ?? [:])], spacing: 14)
@@ -119,15 +125,6 @@ import AppKit
         if !notice.isEmpty { status = PiKit.Note(notice, tone: .warning); addSubview(status!) }
         needsLayout = true
     }
-    private func source(_ row: InspectorRequestRow, kind: String) -> CapturedBodySource {
-        let state = request.metadata[kind]?.object?["state"]?.string ?? ""
-        if row.source != .live, MessageBodyReader.canReadRetained(state) || inspector.workspace == nil {
-            return .archive(inspector.archive, attemptID: row.id, kind: kind)
-        }
-        if let workspace = inspector.workspace { return .live(workspace, sessionID: inspector.scope.sessionID, attemptID: row.id, kind: kind) }
-        return .archive(inspector.archive, attemptID: row.id, kind: kind)
-    }
-
     private func loadPage(_ row: InspectorRequestRow, key: PageKey) async {
         guard currentPage == key, !Task.isCancelled else { return }
         pageLoading = true; pageText = ""

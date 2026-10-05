@@ -211,6 +211,95 @@ import XCTest
         XCTAssertEqual(fixture.textView("item:3")?.string, result, "The reused outline can read and display the complete text again")
     }
 
+    func testLiveBodiesMoveToTheArchiveWithoutLosingTheirViewFormatOrCopy() async throws {
+        let root = scratchRoot("inspector-source-route")
+        let workspace = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        defer { workspace.shutdown(); try? FileManager.default.removeItem(at: root) }
+        let archive = workspace.traces
+        try await archive.configure(quota: 8_388_608, bodyRetention: 1_000_000, metricRetention: 400_000_000)
+        let fullText = #"{"message":"prefix retained 🌍 payload "# + String(repeating: "more data ", count: 7_000) + #" suffix"}"#
+        let full = Data(fullText.utf8), prefix = Data(full.prefix(180))
+
+        for (name, kind, raw, events) in [("raw-request", "request", InspectorRequestModel.RawPart.request, false), ("raw-response", "response", .response, false), ("response-events", "response", .response, true)] {
+            let inspector = SessionInspectorModel(scope: SessionUsageScope(sessionID: "route", workspaceID: "project"), title: name, archive: archive, workspace: workspace, usageLoader: { _, _, _ in throw CaptureFailure.unavailable }, cache: InspectorDocumentCache())
+            let request = inspector.request
+            var helperAvailable = true, liveReads = 0
+            let live = CapturedBodySource(metadata: {
+                guard helperAvailable else { throw CaptureFailure.unavailable }
+                return CapturedBodyMetadata(body: ["state": .string("partial"), "retainedBytes": .number(Double(prefix.count)), "observedBytes": .number(Double(full.count))], hash: nil)
+            }, page: { offset in
+                guard helperAvailable else { throw CaptureFailure.unavailable }
+                liveReads += 1
+                return (prefix.subdata(in: offset..<min(prefix.count, offset + 32_768)), prefix.count)
+            })
+            request.sourceOverride = { row, body in
+                if row.source == .live { return live }
+                return CapturedBodySource.archive(archive, attemptID: row.id, kind: body)
+            }
+            request.metadataOverride = { row in
+                if row.source != .live { return try await archive.metadata(attempt: row.id) }
+                return [kind: .object(["state": .string("partial"), "retainedBytes": .number(Double(prefix.count)), "observedBytes": .number(Double(full.count))])]
+            }
+            request.tab = events ? .response : .raw; request.raw = raw; request.query = "prefix"
+            let page = InspectorRequestPage(inspector: inspector, request: request, compact: false)
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 680), styleMask: [.titled], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false; window.contentView = page; window.orderFront(nil)
+            defer { request.setActive(false); window.contentView = nil; window.close() }
+            var row = InspectorRequestRow(id: UUID().uuidString, wall: 1, turn: "t", purpose: "turn", api: "openai-responses", alias: "route", model: "model", outcome: "running", source: .live)
+            request.setActive(true); request.open(row, predecessor: nil, previousLabel: nil)
+            request.query = "prefix"
+            if events {
+                try await eventually("The response event control did not mount") {
+                    page.layoutSubtreeIfNeeded()
+                    return InspectorExpandFixture.descendants(PiKit.ButtonBase.self, in: page).contains { $0.accessibilityIdentifier() == "inspector-event-log" }
+                }
+                let eventToggle = try XCTUnwrap(InspectorExpandFixture.descendants(PiKit.ButtonBase.self, in: page).first { $0.accessibilityIdentifier() == "inspector-event-log" })
+                eventToggle.performClick(nil)
+            }
+            try await eventually("\(name) did not read its live prefix") {
+                page.layoutSubtreeIfNeeded()
+                return InspectorExpandFixture.descendants(CapturedBodyView.self, in: page).first?.controller.document?.bytes == prefix
+            }
+            let body = try XCTUnwrap(InspectorExpandFixture.descendants(CapturedBodyView.self, in: page).first)
+            var displayed = "", copySource: CapturedBodyCopySource?
+            let originalCopy = body.onCopySource
+            body.onDisplayedText = { displayed = $0 }
+            body.onCopySource = { source in originalCopy?(source); copySource = source }
+            body.setFormat(.text)
+            try await eventually("\(name) did not show its selected UTF-8 format") { displayed == String(decoding: prefix, as: UTF8.self) && copySource?.format == .text && !body.controller.loading }
+            let previousDocument = try XCTUnwrap(body.controller.document?.id), readsBeforeArchive = liveReads
+
+            let metadata: [String: WireValue] = ["attemptId": .string(row.id), "sessionId": .string("route"), "turnId": .string("t"), "mode": .string("persist"), "outcome": .string("completed"), "api": .string("openai-responses"), kind: .object(["observedBytes": .number(Double(full.count))])]
+            try await archive.begin(metadata, workspace: "project")
+            var offset = 0
+            while offset < full.count {
+                let end = min(full.count, offset + 32_768)
+                try await archive.append(attempt: row.id, kind: kind, offset: offset, bytes: full.subdata(in: offset..<end))
+                offset = end
+            }
+            try await archive.finish(metadata)
+            helperAvailable = false; row.source = .log; row.outcome = "completed"
+            request.open(row, predecessor: nil, previousLabel: nil)
+            try await eventually("\(name) did not replace its prefix with the durable archive after the helper expired") {
+                page.layoutSubtreeIfNeeded()
+                return body.controller.document?.bytes == full && displayed == fullText && copySource?.id == body.controller.document?.id && !body.controller.loading
+            }
+            XCTAssertTrue(InspectorExpandFixture.descendants(CapturedBodyView.self, in: page).first === body)
+            XCTAssertEqual(body.controller.document?.replaces, previousDocument, "The archived body replaces the prefix in place")
+            XCTAssertEqual(body.format, .text); XCTAssertTrue(body.retained)
+            XCTAssertEqual(liveReads, readsBeforeArchive, "Archive transition must not query the unavailable helper")
+            if !events {
+                XCTAssertEqual(body.searchQuery, "prefix")
+                let copy = try XCTUnwrap(InspectorExpandFixture.descendants(PiKit.ButtonBase.self, in: page).first { $0.accessibilityIdentifier() == "inspector-raw-copy" })
+                NSPasteboard.general.clearContents(); copy.performClick(nil)
+                try await eventually("\(name) copied an incomplete live prefix") { NSPasteboard.general.string(forType: .string) == fullText }
+            }
+            let copied = try await XCTUnwrap(copySource).render()
+            XCTAssertEqual(copied, fullText, "The complete durable body, including Unicode, can be copied")
+        }
+        XCTAssertTrue(workspace.hosts.isEmpty, "Source overrides keep this regression independent of external helpers")
+    }
+
     func testSessionViewSourcesContainNoSwiftUIHostsOrImports() throws {
         let tests = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let session = tests.deletingLastPathComponent().appendingPathComponent("PiApp/Inspector/Session")
