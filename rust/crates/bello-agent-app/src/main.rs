@@ -3,6 +3,7 @@ mod chat;
 mod chat_navigation;
 mod file_tab;
 mod layout;
+mod queue_presentation;
 mod quick_open;
 mod theme;
 use bello_agent_core::workspace::{ChatRecord, DraftRecord, SubmissionIntent, WorkspaceStore};
@@ -814,6 +815,12 @@ impl AgentView {
     }
     fn queue(&mut self, cx: &mut Context<Self>) -> Div {
         let p = self.palette;
+        let timing = queue_presentation::QueueTiming::new(
+            self.session.edit.is_some(),
+            self.session.state == RunState::Error,
+            self.session.queue_paused || self.session.state == RunState::Paused,
+            self.session.state == RunState::Running,
+        );
         let mut panel = div()
             .mx(px(16.))
             .mb(px(8.))
@@ -837,17 +844,7 @@ impl AgentView {
                     div()
                         .text_size(px(11.5))
                         .text_color(rgb(p.secondary))
-                        .child(format!(
-                            "{} queued{}",
-                            self.session.pending.len(),
-                            if self.session.edit.is_some() {
-                                " · Pending input held for edit"
-                            } else if self.session.queue_paused {
-                                " · Paused"
-                            } else {
-                                ""
-                            }
-                        )),
+                        .child(timing.header(self.session.pending.len())),
                 )
                 .child(
                     self.icon_button(
@@ -864,25 +861,36 @@ impl AgentView {
         if !self.queue_open {
             return panel;
         }
+        let ordered = queue_presentation::grouped_rows(
+            self.session
+                .pending
+                .iter()
+                .map(|item| item.lane == Lane::Steering),
+        );
+        let sections = usize::from(ordered.iter().any(|row| row.follow_up_number.is_none()))
+            + usize::from(ordered.iter().any(|row| row.follow_up_number.is_some()));
         let mut rows = div()
             .id("queue-list")
-            .max_h(px(160.))
+            .max_h(px(queue_presentation::list_height(ordered.len(), sections)))
             .overflow_y_scroll()
             .flex()
-            .flex_col()
-            .gap(px(4.));
+            .flex_col();
         let mut last_lane = None;
-        for (index, item) in self.session.pending.iter().enumerate() {
+        for row in ordered {
+            let item = &self.session.pending[row.source_index];
             if last_lane.as_ref() != Some(&item.lane) {
                 rows = rows.child(
                     div()
-                        .pt(px(4.))
+                        .h(px(queue_presentation::SECTION_HEIGHT))
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
                         .text_size(px(10.5))
                         .text_color(rgb(p.tertiary))
                         .child(if item.lane == Lane::Steering {
-                            "Steering · after current response boundary"
+                            timing.steering()
                         } else {
-                            "Follow-ups · after the run stops"
+                            timing.follow_ups()
                         }),
                 );
                 last_lane = Some(item.lane.clone());
@@ -894,13 +902,19 @@ impl AgentView {
                     .flex()
                     .items_center()
                     .gap(px(8.))
-                    .h(px(32.))
+                    .h(px(queue_presentation::ROW_HEIGHT))
+                    .flex_shrink_0()
                     .child(
                         div()
                             .w(px(14.))
                             .text_size(px(11.5))
                             .text_color(rgb(p.tertiary))
-                            .child((index + 1).to_string()),
+                            .when_some(row.follow_up_number, |d, number| {
+                                d.child(number.to_string())
+                            })
+                            .when(row.follow_up_number.is_none(), |d| {
+                                d.child(self.icon("steering", 12.).text_color(rgb(p.accent)))
+                            }),
                     )
                     .child(
                         div()

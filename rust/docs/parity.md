@@ -9,6 +9,45 @@ This is a **vertical slice, not feature parity**. The broad product inventory
 below is deliberately unweighted: passing tests do not equal completed features.
 A working Responses chat is materially smaller than the source application.
 
+## Current audit: 2026-10-05
+
+Remote `rust` was fetched at `5f2df967a09d68c0019b624b0f3d3eb2c8cb5d9b`.
+Fetched `main` remains `435c4c8a37072a3ce10229195d4dc39a2a43d976`; its
+`apps/macos` and `packages/swift-host` trees match the Rust branch's original
+source exactly. The reported recovery commit `82cd6d631f2aa3228983f70aeac0b6c782a625ef`
+is not present in this fresh clone. No old workspace or uncommitted work was
+overwritten, and no missing recovery implementation is assumed to exist.
+
+Status vocabulary: **missing** means not wired into the Rust product;
+**partial** means only a subset is implemented; **implemented** means source
+and applicable tests exist for the stated scope; **validated** always names
+the check actually run. Historical “unported” entries below mean **missing**.
+No whole product capability is desktop-validated by this audit.
+
+Current local baseline: `cargo test --locked -p bello-agent-core` passes **77**
+tests (43 unit, 9 chat-workspace, 2 runtime, 18 tool-fixture, 5 transport).
+`cargo clippy --locked -p bello-agent-core --all-targets -- -D warnings` and
+`cargo fmt --all -- --check` pass with Rust 1.99.0. The tests use synthetic
+data and loopback requests, not user sessions or a real model endpoint.
+This is **validated core behavior**, not desktop interaction or full workspace
+validation. The starting commit also has a successful historical full Linux
+[CI run](https://github.com/BelloWare/BelloAgent/actions/runs/37181474816).
+The current `cargo test --locked --workspace` attempt compiled the app's Rust
+code but failed at native linking because `xcb`, `xkbcommon` and `xkbcommon-x11`
+development libraries are unavailable locally. It did not run app tests.
+`cargo clippy --locked --workspace --all-targets -- -D warnings` passes for
+the queue presentation candidate, including the GPUI app and its test code;
+this type-check does not establish a linked executable or UI behavior.
+
+The next small slice restores queue presentation from `QueuePanel.swift`:
+edit/failure/pause timing precedence, stable steering/follow-up grouping,
+follow-up numbering, original row/header sizes and a 3.5-row scrolling cap.
+Five pure presentation regression tests pass independently of GPUI. Source
+response-boundary wording is retained where Rust has no production tool batch.
+This is **implemented presentation policy / partial queue UI**. Actual pixels,
+minimum-window overflow, drag reorder, queue details and native interactions
+remain unvalidated or missing; adaptive room budgeting is not yet ported.
+
 Paths in the source column are relative to the repository root. Core source
 paths begin `packages/swift-host/Sources/PiAgentCore/` (abbreviated `Core/` below).
 Native UI paths begin `apps/macos/PiApp/` (abbreviated `App/`).
@@ -32,6 +71,7 @@ Native UI paths begin `apps/macos/PiApp/` (abbreviated `App/`).
 | Built-in tool definitions/execution | Core/Tools.swift; Core/SessionTools.swift; Core/SessionRun.swift | Production unported. Fixture-only ls module + bounded/cancellable executor now implemented; no tool definitions sent or executed by Controller, no fabricated result |
 | MCP lifecycle/invocation | Core/MCP.swift; Core/HostService.swift mcp.* | Unported |
 | Skills and resource resolution | Core/Resources.swift; Core/HostService.swift resources.* | Unported |
+| Project instructions and instruction precedence | Core/Resources.swift; Core/SessionRun.swift; Core/HostService.swift | Missing in production. Provider supports an instructions argument, but runtime.rs passes an empty string; no project instruction discovery or skills UI is implied |
 | Compaction / context preview | Core/SessionCompaction.swift; Core/CompactionPlanner.swift; Core/ContextPreview.swift | Unported; no claim that local context budgeting is complete |
 | Historical message edits/versions | Core/SessionVersions.swift; Core/EditReplayPlan.swift; Core/MessageVersions.swift | Unported |
 | Branch/fork/side conversations | Core/SessionBranching.swift; Core/SessionSide.swift; Core/SessionPersistence.swift | Unported |
@@ -49,7 +89,7 @@ Native UI paths begin `apps/macos/PiApp/` (abbreviated `App/`).
 | Webhooks / completion sounds / menu bar | App/Workspaces/WorkspaceWebhooks.swift; CompletionSound.swift; App/Dashboard/MenuBarMetrics.swift | Unported |
 | Helper JSON protocol / process supervision | Core/HostService.swift; packages/swift-host/Sources/PiHost/Main.swift; App/Host/ | Unported. Rust in-process single-session actor, no Swift-compatible IPC claim |
 | Accessibility / shortcut parity | NEXT-RELEASE.md A1; App/Design/; App/Application/ | Partial GPUI keyboard/text handling. AX tree, VoiceOver, app-wide shortcut audit not validated |
-| macOS distribution / update / signing | project.yml; docs/Release.md; App/Application/ | Unported/unverified. cfg-selected macOS storage path; no release/tag/feed/assets changed |
+| macOS distribution / Sparkle update / signing | project.yml; docs/Release.md; App/Application/UpdateController.swift | Missing/unverified. Original Sparkle 2.8.1 includes configured check policy, active-work/install barriers and draft-flush failure handling; Rust has no updater integration. cfg-selected macOS storage path only; no release/tag/feed/assets changed |
 | Performance vs Swift | README.md prior validation; docs/validation/ | Measurement hooks implemented; same-hardware baseline and sustained latency comparison pending. CPU callback timing is not frame presentation |
 
 ## Latest incremental slice

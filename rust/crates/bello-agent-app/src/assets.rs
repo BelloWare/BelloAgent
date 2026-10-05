@@ -22,6 +22,7 @@ impl AssetSource for Assets {
             "chat" => r#"<path d="M3 4h18v13H9l-5 4v-4H3z"/>"#,
             "chevron" => r#"<path d="m8 5 7 7-7 7"/>"#,
             "down" => r#"<path d="m5 8 7 7 7-7"/>"#,
+            "steering" => r#"<path d="M5 20V10a4 4 0 0 1 4-4h10m-5-4 5 4-5 4"/>"#,
             "dots" => {
                 r#"<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>"#
             }
