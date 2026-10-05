@@ -9,16 +9,26 @@ import XCTest
     private func check<V: View>(_ name: String, _ reference: V, _ native: NSView, width: CGFloat,
                                appearance: NSAppearance.Name, splitGeometry: Bool = false) async throws {
         let frames = PayloadSplitFrames()
-        let measurement = splitGeometry ? Task { @MainActor in
+        let scrolls = PayloadScrollFrames()
+        let scrollGeometry = name == "payload-resources-settings"
+        let measurement = splitGeometry || scrollGeometry ? Task { @MainActor in
             while !Task.isCancelled {
-                frames.recordVisibleSplits()
+                if splitGeometry { frames.recordVisibleSplits() }
+                if scrollGeometry { scrolls.recordVisibleScrolls() }
                 try? await Task.sleep(for: .milliseconds(20))
             }
         } : nil
         defer { measurement?.cancel() }
         let result = try await PiKitParity.compare(name + (appearance == .aqua ? "-light" : "-dark"), appearance: appearance,
                                                    swiftUI: reference, appKit: native, width: width)
-        if name == "payload-resources-settings" { checkSettingsGeometry(in: native) }
+        if scrollGeometry {
+            print("SCROLL \(name) \(appearance.rawValue): " + scrolls.description)
+            if let old = scrolls.reference, let current = scrolls.native {
+                XCTAssertEqual(old.width, current.width, accuracy: 0.5, "The settings scroll view must occupy the same page width")
+                XCTAssertEqual(old.clipWidth, current.clipWidth, accuracy: 0.5, "Scroll indicators must preserve the settings content width")
+            } else { XCTFail("Both settings scroll viewports must be measured") }
+            checkSettingsGeometry(in: native)
+        }
         if splitGeometry {
             print("SPLIT \(name) \(appearance.rawValue): " + frames.description)
             if let old = frames.reference, let current = frames.native {
@@ -113,6 +123,34 @@ import XCTest
             let frame = Frame(width: split.bounds.width, divider: split.dividerThickness,
                               leading: left.frame, trailing: right.frame)
             if split is PayloadSplit { native = frame } else { reference = frame }
+        }
+        for child in view.subviews { record(child) }
+    }
+}
+
+/// Observe the viewport separately from its rows, so a reserved scroller
+/// cannot look like a control-alignment regression in the settings card.
+@MainActor private final class PayloadScrollFrames {
+    struct Frame {
+        let width: CGFloat, clipWidth: CGFloat, documentWidth: CGFloat
+        let style: NSScroller.Style
+        let scrollerHidden: Bool
+        var description: String { "width=\(width) clip=\(clipWidth) document=\(documentWidth) style=\(style.rawValue) hidden=\(scrollerHidden)" }
+    }
+    var reference: Frame?, native: Frame?
+    var description: String { "SwiftUI \(reference?.description ?? "missing"); AppKit \(native?.description ?? "missing")" }
+    func recordVisibleScrolls() {
+        for window in NSApp.windows where window.isVisible && window.styleMask.isEmpty {
+            if let root = window.contentView { record(root) }
+        }
+    }
+    private func record(_ view: NSView) {
+        if let scroll = view as? NSScrollView,
+           abs(scroll.bounds.width - (ResourceInspector.size.width - PiSpacing.xl * 2)) < 1 {
+            let frame = Frame(width: scroll.bounds.width, clipWidth: scroll.contentView.bounds.width,
+                              documentWidth: scroll.documentView?.frame.width ?? 0, style: scroll.scrollerStyle,
+                              scrollerHidden: scroll.verticalScroller?.isHidden ?? true)
+            if scroll is PayloadScroll { native = frame } else { reference = frame }
         }
         for child in view.subviews { record(child) }
     }

@@ -160,6 +160,10 @@ import AppKit
         self.content = content
         super.init(frame: .zero)
         hasVerticalScroller = true; autohidesScrollers = true; drawsBackground = false; borderType = .noBorder
+        // SwiftUI's replaced ScrollView overlays its indicators. Reserving
+        // a legacy scroller here takes 15 points from the settings and
+        // instruction layouts even while that scroller is hidden.
+        scrollerStyle = .overlay
         document.addSubview(content); documentView = document
     }
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
