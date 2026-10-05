@@ -214,6 +214,7 @@ struct SessionInfoTiming: Equatable {
         self.model = model; self.chat = chat; self.footer = footer; self.costLabel = costLabel
         super.init(frame: .zero)
         pressScales = false
+        circularCorners = costLabel == nil
         onPress = { [weak self] in guard let self else { return }; self.model.openInspector(session: self.chat.id, focus: .overview) }
         setAccessibilityLabel("Session Inspector: cost, tokens, time and every request")
         setAccessibilityIdentifier(costLabel == nil ? "sessionUsageButton" : "sessionUsageCostButton")
@@ -222,7 +223,6 @@ struct SessionInfoTiming: Equatable {
     }
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
     override var isFlipped: Bool { true }
-    override var circularCorners: Bool { costLabel == nil }
     private var symbol: PiKit.Symbol { PiKit.Symbol(costLabel == nil ? "chart.pie" : "dollarsign.circle", size: costLabel == nil ? 28 * 0.46 : 10, weight: costLabel == nil ? .medium : .regular) }
     private var reading: PiKit.Line { PiKit.Line(costLabel ?? "", font: PiKit.Font.monospacedDigits(PiKit.Font.body), color: hovering ? .piInk : .piInkSecondary) }
     override var intrinsicContentSize: NSSize {

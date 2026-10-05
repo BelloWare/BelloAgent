@@ -150,7 +150,8 @@ import XCTest
     func testLedgerWaitsForTheViewportAndReusesRowsWhenARequestSettles() throws {
         let history = SessionStatsFixture.session(requests: 100)
         let ledger = SessionRequestLedger(history: SessionTimingHistory(samples: history.requests, completedRequests: history.requests.count))
-        let view = SessionRequestLedgerView(ledger: ledger, open: { _ in }, limit: 40)
+        var opened: String?
+        let view = SessionRequestLedgerView(ledger: ledger, open: { opened = $0 }, limit: 40)
         let spacer = FixedHeight(NSView(), height: 1500, fills: true)
         let column = ShellStack(.vertical, spacing: 8, [.view(spacer, .fill), .view(view, .fill)])
         let scroll = PageScrollView(column: column)
@@ -171,5 +172,8 @@ import XCTest
         XCTAssertTrue(window.firstResponder === retained)
         XCTAssertEqual(view.rows.rows.count, 40); XCTAssertEqual(view.rows.rows.last?.id, "r101")
         XCTAssertEqual(view.rows.accessibilityChildren()?.count, 40, "VoiceOver can reach rows outside the current viewport")
+        let accessible = try XCTUnwrap(view.rows.accessibilityChildren()?.last as? NSAccessibilityElement)
+        XCTAssertTrue(accessible.accessibilityPerformPress())
+        XCTAssertEqual(opened, "r101", "VoiceOver opens the updated request represented by its row")
     }
 }
