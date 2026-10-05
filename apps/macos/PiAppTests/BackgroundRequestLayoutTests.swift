@@ -11,7 +11,7 @@ import XCTest
         return BackgroundRequestsPage.caption(summary)
     }
     static func row(failed: Bool = false, timed: Bool = true) -> BackgroundRequestRow {
-        BackgroundRequestRow(id: "same-request", kind: failed ? .suggestions : .titles, startedAt: minute,
+        BackgroundRequestRow(id: "same-request", kind: failed ? .suggestions : .title, startedAt: minute,
             endedAt: timed ? minute.addingTimeInterval(1.5) : nil,
             status: failed ? .failed("The suggestion request did not complete: Provider rejected request 01234567-89ab-cdef-0123-456789abcdef") : .completed,
             result: "Fixture reply: Generate a concise session title, preferably 3–7 words and at most one line, that describes the work.",
