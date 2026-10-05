@@ -4,6 +4,25 @@ import SwiftUI
 import UniformTypeIdentifiers
 @testable import PiApp
 
+// Test-only observations and scroll targets. The reference retains the
+// original lazy stack and row sizing; no native layout is used here.
+@MainActor final class ConversationResultsReferenceGeometry: ObservableObject {
+    @Published var targetID: String?
+    var rows: [String: CGRect] = [:]
+}
+
+@MainActor private struct ConversationResultFrameObserver: View {
+    let id: String
+    let geometry: ConversationResultsReferenceGeometry
+    var body: some View {
+        GeometryReader { proxy in
+            let frame = proxy.frame(in: .named("conversation-results-document"))
+            Color.clear.onAppear { geometry.rows[id] = frame }
+                .onChange(of: frame) { _, value in geometry.rows[id] = value }
+        }
+    }
+}
+
 /// The unchanged retained-hit row, also exercised without a helper so empty
 /// previews and overflowing result lists remain part of strict parity.
 struct ConversationHitRowReference: View {
@@ -21,6 +40,8 @@ struct ConversationHitRowReference: View {
 struct ConversationContentReference: View {
     @ObservedObject var model: WorkspaceModel
     let sessionID: String
+    var source: ConversationContentSource? = nil
+    @ObservedObject var geometry = ConversationResultsReferenceGeometry()
     @State private var query = ""
     /// The query the listed results were found with.
     @State private var searched = ""
@@ -42,6 +63,7 @@ struct ConversationContentReference: View {
                     Button("Search") { search() }.buttonStyle(.piSecondaryCompact).disabled(busy || query.count > 256)
                     if busy { PiSpinner(controlSize: .small) }
                 }
+                ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 2) {
                         ForEach(result.hits) { hit in
@@ -51,11 +73,14 @@ struct ConversationContentReference: View {
                                     Text(hit.preview).lineLimit(3).font(PiFont.body).foregroundStyle(Color.piInk)
                                 }
                             }
+                            .background(ConversationResultFrameObserver(id: hit.id, geometry: geometry)).id(hit.id)
                         }
-                    }.padding(PiSpacing.sm)
+                    }.padding(PiSpacing.sm).coordinateSpace(name: "conversation-results-document")
                 }
                 .overlay { if result.hits.isEmpty { Text(busy ? "Searching…" : "No matches on this page").font(PiFont.caption).foregroundStyle(Color.piInkTertiary) } }
                 .piInset().accessibilityLabel("Retained conversation search results")
+                .onChange(of: geometry.targetID) { _, id in if let id { proxy.scrollTo(id, anchor: .center) } }
+                }
                 HStack(spacing: PiSpacing.sm) {
                     Text("\(result.hits.count) matches on this page · \(result.total) retained messages").font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
                     Spacer()
@@ -98,7 +123,9 @@ struct ConversationContentReference: View {
         guard !busy else { return }; busy = true
         let text = text ?? query
         Task { defer { busy = false }; do {
-            let found = try await model.searchConversation(sessionID, query: text, start: start)
+            let found: ContentSearch
+            if let source { found = try await source.search(text, start) }
+            else { found = try await model.searchConversation(sessionID, query: text, start: start) }
             if result.revision.isEmpty { last = max(1, found.total) }
             result = found; searched = text; selectedID = nil; notice = ""
         } catch { notice = error.localizedDescription } }
