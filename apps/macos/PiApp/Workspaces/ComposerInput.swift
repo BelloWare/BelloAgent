@@ -399,11 +399,14 @@ import AppKit
     /// The last height worked out, until something in the card changes.
     private var measured: (width: CGFloat, height: CGFloat)?
     override func invalidateIntrinsicContentSize() { measured = nil; super.invalidateIntrinsicContentSize() }
-    /// The card's width in a composer `width` wide: never narrower than its
-    /// bar's controls. Narrower than that, it stands out past both edges,
-    /// centred, as the SwiftUI card did, and the pane cuts it.
+    /// The toolbar keeps its controls' minimum width and can overflow a
+    /// narrow pane. The editor still takes the pane's proposed width, as
+    /// the native field inside the SwiftUI stack did.
+    private func editorWidth(_ width: CGFloat) -> CGFloat {
+        max(0, width - Self.outer.left - Self.outer.right)
+    }
     private func cardWidth(_ width: CGFloat) -> CGFloat {
-        max(width - Self.outer.left - Self.outer.right, bar.naturalWidth)
+        max(editorWidth(width), bar.naturalWidth)
     }
     /// The narrowest the composer is: its bar's controls and its padding.
     var minimumWidth: CGFloat { bar.naturalWidth + Self.outer.left + Self.outer.right }
@@ -423,18 +426,21 @@ import AppKit
         let height = cardHeight(width: width)
         let x = width > bounds.width - Self.outer.left - Self.outer.right ? PiKit.round((bounds.width - width) / 2, piScale) : Self.outer.left
         card.frame = CGRect(x: x, y: Self.outer.top, width: width, height: height)
+        let fieldWidth = editorWidth(bounds.width)
         var y: CGFloat = 0
         for (view, partHeight, inset) in cardParts(width: width) {
             if view === loadingLine {
                 view.frame = CGRect(x: 8, y: y + 8, width: width - 16, height: partHeight - 16)
             } else if view === chips {
                 view.frame = CGRect(x: inset, y: y + PiSpacing.md, width: width - inset * 2, height: partHeight - PiSpacing.md)
+            } else if view === field {
+                view.frame = CGRect(x: PiKit.round((width - fieldWidth) / 2, piScale), y: y, width: fieldWidth, height: partHeight)
             } else {
                 view.frame = CGRect(x: inset, y: y, width: width - inset * 2, height: partHeight)
             }
             if view === field {
                 let size = placeholder.intrinsicContentSize
-                placeholder.frame = CGRect(x: 15, y: y + 9, width: min(size.width, max(0, width - 30)), height: size.height)
+                placeholder.frame = CGRect(x: view.frame.minX + 15, y: y + 9, width: min(size.width, max(0, fieldWidth - 30)), height: size.height)
             }
             y += partHeight
         }
