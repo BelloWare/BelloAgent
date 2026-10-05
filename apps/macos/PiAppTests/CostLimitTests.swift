@@ -222,3 +222,110 @@ final class CostLimitTests: XCTestCase {
         return try XCTUnwrap(found)
     }
 }
+
+extension CostLimitTests {
+    /// The views below the chips by their identifiers.
+    @MainActor private static func view<T: NSView>(_ type: T.Type, _ identifier: String, in root: NSView) -> T? {
+        if let match = root as? T, match.accessibilityIdentifier() == identifier { return match }
+        for subview in root.subviews { if let found = view(type, identifier, in: subview) { return found } }
+        return nil
+    }
+
+    /// The choices as the editor and Settings use them: a chip chooses at once;
+    /// Custom… opens an amount field that starts from a custom limit, refuses
+    /// an amount it cannot use (the Set button disabled, Return naming the
+    /// range) and sets a valid one, closing again.
+    @MainActor func testTheChoicesChooseAPresetOrAValidCustomAmount() throws {
+        var chosen: [CostLimit?] = []
+        let choices = CostLimitChoices(selection: .usd(7.5), defaultLimit: .usd(25)) { chosen.append($0) }
+        choices.frame = CGRect(x: 0, y: 0, width: 348, height: choices.height(forWidth: 348))
+        choices.layoutSubtreeIfNeeded()
+        let custom = try XCTUnwrap(Self.view(CostLimitChip.self, "cost-limit-custom", in: choices))
+        XCTAssertEqual(custom.label, "Custom · $7.50")
+        XCTAssertTrue(custom.isAccessibilitySelected())
+        XCTAssertFalse(try XCTUnwrap(Self.view(CostLimitChip.self, "cost-limit-default", in: choices)).isAccessibilitySelected())
+
+        try XCTUnwrap(Self.view(CostLimitChip.self, "cost-limit-10", in: choices)).performClick(nil)
+        XCTAssertEqual(chosen, [.usd(10)])
+        try XCTUnwrap(Self.view(CostLimitChip.self, "cost-limit-default", in: choices)).performClick(nil)
+        XCTAssertEqual(chosen.last, .some(nil), "Default follows the Settings limit")
+
+        let closedHeight = choices.height(forWidth: 348)
+        custom.performClick(nil)
+        XCTAssertTrue(choices.customOpen)
+        XCTAssertGreaterThan(choices.height(forWidth: 348), closedHeight, "The amount's row opens under the chips")
+        XCTAssertEqual(choices.width(forProposal: 500), 500, "The choices take the width offered, as their flow did")
+        let field = try XCTUnwrap(Self.view(PiKit.TextField.self, "cost-limit-custom-amount", in: choices))
+        let set = try XCTUnwrap(Self.view(PiKit.Button.self, "cost-limit-custom-set", in: choices))
+        XCTAssertEqual(field.text, "7.50", "The field starts from the custom limit")
+        XCTAssertTrue(set.isEnabled)
+        field.text = "nope"; field.onChange?("nope")
+        XCTAssertFalse(set.isEnabled, "Set Limit waits for an amount it can use")
+        let beforeInvalid = choices.height(forWidth: 348)
+        field.onSubmit?()
+        XCTAssertGreaterThan(choices.height(forWidth: 348), beforeInvalid, "Return on a bad amount names the range")
+        XCTAssertEqual(chosen.count, 2, "Nothing was chosen")
+        field.text = "12.5"; field.onChange?("12.5")
+        XCTAssertEqual(choices.height(forWidth: 348), beforeInvalid, "Typing clears the complaint")
+        set.performClick(nil)
+        XCTAssertEqual(chosen.last, .some(.usd(12.5)))
+        XCTAssertFalse(choices.customOpen, "Setting an amount closes the field")
+        XCTAssertEqual(choices.height(forWidth: 348), closedHeight)
+    }
+
+    /// Settings sets its controls' enabled state itself: an invalid amount's
+    /// Set button stays disabled through the form's pass, a valid one follows the form.
+    @MainActor func testSettingsKeepsAnInvalidAmountsSetButtonDisabled() throws {
+        let state = EnabledState()
+        let choices = CostLimitChoices(selection: .usd(25), identifier: "settings-cost-limit") { _ in }
+        choices.enabledState = state
+        choices.frame = CGRect(x: 0, y: 0, width: 420, height: 120)
+        try XCTUnwrap(Self.view(CostLimitChip.self, "settings-cost-limit-custom", in: choices)).performClick(nil)
+        let field = try XCTUnwrap(Self.view(PiKit.TextField.self, "settings-cost-limit-custom-amount", in: choices))
+        let set = try XCTUnwrap(Self.view(PiKit.Button.self, "settings-cost-limit-custom-set", in: choices))
+        field.text = ""; field.onChange?("")
+        state.apply(to: choices, formEnabled: true)
+        XCTAssertFalse(set.isEnabled)
+        field.text = "3"; field.onChange?("3")
+        state.apply(to: choices, formEnabled: true)
+        XCTAssertTrue(set.isEnabled)
+        state.apply(to: choices, formEnabled: false)
+        XCTAssertFalse(set.isEnabled)
+    }
+
+    /// The editor saves a choice and shows why a save failed; its reading
+    /// follows the chat's live figures.
+    @MainActor func testTheEditorSavesAndShowsAFailure() async throws {
+        struct Refused: LocalizedError { var errorDescription: String? { "The vault is locked." } }
+        let footer = SessionMetrics()
+        footer.cost = SessionCostReading(limit: .usd(25), defaultLimit: .usd(25), spentUSD: 1, reportedRequests: 1)
+        @MainActor final class Saves { var saved: [CostLimit?] = []; var refuse = true }
+        let saves = Saves()
+        let editor = CostLimitLiveEditor(footer: footer) { limit in
+            saves.saved.append(limit)
+            if saves.refuse { throw Refused() }
+        }
+        editor.frame = CGRect(x: 0, y: 0, width: 348, height: editor.height(forWidth: 348))
+        let plain = editor.height(forWidth: 348)
+        try XCTUnwrap(Self.view(CostLimitChip.self, "cost-limit-5", in: editor)).performClick(nil)
+        let deadline = Date().addingTimeInterval(5)
+        while editor.saving || editor.height(forWidth: 348) == plain, Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(saves.saved, [.usd(5)])
+        XCTAssertGreaterThan(editor.height(forWidth: 348), plain, "The failure is shown")
+        func texts(_ view: NSView) -> [String] {
+            var found = (view as? TextBlock).map { $0.isHidden ? [] : [$0.text] } ?? []
+            for subview in view.subviews { found += texts(subview) }
+            return found
+        }
+        XCTAssertTrue(texts(editor).contains("The vault is locked."), "The failure reads: \(texts(editor))")
+        saves.refuse = false
+        try XCTUnwrap(Self.view(CostLimitChip.self, "cost-limit-10", in: editor)).performClick(nil)
+        while editor.saving || editor.height(forWidth: 348) != plain, Date() < deadline.addingTimeInterval(5) { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(editor.height(forWidth: 348), plain, "A good save clears the failure")
+        footer.cost = SessionCostReading(limit: .usd(10), override: .usd(10), defaultLimit: .usd(25), spentUSD: 9, reportedRequests: 3)
+        while editor.reading != footer.cost, Date() < deadline.addingTimeInterval(10) { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(editor.reading, footer.cost, "The editor follows the chat's reading")
+        XCTAssertTrue(try XCTUnwrap(Self.view(CostLimitChip.self, "cost-limit-10", in: editor)).isAccessibilitySelected())
+        XCTAssertEqual(editor.meter.accessibilityLabel(), "$9.00 of $10.00, 90%")
+    }
+}

@@ -4,8 +4,8 @@ import SwiftUI
 // Temporary (0.1.120): where the settings and onboarding screens, now
 // AppKit, meet SwiftUI. Their SwiftUI hosts (the sheet `WorkspaceView`
 // presents, the `Settings` scene in PiApp) take them through the
-// representables below, and they host three SwiftUI views other workstreams
-// own (`CostLimitChoices`, `CatalogModelPicker`, `WorkspaceFolderList`).
+// representables below, and they host two SwiftUI views other workstreams
+// own (`CatalogModelPicker`, `WorkspaceFolderList`).
 // Each goes when its other side is AppKit.
 
 /// The Settings sheet's content, as `WorkspaceView` presents it.
@@ -110,11 +110,6 @@ typealias HostedSwiftUI = SettingsBridges.Hosted<AnyView>
         func width(forProposal proposal: CGFloat) -> CGFloat { ceil(size(proposal).width) }
         override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: height(forWidth: bounds.width > 0 ? bounds.width : 380)) }
         override func layout() { super.layout(); host.view.frame = bounds }
-    }
-
-    /// Settings' cost limit: `CostLimitChoices` (Dashboard).
-    static func costLimitChoices(selection: @escaping () -> CostLimit?, choose: @escaping (CostLimit?) -> Void, identifier: String) -> Hosted<AnyView> {
-        Hosted { AnyView(CostLimitChoices(selection: selection(), choose: choose, identifier: identifier).toggleStyle(.piSwitch).buttonStyle(.piSecondary)) }
     }
 
     /// The catalog's models in a popover: `CatalogModelPicker` (workspace shell).

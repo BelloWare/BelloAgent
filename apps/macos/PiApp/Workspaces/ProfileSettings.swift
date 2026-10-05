@@ -331,10 +331,11 @@ import Combine
             SettingsRow(label: "Dashboard window", last: true, control: stepper(name: "Dashboard window", unit: "hours", range: 1...8760,
                                                                             get: { Int64(controller.preferences.dashboard.windowHours) }, set: { controller.preferences.dashboard.windowHours = Int($0) })),
         ])
-        let choices = SettingsBridges.costLimitChoices(selection: { controller.preferences.defaultChatCostLimit },
-                                                       choose: { controller.preferences.chatCostLimit = $0 ?? .standard }, identifier: "settings-cost-limit")
-        updaters.append { choices.update() }
-        hostedViews.append(choices)
+        let choices = CostLimitChoices(selection: controller.preferences.defaultChatCostLimit, identifier: "settings-cost-limit") {
+            controller.preferences.chatCostLimit = $0 ?? .standard
+        }
+        choices.enabledState = enabled
+        updaters.append { [weak choices] in choices?.selection = controller.preferences.defaultChatCostLimit }
         let limitRow = SettingsRow(label: "Cost limit per chat", detail: Self.costDetail(controller), last: true, control: choices)
         let spending = SettingsCard(title: "Spending", footer: CostLimitText.explanation + " A chat can have its own limit: open its token usage figure under the composer, or Session info.", rows: [limitRow])
         // The detail follows the default limit: the row is made again when it changes.

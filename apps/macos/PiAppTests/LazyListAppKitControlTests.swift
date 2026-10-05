@@ -141,9 +141,9 @@ final class LazyListAppKitControlTests: XCTestCase {
         let monitor = MenuBarMetricsController(load: { _, _, _ in throw CaptureFailure.unavailable }, period: .fifteenMinutes)
         let panel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 576), styleMask: [.borderless], backing: .buffered, defer: false)
         panel.isReleasedWhenClosed = false
-        let popup = NSHostingView(rootView: MenuBarMetricsView(load: { _, _, _ in throw CaptureFailure.unavailable }, live: model.liveActivity,
-                                                               monitorController: monitor, openApp: {}, openReport: {})
-            .environment(\.menuBarHeight, 576))
+        let popup = MenuBarMetricsView(load: { _, _, _ in throw CaptureFailure.unavailable }, live: model.liveActivity,
+                                       monitorController: monitor, openApp: {}, openReport: {})
+        popup.panelHeight = 576
         panel.contentView = popup; panel.orderFront(nil)
         defer { monitor.setVisible(false); panel.contentView = nil; panel.close() }
         let repository = root.appendingPathComponent("repository", isDirectory: true)
@@ -167,9 +167,9 @@ final class LazyListAppKitControlTests: XCTestCase {
             let popUps = descendants(view).filter { $0 is NSPopUpButton }.map { String(describing: type(of: $0)) }
             XCTAssertEqual(popUps, [], "Live pop-up menus in the \(name): \(popUps)")
         }
-        // A menu control: SwiftUI's trigger button in the menu bar panel, the
-        // AppKit menu button (a menu-button role, its menu built on the press) in the Changes panel.
-        let triggers = (descendants(popup).compactMap { $0 as? PiPopoverTriggerButton }.map { $0 as NSView }
+        // A menu control: the AppKit menu control (a menu-button role, its
+        // menu built on the press) in the menu bar panel, the menu button in the Changes panel.
+        let triggers = (descendants(popup).compactMap { $0 as? PiKit.MenuControl }.map { $0 as NSView }
                         + descendants(panelView).compactMap { $0 as? PiKit.MenuButton }.map { $0 as NSView }).compactMap { $0.accessibilityIdentifier() }
         for identifier in ["monitorOptions", "git-branch-menu", "git-stash-menu"] {
             XCTAssertTrue(triggers.contains(identifier), "\(identifier) is a menu control: \(triggers)")

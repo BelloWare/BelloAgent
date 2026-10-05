@@ -53,7 +53,7 @@ struct DashboardBucket: Sendable, Identifiable {
     var gateway = GatewayTotals()
 }
 
-struct DashboardRequest: Sendable, Identifiable {
+struct DashboardRequest: Sendable, Identifiable, Equatable {
     let id: String
     let sessionID: String
     let workspaceID: String

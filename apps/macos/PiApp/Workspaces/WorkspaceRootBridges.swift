@@ -6,8 +6,6 @@ import SwiftUI
 // - The window scene (Application/PiApp.swift) takes `WorkspaceView`, a
 //   SwiftUI view: it hosts the AppKit root and carries the scene's focused
 //   value for the menu commands.
-// - The Usage Report and Background Requests pages (Dashboard/) are SwiftUI:
-//   they are hosted here until the Dashboard workstream's AppKit pages land.
 // - Sheets are presented in the app's sheet window (Application/PiSheetWindow),
 //   which takes SwiftUI content; the Settings, Conversation Content and
 //   Resources sheets are still SwiftUI (Application/, Inspector/).
@@ -41,36 +39,16 @@ struct WorkspaceView: View {
 /// The pages laid over the chats.
 @MainActor enum WorkspacePages {
     static func make(_ page: WorkspacePage, model: WorkspaceModel) -> NSView? {
-        let root: AnyView
         switch page {
-        case .report: root = AnyView(ReportPage(model: model))
-        case .background: root = AnyView(BackgroundRequestsPage(model: model))
+        case .report: return ReportPage(model: model)
+        case .background: return BackgroundRequestsPage(model: model)
         default: return nil
         }
-        let host = PageHost(root: root)
-        host.sizingOptions = []
-        return host
     }
     /// The window's disabled state and motion, handed to the page.
     static func update(_ view: NSView, enabled: Bool, reduceMotion: Bool) {
-        guard let host = view as? PageHost, host.enabled != enabled || host.reduceMotion != reduceMotion else { return }
-        host.enabled = enabled; host.reduceMotion = reduceMotion
-        host.apply()
-    }
-    final class PageHost: NSHostingView<AnyView> {
-        let page: AnyView
-        var enabled = true, reduceMotion = PiKit.Motion.reduced
-        init(root: AnyView) {
-            page = root
-            super.init(rootView: AnyView(EmptyView()))
-            apply()
-        }
-        @MainActor @preconcurrency required init(rootView: AnyView) { page = rootView; super.init(rootView: rootView) }
-        @MainActor @preconcurrency required init?(coder: NSCoder) { fatalError("Not used from a nib") }
-        func apply() {
-            rootView = AnyView(page.buttonStyle(.piSecondary).toggleStyle(.piSwitch).ignoresSafeArea(.container, edges: .top)
-                .environment(\.piReduceMotion, reduceMotion).disabled(!enabled))
-        }
+        if let page = view as? ReportPage { page.inheritedEnabled = enabled; page.inheritedReduceMotion = reduceMotion }
+        if let page = view as? BackgroundRequestsPage { page.inheritedEnabled = enabled; page.inheritedReduceMotion = reduceMotion }
     }
 }
 

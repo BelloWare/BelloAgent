@@ -163,31 +163,3 @@ struct WorkspaceFolderList: View {
         }
     }
 }
-
-// TEMPORARY: the limit editor is the Dashboard workstream's SwiftUI
-// `CostLimitLiveEditor`, shown in the shared SwiftUI popover presenter. It
-// moves back beside the cost-limit model code once the editor is AppKit.
-/// The popover "Raise limit…" opens over its button: the chat's limit editor.
-/// One app-owned popover at a time, like the stats pills' and the skills'.
-@MainActor final class CostLimitPopover {
-    static let shared = CostLimitPopover()
-    let presenter = PiPopoverPresenter()
-    /// The chat whose limit the open popover edits (a test seam).
-    private(set) var sessionID: String?
-    static let width: CGFloat = 380
-    func toggle(model: WorkspaceModel, footer: SessionMetrics, sessionID: String, anchor: NSView) {
-        if presenter.isShown, self.sessionID == sessionID { close(); return }
-        self.sessionID = sessionID
-        let reduce = PiMotion.reducesMotion
-        presenter.show(from: anchor, width: Self.width, maximumHeight: 460, animates: !reduce) {
-            AnyView(CostLimitLiveEditor(footer: footer, title: "Raise this chat's limit", choose: { limit in
-                try await model.setCostLimit(limit, for: sessionID)
-                // Chosen: the popover has done its job.
-                CostLimitPopover.shared.close()
-            })
-            .padding(PiSpacing.lg)
-            .environment(\.piReduceMotion, reduce).tint(Color.piAccent))
-        }
-    }
-    func close() { presenter.close(); sessionID = nil }
-}

@@ -1,5 +1,5 @@
 import AppKit
-import SwiftUI
+import Combine
 
 /// One native status item for production and UI fixtures. Mouse-up actions open
 /// immediately for either button; the popover never creates a workspace window.
@@ -8,10 +8,11 @@ import SwiftUI
     private var item: NSStatusItem?
     private let popover = NSPopover()
     private let layout = MenuBarPanelLayout()
+    private var panel: MenuBarMetricsView?
     var onOpen: (() -> Void)?
     var isShown: Bool { popover.isShown }
 
-    func install<Content: View>(title: String? = nil, accessibilityLabel: String = "Bello Agent activity and usage", @ViewBuilder content: () -> Content) {
+    func install(title: String? = nil, accessibilityLabel: String = "Bello Agent activity and usage", content: () -> MenuBarMetricsView) {
         guard item == nil else { return }
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         self.item = item
@@ -24,7 +25,11 @@ import SwiftUI
         item.button?.target = self; item.button?.action = #selector(toggle)
         item.button?.sendAction(on: Self.clickEvents)
         popover.behavior = .transient
-        popover.contentViewController = NSHostingController(rootView: MenuBarPanelFrame(layout: layout, content: content()))
+        let panel = content()
+        self.panel = panel
+        let controller = NSViewController()
+        controller.view = panel
+        popover.contentViewController = controller
         popover.contentSize = NSSize(width: MenuBarPanelLayout.width, height: 720)
     }
 
@@ -33,6 +38,7 @@ import SwiftUI
         if popover.isShown { close() }
         else {
             layout.height = MenuBarPanelLayout.height(available: button.window?.screen?.visibleFrame.height ?? 744)
+            panel?.panelHeight = layout.height
             popover.contentSize = NSSize(width: MenuBarPanelLayout.width, height: layout.height)
             onOpen?()
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
