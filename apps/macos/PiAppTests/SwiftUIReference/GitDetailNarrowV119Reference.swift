@@ -153,7 +153,7 @@ import SwiftUI
     let topHeightKey: AnyHashable
     let loading: Bool
     let more: AnyView?
-    final class Coordinator {
+    @MainActor final class Coordinator {
         let table = GitDiffTable.Coordinator()
         let top = HostedDiffAccessoryNarrowV119Reference()
         let more = HostedDiffAccessoryNarrowV119Reference()
