@@ -157,7 +157,7 @@ struct SessionRequestLedger: Equatable {
     private var offsets: [CGFloat] = [], heights: [CGFloat] = []
     private var totalHeight: CGFloat = 0
     private(set) var made: [Int: SessionLedgerRowView] = [:]
-    private var boundsObserver: NSObjectProtocol?
+    nonisolated(unsafe) private var boundsObserver: NSObjectProtocol?
     private weak var observedClip: NSClipView?
     private var accessible: [NSAccessibilityElement]?
     init(rows: [SessionRequestLedgerRow], open: ((String) -> Void)?) {
@@ -236,15 +236,20 @@ struct SessionRequestLedger: Equatable {
     }
 }
 
-@MainActor private final class SessionLedgerAccessibleRow: NSAccessibilityElement {
-    weak var owner: SessionLedgerRows?
-    let index: Int
-    init(owner: SessionLedgerRows, index: Int) { self.owner = owner; self.index = index; super.init() }
-    nonisolated override func accessibilityPerformPress() -> Bool {
-        MainActor.assumeIsolated {
+private final class SessionLedgerAccessibleRow: NSAccessibilityElement {
+    private let press: @MainActor @Sendable () -> Bool
+    @MainActor init(owner: SessionLedgerRows, index: Int) {
+        press = { [weak owner] in
             guard let owner, let open = owner.open, owner.rows.indices.contains(index) else { return false }
             open(owner.rows[index].id); return true
         }
+        super.init()
+    }
+    nonisolated override func accessibilityPerformPress() -> Bool {
+        // AppKit invokes accessibility actions on the main thread. Transfer
+        // only the actor-bound closure, rather than this non-Sendable element.
+        let action = press
+        return MainActor.assumeIsolated { action() }
     }
 }
 
