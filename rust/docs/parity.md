@@ -294,6 +294,31 @@ pending; latest-stream identity is headless-tested.
 This is not full transcript selection, Markdown rendering, other row actions,
 accessibility or native macOS interaction parity.
 
+## Optional macOS own-window probe
+
+The default build excludes the `native-lifecycle-smoke` feature and all of its
+startup hooks. The opt-in probe reuses GPUI's already-locked Cocoa/Objective-C
+bindings; it adds no new package versions. The reviewed workflow uses a public
+standard `macos-26` Actions job. The runner requires explicit public-job opt-in,
+creates a fresh empty isolated project/session/home, and passes no provider
+configuration or credentials.
+
+The probe observes a native GUI session/display/Metal device and our own visible
+AppKit window with nonempty bounds, then invokes that window's ordinary
+`performClose:` on the native main queue, outside a borrowed GPUI callback. It
+requires ordered window-close/app-quit markers and a clean process exit. A watchdog,
+missing capability, unexpected window or failed marker sequence fails the experiment;
+it does not skip or change permissions/TCC. Logs expose only allowlisted markers.
+
+Local Linux checks passed: 141 default Rust tests, 145 feature-enabled tests,
+strict Clippy/build for both configurations, and four Python harness tests.
+The macOS-only probe has **not yet compiled or run**; native evidence requires its
+own exact-commit CI result. Even a successful probe establishes only empty-workspace
+native lifecycle traversal. It does not prove pixels, desktop input, IME, accessibility,
+nonempty draft persistence, Dock reopen, cancellable Quit, or Sparkle behavior.
+Probe code and its feature-gated hooks count as test-support LOC, not shipped
+production code. No macOS lifecycle parity is claimed by adding this diagnostic.
+
 ## Next implementation priorities
 
 ### macOS application lifetime prerequisite (source audit)

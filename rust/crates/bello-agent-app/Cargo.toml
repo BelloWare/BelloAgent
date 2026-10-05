@@ -5,6 +5,14 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+default = []
+native-lifecycle-smoke = ["dep:cocoa", "dep:objc"]
+
+[target.'cfg(target_os = "macos")'.dependencies]
+cocoa = { version = "=0.26.0", optional = true }
+objc = { version = "=0.2.7", optional = true }
+
 [dependencies]
 bello-agent-core = { path = "../bello-agent-core" }
 bello-workbench = { git = "https://github.com/BelloWare/BelloBox.git", rev = "ee0d27a89aa52524c29b2be5937716b5e799e748" }

@@ -45,3 +45,13 @@ jobs:
         run: cargo test --locked -p bello-agent-core
       - name: Build native applications without launching
         run: cargo build --locked --workspace
+      - name: Test native lifecycle harness policy
+        run: python3 scripts/native-lifecycle-smoke-macos.py --self-test
+      - name: Build explicitly enabled native lifecycle probe
+        run: cargo build --locked -p bello-agent-app --features native-lifecycle-smoke
+      - name: Observe isolated native own-window lifecycle
+        timeout-minutes: 2
+        env:
+          BELLO_NATIVE_PUBLIC_REPOSITORY: ${{ github.event.repository.private == false }}
+        # Own-window visibility and normal close/quit only; no input or pixel parity claim.
+        run: python3 scripts/native-lifecycle-smoke-macos.py "$PWD/target/debug/bello-agent"

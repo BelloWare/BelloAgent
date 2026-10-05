@@ -3,6 +3,8 @@ mod chat;
 mod chat_navigation;
 mod file_tab;
 mod layout;
+#[cfg(feature = "native-lifecycle-smoke")]
+mod native_smoke;
 mod queue_detail;
 mod queue_presentation;
 mod quick_open;
@@ -2120,6 +2122,8 @@ fn default_session() -> PathBuf {
 }
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     START.set(Instant::now()).ok();
+    #[cfg(feature = "native-lifecycle-smoke")]
+    native_smoke::validate_launch()?;
     let mut args = std::env::args().skip(1);
     let mut project = std::env::current_dir()?;
     let mut session = default_session();
@@ -2244,6 +2248,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             })
             .detach();
             cx.activate(true);
+            #[cfg(feature = "native-lifecycle-smoke")]
+            native_smoke::install(cx);
         });
     Ok(())
 }
