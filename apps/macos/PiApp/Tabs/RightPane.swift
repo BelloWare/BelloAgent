@@ -112,14 +112,13 @@ import Combine
         super.layout()
         var top: CGFloat = 0
         if let strip { strip.frame = CGRect(x: 0, y: 0, width: bounds.width, height: TabStripView.height); top = TabStripView.height }
-        let body = CGRect(x: 0, y: top, width: bounds.width, height: max(0, bounds.height - top))
-        // The visible side's flexible transcript keeps its enclosing
-        // allocation; fixed header/composer controls may overflow it.
+        // Opacity kept the side in the released ZStack's layout. Its fixed
+        // controls therefore keep their minimum for the covered tab too;
+        // the tab strip and outer pane still have their actual allocation.
+        let bodyWidth = max(bounds.width, (sideView as? SidePaneView)?.minimumWidth ?? 0)
+        let body = CGRect(x: (bounds.width - bodyWidth) / 2, y: top, width: bodyWidth, height: max(0, bounds.height - top))
         sideView?.frame = body
-        // Opacity kept those controls in the released ZStack's minimum,
-        // which is proposed to the covered tab's representable sibling.
-        let contentWidth = max(body.width, (sideView as? SidePaneView)?.minimumWidth ?? 0)
-        content.frame = CGRect(x: (body.width - contentWidth) / 2, y: body.minY, width: contentWidth, height: body.height)
+        content.frame = body
     }
     /// A covered side takes no clicks.
     override func hitTest(_ point: NSPoint) -> NSView? {
