@@ -153,6 +153,42 @@ import XCTest
         XCTAssertTrue(routing.window === fixture.window)
     }
 
+    func testNavigatorDisclosureKeepsItsFocusWhileRequestsOpenAndClose() async throws {
+        SessionInspectorWindows.shared.closeAll()
+        let pane = try await SessionStatsPopoverTests.seededPane()
+        defer { SessionInspectorWindows.shared.closeAll(); pane.close() }
+        pane.model.openInspector(session: pane.chat.id)
+        let controller = try XCTUnwrap(SessionInspectorWindows.shared.controller(sessionID: pane.chat.id))
+        let inspector = controller.inspector, window = try XCTUnwrap(controller.window)
+        let root = try XCTUnwrap(window.contentView as? SessionInspectorView)
+        let navigator = try XCTUnwrap(InspectorExpandFixture.descendants(InspectorNavigator.self, in: root).first)
+        try await eventually("The Inspector did not list its turn disclosures") {
+            root.layoutSubtreeIfNeeded()
+            return inspector.indexLoaded && inspector.index.turns.contains { !$0.entries.isEmpty }
+        }
+        let turn = try XCTUnwrap(inspector.index.turns.first { !$0.entries.isEmpty })
+        inspector.select(.turn(turn.id))
+        if inspector.expanded.contains(turn.id) { inspector.toggle(turn.id) }
+        try await eventually("The selected turn did not have its native navigator row") {
+            root.layoutSubtreeIfNeeded()
+            guard let row = navigator.list.madeView(for: turn.id) else { return false }
+            return InspectorExpandFixture.descendants(PiKit.ButtonBase.self, in: row).contains { $0.accessibilityLabel() == "Show this turn's requests" }
+        }
+        let row = try XCTUnwrap(navigator.list.madeView(for: turn.id))
+        let disclosure = try XCTUnwrap(InspectorExpandFixture.descendants(PiKit.ButtonBase.self, in: row).first { $0.accessibilityLabel() == "Show this turn's requests" })
+        XCTAssertTrue(window.makeFirstResponder(disclosure))
+        disclosure.performClick(nil)
+        try await eventually("Opening a turn replaced its focused disclosure") {
+            root.layoutSubtreeIfNeeded()
+            return inspector.expanded.contains(turn.id) && navigator.list.madeView(for: turn.id) === row && window.firstResponder === disclosure && disclosure.accessibilityLabel() == "Hide this turn's requests"
+        }
+        disclosure.performClick(nil)
+        try await eventually("The focused turn disclosure did not close its requests") {
+            root.layoutSubtreeIfNeeded()
+            return !inspector.expanded.contains(turn.id) && navigator.list.madeView(for: turn.id) === row && window.firstResponder === disclosure && disclosure.accessibilityLabel() == "Show this turn's requests"
+        }
+    }
+
     func testSessionViewSourcesContainNoSwiftUIHostsOrImports() throws {
         let tests = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let session = tests.deletingLastPathComponent().appendingPathComponent("PiApp/Inspector/Session")
