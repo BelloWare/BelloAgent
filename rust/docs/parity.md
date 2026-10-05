@@ -97,6 +97,7 @@ Native UI paths begin `apps/macos/PiApp/` (abbreviated `App/`).
 | Swift/Pi journal import/portable preview | Core/HostService.swift session.import / recover; Core/SessionReplay.swift | Unported. Explicitly refuses automatic journal migration |
 | Follow-up and steering queue | Core/SessionQueue.swift | Partial. Separate lanes, steering at response boundaries, queue limits, captured model/effort, pause/resume, reorder core API. All-at-once mode not ported |
 | Durable queued editing | Core/SessionQueueEdit.swift | Implemented hold/save/cancel/remove and idempotent identity subset. Both lanes held, restart retains hold; tests. Source revision-basis/outcome pruning not ported |
+| Queued follow-up promotion | Core/SessionQueue.swift steerQueued; App/Workspaces/QueuePanel.swift | Implemented pending follow-up → steering action, same identity/payload/choices and durable lane order. Active worker, edit-hold and persistence guards apply. Rust delivery remains at the current response boundary; production tool-batch parity is still missing. Validation recorded below |
 | Queue presentation | App/Workspaces/QueuePanel.swift | Partial. Bounded/collapsible panel, truthful timing, stable lane grouping, full-text editing, and per-chat full-message/model-choice popover. Drag reorder, adaptive room budgeting, and native interaction validation remain pending |
 | Images/attachments/image-only submissions | Core/PiImage.swift; App/Composer/Attachments.swift; Core/SessionQueue.swift validate | Unported. Attachment control unavailable; transport currently accepts text only |
 | Built-in tool definitions/execution | Core/Tools.swift; Core/SessionTools.swift; Core/SessionRun.swift | Production unported. Fixture-only ls module + bounded/cancellable executor now implemented; no tool definitions sent or executed by Controller, no fabricated result |
@@ -341,6 +342,61 @@ prove pixels, desktop input, IME, accessibility,
 nonempty draft persistence, Dock reopen, cancellable Quit, or Sparkle behavior.
 Probe code and its feature-gated hooks count as test-support LOC, not shipped
 production code. No macOS lifecycle parity is claimed by adding this diagnostic.
+
+## Durable queued follow-up promotion
+
+The source `SessionQueue.swift:91–100` moves one existing follow-up to the tail
+of steering without changing its identity, text or captured model/reasoning.
+Rust now exposes that transaction through the existing queue row's source 22pt
+arrow action, offered only while running and without a queue edit hold. The
+original current request is neither cancelled nor restarted. Its live stream
+continues across the metadata checkpoint; steering is delivered at Rust's
+existing response boundary, before follow-ups. The tooltip describes that actual
+boundary rather than promising the unimplemented production tool batch.
+
+Session validation rejects missing/already-steering, stopped and held targets.
+Controller admission additionally checks the real active worker under the same
+mutex as persistence. Failed and uncertain writes retain existing rollback and
+fail-closed semantics; reopened sessions retain promoted lane/identity/choices.
+The app captures project/chat/controller/operation identity, leaves composer and
+IME state editable, and applies completion to the original chat after navigation.
+Controller replacement invalidates old operation ownership. The existing close
+barrier waits for active or inactive chat promotion completion without freezing
+composition; either success or failure releases that pending-work guard. Successful retry only
+clears its own still-displayed notice, not a newer unrelated error.
+
+Six core regressions cover full Unicode/captured choices/order, all admission
+failures, before/after-rename faults and recovered stream data, real loopback
+blocked-response promotion with a subsequent delta, queued delivery order, Stop,
+reopen and Retry with changed current configuration. Six GPUI fake-platform
+checks cover action policy/22pt bounds at normal/minimum widths, composition,
+stale/replaced ownership, navigation, error ownership and pending-promotion close
+barriers across success/failure and active/inactive chats. Those headless checks
+are separate from desktop interaction and native macOS validation.
+
+Final gates use an isolated Cargo target seeded only with third-party artifacts;
+all first-party libraries and tests are freshly compiled from this checkout.
+No mutation-test artifacts are reused for the final candidate. All 191 default
+and 198 diagnostic-feature workspace tests, strict Clippy/build in both
+configurations, formatting and diff checks pass. Independent review reran six app,
+three session and three runtime promotion checks on immutable final binaries.
+
+Fresh Linux binary
+`73b8e7a47e1ebe7ca7671ea46fa44c40774766db57a261c7eaf9770625b43929`
+passed real arrow-click promotion with a gated loopback response: B moved to
+steering while A stayed a follow-up, request count remained one, and the composer
+stayed focused/editable. At 920×600 the controls and both lanes remained readable.
+Stop/close/reopen retained B's steering lane, A's follow-up lane and the exact
+composer draft. Resume produced the observed synthetic request order root, B, A,
+with B and A completed in the transcript. No external provider was contacted.
+
+One restart displayed a blank client until pointer movement; a same-fixture
+pre-promotion baseline and repeated final candidate both painted before input.
+This intermittent startup observation remains open, not attributed to promotion
+or claimed resolved. Native macOS interaction, native IME, VoiceOver and full
+source tool-batch parity remain unvalidated/missing. The new checkpoint requires
+its own CI evidence. No dependency, provider setting, tool execution or
+native-sheet behavior is enabled by this slice.
 
 ## Sidebar Pin/Unpin slice
 

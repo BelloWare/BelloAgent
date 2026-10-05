@@ -244,6 +244,28 @@ impl Session {
         self.pending.extend(ordered);
         Ok(())
     }
+    /// Move the same pending follow-up behind all existing steering messages.
+    /// The active request continues unchanged; this slice consumes steering at
+    /// its next response boundary because production tools remain disabled.
+    pub fn promote_to_steering(&mut self, id: &str) -> Result<()> {
+        let index = self
+            .pending
+            .iter()
+            .position(|item| item.id == id && item.lane == Lane::FollowUp)
+            .ok_or_else(|| invalid("Message is no longer a pending follow-up"))?;
+        if self.state != RunState::Running {
+            return Err(invalid(
+                "Steering requires an active run; the message stays queued",
+            ));
+        }
+        if self.edit.is_some() {
+            return Err(invalid("Finish or cancel the queued edit first"));
+        }
+        let mut item = self.pending.remove(index);
+        item.lane = Lane::Steering;
+        self.pending.push(item);
+        Ok(())
+    }
     pub fn start_next(&mut self) -> Result<Option<Submission>> {
         if self.state == RunState::Running
             || self.queue_paused
@@ -1200,6 +1222,177 @@ mod tests {
         assert_eq!(s.pending[0].id, b);
         s.begin_edit(&a, "edit").unwrap();
         assert!(s.reorder(&[a, b]).is_err());
+    }
+    fn promotion_fixture() -> Session {
+        let mut session = Session::new();
+        session
+            .submit(Submission::new("active".into(), Lane::FollowUp))
+            .unwrap();
+        session.start_next().unwrap().unwrap();
+        for (id, lane) in [
+            ("follow-before", Lane::FollowUp),
+            ("steer-before", Lane::Steering),
+            ("promoted", Lane::FollowUp),
+            ("steer-after", Lane::Steering),
+            ("follow-after", Lane::FollowUp),
+        ] {
+            session
+                .submit(Submission {
+                    id: id.into(),
+                    text: format!("{id}: {}\ncomplete Unicode text 🦋", "x".repeat(2048)),
+                    lane,
+                    model: Some(format!("captured-{id}")),
+                    effort: Some("high".into()),
+                })
+                .unwrap();
+        }
+        session
+    }
+    #[test]
+    fn promotion_moves_same_submission_to_steering_tail_without_touching_active_run() {
+        let mut session = promotion_fixture();
+        let mut expected = session.clone();
+        let mut promoted = expected.pending.remove(2);
+        promoted.lane = Lane::Steering;
+        expected.pending.push(promoted);
+        session.promote_to_steering("promoted").unwrap();
+        assert_eq!(
+            serde_json::to_value(&session).unwrap(),
+            serde_json::to_value(expected).unwrap()
+        );
+        assert_eq!(
+            session
+                .pending
+                .iter()
+                .filter(|item| item.lane == Lane::Steering)
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            ["steer-before", "steer-after", "promoted"]
+        );
+        assert_eq!(
+            session
+                .pending
+                .iter()
+                .filter(|item| item.lane == Lane::FollowUp)
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            ["follow-before", "follow-after"]
+        );
+    }
+    #[test]
+    fn promotion_rejects_stale_steering_inactive_and_any_edit_hold_without_mutation() {
+        for (id, state, hold) in [
+            ("missing", RunState::Running, None),
+            ("steer-before", RunState::Running, None),
+            ("promoted", RunState::Idle, None),
+            ("promoted", RunState::Paused, None),
+            ("promoted", RunState::Error, None),
+            ("promoted", RunState::Running, Some("promoted")),
+            ("promoted", RunState::Running, Some("follow-before")),
+            ("promoted", RunState::Running, Some("steer-before")),
+        ] {
+            let mut session = promotion_fixture();
+            if state != RunState::Running {
+                let reply = session.active_reply.clone().unwrap();
+                session.finish(&reply, Err(Error::Cancelled)).unwrap();
+                session.state = state;
+                session.queue_paused = session.state != RunState::Idle;
+            }
+            if let Some(hold) = hold {
+                session.begin_edit(hold, "held-edit").unwrap();
+            }
+            let before = serde_json::to_value(&session).unwrap();
+            assert!(session.promote_to_steering(id).is_err());
+            assert_eq!(serde_json::to_value(session).unwrap(), before);
+        }
+        let mut session = promotion_fixture();
+        let active = session.active.as_ref().unwrap().id.clone();
+        let before = serde_json::to_value(&session).unwrap();
+        assert!(session.promote_to_steering(&active).is_err());
+        assert_eq!(serde_json::to_value(session).unwrap(), before);
+    }
+    #[test]
+    fn promotion_rename_failures_keep_memory_atomic_and_reopen_exact_durable_lane() {
+        for (fault, committed) in [
+            (WriteFault::BeforeRename, false),
+            (WriteFault::AfterRename, true),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("promotion.json");
+            let mut store = SessionStore::open(&path).unwrap();
+            store
+                .transact(|session| {
+                    *session = promotion_fixture();
+                    Ok(())
+                })
+                .unwrap();
+            let reply = store.snapshot().active_reply.unwrap();
+            store
+                .append_delta(&reply, Delta::Text("retained once".into()))
+                .unwrap();
+            let before = store.snapshot();
+            let bytes = fs::read(&path).unwrap();
+            store.fault = fault;
+            let failure = store
+                .transact(|session| session.promote_to_steering("promoted"))
+                .unwrap_err();
+            assert_eq!(matches!(failure, Error::PersistenceUncertain(_)), committed);
+            assert_eq!(
+                serde_json::to_value(store.snapshot()).unwrap(),
+                serde_json::to_value(&before).unwrap()
+            );
+            store.fault = WriteFault::None;
+            if committed {
+                assert!(
+                    store
+                        .transact(|session| session.promote_to_steering("follow-before"))
+                        .is_err()
+                );
+                assert!(
+                    store
+                        .append_delta(&reply, Delta::Text("must not append".into()))
+                        .is_err()
+                );
+            } else {
+                assert_eq!(fs::read(&path).unwrap(), bytes);
+                // A rejected checkpoint leaves the original stream writable.
+                store
+                    .append_delta(&reply, Delta::Text(" after failure".into()))
+                    .unwrap();
+            }
+            drop(store);
+            let reopened = SessionStore::open(&path).unwrap().snapshot();
+            let mut expected_pending = before.pending;
+            if committed {
+                let mut promoted = expected_pending.remove(2);
+                promoted.lane = Lane::Steering;
+                expected_pending.push(promoted);
+            }
+            assert_eq!(
+                serde_json::to_value(&reopened.pending).unwrap(),
+                serde_json::to_value(expected_pending).unwrap()
+            );
+            assert_eq!(reopened.state, RunState::Paused);
+            assert!(reopened.queue_paused);
+            assert_eq!(
+                serde_json::to_value(&reopened.retry).unwrap(),
+                serde_json::to_value(before.active).unwrap()
+            );
+            assert_eq!(reopened.messages.len(), 2);
+            assert_eq!(
+                reopened.messages.last().unwrap().text,
+                if committed {
+                    "retained once"
+                } else {
+                    "retained once after failure"
+                }
+            );
+            assert!(!reopened.messages.last().unwrap().replay_eligible);
+            assert_eq!(
+                serde_json::to_value(SessionStore::open(&path).unwrap().snapshot()).unwrap(),
+                serde_json::to_value(reopened).unwrap()
+            );
+        }
     }
     #[test]
     fn failed_write_preserves_memory_and_disk_then_uncertain_write_blocks() {

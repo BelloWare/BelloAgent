@@ -7,6 +7,7 @@ mod layout;
 mod native_menu;
 #[cfg(feature = "native-lifecycle-smoke")]
 mod native_smoke;
+mod queue_actions;
 mod queue_detail;
 mod queue_presentation;
 mod quick_open;
@@ -1034,6 +1035,14 @@ impl AgentView {
             let id = item.id.clone();
             let remove = id.clone();
             let detail = id.clone();
+            let promote = id.clone();
+            let chat_id = self.record.id.clone();
+            let offers_promotion = queue_actions::offers_promotion(&self.chat, &id);
+            let promotion_enabled = self.queue_promotion.is_none()
+                && !self.busy
+                && !self.loading
+                && !self.load_failed
+                && !self.shutting_down;
             rows = rows.child(
                 div()
                     .flex()
@@ -1087,6 +1096,26 @@ impl AgentView {
                             },
                         )),
                     )
+                    .when(offers_promotion, |row| {
+                        row.child(
+                            self.icon_button(
+                                queue_actions::promotion_control_id(&promote),
+                                "steering",
+                                22.,
+                            )
+                            .debug_selector(|| "queue-promote".to_string())
+                            .tooltip(move |_, cx| {
+                                cx.new(|_| queue_actions::PromotionHint(p)).into()
+                            })
+                            .opacity(if promotion_enabled { 1.0 } else { 0.45 })
+                            .on_click(cx.listener(
+                                move |view, _, _, cx| {
+                                    view.promote_queued(&chat_id, &promote, cx);
+                                    cx.stop_propagation();
+                                },
+                            )),
+                        )
+                    })
                     .child(
                         self.icon_button(SharedString::from(format!("edit-{id}")), "pencil", 22.)
                             .on_click(cx.listener(move |v, _, _, cx| v.edit(&id, cx))),

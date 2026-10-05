@@ -200,6 +200,20 @@ impl Controller {
     pub fn reorder(&self, ids: &[String]) -> Result<()> {
         self.change(|s| s.reorder(ids))
     }
+    /// Persist the lane change without interrupting or relaunching the worker.
+    pub fn promote_to_steering(&self, id: &str) -> Result<()> {
+        self.change_checked(
+            |inner| {
+                if !inner.worker_running {
+                    return Err(invalid(
+                        "Steering requires an active run; the message stays queued",
+                    ));
+                }
+                Ok(())
+            },
+            |s| s.promote_to_steering(id),
+        )
+    }
     fn require_config(&self) -> Result<()> {
         if self.config.is_none() {
             return Err(invalid("No connection configured"));
@@ -207,6 +221,13 @@ impl Controller {
         Ok(())
     }
     fn change<T>(&self, action: impl FnOnce(&mut Session) -> Result<T>) -> Result<T> {
+        self.change_checked(|_| Ok(()), action)
+    }
+    fn change_checked<T>(
+        &self,
+        check: impl FnOnce(&Inner) -> Result<()>,
+        action: impl FnOnce(&mut Session) -> Result<T>,
+    ) -> Result<T> {
         let mut inner = self
             .inner
             .lock()
@@ -214,6 +235,7 @@ impl Controller {
         if let Some(error) = &inner.fatal {
             return Err(invalid(error.clone()));
         }
+        check(&inner)?;
         let result = inner.store.transact(action);
         if result.is_ok() {
             self.publish(&inner);

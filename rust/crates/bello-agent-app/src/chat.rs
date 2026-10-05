@@ -21,6 +21,8 @@ pub struct ChatState {
     pub draft_before_edit: String,
     pub visible_messages: usize,
     pub queue_open: bool,
+    pub queue_promotion: Option<uuid::Uuid>,
+    pub queue_promotion_error: Option<String>,
     pub queue_detail: Option<crate::queue_detail::QueueDetail>,
     pub last_revision: u64,
     pub busy: bool,
@@ -86,6 +88,8 @@ impl ChatState {
             error: None,
             visible_messages: 100,
             queue_open: true,
+            queue_promotion: None,
+            queue_promotion_error: None,
             queue_detail: None,
             busy: false,
             loading: false,
@@ -122,6 +126,17 @@ impl ChatState {
         })
     }
     pub fn replace_controller(&mut self, controller: Arc<Controller>, cx: &mut Context<AgentView>) {
+        if !Arc::ptr_eq(&self.controller, &controller) {
+            self.queue_promotion = None;
+            if self
+                .queue_promotion_error
+                .as_ref()
+                .is_some_and(|owned| self.error.as_ref() == Some(owned))
+            {
+                self.error = None;
+            }
+            self.queue_promotion_error = None;
+        }
         self._poll = Self::subscribe(&controller, self.record.id.clone(), cx);
         self.session = controller.snapshot_shared();
         self.last_revision = controller.revision();

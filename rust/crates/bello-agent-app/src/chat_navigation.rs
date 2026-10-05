@@ -673,7 +673,11 @@ impl AgentView {
         if !self.pin_operations.is_empty()
             || self.busy
             || self.loading
-            || self.inactive.values().any(|chat| chat.busy || chat.loading)
+            || self.queue_promotion.is_some()
+            || self
+                .inactive
+                .values()
+                .any(|chat| chat.busy || chat.loading || chat.queue_promotion.is_some())
         {
             self.error = Some("Wait for chat operations to finish before closing.".into());
             cx.notify();
