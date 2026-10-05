@@ -24,7 +24,7 @@ jobs:
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential pkg-config curl ca-certificates libfontconfig1-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libasound2-dev libzstd-dev libssl-dev libvulkan-dev cmake clang lld
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config curl ca-certificates libfontconfig1-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libasound2-dev libzstd-dev libssl-dev libvulkan-dev cmake clang lld xvfb xauth openbox xdotool imagemagick tesseract-ocr fonts-dejavu-core mesa-vulkan-drivers
       - name: Install pinned Rust toolchain
         run: |
           rustup toolchain install 1.99.0 --profile minimal --component rustfmt --component clippy
@@ -37,3 +37,22 @@ jobs:
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Build native applications
         run: cargo build --locked --workspace
+      - name: UI evidence harness self-tests
+        run: python3 -m unittest discover -s scripts -p 'test_linux_ui_smoke.py' -v
+      - name: Capture current Linux software-rendered UI
+        timeout-minutes: 4
+        run: |
+          export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          test -f "$VK_ICD_FILENAMES"
+          xvfb-run --auto-servernum --server-args="-screen 0 1600x1000x24 -nolisten tcp" \
+            sh -eu -c 'openbox >/dev/null 2>&1 & wm=$!; trap "kill $wm || true" EXIT; python3 scripts/linux-ui-smoke.py agent target/debug/bello-agent "$RUNNER_TEMP/ui-evidence"'
+      - name: Upload synthetic Linux UI evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-linux-ui-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/ui-evidence/*.png
+            ${{ runner.temp }}/ui-evidence/report.json
+          if-no-files-found: warn
+          retention-days: 3
