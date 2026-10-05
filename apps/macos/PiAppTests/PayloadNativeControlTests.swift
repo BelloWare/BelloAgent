@@ -48,6 +48,25 @@ import XCTest
         XCTAssertGreaterThanOrEqual(split.arrangedSubviews[0].frame.width, 297.5, "The list must retain its minimum width")
         XCTAssertGreaterThanOrEqual(split.arrangedSubviews[1].frame.width, 487.5, "The payload must retain its minimum width")
     }
+    func testSkillSelectionButtonNamesItsSkillAndExposesSelectionAndPress() {
+        let skill = SkillDescriptor(id: "skill", name: "review-code", path: "/skills/review-code/SKILL.md", description: "Review code", scope: "project", contentHash: "hash", metadataHash: "meta", policy: "explicitOnly", reasons: [], missingDependencies: [])
+        var presses = 0
+        let view = ResourceSkillRow(skill: skill, glide: PiKit.SelectionGlide()) { presses += 1 }
+        XCTAssertEqual(view.row.accessibilityRole(), .button)
+        XCTAssertEqual(view.row.accessibilityLabel(), "/review-code, Only when you ask, project, /skills/review-code/SKILL.md")
+        XCTAssertFalse(view.row.isAccessibilitySelected())
+        view.row.selected = true; XCTAssertTrue(view.row.isAccessibilitySelected())
+        XCTAssertTrue(view.row.accessibilityPerformPress()); XCTAssertEqual(presses, 1)
+    }
+    func testMCPToolSelectionButtonNamesTheToolAndExposesSelectionAndPress() {
+        var presses = 0
+        let view = MCPToolRow(entry: ["name": .string("read_file"), "description": .string("Read a retained file.")], glide: PiKit.SelectionGlide()) { presses += 1 }
+        XCTAssertEqual(view.row.accessibilityRole(), .button)
+        XCTAssertEqual(view.row.accessibilityLabel(), "read_file, Read a retained file.")
+        XCTAssertFalse(view.row.isAccessibilitySelected())
+        view.row.selected = true; XCTAssertTrue(view.row.isAccessibilitySelected())
+        XCTAssertTrue(view.row.accessibilityPerformPress()); XCTAssertEqual(presses, 1)
+    }
     func testRefinedSearchReplacesHighlightsWithoutReplacingTextStorage() throws {
         let initial = try PayloadSearchResult.find(text: "answer and another", query: "a")
         let view = PayloadSearchTextView(result: initial, selected: 0)
