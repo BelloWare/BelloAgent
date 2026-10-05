@@ -4,7 +4,7 @@ import AppKit
 @MainActor final class InspectorRawTab: DashView {
     let inspector: SessionInspectorModel
     let request: InspectorRequestModel
-    var compact: Bool { didSet { if compact != oldValue { needsLayout = true } } }
+    var compact: Bool { didSet { if compact != oldValue { if toolbar != nil { rebuildToolbar() }; needsLayout = true } } }
     private var copySource: CapturedBodyCopySource?
     private var notice = "" { didSet { refreshNotice() } }
     private var pageText = "", pageTotal = 0, pageOffset = 0, pageLoading = false
@@ -19,9 +19,10 @@ import AppKit
     private var footer: NSView?
     private var toolbar: ShellStack?
     private var status: PiKit.Note?
+    private lazy var parts = PiKit.Tabs(selection: request.raw, items: [(InspectorRequestModel.RawPart.request, "Request"), (.response, "Response"), (.headers, "Headers"), (.metadata, "Metadata"), (.links, "Links"), (.events, "Events")]) { [weak request] in request?.raw = $0 }
     private lazy var search = InspectorSearchField(text: request.query) { [weak request] in request?.query = $0 }
     private lazy var copy = PiKit.Button("Copy", symbol: "doc.on.doc", style: .ghost) { [weak self] in self?.copyView() }
-    private lazy var menu: PiKit.MenuControl = {
+    private lazy var captureMenu: PiKit.MenuControl = {
         let face = InspectorCaptureMenuFace()
         return PiKit.MenuControl(label: "Capture settings and exports", identifier: "inspector-raw-menu", help: "Capture settings and exports", face: face, onHover: { face.hovering = $0 }) { [weak self] in self?.menuEntries() ?? [] }
     }()
@@ -61,12 +62,13 @@ import AppKit
         refreshContent(); refreshNotice(); refreshCopy(); needsLayout = true
     }
     private func rebuildToolbar() {
-        let tabs = PiKit.Tabs(selection: request.raw, items: [(InspectorRequestModel.RawPart.request, "Request"), (.response, "Response"), (.headers, "Headers"), (.metadata, "Metadata"), (.links, "Links"), (.events, "Events")]) { [weak request] in request?.raw = $0 }
-        tabs.setAccessibilityIdentifier("inspector-raw-parts")
-        var items: [ShellItem] = [.view(tabs), .spacer(4)]
+        parts.selection = request.raw
+        parts.setAccessibilityIdentifier("inspector-raw-parts")
+        var items: [ShellItem] = [.view(parts), .spacer(4)]
         if showsBody { items.append(.view(search, .fixed(compact ? 180 : 250))) }
-        items += [.view(copy), .view(menu, .fixed(28))]
-        toolbar?.removeFromSuperview(); toolbar = inspectorRow(items, spacing: PiSpacing.sm); addSubview(toolbar!)
+        items += [.view(copy), .view(captureMenu, .fixed(28))]
+        if let toolbar { toolbar.items = items }
+        else { toolbar = inspectorRow(items, spacing: PiSpacing.sm); addSubview(toolbar!) }
     }
     private func show(_ view: NSView) { if displayed !== view { displayed?.removeFromSuperview(); displayed = view; addSubview(view) } }
     private func refreshContent() {
@@ -106,7 +108,7 @@ import AppKit
         if textKey != key { textKey = key; textView = PagedTextView(text: text, accessibilityLabel: label) }
         else { textView?.text = text }
         guard let textView else { return }
-        let host = InspectorContentHost(content: ShellInset(textView))
+        let host = InspectorContentHost(content: PiKit.inset(textView))
         if text.isEmpty { host.cover(InspectorPlaceholder(symbol: "", title: empty)) }
         show(host)
     }
@@ -177,14 +179,14 @@ import AppKit
         if !workspace.isEphemeral(sessionID) { modes.append(("persist", "Persist locally")) }
         var entries: [PiMenuEntry] = [.note("Future body capture")]
         for (value, title) in modes {
-            entries.append(.button(title, checked: mode == value, identifier: "inspector-capture-" + value) { Task { await setMode(value) } })
+            entries.append(.button(title, checked: mode == value, identifier: "inspector-capture-" + value) { Task { await self.setMode(value) } })
         }
         entries.append(.divider)
-        entries.append(.button("Export Metadata…", enabled: row.source != .record, identifier: "inspector-export-metadata") { Task { await exportMetadata(row) } })
-        entries.append(.button("Export Retained Body Bytes…", enabled: row.source != .record, identifier: "inspector-export-bodies") { Task { await exportBodies(row) } })
-        entries.append(.button("Export a Redacted View…", enabled: showsBody && copySource != nil, identifier: "inspector-export-redacted") { Task { await exportRedacted(row) } })
+        entries.append(.button("Export Metadata…", enabled: row.source != .record, identifier: "inspector-export-metadata") { Task { await self.exportMetadata(row) } })
+        entries.append(.button("Export Retained Body Bytes…", enabled: row.source != .record, identifier: "inspector-export-bodies") { Task { await self.exportBodies(row) } })
+        entries.append(.button("Export a Redacted View…", enabled: showsBody && copySource != nil, identifier: "inspector-export-redacted") { Task { await self.exportRedacted(row) } })
         entries.append(.divider)
-        entries.append(.button("Clear This Chat's Captures…", destructive: true, identifier: "inspector-clear-captures") { Task { await clear() } })
+        entries.append(.button("Clear This Chat's Captures…", destructive: true, identifier: "inspector-clear-captures") { Task { await self.clear() } })
         return entries
     }
 

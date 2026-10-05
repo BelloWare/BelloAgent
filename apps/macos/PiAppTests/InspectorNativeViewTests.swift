@@ -58,6 +58,47 @@ import XCTest
         }
     }
 
+    func testMetadataArrivalKeepsTheFocusedRequestTab() async throws {
+        let fixture = try await InspectorExpandFixture(body: InspectorExpandBodies.request(result: "short tool result"))
+        defer { fixture.close() }
+        let page = try XCTUnwrap(fixture.window.contentView as? InspectorRequestPage)
+        let tabs = try XCTUnwrap(InspectorExpandFixture.descendants(PiKit.Tabs<InspectorRequestModel.Tab>.self, in: page).first)
+        let conversation = try XCTUnwrap(InspectorExpandFixture.descendants(PiKit.ButtonBase.self, in: tabs).first { $0.title == "Conversation" })
+        XCTAssertTrue(fixture.window.makeFirstResponder(conversation))
+        fixture.request.metadataOverride = { _ in ["status": .number(503), "outcome": .string("failed")] }
+        var updated = try XCTUnwrap(fixture.request.row); updated.outcome = "failed"
+        fixture.request.open(updated, predecessor: nil, previousLabel: nil)
+        try await eventually("The changed metadata did not reach the request header") {
+            page.layoutSubtreeIfNeeded()
+            return fixture.request.metadata["status"]?.nonnegativeInteger == 503 && InspectorExpandFixture.descendants(PiKit.Badge.self, in: page).contains { $0.text == "HTTP 503" }
+        }
+        XCTAssertTrue(fixture.window.firstResponder === conversation, "Metadata refresh preserves the tab's keyboard focus")
+        XCTAssertTrue(conversation.window === fixture.window)
+    }
+
+    func testRawPartNavigationKeepsFocusAndResizingFitsTheSearch() async throws {
+        let fixture = try await InspectorExpandFixture(body: InspectorExpandBodies.request(result: "short tool result"))
+        defer { fixture.close() }
+        let page = try XCTUnwrap(fixture.window.contentView as? InspectorRequestPage)
+        fixture.request.tab = .raw
+        try await eventually("Raw did not mount its native controls") { !InspectorExpandFixture.descendants(InspectorRawTab.self, in: page).isEmpty }
+        let raw = try XCTUnwrap(InspectorExpandFixture.descendants(InspectorRawTab.self, in: page).first)
+        let parts = try XCTUnwrap(InspectorExpandFixture.descendants(PiKit.Tabs<InspectorRequestModel.RawPart>.self, in: raw).first)
+        let headers = try XCTUnwrap(InspectorExpandFixture.descendants(PiKit.ButtonBase.self, in: parts).first { $0.title == "Headers" })
+        XCTAssertTrue(fixture.window.makeFirstResponder(headers))
+        fixture.request.raw = .headers
+        try await eventually("Headers did not become the selected raw part") { parts.selection == .headers }
+        XCTAssertTrue(fixture.window.firstResponder === headers, "Selecting a raw part retains its focused tab")
+        fixture.request.raw = .request
+        try await eventually("Request did not restore the search") { parts.selection == .request && InspectorExpandFixture.descendants(NSTextField.self, in: raw).contains { $0.accessibilityIdentifier() == "inspector-raw-search" } }
+        let search = try XCTUnwrap(InspectorExpandFixture.descendants(NSTextField.self, in: raw).first { $0.accessibilityIdentifier() == "inspector-raw-search" })
+        page.compact = true; page.layoutSubtreeIfNeeded()
+        XCTAssertEqual(search.superview?.frame.width ?? 0, 180, accuracy: 0.5)
+        page.compact = false; page.layoutSubtreeIfNeeded()
+        XCTAssertEqual(search.superview?.frame.width ?? 0, 250, accuracy: 0.5)
+        XCTAssertTrue(fixture.window.firstResponder === headers, "Resizing the toolbar retains tab focus")
+    }
+
     func testSessionViewSourcesContainNoSwiftUIHostsOrImports() throws {
         let tests = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let session = tests.deletingLastPathComponent().appendingPathComponent("PiApp/Inspector/Session")
