@@ -38,7 +38,7 @@ import SwiftUI
         VStack(spacing: 0) {
             header
             Rectangle().fill(Color.piHairline).frame(height: 1)
-            if let transcriptProbe { SideTranscriptSurfaceV119Reference(onMake: transcriptProbe) }
+            if let transcriptProbe { SideNativeTranscriptV119Reference(onMake: transcriptProbe) }
             else { Color.clear }
             composer
             Color.clear.frame(height: 30)
@@ -106,6 +106,19 @@ import SwiftUI
                 }.padding(.horizontal, 10).padding(.bottom, 8).padding(.top, 0)
             }.piElevated(radius: 16)
         }.padding(.horizontal, PiSpacing.lg).padding(.top, PiSpacing.sm).padding(.bottom, 6)
+    }
+}
+
+// Original NativeTranscriptView's idle VStack: the surface followed by an
+// empty LiveTurnBarSlot. Its edge overlays do not participate in sizing.
+// Keep the wrapper and its flexible proposal, without adding a width frame.
+@MainActor private struct SideNativeTranscriptV119Reference: View {
+    let onMake: (TranscriptNativeScrollView) -> Void
+    var body: some View {
+        VStack(spacing: 0) {
+            SideTranscriptSurfaceV119Reference(onMake: onMake)
+            Group { EmptyView() }
+        }
     }
 }
 
