@@ -169,4 +169,56 @@ import XCTest
         XCTAssertEqual(frozen.frame.width, pane.width, accuracy: 0.5, "The original tab hosting view receives the actual pane allocation")
         try assertFrames(actual, expected, parts: children + [.panel, .backBar, .tabContent])
     }
+
+    /// The gallery also has a kept side under its Changes tab. Opacity did
+    /// not remove that side's controls from the released ZStack's minimum.
+    /// This checks the actual RightPane rather than attributing a neighboring
+    /// pane's proposal to GitPanel's toolbar or translating history rows.
+    func testAChangesTabOverTheKeptSideRetainsTheReleasedRightPaneProposal() async throws {
+        let root = try repositoryFixture(), file = root.appendingPathComponent("PaymentClient.swift")
+        let bench = try ConversationPaneTests.workbench(root: root, chats: ["main"])
+        addTeardownBlock { @MainActor in bench.model.shutdown() }
+        var alternate = bench.profile; alternate.id = "alternate-connection"; alternate.name = "Team fast · Responses"
+        bench.model.profiles.append(alternate)
+        let parent = bench.chats[0]
+        let side = SideRecord(id: "covered-side", parentID: parent.id, workspaceID: bench.workspace.id,
+                              profileID: parent.profileID, title: "Fixture reply: Generate a one-line summary.", kept: true)
+        let session = SessionDisplay(id: side.id); session.historyState = .empty
+        session.messages = [TranscriptMessage(id: "side-reply", role: "assistant", text: "Fixture reply: Is the retry budget shared with queued follow-ups, or per turn?")]
+        bench.model.sides[parent.id] = side; bench.model.displays[side.id] = session
+        let host = bench.model.tabs; host.showsWindows = false
+        addTeardownBlock { @MainActor in host.tearDown() }
+        let fileTab = try XCTUnwrap(host.open(kind: FileTab.kind, key: FileTab.key(for: file)) { FileTab(url: file, projectID: bench.workspace.id) } as? FileTab)
+        let tab = try XCTUnwrap(host.open(kind: ChangesTab.kind, key: bench.workspace.id) {
+            ChangesTab(projectID: bench.workspace.id, name: root.lastPathComponent, roots: [root.path])
+        } as? ChangesTab)
+        tab.cameFrom(fileTab); tab.controller.panel = .history
+        let pane = CGSize(width: 310, height: 576)
+        let native = RightPaneView(model: bench.model, host: host, pane: host.pane)
+        native.makeSideView = { info, display, width in SidePaneView(model: bench.model, session: display, info: info, paneWidth: width) }
+        native.updateSideView = { view, info, width in (view as? SidePaneView)?.update(info: info, paneWidth: width) }
+        native.update(side: (side, session), width: pane.width)
+        let nativeWindow = mount(native, size: pane)
+        try await ready(tab.controller)
+        let content = try XCTUnwrap(tab.contentView.content as? ChangesTabContent)
+        let actual = try await settle(native, window: nativeWindow) {
+            guard let frames = self.nativeFrames(content.panel) else { return nil }
+            return frames.mapValues { rect in native.convert(rect, from: content.panel) }
+        }
+        try await eventually("The covered side's model listing has settled", timeout: 10) { !bench.model.catalogEntry(for: bench.profile).loading }
+
+        let geometry = GitNarrowReferenceGeometry(); geometry.globalCoordinates = true
+        let sideReference = KeptSideMinimumV119Reference(title: side.title, reading: ModelSwitchPills.reading(model: bench.model, session: session), paneWidth: pane.width)
+        let sideMinimum = NSHostingController(rootView: sideReference).sizeThatFits(in: CGSize(width: 0, height: pane.height)).width
+        let reference = RightPaneMinimumV119Reference(
+            tab: ChangesTabNarrowV119Reference(controller: tab.controller, geometry: geometry, project: tab.name, returnName: fileTab.title),
+            side: sideReference)
+        let frozen = NSHostingView(rootView: reference.frame(width: pane.width, height: pane.height).environment(\.piReduceMotion, true))
+        let frozenWindow = mount(frozen, size: pane)
+        let expected = try await settle(frozen, window: frozenWindow, minimumFrames: GitNarrowReferencePart.allCases.count) { geometry.frames }
+        try record("frozen-v119-covered-side", frames: expected, window: frozenWindow, minimum: sideMinimum)
+        try record("native-covered-side", frames: actual, window: nativeWindow)
+        print("GIT-COVERED-SIDE originalControlsMinimum=\(sideMinimum) nativeComposerMinimum=\(self.views(SidePaneView.self, in: native).first?.pane.minimumWidth ?? 0)")
+        try assertFrames(actual, expected, parts: children)
+    }
 }
