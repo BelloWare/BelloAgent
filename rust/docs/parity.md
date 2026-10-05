@@ -312,10 +312,31 @@ macOS delegate registers `applicationWillTerminate:`, not
 dispatches `NSApplication.terminate:` on the main queue. An asynchronous cleanup
 observer must not be presented as a cancellable save-failure barrier.
 
-The next proposed implementation boundary is extracting the existing save/stop
-barrier from window removal into distinct CloseWindow/Quit coordination, followed
-by reviewed native
-termination-veto integration. Preserve active work, chat drafts, unsaved editors
+The save/stop prerequisite now captures drafts, selection revisions and controller
+identities into a window-independent `ShutdownPlan`. It preserves the current
+register → save draft → select → sequential controller shutdown ordering.
+An operation identity controls outcome application; only the matching window
+binding can be removed. A detached-window save failure still restores the retained
+workspace's error/editability state. This does not activate idle detach or native Quit.
+
+Seven additional regression tests cover stale revision rejection, queued edits and
+unsettled submission receipts across reopen, registration failure before stopping,
+partial registration, duplicate/stale completion, detached failure and rebound-window
+protection. A real active loopback worker is stopped before an injected later
+stop-boundary failure, then its shutdown is safely repeated on retry. This does not
+claim recovery from real poisoned locks or panicked workers; later save/select fault
+cuts are not injected by these tests. All 136 workspace tests, strict Clippy,
+formatting and Linux build pass. Current Linux desktop candidate
+`fce530826b456ff552a9bd9bb9159ca83e3b96278f4db122b7b5e0a1e865fa34`
+painted before input, opened Quick Open without a click, kept the window/draft editable
+on a real disposable catalog-write failure, then saved/closed/reopened the exact
+edited draft after removal of that fixture obstruction.
+
+Source settings/side-draft/read-state/project/topic barriers, install quiescence and
+resume, and native termination veto remain missing. Current Rust selection failure
+is still fatal; Swift Quit treats selection as best-effort. Those policy gaps were
+not silently changed by this extraction. The next boundary is distinct source-backed
+CloseWindow/Quit coordination followed by reviewed native termination-veto integration. Preserve active work, chat drafts, unsaved editors
 and undo; recreate only window-scoped bindings. A native delegate bridge must
 retain/forward GPUI's existing delegate behavior, including reopen and quit
 notifications; no unreviewed delegate replacement or implicit veto is acceptable.

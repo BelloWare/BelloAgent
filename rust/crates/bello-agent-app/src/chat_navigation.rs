@@ -644,79 +644,67 @@ impl AgentView {
         let selected = self.record.id.clone();
         self.selection_revision = self.selection_revision.saturating_add(1);
         let revision = self.selection_revision;
-        let workspace = self.workspace.clone();
-        let task = cx.background_executor().spawn(async move {
-            let mut registered = Vec::new();
-            let saved = (|| -> std::result::Result<(), String> {
-                let mut store = workspace
-                    .lock()
-                    .map_err(|_| "Workspace is unavailable".to_owned())?;
-                for (record, draft) in drafts {
-                    store
-                        .register(record.clone(), draft.clone())
-                        .map_err(|e| e.to_string())?;
-                    registered.push(record.id.clone());
-                    store
-                        .save_draft(&record.id, draft)
-                        .map_err(|e| e.to_string())?;
-                }
-                if store
-                    .snapshot()
-                    .chats
-                    .iter()
-                    .any(|chat| chat.id == selected)
-                {
-                    store
-                        .select(&selected, revision)
-                        .map_err(|e| e.to_string())?;
-                }
-                Ok(())
-            })();
-            let outcome = if saved.is_ok() {
-                let mut result = Ok(());
-                for controller in controllers {
-                    if let Err(error) = controller.shutdown().await {
-                        result = Err(error.to_string());
-                        break;
-                    }
-                }
-                result
-            } else {
-                saved
-            };
-            (outcome, registered)
-        });
-        cx.spawn_in(window, async move |view, cx| {
-            let (result, registered) = task.await;
-            let _ = cx.update(|window, cx| {
-                let _ = view.update(cx, |view, cx| {
-                    for id in registered {
-                        if let Some(chat) = view.chat_mut(&id) {
-                            chat.pending = false;
-                        }
-                    }
-                    match result {
-                        Ok(()) => {
-                            view.close_ready = true;
-                            window.remove_window();
-                        }
-                        Err(error) => {
-                            view.shutting_down = false;
-                            view.error =
-                                Some(format!("Could not save drafts before closing: {error}"));
-                            for chat in
-                                std::iter::once(&mut view.chat).chain(view.inactive.values_mut())
-                            {
-                                chat.composer
-                                    .update(cx, |editor, cx| editor.set_read_only(false, cx));
-                            }
-                            cx.notify();
-                        }
-                    }
-                });
-            });
+        let operation = uuid::Uuid::new_v4();
+        self.shutdown_operation = Some(operation);
+        let binding = self.window_binding;
+        let window_handle = window.window_handle();
+        let plan = crate::shutdown_barrier::ShutdownPlan {
+            drafts,
+            controllers,
+            selected,
+            selection_revision: revision,
+            workspace: self.workspace.clone(),
+        };
+        let task = cx.background_executor().spawn(plan.execute());
+        // Saving/stopping belongs to the app-owned workspace. Its outcome must
+        // still restore failure state if the original native window disappears.
+        cx.spawn(async move |view, cx| {
+            let outcome = task.await;
+            let remove_window = view
+                .update(cx, |view, cx| {
+                    let completed = view.finish_shutdown(operation, outcome, cx);
+                    completed && view.window_binding == binding
+                })
+                .unwrap_or(false);
+            if remove_window {
+                // Only presentation is window-scoped; never remove a replacement.
+                let _ = window_handle.update(cx, |_, window, _| window.remove_window());
+            }
         })
         .detach();
         cx.notify();
+    }
+    pub(super) fn finish_shutdown(
+        &mut self,
+        operation: uuid::Uuid,
+        outcome: crate::shutdown_barrier::ShutdownOutcome,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.shutdown_operation != Some(operation) {
+            return false;
+        }
+        self.shutdown_operation = None;
+        for id in outcome.registered {
+            if let Some(chat) = self.chat_mut(&id) {
+                chat.pending = false;
+            }
+        }
+        match outcome.result {
+            Ok(()) => {
+                self.close_ready = true;
+                cx.notify();
+                true
+            }
+            Err(error) => {
+                self.shutting_down = false;
+                self.error = Some(format!("Could not save drafts before closing: {error}"));
+                for chat in std::iter::once(&mut self.chat).chain(self.inactive.values_mut()) {
+                    chat.composer
+                        .update(cx, |editor, cx| editor.set_read_only(false, cx));
+                }
+                cx.notify();
+                false
+            }
+        }
     }
 }

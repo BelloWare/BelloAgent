@@ -238,3 +238,75 @@ fn app_shutdown_releases_retained_workspace_at_the_original_cleanup_boundary(
     cx.update(|cx| cx.shutdown());
     assert_eq!(releases.load(Ordering::SeqCst), 1);
 }
+
+#[gpui::test]
+fn detached_save_failure_still_thaws_retained_workspace_and_reopens(cx: &mut TestAppContext) {
+    let (dir, first, root) = fixture(cx);
+    cx.simulate_input(first.into(), "keep detached");
+    std::fs::create_dir(dir.path().join("session.workspace.json")).unwrap();
+    first
+        .update(cx, |view, window, cx| {
+            view.begin_shutdown(window, cx);
+            let operation = view.shutdown_operation;
+            view.begin_shutdown(window, cx);
+            assert_eq!(view.shutdown_operation, operation); // Duplicate close is idempotent.
+            window.remove_window();
+        })
+        .unwrap();
+    cx.run_until_parked();
+    assert!(!cx.read(|cx| root.read(cx).shutting_down));
+    assert!(cx.read(|cx| root.read(cx).shutdown_operation.is_none()));
+    assert!(cx.read(|cx| {
+        root.read(cx)
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("Could not save drafts")
+    }));
+    let second = cx.update(WorkspaceLifetime::ensure_window).unwrap();
+    cx.run_until_parked();
+    cx.simulate_input(second.into(), "!");
+    assert_eq!(
+        cx.read(|cx| root.read(cx).composer.read(cx).text().to_owned()),
+        "keep detached!"
+    );
+}
+
+#[gpui::test]
+fn stale_barrier_outcome_cannot_thaw_or_mark_new_operation_complete(cx: &mut TestAppContext) {
+    let (_dir, _first, root) = fixture(cx);
+    let current = uuid::Uuid::new_v4();
+    root.update(cx, |view, cx| {
+        view.shutting_down = true;
+        view.shutdown_operation = Some(current);
+        let id = view.record.id.clone();
+        assert!(!view.finish_shutdown(
+            uuid::Uuid::new_v4(),
+            crate::shutdown_barrier::ShutdownOutcome {
+                registered: vec![id],
+                result: Err("stale failure".into()),
+            },
+            cx
+        ));
+        assert!(view.pending);
+        assert!(view.shutting_down);
+        assert_eq!(view.shutdown_operation, Some(current));
+        assert!(view.error.is_none());
+        assert!(!view.close_ready);
+    });
+}
+
+#[gpui::test]
+fn successful_barrier_cannot_remove_a_rebound_window_generation(cx: &mut TestAppContext) {
+    let (_dir, first, root) = fixture(cx);
+    first
+        .update(cx, |view, window, cx| {
+            view.begin_shutdown(window, cx);
+            // Model a newer native binding before the old completion is delivered.
+            view.bind_window(window, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    assert!(cx.read(|cx| root.read(cx).close_ready));
+    assert_eq!(cx.read(|cx| cx.windows().len()), 1);
+}

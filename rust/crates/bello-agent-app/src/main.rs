@@ -6,6 +6,7 @@ mod layout;
 mod queue_detail;
 mod queue_presentation;
 mod quick_open;
+mod shutdown_barrier;
 mod theme;
 mod workspace_lifetime;
 use bello_agent_core::workspace::{ChatRecord, DraftRecord, SubmissionIntent, WorkspaceStore};
@@ -90,6 +91,7 @@ struct AgentView {
     selection_revision: u64,
     shutting_down: bool,
     close_ready: bool,
+    shutdown_operation: Option<uuid::Uuid>,
     chat_directory: PathBuf,
     unloaded_drafts: BTreeMap<String, DraftRecord>,
     recoveries: BTreeMap<String, SubmissionIntent>,
@@ -207,6 +209,7 @@ impl AgentView {
             selection_revision: state.selection_revision,
             shutting_down: false,
             close_ready: false,
+            shutdown_operation: None,
             palette,
             layout,
             layout_store,
