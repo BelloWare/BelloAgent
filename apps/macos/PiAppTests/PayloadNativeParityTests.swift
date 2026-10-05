@@ -35,6 +35,7 @@ import XCTest
                 XCTAssertEqual(old.width, current.width, accuracy: 0.5, "\(name): split viewport width")
                 XCTAssertEqual(old.leading.width, current.leading.width, accuracy: 0.5, "\(name): initial leading pane width")
                 XCTAssertEqual(old.trailing.width, current.trailing.width, accuracy: 0.5, "\(name): initial trailing pane width")
+                XCTAssertEqual(old.leading.height, current.leading.height, accuracy: 0.5, "\(name): initial pane height")
             } else { XCTFail("\(name): both visible split layouts must be measured") }
         }
         XCTAssertEqual(result.swiftUIFit.height, result.appKitFit.height, accuracy: 0.5, result.description)
