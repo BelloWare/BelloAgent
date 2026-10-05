@@ -205,7 +205,7 @@ import XCTest
         let pane = CGSize(width: 310, height: 576)
         let native = RightPaneView(model: bench.model, host: host, pane: host.pane)
         native.makeSideView = { info, display, width in SidePaneView(model: bench.model, session: display, info: info, paneWidth: width) }
-        native.updateSideView = { view, info, width in (view as? SidePaneView)?.update(info: info, paneWidth: width) }
+        native.updateSideView = { view, info, _, width in (view as? SidePaneView)?.update(info: info, paneWidth: width) }
         native.update(side: (side, session), width: pane.width)
         let nativeWindow = mount(native, size: pane)
         try await ready(tab.controller)
