@@ -5,7 +5,7 @@ import SwiftUI
 
 // Frozen from Bello Agent 0.1.119 (310b222c), ProfileSettings.connections.
 // Retains all six groups, their rows, labels, controls and spacing. The
-// additions are layout measurements, stable scroll targets, an eager oracle
+// additions are layout measurements, stable scroll targets, an eager comparison
 // using the same children, and a closed catalog button without its popup.
 // No native Settings layout is used by this reference.
 
@@ -200,4 +200,3 @@ import SwiftUI
         .accessibilityIdentifier(miniSelection ? "settings-mini-model-menu" : "settings-model-menu")
     }
 }
-
