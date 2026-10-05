@@ -135,6 +135,22 @@ import XCTest
         window.contentView = nil
         XCTAssertNil(copy); XCTAssertNil(view.controller.document); XCTAssertFalse(view.controller.loading)
     }
+    func testClosingDuringBodyReadReleasesItsViewBeforeTheRetainedPageAnswers() async throws {
+        let gate = PayloadReadGate<(Data, Int)>(), bytes = Data(#"{"retained":"late body"}"#.utf8)
+        defer { gate.finish((bytes, bytes.count)) }
+        var copy: CapturedBodyCopySource?
+        let source = CapturedBodySource(metadata: { CapturedBodyMetadata(body: ["state": .string("complete"), "retainedBytes": .number(Double(bytes.count)), "observedBytes": .number(Double(bytes.count))], hash: nil) },
+                                        page: { _ in await gate.read() })
+        var view: CapturedBodyView? = CapturedBodyView(source: source, sessionID: "s", attemptID: "a", kind: "request", retained: false, onCopySource: { copy = $0 })
+        weak var released = view
+        let window = attach(try XCTUnwrap(view))
+        try await eventually("The retained body page read has started") { gate.started }
+        window.makeFirstResponder(nil); window.contentView = nil; view = nil
+        try await eventually("The body view releases before an uncancellable source page returns") { autoreleasepool { released == nil } }
+        gate.finish((bytes, bytes.count))
+        try await eventually("The cancelled body page read has returned") { gate.returned }
+        XCTAssertNil(copy, "A late source page cannot reinstall a closed body's copy source")
+    }
     func testMCPRemovalStateAndInheritedDisablingDoNotStartAHelper() async throws {
         let root = scratchRoot("native-mcp-controls")
         defer { try? FileManager.default.removeItem(at: root) }
