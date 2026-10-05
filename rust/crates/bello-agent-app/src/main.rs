@@ -8,6 +8,7 @@ mod queue_presentation;
 mod quick_open;
 mod shutdown_barrier;
 mod theme;
+mod transcript_actions;
 mod workspace_lifetime;
 use bello_agent_core::workspace::{ChatRecord, DraftRecord, SubmissionIntent, WorkspaceStore};
 use bello_agent_core::{Controller, Credential, Lane, Profile, RunState, SessionStore};
@@ -1293,6 +1294,7 @@ impl AgentView {
             }
             body = body.child(
                 div()
+                    .debug_selector(|| format!("transcript-text-{}", message.id))
                     .min_w_0()
                     .max_w_full()
                     .text_size(px(14.5))
@@ -1311,17 +1313,35 @@ impl AgentView {
                         .child("Interrupted"),
                 );
             }
+            let key =
+                transcript_actions::MessageKey::new(self.record.id.clone(), message.id.clone());
+            let group = key.hover_group();
+            let actions = self.transcript_copy_band(key, cx);
             transcript = transcript.child(
-                div().w_full().flex().justify_center().child(
-                    div()
-                        .w_full()
-                        .max_w(px(840.))
-                        .min_w_0()
-                        .pt(px(12.))
-                        .flex()
-                        .when(user, |d| d.justify_end().pl(px(40.)))
-                        .child(body),
-                ),
+                div()
+                    .group(group)
+                    .debug_selector(|| format!("transcript-row-{}", message.id))
+                    // Keep a single content-sized scroll row. A nested
+                    // auto-height flex wrapper can retain an oversized intrinsic
+                    // height after resize and push subsequent messages away.
+                    .w_full()
+                    .max_w(px(840.))
+                    .mx_auto()
+                    .min_w_0()
+                    .flex_shrink_0()
+                    .pt(px(12.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.))
+                    .child(
+                        div()
+                            .w_full()
+                            .min_w_0()
+                            .flex()
+                            .when(user, |d| d.justify_end().pl(px(40.)))
+                            .child(body),
+                    )
+                    .child(actions),
             );
         }
         let queue = self.queue(cx);

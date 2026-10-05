@@ -108,6 +108,7 @@ Native UI paths begin `apps/macos/PiApp/` (abbreviated `App/`).
 | Branch/fork/side conversations | Core/SessionBranching.swift; Core/SessionSide.swift; Core/SessionPersistence.swift | Unported |
 | Multiple projects/topics/chat organization | App/Workspaces/WorkspaceModel.swift; WorkspaceTopics.swift; WorkspaceTabs.swift | Partial: independent chats in one explicitly selected project, existing New Chat/sidebar controls, draft/selection persistence and deferred creation. Projects manager, multiple roots, topics and organization remain unported |
 | Native transcript/composer | App/Transcript/; App/Workspaces/ComposerInput.swift | Partial source-matched GPUI shell/transcript/composer with shared IME-aware proportional input, source tokens/geometry, adjacent pane, source Enter/Shift-Enter intent, persisted sidebar/split resizing. Markdown/links/rich tool cards and many interaction surfaces remain unported; initial transcript window explicitly paged |
+| Transcript Copy | App/Transcript/TranscriptRows.swift RowActionsView/TranscriptPillStyle; App/Workspaces/ConversationPane.swift | Implemented hover Copy slice with source 22pt reserved band, trailing pill and raw message text. Resolves current active chat/message identity at click; stale/missing identities leave clipboard unchanged. Five lookup/headless clipboard/layout tests pass; native runtime scope below. Other transcript actions and accessibility parity remain missing |
 | Quick Open / adjacent file tabs | App/Files/QuickOpen.swift; App/Files/QuickOpenPanel.swift; App/Files/WorkspaceQuickOpen.swift; App/Workspaces/WorkspaceTabs.swift | Source-shaped Ctrl/⌘P popup, bounded background fuzzy search, :line, recent files, independent file tabs and dirty-close flows. Core/lifecycle tests pass; latest native interaction QA pending |
 | Shared folder browser | App/Files/; App/Workspaces/WorkspaceView.swift RightPane | Reuses BelloBox bello-workbench-ui; lazy/background filesystem work. See shared ledger/tests for limits |
 | Shared Git changes/history/diff | App/Git/; NEXT-RELEASE.md D1/D8 | Partial shared workbench reader. Source commit scopes, reword, blame parity not established |
@@ -263,6 +264,36 @@ for isolation, durability, format, permission, recovery, and backup limits.
   race fixes and unverified native interactions are recorded in
   [the validation record](validation/multichat-2026-10-04.md).
 
+## Transcript Copy validation (2026-10-05)
+
+The Copy pill follows `TranscriptRows.swift`'s reserved 22pt action band, 6pt gap,
+11pt medium text, 10pt horizontal/4pt vertical padding and overlaid border. Both
+roles' actions trail their row; existing message-body widths/alignment are unchanged.
+It copies the current controller message's exact text by chat/message identity,
+including raw Markdown, whitespace and Unicode. A missing/stale identity is a no-op.
+
+Five regression tests cover lookup, a real GPUI fake-platform clipboard boundary
+and repeated normal/minimum resize geometry; all 141 workspace tests, strict Clippy, formatting and build passed in an isolated
+worktree containing only this app slice and the published dependency manifests.
+Earlier Linux desktop candidate
+`a40471202cbd97dc2c97e5d61353a3114017c13c93b3d446e07057d7dc1662b2`
+passed hover visibility, trailing alignment and no row-height jump. Click → paste
+through the actual clipboard reproduced the synthetic user message (51 UTF-8 bytes)
+and assistant reply (73 bytes) exactly, including combining text, raw Markdown and
+trailing spaces, verified from the disposable saved draft. Its minimum-width check
+then exposed a regression: a redundant nested auto-height flex wrapper retained
+phantom row height after resize and displaced the assistant message. The final
+candidate removes that wrapper while retaining source geometry; its headless
+1180→920→1280→920 test asserts both text visibility and exact 22px pill/band height.
+Current candidate `1b2dd0455bb51677f4a15b1087d1bbbaad32c90998d9b4dff93ca85bc7122e6e`
+passed fresh actual 920×600 desktop checks: both messages remain visible through
+resize/scroll, hover pills trail without row jumps, and both exact-byte clipboard
+checks were repeated successfully. These current screenshots and results supersede
+the earlier candidate's geometry evidence. Live stream-update desktop checks remain
+pending; latest-stream identity is headless-tested.
+This is not full transcript selection, Markdown rendering, other row actions,
+accessibility or native macOS interaction parity.
+
 ## Next implementation priorities
 
 ### macOS application lifetime prerequisite (source audit)
@@ -331,6 +362,13 @@ formatting and Linux build pass. Current Linux desktop candidate
 painted before input, opened Quick Open without a click, kept the window/draft editable
 on a real disposable catalog-write failure, then saved/closed/reopened the exact
 edited draft after removal of that fixture obstruction.
+
+Composition during Close/Quit remains an explicit audit gap: the existing shutdown
+path makes composers read-only before capturing drafts, without an explicit
+marked-text commit/cancel gate. The pinned editor already exposes `has_marked_text`;
+retaining the same editor entities does not require a move-only transfer API.
+No macOS IME close/quit interaction has been validated, and this checkpoint does
+not silently choose a new composition policy.
 
 Source settings/side-draft/read-state/project/topic barriers, install quiescence and
 resume, and native termination veto remain missing. Current Rust selection failure
