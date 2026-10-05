@@ -283,7 +283,10 @@ import AppKit
     private let search = PiKit.SymbolView(PiKit.Symbol("magnifyingglass", size: 11, weight: .medium), color: .piInkTertiary)
     private let clear = InspectorSearchClearButton(frame: .zero)
     private let changed: (String) -> Void
-    var text: String { get { field.stringValue } set { if field.stringValue != newValue { field.stringValue = newValue }; clear.isHidden = newValue.isEmpty; needsLayout = true } }
+    var text: String {
+        get { field.stringValue }
+        set { if field.stringValue != newValue { field.stringValue = newValue }; updateClear() }
+    }
     init(text: String, changed: @escaping (String) -> Void) {
         self.changed = changed
         super.init(fill: .piSurface, stroke: .piHairline, cornerRadius: 8)
@@ -293,19 +296,29 @@ import AppKit
         shellAdd([field, search, clear]); self.text = text
     }
     required init?(coder: NSCoder) { nil }
-    func controlTextDidChange(_ notification: Notification) { clear.isHidden = field.stringValue.isEmpty; needsLayout = true; changed(field.stringValue) }
+    private func updateClear() {
+        let hidden = field.stringValue.isEmpty
+        if clear.isHidden != hidden {
+            clear.isHidden = hidden
+            invalidateIntrinsicContentSize(); PiKit.sizeChanged(self)
+        }
+        needsLayout = true
+    }
+    func controlTextDidChange(_ notification: Notification) { updateClear(); changed(field.stringValue) }
     func controlTextDidBeginEditing(_ notification: Notification) { strokeColor = NSColor.piAccent.piOpacity(0.5) }
     func controlTextDidEndEditing(_ notification: Notification) { strokeColor = .piHairline }
-    // A plain SwiftUI caption field gives its native cell a one-point taller
-    // slot than static Text. The cell sits at the bottom of that slot.
-    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: field.intrinsicContentSize.height + 1 + 12) }
+    // The original HStack has a 13-point caption slot when empty. Its clear
+    // Image-only button expands that slot to 15 points when there is a query.
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: field.intrinsicContentSize.height + (clear.isHidden ? -1 : 1) + 12) }
     override func layout() {
         super.layout(); let icon = search.intrinsicContentSize
         search.frame = CGRect(x: 9, y: (bounds.height - 1 - icon.height) / 2, width: icon.width, height: icon.height)
         let clearSize = clear.intrinsicContentSize
         let x = 9 + icon.width + 6, clearWidth: CGFloat = clear.isHidden ? 0 : clearSize.width + 6
         let textHeight = field.intrinsicContentSize.height
-        field.frame = CGRect(x: x - PiKit.fieldInset, y: bounds.height - 6 - textHeight, width: max(0, bounds.width - x - 9 - clearWidth) + 2 * PiKit.fieldInset, height: textHeight)
+        // The plain field's cell baseline sits half a point below the
+        // centred native cell in both the 13- and 15-point SwiftUI slots.
+        field.frame = CGRect(x: x - PiKit.fieldInset, y: (bounds.height - textHeight) / 2 + 0.5, width: max(0, bounds.width - x - 9 - clearWidth) + 2 * PiKit.fieldInset, height: textHeight)
         clear.frame = CGRect(x: bounds.width - 9 - clearSize.width, y: (bounds.height - clearSize.height) / 2, width: clearSize.width, height: clearSize.height)
     }
 }
