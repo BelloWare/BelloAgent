@@ -615,15 +615,29 @@ fn promotion_requires_a_controller_worker_even_with_a_running_checkpoint() {
     assert_rejected_promotion(&controller, &path, "pending");
 }
 
+#[derive(Clone, Copy)]
+enum PublicationObservation {
+    Quiescent,
+    Streaming,
+}
+
 fn assert_rejected_reorder(
     controller: &Controller,
     path: &std::path::Path,
     ids: &[String],
     held: bool,
+    publication: PublicationObservation,
 ) {
     let before = serde_json::to_vec(&controller.snapshot()).unwrap();
     let bytes = std::fs::read(path).unwrap();
-    let revision = controller.revision();
+    // publish() sends the immutable snapshot before incrementing its counter.
+    // Seeing the gated stream's partial text does not prove that increment has
+    // completed. The gateway blocks further deltas, so exact snapshot/disk
+    // invariants remain meaningful; counter equality requires no publisher.
+    let revision = match publication {
+        PublicationObservation::Quiescent => Some(controller.revision()),
+        PublicationObservation::Streaming => None,
+    };
     let error = controller.reorder(ids).unwrap_err();
     if held {
         assert!(
@@ -634,7 +648,9 @@ fn assert_rejected_reorder(
     }
     assert_eq!(serde_json::to_vec(&controller.snapshot()).unwrap(), before);
     assert_eq!(std::fs::read(path).unwrap(), bytes);
-    assert_eq!(controller.revision(), revision);
+    if let Some(revision) = revision {
+        assert_eq!(controller.revision(), revision);
+    }
 }
 
 #[test]
@@ -669,7 +685,13 @@ fn reorder_persists_while_active_request_continues_then_drains_steering_and_capt
     }
     let order = ["last", "first", "middle"].map(String::from);
     controller.begin_edit("steer-first", "hold").unwrap();
-    assert_rejected_reorder(&controller, &path, &order, true);
+    assert_rejected_reorder(
+        &controller,
+        &path,
+        &order,
+        true,
+        PublicationObservation::Streaming,
+    );
     controller.resolve_edit("hold", "cancelled", None).unwrap();
     for invalid in [
         ["last", "first", "missing"],
@@ -677,7 +699,13 @@ fn reorder_persists_while_active_request_continues_then_drains_steering_and_capt
         ["last", "first", "active"],
         ["last", "first", "first"],
     ] {
-        assert_rejected_reorder(&controller, &path, &invalid.map(String::from), false);
+        assert_rejected_reorder(
+            &controller,
+            &path,
+            &invalid.map(String::from),
+            false,
+            PublicationObservation::Streaming,
+        );
     }
     let before = controller.snapshot();
     let expected_pending = [1, 3, 4, 0, 2].map(|index| before.pending[index].clone());
@@ -727,7 +755,13 @@ fn reorder_persists_while_active_request_continues_then_drains_steering_and_capt
     );
     assert_eq!(final_snapshot.messages[1].text, "reply 0");
     assert!(final_snapshot.retry.is_none());
-    assert_rejected_reorder(&controller, &path, &order, false);
+    assert_rejected_reorder(
+        &controller,
+        &path,
+        &order,
+        false,
+        PublicationObservation::Quiescent,
+    );
     drop(controller);
     assert_eq!(
         serde_json::to_value(SessionStore::open(path).unwrap().snapshot()).unwrap(),
@@ -794,7 +828,13 @@ fn reordered_queue_reopens_with_each_captured_model_effort_and_full_text() {
             .is_some_and(|m| m.text == "blocked partial")
     });
     // The first queued item has now been delivered, invalidating the old drag.
-    assert_rejected_reorder(&reopened, &path, &order, false);
+    assert_rejected_reorder(
+        &reopened,
+        &path,
+        &order,
+        false,
+        PublicationObservation::Streaming,
+    );
     gateway.release.send(true).unwrap();
     gateway.assert_request_with_choices(
         "first",
@@ -836,4 +876,47 @@ fn reordered_queue_reopens_with_each_captured_model_effort_and_full_text() {
         serde_json::to_value(snapshot).unwrap()
     );
     gateway.finish();
+}
+
+#[test]
+fn rejected_reorder_without_a_worker_preserves_publication_counter() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("quiescent-reorder.json");
+    let mut store = SessionStore::open(&path).unwrap();
+    store
+        .transact(|session| {
+            for id in ["first", "second"] {
+                let mut item = Submission::new(id.into(), Lane::FollowUp);
+                item.id = id.into();
+                session.submit(item)?;
+            }
+            session.state = RunState::Paused;
+            session.queue_paused = true;
+            Ok(())
+        })
+        .unwrap();
+    let controller = Controller::new(store, None).unwrap();
+    let order = ["second", "first"].map(String::from);
+    assert_rejected_reorder(
+        &controller,
+        &path,
+        &["missing".into()],
+        false,
+        PublicationObservation::Quiescent,
+    );
+    controller.begin_edit("first", "held").unwrap();
+    assert_rejected_reorder(
+        &controller,
+        &path,
+        &order,
+        true,
+        PublicationObservation::Quiescent,
+    );
+    assert_rejected_reorder(
+        &controller,
+        &path,
+        &["missing".into()],
+        false,
+        PublicationObservation::Quiescent,
+    );
 }
