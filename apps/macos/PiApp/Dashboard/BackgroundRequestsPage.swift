@@ -227,10 +227,13 @@ import AppKit
         let tabs = filterTabs.intrinsicContentSize
         if compact {
             filterTabs.frame = CGRect(x: PiSpacing.lg, y: top + row + PiSpacing.sm, width: tabs.width, height: tabs.height)
+            // The old HStack ended in a spacer, with one 12-point gap.
+            trailing -= PiSpacing.md + PiSpacing.sm
         } else {
             trailing -= tabs.width
             centre(filterTabs, x: trailing)
-            trailing -= PiSpacing.sm
+            // The spacer sat between the title column and tabs: two gaps.
+            trailing -= 2 * PiSpacing.md + PiSpacing.sm
         }
         let room = max(0, trailing - x)
         let titleSize = title.intrinsicContentSize, captionSize = caption.intrinsicContentSize
@@ -406,7 +409,8 @@ import AppKit
         if !duration.isHidden { right -= PiSpacing.sm + d.width; centred(duration, d, right, d.width) }
         centred(kind, k, x, k.width)
         let headX = x + k.width + PiSpacing.sm
-        centred(headline, h, headX, max(0, min(h.width, right - PiSpacing.sm - headX)))
+        // HStack's spacer keeps its 8 points plus a gap on each side.
+        centred(headline, h, headX, max(0, min(h.width, right - 3 * PiSpacing.sm - headX)))
         meta.frame = CGRect(x: x, y: first + 4, width: inner, height: PiKit.Line("Ag", font: Self.metaFont, color: .black).lineHeight)
     }
 
