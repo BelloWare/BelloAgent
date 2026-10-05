@@ -86,7 +86,6 @@ enum ConversationSearchPaging {
         copyAll.onPress = { [weak self] in guard let self else { return }; self.copy(first: 1, last: self.result.total) }
         exportButton.onPress = { [weak self] in self?.export() }
         exportButton.toolTip = "Save the whole retained conversation as a Markdown text file"
-        list.scrollerStyle = .overlay
         list.spacing = 2; list.insets = NSEdgeInsets(top: PiSpacing.sm, left: PiSpacing.sm, bottom: PiSpacing.sm, right: PiSpacing.sm)
         list.setAccessibilityLabel("Retained conversation search results")
         refresh()
@@ -198,19 +197,23 @@ enum ConversationSearchPaging {
     }
 }
 
-@MainActor private final class ConversationHitRow: DashView {
+@MainActor final class ConversationHitRow: DashView {
     let hit: ContentHit
     let row: PiKit.SelectableRow
     init(hit: ContentHit, glide: PiKit.SelectionGlide, action: @escaping () -> Void) {
         self.hit = hit
         let position = ShellStack(.horizontal, spacing: 0, [.spacer(0), .view(PiKit.TextLine(PiKit.Line("\(hit.position)", font: PiKit.Font.monospacedDigits(PiKit.Font.caption), color: .piInkTertiary)))])
         let preview = ShellText(hit.preview, font: PiKit.Font.body, color: .piInk, maximumLines: 3)
+        // An empty retained message contributes no preview line. Its row
+        // is only as tall as the position caption and selection padding.
+        preview.isHidden = hit.preview.isEmpty
         row = PiKit.SelectableRow(content: ShellStack(.horizontal, spacing: PiSpacing.md, alignment: .top, [.view(position, .fixed(44)), .view(preview, .fill)]), glide: glide, action: action)
+        row.setAccessibilityLabel("Message \(hit.position)" + (hit.preview.isEmpty ? "" : ", \(hit.preview)"))
         super.init(frame: .zero); addSubview(row)
     }
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
     static func height(_ hit: ContentHit, width: CGFloat) -> CGFloat {
-        let text = min(3, max(1, ShellWrap.ranges(hit.preview, font: PiKit.Font.body, width: max(0, width - 20 - 44 - PiSpacing.md)).count))
+        let text = hit.preview.isEmpty ? 0 : min(3, max(1, ShellWrap.ranges(hit.preview, font: PiKit.Font.body, width: max(0, width - 20 - 44 - PiSpacing.md)).count))
         return max(PiKit.Line("1", font: PiKit.Font.caption, color: .piInk).lineHeight, CGFloat(text) * PiKit.Line("Ag", font: PiKit.Font.body, color: .piInk).lineHeight) + 16
     }
     override func layout() { super.layout(); row.frame = bounds }

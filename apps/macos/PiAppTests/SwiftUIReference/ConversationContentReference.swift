@@ -3,6 +3,21 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 @testable import PiApp
+
+/// The unchanged retained-hit row, also exercised without a helper so empty
+/// previews and overflowing result lists remain part of strict parity.
+struct ConversationHitRowReference: View {
+    let hit: ContentHit
+    var body: some View {
+        PiSelectableRow(selected: false, action: {}) {
+            HStack(alignment: .top, spacing: PiSpacing.md) {
+                Text("\(hit.position)").font(PiFont.caption.monospacedDigit()).foregroundStyle(Color.piInkTertiary).frame(width: 44, alignment: .trailing)
+                Text(hit.preview).lineLimit(3).font(PiFont.body).foregroundStyle(Color.piInk)
+            }
+        }
+    }
+}
+
 struct ConversationContentReference: View {
     @ObservedObject var model: WorkspaceModel
     let sessionID: String
