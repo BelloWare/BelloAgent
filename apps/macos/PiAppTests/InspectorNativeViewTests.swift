@@ -117,8 +117,8 @@ import XCTest
 /// widths in each appearance. The allowance covers only the existing symbol
 /// edge differences (PiKitParityTests), not visible movement or wrapping.
 @MainActor final class InspectorNativeParityTests: XCTestCase, SerialTestLane {
-    override func setUp() { super.setUp(); PiKit.Motion.reducedOverride = true }
-    override func tearDown() { PiKit.Motion.reducedOverride = nil; super.tearDown() }
+    override func setUp() async throws { PiKit.Motion.reducedOverride = true }
+    override func tearDown() async throws { PiKit.Motion.reducedOverride = nil }
 
     private func check<V: View>(_ name: String, width: CGFloat, appearance: NSAppearance.Name, reference: V, native: NSView) async throws {
         let comparison = try await PiKitParity.compare(name, appearance: appearance, swiftUI: reference.frame(width: width), appKit: native, width: width)
