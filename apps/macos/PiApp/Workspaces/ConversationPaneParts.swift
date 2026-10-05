@@ -97,6 +97,15 @@ import QuartzCore
         PiKit.sizeChanged(self)
     }
     func height(forWidth width: CGFloat) -> CGFloat { stack.height(forWidth: width) }
+    /// The kept title can truncate. The unsaved title was fixedSize, and
+    /// badges and actions retain their widths and original stack spacing.
+    var minimumWidth: CGFloat {
+        let titleWidth = (plainTitle.isHidden ? 0 : plainTitle.intrinsicContentSize.width) + 6 + badgeSlot.naturalWidth
+        var items = [StackLayout.Item(view: nil, sizing: .fixed(CGSize(width: titleWidth, height: 0))), .spacer(PiSpacing.sm), .fixed(bringBack)]
+        if !keep.isHidden { items.append(.fixed(keep)) }
+        items += [.fixed(actionsMenu), .fixed(close)]
+        return StackLayout.width(items, spacing: stack.spacing, proposal: 0) + stack.padding.left + stack.padding.right
+    }
     override func setFrameSize(_ newSize: NSSize) { super.setFrameSize(newSize); needsLayout = true }
     override func layout() { super.layout(); stack.frame = bounds }
     override var wantsUpdateLayer: Bool { true }

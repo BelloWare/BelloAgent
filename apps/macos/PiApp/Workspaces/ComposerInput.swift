@@ -102,7 +102,7 @@ import AppKit
         stop = ComposerRoundButton(symbol: "stop.fill", symbolSize: 12, fill: .piDanger, ink: .piOnAccent) {}
         stop.toolTip = "Stop response"; stop.setAccessibilityLabel("Stop response"); stop.setAccessibilityIdentifier("composerStopResponse")
         bar = ShellStack(.horizontal, spacing: ComposerBarMetrics.spacing, padding: NSEdgeInsets(top: 0, left: 10, bottom: 8, right: 10), [
-            .view(attach), .view(skills), .spacer(0), .view(runControls), .view(changes), .view(usage), .view(actionsSlot),
+            .view(attach), .view(skills), .spacer(), .view(runControls), .view(changes), .view(usage), .view(actionsSlot),
             .view(pills, insets: NSEdgeInsets(top: 0, left: 0, bottom: 0, right: ComposerBarMetrics.pillsTrailing)),
             .view(send), .view(stop),
         ])
@@ -325,7 +325,10 @@ import AppKit
         steer.isEnabled = !state.loading && !state.disabled
         hintLine.isHidden = !(state.form.runControls.showsHint && state.hint != nil)
         hintLine.line.text = state.hint ?? ""
-        runControls.isHidden = steer.isHidden && hintLine.isHidden
+        // The released empty HStack remains a bar child when idle. Its
+        // outer gap and Spacer's default minimum are part of the bar's
+        // minimum even though the group contains no visible control.
+        runControls.isHidden = false
         runControls.relayoutAll()
         changes.isHidden = !state.showsChanges
         changes.isEnabled = !state.disabled
@@ -379,6 +382,7 @@ import AppKit
     private func contentHeightChanged() {
         invalidateIntrinsicContentSize(); needsLayout = true
         heightChanged?()
+        PiKit.sizeChanged(self)
     }
 
     // MARK: Layout
