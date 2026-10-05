@@ -176,6 +176,33 @@ import XCTest
         XCTAssertNil(view.editor.layoutManager?.temporaryAttribute(.backgroundColor, atCharacterIndex: 0, effectiveRange: nil))
         XCTAssertNotNil(view.editor.layoutManager?.temporaryAttribute(.backgroundColor, atCharacterIndex: refined.matches[0].location, effectiveRange: nil))
     }
+    func testRefinedSearchKeepsItsNonzeroViewportWhenTheNewMatchIsVisible() async throws {
+        let text = "original first match\n" + (1...100).map { $0 == 15 ? "target in the visible middle" : "Retained line \($0)" }.joined(separator: "\n")
+        let initial = try PayloadSearchResult.find(text: text, query: "original")
+        let view = PayloadSearchTextView(result: initial, selected: 0)
+        let window = attach(view, size: CGSize(width: 700, height: 300))
+        try await eventually("The initial retained search is mounted", timeout: .seconds(3)) {
+            view.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            return view.editor.selectedRange() == initial.matches[0] && view.editor.frame.height > view.contentView.bounds.height
+        }
+        view.contentView.scroll(to: NSPoint(x: 0, y: 100)); view.reflectScrolledClipView(view.contentView)
+        let origin = view.contentView.bounds.origin, storage = view.editor.textStorage
+        XCTAssertGreaterThan(origin.y, 0, "The reader is already partway through the body")
+        let refined = try PayloadSearchResult.find(text: text, query: "target", textID: initial.textID)
+        view.update(result: refined, selected: 0)
+        try await eventually("A visible refined match keeps the reader's position", timeout: .seconds(3)) {
+            view.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            return view.editor.selectedRange() == refined.matches[0] && abs(view.contentView.bounds.minY - origin.y) <= 0.25
+        }
+        let manager = try XCTUnwrap(view.editor.layoutManager), container = try XCTUnwrap(view.editor.textContainer)
+        let glyphs = manager.glyphRange(forCharacterRange: refined.matches[0], actualCharacterRange: nil)
+        let glyph = manager.boundingRect(forGlyphRange: glyphs, in: container)
+        let match = view.contentView.convert(glyph.offsetBy(dx: view.editor.textContainerOrigin.x,
+                                                          dy: view.editor.textContainerOrigin.y), from: view.editor)
+        XCTAssertTrue(view.contentView.bounds.contains(match), "The selected refined match is fully visible in the preserved viewport")
+        XCTAssertEqual(view.contentView.bounds.minX, origin.x, accuracy: 0.25)
+        XCTAssertTrue(view.editor.textStorage === storage)
+    }
     func testGrowthAndSearchDoNotReadAgainUntilLoadLatest() async throws {
         var bytes = Data(#"{"message":"first retained body"}"#.utf8), reads = 0
         var copy: CapturedBodyCopySource?
