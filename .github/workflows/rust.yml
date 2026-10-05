@@ -12,6 +12,8 @@ concurrency:
   cancel-in-progress: true
 jobs:
   linux:
+    # Never consume paid private-repository runner minutes.
+    if: github.event.repository.private == false
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     defaults:
@@ -47,13 +49,14 @@ jobs:
           test -f "$VK_ICD_FILENAMES"
           xvfb-run --auto-servernum --server-args="-screen 0 1600x1000x24 -nolisten tcp" \
             sh -eu -c 'openbox >/dev/null 2>&1 & wm=$!; trap "kill $wm || true" EXIT; python3 scripts/linux-ui-smoke.py agent target/debug/bello-agent "$RUNNER_TEMP/ui-evidence"'
-      - name: Upload synthetic Linux UI evidence
+      - name: Summarize Linux UI smoke without artifact storage
         if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: agent-linux-ui-${{ github.sha }}
-          path: |
-            ${{ runner.temp }}/ui-evidence/*.png
-            ${{ runner.temp }}/ui-evidence/report.json
-          if-no-files-found: warn
-          retention-days: 3
+        run: |
+          if test -f "$RUNNER_TEMP/ui-evidence/report.json"; then
+            echo 'Linux software-rendered UI smoke; screenshots are temporary and are not uploaded.' >> "$GITHUB_STEP_SUMMARY"
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat "$RUNNER_TEMP/ui-evidence/report.json" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'Linux UI smoke did not produce a report; inspect earlier failed steps.' >> "$GITHUB_STEP_SUMMARY"
+          fi
