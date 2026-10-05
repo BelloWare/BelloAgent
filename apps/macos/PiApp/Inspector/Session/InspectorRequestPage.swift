@@ -10,7 +10,11 @@ import AppKit
     private var shownMetadata: [String: WireValue] = [:]
     private var shownHeaderIdentity = ""
     private var header: NSView?
-    private var tabs: NSView?
+    private var tabs: InspectorInset?
+    private lazy var tabControl = PiKit.Tabs(selection: request.tab, items: [(InspectorRequestModel.Tab.conversation, "Conversation"), (.response, "Response"), (.raw, "Raw")]) { [weak request] in request?.tab = $0 }
+    private lazy var eventToggle = PiKit.Button("Event log", symbol: "list.bullet.rectangle", style: .ghost) { [weak self] in self?.events.toggle(); self?.refresh() }
+    private lazy var tabRow = inspectorRow([.view(tabControl), .spacer(0), .view(eventToggle)], spacing: PiSpacing.sm)
+    private lazy var tabStrip = padded(tabRow, bottom: 10)
     private let rule = InspectorRule()
     private let conversationOutline = InspectorItemsOutline()
     private let responseOutline = InspectorItemsOutline()
@@ -45,9 +49,9 @@ import AppKit
             header?.removeFromSuperview(); header = buildHeader(row); addSubview(header!)
             shownRow = row; shownMetadata = request.metadata; shownHeaderIdentity = headerIdentity; forceHeader = false
         }
-        tabs?.removeFromSuperview(); tabs = nil; summary?.removeFromSuperview(); summary = nil
+        summary?.removeFromSuperview(); summary = nil
         if row.source == .record {
-            rule.removeFromSuperview()
+            tabs?.removeFromSuperview(); tabs = nil; rule.removeFromSuperview()
             showContent(InspectorPlaceholder(symbol: "doc.text.magnifyingglass", title: "Known from the chat's own record", message: (row.logMissing == .expired ? "This request's row has expired from the request log" : "The request log never had this request") + ", so its body and headers are not available. The figures above are the ones its reply recorded."))
         } else {
             tabs = buildTabs(); shellAdd([tabs!, rule])
@@ -124,15 +128,16 @@ import AppKit
         }
         let card = PiKit.card(grid, padding: PiSpacing.md, sunken: true); card.setAccessibilityIdentifier("inspector-request-more"); return card
     }
-    private func buildTabs() -> NSView {
-        let tabs = PiKit.Tabs(selection: request.tab, items: [(InspectorRequestModel.Tab.conversation, "Conversation"), (.response, "Response"), (.raw, "Raw")]) { [weak request] in request?.tab = $0 }
-        tabs.setAccessibilityIdentifier("inspector-request-tabs")
-        var items: [ShellItem] = [.view(tabs), .spacer(0)]
-        if request.tab == .response {
-            let toggle = PiKit.Button(events ? "Hide event log" : "Event log", symbol: "list.bullet.rectangle", style: .ghost) { [weak self] in self?.events.toggle(); self?.refresh() }
-            toggle.setAccessibilityIdentifier("inspector-event-log"); items.append(.view(toggle))
-        }
-        return padded(inspectorRow(items, spacing: PiSpacing.sm), bottom: 10)
+    private func buildTabs() -> InspectorInset {
+        tabControl.selection = request.tab
+        tabControl.setAccessibilityIdentifier("inspector-request-tabs")
+        let title = events ? "Hide event log" : "Event log"
+        if eventToggle.title != title { eventToggle.title = title }
+        eventToggle.setAccessibilityIdentifier("inspector-event-log")
+        let hidden = request.tab != .response
+        if eventToggle.isHidden != hidden { eventToggle.isHidden = hidden; tabRow.changed() }
+        tabStrip.insets = NSEdgeInsets(top: 0, left: inset, bottom: 10, right: inset)
+        return tabStrip
     }
 
     private func showConversation(_ row: InspectorRequestRow) {
