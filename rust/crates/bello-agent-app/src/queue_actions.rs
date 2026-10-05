@@ -23,13 +23,13 @@ impl AgentView {
             || self.busy
             || self.loading
             || self.load_failed
-            || self.queue_promotion.is_some()
+            || self.queue_operation.is_some()
             || !offers_promotion(&self.chat, turn_id)
         {
             return;
         }
         let operation = uuid::Uuid::new_v4();
-        self.queue_promotion = Some(operation);
+        self.queue_operation = Some(operation);
         let controller = self.controller.clone();
         let worker = controller.clone();
         let chat_id = chat_id.to_owned();
@@ -50,7 +50,63 @@ impl AgentView {
         cx.notify();
     }
 
+    pub(crate) fn reorder_queued(
+        &mut self,
+        drag: &crate::queue_drag::QueueDrag,
+        order: Vec<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.accepts_queue_drag(drag)
+            || self.queue_operation.is_some()
+            || self.busy
+            || self.loading
+            || self.load_failed
+            || self.shutting_down
+        {
+            return;
+        }
+        let operation = uuid::Uuid::new_v4();
+        self.queue_operation = Some(operation);
+        let controller = self.controller.clone();
+        let worker = controller.clone();
+        let id = self.record.id.clone();
+        let project = self.project.clone();
+        let task = cx.background_executor().spawn(async move {
+            worker.reorder(&order).map_err(|error| match error {
+                bello_agent_core::Error::QueueOrder => error.to_string(),
+                _ => format!("The queue was not reordered. {error}"),
+            })
+        });
+        cx.spawn(async move |view, cx| {
+            let result = task.await;
+            let _ = view.update(cx, |view, cx| {
+                view.finish_queue_operation(&id, &project, &controller, operation, result, cx)
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
     pub(crate) fn finish_queue_promotion(
+        &mut self,
+        chat_id: &str,
+        project: &Path,
+        controller: &Arc<Controller>,
+        operation: uuid::Uuid,
+        result: Result<(), String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.finish_queue_operation(
+            chat_id,
+            project,
+            controller,
+            operation,
+            result.map_err(|error| format!("Queued message could not be promoted: {error}")),
+            cx,
+        );
+    }
+
+    pub(crate) fn finish_queue_operation(
         &mut self,
         chat_id: &str,
         project: &Path,
@@ -65,25 +121,24 @@ impl AgentView {
         let Some(chat) = self.chat_mut(chat_id) else {
             return;
         };
-        if chat.queue_promotion != Some(operation) || !Arc::ptr_eq(&chat.controller, controller) {
+        if chat.queue_operation != Some(operation) || !Arc::ptr_eq(&chat.controller, controller) {
             return;
         }
-        chat.queue_promotion = None;
+        chat.queue_operation = None;
         chat.session = controller.snapshot_shared();
         match result {
             Ok(()) => {
                 if chat
-                    .queue_promotion_error
+                    .queue_operation_error
                     .as_ref()
                     .is_some_and(|owned| chat.error.as_ref() == Some(owned))
                 {
                     chat.error = None;
                 }
-                chat.queue_promotion_error = None;
+                chat.queue_operation_error = None;
             }
-            Err(error) => {
-                let notice = format!("Queued message could not be promoted: {error}");
-                chat.queue_promotion_error = Some(notice.clone());
+            Err(notice) => {
+                chat.queue_operation_error = Some(notice.clone());
                 chat.error = Some(notice);
                 chat.dismissed_error = None;
                 chat.error_expanded = false;

@@ -21,8 +21,11 @@ pub struct ChatState {
     pub draft_before_edit: String,
     pub visible_messages: usize,
     pub queue_open: bool,
-    pub queue_promotion: Option<uuid::Uuid>,
-    pub queue_promotion_error: Option<String>,
+    pub queue_scroll: ScrollHandle,
+    pub queue_drag: Option<crate::queue_drag::QueueDragState>,
+    pub queue_drag_task: Option<Task<()>>,
+    pub queue_operation: Option<uuid::Uuid>,
+    pub queue_operation_error: Option<String>,
     pub queue_detail: Option<crate::queue_detail::QueueDetail>,
     pub last_revision: u64,
     pub busy: bool,
@@ -88,8 +91,11 @@ impl ChatState {
             error: None,
             visible_messages: 100,
             queue_open: true,
-            queue_promotion: None,
-            queue_promotion_error: None,
+            queue_scroll: ScrollHandle::new(),
+            queue_drag: None,
+            queue_drag_task: None,
+            queue_operation: None,
+            queue_operation_error: None,
             queue_detail: None,
             busy: false,
             loading: false,
@@ -127,15 +133,17 @@ impl ChatState {
     }
     pub fn replace_controller(&mut self, controller: Arc<Controller>, cx: &mut Context<AgentView>) {
         if !Arc::ptr_eq(&self.controller, &controller) {
-            self.queue_promotion = None;
+            self.queue_drag = None;
+            self.queue_drag_task = None;
+            self.queue_operation = None;
             if self
-                .queue_promotion_error
+                .queue_operation_error
                 .as_ref()
                 .is_some_and(|owned| self.error.as_ref() == Some(owned))
             {
                 self.error = None;
             }
-            self.queue_promotion_error = None;
+            self.queue_operation_error = None;
         }
         self._poll = Self::subscribe(&controller, self.record.id.clone(), cx);
         self.session = controller.snapshot_shared();

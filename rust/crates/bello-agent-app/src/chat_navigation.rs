@@ -93,6 +93,7 @@ impl AgentView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.cancel_queue_drag(window, cx);
         let outgoing = std::mem::replace(&mut self.chat, chat);
         let id = outgoing.record.id.clone();
         if outgoing.pending
@@ -673,11 +674,11 @@ impl AgentView {
         if !self.pin_operations.is_empty()
             || self.busy
             || self.loading
-            || self.queue_promotion.is_some()
+            || self.queue_operation.is_some()
             || self
                 .inactive
                 .values()
-                .any(|chat| chat.busy || chat.loading || chat.queue_promotion.is_some())
+                .any(|chat| chat.busy || chat.loading || chat.queue_operation.is_some())
         {
             self.error = Some("Wait for chat operations to finish before closing.".into());
             cx.notify();

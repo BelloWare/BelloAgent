@@ -222,9 +222,6 @@ impl Session {
         Ok(())
     }
     pub fn reorder(&mut self, ids: &[String]) -> Result<()> {
-        if self.edit.is_some() {
-            return Err(invalid("Finish or cancel the queued edit first"));
-        }
         let following: Vec<_> = self
             .pending
             .iter()
@@ -234,7 +231,10 @@ impl Session {
             || ids.iter().collect::<std::collections::HashSet<_>>().len() != ids.len()
             || ids.iter().any(|id| !following.iter().any(|v| &v.id == id))
         {
-            return Err(invalid("List each pending follow-up exactly once"));
+            return Err(Error::QueueOrder);
+        }
+        if self.edit.is_some() {
+            return Err(invalid("Finish or cancel the queued edit first"));
         }
         let ordered: Vec<_> = ids
             .iter()
@@ -1208,20 +1208,214 @@ mod tests {
         assert_eq!(store.snapshot().title, "New chat");
         assert_eq!(store.snapshot().revision, rev);
     }
+    fn reordered_ids() -> Vec<String> {
+        ["follow-after", "follow-before", "promoted"]
+            .map(String::from)
+            .to_vec()
+    }
+    fn expected_reordered_pending(session: &Session) -> Vec<Submission> {
+        // Explicit indices independently check both the stable steering lane
+        // and the exact requested follow-up order, including every payload.
+        [1, 3, 4, 0, 2]
+            .map(|index| session.pending[index].clone())
+            .to_vec()
+    }
     #[test]
-    fn reorder_rejects_omissions_duplicates_and_held_edit() {
-        let mut s = Session::new();
-        s.submit(Submission::new("a".into(), Lane::FollowUp))
-            .unwrap();
-        s.submit(Submission::new("b".into(), Lane::FollowUp))
-            .unwrap();
-        let a = s.pending[0].id.clone();
-        let b = s.pending[1].id.clone();
-        assert!(s.reorder(&[a.clone(), a.clone()]).is_err());
-        s.reorder(&[b.clone(), a.clone()]).unwrap();
-        assert_eq!(s.pending[0].id, b);
-        s.begin_edit(&a, "edit").unwrap();
-        assert!(s.reorder(&[a, b]).is_err());
+    fn reorder_preserves_full_submissions_steering_and_active_run() {
+        let mut session = promotion_fixture();
+        for (item, effort) in session
+            .pending
+            .iter_mut()
+            .zip(["low", "medium", "high", "medium", "low"])
+        {
+            item.effort = Some(effort.into());
+        }
+        let mut expected = session.clone();
+        expected.pending = expected_reordered_pending(&session);
+        session.reorder(&reordered_ids()).unwrap();
+        assert_eq!(
+            serde_json::to_vec(&session).unwrap(),
+            serde_json::to_vec(&expected).unwrap()
+        );
+        // An identical repeated order is valid and retains the full payload.
+        session.reorder(&reordered_ids()).unwrap();
+        assert_eq!(
+            serde_json::to_vec(&session).unwrap(),
+            serde_json::to_vec(&expected).unwrap()
+        );
+        Session::new().reorder(&[]).unwrap();
+    }
+    #[test]
+    fn reorder_uses_typed_queue_order_for_every_membership_mismatch_without_mutation() {
+        for ids in [
+            vec![],
+            vec!["follow-before", "promoted"],
+            vec!["follow-before", "promoted", "follow-after", "extra"],
+            vec!["follow-before", "follow-before", "follow-after"],
+            vec!["follow-before", "missing", "follow-after"],
+            vec!["follow-before", "steer-before", "follow-after"],
+        ] {
+            let mut session = promotion_fixture();
+            let before = serde_json::to_vec(&session).unwrap();
+            let ids = ids.into_iter().map(String::from).collect::<Vec<_>>();
+            let error = session.reorder(&ids).unwrap_err();
+            assert!(matches!(error, Error::QueueOrder));
+            assert_eq!(
+                error.to_string(),
+                "The queue changed while you were dragging, so nothing was moved. Drag again."
+            );
+            assert_eq!(serde_json::to_vec(&session).unwrap(), before);
+        }
+        for held_id in ["follow-before", "steer-before"] {
+            let mut session = promotion_fixture();
+            session.begin_edit(held_id, "held-edit").unwrap();
+            let before = serde_json::to_vec(&session).unwrap();
+            assert!(matches!(
+                session.reorder(&reordered_ids()),
+                Err(Error::Invalid(message)) if message == "Finish or cancel the queued edit first"
+            ));
+            assert_eq!(serde_json::to_vec(&session).unwrap(), before);
+            // Like the Swift queue, a stale drag takes precedence over an
+            // edit acquired in either lane while that drag was in progress.
+            let captured_order = reordered_ids();
+            session.remove("promoted").unwrap();
+            let before = serde_json::to_vec(&session).unwrap();
+            assert!(matches!(
+                session.reorder(&captured_order),
+                Err(Error::QueueOrder)
+            ));
+            assert_eq!(serde_json::to_vec(&session).unwrap(), before);
+        }
+    }
+    #[test]
+    fn stale_reorder_after_removal_delivery_promotion_or_addition_preserves_committed_bytes() {
+        for change in ["remove", "deliver", "promote", "add"] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("reorder.json");
+            let mut store = SessionStore::open(&path).unwrap();
+            store
+                .transact(|session| {
+                    *session = promotion_fixture();
+                    Ok(())
+                })
+                .unwrap();
+            let captured_order = reordered_ids();
+            store
+                .transact(|session| {
+                    match change {
+                        "remove" => session.remove("promoted")?,
+                        "promote" => session.promote_to_steering("promoted")?,
+                        "add" => session
+                            .submit(Submission::new("added during drag".into(), Lane::FollowUp))?,
+                        "deliver" => {
+                            for id in ["steer-before", "steer-after", "follow-before"] {
+                                let reply = session.active_reply.clone().unwrap();
+                                session.finish(&reply, Err(Error::Cancelled))?;
+                                session.resume()?;
+                                assert_eq!(session.start_next()?.unwrap().id, id);
+                            }
+                        }
+                        _ => unreachable!(),
+                    }
+                    Ok(())
+                })
+                .unwrap();
+            let before = serde_json::to_vec(&store.snapshot()).unwrap();
+            let bytes = fs::read(&path).unwrap();
+            assert!(matches!(
+                store.transact(|session| session.reorder(&captured_order)),
+                Err(Error::QueueOrder)
+            ));
+            assert_eq!(serde_json::to_vec(&store.snapshot()).unwrap(), before);
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+        }
+    }
+    #[test]
+    fn reorder_rename_failures_preserve_prior_or_committed_order_and_stream_on_reopen() {
+        for (fault, committed) in [
+            (WriteFault::BeforeRename, false),
+            (WriteFault::AfterRename, true),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("reorder.json");
+            let mut store = SessionStore::open(&path).unwrap();
+            store
+                .transact(|session| {
+                    *session = promotion_fixture();
+                    Ok(())
+                })
+                .unwrap();
+            let reply = store.snapshot().active_reply.unwrap();
+            store
+                .append_delta(&reply, Delta::Text("retained once".into()))
+                .unwrap();
+            let before = store.snapshot();
+            let bytes = fs::read(&path).unwrap();
+            let journal_path =
+                crate::stream_journal::path(&path, &before.stream_generation).unwrap();
+            let journal_bytes = fs::read(&journal_path).unwrap();
+            store.fault = fault;
+            let error = store
+                .transact(|session| session.reorder(&reordered_ids()))
+                .unwrap_err();
+            assert_eq!(matches!(error, Error::PersistenceUncertain(_)), committed);
+            assert_eq!(
+                serde_json::to_vec(&store.snapshot()).unwrap(),
+                serde_json::to_vec(&before).unwrap()
+            );
+            assert_eq!(fs::read(&journal_path).unwrap(), journal_bytes);
+            store.fault = WriteFault::None;
+            let expected_pending = if committed {
+                assert!(
+                    store
+                        .transact(|session| session.reorder(&reordered_ids()))
+                        .is_err()
+                );
+                assert!(
+                    store
+                        .append_delta(&reply, Delta::Text("must not append".into()))
+                        .is_err()
+                );
+                let persisted: Session = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+                assert_eq!(
+                    serde_json::to_vec(&persisted.pending).unwrap(),
+                    serde_json::to_vec(&expected_reordered_pending(&before)).unwrap()
+                );
+                expected_reordered_pending(&before)
+            } else {
+                assert_eq!(fs::read(&path).unwrap(), bytes);
+                store
+                    .append_delta(&reply, Delta::Text(" after failure".into()))
+                    .unwrap();
+                before.pending.clone()
+            };
+            drop(store);
+            let reopened = SessionStore::open(&path).unwrap().snapshot();
+            assert_eq!(
+                serde_json::to_vec(&reopened.pending).unwrap(),
+                serde_json::to_vec(&expected_pending).unwrap()
+            );
+            assert_eq!(reopened.state, RunState::Paused);
+            assert!(reopened.queue_paused);
+            assert_eq!(
+                serde_json::to_vec(&reopened.retry).unwrap(),
+                serde_json::to_vec(&before.active).unwrap()
+            );
+            assert_eq!(reopened.messages.len(), 2);
+            assert_eq!(
+                reopened.messages.last().unwrap().text,
+                if committed {
+                    "retained once"
+                } else {
+                    "retained once after failure"
+                }
+            );
+            assert!(!reopened.messages.last().unwrap().replay_eligible);
+            assert_eq!(
+                serde_json::to_vec(&SessionStore::open(&path).unwrap().snapshot()).unwrap(),
+                serde_json::to_vec(&reopened).unwrap()
+            );
+        }
     }
     fn promotion_fixture() -> Session {
         let mut session = Session::new();

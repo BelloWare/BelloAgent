@@ -98,7 +98,7 @@ Native UI paths begin `apps/macos/PiApp/` (abbreviated `App/`).
 | Follow-up and steering queue | Core/SessionQueue.swift | Partial. Separate lanes, steering at response boundaries, queue limits, captured model/effort, pause/resume, reorder core API. All-at-once mode not ported |
 | Durable queued editing | Core/SessionQueueEdit.swift | Implemented hold/save/cancel/remove and idempotent identity subset. Both lanes held, restart retains hold; tests. Source revision-basis/outcome pruning not ported |
 | Queued follow-up promotion | Core/SessionQueue.swift steerQueued; App/Workspaces/QueuePanel.swift | Implemented pending follow-up → steering action, same identity/payload/choices and durable lane order. Active worker, edit-hold and persistence guards apply. Rust delivery remains at the current response boundary; production tool-batch parity is still missing. Validation recorded below |
-| Queue presentation | App/Workspaces/QueuePanel.swift | Partial. Bounded/collapsible panel, truthful timing, stable lane grouping, full-text editing, and per-chat full-message/model-choice popover. Drag reorder, adaptive room budgeting, and native interaction validation remain pending |
+| Queue presentation | App/Workspaces/QueuePanel.swift | Partial. Bounded/collapsible panel, truthful timing, stable lane grouping, full-text editing, and per-chat full-message/model-choice popover. Durable follow-up drag reorder is implemented below; adaptive room budgeting and native macOS interaction validation remain pending |
 | Images/attachments/image-only submissions | Core/PiImage.swift; App/Composer/Attachments.swift; Core/SessionQueue.swift validate | Unported. Attachment control unavailable; transport currently accepts text only |
 | Built-in tool definitions/execution | Core/Tools.swift; Core/SessionTools.swift; Core/SessionRun.swift | Production unported. Fixture-only ls module + bounded/cancellable executor now implemented; no tool definitions sent or executed by Controller, no fabricated result |
 | MCP lifecycle/invocation | Core/MCP.swift; Core/HostService.swift mcp.* | Unported |
@@ -342,6 +342,59 @@ prove pixels, desktop input, IME, accessibility,
 nonempty draft persistence, Dock reopen, cancellable Quit, or Sparkle behavior.
 Probe code and its feature-gated hooks count as test-support LOC, not shipped
 production code. No macOS lifecycle parity is claimed by adding this diagnostic.
+
+## Durable follow-up drag reorder
+
+`QueuePanel.swift:98–99,131,153–155,352–360` supplies the original row drag and
+“Drag to reorder” hint. Follow-ups alone can move; steering rows and edit-held
+queues cannot. The gesture retains the displayed follow-up identities and applies
+the source single-row move semantics before/after a target. Original 30pt rows,
+22pt controls, numbering, section order and capped scrolling remain in place.
+The drag preview uses the row's number, literal preview text and control geometry;
+an overlay insertion line does not change row height. Bounded edge scrolling keeps
+later rows reachable at the minimum window size.
+
+The existing durable reorder API now returns typed `QueueOrder` when the captured
+membership is stale, duplicated or incomplete. Source membership-before-edit-hold
+precedence is retained. The exact notice is “The queue changed while you were
+dragging, so nothing was moved. Drag again.” Other failures say that the queue was
+not reordered. No optimistic durable order, request restart or composer freeze is
+introduced. Captured turn text/model/effort and steering order remain unchanged.
+
+App drag/drop and completion check chat, project, controller, window binding and
+operation identity. Escape, outside release, chat navigation and rebinding cancel
+only the gesture. Mouse-up cleanup is deferred until the drop callback finishes.
+One shared queue-operation token serializes promotion/reorder admission and uses
+the existing reviewed close barrier; completion/failure releases it. Row action
+buttons retain their own mouse-down/click path rather than initiating a drag.
+
+Nine app checks exercise actual GPUI fake-platform mouse dispatch, cancellation,
+stale membership, row actions/edit holds, minimum-size edge scrolling, composition
+and rebinding, plus pure move/edge policy. Six focused core checks cover typed
+rejection, stale remove/deliver/promote/add cases, captured choices/steering, rename faults,
+uncertainty/reopen and live loopback request/delivery order. The prior six promotion
+app checks also pass after sharing operation ownership. Independent review reran
+all 21 focused checks from immutable binaries.
+
+All 205 default and 212 diagnostic-feature workspace tests, strict Clippy/build in
+both configurations, formatting and diff checks pass in the isolated canonical
+target. No mutation builds, new dependencies, provider/tool execution changes or
+native sheets are part of this slice. Fresh Linux binary
+`7e5fa1ab38e80b4b6a3133790af3c0759616d965acdaf5db361f4b59d2550c40`
+passed actual pointer reorder A below B, outside-release no-op, queued Edit and
+held-drag rejection, Cancel/draft preservation, and 920×600 scrolling to later
+rows followed by moving H before D. Stop/restart retained the queue. After an
+explicitly stopped steering C, Resume produced the observed synthetic request
+and transcript order B,A,C,H,D,E,F,G; all eight follow-ups completed and the exact
+composer draft remained. Three observed launches painted before input.
+
+The desktop tool provides an atomic drag operation, so timed edge dwell,
+mid-drag Escape and concurrent stale races remain headless/core checks rather
+than live desktop proof. Persistence fault cuts also remain core-test evidence.
+Native macOS drag, accessibility and real OS IME interaction remain unvalidated.
+This does not close the source adaptive queue room-budget gap or resolve the
+previously recorded intermittent startup-paint observation. Exact new-checkpoint
+CI remains to be observed after publication.
 
 ## Durable queued follow-up promotion
 

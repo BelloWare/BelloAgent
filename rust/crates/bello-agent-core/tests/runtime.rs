@@ -1,5 +1,5 @@
 use bello_agent_core::{
-    Controller, Credential, Lane, Profile, RunState, Session, SessionStore, Submission,
+    Controller, Credential, Error, Lane, Profile, RunState, Session, SessionStore, Submission,
 };
 use serde_json::json;
 use std::{
@@ -363,6 +363,15 @@ impl PromotionGateway {
         serde_json::from_value(json!({"id":"promotion-fixture","api":"openai-responses","providerId":"litellm","modelId":"captured-model","reasoning":true,"thinkingLevel":"low","baseUrl":self.url,"contextWindow":32000,"maxOutputTokens":4096})).unwrap()
     }
     fn assert_request(&self, id: &str, user_texts: &[&str]) -> serde_json::Value {
+        self.assert_request_with_choices(id, user_texts, "captured-model", "low")
+    }
+    fn assert_request_with_choices(
+        &self,
+        id: &str,
+        user_texts: &[&str],
+        model: &str,
+        effort: &str,
+    ) -> serde_json::Value {
         let raw =
             String::from_utf8(self.requests.recv_timeout(Duration::from_secs(5)).unwrap()).unwrap();
         let (headers, body) = raw.split_once("\r\n\r\n").unwrap();
@@ -372,8 +381,8 @@ impl PromotionGateway {
                 .any(|line| line.eq_ignore_ascii_case(&format!("x-turn-id: {id}")))
         );
         let body: serde_json::Value = serde_json::from_str(body).unwrap();
-        assert_eq!(body["model"], "captured-model");
-        assert_eq!(body["reasoning"]["effort"], "low");
+        assert_eq!(body["model"], model);
+        assert_eq!(body["reasoning"]["effort"], effort);
         assert!(body.get("tools").is_none());
         assert_eq!(
             body["input"]
@@ -604,4 +613,227 @@ fn promotion_requires_a_controller_worker_even_with_a_running_checkpoint() {
     let controller = Controller::new(store, None).unwrap();
     assert_eq!(controller.snapshot().state, RunState::Running);
     assert_rejected_promotion(&controller, &path, "pending");
+}
+
+fn assert_rejected_reorder(
+    controller: &Controller,
+    path: &std::path::Path,
+    ids: &[String],
+    held: bool,
+) {
+    let before = serde_json::to_vec(&controller.snapshot()).unwrap();
+    let bytes = std::fs::read(path).unwrap();
+    let revision = controller.revision();
+    let error = controller.reorder(ids).unwrap_err();
+    if held {
+        assert!(
+            matches!(error, Error::Invalid(message) if message == "Finish or cancel the queued edit first")
+        );
+    } else {
+        assert!(matches!(error, Error::QueueOrder));
+    }
+    assert_eq!(serde_json::to_vec(&controller.snapshot()).unwrap(), before);
+    assert_eq!(std::fs::read(path).unwrap(), bytes);
+    assert_eq!(controller.revision(), revision);
+}
+
+#[test]
+fn reorder_persists_while_active_request_continues_then_drains_steering_and_captured_order() {
+    let gateway = PromotionGateway::new(6);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("reorder.json");
+    let controller = Controller::new(
+        SessionStore::open(&path).unwrap(),
+        Some((
+            gateway.profile(),
+            Credential::new("fake-only".into()).unwrap(),
+        )),
+    )
+    .unwrap();
+    submit_queue_item(&controller, "active", "active", Lane::FollowUp);
+    gateway.assert_request("active", &["active"]);
+    await_state(&controller, |s| {
+        s.messages
+            .last()
+            .is_some_and(|m| m.text == "blocked partial")
+    });
+    let full_text = format!("{}\nfull reordered text 🦋", "x".repeat(2048));
+    for (id, text, lane) in [
+        ("first", "first follow-up", Lane::FollowUp),
+        ("steer-first", "first steering", Lane::Steering),
+        ("middle", full_text.as_str(), Lane::FollowUp),
+        ("steer-last", "last steering", Lane::Steering),
+        ("last", "last follow-up", Lane::FollowUp),
+    ] {
+        submit_queue_item(&controller, id, text, lane);
+    }
+    let order = ["last", "first", "middle"].map(String::from);
+    controller.begin_edit("steer-first", "hold").unwrap();
+    assert_rejected_reorder(&controller, &path, &order, true);
+    controller.resolve_edit("hold", "cancelled", None).unwrap();
+    for invalid in [
+        ["last", "first", "missing"],
+        ["last", "first", "steer-first"],
+        ["last", "first", "active"],
+        ["last", "first", "first"],
+    ] {
+        assert_rejected_reorder(&controller, &path, &invalid.map(String::from), false);
+    }
+    let before = controller.snapshot();
+    let expected_pending = [1, 3, 4, 0, 2].map(|index| before.pending[index].clone());
+    controller.reorder(&order).unwrap();
+    let reordered = controller.snapshot();
+    assert_eq!(reordered.state, RunState::Running);
+    assert_eq!(reordered.active_reply, before.active_reply);
+    assert_eq!(
+        serde_json::to_value(&reordered.active).unwrap(),
+        serde_json::to_value(&before.active).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(&reordered.messages).unwrap(),
+        serde_json::to_value(&before.messages).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(&reordered.pending).unwrap(),
+        serde_json::to_value(expected_pending).unwrap()
+    );
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&std::fs::read(&path).unwrap()).unwrap(),
+        serde_json::to_value(&reordered).unwrap()
+    );
+    gateway.release.send(true).unwrap();
+    let mut texts = vec!["active"];
+    for (id, text) in [
+        ("steer-first", "first steering"),
+        ("steer-last", "last steering"),
+        ("last", "last follow-up"),
+        ("first", "first follow-up"),
+        ("middle", full_text.as_str()),
+    ] {
+        texts.push(text);
+        gateway.assert_request(id, &texts);
+    }
+    await_state(&controller, |s| {
+        s.state == RunState::Idle && s.pending.is_empty()
+    });
+    shutdown_fixture(&controller);
+    let final_snapshot = controller.snapshot();
+    assert_eq!(final_snapshot.messages.len(), 12);
+    assert!(
+        final_snapshot
+            .messages
+            .iter()
+            .all(|message| message.replay_eligible)
+    );
+    assert_eq!(final_snapshot.messages[1].text, "reply 0");
+    assert!(final_snapshot.retry.is_none());
+    assert_rejected_reorder(&controller, &path, &order, false);
+    drop(controller);
+    assert_eq!(
+        serde_json::to_value(SessionStore::open(path).unwrap().snapshot()).unwrap(),
+        serde_json::to_value(final_snapshot).unwrap()
+    );
+    gateway.finish();
+}
+
+#[test]
+fn reordered_queue_reopens_with_each_captured_model_effort_and_full_text() {
+    let gateway = PromotionGateway::new(3);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("reorder.json");
+    let full_text = format!("{}\nretained reordered text 🦋", "x".repeat(2048));
+    let rows = [
+        ("first", "first follow-up", "captured-first", "low"),
+        ("middle", full_text.as_str(), "captured-middle", "medium"),
+        ("last", "last follow-up", "captured-last", "high"),
+    ];
+    let mut store = SessionStore::open(&path).unwrap();
+    store
+        .transact(|session| {
+            for (id, text, model, effort) in rows {
+                session.submit(Submission {
+                    id: id.into(),
+                    text: text.into(),
+                    lane: Lane::FollowUp,
+                    model: Some(model.into()),
+                    effort: Some(effort.into()),
+                })?;
+            }
+            session.state = RunState::Paused;
+            session.queue_paused = true;
+            Ok(())
+        })
+        .unwrap();
+    let controller = Controller::new(store, None).unwrap();
+    let order = ["last", "first", "middle"].map(String::from);
+    controller.reorder(&order).unwrap();
+    let saved = controller.snapshot();
+    assert!(saved.queue_paused);
+    assert_eq!(saved.state, RunState::Paused);
+    drop(controller);
+    let mut changed_profile = gateway.profile();
+    changed_profile.model_id = "different-current-model".into();
+    changed_profile.thinking_level = "xhigh".into();
+    let reopened = Controller::new(
+        SessionStore::open(&path).unwrap(),
+        Some((
+            changed_profile,
+            Credential::new("fake-only".into()).unwrap(),
+        )),
+    )
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(reopened.snapshot()).unwrap(),
+        serde_json::to_value(saved).unwrap()
+    );
+    reopened.resume().unwrap();
+    gateway.assert_request_with_choices("last", &["last follow-up"], "captured-last", "high");
+    await_state(&reopened, |s| {
+        s.messages
+            .last()
+            .is_some_and(|m| m.text == "blocked partial")
+    });
+    // The first queued item has now been delivered, invalidating the old drag.
+    assert_rejected_reorder(&reopened, &path, &order, false);
+    gateway.release.send(true).unwrap();
+    gateway.assert_request_with_choices(
+        "first",
+        &["last follow-up", "first follow-up"],
+        "captured-first",
+        "low",
+    );
+    gateway.assert_request_with_choices(
+        "middle",
+        &["last follow-up", "first follow-up", full_text.as_str()],
+        "captured-middle",
+        "medium",
+    );
+    await_state(&reopened, |s| {
+        s.state == RunState::Idle && s.pending.is_empty()
+    });
+    shutdown_fixture(&reopened);
+    let snapshot = reopened.snapshot();
+    assert_eq!(snapshot.messages.len(), 6);
+    assert!(
+        snapshot
+            .messages
+            .iter()
+            .all(|message| message.replay_eligible)
+    );
+    assert_eq!(
+        snapshot
+            .messages
+            .iter()
+            .filter(|message| message.role == "user")
+            .map(|message| message.id.as_str())
+            .collect::<Vec<_>>(),
+        order.iter().map(String::as_str).collect::<Vec<_>>()
+    );
+    assert!(snapshot.retry.is_none());
+    drop(reopened);
+    assert_eq!(
+        serde_json::to_value(SessionStore::open(path).unwrap().snapshot()).unwrap(),
+        serde_json::to_value(snapshot).unwrap()
+    );
+    gateway.finish();
 }

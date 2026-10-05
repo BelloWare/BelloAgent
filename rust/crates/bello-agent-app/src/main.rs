@@ -9,6 +9,7 @@ mod native_menu;
 mod native_smoke;
 mod queue_actions;
 mod queue_detail;
+mod queue_drag;
 mod queue_presentation;
 mod quick_open;
 mod shutdown_barrier;
@@ -261,6 +262,7 @@ impl AgentView {
         view
     }
     fn bind_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.cancel_queue_drag(window, cx);
         self.sidebar_menu = None;
         let binding = workspace_lifetime::WindowBinding::new(window.window_handle().window_id());
         self.window_binding = Some(binding);
@@ -582,6 +584,10 @@ impl AgentView {
         if !event.is_held {
             self.cancelled_prompt_key = None;
         } else if self.cancelled_prompt_key.as_deref() == Some(event.keystroke.key.as_str()) {
+            cx.stop_propagation();
+            return;
+        }
+        if event.keystroke.key == "escape" && self.cancel_queue_drag(window, cx) {
             cx.stop_propagation();
             return;
         }
@@ -958,6 +964,19 @@ impl AgentView {
             self.session.queue_paused || self.session.state == RunState::Paused,
             self.session.state == RunState::Running,
         );
+        let follow_up_count = self
+            .session
+            .pending
+            .iter()
+            .filter(|item| item.lane == Lane::FollowUp)
+            .count();
+        let reorder_enabled = follow_up_count > 1
+            && self.session.edit.is_none()
+            && self.queue_operation.is_none()
+            && !self.busy
+            && !self.loading
+            && !self.load_failed
+            && !self.shutting_down;
         let mut panel = div()
             .mx(px(16.))
             .mb(px(8.))
@@ -983,14 +1002,26 @@ impl AgentView {
                         .text_color(rgb(p.secondary))
                         .child(timing.header(self.session.pending.len())),
                 )
+                .when(
+                    self.queue_open && follow_up_count > 1 && self.session.edit.is_none(),
+                    |header| {
+                        header.child(
+                            div()
+                                .text_size(px(10.5))
+                                .text_color(rgb(p.tertiary))
+                                .child("Drag to reorder"),
+                        )
+                    },
+                )
                 .child(
                     self.icon_button(
                         "toggle-queue",
                         if self.queue_open { "down" } else { "chevron" },
                         22.,
                     )
-                    .on_click(cx.listener(|view, _, _, cx| {
+                    .on_click(cx.listener(|view, _, window, cx| {
                         view.queue_open = !view.queue_open;
+                        view.cancel_queue_drag(window, cx);
                         cx.notify();
                     })),
                 ),
@@ -1008,6 +1039,22 @@ impl AgentView {
             + usize::from(ordered.iter().any(|row| row.follow_up_number.is_some()));
         let mut rows = div()
             .id("queue-list")
+            .track_scroll(&self.queue_scroll)
+            .on_drag_move(cx.listener(
+                |view, event: &DragMoveEvent<queue_drag::QueueDrag>, window, cx| {
+                    if view.accepts_queue_drag(event.drag(cx)) {
+                        view.update_queue_drop_target(event.event.position, cx);
+                    } else {
+                        view.cancel_queue_drag(window, cx);
+                    }
+                },
+            ))
+            .on_drop(
+                cx.listener(|view, drag: &queue_drag::QueueDrag, window, cx| {
+                    view.drop_queued(drag, window, cx);
+                    cx.stop_propagation();
+                }),
+            )
             .max_h(px(queue_presentation::list_height(ordered.len(), sections)))
             .overflow_y_scroll()
             .flex()
@@ -1038,13 +1085,58 @@ impl AgentView {
             let promote = id.clone();
             let chat_id = self.record.id.clone();
             let offers_promotion = queue_actions::offers_promotion(&self.chat, &id);
-            let promotion_enabled = self.queue_promotion.is_none()
+            let drag = if reorder_enabled {
+                row.follow_up_number
+                    .map(|number| self.queue_drag_payload(&id, number, &item.text))
+            } else {
+                None
+            };
+            let insertion = self
+                .queue_drag
+                .as_ref()
+                .and_then(|state| state.target.as_ref())
+                .filter(|(target, _)| target == &id)
+                .map(|(_, after)| *after);
+            let drag_owner = cx.weak_entity();
+            let promotion_enabled = self.queue_operation.is_none()
                 && !self.busy
                 && !self.loading
                 && !self.load_failed
                 && !self.shutting_down;
             rows = rows.child(
                 div()
+                    .id(SharedString::from(format!("queue-row-{id}")))
+                    .relative()
+                    .when_some(drag, |row, drag| {
+                        row.cursor(CursorStyle::OpenHand).on_drag(
+                            drag,
+                            move |drag, _, window, cx| {
+                                let width = drag_owner
+                                    .update(cx, |view, cx| {
+                                        let width = view.queue_scroll.bounds().size.width;
+                                        view.start_queue_drag(drag, window, cx);
+                                        width
+                                    })
+                                    .unwrap_or(px(240.));
+                                cx.new(|_| queue_drag::QueueDragPreview {
+                                    drag: drag.clone(),
+                                    width,
+                                })
+                            },
+                        )
+                    })
+                    .when_some(insertion, |row, after| {
+                        row.child(
+                            div()
+                                .absolute()
+                                .left_0()
+                                .right_0()
+                                .h(px(1.))
+                                .bg(rgb(p.accent))
+                                .when(after, |line| line.bottom_0())
+                                .when(!after, |line| line.top_0()),
+                        )
+                    })
                     .flex()
                     .items_center()
                     .gap(px(8.))
@@ -1084,6 +1176,7 @@ impl AgentView {
                             "info",
                             22.,
                         )
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .on_click(cx.listener(
                             move |view, event: &ClickEvent, window, cx| {
                                 view.open_queue_detail(
@@ -1103,6 +1196,7 @@ impl AgentView {
                                 "steering",
                                 22.,
                             )
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                             .debug_selector(|| "queue-promote".to_string())
                             .tooltip(move |_, cx| {
                                 cx.new(|_| queue_actions::PromotionHint(p)).into()
@@ -1118,6 +1212,7 @@ impl AgentView {
                     })
                     .child(
                         self.icon_button(SharedString::from(format!("edit-{id}")), "pencil", 22.)
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                             .on_click(cx.listener(move |v, _, _, cx| v.edit(&id, cx))),
                     )
                     .child(
@@ -1126,6 +1221,7 @@ impl AgentView {
                             "close",
                             22.,
                         )
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .on_click(
                             cx.listener(move |v, _, _, cx| v.remove_queue(remove.clone(), cx)),
                         ),
@@ -2137,11 +2233,17 @@ impl Render for AgentView {
             }))
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|view, _, _, cx| view.finish_resize(cx)),
+                cx.listener(|view, _, window, cx| {
+                    view.finish_resize(cx);
+                    cx.defer_in(window, |view, _, cx| view.clear_queue_drag_state(cx));
+                }),
             )
             .on_mouse_up_out(
                 MouseButton::Left,
-                cx.listener(|view, _, _, cx| view.finish_resize(cx)),
+                cx.listener(|view, _, window, cx| {
+                    view.finish_resize(cx);
+                    cx.defer_in(window, |view, _, cx| view.clear_queue_drag_state(cx));
+                }),
             );
         if let Some(mut detail) = self.queue_detail.take() {
             let key = detail.key.clone();

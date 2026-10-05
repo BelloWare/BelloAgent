@@ -19,6 +19,8 @@ pub use session::{Lane, Message, RunState, Session, SessionStore, Submission};
 pub enum Error {
     #[error("{0}")]
     Invalid(String),
+    #[error("The queue changed while you were dragging, so nothing was moved. Drag again.")]
+    QueueOrder,
     #[error("{0}")]
     Provider(String),
     #[error("The response stream ended before a terminal response event")]

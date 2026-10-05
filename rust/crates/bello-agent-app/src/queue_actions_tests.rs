@@ -96,11 +96,11 @@ fn queue_promotion_rejection_never_freezes_or_rewrites_composition(cx: &mut Test
             let before = view.composer.read(cx).text().to_owned();
             let chat_id = view.record.id.clone();
             view.promote_queued("different chat", &id, cx);
-            assert!(view.queue_promotion.is_none());
+            assert!(view.queue_operation.is_none());
             view.promote_queued(&chat_id, &id, cx);
-            let token = view.queue_promotion.unwrap();
+            let token = view.queue_operation.unwrap();
             view.promote_queued(&chat_id, &id, cx);
-            assert_eq!(view.queue_promotion, Some(token));
+            assert_eq!(view.queue_operation, Some(token));
             assert!(view.composer.read(cx).has_marked_text());
             assert_eq!(view.composer.read(cx).text(), before);
             assert!(!view.busy);
@@ -109,7 +109,7 @@ fn queue_promotion_rejection_never_freezes_or_rewrites_composition(cx: &mut Test
     cx.run_until_parked();
     window
         .update(cx, |view, window, cx| {
-            assert!(view.queue_promotion.is_none());
+            assert!(view.queue_operation.is_none());
             assert!(
                 view.error
                     .as_deref()
@@ -134,7 +134,7 @@ fn queue_promotion_completion_stays_with_original_chat_and_rejects_stale_owners(
             let project = view.project.clone();
             let controller = view.controller.clone();
             let token = uuid::Uuid::new_v4();
-            view.queue_promotion = Some(token);
+            view.queue_operation = Some(token);
             view.new_chat(window, cx);
             let selected = view.record.id.clone();
             assert_ne!(selected, chat_id);
@@ -188,7 +188,7 @@ fn queue_promotion_completion_stays_with_original_chat_and_rejects_stale_owners(
             );
         })
         .unwrap();
-    assert!(cx.read(|cx| root.read(cx).queue_promotion.is_none()));
+    assert!(cx.read(|cx| root.read(cx).queue_operation.is_none()));
 }
 
 #[gpui::test]
@@ -201,7 +201,7 @@ fn queue_promotion_success_clears_only_its_owned_error(cx: &mut TestAppContext) 
             let controller = view.controller.clone();
             for overwritten in [false, true] {
                 let token = uuid::Uuid::new_v4();
-                view.queue_promotion = Some(token);
+                view.queue_operation = Some(token);
                 view.finish_queue_promotion(
                     &id,
                     &project,
@@ -214,13 +214,13 @@ fn queue_promotion_success_clears_only_its_owned_error(cx: &mut TestAppContext) 
                     view.error = Some("newer unrelated error".into());
                 }
                 let retry = uuid::Uuid::new_v4();
-                view.queue_promotion = Some(retry);
+                view.queue_operation = Some(retry);
                 view.finish_queue_promotion(&id, &project, &controller, retry, Ok(()), cx);
                 assert_eq!(
                     view.error.as_deref(),
                     overwritten.then_some("newer unrelated error")
                 );
-                assert!(view.queue_promotion_error.is_none());
+                assert!(view.queue_operation_error.is_none());
             }
         })
         .unwrap();
@@ -237,16 +237,16 @@ fn queue_promotion_controller_replacement_invalidates_old_operation_without_touc
             let id = view.record.id.clone();
             let project = view.project.clone();
             let token = uuid::Uuid::new_v4();
-            view.queue_promotion = Some(token);
+            view.queue_operation = Some(token);
             view.chat.replace_controller(old.clone(), cx);
-            assert_eq!(view.queue_promotion, Some(token));
-            view.queue_promotion_error = Some("older promotion notice".into());
+            assert_eq!(view.queue_operation, Some(token));
+            view.queue_operation_error = Some("older promotion notice".into());
             view.error = Some("newer unrelated error".into());
             let replacement =
                 Controller::new(SessionStore::pending_with_id(&id).unwrap(), None).unwrap();
             view.chat.replace_controller(replacement, cx);
-            assert!(view.queue_promotion.is_none());
-            assert!(view.queue_promotion_error.is_none());
+            assert!(view.queue_operation.is_none());
+            assert!(view.queue_operation_error.is_none());
             view.finish_queue_promotion(
                 &id,
                 &project,
@@ -272,7 +272,7 @@ fn queue_promotion_close_barrier_waits_for_active_and_inactive_completion(cx: &m
                     let project = view.project.clone();
                     let controller = view.controller.clone();
                     let token = uuid::Uuid::new_v4();
-                    view.queue_promotion = Some(token);
+                    view.queue_operation = Some(token);
                     if inactive {
                         view.new_chat(window, cx);
                     }
@@ -295,7 +295,7 @@ fn queue_promotion_close_barrier_waits_for_active_and_inactive_completion(cx: &m
                     assert_eq!(view.composer.read(cx).text(), before);
                     assert!(view.composer.read(cx).has_marked_text());
                     assert!(view.composer.read(cx).focus_handle(cx).is_focused(window));
-                    assert_eq!(view.chat_ref(&id).unwrap().queue_promotion, Some(token));
+                    assert_eq!(view.chat_ref(&id).unwrap().queue_operation, Some(token));
                     view.finish_queue_promotion(
                         &id,
                         &project,
@@ -308,7 +308,7 @@ fn queue_promotion_close_barrier_waits_for_active_and_inactive_completion(cx: &m
                         },
                         cx,
                     );
-                    assert!(view.chat_ref(&id).unwrap().queue_promotion.is_none());
+                    assert!(view.chat_ref(&id).unwrap().queue_operation.is_none());
                     // Composition during actual Close remains a separate audited
                     // policy gap. Only blocked-close preservation is tested here.
                     view.composer
