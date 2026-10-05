@@ -1,91 +1,121 @@
-import SwiftUI
 import AppKit
 
-/// The capture as it was: the request and response bodies (formatted JSON,
-/// events, UTF-8 or hex), the headers, the metadata record, the message links
-/// and the event index. Searchable and copyable; capture settings, exports
-/// and redaction in the ⋯ menu.
-struct InspectorRawTab: View {
-    @ObservedObject var inspector: SessionInspectorModel
-    @ObservedObject var request: InspectorRequestModel
-    let compact: Bool
-    @State private var copySource: CapturedBodyCopySource?
-    @State private var notice = ""
-    @State private var pageText = ""
-    @State private var pageTotal = 0
-    @State private var pageOffset = 0
-    @State private var pageLoading = false
-    @FocusState private var searchFocused: Bool
-
+/// Retained capture views stay mounted while filters and payload pages change.
+@MainActor final class InspectorRawTab: DashView {
+    let inspector: SessionInspectorModel
+    let request: InspectorRequestModel
+    var compact: Bool { didSet { if compact != oldValue { needsLayout = true } } }
+    private var copySource: CapturedBodyCopySource?
+    private var notice = "" { didSet { refreshNotice() } }
+    private var pageText = "", pageTotal = 0, pageOffset = 0, pageLoading = false
+    private var lastPart: InspectorRequestModel.RawPart?
+    private var lastRow: String?
+    private var lastFocus = 0
+    private var bodyKey: String?
+    private var body: CapturedBodyView?
+    private var displayed: NSView?
+    private var textView: PagedTextView?
+    private var textKey: String?
+    private var footer: NSView?
+    private var toolbar: ShellStack?
+    private var status: PiKit.Note?
+    private lazy var search = InspectorSearchField(text: request.query) { [weak request] in request?.query = $0 }
+    private lazy var copy = PiKit.Button("Copy", symbol: "doc.on.doc", style: .ghost) { [weak self] in self?.copyView() }
+    private lazy var menu: PiKit.MenuControl = {
+        let face = InspectorCaptureMenuFace()
+        return PiKit.MenuControl(label: "Capture settings and exports", identifier: "inspector-raw-menu", help: "Capture settings and exports", face: face, onHover: { face.hovering = $0 }) { [weak self] in self?.menuEntries() ?? [] }
+    }()
+    private lazy var observer = ShellObserver { [weak self] in self?.refresh() }
+    private var pageTask: Task<Void, Never>?
+    private var currentPage: PageKey?
+    private struct PageKey: Equatable { let attempt: String; let part: InspectorRequestModel.RawPart; let offset: Int }
     private var row: InspectorRequestRow? { request.row }
     private var showsBody: Bool { request.raw == .request || request.raw == .response }
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            toolbar
-            if let row {
-                switch request.raw {
-                case .request, .response: bodyView(row)
-                case .headers: headers
-                case .metadata: text(request.metadataText, empty: request.metadataLoaded ? "No metadata record." : "Reading the metadata record…", label: "Request metadata")
-                case .links, .events: paged(row)
-                }
-            }
-            if !notice.isEmpty { PiStatusLine(text: notice, tone: .warning) }
+    init(inspector: SessionInspectorModel, request: InspectorRequestModel, compact: Bool) {
+        self.inspector = inspector; self.request = request; self.compact = compact
+        super.init(frame: .zero)
+        setAccessibilityIdentifier("inspector-raw"); copy.setAccessibilityIdentifier("inspector-raw-copy")
+        observer.observe(request); refresh()
+    }
+    required init?(coder: NSCoder) { nil }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil { pageTask?.cancel(); pageTask = nil; currentPage = nil }
+        else { refresh() }
+    }
+    func refresh() {
+        if lastRow != row?.id || lastPart != request.raw {
+            copySource = nil; pageOffset = 0; pageText = ""; pageTotal = 0
+            pageTask?.cancel(); pageTask = nil; currentPage = nil
+            if lastRow != row?.id { notice = "" }
+            lastRow = row?.id; lastPart = request.raw
+            rebuildToolbar()
         }
-        .padding(.horizontal, compact ? PiSpacing.lg : PiSpacing.xl).padding(.vertical, 12)
-        .onChange(of: request.searchFocus) { _, _ in if showsBody { searchFocused = true } else { request.raw = .request; searchFocused = true } }
-        .onChange(of: request.raw) { _, _ in copySource = nil; pageOffset = 0 }
-        .onChange(of: row?.id) { _, _ in copySource = nil; pageOffset = 0; notice = "" }
-        .accessibilityIdentifier("inspector-raw")
-    }
-
-    private var toolbar: some View {
-        HStack(spacing: PiSpacing.sm) {
-            PiTabs(selection: $request.raw, items: [(.request, "Request"), (.response, "Response"), (.headers, "Headers"),
-                                                     (.metadata, "Metadata"), (.links, "Links"), (.events, "Events")])
-                .accessibilityIdentifier("inspector-raw-parts")
-            Spacer(minLength: 4)
-            if showsBody { searchField }
-            Button { copyView() } label: { Label("Copy", systemImage: "doc.on.doc") }
-                .buttonStyle(.piGhost).disabled(showsBody ? copySource == nil : request.metadataText.isEmpty && pageText.isEmpty)
-                .accessibilityIdentifier("inspector-raw-copy")
-            PiMenuControl(label: "Capture settings and exports", identifier: "inspector-raw-menu", help: "Capture settings and exports") {
-                menuEntries()
-            } face: { hovering in
-                Image(systemName: "ellipsis").font(.system(size: 12, weight: .semibold)).foregroundStyle(hovering ? Color.piInk : Color.piInkSecondary)
-                    .frame(width: 28, height: 28).background(hovering ? Color.piFillStrong : Color.piFill, in: Circle()).contentShape(Circle())
-            }
-            .frame(width: 28, height: 28)
+        search.text = request.query
+        if lastFocus != request.searchFocus {
+            lastFocus = request.searchFocus
+            if !showsBody { request.raw = .request; refresh() }
+            DispatchQueue.main.async { [weak self] in guard let self else { return }; self.window?.makeFirstResponder(self.search.field) }
         }
+        refreshContent(); refreshNotice(); refreshCopy(); needsLayout = true
     }
-
-    private var searchField: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "magnifyingglass").font(.system(size: 11, weight: .medium)).foregroundStyle(Color.piInkTertiary)
-            TextField("Find in body and headers", text: $request.query).textFieldStyle(.plain).font(PiFont.caption)
-                .focused($searchFocused).accessibilityIdentifier("inspector-raw-search")
-            if !request.query.isEmpty {
-                Button { request.query = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(Color.piInkTertiary) }
-                    .buttonStyle(.plain).piPointer().accessibilityLabel("Clear the search")
+    private func rebuildToolbar() {
+        let tabs = PiKit.Tabs(selection: request.raw, items: [(InspectorRequestModel.RawPart.request, "Request"), (.response, "Response"), (.headers, "Headers"), (.metadata, "Metadata"), (.links, "Links"), (.events, "Events")]) { [weak request] in request?.raw = $0 }
+        tabs.setAccessibilityIdentifier("inspector-raw-parts")
+        var items: [ShellItem] = [.view(tabs), .spacer(4)]
+        if showsBody { items.append(.view(search, .fixed(compact ? 180 : 250))) }
+        items += [.view(copy), .view(menu, .fixed(28))]
+        toolbar?.removeFromSuperview(); toolbar = inspectorRow(items, spacing: PiSpacing.sm); addSubview(toolbar!)
+    }
+    private func show(_ view: NSView) { if displayed !== view { displayed?.removeFromSuperview(); displayed = view; addSubview(view) } }
+    private func refreshContent() {
+        footer?.removeFromSuperview(); footer = nil
+        guard let row else { return }
+        switch request.raw {
+        case .request, .response:
+            let kind = request.raw == .request ? "request" : "response"
+            let key = row.id + ":" + kind
+            if bodyKey != key {
+                bodyKey = key
+                body = CapturedBodyView(source: source(row, kind: kind), sessionID: inspector.scope.sessionID, attemptID: row.id, kind: kind, retained: row.source != .live, initialFormat: kind == "response" ? .combined : .json, searchQuery: request.query, searchHeaders: request.metadata[kind + "Headers"]?.object ?? [:], growingBytes: kind == "response" ? request.growingBytes : nil, onCopySource: { [weak self] in self?.copySource = $0; self?.refreshCopy() })
+            } else { body?.update(searchQuery: request.query, searchHeaders: request.metadata[kind + "Headers"]?.object ?? [:], growingBytes: kind == "response" ? request.growingBytes : nil) }
+            if let body { show(body) }
+        case .headers:
+            let column = inspectorColumn([InspectorSectionTitle("Request headers", subtitle: "authentication values are masked"), CapturedHeadersView(headers: request.metadata["requestHeaders"]?.object ?? [:]), InspectorSectionTitle("Response headers"), CapturedHeadersView(headers: request.metadata["responseHeaders"]?.object ?? [:])], spacing: 14)
+            let scroll = PageScrollView(column: column); scroll.setAccessibilityIdentifier("inspector-raw-headers"); show(scroll)
+        case .metadata:
+            showText(request.metadataText, empty: request.metadataLoaded ? "No metadata record." : "Reading the metadata record…", label: "Request metadata", key: row.id + ":metadata")
+        case .links, .events:
+            showText(pageText, empty: pageLoading ? "Reading…" : "Nothing recorded.", label: request.raw == .links ? "Message links" : "Event index", key: row.id + ":" + request.raw.rawValue)
+            var items: [ShellItem] = []
+            if pageTotal > 128 {
+                items.append(.view(PiKit.Pager(center: inspectorText("\(pageOffset + 1)–\(min(pageTotal, pageOffset + 128)) of \(pageTotal)"), canPrevious: pageOffset > 0, canNext: pageOffset + 128 < pageTotal, previous: { [weak self] in guard let self else { return }; self.pageOffset = max(0, self.pageOffset - 128); self.refreshContent() }, next: { [weak self] in guard let self else { return }; self.pageOffset += 128; self.refreshContent() })))
+            }
+            items += [.spacer(0), .view(inspectorText(request.raw == .links ? "Messages this request used (context) and produced (output)." : "Server-sent event offsets into the retained response.", font: PiKit.Font.micro, color: .piInkTertiary), .flexible)]
+            footer = inspectorRow(items); addSubview(footer!)
+            let key = PageKey(attempt: row.id, part: request.raw, offset: pageOffset)
+            if currentPage != key, window != nil {
+                currentPage = key; pageTask?.cancel()
+                pageTask = Task { [weak self] in await self?.loadPage(row, key: key) }
             }
         }
-        .padding(.horizontal, 9).padding(.vertical, 6)
-        .background(Color.piSurface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(searchFocused ? Color.piAccent.opacity(0.5) : Color.piHairline, lineWidth: 1))
-        .frame(width: compact ? 180 : 250)
+        needsLayout = true; refreshCopy()
     }
-
-    private func bodyView(_ row: InspectorRequestRow) -> some View {
-        let kind = request.raw == .request ? "request" : "response"
-        return CapturedBodyView(source: source(row, kind: kind), sessionID: inspector.scope.sessionID, attemptID: row.id, kind: kind,
-                                retained: row.source != .live, copySource: $copySource,
-                                initialFormat: kind == "response" ? .combined : .json, searchQuery: request.query,
-                                searchHeaders: request.metadata[kind + "Headers"]?.object ?? [:],
-                                growingBytes: kind == "response" ? request.growingBytes : nil)
-            .id(row.id + ":" + kind)
+    private func showText(_ text: String, empty: String, label: String, key: String) {
+        if textKey != key { textKey = key; textView = PagedTextView(text: text, accessibilityLabel: label) }
+        else { textView?.text = text }
+        guard let textView else { return }
+        let host = InspectorContentHost(content: ShellInset(textView))
+        if text.isEmpty { host.cover(InspectorPlaceholder(symbol: "", title: empty)) }
+        show(host)
     }
-
+    private func refreshCopy() { copy.isEnabled = showsBody ? copySource != nil : !request.metadataText.isEmpty || !pageText.isEmpty }
+    private func refreshNotice() {
+        status?.removeFromSuperview(); status = nil
+        if !notice.isEmpty { status = PiKit.Note(notice, tone: .warning); addSubview(status!) }
+        needsLayout = true
+    }
     private func source(_ row: InspectorRequestRow, kind: String) -> CapturedBodySource {
         let state = request.metadata[kind]?.object?["state"]?.string ?? ""
         if row.source != .live, MessageBodyReader.canReadRetained(state) || inspector.workspace == nil {
@@ -95,58 +125,19 @@ struct InspectorRawTab: View {
         return .archive(inspector.archive, attemptID: row.id, kind: kind)
     }
 
-    private var headers: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                InspectorSectionTitle("Request headers", subtitle: "authentication values are masked")
-                CapturedHeadersView(headers: request.metadata["requestHeaders"]?.object ?? [:])
-                InspectorSectionTitle("Response headers")
-                CapturedHeadersView(headers: request.metadata["responseHeaders"]?.object ?? [:])
-            }
-        }
-        .accessibilityIdentifier("inspector-raw-headers")
-    }
-
-    private func text(_ value: String, empty: String, label: String) -> some View {
-        ZStack {
-            PagedTextView(text: value, accessibilityLabel: label).piInset(sunken: true)
-            if value.isEmpty { Text(empty).font(PiFont.caption).foregroundStyle(Color.piInkTertiary) }
-        }
-    }
-
-    /// Message links and the event index come a page at a time.
-    private func paged(_ row: InspectorRequestRow) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            text(pageText, empty: pageLoading ? "Reading…" : "Nothing recorded.", label: request.raw == .links ? "Message links" : "Event index")
-            HStack {
-                if pageTotal > 128 {
-                    PiPager(previous: { pageOffset = max(0, pageOffset - 128) }, next: { pageOffset += 128 },
-                            canPrevious: pageOffset > 0, canNext: pageOffset + 128 < pageTotal) {
-                        Text("\(pageOffset + 1)–\(min(pageTotal, pageOffset + 128)) of \(pageTotal)")
-                    }
-                }
-                Spacer()
-                Text(request.raw == .links ? "Messages this request used (context) and produced (output)." : "Server-sent event offsets into the retained response.")
-                    .font(PiFont.micro).foregroundStyle(Color.piInkTertiary)
-            }
-        }
-        .task(id: PageKey(attempt: row.id, part: request.raw, offset: pageOffset)) { await loadPage(row) }
-    }
-    private struct PageKey: Equatable { let attempt: String; let part: InspectorRequestModel.RawPart; let offset: Int }
-
-    private func loadPage(_ row: InspectorRequestRow) async {
+    private func loadPage(_ row: InspectorRequestRow, key: PageKey) async {
         pageLoading = true; pageText = ""
-        defer { pageLoading = false }
+        defer { if currentPage == key { pageLoading = false; refreshContent() } }
         do {
             let value: [String: WireValue]
-            if request.raw == .links {
-                value = try await inspector.archive.messageLinks(attemptID: row.id, offset: pageOffset)
+            if key.part == .links {
+                value = try await inspector.archive.messageLinks(attemptID: row.id, offset: key.offset)
             } else if row.source != .live || request.metadata["response"]?.object?["savedToLog"]?.bool == true,
-                      let retained = try? await inspector.archive.eventIndices(attemptID: row.id, offset: pageOffset) {
+                      let retained = try? await inspector.archive.eventIndices(attemptID: row.id, offset: key.offset) {
                 // A request the log saved is read there, also while the index still shows the helper's row.
                 value = retained
             } else if let workspace = inspector.workspace {
-                value = try await workspace.debugRequest("debug.raw-events", sessionID: inspector.scope.sessionID, params: ["attemptId": .string(row.id), "offset": .number(Double(pageOffset))])
+                value = try await workspace.debugRequest("debug.raw-events", sessionID: inspector.scope.sessionID, params: ["attemptId": .string(row.id), "offset": .number(Double(key.offset))])
             } else { throw HostError.failure("No event index was retained for this request.") }
             try Task.checkCancellation()
             let text = await Task.detached(priority: .userInitiated) { () -> String in
@@ -156,6 +147,7 @@ struct InspectorRawTab: View {
                 return WireValue.object(value).pretty
             }.value
             try Task.checkCancellation()
+            guard currentPage == key else { return }
             pageText = text; pageTotal = Int(value["total"]?.number ?? 0)
         } catch is CancellationError {
         } catch { pageText = ""; notice = error.localizedDescription }
@@ -256,5 +248,58 @@ struct InspectorRawTab: View {
                                                "view": .string(transformed)])
             try Data(manifest.pretty.utf8).write(to: url, options: .atomic)
         } catch { if !(error is CancellationError) { notice = error.localizedDescription } }
+    }
+    override func layout() {
+        super.layout()
+        let inset = compact ? PiSpacing.lg : PiSpacing.xl
+        let width = max(0, bounds.width - 2 * inset)
+        if let toolbar {
+            if let index = toolbar.items.firstIndex(where: { $0.view === search }) { toolbar.items[index].size = .fixed(compact ? 180 : 250) }
+            let height = toolbar.height(forWidth: width); toolbar.frame = CGRect(x: inset, y: 12, width: width, height: height)
+        }
+        let top = (toolbar?.frame.maxY ?? 12) + 10
+        let noteHeight = status.map { PiKit.height(of: $0, width: width) + 10 } ?? 0
+        let footHeight = footer.map { PiKit.height(of: $0, width: width) + 8 } ?? 0
+        let height = max(0, bounds.height - top - 12 - noteHeight - footHeight)
+        displayed?.frame = CGRect(x: inset, y: top, width: width, height: height)
+        footer?.frame = CGRect(x: inset, y: top + height + 8, width: width, height: max(0, footHeight - 8))
+        status?.frame = CGRect(x: inset, y: bounds.height - 12 - max(0, noteHeight - 10), width: width, height: max(0, noteHeight - 10))
+    }
+}
+
+@MainActor private final class InspectorCaptureMenuFace: DashView {
+    var hovering = false { didSet { needsDisplay = true } }
+    override var intrinsicContentSize: NSSize { NSSize(width: 28, height: 28) }
+    override func draw(_ dirtyRect: NSRect) {
+        (hovering ? NSColor.piFillStrong : .piFill).setFill(); NSBezierPath(ovalIn: bounds).fill()
+        PiKit.Symbol("ellipsis", size: 12, weight: .semibold).draw(centredIn: bounds, color: hovering ? .piInk : .piInkSecondary, scale: piScale)
+    }
+}
+
+@MainActor private final class InspectorSearchField: PiKit.Box, NSTextFieldDelegate {
+    let field = NSTextField(string: "")
+    private let search = PiKit.SymbolView(PiKit.Symbol("magnifyingglass", size: 11, weight: .medium), color: .piInkTertiary)
+    private let clear: PiKit.IconButton
+    private let changed: (String) -> Void
+    var text: String { get { field.stringValue } set { if field.stringValue != newValue { field.stringValue = newValue }; clear.isHidden = newValue.isEmpty; needsLayout = true } }
+    init(text: String, changed: @escaping (String) -> Void) {
+        self.changed = changed; clear = PiKit.IconButton(symbol: "xmark.circle.fill", label: "Clear the search", size: 14)
+        super.init(fill: .piSurface, stroke: .piHairline, cornerRadius: 8)
+        PiKit.configurePlain(field, font: PiKit.Font.caption, placeholder: "Find in body and headers")
+        field.setAccessibilityIdentifier("inspector-raw-search"); field.delegate = self
+        clear.onPress = { [weak self] in self?.text = ""; self?.changed("") }
+        shellAdd([field, search, clear]); self.text = text
+    }
+    required init?(coder: NSCoder) { nil }
+    func controlTextDidChange(_ notification: Notification) { clear.isHidden = field.stringValue.isEmpty; needsLayout = true; changed(field.stringValue) }
+    func controlTextDidBeginEditing(_ notification: Notification) { strokeColor = NSColor.piAccent.piOpacity(0.5) }
+    func controlTextDidEndEditing(_ notification: Notification) { strokeColor = .piHairline }
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: PiKit.Line("Ag", font: PiKit.Font.caption, color: .black).lineHeight + 12) }
+    override func layout() {
+        super.layout(); let icon = search.intrinsicContentSize
+        search.frame = CGRect(x: 9, y: (bounds.height - icon.height) / 2, width: icon.width, height: icon.height)
+        let x = 9 + icon.width + 6, clearWidth: CGFloat = clear.isHidden ? 0 : 20
+        field.frame = CGRect(x: x - PiKit.fieldInset, y: 6, width: max(0, bounds.width - x - 9 - clearWidth) + 2 * PiKit.fieldInset, height: bounds.height - 12)
+        clear.frame = CGRect(x: bounds.width - 9 - 14, y: (bounds.height - 14) / 2, width: 14, height: 14)
     }
 }

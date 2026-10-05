@@ -173,7 +173,7 @@ final class ViewUpdateSideEffectTests: XCTestCase {
         let whole = InspectorExpandBodies.toolResult(lines: 200)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 640), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: ScrollView { InspectorPromptCard(preview: String(whole.prefix(2_000)), model: model, showAll: {}).padding(24) })
+        window.contentView = nativePromptPage(InspectorPromptCard(preview: String(whole.prefix(2_000)), model: model, showAll: {}))
         window.orderFront(nil)
         defer { model.collapse(); window.contentView = nil; window.close() }
         for _ in 0..<10 { window.contentView?.layoutSubtreeIfNeeded(); window.displayIfNeeded(); try await Task.sleep(for: .milliseconds(20)) }
