@@ -101,7 +101,8 @@ struct PayloadSearchResult: Sendable {
 @MainActor final class PayloadSearchTextView: NSScrollView {
     let editor = NSTextView()
     private var id: UUID?, textID: UUID?, selected: Int?
-    private var pendingScroll: NSRange?
+    private struct Reveal { let range: NSRange; let origin: NSPoint }
+    private var pendingScroll: Reveal?
     init(result: PayloadSearchResult, selected: Int) {
         super.init(frame: .zero)
         hasVerticalScroller = true; autohidesScrollers = true; drawsBackground = false
@@ -124,8 +125,9 @@ struct PayloadSearchResult: Sendable {
         if window != nil, pendingScroll != nil { needsLayout = true }
     }
     private func scrollToPendingMatch() {
-        guard let range = pendingScroll, window != nil,
+        guard let reveal = pendingScroll, window != nil,
               contentView.bounds.width > 0, contentView.bounds.height > 0 else { return }
+        let range = reveal.range
         pendingScroll = nil
         // Realize the selected match, leaving a large body's other text to
         // noncontiguous layout instead of laying out the whole container.
@@ -135,14 +137,22 @@ struct PayloadSearchResult: Sendable {
             let glyph = manager.boundingRect(forGlyphRange: glyphs, in: container)
             let rect = contentView.convert(glyph.offsetBy(dx: editor.textContainerOrigin.x,
                                                          dy: editor.textContainerOrigin.y), from: editor)
-            // Revealing an already visible first match can make AppKit
-            // consume the leading text inset in an overflowing document.
-            // Keep the viewport, and scroll only for a match outside it.
-            if contentView.bounds.contains(rect) { return }
+            // Initial text sizing can move the clip before this first
+            // layout. Preserve its pre-update viewport when that viewport
+            // already contains the chosen match at the final size.
+            let viewport = NSRect(origin: reveal.origin, size: contentView.bounds.size)
+            if viewport.contains(rect) {
+                if contentView.bounds.origin != reveal.origin {
+                    contentView.scroll(to: reveal.origin)
+                    reflectScrolledClipView(contentView)
+                }
+                return
+            }
         }
         editor.scrollRangeToVisible(range)
     }
     func update(result: PayloadSearchResult, selected: Int) {
+        let origin = pendingScroll?.origin ?? contentView.bounds.origin
         if id != result.id {
             id = result.id; self.selected = nil; pendingScroll = nil
             if textID != result.textID {
@@ -164,7 +174,7 @@ struct PayloadSearchResult: Sendable {
         // Selecting while the new reader has a zero-sized viewport can
         // scroll away its top inset before wrapping reaches its final width.
         // Keep selection immediate, and reveal it after the scroll view tiles.
-        pendingScroll = range
+        pendingScroll = Reveal(range: range, origin: origin)
         needsLayout = true
     }
 }
