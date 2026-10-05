@@ -24,6 +24,8 @@ struct CapturedBodyViewReference: View {
     var growingBytes: Int? = nil
     /// Test-only readiness observation; leaves the frozen load/search flow intact.
     var onControllers: ((CapturedBodyController, PayloadSearchController) -> Void)? = nil
+    /// Observe the unrounded search layout without changing its proposal.
+    var onSearchFrame: ((String, CGRect) -> Void)? = nil
     @StateObject private var controller = CapturedBodyController()
     @StateObject private var search = PayloadSearchController()
     @State private var previousSelection: Selection?
@@ -151,6 +153,7 @@ struct CapturedBodyViewReference: View {
                 Text(controller.notice).font(PiFont.micro).foregroundStyle(Color.piWarning)
             }
         }
+        .coordinateSpace(name: "captured-body-reference")
         .onAppear { onControllers?(controller, search) }
         .task(id: identity) {
             let preserve = previousSelection.map { $0.session == identity.session && $0.attempt == identity.attempt && $0.kind == identity.kind } ?? false
@@ -197,18 +200,27 @@ struct CapturedBodyViewReference: View {
                         .font(PiFont.caption).monospacedDigit().accessibilityIdentifier("payload-search-count")
                     Spacer()
                     if search.loading { Text("Updating…").font(PiFont.micro).foregroundStyle(Color.piInkTertiary) }
-                    Button { search.move(-1) } label: { Image(systemName: "chevron.up") }
+                    Button { search.move(-1) } label: { Image(systemName: "chevron.up").background(searchFrame("previous-symbol")) }
                         .buttonStyle(.piGhost).disabled(result.matches.isEmpty).help("Previous match").accessibilityLabel("Previous match")
-                    Button { search.move(1) } label: { Image(systemName: "chevron.down") }
+                        .background(searchFrame("previous"))
+                    Button { search.move(1) } label: { Image(systemName: "chevron.down").background(searchFrame("next-symbol")) }
                         .buttonStyle(.piGhost).disabled(result.matches.isEmpty).help("Next match").accessibilityLabel("Next match")
+                        .background(searchFrame("next"))
                 } else if search.loading { PiShimmerText(text: "Searching body and headers…", size: 11) }
-            }
+            }.background(searchFrame("bar"))
             if let result = search.result {
-                PayloadSearchTextReference(result: result, selected: search.selected).piInset(sunken: true)
+                PayloadSearchTextReference(result: result, selected: search.selected).piInset(sunken: true).background(searchFrame("reader"))
             } else {
                 Text(search.notice).font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+        }
+    }
+    private func searchFrame(_ name: String) -> some View {
+        GeometryReader { geometry in
+            let frame = geometry.frame(in: .named("captured-body-reference"))
+            Color.clear.onAppear { onSearchFrame?(name, frame) }
+                .onChange(of: frame) { _, value in onSearchFrame?(name, value) }
         }
     }
     private func updateDisplayedText() async {

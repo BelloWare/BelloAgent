@@ -161,17 +161,22 @@ import XCTest
                 @MainActor final class MountedReference {
                     var controller: CapturedBodyController?
                     var search: PayloadSearchController?
+                    var frames: [String: CGRect] = [:]
                 }
                 let mounted = MountedReference()
                 let value = source(bytes)
                 var reference = CapturedBodyViewReference(source: value, sessionID: "s", attemptID: "search", kind: "request", retained: false,
                                                           searchQuery: query, searchHeaders: headers)
                 reference.onControllers = { mounted.controller = $0; mounted.search = $1 }
+                reference.onSearchFrame = { mounted.frames[$0] = $1 }
                 let view = CapturedBodyView(source: value, sessionID: "s", attemptID: "search", kind: "request", retained: false,
                                             searchQuery: query, searchHeaders: headers)
                 func findNative(in root: NSView) -> CapturedBodyView? {
                     if let native = root as? CapturedBodyView { return native }
                     return root.subviews.lazy.compactMap { findNative(in: $0) }.first
+                }
+                func searchBoxes(in root: NSView) -> [PiKit.Box] {
+                    ((root as? PiKit.Box).map { [$0] } ?? []) + root.subviews.flatMap { searchBoxes(in: $0) }
                 }
                 let expectedMatches = query == "README" ? 2 : 0
                 try await check("payload-complete-search-" + (query == "README" ? "matches" : "none"), reference.frame(width: 700, height: 500),
@@ -185,6 +190,20 @@ import XCTest
                         return !controller.loading && document.bytes == bytes && !search.loading
                             && result.matches.count == expectedMatches && result.text.contains("README")
                             && result.text.hasPrefix("Request headers\naccept: text/event-stream\n\nRequest body\n")
+                            && (native != nil || ["bar", "reader", "previous", "next", "previous-symbol", "next-symbol"]
+                                .allSatisfy { (mounted.frames[$0]?.height ?? 0) > 0 })
+                    }
+                    if let native = findNative(in: root), let bar = native.previousMatch.superview,
+                       let box = searchBoxes(in: native).first(where: { $0.content is PayloadSearchTextView }) {
+                        let frames: [String: CGRect] = ["bar": bar.convert(bar.bounds, to: native),
+                            "reader": box.convert(box.bounds, to: native),
+                            "previous": native.previousMatch.convert(native.previousMatch.bounds, to: native),
+                            "next": native.nextMatch.convert(native.nextMatch.bounds, to: native)]
+                        print("SEARCH-FRAMES native \(query): " + frames.keys.sorted().map { "\($0)=\(frames[$0]!)" }.joined(separator: " "))
+                        let symbol = PiKit.Symbol("chevron.up", size: 12.5, weight: .medium)
+                        print("SEARCH-SYMBOL native: layout=\(symbol.layoutSize) image=\(symbol.imageSize)")
+                    } else {
+                        print("SEARCH-FRAMES frozen \(query): " + mounted.frames.keys.sorted().map { "\($0)=\(mounted.frames[$0]!)" }.joined(separator: " "))
                     }
                 })
             }
