@@ -1,6 +1,6 @@
 use crate::{
-    Credential, Error, Lane, Profile, QueueEditStatus, ResponsesClient, Result, RunState, Session,
-    SessionStore, Submission, invalid,
+    Credential, Error, Lane, Profile, QueueEditState, QueueEditStatus, ResponsesClient, Result,
+    RunState, Session, SessionStore, Submission, invalid,
 };
 use std::sync::{
     Arc, Mutex, OnceLock, RwLock,
@@ -194,6 +194,63 @@ impl Controller {
     pub fn begin_edit(&self, turn_id: &str, edit_id: &str) -> Result<String> {
         self.change(|s| s.begin_edit(turn_id, edit_id))
     }
+    /// Cancel one edit against certain actor state. Only releasing this exact
+    /// active hold may reserve an idle queue worker; tombstones and previously
+    /// resolved identities never start pending work.
+    pub fn cancel_edit_certain(
+        self: &Arc<Self>,
+        edit_id: &str,
+        turn_id: &str,
+    ) -> Result<QueueEditStatus> {
+        let (status, launch) = {
+            let mut inner = self
+                .inner
+                .lock()
+                .map_err(|_| invalid("Session is unavailable"))?;
+            if let Some(error) = &inner.fatal {
+                return Err(invalid(error.clone()));
+            }
+            inner.store.require_certain()?;
+            if turn_id.is_empty() || turn_id.len() > 128 {
+                return Err(invalid("Invalid held turn identity"));
+            }
+            let status = inner.store.edit_status(edit_id)?;
+            let released_hold = match &status.state {
+                QueueEditState::Active { turn_id: held, .. } => {
+                    if held != turn_id {
+                        return Err(invalid("This queued edit belongs to another turn"));
+                    }
+                    true
+                }
+                QueueEditState::Unknown => false,
+                QueueEditState::Saved { .. }
+                | QueueEditState::Cancelled
+                | QueueEditState::Removed => return Ok(status),
+            };
+            inner
+                .store
+                .transact(|session| session.resolve_edit(edit_id, "cancelled", None))?;
+            let status = inner.store.edit_status(edit_id)?;
+            self.publish(&inner);
+            let snapshot = inner.store.snapshot();
+            let launch = released_hold
+                && self.config.is_some()
+                && !inner.worker_running
+                && snapshot.state == RunState::Idle
+                && !snapshot.queue_paused
+                && snapshot.edit.is_none()
+                && !snapshot.pending.is_empty();
+            if launch {
+                inner.worker_running = true;
+                self.worker_active.store(true, Ordering::Release);
+            }
+            (status, launch)
+        };
+        if launch {
+            self.spawn_reserved_worker(None);
+        }
+        Ok(status)
+    }
     pub fn resolve_edit(
         self: &Arc<Self>,
         edit_id: &str,
@@ -289,6 +346,9 @@ impl Controller {
             inner.worker_running = true;
             self.worker_active.store(true, Ordering::Release);
         }
+        self.spawn_reserved_worker(first);
+    }
+    fn spawn_reserved_worker(self: &Arc<Self>, first: Option<Submission>) {
         let this = Arc::clone(self);
         let worker = self.runtime.spawn(async move {
             this.run(first).await;
@@ -490,6 +550,557 @@ mod edit_status_tests {
         let controller = Controller::new(store, None).unwrap();
         controller.begin_edit(&turn_id, "edit").unwrap();
         (controller, turn_id)
+    }
+
+    fn configured_fixture(store: SessionStore) -> (Arc<Controller>, std::net::TcpListener) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let profile: Profile = serde_json::from_value(serde_json::json!({
+            "id":"certain-cancel-fixture", "api":"openai-responses", "providerId":"litellm",
+            "modelId":"local-fixture", "baseUrl":format!("http://{}", listener.local_addr().unwrap()),
+            "contextWindow":32000, "maxOutputTokens":4096
+        })).unwrap();
+        let controller = Controller::new(
+            store,
+            Some((profile, Credential::new("fixture-only".into()).unwrap())),
+        )
+        .unwrap();
+        (controller, listener)
+    }
+
+    fn assert_never_launched(controller: &Controller, listener: &std::net::TcpListener) {
+        assert!(!controller.inner.lock().unwrap().worker_running);
+        assert!(!controller.worker_active.load(Ordering::Acquire));
+        assert!(controller.worker.lock().unwrap().is_none());
+        assert!(controller.active_cancel.read().unwrap().is_none());
+        assert!(
+            matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+        );
+    }
+
+    async fn complete_fixture(socket: &mut TcpStream) {
+        timeout(DEADLINE, async {
+            socket.write_all(concat!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n",
+                "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"done\"}]}]}}\n\n"
+            ).as_bytes()).await.unwrap();
+            socket.shutdown().await.unwrap();
+        })
+        .await
+        .expect("fixture completion timed out");
+    }
+
+    #[test]
+    fn cancel_edit_certain_terminal_is_read_only_with_configured_idle_pending_work() {
+        for outcome in ["saved", "cancelled", "removed"] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("session.json");
+            let mut store = SessionStore::open(&path).unwrap();
+            let turn = Submission::new("original".into(), Lane::FollowUp);
+            store
+                .transact(|session| {
+                    session.submit(turn.clone())?;
+                    session.submit(Submission::new("still pending".into(), Lane::FollowUp))?;
+                    session.begin_edit(&turn.id, "edit")?;
+                    session.resolve_edit(
+                        "edit",
+                        outcome,
+                        (outcome == "saved").then_some("saved text"),
+                    )
+                })
+                .unwrap();
+            let (controller, listener) = configured_fixture(store);
+            let authoritative = controller.edit_status("edit").unwrap();
+            let cached = controller.snapshot_shared();
+            let bytes = retained_files(dir.path());
+            let revision = controller.revision();
+            let updates = controller.subscribe();
+            assert_eq!(cached.state, RunState::Idle);
+            assert!(!cached.pending.is_empty());
+            assert!(!cached.queue_paused);
+            for _ in 0..2 {
+                assert_eq!(
+                    controller.cancel_edit_certain("edit", &turn.id).unwrap(),
+                    authoritative
+                );
+                assert_eq!(retained_files(dir.path()), bytes);
+                assert_eq!(controller.revision(), revision);
+                assert!(Arc::ptr_eq(&cached, &controller.snapshot_shared()));
+                assert!(!updates.has_changed().unwrap());
+                assert_never_launched(&controller, &listener);
+            }
+        }
+    }
+
+    #[test]
+    fn cancel_edit_certain_unknown_fences_begin_once_without_releasing_or_dispatching() {
+        for other_hold in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("session.json");
+            let mut store = SessionStore::open(&path).unwrap();
+            let turn = Submission::new("untouched original".into(), Lane::FollowUp);
+            store
+                .transact(|session| {
+                    session.submit(turn.clone())?;
+                    if other_hold {
+                        session.begin_edit(&turn.id, "other-edit")?;
+                    }
+                    Ok(())
+                })
+                .unwrap();
+            let (controller, listener) = configured_fixture(store);
+            let before = controller.snapshot_shared();
+            let mut updates = controller.subscribe();
+            let status = controller
+                .cancel_edit_certain("delayed-edit", &turn.id)
+                .unwrap();
+            assert_eq!(status.state, QueueEditState::Cancelled);
+            assert_eq!(status.current_hold, before.edit);
+            assert_eq!(status.session_revision, before.revision + 1);
+            assert_eq!(controller.revision(), 1);
+            assert!(updates.has_changed().unwrap());
+            updates.borrow_and_update();
+            assert_eq!(
+                controller.snapshot_shared().pending[0].text,
+                "untouched original"
+            );
+            assert_never_launched(&controller, &listener);
+            let bytes = retained_files(dir.path());
+            let cached = controller.snapshot_shared();
+            assert_eq!(
+                controller
+                    .cancel_edit_certain("delayed-edit", &turn.id)
+                    .unwrap(),
+                status
+            );
+            assert!(controller.begin_edit(&turn.id, "delayed-edit").is_err());
+            assert_eq!(retained_files(dir.path()), bytes);
+            assert_eq!(controller.revision(), 1);
+            assert!(Arc::ptr_eq(&cached, &controller.snapshot_shared()));
+            assert!(!updates.has_changed().unwrap());
+            assert_never_launched(&controller, &listener);
+        }
+    }
+
+    #[test]
+    fn cancel_edit_certain_wrong_turn_invalid_identities_and_fatal_never_mutate() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
+        let (controller, turn_id) = held_controller(&path);
+        let bytes = retained_files(dir.path());
+        let cached = controller.snapshot_shared();
+        let revision = controller.revision();
+        let updates = controller.subscribe();
+        for (edit, turn) in [
+            ("edit".into(), "wrong-turn".into()),
+            (String::new(), turn_id.clone()),
+            ("x".repeat(129), turn_id.clone()),
+            ("edit".into(), String::new()),
+            ("unknown".into(), "x".repeat(129)),
+        ] {
+            assert!(controller.cancel_edit_certain(&edit, &turn).is_err());
+        }
+        controller.inner.lock().unwrap().fatal = Some("fatal fixture".into());
+        for edit in ["edit", "unknown"] {
+            assert!(controller.cancel_edit_certain(edit, &turn_id).is_err());
+        }
+        assert_eq!(retained_files(dir.path()), bytes);
+        assert_eq!(controller.revision(), revision);
+        assert!(Arc::ptr_eq(&cached, &controller.snapshot_shared()));
+        assert!(!updates.has_changed().unwrap());
+        assert!(controller.worker.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn cancel_edit_certain_without_configuration_commits_but_never_launches() {
+        let dir = tempfile::tempdir().unwrap();
+        let (controller, turn_id) = held_controller(&dir.path().join("session.json"));
+        let before = controller.snapshot_shared();
+        let status = controller.cancel_edit_certain("edit", &turn_id).unwrap();
+        assert_eq!(status.state, QueueEditState::Cancelled);
+        assert_eq!(status.session_revision, before.revision + 1);
+        assert!(status.current_hold.is_none());
+        assert_eq!(
+            controller.snapshot_shared().pending[0].text,
+            before.pending[0].text
+        );
+        assert!(!controller.inner.lock().unwrap().worker_running);
+        assert!(controller.worker.lock().unwrap().is_none());
+        let pending = Controller::new(SessionStore::pending(), None).unwrap();
+        let cached = pending.snapshot_shared();
+        assert!(pending.cancel_edit_certain("unknown", "turn").is_err());
+        assert!(Arc::ptr_eq(&cached, &pending.snapshot_shared()));
+        assert_eq!(pending.revision(), 0);
+    }
+
+    #[tokio::test]
+    async fn cancel_edit_certain_active_idle_release_dispatches_exactly_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = SessionStore::open(dir.path().join("session.json")).unwrap();
+        let turn = Submission::new("released original".into(), Lane::FollowUp);
+        store
+            .transact(|session| {
+                session.submit(turn.clone())?;
+                session.begin_edit(&turn.id, "edit")?;
+                Ok(())
+            })
+            .unwrap();
+        let before = store.snapshot_revision();
+        let (controller, listener) = configured_fixture(store);
+        let accepts = TcpListener::from_std(listener.try_clone().unwrap()).unwrap();
+        let status = controller.cancel_edit_certain("edit", &turn.id).unwrap();
+        assert_eq!(status.state, QueueEditState::Cancelled);
+        assert_eq!(status.session_revision, before + 1);
+        assert!(status.current_hold.is_none());
+        let (mut socket, _) = timeout(DEADLINE, accepts.accept()).await.unwrap().unwrap();
+        let request = read_fixture_request(&mut socket).await;
+        assert_eq!(
+            request["input"][0]["content"][0]["text"],
+            "released original"
+        );
+        let worker_id = controller.worker.lock().unwrap().as_ref().unwrap().id();
+        let cancel = controller.active_cancel.read().unwrap().clone().unwrap();
+        let cached = controller.snapshot_shared();
+        let bytes = retained_files(dir.path());
+        let revision = controller.revision();
+        assert_eq!(
+            controller
+                .cancel_edit_certain("edit", &turn.id)
+                .unwrap()
+                .state,
+            QueueEditState::Cancelled
+        );
+        assert_eq!(
+            controller.worker.lock().unwrap().as_ref().unwrap().id(),
+            worker_id
+        );
+        assert!(!cancel.is_cancelled());
+        assert_eq!(retained_files(dir.path()), bytes);
+        assert_eq!(controller.revision(), revision);
+        assert!(Arc::ptr_eq(&cached, &controller.snapshot_shared()));
+        complete_fixture(&mut socket).await;
+        await_session(&controller, |session| {
+            session.state == RunState::Idle && session.pending.is_empty()
+        })
+        .await;
+        timeout(DEADLINE, controller.shutdown())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!controller.inner.lock().unwrap().worker_running);
+        assert!(
+            matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+        );
+        assert_eq!(
+            controller
+                .snapshot_shared()
+                .messages
+                .iter()
+                .filter(|message| message.role == "user")
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_edit_certain_keeps_gated_worker_until_its_normal_queue_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        let (controller, listener) =
+            configured_fixture(SessionStore::open(dir.path().join("session.json")).unwrap());
+        let accepts = TcpListener::from_std(listener.try_clone().unwrap()).unwrap();
+        controller
+            .submit("first gated request".into(), Lane::FollowUp)
+            .unwrap();
+        let (mut first, _) = timeout(DEADLINE, accepts.accept()).await.unwrap().unwrap();
+        read_fixture_request(&mut first).await;
+        let turn = Submission::new("queued original".into(), Lane::FollowUp);
+        controller.submit_identified(turn.clone()).unwrap();
+        controller.begin_edit(&turn.id, "edit").unwrap();
+        let worker_id = controller.worker.lock().unwrap().as_ref().unwrap().id();
+        let cancel = controller.active_cancel.read().unwrap().clone().unwrap();
+        let status = controller.cancel_edit_certain("edit", &turn.id).unwrap();
+        assert_eq!(status.state, QueueEditState::Cancelled);
+        assert!(status.current_hold.is_none());
+        assert_eq!(controller.snapshot_shared().state, RunState::Running);
+        assert_eq!(controller.snapshot_shared().pending[0].id, turn.id);
+        assert_eq!(
+            controller.worker.lock().unwrap().as_ref().unwrap().id(),
+            worker_id
+        );
+        assert!(controller.inner.lock().unwrap().worker_running);
+        assert!(!cancel.is_cancelled());
+        assert!(
+            matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+        );
+        complete_fixture(&mut first).await;
+        let (mut second, _) = timeout(DEADLINE, accepts.accept()).await.unwrap().unwrap();
+        let request = read_fixture_request(&mut second).await;
+        assert!(
+            request["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|message| message["role"] == "user"
+                    && message["content"][0]["text"] == "queued original")
+        );
+        assert_eq!(
+            controller.worker.lock().unwrap().as_ref().unwrap().id(),
+            worker_id
+        );
+        complete_fixture(&mut second).await;
+        await_session(&controller, |session| {
+            session.state == RunState::Idle && session.pending.is_empty()
+        })
+        .await;
+        timeout(DEADLINE, controller.shutdown())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+        );
+        assert_eq!(
+            controller
+                .snapshot_shared()
+                .messages
+                .iter()
+                .filter(|message| message.role == "user")
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn cancel_edit_certain_paused_reopened_and_error_queues_never_dispatch() {
+        for mode in ["paused", "paused-flag", "reopened", "error-unpaused"] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("session.json");
+            let mut store = SessionStore::open(&path).unwrap();
+            let turn = Submission::new("original".into(), Lane::FollowUp);
+            store
+                .transact(|session| {
+                    session.submit(turn.clone())?;
+                    session.begin_edit(&turn.id, "edit")?;
+                    match mode {
+                        "paused" => {
+                            session.state = RunState::Paused;
+                            session.queue_paused = false;
+                        }
+                        "paused-flag" => {
+                            session.queue_paused = true;
+                        }
+                        "error-unpaused" => {
+                            session.state = RunState::Error;
+                            session.queue_paused = false;
+                            session.error = Some("retained failure".into());
+                        }
+                        _ => {}
+                    }
+                    Ok(())
+                })
+                .unwrap();
+            if mode == "reopened" {
+                drop(store);
+                store = SessionStore::open(&path).unwrap();
+                assert_eq!(store.snapshot().state, RunState::Paused);
+                assert!(store.snapshot().queue_paused);
+            }
+            let (controller, listener) = configured_fixture(store);
+            let before = controller.snapshot_shared();
+            let status = controller.cancel_edit_certain("edit", &turn.id).unwrap();
+            assert_eq!(status.state, QueueEditState::Cancelled);
+            assert!(status.current_hold.is_none());
+            assert_eq!(controller.snapshot_shared().state, before.state);
+            assert_eq!(
+                controller.snapshot_shared().queue_paused,
+                before.queue_paused
+            );
+            assert_eq!(controller.snapshot_shared().pending[0].text, "original");
+            assert_never_launched(&controller, &listener);
+        }
+    }
+
+    #[test]
+    fn cancel_edit_certain_real_pre_and_post_rename_failures_fence_all_further_actions() {
+        for active in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("session.json");
+            let mut store = SessionStore::open(&path).unwrap();
+            let turn = Submission::new("original".into(), Lane::FollowUp);
+            store
+                .transact(|session| {
+                    session.submit(turn.clone())?;
+                    if active {
+                        session.begin_edit(&turn.id, "edit")?;
+                    }
+                    Ok(())
+                })
+                .unwrap();
+            let (controller, listener) = configured_fixture(store);
+            let cached = controller.snapshot_shared();
+            let bytes = std::fs::read(&path).unwrap();
+            let updates = controller.subscribe();
+            controller.inner.lock().unwrap().store.fault = WriteFault::BeforeRename;
+            assert!(controller.cancel_edit_certain("edit", &turn.id).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            assert_eq!(
+                controller.edit_status("edit").unwrap().state,
+                if active {
+                    QueueEditState::Active {
+                        turn_id: turn.id.clone(),
+                        text: "original".into(),
+                    }
+                } else {
+                    QueueEditState::Unknown
+                }
+            );
+            assert_eq!(controller.revision(), 0);
+            assert!(Arc::ptr_eq(&cached, &controller.snapshot_shared()));
+            assert!(!updates.has_changed().unwrap());
+            assert_never_launched(&controller, &listener);
+            controller.inner.lock().unwrap().store.fault = WriteFault::AfterRename;
+            assert!(matches!(
+                controller.cancel_edit_certain("edit", &turn.id),
+                Err(Error::PersistenceUncertain(_))
+            ));
+            controller.inner.lock().unwrap().store.fault = WriteFault::None;
+            let retained = retained_files(dir.path());
+            let committed: Session =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert!(committed.edit.is_none());
+            assert_eq!(
+                committed.queue_edit_status("edit").unwrap().state,
+                QueueEditState::Cancelled
+            );
+            for edit in ["edit", "unknown"] {
+                assert!(matches!(
+                    controller.cancel_edit_certain(edit, &turn.id),
+                    Err(Error::PersistenceUncertain(_))
+                ));
+            }
+            assert_eq!(retained_files(dir.path()), retained);
+            assert_eq!(controller.revision(), 0);
+            assert!(Arc::ptr_eq(&cached, &controller.snapshot_shared()));
+            assert!(!updates.has_changed().unwrap());
+            assert_never_launched(&controller, &listener);
+            drop(controller);
+            let (reopened, listener) = configured_fixture(SessionStore::open(&path).unwrap());
+            let status = reopened.cancel_edit_certain("edit", &turn.id).unwrap();
+            assert_eq!(status.state, QueueEditState::Cancelled);
+            assert_eq!(retained_files(dir.path()), retained);
+            assert_never_launched(&reopened, &listener);
+        }
+    }
+
+    #[test]
+    fn cancel_edit_certain_terminal_status_still_requires_certain_fatal_free_storage() {
+        for outcome in ["saved", "cancelled", "removed"] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("session.json");
+            let mut store = SessionStore::open(&path).unwrap();
+            let turn = Submission::new("original".into(), Lane::FollowUp);
+            let queued = Submission::new("still pending".into(), Lane::FollowUp);
+            store
+                .transact(|session| {
+                    session.submit(turn.clone())?;
+                    session.submit(queued.clone())?;
+                    session.begin_edit(&turn.id, "edit")?;
+                    session.resolve_edit(
+                        "edit",
+                        outcome,
+                        (outcome == "saved").then_some("saved text"),
+                    )
+                })
+                .unwrap();
+            let (controller, listener) = configured_fixture(store);
+            let expected = controller.edit_status("edit").unwrap();
+            // Even a plausible presentation value is never cancellation authority.
+            controller.published.send_replace(Arc::new(Session::new()));
+            let cached = controller.snapshot_shared();
+            assert_eq!(
+                controller.cancel_edit_certain("edit", &turn.id).unwrap(),
+                expected
+            );
+            assert!(Arc::ptr_eq(&cached, &controller.snapshot_shared()));
+            let updates = controller.subscribe();
+            controller.inner.lock().unwrap().fatal = Some("fatal checkpoint".into());
+            assert!(controller.cancel_edit_certain("edit", &turn.id).is_err());
+            controller.inner.lock().unwrap().fatal = None;
+            controller.inner.lock().unwrap().store.fault = WriteFault::AfterRename;
+            assert!(matches!(
+                controller.begin_edit(&queued.id, "uncertain-edit"),
+                Err(Error::PersistenceUncertain(_))
+            ));
+            controller.inner.lock().unwrap().store.fault = WriteFault::None;
+            let bytes = retained_files(dir.path());
+            for edit in ["edit", "uncertain-edit", "unknown"] {
+                assert!(matches!(
+                    controller.cancel_edit_certain(edit, &turn.id),
+                    Err(Error::PersistenceUncertain(_))
+                ));
+            }
+            assert_eq!(retained_files(dir.path()), bytes);
+            assert_eq!(controller.revision(), 0);
+            assert!(Arc::ptr_eq(&cached, &controller.snapshot_shared()));
+            assert!(!updates.has_changed().unwrap());
+            assert_never_launched(&controller, &listener);
+        }
+    }
+
+    #[test]
+    fn cancel_edit_certain_concurrent_identity_commands_have_one_serialized_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        let (controller, turn_id) = held_controller(&dir.path().join("session.json"));
+        let before = controller.snapshot_shared().revision;
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let results = std::thread::scope(|scope| {
+            let mut joins = Vec::new();
+            for _ in 0..2 {
+                let controller = Arc::clone(&controller);
+                let barrier = Arc::clone(&barrier);
+                let turn_id = turn_id.clone();
+                joins.push(scope.spawn(move || {
+                    barrier.wait();
+                    controller.cancel_edit_certain("edit", &turn_id).unwrap()
+                }));
+            }
+            barrier.wait();
+            joins
+                .into_iter()
+                .map(|join| join.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(results[0], results[1]);
+        assert_eq!(results[0].session_revision, before + 1);
+        assert_eq!(controller.snapshot_shared().outcomes.len(), 1);
+        assert_eq!(controller.revision(), 2); // Begin, then the sole Cancel commit.
+        assert!(controller.begin_edit(&turn_id, "edit").is_err());
+        // Competing unknown Cancel and delayed Begin have the same terminal
+        // result in either actor order, without leaving a reacquired hold.
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        std::thread::scope(|scope| {
+            let controller = &controller;
+            let turn_id = &turn_id;
+            let begin_barrier = Arc::clone(&barrier);
+            let begin = scope.spawn(move || {
+                begin_barrier.wait();
+                controller.begin_edit(turn_id, "raced-edit")
+            });
+            let cancel_barrier = Arc::clone(&barrier);
+            let cancel = scope.spawn(move || {
+                cancel_barrier.wait();
+                controller.cancel_edit_certain("raced-edit", turn_id)
+            });
+            barrier.wait();
+            let _ = begin.join().unwrap();
+            assert_eq!(
+                cancel.join().unwrap().unwrap().state,
+                QueueEditState::Cancelled
+            );
+        });
+        assert!(controller.snapshot_shared().edit.is_none());
+        assert!(controller.begin_edit(&turn_id, "raced-edit").is_err());
+        assert_eq!(controller.snapshot_shared().outcomes.len(), 2);
     }
 
     #[test]

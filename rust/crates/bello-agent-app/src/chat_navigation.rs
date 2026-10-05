@@ -25,7 +25,12 @@ impl AgentView {
         let Some(chat) = self.chat_mut(id) else {
             return;
         };
-        chat.draft_revision = chat.draft_revision.saturating_add(1);
+        let Some(revision) = chat.draft_revision.checked_add(1) else {
+            chat.error = Some("Draft revision limit reached; text remains in the composer.".into());
+            cx.notify();
+            return;
+        };
+        chat.draft_revision = revision;
         if chat.pending && chat.inflight_submission.is_none() {
             return;
         }
@@ -64,8 +69,12 @@ impl AgentView {
         if self.pending || self.shutting_down {
             return;
         }
-        self.selection_revision = self.selection_revision.saturating_add(1);
-        let revision = self.selection_revision;
+        let Some(revision) = self.selection_revision.checked_add(1) else {
+            self.error = Some("Selection revision limit reached.".into());
+            cx.notify();
+            return;
+        };
+        self.selection_revision = revision;
         let id = self.record.id.clone();
         let workspace = self.workspace.clone();
         let timer = cx.background_executor().timer(Duration::from_millis(250));
@@ -141,7 +150,10 @@ impl AgentView {
                 let chat = ChatState::new(
                     controller,
                     record.clone(),
-                    DraftRecord::default(),
+                    chat::RestoredDraft {
+                        draft: DraftRecord::default(),
+                        cancellation: None,
+                    },
                     true,
                     self.palette,
                     window,
@@ -239,7 +251,10 @@ impl AgentView {
         let chat = ChatState::new(
             placeholder,
             record.clone(),
-            draft,
+            chat::RestoredDraft {
+                draft,
+                cancellation: self.queued_cancellations.get(id),
+            },
             false,
             self.palette,
             window,
@@ -255,7 +270,7 @@ impl AgentView {
         let Some(chat) = self.chat_mut(id) else {
             return;
         };
-        if chat.loading || chat.busy {
+        if chat.loading || chat.busy || chat.queue_operation.is_some() {
             return;
         }
         chat.load_generation = chat.load_generation.saturating_add(1);
@@ -322,6 +337,8 @@ impl AgentView {
             || self.load_failed
             || self.shutting_down
             || self.edit_recovery.blocked
+            || self.has_pending_cancel(&self.record.id)
+            || self.queue_operation.is_some()
         {
             return;
         }
@@ -339,7 +356,12 @@ impl AgentView {
         }
         let captured = self.saved_draft(cx);
         let captured_revision = self.draft_revision;
-        self.draft_revision = self.draft_revision.saturating_add(1);
+        let Some(revision) = self.draft_revision.checked_add(1) else {
+            self.error = Some("Draft revision limit reached; text remains in the composer.".into());
+            cx.notify();
+            return;
+        };
+        self.draft_revision = revision;
         self.busy = true;
         self.error = None;
         self.dismissed_error = None;
@@ -402,6 +424,7 @@ impl AgentView {
             let (accepted, registered, uncertain, error) = task.await;
             let _ = view.update(cx, move |view, cx| {
                 let mut restore = None;
+                let mut revision_exhausted = false;
                 if let Some(chat) = view.chat_mut(&id) {
                     chat.busy = !accepted;
                     chat.inflight_submission = None;
@@ -419,11 +442,17 @@ impl AgentView {
                         };
                         chat.composer
                             .update(cx, |editor, cx| editor.set_text(merged, cx));
-                        chat.draft_revision = chat.draft_revision.saturating_add(1);
-                        restore = Some((chat.record.clone(), chat.saved_draft(cx)));
+                        if let Some(revision) = chat.draft_revision.checked_add(1) {
+                            chat.draft_revision = revision;
+                            restore = Some((chat.record.clone(), chat.saved_draft(cx)));
+                        } else {
+                            revision_exhausted = true;
+                            chat.busy = false;
+                            chat.error = Some("Draft revision limit reached; restored text and submission receipt are preserved.".into());
+                        }
                     }
                 }
-                if uncertain {
+                if uncertain || revision_exhausted {
                     view.recoveries.insert(receipt.id.clone(), receipt.clone());
                 }
                 if let Some((record, draft)) = restore {
@@ -606,7 +635,13 @@ impl AgentView {
         .detach();
     }
     pub(super) fn resolve_intent(&mut self, intent_id: &str, insert: bool, cx: &mut Context<Self>) {
-        if self.busy || self.loading || self.load_failed || self.shutting_down {
+        if self.busy
+            || self.loading
+            || self.load_failed
+            || self.shutting_down
+            || self.edit_recovery.blocked
+            || self.has_pending_cancel(&self.record.id)
+        {
             return;
         }
         let Some(intent) = self.recoveries.get(intent_id).cloned() else {
@@ -628,7 +663,14 @@ impl AgentView {
                 format!("{}\n\n{}", intent.text, draft.text)
             };
         }
-        self.draft_revision = self.draft_revision.saturating_add(1);
+        let Some(revision) = self.draft_revision.checked_add(1) else {
+            self.error = Some(
+                "Draft revision limit reached; text and recovery receipt are preserved.".into(),
+            );
+            cx.notify();
+            return;
+        };
+        self.draft_revision = revision;
         draft.revision = self.draft_revision;
         self.busy = true;
         self.composer
@@ -683,13 +725,25 @@ impl AgentView {
             cx.notify();
             return;
         }
+        if self.selection_revision.checked_add(1).is_none()
+            || std::iter::once(&self.chat)
+                .chain(self.inactive.values())
+                .any(|chat| chat.draft_revision.checked_add(1).is_none())
+        {
+            self.error = Some("A draft or selection revision is exhausted; text is preserved and closing is blocked.".into());
+            cx.notify();
+            return;
+        }
         self.shutting_down = true;
         self.close_dialog = false;
         let mut drafts = Vec::new();
         let mut controllers = Vec::new();
         for chat in std::iter::once(&mut self.chat).chain(self.inactive.values_mut()) {
             chat.draft_task = None;
-            chat.draft_revision = chat.draft_revision.saturating_add(1);
+            chat.draft_revision = chat
+                .draft_revision
+                .checked_add(1)
+                .expect("shutdown revision preflight");
             chat.composer
                 .update(cx, |editor, cx| editor.set_read_only(true, cx));
             let draft = chat.saved_draft(cx);
@@ -699,7 +753,10 @@ impl AgentView {
             controllers.push(chat.controller.clone());
         }
         let selected = self.record.id.clone();
-        self.selection_revision = self.selection_revision.saturating_add(1);
+        self.selection_revision = self
+            .selection_revision
+            .checked_add(1)
+            .expect("shutdown selection preflight");
         let revision = self.selection_revision;
         let operation = uuid::Uuid::new_v4();
         self.shutdown_operation = Some(operation);

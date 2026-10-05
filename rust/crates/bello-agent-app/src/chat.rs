@@ -9,6 +9,11 @@ use bello_workbench_ui::{EditorEvent, EditorView};
 use gpui::*;
 use std::sync::Arc;
 
+pub(crate) struct RestoredDraft<'a> {
+    pub draft: DraftRecord,
+    pub cancellation: Option<&'a bello_agent_core::workspace::QueuedCancelReceipt>,
+}
+
 pub struct ChatState {
     pub record: ChatRecord,
     pub controller: Arc<Controller>,
@@ -19,6 +24,8 @@ pub struct ChatState {
     pub queued_turn_id: Option<String>,
     pub queued_original: Option<String>,
     pub draft_before_edit: String,
+    pub retained_edit: Option<QueuedDraft>,
+    pub cancel_operation: Option<crate::queue_cancel::CancelOperation>,
     pub visible_messages: usize,
     pub queue_open: bool,
     pub queue_geometry: Option<crate::queue_geometry::QueueGeometry>,
@@ -48,18 +55,38 @@ impl ChatState {
     pub fn new(
         controller: Arc<Controller>,
         record: ChatRecord,
-        draft: DraftRecord,
+        restored: RestoredDraft<'_>,
         pending: bool,
         palette: Palette,
         window: &mut Window,
         cx: &mut Context<AgentView>,
     ) -> Self {
+        let RestoredDraft {
+            draft,
+            cancellation,
+        } = restored;
         let session = controller.snapshot_shared();
-        let text = draft
-            .queued_edit
-            .as_ref()
-            .map(|v| v.rewrite.clone())
-            .unwrap_or_else(|| draft.text.clone());
+        let pending_cancel = cancellation.and_then(|receipt| match &receipt.state {
+            bello_agent_core::workspace::QueuedCancelState::Pending { edit_id, turn_id } => {
+                Some((edit_id, turn_id))
+            }
+            bello_agent_core::workspace::QueuedCancelState::Settled => None,
+        });
+        let retain_unowned = pending_cancel.is_some_and(|(edit, turn)| {
+            draft
+                .queued_edit
+                .as_ref()
+                .is_none_or(|saved| &saved.edit_id == edit && &saved.turn_id == turn)
+        });
+        let text = if retain_unowned {
+            draft.text.clone()
+        } else {
+            draft
+                .queued_edit
+                .as_ref()
+                .map(|v| v.rewrite.clone())
+                .unwrap_or_else(|| draft.text.clone())
+        };
         let composer = cx.new(|cx| {
             let mut view = EditorView::new(text, window, cx);
             view.set_composer_mode(cx);
@@ -76,6 +103,7 @@ impl ChatState {
         let recovery_id = record.id.clone();
         let recovery_events = cx.observe(&composer, move |view, _, cx| {
             view.resume_edit_reconciliation(&recovery_id, cx);
+            view.resume_deferred_cancel(&recovery_id, cx);
         });
         let poll = Self::subscribe(&controller, record.id.clone(), cx);
         Self {
@@ -84,13 +112,31 @@ impl ChatState {
             record,
             session,
             composer,
-            editing: draft.queued_edit.as_ref().map(|v| v.edit_id.clone()),
-            queued_turn_id: draft.queued_edit.as_ref().map(|v| v.turn_id.clone()),
-            queued_original: draft
-                .queued_edit
-                .as_ref()
-                .and_then(|v| v.original_text.clone()),
-            draft_before_edit: if draft.queued_edit.is_some() {
+            editing: if retain_unowned {
+                None
+            } else {
+                draft.queued_edit.as_ref().map(|v| v.edit_id.clone())
+            },
+            queued_turn_id: if retain_unowned {
+                None
+            } else {
+                draft.queued_edit.as_ref().map(|v| v.turn_id.clone())
+            },
+            queued_original: if retain_unowned {
+                None
+            } else {
+                draft
+                    .queued_edit
+                    .as_ref()
+                    .and_then(|v| v.original_text.clone())
+            },
+            retained_edit: if retain_unowned {
+                draft.queued_edit.clone()
+            } else {
+                None
+            },
+            cancel_operation: None,
+            draft_before_edit: if !retain_unowned && draft.queued_edit.is_some() {
                 draft.text
             } else {
                 String::new()
@@ -104,7 +150,9 @@ impl ChatState {
             queue_drag_task: None,
             queue_operation: None,
             queue_operation_error: None,
-            edit_recovery: crate::queue_edit::EditRecovery::new(draft.queued_edit.is_some()),
+            edit_recovery: crate::queue_edit::EditRecovery::new(
+                draft.queued_edit.is_some() || pending_cancel.is_some(),
+            ),
             _recovery_events: recovery_events,
             queue_detail: None,
             busy: false,
@@ -146,7 +194,10 @@ impl ChatState {
             self.queue_drag = None;
             self.queue_drag_task = None;
             self.queue_operation = None;
-            self.edit_recovery = crate::queue_edit::EditRecovery::new(self.editing.is_some());
+            self.cancel_operation = None;
+            self.edit_recovery = crate::queue_edit::EditRecovery::new(
+                self.editing.is_some() || self.retained_edit.is_some(),
+            );
             if self
                 .queue_operation_error
                 .as_ref()
@@ -163,31 +214,35 @@ impl ChatState {
     }
     pub fn saved_draft(&self, cx: &App) -> DraftRecord {
         let text = self.composer.read(cx).text().to_owned();
-        let queued_edit = self.editing.as_ref().and_then(|edit_id| {
-            let turn_id = self.queued_turn_id.clone().or_else(|| {
-                self.session
-                    .edit
-                    .as_ref()
-                    .filter(|edit| &edit.edit_id == edit_id)
-                    .map(|edit| edit.turn_id.clone())
-            })?;
-            let original_text = self.queued_original.clone().or_else(|| {
-                self.session
-                    .pending
-                    .iter()
-                    .find(|item| item.id == turn_id)
-                    .map(|item| item.text.clone())
-            });
-            Some(QueuedDraft {
-                edit_id: edit_id.clone(),
-                turn_id,
-                rewrite: text.clone(),
-                original_text,
+        let queued_edit = self
+            .editing
+            .as_ref()
+            .and_then(|edit_id| {
+                let turn_id = self.queued_turn_id.clone().or_else(|| {
+                    self.session
+                        .edit
+                        .as_ref()
+                        .filter(|edit| &edit.edit_id == edit_id)
+                        .map(|edit| edit.turn_id.clone())
+                })?;
+                let original_text = self.queued_original.clone().or_else(|| {
+                    self.session
+                        .pending
+                        .iter()
+                        .find(|item| item.id == turn_id)
+                        .map(|item| item.text.clone())
+                });
+                Some(QueuedDraft {
+                    edit_id: edit_id.clone(),
+                    turn_id,
+                    rewrite: text.clone(),
+                    original_text,
+                })
             })
-        });
+            .or_else(|| self.retained_edit.clone());
         DraftRecord {
             revision: self.draft_revision,
-            text: if queued_edit.is_some() {
+            text: if self.editing.is_some() {
                 self.draft_before_edit.clone()
             } else {
                 text

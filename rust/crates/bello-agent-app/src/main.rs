@@ -8,6 +8,7 @@ mod native_menu;
 #[cfg(feature = "native-lifecycle-smoke")]
 mod native_smoke;
 mod queue_actions;
+mod queue_cancel;
 mod queue_detail;
 mod queue_drag;
 mod queue_edit;
@@ -109,6 +110,7 @@ struct AgentView {
     chat_directory: PathBuf,
     unloaded_drafts: BTreeMap<String, DraftRecord>,
     recoveries: BTreeMap<String, SubmissionIntent>,
+    queued_cancellations: BTreeMap<String, bello_agent_core::workspace::QueuedCancelReceipt>,
     palette: Palette,
     layout: layout::Layout,
     layout_store: Arc<layout::LayoutStore>,
@@ -180,7 +182,19 @@ impl AgentView {
             record.snapshot.parent().unwrap().join("layout.json"),
         ));
         let layout = layout_store.load();
-        let chat = ChatState::new(controller, record, draft, pending, palette, window, cx);
+        let cancel_receipt = state.queued_cancellations.get(&record.id).cloned();
+        let chat = ChatState::new(
+            controller,
+            record,
+            chat::RestoredDraft {
+                draft,
+                cancellation: cancel_receipt.as_ref(),
+            },
+            pending,
+            palette,
+            window,
+            cx,
+        );
         let filter = cx.new(|cx| {
             let mut view = EditorView::new(String::new(), window, cx);
             let mut style = Self::composer_style(palette);
@@ -229,6 +243,7 @@ impl AgentView {
             chat_directory,
             unloaded_drafts: state.drafts,
             recoveries: state.intents,
+            queued_cancellations: state.queued_cancellations,
             workspace,
             selection_revision: state.selection_revision,
             shutting_down: false,
@@ -364,6 +379,7 @@ impl AgentView {
         &mut self,
         cx: &mut Context<Self>,
         recovery_edit: Option<String>,
+        flush_current_draft: bool,
         command: impl FnOnce(Arc<Controller>) -> bello_agent_core::Result<R> + Send + 'static,
         apply: impl FnOnce(&mut ChatState, R, &mut Context<Self>) + 'static,
     ) {
@@ -372,24 +388,65 @@ impl AgentView {
             || self.load_failed
             || self.shutting_down
             || self.edit_recovery.blocked
+            || self.has_pending_cancel(&self.record.id)
+            || self.queue_operation.is_some()
         {
             return;
         }
+        let flush = if flush_current_draft {
+            if self.composer.read(cx).has_marked_text() {
+                self.error = Some("Finish composing text before changing the queued edit.".into());
+                cx.notify();
+                return;
+            }
+            let Some(next) = self
+                .draft_revision
+                .checked_add(2)
+                .map(|_| self.draft_revision + 1)
+            else {
+                self.error = Some("Draft revision limit reached; your text is preserved.".into());
+                cx.notify();
+                return;
+            };
+            self.draft_revision = next;
+            Some(self.saved_draft(cx))
+        } else {
+            None
+        };
         self.busy = true;
         self.error = None;
         self.dismissed_error = None;
         self.error_expanded = false;
         let id = self.record.id.clone();
         let controller = self.controller.clone();
+        let workspace = self.workspace.clone();
+        let flush_id = id.clone();
+        let identity_controller = controller.clone();
+        let identity_project = self.project.clone();
         self.composer
             .update(cx, |editor, cx| editor.set_read_only(true, cx));
-        let task = cx
-            .background_executor()
-            .spawn(async move { command(controller) });
+        let task = cx.background_executor().spawn(async move {
+            if let Some(draft) = flush {
+                workspace
+                    .lock()
+                    .map_err(|_| {
+                        bello_agent_core::Error::Invalid("Workspace is unavailable".into())
+                    })?
+                    .flush_draft_exact(&flush_id, draft)?;
+            }
+            command(controller)
+        });
         cx.spawn(async move |view, cx| {
             let result = task.await;
             let failed = result.is_err();
             let _ = view.update(cx, move |view, cx| {
+                if view.project != identity_project
+                    || view
+                        .chat_ref(&id)
+                        .is_none_or(|chat| !Arc::ptr_eq(&chat.controller, &identity_controller))
+                {
+                    return;
+                }
                 if let Some(chat) = view.chat_mut(&id) {
                     chat.busy = false;
                     chat.composer
@@ -401,7 +458,6 @@ impl AgentView {
                     }
                     chat.session = chat.controller.snapshot_shared();
                 }
-                view.draft_changed(&id, cx);
                 if failed && let Some(edit_id) = recovery_edit {
                     view.recheck_edit_after_failure(&id, Some(edit_id), cx);
                 }
@@ -431,6 +487,7 @@ impl AgentView {
         self.command(
             cx,
             Some(edit_id.clone()),
+            true,
             move |controller| controller.begin_edit(&turn_id, &requested_edit),
             move |view, text, cx| {
                 view.draft_before_edit = view.composer.read(cx).text().to_owned();
@@ -443,6 +500,11 @@ impl AgentView {
         );
     }
     fn resolve_edit(&mut self, outcome: &str, cx: &mut Context<Self>) {
+        if outcome == "cancelled" {
+            let chat_id = self.record.id.clone();
+            self.cancel_owned_edit(&chat_id, cx);
+            return;
+        }
         let Some(id) = self
             .editing
             .clone()
@@ -455,6 +517,7 @@ impl AgentView {
         self.command(
             cx,
             Some(id.clone()),
+            true,
             move |controller| {
                 controller.resolve_edit(
                     &id,
@@ -487,6 +550,7 @@ impl AgentView {
         self.command(
             cx,
             recovery_edit,
+            true,
             move |controller| controller.remove(&id),
             move |view, (), cx| {
                 if removes_edit && view.editing.is_some() {
@@ -1754,10 +1818,17 @@ impl AgentView {
             )
             .child(div().flex_1());
         if self.editing.is_some() {
+            let cancel_chat = self.record.id.clone();
             bar = bar.child(
                 self.button("cancel-edit", "Cancel")
-                    .opacity(if self.edit_recovery.blocked { 0.45 } else { 1. })
-                    .on_click(cx.listener(|v, _, _, cx| v.resolve_edit("cancelled", cx))),
+                    .opacity(if self.can_cancel_owned_edit() {
+                        1.
+                    } else {
+                        0.45
+                    })
+                    .on_click(
+                        cx.listener(move |v, _, _, cx| v.cancel_owned_edit(&cancel_chat, cx)),
+                    ),
             );
         }
         if self.session.state == RunState::Running {
@@ -1778,7 +1849,13 @@ impl AgentView {
                 self.button("retry", "Retry")
                     .opacity(if self.edit_recovery.blocked { 0.45 } else { 1. })
                     .on_click(cx.listener(|v, _, _, cx| {
-                        v.command(cx, None, |controller| controller.retry(), |_, (), _| {})
+                        v.command(
+                            cx,
+                            None,
+                            false,
+                            |controller| controller.retry(),
+                            |_, (), _| {},
+                        )
                     })),
             );
         }

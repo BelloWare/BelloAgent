@@ -370,9 +370,9 @@ not a captured background copy. Actual replacement waits for marked composition;
 an entity observation catches unmark notifications, which do not emit a Changed
 event. The existing source distinction remains: an explicit owned Cancel discards
 its rewrite, whereas recovery preserves genuinely unsaved rewriting according to
-the saved digest/original-text comparison. The new v3 Cancel receipt, nonfreezing
-Begin adoption and source owned/unowned row controls are still pending, not implied
-by this checkpoint.
+the saved digest/original-text comparison. At that checkpoint, the v3 Cancel receipt,
+nonfreezing Begin adoption and source owned/unowned row controls were still pending.
+The later durable Cancel checkpoint below updates that boundary.
 
 Ten added core tests bring the core suite to 143. They cover reopen confirmation
 and failure, pre/post-rename errors, poisoned status versus old cached holds,
@@ -455,11 +455,95 @@ unconfirmed and text is preserved/blocked, without promising an in-app reload
 control. A future catalog recovery must also confirm the validated catalog file
 and parent directory before treating reopened cancellation receipts as durable;
 that is separate from SessionStore's confirmation already implemented here.
-Existing global typing/Close revision saturation at u64::MAX is not fixed here;
+At that checkpoint, global typing/Close revision saturation at u64::MAX was not fixed;
 this checkpoint's checked-overflow proof covers the recovery merge only. Broader
 checked protocol allocation and exact precommand draft flush belong to the next
 reviewed slice. Native macOS IME, pixels, source window-Close versus true Quit,
 and live-controller recovery remain unvalidated.
+
+## Durable queued Cancel and exact-draft command boundary
+
+Status: **implemented bounded recovery protocol; headless Linux validated**.
+This extends the certain-status checkpoint above. It does not complete held-edit
+UI parity: nonfreezing Begin/adoption, source unowned “Resume Edit” / “Cancel Edit”
+row controls and live controller reload remain separate work.
+
+Source: `QueuePanel.swift:370–739` distinguishes explicitly owned Cancel (discard
+its rewrite) from recovered/unowned reconciliation (preserve genuinely unsaved
+rewriting). `SessionQueueEdit.swift:132–146,175–208` records unknown cancellation
+without releasing pending input; only resolving the named active hold can release
+an idle, unpaused run. The Rust actor now checks certainty, typed status and exact
+active edit/turn identity under one mutex. Saved/Cancelled/Removed answers are
+unchanged observations with no transaction/publication/launch. Unknown writes its
+own tombstone once, preserves another hold and never launches. Named Active
+cancellation commits before atomically reserving an eligible idle worker; a running
+worker is not interrupted. Paused/reopened/Error input is not implicitly resumed.
+
+Catalog v3 adds per-chat identity-only Pending/Settled cancellation receipts,
+independently fenced from draft revisions. Preparation persists before actor
+Cancel; reopening retries the same identity, never Begin. A settled receipt is
+retained to reject delayed preparation. Equal-revision unequal draft contents
+conflict; settlement can preserve a newer already-reconciled autosave while clearing
+only the exact receipt. Valid v1/v2 catalogs open without rewrite; promotion is
+monotonic and malformed records remain untouched. Existing catalog files and parent
+directories are confirmed before recovered records become authoritative.
+
+The existing owned Cancel button now uses this protocol. Its callback captures
+chat identity; completion checks project, operation and controller identity and
+updates that retained chat rather than the current selection. Startup Pending
+recovery leaves ordinary typing enabled, retains rewrite metadata separately and
+merges only after certain terminal status. Marked composition defers replacement
+until the editor notification; a known later command failure invalidates the deferred
+answer. Whole merged drafts and checked revision allocations are validated before
+replacement. Owned Cancel discards only after durable settlement; a later unrelated
+actor failure rechecks certainty without resurrecting the durably discarded rewrite.
+Window rebinding retains the same editor entity and does not steal focus.
+
+Save and every generic Remove now persist the exact captured draft before actor
+mutation, even if the cached display omits the hold. Their existing exclusive busy
+barrier remains through completion; errors preserve text for retry. Submit, intent
+recovery and queue operations cannot cross a pending Cancel. Close waits for active
+operations. Typing, command capture, submission restoration and Close draft/selection
+revisions use checked allocation rather than wrapping/saturating this protocol's
+revision fence. Exhaustion keeps text and refuses unsafe persistence/Close; it does
+not invent a revision reset. Session shutdown behavior is unchanged.
+
+Validation: **300 default workspace tests / 307 with the optional native lifecycle
+feature**, strict all-target Clippy in both configurations, formatting and Linux
+workspace build pass. Core/catalog crash-cut and CAS tests cover prepare/actor/
+settle, stale receipts, newer autosaves, payload conflicts, malformed v3 records,
+pre-/post-rename uncertainty and reopen confirmation. Fourteen isolated mutation
+checks reject removed catalog/actor safeguards. Ten actor cases include configured
+loopback zero-dispatch terminal/unknown replays, one-time active release, a gated
+active worker, identity races, Error/paused guards and real storage faults. Sixteen
+new headless GPUI cases cover owned/recovered semantics, actual catalog-path
+failure/retry, exact-draft Save/Remove failure, marked-text deferral, later failure,
+merge limits, revision exhaustion, navigation/Close and window rebinding. Independent
+review reran all 121 app tests and 95 core unit tests. These tests do not prove
+physical power-loss behavior or native IME/pixel/accessibility parity. Current
+macOS compilation/runtime evidence for these new bytes is pending publication.
+
+Actual Linux desktop validation passed the bounded recovery matrix on candidate
+`fc409b7e3f240f4b73f517a3ced6552719ecff1c80e693bb939652421440efc6`.
+A disposable catalog-path obstruction showed the pending cancellation error while
+preserving the rewrite and hold; restoring that fixture allowed Cancel to settle
+and restore the ordinary draft. Pending Active/Cancelled/Unknown startup recovered
+and retained the exact unsaved rewrite plus ordinary draft once; Pending Saved
+preserved the saved queued text and restored only the ordinary draft. Repeated
+Close/reopen did not duplicate a merge. Actual Save and generic Remove with a
+catalog-path obstruction preserved the rewrite, original row and hold; after the
+fixture was restored, retry respectively saved the rewrite or removed the queued
+row, restoring the exact ordinary draft. All windows closed cleanly and fixture
+obstructions were restored. A transient blank bound-window startup capture on the
+Remove case resolved before interaction/full-desktop capture; its cause remains
+unproven, consistent with the separately recorded intermittent paint observation.
+Typing during the obstruction can produce a newer,
+separately owned draft-save warning. That warning remains stale after a successful
+Cancel until restart; it does not block typing, retry, Close or durable recovery.
+Revision-tagged draft-error ownership is a separate follow-up, not fixed by clearing
+arbitrary message prefixes. Begin still uses the earlier frozen-composer command path. There is no generalized operation
+journal, outcome retention policy or live reload added here; provider/tool behavior
+and native lifecycle policy are unchanged.
 
 ## Queue-header Resume / Send queued
 

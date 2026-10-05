@@ -47,7 +47,17 @@ unchanged active streaming. Source row controls require real Linux interaction
 and minimum-width checks; Linux and headless tests do not establish native macOS
 IME, accessibility or pixel parity.
 
-Checkpoint boundaries: first wire certain status into existing recovery; then
-wire durable Cancel receipts, nonfreezing adoption and source held-row controls.
+Checkpoint boundaries: certain status was wired first. The next complete cut wires
+v3 durable Cancel receipts, startup retry and exact-draft Save/Remove barriers into
+the existing controls. Nonfreezing Begin/adoption and source held-row controls follow
+in a separately validated checkpoint. Pending recovery keeps ordinary typing enabled;
+owned Cancel still uses its existing short exclusive command barrier.
+
+Cancel replay uses one certainty-checked actor operation: terminal outcomes return
+unchanged; Unknown tombstones only its own identity without dispatch; matching Active
+cancellation may atomically reserve a worker only when configured, idle, unpaused,
+without another hold and with pending input. This prevents a recovered or repeated
+Cancel from becoming implicit Resume. Source evidence is
+`SessionQueueEdit.swift:132–146,175–208`.
 Every published checkpoint must build and expose useful behavior, with independent
 review and its actual validation scope recorded separately.

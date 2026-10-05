@@ -42,6 +42,11 @@ impl AgentView {
         edit_id: Option<String>,
         cx: &mut Context<Self>,
     ) {
+        if self.has_pending_cancel(id) {
+            self.invalidate_cancel_check(id, cx);
+            self.resume_durable_cancel(id, cx);
+            return;
+        }
         let Some(chat) = self.chat_mut(id) else {
             return;
         };
@@ -76,9 +81,14 @@ impl AgentView {
     }
 
     pub(crate) fn reconcile_edit(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.has_pending_cancel(id) {
+            self.resume_durable_cancel(id, cx);
+            return;
+        }
         let edit_id = self.chat_ref(id).and_then(|chat| {
             chat.editing
                 .clone()
+                .or_else(|| chat.retained_edit.as_ref().map(|edit| edit.edit_id.clone()))
                 .or_else(|| chat.session.edit.as_ref().map(|hold| hold.edit_id.clone()))
                 .or_else(|| chat.edit_recovery.requested.clone())
         });
@@ -93,6 +103,10 @@ impl AgentView {
         edit_id: String,
         cx: &mut Context<Self>,
     ) {
+        if self.has_pending_cancel(id) {
+            self.resume_durable_cancel(id, cx);
+            return;
+        }
         let project = self.project.clone();
         let binding = self.window_binding;
         let Some(chat) = self.chat_mut(id) else {
@@ -228,6 +242,7 @@ impl AgentView {
                     // validated next revision from this unchanged prior value.
                     debug_assert_eq!(chat.draft_revision.checked_add(1), Some(draft.revision));
                     chat.editing = None;
+                    chat.retained_edit = None;
                     chat.queued_turn_id = None;
                     chat.queued_original = None;
                     chat.draft_before_edit.clear();

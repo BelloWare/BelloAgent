@@ -161,6 +161,79 @@ pub struct SubmissionIntent {
     pub lane: Lane,
     pub draft_revision: u64,
 }
+/// A per-chat cancellation fence, independent of debounced draft writes.
+/// Settled receipts are retained to reject delayed preparation of an old Cancel.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct QueuedCancelReceipt {
+    pub revision: u64,
+    pub state: QueuedCancelState,
+}
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum QueuedCancelState {
+    Pending { edit_id: String, turn_id: String },
+    Settled,
+}
+impl<'de> Deserialize<'de> for QueuedCancelState {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // Serde's internally tagged unit variants otherwise ignore unknown
+        // fields, even with deny_unknown_fields on the enum. An empty struct
+        // variant enforces the settled record's exact shape.
+        #[derive(Deserialize)]
+        #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+        enum Record {
+            Pending { edit_id: String, turn_id: String },
+            Settled {},
+        }
+        Ok(match Record::deserialize(deserializer)? {
+            Record::Pending { edit_id, turn_id } => Self::Pending { edit_id, turn_id },
+            Record::Settled {} => Self::Settled,
+        })
+    }
+}
+impl QueuedCancelReceipt {
+    /// Allocate after the last retained receipt (or zero for the first Cancel).
+    /// Leave room for settlement before dispatching any actor operation. The
+    /// identity can name an unowned hold with no retained queued rewrite.
+    pub fn pending(previous_revision: u64, edit_id: String, turn_id: String) -> Result<Self> {
+        let receipt = Self {
+            revision: previous_revision
+                .checked_add(1)
+                .ok_or_else(|| invalid("Cancellation revision overflow"))?,
+            state: QueuedCancelState::Pending { edit_id, turn_id },
+        };
+        receipt.validate()?;
+        Ok(receipt)
+    }
+    fn validate(&self) -> Result<()> {
+        if self.revision == 0 {
+            return Err(invalid("Invalid cancellation revision"));
+        }
+        match &self.state {
+            QueuedCancelState::Pending { edit_id, turn_id } => {
+                if self.revision == u64::MAX {
+                    return Err(invalid("Cancellation revision overflow"));
+                }
+                if edit_id.is_empty()
+                    || edit_id.len() > 128
+                    || turn_id.is_empty()
+                    || turn_id.len() > 128
+                {
+                    return Err(invalid("Invalid cancellation identity"));
+                }
+            }
+            QueuedCancelState::Settled if self.revision < 2 => {
+                return Err(invalid("Invalid settled cancellation revision"));
+            }
+            QueuedCancelState::Settled => {}
+        }
+        Ok(())
+    }
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WorkspaceSnapshot {
     pub version: u32,
@@ -173,6 +246,8 @@ pub struct WorkspaceSnapshot {
     pub selection_revision: u64,
     #[serde(default)]
     pub settled_submissions: BTreeMap<String, u64>,
+    #[serde(default)]
+    pub queued_cancellations: BTreeMap<String, QueuedCancelReceipt>,
 }
 impl WorkspaceSnapshot {
     fn new(project: PathBuf) -> Self {
@@ -186,14 +261,21 @@ impl WorkspaceSnapshot {
             selected: None,
             selection_revision: 0,
             settled_submissions: BTreeMap::new(),
+            queued_cancellations: BTreeMap::new(),
         }
     }
     fn validate(&self) -> Result<()> {
-        if !matches!(self.version, 1 | 2)
+        if !matches!(self.version, 1..=3)
             || self.chats.len() > MAX_CHATS
             || self.intents.len() > MAX_CHATS
+            || self.queued_cancellations.len() > MAX_CHATS
         {
             return Err(invalid("Unsupported or oversized Rust workspace catalog"));
+        }
+        if self.version < 3 && !self.queued_cancellations.is_empty() {
+            return Err(invalid(
+                "Cancellation receipts require Rust workspace catalog version 3",
+            ));
         }
         if self.version == 1
             && self
@@ -222,6 +304,17 @@ impl WorkspaceSnapshot {
         }
         if self.settled_submissions.keys().any(|id| !ids.contains(id)) {
             return Err(invalid("Submission receipt names an unknown chat"));
+        }
+        for (id, receipt) in &self.queued_cancellations {
+            if !ids.contains(id) {
+                return Err(invalid("Cancellation receipt names an unknown chat"));
+            }
+            receipt.validate()?;
+            if receipt.revision > self.revision {
+                return Err(invalid(
+                    "Cancellation revision exceeds its catalog revision",
+                ));
+            }
         }
         for draft in self.drafts.values() {
             draft.validate()?;
@@ -259,7 +352,14 @@ enum Fault {
 }
 impl WorkspaceStore {
     pub fn open(path: impl AsRef<Path>, project: impl AsRef<Path>) -> Result<Self> {
-        let path = absolute(path.as_ref())?;
+        Self::open_with_confirmation(path.as_ref(), project.as_ref(), confirm_existing_catalog)
+    }
+    fn open_with_confirmation(
+        path: &Path,
+        project: &Path,
+        confirm: impl FnOnce(&Path) -> Result<()>,
+    ) -> Result<Self> {
+        let path = absolute(path)?;
         let project = fs::canonicalize(project)?;
         if !project.is_dir() {
             return Err(invalid("The project is not a directory"));
@@ -294,6 +394,9 @@ impl WorkspaceStore {
             if state.project != project {
                 return Err(invalid("This Rust chat catalog belongs to another project"));
             }
+            // An existing post-rename file is not authoritative merely because
+            // its bytes can be read. Confirm file and directory without a rewrite.
+            confirm(&path)?;
             state
         } else {
             WorkspaceSnapshot::new(project)
@@ -428,6 +531,210 @@ impl WorkspaceStore {
             state.drafts.insert(id.into(), draft);
             Ok(true)
         })
+    }
+    /// Barrier before Save/Remove. Success proves that this exact payload is
+    /// durable. Unlike ordinary debounce writes, stale or conflicting payloads
+    /// are errors and must never authorize dispatching the actor command.
+    pub fn flush_draft_exact(&mut self, id: &str, draft: DraftRecord) -> Result<()> {
+        self.ensure_certain()?;
+        draft.validate()?;
+        require_chat(&self.state, id)?;
+        if exact_draft_current(&self.state, id, &draft)? {
+            return Ok(());
+        }
+        self.transact(|state| {
+            state.drafts.insert(id.into(), draft);
+            Ok(())
+        })
+    }
+    /// Atomically preserve the latest draft and cancellation intent before any
+    /// actor dispatch. Only an exact retained Pending retry is idempotent; older,
+    /// conflicting and superseding preparations fail without changing anything.
+    pub fn prepare_queued_cancel(
+        &mut self,
+        id: &str,
+        pending: QueuedCancelReceipt,
+        draft: DraftRecord,
+    ) -> Result<()> {
+        self.ensure_certain()?;
+        require_chat(&self.state, id)?;
+        pending.validate()?;
+        draft.validate()?;
+        let QueuedCancelState::Pending { edit_id, turn_id } = &pending.state else {
+            return Err(invalid("Cancellation preparation requires Pending state"));
+        };
+        let retry = self.state.queued_cancellations.get(id) == Some(&pending);
+        for retained in [Some(&draft), self.state.drafts.get(id)]
+            .into_iter()
+            .flatten()
+        {
+            if let Some(edit) = &retained.queued_edit
+                && &edit.edit_id == edit_id
+                && &edit.turn_id != turn_id
+            {
+                return Err(invalid(
+                    "Cancellation preparation belongs to another queued turn",
+                ));
+            }
+        }
+        if !retry
+            && draft
+                .queued_edit
+                .as_ref()
+                .is_some_and(|edit| &edit.edit_id != edit_id)
+        {
+            return Err(invalid(
+                "Cancellation preparation belongs to another queued draft",
+            ));
+        }
+        if let Some(existing) = self.state.queued_cancellations.get(id) {
+            if existing == &pending {
+                // The same durable Cancel remains authorized after newer typing.
+                // Never restore its older draft, but reject ambiguous equal revisions.
+                if let Some(saved) = self.state.drafts.get(id) {
+                    if saved.revision > draft.revision {
+                        return Ok(());
+                    }
+                    if saved.revision == draft.revision {
+                        return if saved == &draft {
+                            Ok(())
+                        } else {
+                            Err(invalid("Draft revision conflicts with saved contents"))
+                        };
+                    }
+                }
+                return self.transact(|state| {
+                    state.drafts.insert(id.into(), draft);
+                    Ok(())
+                });
+            }
+            if matches!(existing.state, QueuedCancelState::Pending { .. }) {
+                return Err(invalid("Another cancellation is still pending"));
+            }
+        }
+        let previous = self
+            .state
+            .queued_cancellations
+            .get(id)
+            .map_or(0, |v| v.revision);
+        if previous.checked_add(1) != Some(pending.revision) {
+            return Err(invalid(
+                "Cancellation preparation is obsolete or conflicts with its fence",
+            ));
+        }
+        exact_draft_current(&self.state, id, &draft)?;
+        self.transact(|state| {
+            state.drafts.insert(id.into(), draft);
+            state.queued_cancellations.insert(id.into(), pending);
+            state.version = 3;
+            Ok(())
+        })
+    }
+    /// Settle only the exact Pending identity and operation revision.
+    /// `source` is the latest draft used to compute `reconciled`, not a cached
+    /// catalog snapshot. A newer postmerge autosave wins; newer held text needs
+    /// reconciliation again. Never replace a live editor with the returned store.
+    ///
+    /// Returns false only when a strictly newer receipt already fences this
+    /// completion, including an already settled retry. It performs no write in
+    /// that case. Equal-revision different receipts and absent receipts are errors.
+    pub fn settle_queued_cancel(
+        &mut self,
+        id: &str,
+        expected: &QueuedCancelReceipt,
+        source: &DraftRecord,
+        reconciled: DraftRecord,
+    ) -> Result<bool> {
+        self.ensure_certain()?;
+        require_chat(&self.state, id)?;
+        expected.validate()?;
+        let QueuedCancelState::Pending { edit_id, turn_id } = &expected.state else {
+            return Err(invalid("Cancellation settlement requires Pending state"));
+        };
+        let existing = self
+            .state
+            .queued_cancellations
+            .get(id)
+            .ok_or_else(|| invalid("Cancellation has no saved receipt"))?;
+        if existing.revision > expected.revision {
+            return Ok(false);
+        }
+        if existing != expected {
+            return Err(invalid(
+                "Cancellation settlement conflicts with its saved receipt",
+            ));
+        }
+        source.validate()?;
+        reconciled.validate()?;
+        if let Some(edit) = &source.queued_edit {
+            if &edit.edit_id == edit_id {
+                if &edit.turn_id != turn_id {
+                    return Err(invalid(
+                        "Cancellation reconciliation belongs to another queued turn",
+                    ));
+                }
+                if reconciled.queued_edit.is_some()
+                    || source.revision.checked_add(1) != Some(reconciled.revision)
+                {
+                    return Err(invalid(
+                        "Cancellation reconciliation needs the next cleared draft revision",
+                    ));
+                }
+            } else if source != &reconciled {
+                return Err(invalid("Cancellation cannot change another queued edit"));
+            }
+        } else if source != &reconciled {
+            return Err(invalid("An already reconciled draft must remain unchanged"));
+        }
+        let saved = self
+            .state
+            .drafts
+            .get(id)
+            .ok_or_else(|| invalid("Cancellation has no saved draft"))?;
+        let preserve_newer = if saved.revision > reconciled.revision {
+            if saved.queued_edit.is_some() {
+                return Err(invalid(
+                    "Newer queued draft needs cancellation reconciliation",
+                ));
+            }
+            true
+        } else if saved.revision == reconciled.revision {
+            if saved != &reconciled {
+                return Err(invalid("Draft revision conflicts with saved contents"));
+            }
+            true
+        } else {
+            if saved.revision > source.revision
+                || (saved.revision == source.revision && saved != source)
+            {
+                return Err(invalid(
+                    "Cancellation source conflicts with the saved draft",
+                ));
+            }
+            false
+        };
+        let settled = QueuedCancelReceipt {
+            revision: expected
+                .revision
+                .checked_add(1)
+                .ok_or_else(|| invalid("Cancellation revision overflow"))?,
+            state: QueuedCancelState::Settled,
+        };
+        self.transact(|state| {
+            if !preserve_newer {
+                state.drafts.insert(id.into(), reconciled);
+            }
+            state.queued_cancellations.insert(id.into(), settled);
+            Ok(true)
+        })
+    }
+    fn ensure_certain(&self) -> Result<()> {
+        if self.uncertain {
+            return Err(invalid(
+                "Workspace persistence is uncertain. Reopen before continuing.",
+            ));
+        }
+        Ok(())
     }
     pub fn select(&mut self, id: &str, revision: u64) -> Result<bool> {
         if self.uncertain {
@@ -624,7 +931,7 @@ impl WorkspaceStore {
             .iter()
             .any(|chat| chat.sidebar_order.is_some() || chat.pinned_at.is_some())
         {
-            state.version = 2;
+            state.version = state.version.max(2);
         }
         state.revision = state
             .revision
@@ -677,6 +984,40 @@ impl WorkspaceStore {
         self.state = state;
         Ok(result)
     }
+}
+fn require_chat(state: &WorkspaceSnapshot, id: &str) -> Result<()> {
+    if !state.chats.iter().any(|chat| chat.id == id) {
+        return Err(invalid("Draft has no saved chat"));
+    }
+    Ok(())
+}
+/// Return true only for equal revision and equal contents. Lower revisions and
+/// equal-revision conflicts cannot serve as an exact-payload persistence barrier.
+fn exact_draft_current(state: &WorkspaceSnapshot, id: &str, draft: &DraftRecord) -> Result<bool> {
+    if let Some(saved) = state.drafts.get(id) {
+        if saved.revision > draft.revision {
+            return Err(invalid("Draft is older than the saved draft"));
+        }
+        if saved.revision == draft.revision {
+            return if saved == draft {
+                Ok(true)
+            } else {
+                Err(invalid("Draft revision conflicts with saved contents"))
+            };
+        }
+    }
+    Ok(false)
+}
+fn confirm_existing_catalog(path: &Path) -> Result<()> {
+    File::open(path)
+        .and_then(|file| file.sync_all())
+        .map_err(|error| Error::PersistenceUncertain(error.to_string()))?;
+    File::open(
+        path.parent()
+            .ok_or_else(|| invalid("Catalog needs a directory"))?,
+    )
+    .and_then(|directory| directory.sync_all())
+    .map_err(|error| Error::PersistenceUncertain(error.to_string()))
 }
 fn absolute(path: &Path) -> Result<PathBuf> {
     Ok(if path.is_absolute() {
@@ -982,5 +1323,857 @@ mod tests {
     fn lock_and_project_binding_are_checked() {
         let (dir, _store, _) = fixture();
         assert!(WorkspaceStore::open(dir.path().join("workspace.json"), dir.path()).is_err());
+    }
+    fn held_draft(revision: u64) -> DraftRecord {
+        DraftRecord {
+            revision,
+            text: "displaced draft".into(),
+            queued_edit: Some(QueuedDraft {
+                edit_id: "cancel-this-edit".into(),
+                turn_id: "cancel-this-turn".into(),
+                rewrite: "unsaved rewrite".into(),
+                original_text: Some("original".into()),
+            }),
+        }
+    }
+    fn pending_cancel(previous_revision: u64) -> QueuedCancelReceipt {
+        QueuedCancelReceipt::pending(
+            previous_revision,
+            "cancel-this-edit".into(),
+            "cancel-this-turn".into(),
+        )
+        .unwrap()
+    }
+    fn reconciled(source: &DraftRecord) -> DraftRecord {
+        let mut next = source.clone();
+        next.reconcile_queued_status(&crate::QueueEditStatus {
+            edit_id: source.queued_edit.as_ref().unwrap().edit_id.clone(),
+            state: crate::QueueEditState::Cancelled,
+            current_hold: None,
+            session_revision: 1,
+        })
+        .unwrap();
+        next
+    }
+    fn state_bytes(store: &WorkspaceStore) -> Vec<u8> {
+        serde_json::to_vec(&store.snapshot()).unwrap()
+    }
+    #[test]
+    fn cancellation_prepare_is_atomic_at_real_rename_boundaries_and_reopen_confirms() {
+        for (fault, committed) in [(Fault::BeforeRename, false), (Fault::AfterRename, true)] {
+            let (dir, mut store, chat) = fixture();
+            let initial = held_draft(4);
+            store.register(chat.clone(), initial.clone()).unwrap();
+            let path = dir.path().join("workspace.json");
+            let old_bytes = fs::read(&path).unwrap();
+            let before = state_bytes(&store);
+            let mut latest = initial.clone();
+            latest.revision += 1;
+            latest
+                .queued_edit
+                .as_mut()
+                .unwrap()
+                .rewrite
+                .push_str(" latest");
+            let pending = pending_cancel(0);
+            store.fault = fault;
+            let error = store
+                .prepare_queued_cancel(&chat.id, pending.clone(), latest.clone())
+                .unwrap_err();
+            assert_eq!(matches!(error, Error::PersistenceUncertain(_)), committed);
+            assert_eq!(state_bytes(&store), before);
+            if committed {
+                store.fault = Fault::None;
+                assert!(
+                    store
+                        .prepare_queued_cancel(&chat.id, pending.clone(), latest.clone())
+                        .is_err()
+                );
+                assert!(store.flush_draft_exact(&chat.id, initial.clone()).is_err());
+                assert!(
+                    store
+                        .settle_queued_cancel(&chat.id, &pending, &latest, reconciled(&latest))
+                        .is_err()
+                );
+            } else {
+                assert_eq!(fs::read(&path).unwrap(), old_bytes);
+            }
+            drop(store);
+            let retained = fs::read(&path).unwrap();
+            let confirmed = std::cell::Cell::new(false);
+            let reopened = WorkspaceStore::open_with_confirmation(&path, dir.path(), |existing| {
+                assert_eq!(fs::read(existing).unwrap(), retained);
+                confirm_existing_catalog(existing)?;
+                confirmed.set(true);
+                Ok(())
+            })
+            .unwrap();
+            assert!(confirmed.get());
+            assert_eq!(
+                reopened.snapshot().drafts[&chat.id],
+                if committed { latest } else { initial }
+            );
+            assert_eq!(
+                reopened.snapshot().queued_cancellations.get(&chat.id),
+                committed.then_some(&pending)
+            );
+            assert_eq!(fs::read(&path).unwrap(), retained);
+        }
+    }
+    #[test]
+    fn cancellation_settlement_is_atomic_at_real_rename_boundaries() {
+        for (fault, committed) in [(Fault::BeforeRename, false), (Fault::AfterRename, true)] {
+            let (dir, mut store, chat) = fixture();
+            let draft = held_draft(4);
+            store.register(chat.clone(), draft.clone()).unwrap();
+            let pending = pending_cancel(0);
+            store
+                .prepare_queued_cancel(&chat.id, pending.clone(), draft.clone())
+                .unwrap();
+            let path = dir.path().join("workspace.json");
+            let old_bytes = fs::read(&path).unwrap();
+            let before = state_bytes(&store);
+            let merged = reconciled(&draft);
+            store.fault = fault;
+            let error = store
+                .settle_queued_cancel(&chat.id, &pending, &draft, merged.clone())
+                .unwrap_err();
+            assert_eq!(matches!(error, Error::PersistenceUncertain(_)), committed);
+            assert_eq!(state_bytes(&store), before);
+            if committed {
+                store.fault = Fault::None;
+                assert!(
+                    store
+                        .settle_queued_cancel(&chat.id, &pending, &draft, merged.clone())
+                        .is_err()
+                );
+                assert!(
+                    store
+                        .prepare_queued_cancel(&chat.id, pending.clone(), draft.clone())
+                        .is_err()
+                );
+                assert!(store.save_draft(&chat.id, merged.clone()).is_err());
+            } else {
+                assert_eq!(fs::read(&path).unwrap(), old_bytes);
+            }
+            drop(store);
+            let mut reopened = WorkspaceStore::open(&path, dir.path()).unwrap();
+            assert_eq!(
+                reopened.snapshot().drafts[&chat.id],
+                if committed {
+                    merged.clone()
+                } else {
+                    draft.clone()
+                }
+            );
+            assert_eq!(
+                reopened.snapshot().queued_cancellations[&chat.id],
+                if committed {
+                    QueuedCancelReceipt {
+                        revision: 2,
+                        state: QueuedCancelState::Settled,
+                    }
+                } else {
+                    pending.clone()
+                }
+            );
+            assert_eq!(
+                reopened
+                    .settle_queued_cancel(&chat.id, &pending, &draft, merged)
+                    .unwrap(),
+                !committed
+            );
+            assert!(
+                reopened
+                    .prepare_queued_cancel(&chat.id, pending, draft.clone())
+                    .is_err()
+            );
+        }
+    }
+    #[test]
+    fn existing_catalog_confirmation_is_required_without_opening_rewrite_for_all_versions() {
+        for version in [1, 2, 3] {
+            let (dir, mut store, chat) = fixture();
+            let draft = held_draft(4);
+            store.register(chat.clone(), draft.clone()).unwrap();
+            if version == 3 {
+                store
+                    .prepare_queued_cancel(&chat.id, pending_cancel(0), draft.clone())
+                    .unwrap();
+            }
+            let mut state = store.snapshot();
+            state.version = version;
+            let mut value = serde_json::to_value(state).unwrap();
+            if version < 3 {
+                value
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("queued_cancellations");
+            }
+            let path = dir.path().join("workspace.json");
+            drop(store);
+            let bytes =
+                format!(" \n{}\n  ", serde_json::to_string_pretty(&value).unwrap()).into_bytes();
+            fs::write(&path, &bytes).unwrap();
+            for fail_after_file_sync in [false, true] {
+                let result =
+                    WorkspaceStore::open_with_confirmation(&path, dir.path(), |existing| {
+                        assert_eq!(fs::read(existing).unwrap(), bytes);
+                        if fail_after_file_sync {
+                            File::open(existing)?.sync_all()?;
+                        }
+                        Err(Error::PersistenceUncertain(
+                            "injected confirmation failure".into(),
+                        ))
+                    });
+                assert!(matches!(result, Err(Error::PersistenceUncertain(_))));
+                assert_eq!(fs::read(&path).unwrap(), bytes);
+            }
+            let confirmed = std::cell::Cell::new(false);
+            let reopened = WorkspaceStore::open_with_confirmation(&path, dir.path(), |existing| {
+                confirm_existing_catalog(existing)?;
+                confirmed.set(true);
+                Ok(())
+            })
+            .unwrap();
+            assert!(confirmed.get());
+            assert_eq!(reopened.snapshot().version, version);
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let store = WorkspaceStore::open_with_confirmation(
+            &dir.path().join("missing.json"),
+            dir.path(),
+            |_| panic!("pending workspace has no existing file to confirm"),
+        )
+        .unwrap();
+        assert!(store.snapshot().chats.is_empty());
+        assert!(matches!(
+            confirm_existing_catalog(&dir.path().join("missing.json")),
+            Err(Error::PersistenceUncertain(_))
+        ));
+    }
+    #[test]
+    fn cancel_receipt_fence_and_draft_fence_remain_independent_across_retries() {
+        let (dir, mut store, chat) = fixture();
+        let draft = held_draft(4);
+        store.register(chat.clone(), draft.clone()).unwrap();
+        let pending = pending_cancel(0);
+        store
+            .prepare_queued_cancel(&chat.id, pending.clone(), draft.clone())
+            .unwrap();
+        let bytes = fs::read(dir.path().join("workspace.json")).unwrap();
+        store
+            .prepare_queued_cancel(&chat.id, pending.clone(), draft.clone())
+            .unwrap();
+        store.flush_draft_exact(&chat.id, draft.clone()).unwrap();
+        assert_eq!(fs::read(dir.path().join("workspace.json")).unwrap(), bytes);
+        let merged = reconciled(&draft);
+        store.save_draft(&chat.id, merged.clone()).unwrap();
+        let newer = DraftRecord {
+            revision: merged.revision + 1,
+            text: "new postmerge typing".into(),
+            queued_edit: None,
+        };
+        store.save_draft(&chat.id, newer.clone()).unwrap();
+        assert_eq!(store.snapshot().queued_cancellations[&chat.id], pending);
+        // Exact persisted Pending still authorizes an idempotent actor retry,
+        // even after autosave has independently persisted reconciled/newer text.
+        store
+            .prepare_queued_cancel(&chat.id, pending.clone(), draft.clone())
+            .unwrap();
+        assert!(
+            store
+                .settle_queued_cancel(&chat.id, &pending, &draft, merged.clone())
+                .unwrap()
+        );
+        assert_eq!(store.snapshot().drafts[&chat.id], newer);
+        assert!(!store.save_draft(&chat.id, draft.clone()).unwrap());
+        let after = state_bytes(&store);
+        assert!(
+            !store
+                .settle_queued_cancel(&chat.id, &pending, &draft, merged)
+                .unwrap()
+        );
+        assert!(
+            store
+                .prepare_queued_cancel(&chat.id, pending.clone(), draft.clone())
+                .is_err()
+        );
+        // A delayed prepare with a freshly captured current draft must still
+        // fail on the operation fence, independently of the draft revision.
+        assert!(
+            store
+                .prepare_queued_cancel(&chat.id, pending.clone(), newer.clone())
+                .is_err()
+        );
+        assert_eq!(state_bytes(&store), after);
+        let mut next = held_draft(newer.revision + 1);
+        next.queued_edit.as_mut().unwrap().edit_id = "second-operation".into();
+        let next_pending =
+            QueuedCancelReceipt::pending(2, "second-operation".into(), "cancel-this-turn".into())
+                .unwrap();
+        store
+            .prepare_queued_cancel(&chat.id, next_pending.clone(), next.clone())
+            .unwrap();
+        assert!(
+            !store
+                .settle_queued_cancel(&chat.id, &pending, &draft, reconciled(&draft))
+                .unwrap()
+        );
+        assert_eq!(
+            store.snapshot().queued_cancellations[&chat.id],
+            next_pending
+        );
+        assert_eq!(store.snapshot().drafts[&chat.id], next);
+    }
+    #[test]
+    fn exact_flush_and_cancel_reject_equal_revision_different_contents_without_writes() {
+        let (dir, mut store, chat) = fixture();
+        let draft = held_draft(4);
+        store.register(chat.clone(), draft.clone()).unwrap();
+        let path = dir.path().join("workspace.json");
+        let before = fs::read(&path).unwrap();
+        let mut conflicting = draft.clone();
+        conflicting.text = "same revision but another payload".into();
+        assert!(
+            store
+                .flush_draft_exact(&chat.id, conflicting.clone())
+                .is_err()
+        );
+        assert!(
+            store
+                .prepare_queued_cancel(&chat.id, pending_cancel(0), conflicting.clone())
+                .is_err()
+        );
+        let mut old = draft.clone();
+        old.revision -= 1;
+        assert!(store.flush_draft_exact(&chat.id, old.clone()).is_err());
+        assert!(
+            store
+                .prepare_queued_cancel(&chat.id, pending_cancel(0), old.clone())
+                .is_err()
+        );
+        assert_eq!(fs::read(&path).unwrap(), before);
+        let pending = pending_cancel(0);
+        store
+            .prepare_queued_cancel(&chat.id, pending.clone(), draft.clone())
+            .unwrap();
+        let mut actual = reconciled(&draft);
+        actual.text.push_str(" different");
+        store.save_draft(&chat.id, actual.clone()).unwrap();
+        let before = fs::read(&path).unwrap();
+        assert!(
+            store
+                .settle_queued_cancel(&chat.id, &pending, &draft, reconciled(&draft))
+                .is_err()
+        );
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(store.snapshot().drafts[&chat.id], actual);
+        assert_eq!(store.snapshot().queued_cancellations[&chat.id], pending);
+    }
+    #[test]
+    fn newer_held_draft_must_be_reconciled_before_cancellation_can_settle() {
+        let (dir, mut store, chat) = fixture();
+        let draft = held_draft(4);
+        store.register(chat.clone(), draft.clone()).unwrap();
+        let pending = pending_cancel(0);
+        store
+            .prepare_queued_cancel(&chat.id, pending.clone(), draft.clone())
+            .unwrap();
+        let mut latest = held_draft(7);
+        latest.queued_edit.as_mut().unwrap().rewrite = "latest unsaved rewrite".into();
+        store.save_draft(&chat.id, latest.clone()).unwrap();
+        let before = fs::read(dir.path().join("workspace.json")).unwrap();
+        assert!(
+            store
+                .settle_queued_cancel(&chat.id, &pending, &draft, reconciled(&draft))
+                .is_err()
+        );
+        assert_eq!(fs::read(dir.path().join("workspace.json")).unwrap(), before);
+        let merged = reconciled(&latest);
+        assert!(
+            store
+                .settle_queued_cancel(&chat.id, &pending, &latest, merged.clone())
+                .unwrap()
+        );
+        assert_eq!(store.snapshot().drafts[&chat.id], merged);
+    }
+    #[test]
+    fn settlement_accepts_an_exact_already_reconciled_source_and_validates_the_whole_merge() {
+        let (_dir, mut store, chat) = fixture();
+        let draft = held_draft(4);
+        store.register(chat.clone(), draft.clone()).unwrap();
+        let pending = pending_cancel(0);
+        store
+            .prepare_queued_cancel(&chat.id, pending.clone(), draft.clone())
+            .unwrap();
+        let before = state_bytes(&store);
+        let mut invalid = reconciled(&draft);
+        invalid.text = "x".repeat(MAX_DRAFT_BYTES + 1);
+        assert!(
+            store
+                .settle_queued_cancel(&chat.id, &pending, &draft, invalid)
+                .is_err()
+        );
+        let mut overflow = draft.clone();
+        overflow.revision = u64::MAX;
+        assert!(
+            store
+                .settle_queued_cancel(
+                    &chat.id,
+                    &pending,
+                    &overflow,
+                    DraftRecord {
+                        revision: 0,
+                        text: String::new(),
+                        queued_edit: None
+                    }
+                )
+                .is_err()
+        );
+        assert_eq!(state_bytes(&store), before);
+        let merged = reconciled(&draft);
+        store.save_draft(&chat.id, merged.clone()).unwrap();
+        let mut different = merged.clone();
+        different.text.push_str(" changed without a new revision");
+        assert!(
+            store
+                .settle_queued_cancel(&chat.id, &pending, &merged, different)
+                .is_err()
+        );
+        assert!(
+            store
+                .settle_queued_cancel(&chat.id, &pending, &merged, merged.clone())
+                .unwrap()
+        );
+        assert_eq!(store.snapshot().drafts[&chat.id], merged);
+    }
+    #[test]
+    fn cancel_revision_allocation_and_catalog_overflow_leave_original_recovery_material() {
+        let (dir, mut store, chat) = fixture();
+        let draft = held_draft(4);
+        store.register(chat.clone(), draft.clone()).unwrap();
+        assert!(QueuedCancelReceipt::pending(u64::MAX, "edit".into(), "turn".into()).is_err());
+        assert!(QueuedCancelReceipt::pending(u64::MAX - 1, "edit".into(), "turn".into()).is_err());
+        let path = dir.path().join("workspace.json");
+        let mut state = store.snapshot();
+        state.revision = u64::MAX;
+        state.version = 3;
+        state.queued_cancellations.insert(
+            chat.id.clone(),
+            QueuedCancelReceipt {
+                revision: u64::MAX - 1,
+                state: QueuedCancelState::Settled,
+            },
+        );
+        drop(store);
+        let bytes = serde_json::to_vec(&state).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        let mut store = WorkspaceStore::open(&path, dir.path()).unwrap();
+        assert!(
+            store
+                .prepare_queued_cancel(
+                    &chat.id,
+                    QueuedCancelReceipt {
+                        revision: u64::MAX,
+                        state: QueuedCancelState::Pending {
+                            edit_id: "cancel-this-edit".into(),
+                            turn_id: "cancel-this-turn".into()
+                        }
+                    },
+                    draft.clone()
+                )
+                .is_err()
+        );
+        let mut later = draft;
+        later.revision += 1;
+        assert!(store.flush_draft_exact(&chat.id, later).is_err());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert_eq!(state_bytes(&store), serde_json::to_vec(&state).unwrap());
+    }
+    #[test]
+    fn wrong_cancel_identity_revision_payload_and_unknown_chat_never_mutate_catalog() {
+        let (dir, mut store, chat) = fixture();
+        let draft = held_draft(4);
+        store.register(chat.clone(), draft.clone()).unwrap();
+        let pending = pending_cancel(0);
+        assert!(
+            store
+                .prepare_queued_cancel("unknown-chat", pending.clone(), draft.clone())
+                .is_err()
+        );
+        assert!(
+            store
+                .flush_draft_exact("unknown-chat", draft.clone())
+                .is_err()
+        );
+        store
+            .prepare_queued_cancel(&chat.id, pending.clone(), draft.clone())
+            .unwrap();
+        let before = fs::read(dir.path().join("workspace.json")).unwrap();
+        for change in ["edit", "turn", "revision"] {
+            let mut wrong = pending.clone();
+            match &mut wrong.state {
+                QueuedCancelState::Pending { edit_id, turn_id } => match change {
+                    "edit" => *edit_id = "different".into(),
+                    "turn" => *turn_id = "different".into(),
+                    _ => wrong.revision += 1,
+                },
+                _ => unreachable!(),
+            }
+            assert!(
+                store
+                    .prepare_queued_cancel(&chat.id, wrong.clone(), draft.clone())
+                    .is_err()
+            );
+            assert!(
+                store
+                    .settle_queued_cancel(&chat.id, &wrong, &draft, reconciled(&draft))
+                    .is_err()
+            );
+        }
+        let mut wrong_draft = draft.clone();
+        wrong_draft.queued_edit.as_mut().unwrap().turn_id = "different-turn".into();
+        assert!(
+            store
+                .prepare_queued_cancel(&chat.id, pending.clone(), wrong_draft)
+                .is_err()
+        );
+        assert!(
+            store
+                .settle_queued_cancel("unknown-chat", &pending, &draft, reconciled(&draft))
+                .is_err()
+        );
+        assert_eq!(fs::read(dir.path().join("workspace.json")).unwrap(), before);
+    }
+    #[test]
+    fn v3_promotion_is_monotonic_and_other_transactions_preserve_cancel_receipts() {
+        let (dir, mut store, mut chat) = fixture();
+        chat.sidebar_order = Some(9);
+        let draft = held_draft(4);
+        store.register(chat.clone(), draft.clone()).unwrap();
+        assert_eq!(store.snapshot().version, 2);
+        let pending = pending_cancel(0);
+        store
+            .prepare_queued_cancel(&chat.id, pending.clone(), draft.clone())
+            .unwrap();
+        store.name_chat(&chat.id, "renamed").unwrap();
+        store.select(&chat.id, 3).unwrap();
+        store
+            .set_pinned(chat.clone(), DraftRecord::default(), true, 1)
+            .unwrap();
+        let intent = SubmissionIntent {
+            id: Uuid::new_v4().to_string(),
+            chat_id: chat.id.clone(),
+            text: "another retained send".into(),
+            lane: Lane::FollowUp,
+            draft_revision: 1,
+        };
+        store.begin_submission(intent.clone()).unwrap();
+        store.acknowledge_submission(&intent.id).unwrap();
+        assert_eq!(store.snapshot().version, 3);
+        assert_eq!(store.snapshot().queued_cancellations[&chat.id], pending);
+        let merged = reconciled(&draft);
+        store
+            .settle_queued_cancel(&chat.id, &pending, &draft, merged.clone())
+            .unwrap();
+        let settled = store.snapshot().queued_cancellations[&chat.id].clone();
+        let later = DraftRecord {
+            revision: merged.revision + 1,
+            text: "later".into(),
+            queued_edit: None,
+        };
+        store.save_draft(&chat.id, later.clone()).unwrap();
+        store
+            .save_submitting_draft(chat.clone(), later, intent.clone())
+            .unwrap();
+        store.name_chat(&chat.id, "renamed again").unwrap();
+        assert!(store.snapshot().intents.is_empty());
+        assert_eq!(
+            store.snapshot().settled_submissions[&chat.id],
+            intent.draft_revision
+        );
+        assert_eq!(store.snapshot().queued_cancellations[&chat.id], settled);
+        drop(store);
+        let reopened = WorkspaceStore::open(dir.path().join("workspace.json"), dir.path()).unwrap();
+        assert_eq!(reopened.snapshot().version, 3);
+        assert_eq!(reopened.snapshot().queued_cancellations[&chat.id], settled);
+    }
+
+    #[test]
+    fn malformed_cancel_receipts_fail_before_confirmation_and_preserve_exact_bytes() {
+        use serde_json::{Value, json};
+        let (dir, mut store, chat) = fixture();
+        let draft = held_draft(4);
+        store.register(chat.clone(), draft.clone()).unwrap();
+        store
+            .prepare_queued_cancel(&chat.id, pending_cancel(0), draft)
+            .unwrap();
+        let base = serde_json::to_value(store.snapshot()).unwrap();
+        let path = dir.path().join("workspace.json");
+        drop(store);
+        let mut cases: Vec<Value> = Vec::new();
+        for version in [1, 2, 4] {
+            let mut value = base.clone();
+            value["version"] = version.into();
+            cases.push(value);
+        }
+        for receipt in [
+            json!({"state":{"kind":"pending","edit_id":"edit","turn_id":"turn"}}),
+            json!({"revision":1}),
+            json!({"revision":1,"state":null}),
+            json!({"revision":1,"state":{"edit_id":"edit","turn_id":"turn"}}),
+            json!({"revision":1,"state":{"kind":"unknown","edit_id":"edit","turn_id":"turn"}}),
+            json!({"revision":1,"state":{"kind":"pending","turn_id":"turn"}}),
+            json!({"revision":1,"state":{"kind":"pending","edit_id":"edit"}}),
+            json!({"revision":1,"state":{"kind":"pending","edit_id":"","turn_id":"turn"}}),
+            json!({"revision":1,"state":{"kind":"pending","edit_id":"edit","turn_id":""}}),
+            json!({"revision":1,"state":{"kind":"pending","edit_id":"e".repeat(129),"turn_id":"turn"}}),
+            json!({"revision":1,"state":{"kind":"pending","edit_id":"edit","turn_id":"t".repeat(129)}}),
+            json!({"revision":1,"extra":"hidden","state":{"kind":"pending","edit_id":"edit","turn_id":"turn"}}),
+            json!({"revision":1,"state":{"kind":"pending","edit_id":"edit","turn_id":"turn","extra":"hidden"}}),
+            json!({"revision":2,"state":{"kind":"settled","edit_id":"forbidden"}}),
+            json!({"revision":0,"state":{"kind":"pending","edit_id":"edit","turn_id":"turn"}}),
+            json!({"revision":u64::MAX,"state":{"kind":"pending","edit_id":"edit","turn_id":"turn"}}),
+            json!({"revision":1,"state":{"kind":"settled"}}),
+            json!({"revision":3,"state":{"kind":"settled"}}), // exceeds catalog revision
+            json!({"revision":-1,"state":{"kind":"settled"}}),
+        ] {
+            let mut value = base.clone();
+            value["queued_cancellations"][&chat.id] = receipt;
+            cases.push(value);
+        }
+        let mut unknown = base.clone();
+        unknown["queued_cancellations"][Uuid::new_v4().to_string()] =
+            json!({"revision":2,"state":{"kind":"settled"}});
+        cases.push(unknown);
+        let mut oversized = base.clone();
+        for _ in 0..MAX_CHATS {
+            oversized["queued_cancellations"][Uuid::new_v4().to_string()] =
+                json!({"revision":2,"state":{"kind":"settled"}});
+        }
+        cases.push(oversized);
+        for (index, value) in cases.into_iter().enumerate() {
+            let bytes =
+                format!(" \n{}\n  ", serde_json::to_string_pretty(&value).unwrap()).into_bytes();
+            fs::write(&path, &bytes).unwrap();
+            assert!(
+                WorkspaceStore::open_with_confirmation(&path, dir.path(), |_| {
+                    panic!("malformed catalog {index} must fail before confirmation")
+                })
+                .is_err(),
+                "accepted malformed catalog {index}"
+            );
+            assert_eq!(
+                fs::read(&path).unwrap(),
+                bytes,
+                "rewrote malformed catalog {index}"
+            );
+        }
+    }
+    #[test]
+    fn cancel_without_a_retained_queued_draft_preserves_ordinary_typing() {
+        let (dir, mut store, chat) = fixture();
+        let initial = DraftRecord {
+            revision: 7,
+            text: "ordinary draft".into(),
+            queued_edit: None,
+        };
+        store.register(chat.clone(), initial.clone()).unwrap();
+        let pending = pending_cancel(0);
+        store
+            .prepare_queued_cancel(&chat.id, pending.clone(), initial.clone())
+            .unwrap();
+        let latest = DraftRecord {
+            revision: 8,
+            text: "newer ordinary typing".into(),
+            queued_edit: None,
+        };
+        store.save_draft(&chat.id, latest.clone()).unwrap();
+        store
+            .prepare_queued_cancel(&chat.id, pending.clone(), initial.clone())
+            .unwrap();
+        assert!(
+            store
+                .settle_queued_cancel(&chat.id, &pending, &initial, initial.clone())
+                .unwrap()
+        );
+        assert_eq!(store.snapshot().drafts[&chat.id], latest);
+        drop(store);
+        let reopened = WorkspaceStore::open(dir.path().join("workspace.json"), dir.path()).unwrap();
+        assert_eq!(reopened.snapshot().drafts[&chat.id], latest);
+        assert_eq!(
+            reopened.snapshot().queued_cancellations[&chat.id].state,
+            QueuedCancelState::Settled
+        );
+    }
+    #[test]
+    fn exact_pending_retry_updates_only_newer_valid_draft_and_rejects_payload_conflict() {
+        let (dir, mut store, chat) = fixture();
+        let draft = held_draft(4);
+        store.register(chat.clone(), draft.clone()).unwrap();
+        let pending = pending_cancel(0);
+        store
+            .prepare_queued_cancel(&chat.id, pending.clone(), draft.clone())
+            .unwrap();
+        let mut same_revision = draft.clone();
+        same_revision.text.push_str(" conflicting");
+        let before = fs::read(dir.path().join("workspace.json")).unwrap();
+        assert!(
+            store
+                .prepare_queued_cancel(&chat.id, pending.clone(), same_revision)
+                .is_err()
+        );
+        assert_eq!(fs::read(dir.path().join("workspace.json")).unwrap(), before);
+        let mut latest = draft.clone();
+        latest.revision += 1;
+        latest.queued_edit.as_mut().unwrap().rewrite = "updated rewrite".into();
+        store
+            .prepare_queued_cancel(&chat.id, pending.clone(), latest.clone())
+            .unwrap();
+        assert_eq!(store.snapshot().drafts[&chat.id], latest);
+        assert_eq!(store.snapshot().queued_cancellations[&chat.id], pending);
+        store
+            .prepare_queued_cancel(&chat.id, pending, draft)
+            .unwrap();
+        assert_eq!(store.snapshot().drafts[&chat.id], latest);
+    }
+
+    #[test]
+    fn exact_retry_and_settlement_preserve_a_different_newer_held_draft() {
+        let (dir, mut store, chat) = fixture();
+        let draft = held_draft(4);
+        store.register(chat.clone(), draft.clone()).unwrap();
+        let pending = pending_cancel(0);
+        store
+            .prepare_queued_cancel(&chat.id, pending.clone(), draft.clone())
+            .unwrap();
+        let mut next = held_draft(5);
+        next.queued_edit.as_mut().unwrap().edit_id = "another-edit".into();
+        next.queued_edit.as_mut().unwrap().turn_id = "another-turn".into();
+        store.save_draft(&chat.id, next.clone()).unwrap();
+        let before = fs::read(dir.path().join("workspace.json")).unwrap();
+        store
+            .prepare_queued_cancel(&chat.id, pending.clone(), next.clone())
+            .unwrap();
+        store
+            .prepare_queued_cancel(&chat.id, pending.clone(), draft.clone())
+            .unwrap();
+        assert_eq!(fs::read(dir.path().join("workspace.json")).unwrap(), before);
+        assert!(
+            store
+                .settle_queued_cancel(&chat.id, &pending, &next, reconciled(&next))
+                .is_err()
+        );
+        assert!(
+            store
+                .settle_queued_cancel(&chat.id, &pending, &next, next.clone())
+                .unwrap()
+        );
+        assert_eq!(store.snapshot().drafts[&chat.id], next);
+        assert_eq!(
+            store.snapshot().queued_cancellations[&chat.id].state,
+            QueuedCancelState::Settled
+        );
+        let later = pending_cancel(2);
+        assert!(
+            store
+                .prepare_queued_cancel(&chat.id, later, next.clone())
+                .is_err()
+        );
+        assert_eq!(store.snapshot().drafts[&chat.id], next);
+    }
+    #[test]
+    fn same_edit_with_a_different_turn_conflicts_even_on_exact_pending_retry() {
+        let (_dir, mut store, chat) = fixture();
+        let draft = held_draft(4);
+        store.register(chat.clone(), draft.clone()).unwrap();
+        let pending = pending_cancel(0);
+        store
+            .prepare_queued_cancel(&chat.id, pending.clone(), draft.clone())
+            .unwrap();
+        let mut conflict = draft.clone();
+        conflict.revision += 1;
+        conflict.queued_edit.as_mut().unwrap().turn_id = "wrong-turn".into();
+        let before = state_bytes(&store);
+        assert!(
+            store
+                .prepare_queued_cancel(&chat.id, pending.clone(), conflict.clone())
+                .is_err()
+        );
+        assert!(
+            store
+                .settle_queued_cancel(&chat.id, &pending, &conflict, conflict.clone())
+                .is_err()
+        );
+        assert_eq!(state_bytes(&store), before);
+        // Ordinary draft semantics remain unchanged, but such an inconsistent
+        // retained source must not authorize an old captured Cancel either.
+        store.save_draft(&chat.id, conflict).unwrap();
+        let before = state_bytes(&store);
+        assert!(
+            store
+                .prepare_queued_cancel(&chat.id, pending, draft)
+                .is_err()
+        );
+        assert_eq!(state_bytes(&store), before);
+    }
+    #[test]
+    fn exact_flush_failure_never_authorizes_dispatch_before_reopen_confirmation() {
+        for (fault, committed) in [(Fault::BeforeRename, false), (Fault::AfterRename, true)] {
+            let (dir, mut store, chat) = fixture();
+            let draft = held_draft(4);
+            store.register(chat.clone(), draft.clone()).unwrap();
+            let mut latest = draft.clone();
+            latest.revision += 1;
+            latest.queued_edit.as_mut().unwrap().rewrite = "latest Save payload".into();
+            let path = dir.path().join("workspace.json");
+            let before = fs::read(&path).unwrap();
+            store.fault = fault;
+            assert!(store.flush_draft_exact(&chat.id, latest.clone()).is_err());
+            assert_eq!(store.snapshot().drafts[&chat.id], draft);
+            if committed {
+                store.fault = Fault::None;
+                assert!(store.flush_draft_exact(&chat.id, latest.clone()).is_err());
+            } else {
+                assert_eq!(fs::read(&path).unwrap(), before);
+            }
+            drop(store);
+            let mut reopened = WorkspaceStore::open(&path, dir.path()).unwrap();
+            assert_eq!(
+                reopened.snapshot().drafts[&chat.id],
+                if committed { latest.clone() } else { draft }
+            );
+            reopened
+                .flush_draft_exact(&chat.id, latest.clone())
+                .unwrap();
+            assert_eq!(reopened.snapshot().drafts[&chat.id], latest);
+        }
+    }
+    #[test]
+    fn cancellation_settlement_catalog_revision_overflow_rolls_back_every_change() {
+        let (dir, mut store, chat) = fixture();
+        let draft = held_draft(4);
+        store.register(chat.clone(), draft.clone()).unwrap();
+        let pending = pending_cancel(0);
+        store
+            .prepare_queued_cancel(&chat.id, pending.clone(), draft.clone())
+            .unwrap();
+        let mut state = store.snapshot();
+        state.revision = u64::MAX;
+        let path = dir.path().join("workspace.json");
+        drop(store);
+        let bytes = serde_json::to_vec(&state).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        let mut store = WorkspaceStore::open(&path, dir.path()).unwrap();
+        assert!(
+            store
+                .settle_queued_cancel(&chat.id, &pending, &draft, reconciled(&draft))
+                .is_err()
+        );
+        assert_eq!(state_bytes(&store), bytes);
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert_eq!(store.snapshot().queued_cancellations[&chat.id], pending);
     }
 }
