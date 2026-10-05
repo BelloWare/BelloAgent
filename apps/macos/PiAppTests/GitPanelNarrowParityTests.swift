@@ -263,11 +263,10 @@ import XCTest
         }
     }
 
-    /// A visible side's flexible transcript keeps the enclosing proposal,
-    /// even when the side's fixed controls report a larger stack minimum.
-    /// This differs from the covered tab sibling measured above and keeps
-    /// a pinned sides-panel column outside the conversation's viewport.
-    func testVisibleSideTranscriptKeepsTheReleasedAllocationUnderItsControlMinimum() async throws {
+    /// The released ZStack permits fixed side controls to widen its flexible
+    /// transcript too. Preserve that measured overflow for kept and in-memory
+    /// sides rather than assuming the pane allocation always constrains it.
+    func testVisibleSideTranscriptRetainsTheReleasedControlMinimum() async throws {
         let root = try repositoryFixture()
         let bench = try ConversationPaneTests.workbench(root: root, chats: ["main"])
         addTeardownBlock { @MainActor in bench.model.shutdown() }
@@ -315,10 +314,92 @@ import XCTest
             let actual = nativeScroll.convert(nativeScroll.bounds, to: native)
             print("RIGHT-PANE-VISIBLE kept=\(kept) originalTranscript=\(previous) nativeTranscript=\(actual) controlsMinimum=\(mountedSide.minimumWidth)")
             XCTAssertGreaterThan(mountedSide.minimumWidth, pane.width, "The real controls exercise the overflowing minimum")
-            XCTAssertEqual(previous.minX, 0, accuracy: 0.5, "The original flexible transcript keeps the pane's leading boundary")
-            XCTAssertEqual(previous.width, pane.width, accuracy: 0.5, "The original flexible transcript retains its enclosing allocation")
+            let releasedWidth: CGFloat = kept ? 336 : 457
+            XCTAssertEqual(previous.minX, (pane.width - releasedWidth) / 2, accuracy: 0.5, "The original controls center their overflowing minimum")
+            XCTAssertEqual(previous.width, releasedWidth, accuracy: 0.5, "The independent original kept/in-memory controls retain their measured minimum")
             XCTAssertEqual(actual.minX, previous.minX, accuracy: 0.5, "The visible transcript keeps the released leading boundary")
             XCTAssertEqual(actual.width, previous.width, accuracy: 0.5, "The visible transcript keeps the released allocation")
+        }
+    }
+
+    /// Pinning the sides panel resizes RightPane without rebuilding the
+    /// selected side. Its composer must try its forms at the new allocation,
+    /// before those fixed controls determine the transcript's minimum.
+    func testVisibleSideRefreshesTheComposerProposalWhenItsColumnResizes() async throws {
+        let root = try repositoryFixture()
+        let workspace = WorkspaceRecord(id: "sides-panel-project", path: root.path, trusted: true)
+        var profile = ProfileRecord()
+        profile.id = "sides-panel-profile"; profile.name = "Sides"
+        profile.baseUrl = "http://127.0.0.1:9/v1"; profile.modelId = "sides-model"
+        var configuration = VaultConfiguration()
+        configuration.workspaces = [workspace]
+        configuration.profiles = [VaultProfile(profile: profile, apiKey: "synthetic-sides-panel-key")]
+        let vault = ConfigurationVault(storage: MemoryVaultStorage(try JSONEncoder().encode(configuration)))
+        let model = WorkspaceModel(stateRoot: root.appendingPathComponent("pin-state"), vault: vault)
+        addTeardownBlock { @MainActor in model.shutdown() }
+        let parent = ChatRecord(id: "P", workspaceID: workspace.id, title: "P", path: nil, profileID: profile.id)
+        var child = ChatRecord(id: "S1", workspaceID: workspace.id, title: "S1", path: nil, profileID: profile.id)
+        child.parentSessionID = parent.id
+        model.workspaces = [workspace]; model.profiles = [profile]; model.chats = [parent, child]
+        model.selectedWorkspaceID = workspace.id; model.profileChoice = profile.id
+        let side = SideRecord(id: child.id, parentID: parent.id, workspaceID: workspace.id,
+                              profileID: profile.id, title: child.title, kept: true)
+        let session = SessionDisplay(id: child.id); session.historyState = .empty
+        session.messages = [TranscriptMessage(id: "side-reply", role: "assistant", text: "The saved side remains in its column when the panel is pinned.")]
+        model.displays[session.id] = session; model.sides[parent.id] = side
+        let host = model.tabs; host.showsWindows = false
+        addTeardownBlock { @MainActor in host.tearDown() }
+        let height: CGFloat = 820
+        let native = RightPaneView(model: model, host: host, pane: host.pane)
+        native.makeSideView = { info, display, width in SidePaneView(model: model, session: display, info: info, paneWidth: width) }
+        native.updateSideView = { view, info, _, width in (view as? SidePaneView)?.update(info: info, paneWidth: width) }
+        native.update(side: (side, session), width: 489)
+        let nativeWindow = mount(native, size: CGSize(width: 489, height: height))
+        try await eventually("The single-profile saved side and its model reading are ready", timeout: 10) {
+            native.layoutSubtreeIfNeeded(); nativeWindow.displayIfNeeded()
+            return (self.views(TranscriptNativeScrollView.self, in: native).first?.bounds.width ?? 0) > 0
+                && !model.catalogEntry(for: profile).loading
+        }
+        let mountedSide = try XCTUnwrap(views(SidePaneView.self, in: native).first)
+        let composer = mountedSide.pane.composer
+        let nativeScroll = try XCTUnwrap(views(TranscriptNativeScrollView.self, in: mountedSide).first)
+        let reading = ModelSwitchPills.reading(model: model, session: session)
+        XCTAssertFalse(reading.contents.showsConnection, "The original pinned fixture has just one profile")
+        XCTAssertEqual(reading.contents.model, "sides-model")
+        XCTAssertEqual(reading.contents.effort, "Effort · connection default")
+        var frozenScroll: TranscriptNativeScrollView?
+        func reference(width: CGFloat) -> some View {
+            RightPaneMinimumV119Reference(tab: nil, side: KeptSideMinimumV119Reference(title: side.title,
+                reading: reading, paneWidth: width, transcriptProbe: { frozenScroll = $0 }))
+                .frame(width: width, height: height).environment(\.piReduceMotion, true)
+        }
+        let frozen = NSHostingView(rootView: reference(width: 489))
+        let frozenWindow = mount(frozen, size: CGSize(width: 489, height: height))
+        for width: CGFloat in [489, 365, 489] {
+            // The actual window allocation changes; deliberately do not call
+            // RightPane.update, as pinning has no new side/session to publish.
+            nativeWindow.setContentSize(CGSize(width: width, height: height))
+            frozenWindow.setContentSize(CGSize(width: width, height: height))
+            frozen.rootView = reference(width: width)
+            var previous = CGRect.null, stable = 0
+            try await eventually("The original \(width)pt visible-side allocation settles") {
+                frozen.layoutSubtreeIfNeeded(); frozenWindow.displayIfNeeded()
+                guard let frozenScroll, frozenScroll.window != nil, frozenScroll.bounds.width > 0 else { return false }
+                let rect = frozenScroll.convert(frozenScroll.bounds, to: frozen)
+                stable = rect == previous ? stable + 1 : 0; previous = rect
+                return stable >= 3
+            }
+            native.layoutSubtreeIfNeeded(); nativeWindow.displayIfNeeded()
+            let actual = nativeScroll.convert(nativeScroll.bounds, to: native)
+            print("RIGHT-PANE-RESIZE allocated=\(width) originalTranscript=\(previous) nativeTranscript=\(actual) controlsMinimum=\(mountedSide.minimumWidth) composerProposal=\(composer.paneWidth)")
+            XCTAssertTrue(views(SidePaneView.self, in: native).first === mountedSide, "Resizing retains the selected side")
+            XCTAssertTrue(mountedSide.pane.composer === composer, "Resizing retains the draft's composer")
+            XCTAssertEqual(composer.paneWidth, width, accuracy: 0.5, "Control forms use the actual resized column before measuring its minimum")
+            XCTAssertEqual(previous.minX, 0, accuracy: 0.5, "This original single-profile form fits its allocated column")
+            XCTAssertEqual(previous.width, width, accuracy: 0.5, "The original pinned form gives the reserved panel its room")
+            XCTAssertEqual(actual.minX, previous.minX, accuracy: 0.5, "The resized native transcript keeps the original leading boundary")
+            XCTAssertEqual(actual.width, previous.width, accuracy: 0.5, "The resized native transcript keeps the original column width")
+            XCTAssertLessThanOrEqual(actual.maxX, width, "The transcript does not enter the reserved panel's column")
         }
     }
 }
