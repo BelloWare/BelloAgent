@@ -1,5 +1,5 @@
 import AppKit
-import SwiftUI
+import Combine
 
 // An item's whole text, shown where its preview was: laid out once by
 // TextKit 1 away from the main thread, then handed to a selectable text view.
@@ -406,24 +406,10 @@ final class InspectorTextView: NSTextView {
     }
 }
 
-/// A whole text in a SwiftUI page: the Turn page's prompt. It is as tall as
-/// its layout, and a new width is laid out on the worker after the update
-/// that offered it.
-struct InspectorTextBlock: NSViewRepresentable {
-    @ObservedObject var expansion: InspectorExpansion
-
-    func makeNSView(context: Context) -> InspectorTextBlockView { InspectorTextBlockView() }
-    func updateNSView(_ view: InspectorTextBlockView, context: Context) { view.show(expansion) }
-    static func dismantleNSView(_ view: InspectorTextBlockView, coordinator: ()) { view.show(nil) }
-    func sizeThatFits(_ proposal: ProposedViewSize, nsView: InspectorTextBlockView, context: Context) -> CGSize? {
-        let width = proposal.width ?? expansion.layout?.width ?? 0
-        return CGSize(width: width.isFinite ? width : expansion.layout?.width ?? 0, height: expansion.layout?.height ?? 0)
-    }
-}
-
 /// Hosts an expansion's text view at its top left and tells the expansion the
 /// width it has, from AppKit's layout rather than SwiftUI's update.
-final class InspectorTextBlockView: NSView {
+class InspectorTextBlockView: NSView, PiKit.WidthSizing {
+    private lazy var observer = ShellObserver { [weak self] in self?.refresh() }
     private weak var expansion: InspectorExpansion?
     override var isFlipped: Bool { true }
     init() {
@@ -434,12 +420,20 @@ final class InspectorTextBlockView: NSView {
     required init?(coder: NSCoder) { nil }
 
     func show(_ expansion: InspectorExpansion?) {
+        if self.expansion !== expansion { observer.reset(); if let expansion { observer.observe(expansion) } }
         self.expansion = expansion
+        refresh()
+    }
+    private func refresh() {
+        let expansion = self.expansion
         let view = expansion?.textView
         for case let other as InspectorTextView in subviews where other !== view { other.removeFromSuperview() }
         if let view, view.superview !== self { addSubview(view) }
         needsLayout = true
+        invalidateIntrinsicContentSize(); PiKit.sizeChanged(self)
     }
+    func height(forWidth width: CGFloat) -> CGFloat { expansion?.layout?.height ?? 0 }
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: expansion?.layout?.height ?? 0) }
     override func setFrameSize(_ newSize: NSSize) {
         let wider = newSize.width != frame.width
         super.setFrameSize(newSize)
@@ -454,4 +448,10 @@ final class InspectorTextBlockView: NSView {
         }
         expansion.offer(width: bounds.width)
     }
+}
+
+/// A whole prompt hosted natively, sized by its worker-produced layout.
+final class InspectorTextBlock: InspectorTextBlockView {
+    init(expansion: InspectorExpansion) { super.init(); show(expansion) }
+    required init?(coder: NSCoder) { nil }
 }

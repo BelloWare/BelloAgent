@@ -1,424 +1,287 @@
-import SwiftUI
+import AppKit
 
-/// The Session Inspector: a navigator of the session's turns and requests on
-/// the left, the page it has open on the right.
-struct SessionInspectorView: View {
-    @ObservedObject var inspector: SessionInspectorModel
-    /// Narrower than this, the navigator narrows and the pages stack.
+/// Native Inspector chrome and lazy navigator around a stable current page.
+@MainActor final class SessionInspectorView: DashView {
+    let inspector: SessionInspectorModel
     static let compactWidth: CGFloat = 900
+    private let bar = PiWindowBarView(frame: .zero)
+    private let title = inspectorText("Session Inspector", font: PiKit.Font.title(14))
+    private let sessionTitle: ShellText
+    private let refreshButton: PiKit.IconButton
+    private let navigator: InspectorNavigator
+    private var pageView: NSView?
+    private var notice: NSView?
+    private var shownPage: InspectorPage?
+    private var isCompact = false
+    private lazy var observer = ShellObserver { [weak self] in self?.refresh() }
+    init(inspector: SessionInspectorModel) {
+        self.inspector = inspector
+        sessionTitle = inspectorText(inspector.title, color: .piInkSecondary); sessionTitle.truncation = .middle
+        refreshButton = PiKit.IconButton(symbol: "arrow.clockwise", label: "Read this session's requests again", size: 24) { [weak inspector] in inspector?.refresh() }
+        navigator = InspectorNavigator(inspector: inspector)
+        super.init(frame: .zero)
+        shellAdd([bar, title, sessionTitle, refreshButton, navigator])
+        refreshButton.setAccessibilityIdentifier("inspector-refresh"); setAccessibilityIdentifier("session-inspector")
+        observer.observe(inspector); refresh()
+    }
+    required init?(coder: NSCoder) { nil }
+    func refresh() {
+        sessionTitle.set(inspector.title, color: .piInkSecondary)
+        notice?.removeFromSuperview(); notice = nil
+        if let message = inspector.focusNotice ?? inspector.failure { notice = InspectorInset(InspectorBanner(symbol: "exclamationmark.circle", text: message, tone: .warning), insets: NSEdgeInsets(top: PiSpacing.md, left: PiSpacing.xl, bottom: 0, right: PiSpacing.xl)); addSubview(notice!) }
+        switch inspector.page {
+        case .overview:
+            if !(pageView is InspectorOverviewPage) { install(InspectorOverviewPage(inspector: inspector, compact: isCompact)) }
+        case .nextRequest:
+            if !(pageView is InspectorNextRequestPage) { install(InspectorNextRequestPage(inspector: inspector, next: inspector.next, compact: isCompact)) }
+        case .turn(let id):
+            if let view = pageView as? InspectorTurnPage { view.turnID = id }
+            else { install(InspectorTurnPage(inspector: inspector, turnID: id, compact: isCompact)) }
+        case .request:
+            if !(pageView is InspectorRequestPage) { install(InspectorRequestPage(inspector: inspector, request: inspector.request, compact: isCompact)) }
+        }
+        shownPage = inspector.page; needsLayout = true
+    }
+    private func install(_ page: NSView) { pageView?.removeFromSuperview(); pageView = page; addSubview(page) }
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        guard event.type == .keyDown, event.modifierFlags.intersection([.command, .option, .control, .shift]) == .command else { return super.performKeyEquivalent(with: event) }
+        switch event.charactersIgnoringModifiers?.lowercased() {
+        case "[": inspector.step(-1); return true
+        case "]": inspector.step(1); return true
+        case "f":
+            if case .request = inspector.page {} else if let latest = inspector.index.latestRequestID { inspector.select(.request(latest)) }
+            inspector.request.tab = .raw; inspector.request.searchFocus &+= 1; return true
+        default: return super.performKeyEquivalent(with: event)
+        }
+    }
+    override func layout() {
+        super.layout()
+        let compact = bounds.width < Self.compactWidth
+        if compact != isCompact {
+            isCompact = compact
+            (pageView as? InspectorOverviewPage)?.compact = compact
+            (pageView as? InspectorNextRequestPage)?.compact = compact
+            (pageView as? InspectorTurnPage)?.compact = compact
+            (pageView as? InspectorRequestPage)?.compact = compact
+        }
+        bar.frame = CGRect(x: 0, y: 0, width: bounds.width, height: 48)
+        refreshButton.frame = CGRect(x: max(0, bounds.width - PiSpacing.md - 24), y: 12, width: 24, height: 24)
+        let width = max(0, refreshButton.frame.minX - 8 - PiKit.Sheet.trafficLightInset)
+        let top = PiKit.round((48 - title.intrinsicContentSize.height - 1 - sessionTitle.intrinsicContentSize.height) / 2, piScale)
+        title.frame = CGRect(x: PiKit.Sheet.trafficLightInset, y: top, width: width, height: title.intrinsicContentSize.height)
+        sessionTitle.frame = CGRect(x: PiKit.Sheet.trafficLightInset, y: title.frame.maxY + 1, width: width, height: sessionTitle.intrinsicContentSize.height)
+        let navWidth: CGFloat = compact ? 214 : 262
+        navigator.frame = CGRect(x: 0, y: 49, width: navWidth, height: max(0, bounds.height - 49))
+        let pageX = navWidth + 1, pageWidth = max(0, bounds.width - pageX)
+        var y: CGFloat = 49
+        if let notice { let height = PiKit.height(of: notice, width: pageWidth); notice.frame = CGRect(x: pageX, y: y, width: pageWidth, height: height); y += height }
+        pageView?.frame = CGRect(x: pageX, y: y, width: pageWidth, height: max(0, bounds.height - y))
+    }
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.piContent.setFill(); bounds.fill()
+        NSColor.piWindow.setFill(); CGRect(x: 0, y: 0, width: bounds.width, height: 48).fill()
+        let navWidth: CGFloat = isCompact ? 214 : 262
+        CGRect(x: 0, y: 49, width: navWidth, height: max(0, bounds.height - 49)).fill()
+        NSColor.piHairline.setFill(); CGRect(x: 0, y: 48, width: bounds.width, height: 1).fill(); CGRect(x: navWidth, y: 49, width: 1, height: max(0, bounds.height - 49)).fill()
+    }
+}
 
-    var body: some View {
-        GeometryReader { geometry in
-            let compact = geometry.size.width < Self.compactWidth
-            VStack(spacing: 0) {
-                InspectorTitleBar(inspector: inspector)
-                Rectangle().fill(Color.piHairline).frame(height: 1)
-                HStack(spacing: 0) {
-                    InspectorNavigator(inspector: inspector, compact: compact)
-                        .frame(width: compact ? 214 : 262)
-                        .background(Color.piWindow)
-                    Rectangle().fill(Color.piHairline).frame(width: 1)
-                    InspectorPageView(inspector: inspector, compact: compact)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .background(Color.piContent)
+/// Only visible rows are built. Each descriptor is prepared from typed index
+/// rows: navigating or folding this list never reads a body or metadata blob.
+@MainActor final class InspectorNavigator: DashView {
+    let inspector: SessionInspectorModel
+    let list = LazyStackView()
+    private let glide = PiKit.SelectionGlide()
+    private lazy var observer = ShellObserver { [weak self] in self?.refresh() }
+    private var rows: [Descriptor] = []
+    private var lastPage: InspectorPage?
+    enum Descriptor: Equatable {
+        case overview(String, Bool), next(Bool), section(Bool), message(String)
+        case turn(InspectorTurn, String?, Bool, Bool)
+        case version(InspectorTurn, String?, Bool)
+        case compaction(InspectorCompaction, CGFloat, Bool, Bool)
+        case request(InspectorRequestRow, Int, String, CGFloat, Bool)
+        var key: String {
+            switch self { case .overview: return "overview"; case .next: return "next"; case .section: return "section"; case .message(let text): return "message:" + text; case .turn(let turn, _, _, _), .version(let turn, _, _): return turn.id; case .compaction(let group, _, _, _): return group.id; case .request(let row, _, _, _, _): return row.id }
+        }
+        var height: CGFloat { switch self { case .overview, .next: return 46; case .turn: return 44; case .version: return 36; case .section: return 30; default: return 30 } }
+        var selected: Bool {
+            switch self { case .overview(_, let selected), .next(let selected), .turn(_, _, _, let selected), .version(_, _, let selected), .request(_, _, _, _, let selected): return selected; case .compaction(_, _, let expanded, let selected): return selected && !expanded; default: return false }
+        }
+        var unselected: Descriptor {
+            switch self { case .overview(let text, _): return .overview(text, false); case .next: return .next(false); case .turn(let turn, let prompt, let expanded, _): return .turn(turn, prompt, expanded, false); case .version(let turn, let prompt, _): return .version(turn, prompt, false); case .compaction(let group, let indent, let expanded, _): return .compaction(group, indent, expanded, false); case .request(let row, let number, let kind, let indent, _): return .request(row, number, kind, indent, false); default: return self }
+        }
+    }
+    init(inspector: SessionInspectorModel) {
+        self.inspector = inspector; super.init(frame: .zero); addSubview(list)
+        list.spacing = 1; list.insets = NSEdgeInsets(top: 8, left: 6, bottom: 8, right: 6)
+        list.setAccessibilityIdentifier("inspector-navigator"); observer.observe(inspector); refresh()
+    }
+    required init?(coder: NSCoder) { nil }
+    func refresh() {
+        let requests = inspector.index.requests.filter { $0.source != .record }.count, turns = inspector.index.turns.filter { !$0.isOther }.count
+        let subtitle = requests > 0 ? "\(turns) turn" + (turns == 1 ? "" : "s") + " · \(requests) request" + (requests == 1 ? "" : "s") : "Cost, tokens and time"
+        var built: [Descriptor] = [.overview(subtitle, inspector.page == .overview), .next(inspector.page == .nextRequest), .section(inspector.indexLoaded && inspector.index.turns.contains(where: \.running))]
+        if inspector.index.isEmpty { built.append(.message(inspector.indexLoaded ? "No requests yet" : "Reading requests…")) }
+        func entries(_ entries: [InspectorTurn.Entry], indent: CGFloat) {
+            for entry in entries {
+                switch entry {
+                case .request(let row, let number): built.append(.request(row, number, inspector.index.kind(of: row.id), indent, inspector.page == .request(row.id)))
+                case .compaction(let group):
+                    let expanded = inspector.expanded.contains(group.id)
+                    built.append(.compaction(group, indent, expanded, group.requests.contains { inspector.page == .request($0.id) }))
+                    if expanded { for (offset, row) in group.requests.enumerated() { built.append(.request(row, group.first + offset, inspector.summaryLabel(row.id) ?? "summary request \(offset + 1)", indent + 16, inspector.page == .request(row.id))) } }
                 }
             }
         }
-        .frame(minWidth: SessionInspectorWindowController.minimumSize.width, minHeight: SessionInspectorWindowController.minimumSize.height)
-        .background(Color.piContent)
-        .background(InspectorShortcuts(inspector: inspector))
-        .tint(Color.piAccent)
-        .accessibilityIdentifier("session-inspector")
-    }
-}
-
-/// The window's own title bar: it drags and zooms the window, names the
-/// session, and leaves the traffic lights their room.
-private struct InspectorTitleBar: View {
-    @ObservedObject var inspector: SessionInspectorModel
-    var body: some View {
-        ZStack(alignment: .leading) {
-            PiWindowBar()
-            HStack(spacing: PiSpacing.sm) {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Session Inspector").font(PiFont.title(14)).foregroundStyle(Color.piInk)
-                    Text(inspector.title).font(PiFont.caption).foregroundStyle(Color.piInkSecondary).lineLimit(1).truncationMode(.middle)
-                }.allowsHitTesting(false)
-                Spacer(minLength: 8)
-                PiIconButton(symbol: "arrow.clockwise", label: "Read this session's requests again", size: 24) { inspector.refresh() }
-                    .accessibilityIdentifier("inspector-refresh")
-            }
-            .padding(.leading, PiWindowBar.trafficLightInset).padding(.trailing, PiSpacing.md)
-        }
-        .frame(height: 48).background(Color.piWindow)
-    }
-}
-
-/// ⌘[ and ⌘] step through the requests; ⌘F finds in the request on screen.
-private struct InspectorShortcuts: View {
-    @ObservedObject var inspector: SessionInspectorModel
-    var body: some View {
-        VStack {
-            Button("Previous request") { inspector.step(-1) }.keyboardShortcut("[", modifiers: .command)
-            Button("Next request") { inspector.step(1) }.keyboardShortcut("]", modifiers: .command)
-            Button("Find in request") {
-                if case .request = inspector.page {} else if let latest = inspector.index.latestRequestID { inspector.select(.request(latest)) }
-                inspector.request.tab = .raw
-                inspector.request.searchFocus &+= 1
-            }.keyboardShortcut("f", modifiers: .command)
-        }
-        .frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
-    }
-}
-
-// MARK: - Navigator
-
-/// Overview, the next request, then every turn with its requests under it.
-/// Rows are one height each and built as they scroll into view.
-private struct InspectorNavigator: View {
-    @ObservedObject var inspector: SessionInspectorModel
-    let compact: Bool
-    @Namespace private var selection
-
-    var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 1) {
-                    InspectorNavRow(symbol: "chart.bar.xaxis", title: "Overview", subtitle: overviewSubtitle,
-                                    selected: inspector.page == .overview) { inspector.select(.overview) }
-                        .id("overview")
-                    InspectorNavRow(symbol: "square.stack.3d.up", title: "Next request", subtitle: "What the model receives next",
-                                    selected: inspector.page == .nextRequest) { inspector.select(.nextRequest) }
-                        .id("next")
-                    sectionLabel
-                    if inspector.index.isEmpty {
-                        Text(inspector.indexLoaded ? "No requests yet" : "Reading requests…")
-                            .font(PiFont.caption).foregroundStyle(Color.piInkTertiary)
-                            .padding(.horizontal, 14).padding(.vertical, 8)
-                    }
-                    ForEach(inspector.index.turns) { turn in
-                        InspectorTurnRow(turn: turn, prompt: inspector.prompts[turn.id], compact: compact,
-                                         expanded: inspector.expanded.contains(turn.id),
-                                         selected: inspector.page == .turn(turn.id),
-                                         toggle: { inspector.toggle(turn.id) },
-                                         open: { inspector.select(.turn(turn.id)) })
-                            .id(turn.id)
-                        if inspector.expanded.contains(turn.id) {
-                            InspectorEntryRows(inspector: inspector, entries: turn.entries, indent: 26)
-                            // An edited turn's earlier versions, each with the requests it made.
-                            ForEach(turn.earlier) { version in
-                                InspectorVersionNavRow(version: version, prompt: inspector.prompts[version.id],
-                                                       selected: inspector.page == .turn(version.id)) { inspector.select(.turn(version.id)) }
-                                    .id(version.id)
-                                InspectorEntryRows(inspector: inspector, entries: version.entries, indent: 40)
-                            }
-                        }
-                    }
-                    if inspector.index.olderRequests > 0 {
-                        Text("\(inspector.index.olderRequests) older requests are not listed")
-                            .font(PiFont.micro).foregroundStyle(Color.piInkTertiary).padding(.horizontal, 14).padding(.vertical, 8)
-                    }
-                }
-                .padding(.vertical, 8).padding(.horizontal, 6)
-                .environment(\.piSelectionNamespace, selection)
-            }
-            .onChange(of: inspector.page) { _, page in scroll(proxy, to: page) }
-            .onAppear { scroll(proxy, to: inspector.page) }
-        }
-        .accessibilityIdentifier("inspector-navigator")
-    }
-
-    private func scroll(_ proxy: ScrollViewProxy, to page: InspectorPage) {
-        let target: String
-        switch page {
-        case .overview: target = "overview"
-        case .nextRequest: target = "next"
-        case .turn(let id), .request(let id): target = id
-        }
-        // A turn of requests at a time: after SwiftUI placed the rows.
-        DispatchQueue.main.async { proxy.scrollTo(target, anchor: nil) }
-    }
-
-    private var overviewSubtitle: String {
-        let requests = inspector.index.requests.filter { $0.source != .record }.count
-        let turns = inspector.index.turns.filter { !$0.isOther }.count
-        guard requests > 0 else { return "Cost, tokens and time" }
-        return "\(turns) turn" + (turns == 1 ? "" : "s") + " · \(requests) request" + (requests == 1 ? "" : "s")
-    }
-
-    private var sectionLabel: some View {
-        HStack {
-            Text("TURNS").font(PiFont.micro).tracking(0.6).foregroundStyle(Color.piInkTertiary)
-            Spacer(minLength: 0)
-            if inspector.indexLoaded, inspector.index.turns.contains(where: \.running) {
-                PiShimmerText(text: "running", size: 10)
+        for turn in inspector.index.turns {
+            let expanded = inspector.expanded.contains(turn.id)
+            built.append(.turn(turn, inspector.prompts[turn.id], expanded, inspector.page == .turn(turn.id)))
+            if expanded {
+                entries(turn.entries, indent: 26)
+                for version in turn.earlier { built.append(.version(version, inspector.prompts[version.id], inspector.page == .turn(version.id))); entries(version.entries, indent: 40) }
             }
         }
-        .padding(.horizontal, 12).padding(.top, 14).padding(.bottom, 4)
-        .accessibilityAddTraits(.isHeader)
+        if inspector.index.olderRequests > 0 { built.append(.message("\(inspector.index.olderRequests) older requests are not listed")) }
+        let previousKeys = rows.map(\.key); rows = built
+        let source = LazyStackView.Source(count: built.count, key: { built[$0].key }, height: { index, _ in built[index].height }, view: { [weak self] index, existing in
+            guard let self else { return NSView() }
+            let descriptor = built[index]
+            if let existing = existing as? Holder, existing.descriptor.unselected == descriptor.unselected {
+                existing.update(descriptor); return existing
+            }
+            return Holder(descriptor: descriptor, content: self.make(descriptor))
+        })
+        if previousKeys == built.map(\.key) { list.update(source) } else { list.reload(source) }
+        if lastPage != inspector.page {
+            lastPage = inspector.page
+            let target: String
+            switch inspector.page { case .overview: target = "overview"; case .nextRequest: target = "next"; case .turn(let id), .request(let id): target = id }
+            DispatchQueue.main.async { [weak self] in guard let self, let index = self.rows.firstIndex(where: { $0.key == target }) else { return }; self.list.scrollToRow(index) }
+        }
+    }
+    private func make(_ descriptor: Descriptor) -> NSView {
+        switch descriptor {
+        case .overview(let subtitle, let selected): return navigation(symbol: "chart.bar.xaxis", title: "Overview", subtitle: subtitle, selected: selected) { [weak inspector] in inspector?.select(.overview) }
+        case .next(let selected): return navigation(symbol: "square.stack.3d.up", title: "Next request", subtitle: "What the model receives next", selected: selected) { [weak inspector] in inspector?.select(.nextRequest) }
+        case .section(let running):
+            var items: [ShellItem] = [.view(PiKit.TextLine(PiKit.Line("TURNS", font: PiKit.Font.micro, color: .piInkTertiary, tracking: 0.6))), .spacer(0)]
+            if running { items.append(.view(PiKit.ShimmerText("running", size: 10))) }
+            let row = inspectorRow(items); row.padding = NSEdgeInsets(top: 14, left: 12, bottom: 4, right: 12); row.setAccessibilityRoleDescription("heading"); return row
+        case .message(let text): return InspectorInset(inspectorText(text, font: text.contains("older requests") ? PiKit.Font.micro : PiKit.Font.caption, color: .piInkTertiary), insets: NSEdgeInsets(top: 8, left: 14, bottom: 8, right: 14))
+        case .turn(let turn, let prompt, let expanded, let selected):
+            let heading = turn.isOther ? "Other requests" : Self.firstLine(prompt) ?? turn.started.map { "Turn at " + Date(timeIntervalSince1970: $0).formatted(date: .omitted, time: .shortened) } ?? "Turn \(turn.number)"
+            var details: [ShellItem] = []
+            if turn.running { details.append(.view(InspectorStatusMark(outcome: "running"))) }
+            details.append(.view(inspectorText(turn.summary, font: PiKit.Font.monospacedDigits(PiKit.Font.micro), color: .piInkTertiary), .flexible))
+            let number = InspectorTurnNumber(turn.isOther ? "·" : "\(turn.number)", selected: selected)
+            let labels = inspectorColumn([inspectorText(heading, font: .systemFont(ofSize: 12.5, weight: .medium)), inspectorRow(details, spacing: 5)], spacing: 1)
+            let face = inspectorRow([.view(number), .view(labels, .fill), .spacer(0)], spacing: 8)
+            let selectedRow = PiKit.SelectableRow(content: face, selected: selected, glide: glide) { [weak inspector] in inspector?.select(.turn(turn.id)) }
+            let toggle = InspectorDisclosure(expanded: expanded, symbolSize: 9, width: 18, height: 40, label: expanded ? "Hide this turn's requests" : "Show this turn's requests") { [weak inspector] in inspector?.toggle(turn.id) }
+            let row = inspectorRow([.view(toggle, .fixed(18)), .view(selectedRow, .fill)], spacing: 0)
+            row.setAccessibilityIdentifier("inspector-turn-row"); row.setAccessibilityLabel((turn.isOther ? "Other requests" : "Turn \(turn.number)") + ": " + heading + ", " + turn.summary); return row
+        case .version(let version, let prompt, let selected):
+            let label = version.version.map { "Version \($0.index) of \($0.count)" } ?? "Earlier version"
+            let line = [Self.firstLine(prompt), version.summary].compactMap { $0?.isEmpty == false ? $0 : nil }.joined(separator: " · ")
+            let face = inspectorRow([.view(InspectorFixedSize(PiKit.SymbolView(PiKit.Symbol("clock.arrow.circlepath", size: 10.5, weight: .medium), color: selected ? .piAccent : .piInkTertiary), width: 16, height: 14)), .view(inspectorColumn([inspectorText(label, font: .systemFont(ofSize: 12, weight: .medium)), inspectorText(line, font: PiKit.Font.micro, color: .piInkTertiary)], spacing: 1), .fill), .spacer(0)], spacing: 7)
+            let row = PiKit.SelectableRow(content: face, selected: selected, glide: glide) { [weak inspector] in inspector?.select(.turn(version.id)) }; row.setAccessibilityIdentifier("inspector-version-row"); row.setAccessibilityLabel("Earlier version: " + label + (line.isEmpty ? "" : ", " + line)); return InspectorInset(row, insets: NSEdgeInsets(top: 0, left: 26, bottom: 0, right: 0))
+        case .compaction(let group, let indent, let expanded, let selected):
+            let cost = group.requests.compactMap(\.cost)
+            let face = InspectorCompactLine(symbol: "arrow.down.right.and.arrow.up.left", number: nil, kind: group.title, model: nil, flow: cost.isEmpty ? nil : compactGatewayUSD(cost.reduce(0, +)), kindColor: .piInk, symbolColor: group.requests.contains(where: \.failed) ? .piDanger : .piInkSecondary)
+            let row = PiKit.SelectableRow(content: face, selected: selected && !expanded, glide: glide) { [weak inspector] in if let first = group.requests.first { inspector?.select(.request(first.id)) } }
+            let toggle = InspectorDisclosure(expanded: expanded, symbolSize: 8.5, width: 16, height: 30, label: expanded ? "Hide this compaction's requests" : "Show this compaction's requests") { [weak inspector] in inspector?.toggle(group.id) }
+            let content = inspectorRow([.view(toggle, .fixed(16)), .view(row, .fill)], spacing: 0); content.setAccessibilityIdentifier("inspector-compaction-row"); content.setAccessibilityLabel(group.title); return InspectorInset(content, insets: NSEdgeInsets(top: 0, left: indent - 16, bottom: 0, right: 0))
+        case .request(let request, let number, let kind, let indent, let selected):
+            let model = request.model ?? request.alias ?? ""
+            let face = InspectorCompactLine(symbol: nil, number: number, kind: kind, model: model, flow: request.tokenFlow, kindColor: request.source == .record ? .piInkTertiary : .piInk, symbolColor: .piInkTertiary, outcome: request.outcome)
+            let row = PiKit.SelectableRow(content: face, selected: selected, glide: glide) { [weak inspector] in inspector?.select(.request(request.id)) }
+            row.toolTip = model.isEmpty ? kind : kind + " · " + model
+            row.setAccessibilityIdentifier("inspector-request-row"); row.setAccessibilityLabel("Request \(number), \(kind), " + (model.isEmpty ? "model unreported" : model) + (request.tokenFlow.map { ", " + $0 } ?? ""))
+            return InspectorInset(row, insets: NSEdgeInsets(top: 0, left: indent, bottom: 0, right: 0))
+        }
+    }
+    private static func firstLine(_ prompt: String?) -> String? { prompt.flatMap { $0.split(separator: "\n", omittingEmptySubsequences: true).first.map(String.init) }?.trimmingCharacters(in: .whitespaces).nilIfEmpty }
+    private func navigation(symbol: String, title: String, subtitle: String, selected: Bool, action: @escaping () -> Void) -> NSView {
+        let face = inspectorRow([.view(InspectorNavIcon(symbol: symbol, selected: selected)), .view(inspectorColumn([inspectorText(title, font: .systemFont(ofSize: 13, weight: .semibold)), inspectorText(subtitle, color: .piInkTertiary)], spacing: 1), .fill), .spacer(0)], spacing: 10)
+        let row = PiKit.SelectableRow(content: face, selected: selected, glide: glide, action: action); row.setAccessibilityLabel(title + ", " + subtitle); return row
+    }
+    override func layout() { super.layout(); list.frame = bounds }
+    final class Holder: DashView {
+        private(set) var descriptor: Descriptor
+        let content: NSView
+        init(descriptor: Descriptor, content: NSView) { self.descriptor = descriptor; self.content = content; super.init(frame: .zero); addSubview(content) }
+        required init?(coder: NSCoder) { nil }
+        func update(_ descriptor: Descriptor) {
+            guard self.descriptor != descriptor else { return }
+            self.descriptor = descriptor
+            func update(_ view: NSView) {
+                (view as? PiKit.SelectableRow)?.selected = descriptor.selected
+                (view as? InspectorTurnNumber)?.selected = descriptor.selected
+                (view as? InspectorNavIcon)?.selected = descriptor.selected
+                for child in view.subviews { update(child) }
+            }
+            update(content)
+        }
+        override func layout() { super.layout(); content.frame = bounds }
     }
 }
 
-/// A row of the navigator: a tinted glyph, a title and a quieter line.
-private struct InspectorNavRow: View {
+@MainActor private final class InspectorTurnNumber: DashView {
+    let text: String
+    var selected: Bool { didSet { if selected != oldValue { needsDisplay = true } } }
+    init(_ text: String, selected: Bool) { self.text = text; self.selected = selected; super.init(frame: .zero); setAccessibilityElement(false) }
+    required init?(coder: NSCoder) { nil }
+    private var line: PiKit.Line { PiKit.Line(text, font: PiKit.Font.monospacedDigits(.systemFont(ofSize: 10.5, weight: .semibold)), color: selected ? .piAccent : .piInkSecondary) }
+    override var intrinsicContentSize: NSSize { NSSize(width: max(20, line.size(scale: piScale).width), height: 20) }
+    override func draw(_ dirtyRect: NSRect) { (selected ? NSColor.piAccentSoft : .piFill).setFill(); NSBezierPath(roundedRect: bounds, xRadius: 6, yRadius: 6).fill(); let size = line.size(scale: piScale); line.draw(at: CGPoint(x: PiKit.round((bounds.width - size.width) / 2, piScale), y: PiKit.round((bounds.height - size.height) / 2, piScale)), scale: piScale) }
+}
+@MainActor private final class InspectorDisclosure: PiKit.ButtonBase {
+    let expanded: Bool, symbolSize: CGFloat, width: CGFloat, height: CGFloat
+    init(expanded: Bool, symbolSize: CGFloat, width: CGFloat, height: CGFloat, label: String, action: @escaping () -> Void) { self.expanded = expanded; self.symbolSize = symbolSize; self.width = width; self.height = height; super.init(frame: .zero); pressScales = false; onPress = action; setAccessibilityLabel(label); setAccessibilityValue(expanded ? "Expanded" : "Collapsed") }
+    required init?(coder: NSCoder) { nil }
+    override var intrinsicContentSize: NSSize { NSSize(width: width, height: height) }
+    override func styleFace() { fill.backgroundColor = CGColor.clear; stroke.borderColor = CGColor.clear }
+    override func drawContent(in rect: CGRect) { PiKit.Symbol(expanded ? "chevron.down" : "chevron.right", size: symbolSize, weight: .semibold).draw(centredIn: rect, color: .piInkTertiary, scale: piScale) }
+}
+
+/// A request's kind remains whole; model and token flow give way in order.
+@MainActor private final class InspectorCompactLine: DashView {
+    private let mark: NSView
+    private let number: ShellText?
+    private let kind: ShellText, model: ShellText?, flow: ShellText?
+    init(symbol: String?, number: Int?, kind: String, model: String?, flow: String?, kindColor: NSColor, symbolColor: NSColor, outcome: String? = nil) {
+        mark = symbol.map { PiKit.SymbolView(PiKit.Symbol($0, size: 10.5, weight: .medium), color: symbolColor) } ?? InspectorStatusMark(outcome: outcome ?? "")
+        self.number = number.map { inspectorText(String($0), font: PiKit.Font.monospacedDigits(.systemFont(ofSize: 11, weight: .semibold)), color: .piInkSecondary) }
+        self.kind = inspectorText(kind, font: .systemFont(ofSize: 12, weight: symbol == nil ? .regular : .medium), color: kindColor)
+        self.model = model.flatMap { $0.isEmpty ? nil : inspectorText($0, font: PiKit.Font.micro, color: .piInkTertiary) }
+        self.flow = flow.map { inspectorText($0, font: PiKit.Font.monospacedDigits(.systemFont(ofSize: 10.5)), color: .piInkTertiary) }
+        super.init(frame: .zero); shellAdd([mark, self.kind] + [self.number, self.model, self.flow].compactMap { $0 })
+    }
+    required init?(coder: NSCoder) { nil }
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: max(kind.intrinsicContentSize.height, mark.intrinsicContentSize.height)) }
+    override func layout() {
+        super.layout(); var x: CGFloat = 0
+        func place(_ view: NSView, width: CGFloat? = nil) { let size = view.intrinsicContentSize; let w = width ?? size.width; view.frame = CGRect(x: x, y: PiKit.round((bounds.height - size.height) / 2, piScale), width: w, height: size.height); x += w + 7 }
+        place(mark); if let number { place(number) }; place(kind)
+        let remaining = max(0, bounds.width - x)
+        let flowWidth = flow?.naturalWidth ?? 0, modelWidth = model?.naturalWidth ?? 0
+        let showsFlow = flowWidth + 4 <= remaining
+        let showsModel = model != nil && showsFlow && modelWidth + flowWidth + (flow == nil ? 4 : 11) <= remaining
+        if let model { model.isHidden = !showsModel; if showsModel { place(model) } }
+        if let flow { flow.isHidden = !showsFlow; if showsFlow { let height = flow.intrinsicContentSize.height; flow.frame = CGRect(x: bounds.width - flowWidth, y: PiKit.round((bounds.height - height) / 2, piScale), width: flowWidth, height: height) } }
+    }
+}
+
+@MainActor private final class InspectorNavIcon: DashView {
     let symbol: String
-    let title: String
-    let subtitle: String
-    let selected: Bool
-    let action: () -> Void
-    var body: some View {
-        PiSelectableRow(selected: selected, action: action) {
-            HStack(spacing: 10) {
-                PiIconBadge(symbol: symbol, tone: selected ? .accent : .neutral, size: 26)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(title).font(.system(size: 13, weight: .semibold)).foregroundStyle(Color.piInk).lineLimit(1)
-                    Text(subtitle).font(PiFont.caption).foregroundStyle(Color.piInkTertiary).lineLimit(1)
-                }
-                Spacer(minLength: 0)
-            }
-        }
-        .frame(height: 46)
-        .accessibilityLabel(title + ", " + subtitle)
-        .accessibilityAddTraits(selected ? .isSelected : [])
-    }
-}
-
-/// A turn: its number, the first line of its prompt, what it cost.
-private struct InspectorTurnRow: View {
-    let turn: InspectorTurn
-    let prompt: String?
-    let compact: Bool
-    let expanded: Bool
-    let selected: Bool
-    let toggle: () -> Void
-    let open: () -> Void
-    private var accessibility: String {
-        let name = turn.isOther ? "Other requests" : "Turn \(turn.number)"
-        return name + ": " + heading + ", " + turn.summary
-    }
-    private var heading: String {
-        if turn.isOther { return "Other requests" }
-        let line = prompt.flatMap { $0.split(separator: "\n", omittingEmptySubsequences: true).first.map(String.init) }?
-            .trimmingCharacters(in: .whitespaces)
-        if let line, !line.isEmpty { return line }
-        return turn.started.map { "Turn at " + Date(timeIntervalSince1970: $0).formatted(date: .omitted, time: .shortened) } ?? "Turn \(turn.number)"
-    }
-    var body: some View {
-        HStack(spacing: 0) {
-            Button(action: toggle) {
-                Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(Color.piInkTertiary)
-                    .rotationEffect(.degrees(expanded ? 90 : 0))
-                    .frame(width: 18, height: 40).contentShape(Rectangle())
-            }
-            .buttonStyle(.plain).piPointer()
-            .accessibilityLabel(expanded ? "Hide this turn's requests" : "Show this turn's requests")
-            PiSelectableRow(selected: selected, action: open) {
-                HStack(alignment: .center, spacing: 8) {
-                    Text(turn.isOther ? "·" : "\(turn.number)")
-                        .font(.system(size: 10.5, weight: .semibold)).monospacedDigit()
-                        .foregroundStyle(selected ? Color.piAccent : Color.piInkSecondary)
-                        .frame(minWidth: 20, minHeight: 20)
-                        .background(selected ? Color.piAccentSoft : Color.piFill, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(heading).font(.system(size: 12.5, weight: .medium)).foregroundStyle(Color.piInk).lineLimit(1)
-                        HStack(spacing: 5) {
-                            if turn.running { InspectorStatusMark(outcome: "running") }
-                            Text(turn.summary).font(PiFont.micro).foregroundStyle(Color.piInkTertiary).lineLimit(1).monospacedDigit()
-                        }
-                    }
-                    Spacer(minLength: 0)
-                }
-            }
-        }
-        .frame(height: 44)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(accessibility)
-        .accessibilityIdentifier("inspector-turn-row")
-    }
-}
-
-/// A turn's requests as the navigator lists them: each request on its own
-/// row, and each compaction's summary requests under one Compaction row,
-/// named for what each summarized once a page of that compaction has opened.
-private struct InspectorEntryRows: View {
-    @ObservedObject var inspector: SessionInspectorModel
-    let entries: [InspectorTurn.Entry]
-    let indent: CGFloat
-    var body: some View {
-        ForEach(entries) { entry in
-            switch entry {
-            case .request(let row, let number):
-                InspectorRequestNavRow(row: row, number: number, kind: inspector.index.kind(of: row.id),
-                                       selected: inspector.page == .request(row.id), indent: indent) { inspector.select(.request(row.id)) }
-                    .id(row.id)
-            case .compaction(let group):
-                InspectorCompactionNavRow(group: group, expanded: inspector.expanded.contains(group.id),
-                                          selected: group.requests.contains { inspector.page == .request($0.id) }, indent: indent,
-                                          toggle: { inspector.toggle(group.id) },
-                                          open: { if let first = group.requests.first { inspector.select(.request(first.id)) } })
-                    .id(group.id)
-                if inspector.expanded.contains(group.id) {
-                    ForEach(Array(group.requests.enumerated()), id: \.element.id) { offset, row in
-                        InspectorRequestNavRow(row: row, number: group.first + offset,
-                                               kind: inspector.summaryLabel(row.id) ?? "summary request \(offset + 1)",
-                                               selected: inspector.page == .request(row.id), indent: indent + 16) { inspector.select(.request(row.id)) }
-                            .id(row.id)
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// One compaction: "Compaction · 2 requests", folding its summary requests.
-private struct InspectorCompactionNavRow: View {
-    let group: InspectorCompaction
-    let expanded: Bool
-    let selected: Bool
-    let indent: CGFloat
-    let toggle: () -> Void
-    let open: () -> Void
-    private var cost: String? {
-        let reported = group.requests.compactMap(\.cost)
-        return reported.isEmpty ? nil : compactGatewayUSD(reported.reduce(0, +))
-    }
-    var body: some View {
-        HStack(spacing: 0) {
-            Button(action: toggle) {
-                Image(systemName: "chevron.right").font(.system(size: 8.5, weight: .semibold)).foregroundStyle(Color.piInkTertiary)
-                    .rotationEffect(.degrees(expanded ? 90 : 0))
-                    .frame(width: 16, height: 30).contentShape(Rectangle())
-            }
-            .buttonStyle(.plain).piPointer()
-            .accessibilityLabel(expanded ? "Hide this compaction's requests" : "Show this compaction's requests")
-            PiSelectableRow(selected: selected && !expanded, action: open) {
-                // The title always reads whole; the cost follows where it fits.
-                ViewThatFits(in: .horizontal) {
-                    line(cost: true)
-                    line(cost: false)
-                }
-            }
-        }
-        .padding(.leading, indent - 16)
-        .frame(height: 30)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(group.title)
-        .accessibilityIdentifier("inspector-compaction-row")
-    }
-    private func line(cost showsCost: Bool) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: "arrow.down.right.and.arrow.up.left").font(.system(size: 10.5, weight: .medium))
-                .foregroundStyle(group.requests.contains(where: \.failed) ? Color.piDanger : Color.piInkSecondary)
-            Text(group.title).font(.system(size: 12, weight: .medium)).foregroundStyle(Color.piInk).lineLimit(1).fixedSize()
-            Spacer(minLength: 4)
-            if showsCost, let cost { Text(cost).font(.system(size: 10.5)).monospacedDigit().foregroundStyle(Color.piInkTertiary).fixedSize() }
-        }
-    }
-}
-
-/// An earlier version of an edited turn, under the turn as it stands: which
-/// version it was, the first line of what it asked, what its requests cost.
-private struct InspectorVersionNavRow: View {
-    let version: InspectorTurn
-    let prompt: String?
-    let selected: Bool
-    let action: () -> Void
-    private var label: String {
-        guard let mark = version.version else { return "Earlier version" }
-        return "Version \(mark.index) of \(mark.count)"
-    }
-    private var line: String {
-        let first = prompt.flatMap { $0.split(separator: "\n", omittingEmptySubsequences: true).first.map(String.init) }?.trimmingCharacters(in: .whitespaces)
-        return [first, version.summary].compactMap { $0?.isEmpty == false ? $0 : nil }.joined(separator: " · ")
-    }
-    var body: some View {
-        PiSelectableRow(selected: selected, action: action) {
-            HStack(spacing: 7) {
-                Image(systemName: "clock.arrow.circlepath").font(.system(size: 10.5, weight: .medium))
-                    .foregroundStyle(selected ? Color.piAccent : Color.piInkTertiary)
-                    .frame(width: 16)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(label).font(.system(size: 12, weight: .medium)).foregroundStyle(Color.piInk).lineLimit(1)
-                    Text(line).font(PiFont.micro).foregroundStyle(Color.piInkTertiary).lineLimit(1)
-                }
-                Spacer(minLength: 0)
-            }
-        }
-        .padding(.leading, 26)
-        .frame(height: 36)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Earlier version: " + label + (line.isEmpty ? "" : ", " + line))
-        .accessibilityIdentifier("inspector-version-row")
-    }
-}
-
-/// One request of a turn: its number, what kind of request it was, the model
-/// that answered and what went in and out.
-private struct InspectorRequestNavRow: View {
-    let row: InspectorRequestRow
-    let number: Int
-    let kind: String
-    let selected: Bool
-    var indent: CGFloat = 26
-    let action: () -> Void
-    private var model: String { row.model ?? row.alias ?? "" }
-    private var kindColor: Color { row.source == .record ? .piInkTertiary : .piInk }
-    private var accessibility: String {
-        let flow = row.tokenFlow.map { ", " + $0 } ?? ""
-        return "Request \(number), \(kind), " + (model.isEmpty ? "model unreported" : model) + flow
-    }
-    var body: some View {
-        PiSelectableRow(selected: selected, action: action) { content }
-            .padding(.leading, indent)
-            .frame(height: 30)
-            .accessibilityLabel(accessibility)
-            .accessibilityIdentifier("inspector-request-row")
-    }
-    /// The kind always reads whole; the tokens and the model follow only
-    /// where they fit, the model first to go (the request page names it).
-    private var content: some View {
-        HStack(spacing: 7) {
-            InspectorStatusMark(outcome: row.outcome)
-            Text(String(number)).font(.system(size: 11, weight: .semibold)).monospacedDigit().foregroundStyle(Color.piInkSecondary)
-            ViewThatFits(in: .horizontal) {
-                line(model: true, flow: true)
-                line(model: false, flow: true)
-                line(model: false, flow: false)
-            }
-        }
-        .help(model.isEmpty ? kind : kind + " · " + model)
-    }
-    private func line(model showsModel: Bool, flow showsFlow: Bool) -> some View {
-        HStack(spacing: 7) {
-            Text(kind).font(.system(size: 12)).foregroundStyle(kindColor).lineLimit(1).fixedSize()
-            if showsModel, !model.isEmpty {
-                Text(model).font(PiFont.micro).foregroundStyle(Color.piInkTertiary).lineLimit(1).fixedSize()
-            }
-            Spacer(minLength: 4)
-            if showsFlow, let flow = row.tokenFlow {
-                Text(flow).font(.system(size: 10.5)).monospacedDigit().foregroundStyle(Color.piInkTertiary).lineLimit(1).fixedSize()
-            }
-        }
-    }
-}
-
-// MARK: - Pages
-
-private struct InspectorPageView: View {
-    @ObservedObject var inspector: SessionInspectorModel
-    let compact: Bool
-    var body: some View {
-        VStack(spacing: 0) {
-            if let notice = inspector.focusNotice ?? inspector.failure {
-                InspectorBanner(symbol: "exclamationmark.circle", text: notice, tone: .warning)
-                    .padding(.horizontal, PiSpacing.xl).padding(.top, PiSpacing.md)
-            }
-            switch inspector.page {
-            case .overview: InspectorOverviewPage(inspector: inspector, compact: compact)
-            case .nextRequest: InspectorNextRequestPage(inspector: inspector, next: inspector.next, compact: compact)
-            case .turn(let id): InspectorTurnPage(inspector: inspector, turnID: id, compact: compact)
-            case .request: InspectorRequestPage(inspector: inspector, request: inspector.request, compact: compact)
-            }
-        }
+    var selected: Bool { didSet { if selected != oldValue { needsDisplay = true } } }
+    init(symbol: String, selected: Bool) { self.symbol = symbol; self.selected = selected; super.init(frame: .zero); setAccessibilityElement(false) }
+    required init?(coder: NSCoder) { nil }
+    override var intrinsicContentSize: NSSize { NSSize(width: 26, height: 26) }
+    override func draw(_ dirtyRect: NSRect) {
+        let tone: PiTone = selected ? .accent : .neutral
+        tone.nsColor.piOpacity(0.13).setFill(); NSBezierPath(roundedRect: bounds, xRadius: 7.8, yRadius: 7.8).fill()
+        PiKit.Symbol(symbol, size: 26 * 0.46, weight: .semibold).draw(centredIn: bounds, color: tone.nsColor, scale: piScale)
     }
 }

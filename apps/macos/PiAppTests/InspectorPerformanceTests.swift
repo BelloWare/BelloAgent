@@ -1,6 +1,5 @@
 import XCTest
 import AppKit
-import SwiftUI
 @testable import PiApp
 
 /// The main thread's CPU time between two ticks of a 1 ms timer on the main
@@ -72,7 +71,7 @@ final class InspectorPerformanceTests: XCTestCase, SerialTestLane {
         }
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1_100, height: 820), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: InspectorRequestPage(inspector: inspector, request: request, compact: false).frame(width: 1_100, height: 820))
+        window.contentView = InspectorRequestPage(inspector: inspector, request: request, compact: false)
         window.orderFront(nil)
         defer { request.setActive(false); window.contentView = nil; window.close() }
         func outline() -> NSOutlineView? {

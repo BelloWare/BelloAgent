@@ -1,5 +1,4 @@
 import AppKit
-import SwiftUI
 
 // The AppKit views the inspector's outline is drawn with: the outline view,
 // its two row backgrounds, and a cell for each kind of row — a heading or

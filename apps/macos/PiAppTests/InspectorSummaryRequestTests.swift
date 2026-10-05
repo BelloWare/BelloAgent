@@ -1,5 +1,4 @@
 import XCTest
-import SwiftUI
 import AppKit
 @testable import PiApp
 
@@ -166,7 +165,7 @@ final class InspectorSummaryRequestTests: XCTestCase {
         // The instruction is the first thing on the Conversation tab.
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1_100, height: 820), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        let hosted = NSHostingView(rootView: InspectorRequestPage(inspector: inspector, request: inspector.request, compact: false).frame(width: 1_100, height: 820))
+        let hosted = InspectorRequestPage(inspector: inspector, request: inspector.request, compact: false)
         window.contentView = hosted; window.orderFront(nil)
         defer { window.contentView = nil; window.close() }
         for _ in 0..<10 { hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded(); try await Task.sleep(for: .milliseconds(20)) }

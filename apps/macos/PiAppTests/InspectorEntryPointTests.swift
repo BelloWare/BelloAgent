@@ -165,7 +165,7 @@ final class InspectorWindowControlTests: XCTestCase {
             let popUps = descendants(hosted).filter { $0 is NSPopUpButton }.map { String(describing: type(of: $0)) }
             XCTAssertEqual(popUps, [], "\(name): live pop-up menus in the Inspector, rebuilt on every update: \(popUps)")
             if name == "Raw" {
-                XCTAssertTrue(descendants(hosted).contains { ($0 as? PiPopoverTriggerButton)?.accessibilityIdentifier() == "inspector-raw-menu" },
+                XCTAssertTrue(descendants(hosted).contains { ($0 as? PiKit.MenuControl)?.accessibilityIdentifier() == "inspector-raw-menu" },
                               "Raw's capture menu is built when it opens")
             }
             // The navigator's lazy list: the scroll view along the window's leading edge.
@@ -175,8 +175,15 @@ final class InspectorWindowControlTests: XCTestCase {
             }
             let list = try XCTUnwrap(lists.max { $0.bounds.height < $1.bounds.height }?.documentView, "\(name): the navigator is on screen")
             XCTAssertGreaterThan(descendants(list).count, 0)
-            let controls = LazyListAppKitControlTests.selfSizingControls(in: list)
-            XCTAssertEqual(controls, [], "\(name): the navigator's lazy list hosts AppKit controls that size themselves: \(controls)")
+            let controls = descendants(list).filter { ($0 is NSControl && !($0 is PiKit.ButtonBase)) || $0 is NSProgressIndicator }
+            XCTAssertTrue(controls.isEmpty, "\(name): the native list contains only fixed Pi press controls")
+            let rows = descendants(list).compactMap { $0 as? InspectorNavigator.Holder }
+            XCTAssertFalse(rows.isEmpty, "The visible native navigator rows are mounted")
+            XCTAssertLessThan(rows.count, 40, "The navigator builds its viewport, not every retained row")
+            for row in rows {
+                XCTAssertEqual(row.frame.height, row.descriptor.height, accuracy: 0.01)
+                XCTAssertTrue(row.frame.minY.isFinite && row.frame.width.isFinite)
+            }
         }
     }
 }
