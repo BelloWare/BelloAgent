@@ -125,7 +125,11 @@ import XCTest
         try record("frozen-v119", frames: expected, window: frozenWindow, minimum: minimum)
         try record("native", frames: actual, window: nativeWindow)
 
-        XCTAssertGreaterThan(minimum, pane.width, "The original nonshrinking toolbar determines the minimum at this real narrow pane width")
+        XCTAssertGreaterThan(minimum, pane.width, "The released content reports an intrinsic minimum wider than the actual pane allocation")
+        let toolbar = try XCTUnwrap(views(GitPanelToolbar.self, in: native).first)
+        XCTAssertEqual(toolbar.minimumWidth, try XCTUnwrap(expected[.toolbar]).width, accuracy: 0.5,
+                       "The actual folder and fixed controls determine the toolbar's nonshrinking minimum")
+        XCTAssertEqual(native.bounds.width, pane.width, accuracy: 0.5, "Toolbar overflow preserves the panel's pane allocation")
         try assertFrames(actual, expected, parts: children)
     }
 
@@ -167,7 +171,12 @@ import XCTest
         try record("frozen-v119-tab", frames: expected, window: frozenWindow, minimum: minimum)
         try record("native-tab", frames: actual, window: nativeWindow)
         XCTAssertEqual(frozen.frame.width, pane.width, accuracy: 0.5, "The original tab hosting view receives the actual pane allocation")
-        try assertFrames(actual, expected, parts: children + [.panel, .backBar, .tabContent])
+        XCTAssertEqual(content.bounds.width, pane.width, accuracy: 0.5, "The native tab keeps the same AppKit allocation")
+        XCTAssertEqual(content.panel.bounds.width, pane.width, accuracy: 0.5, "The native panel keeps the history and detail's actual width")
+        // SwiftUI reports its overflowing VStack's logical minimum frame;
+        // AppKit reports the allocated host bounds. Their visible children
+        // are the equivalent contract, including the overflowing toolbar.
+        try assertFrames(actual, expected, parts: children + [.backBar])
     }
 
     /// The gallery also has a kept side under its Changes tab. Opacity did
@@ -196,7 +205,7 @@ import XCTest
         let pane = CGSize(width: 310, height: 576)
         let native = RightPaneView(model: bench.model, host: host, pane: host.pane)
         native.makeSideView = { info, display, width in SidePaneView(model: bench.model, session: display, info: info, paneWidth: width) }
-        native.updateSideView = { view, info, width in (view as? SidePaneView)?.update(info: info, paneWidth: width) }
+        native.updateSideView = { view, info, _, width in (view as? SidePaneView)?.update(info: info, paneWidth: width) }
         native.update(side: (side, session), width: pane.width)
         let nativeWindow = mount(native, size: pane)
         try await ready(tab.controller)

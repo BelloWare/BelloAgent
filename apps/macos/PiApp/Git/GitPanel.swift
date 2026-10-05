@@ -158,8 +158,12 @@ import GitView
         if nowWide != wide { wide = nowWide; toolbar.apply(GitPanelToolbar.Inputs(controller), wide: wide) }
         probe.frame = .zero
         header.frame = CGRect(x: 0, y: 0, width: width, height: 32)
-        let toolbarHeight = toolbar.height(forWidth: width)
-        toolbar.frame = CGRect(x: 0, y: 32, width: width, height: toolbarHeight)
+        // A stack keeps the folder symbol and fixed controls even where
+        // their minimum exceeds the pane. Only the toolbar overflows; the
+        // history and detail still receive the pane's actual allocation.
+        let toolbarWidth = max(width, toolbar.minimumWidth)
+        let toolbarHeight = toolbar.height(forWidth: toolbarWidth)
+        toolbar.frame = CGRect(x: (width - toolbarWidth) / 2, y: 32, width: toolbarWidth, height: toolbarHeight)
         toolbarRule.frame = CGRect(x: 0, y: 32 + toolbarHeight, width: width, height: 1)
         let body = CGRect(x: 0, y: toolbarRule.frame.maxY, width: width, height: max(0, bounds.height - toolbarRule.frame.maxY))
         notRepository.frame = body
@@ -356,6 +360,7 @@ enum GitPanelSplit {
 
     func apply(_ next: Inputs, wide: Bool) {
         guard next != inputs || wide != self.wide else { return }
+        let previousMinimum = minimumWidth
         inputs = next; self.wide = wide
         RedrawCounter.note("GitPanelToolbar")
         if next.roots.count > 1 {
@@ -394,7 +399,7 @@ enum GitPanelSplit {
         } else { committed?.removeFromSuperview(); committed = nil }
         needsLayout = true
         let height = bounds.width > 0 ? self.height(forWidth: bounds.width) : 0
-        if height != bounds.height { PiKit.sizeChanged(self) }
+        if height != bounds.height || minimumWidth != previousMinimum { PiKit.sizeChanged(self) }
     }
 
     // MARK: Layout
@@ -402,7 +407,9 @@ enum GitPanelSplit {
     private var rootItem: StackLayout.Item {
         // The dropdown and the menus are their own size (`fixedSize`).
         if let rootDropdown { return .fixed(rootDropdown) }
-        return .view(rootLabel, StackLayout.Sizing(width: { [rootLabel] in min(rootLabel.intrinsicContentSize.width, max(0, $0)) },
+        // The caption can give up its text, but the folder and its label
+        // spacing retain the minimum of the original SwiftUI Label.
+        return .view(rootLabel, StackLayout.Sizing(width: { [rootLabel] in min(rootLabel.intrinsicContentSize.width, max(rootLabel.symbolWidth, $0)) },
                                                    height: { [rootLabel] _ in rootLabel.intrinsicContentSize.height }))
     }
     private var outcomeItems: [StackLayout.Item] {
@@ -422,6 +429,12 @@ enum GitPanelSplit {
         return items
     }
     private func secondRow() -> [StackLayout.Item] { [.fixed(panelTabs), .spacer()] + outcomeItems }
+
+    var minimumWidth: CGFloat {
+        let first = StackLayout.width(firstRow(), spacing: PiSpacing.sm, proposal: 0)
+        let second = wide ? 0 : StackLayout.width(secondRow(), spacing: PiSpacing.sm, proposal: 0)
+        return max(first, second) + PiSpacing.lg * 2
+    }
 
     func height(forWidth width: CGFloat) -> CGFloat {
         let inner = width - PiSpacing.lg * 2
