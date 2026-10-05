@@ -97,10 +97,11 @@ struct TerminalHistoryLine: Sendable {
         if suspicious, text.count != written { self.exact = cells.filter { $0.width != 0 }.map(\.text) } else { self.exact = nil }
     }
     /// Scalars that join the grapheme before them across a cell boundary: the
-    /// two halves of a flag, and conjoining Hangul.
+    /// two halves of a flag, conjoining Hangul, and a skin tone modifier,
+    /// which takes cells of its own after its emoji.
     private static func joinsPrevious(_ scalar: Unicode.Scalar) -> Bool {
         let value = scalar.value
-        return (0x1f1e6...0x1f1ff).contains(value) || (0x1160...0x11ff).contains(value)
+        return (0x1f1e6...0x1f1ff).contains(value) || (0x1160...0x11ff).contains(value) || (0x1f3fb...0x1f3ff).contains(value)
     }
 
     /// The line as the screen held it. Widths come back from the characters
