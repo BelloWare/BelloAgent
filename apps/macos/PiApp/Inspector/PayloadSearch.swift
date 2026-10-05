@@ -127,7 +127,9 @@ struct PayloadSearchResult: Sendable {
         guard let range = pendingScroll, window != nil,
               contentView.bounds.width > 0, contentView.bounds.height > 0 else { return }
         pendingScroll = nil
-        if let container = editor.textContainer { editor.layoutManager?.ensureLayout(for: container) }
+        // Realize the selected match, leaving a large body's other text to
+        // noncontiguous layout instead of laying out the whole container.
+        editor.layoutManager?.ensureLayout(forCharacterRange: range)
         editor.scrollRangeToVisible(range)
     }
     func update(result: PayloadSearchResult, selected: Int) {
