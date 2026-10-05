@@ -3,6 +3,12 @@ import XCTest
 @testable import PiApp
 
 @MainActor final class PayloadNativeControlTests: XCTestCase, SerialTestLane {
+    private func workspace(_ name: String) -> WorkspaceModel {
+        let root = scratchRoot(name)
+        let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        addTeardownBlock { @MainActor in model.shutdown(); try? FileManager.default.removeItem(at: root) }
+        return model
+    }
     private func body(_ bytes: @escaping () -> Data, reads: @escaping () -> Void = {}) -> CapturedBodySource {
         CapturedBodySource(metadata: {
             let value = bytes()
@@ -118,4 +124,126 @@ import XCTest
         XCTAssertEqual(model.mcpServerCount("project"), 0)
         XCTAssertTrue(model.hosts.isEmpty, "Removing configuration must never reconnect a helper while refreshing controls")
     }
+    func testClosingDuringConversationSearchReleasesItsViewBeforeTheReadReturns() async throws {
+        let model = workspace("conversation-search-release"), gate = PayloadReadGate<ContentSearch>()
+        let empty = ContentSearch(hits: [], total: 0, next: nil, revision: "r")
+        defer { gate.finish(empty) }
+        let source = ConversationContentSource(search: { _, _ in await gate.read() }, page: { _, _, _, _ in .init(text: "", next: nil) }, reveal: { _ in })
+        var view: ConversationContentView? = ConversationContentView(model: model, sessionID: "s", source: source)
+        weak var released = view
+        let window = attach(try XCTUnwrap(view), size: ConversationContentView.size)
+        try await eventually("The conversation search has started") { gate.started }
+        window.makeFirstResponder(nil); window.contentView = nil; view = nil
+        try await eventually("The closed conversation sheet releases while search is still pending") { autoreleasepool { released == nil } }
+        gate.finish(empty)
+        try await eventually("The cancelled search has returned") { gate.returned }
+        XCTAssertTrue(model.hosts.isEmpty)
+    }
+    func testClosingDuringResourceOptionsDoesNotStartDiscoveryAfterTheAnswer() async throws {
+        let model = workspace("resource-options-release"), gate = PayloadReadGate<[String: WireValue]>()
+        model.selectedWorkspaceID = "project"
+        var catalogReads = 0, requestReads = 0
+        defer { gate.finish([:]) }
+        let source = ResourceInspectorSource(options: { _ in await gate.read() }, catalog: { _ in catalogReads += 1 }, request: { _, _, _ in requestReads += 1; return [:] })
+        var view: ResourceInspector? = ResourceInspector(model: model, source: source)
+        weak var released = view
+        let window = attach(try XCTUnwrap(view), size: ResourceInspector.size)
+        try await eventually("The resource options read has started") { gate.started }
+        window.makeFirstResponder(nil); window.contentView = nil; view = nil
+        try await eventually("The closed resource sheet releases while options are still pending") { autoreleasepool { released == nil } }
+        gate.finish([:])
+        try await eventually("The cancelled options read has returned") { gate.returned }
+        XCTAssertEqual(catalogReads, 0); XCTAssertEqual(requestReads, 0)
+        XCTAssertTrue(model.hosts.isEmpty, "An options answer from a closed sheet must not start resource helpers")
+    }
+    func testClosingDuringMCPDiscoveryReleasesItsViewBeforeTheHelperAnswers() async throws {
+        let model = workspace("mcp-discovery-release"), gate = PayloadReadGate<[String: WireValue]>()
+        defer { gate.finish([:]) }
+        let source = ResourceInspectorSource(options: { _ in [:] }, catalog: { _ in }, request: { _, _, _ in await gate.read() })
+        var view: NativeMCPInspector? = NativeMCPInspector(model: model, source: source)
+        weak var released = view
+        let window = attach(try XCTUnwrap(view))
+        try await eventually("MCP discovery has started") { gate.started }
+        window.makeFirstResponder(nil); window.contentView = nil; view = nil
+        try await eventually("The closed MCP view releases while discovery is still pending") { autoreleasepool { released == nil } }
+        gate.finish(["servers": .array([.object(["server": .string("late")])])])
+        try await eventually("The cancelled discovery has returned") { gate.returned }
+    }
+    func testClosingDuringRetainedCopyPreservesTheClipboard() async throws {
+        let model = workspace("conversation-copy-release"), gate = PayloadReadGate<ContentPage>()
+        let page = ContentPage(text: "Late retained text", next: nil)
+        defer { gate.finish(page) }
+        let source = ConversationContentSource(search: { _, _ in .init(hits: [], total: 1, next: nil, revision: "r") }, page: { _, _, _, _ in await gate.read() }, reveal: { _ in })
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        pasteboard.setString("Keep the current clipboard", forType: .string)
+        let before = pasteboard.changeCount
+        var view: ConversationContentView? = ConversationContentView(model: model, sessionID: "s", source: source, pasteboard: pasteboard)
+        weak var released = view
+        let window = attach(try XCTUnwrap(view), size: ConversationContentView.size)
+        try await eventually("The retained range is ready to copy") { view?.copyAll.isEnabled == true }
+        view?.copyAll.onPress?()
+        try await eventually("Copy is reading retained text") { gate.started }
+        window.makeFirstResponder(nil); window.contentView = nil; view = nil
+        try await eventually("Copy does not retain a closed conversation view") { autoreleasepool { released == nil } }
+        gate.finish(page)
+        try await eventually("The cancelled copy read has returned") { gate.returned }
+        XCTAssertEqual(pasteboard.string(forType: .string), "Keep the current clipboard")
+        XCTAssertEqual(pasteboard.changeCount, before)
+    }
+    func testClosingDuringRetainedExportDoesNotWriteAFile() async throws {
+        let model = workspace("conversation-export-release"), gate = PayloadReadGate<ContentPage>()
+        let page = ContentPage(text: "Late retained export", next: nil), root = scratchRoot("closed-export")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { gate.finish(page); try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("conversation.md"), oldChooser = PiQuestion.shared.chooseFiles
+        PiQuestion.shared.chooseFiles = { [url] }
+        defer { PiQuestion.shared.chooseFiles = oldChooser }
+        let source = ConversationContentSource(search: { _, _ in .init(hits: [], total: 1, next: nil, revision: "r") }, page: { _, _, _, _ in await gate.read() }, reveal: { _ in })
+        var view: ConversationContentView? = ConversationContentView(model: model, sessionID: "s", source: source)
+        weak var released = view
+        let window = attach(try XCTUnwrap(view), size: ConversationContentView.size)
+        try await eventually("The retained conversation is ready to export") { view?.exportButton.isEnabled == true }
+        view?.exportButton.onPress?()
+        try await eventually("Export is reading retained text") { gate.started }
+        window.makeFirstResponder(nil); window.contentView = nil; view = nil
+        try await eventually("Export does not retain a closed conversation view") { autoreleasepool { released == nil } }
+        gate.finish(page)
+        try await eventually("The cancelled export read has returned") { gate.returned }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+    }
+    func testClosingDuringMCPConfirmationRejectsTheLateAcceptedInvocation() async throws {
+        let model = workspace("mcp-confirmation-release")
+        model.chats = [ChatRecord(id: "editing", workspaceID: "project", title: "Editing", path: nil, profileID: "p")]
+        model.resourceTargetSessionID = "editing"
+        var requests: [String] = [], answer: ((NSApplication.ModalResponse) -> Void)?
+        let oldPresenter = PiQuestion.shared.present
+        PiQuestion.shared.present = { _, _, completion in answer = completion }
+        defer { answer?(.alertSecondButtonReturn); PiQuestion.shared.present = oldPresenter; PiQuestion.shared.cancel() }
+        let source = ResourceInspectorSource(options: { _ in [:] }, catalog: { _ in }, request: { method, _, _ in requests.append(method); return [:] })
+        var view: NativeMCPInspector? = NativeMCPInspector(model: model, source: source)
+        weak var released = view
+        let window = attach(try XCTUnwrap(view))
+        try await eventually("The initial MCP discovery is complete") { view?.refresh.isEnabled == true }
+        view?.serverField.onChange?("preview-server"); view?.toolField.onChange?("preview-tool")
+        view?.invokeButton.onPress?()
+        try await eventually("The invocation confirmation is waiting") { answer != nil }
+        window.makeFirstResponder(nil); window.contentView = nil; view = nil
+        try await eventually("The pending confirmation does not retain the closed MCP view") { autoreleasepool { released == nil } }
+        let completion = try XCTUnwrap(answer); answer = nil; completion(.alertFirstButtonReturn)
+        try await eventually("The cancelled confirmation has completed") { !PiQuestion.shared.asking }
+        XCTAssertEqual(requests, ["mcp.list"], "A late accepted question must not invoke a tool after its owning view closes")
+        XCTAssertTrue(model.hosts.isEmpty)
+    }
+}
+
+@MainActor private final class PayloadReadGate<Value: Sendable> {
+    private var continuation: CheckedContinuation<Value, Never>?
+    var started: Bool { continuation != nil }
+    private(set) var returned = false
+    func read() async -> Value {
+        let value = await withCheckedContinuation { continuation = $0 }
+        returned = true; return value
+    }
+    func finish(_ value: Value) { let pending = continuation; continuation = nil; pending?.resume(returning: value) }
 }

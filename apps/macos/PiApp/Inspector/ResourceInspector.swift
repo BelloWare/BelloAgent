@@ -1,17 +1,31 @@
 import AppKit
 
+@MainActor struct ResourceInspectorSource: Sendable {
+    let options: @MainActor @Sendable (String) async throws -> [String: WireValue]
+    let catalog: @MainActor @Sendable (String?) async -> Void
+    let request: @MainActor @Sendable (String, [String: WireValue], String?) async throws -> [String: WireValue]
+    static func workspace(_ model: WorkspaceModel) -> Self {
+        Self(options: { try await model.editableResourceSettings(workspaceID: $0) },
+             catalog: { await model.loadSkillCatalog(refresh: true, sessionID: $0) },
+             request: { try await model.resourceRequest($0, params: $1, sessionID: $2) })
+    }
+}
+
 /// Project resource discovery and policy, shown in a native resizable sheet.
 /// The project/chat origin is fixed when the sheet opens.
 @MainActor final class ResourceInspector: DashView, InheritsEnabled {
     static let size = NSSize(width: 1100, height: 800)
     let model: WorkspaceModel
+    private let source: ResourceInspectorSource
+    private let work = PayloadTaskScope()
     var dismiss: () -> Void
     var inheritedEnabled = true { didSet { refreshUI() } }
     private var tab = "skills", query = "", management = false, selectedID = ""
     private var searchEntries: [SkillSearch.Entry] = []
-    private var detailTask: Task<Void, Never>?, initialTask: Task<Void, Never>?
+    private var detailTask: Task<Void, Never>?
     private var detailGeneration = UUID(), refreshGeneration = UUID()
     private var originID: String?, isPresented = false
+    private var observing = false
     private var detail = "", bodyOffset = 0, nextBody: Double?
     private var snapshot: [String: WireValue] = [:], sourceOffset = 0, options: [String: WireValue] = [:]
     private var home = "", fallbacks = "", byteLimit = 32768, overrideBudget = false
@@ -65,9 +79,9 @@ import AppKit
     let budgetToggle = PiKit.Switch(isOn: false, label: "")
     let budgetField = PiKit.NumberField(placeholder: "Bytes", value: 32768)
     let saveSettings = PiKit.Button("Save Discovery Settings", style: .primary)
-    private lazy var mcpPage = NativeMCPInspector(model: model)
-    init(model: WorkspaceModel, initialTab: String = "skills", dismiss: @escaping () -> Void = {}) {
-        self.model = model; self.dismiss = dismiss; tab = initialTab
+    private lazy var mcpPage = NativeMCPInspector(model: model, source: source)
+    init(model: WorkspaceModel, initialTab: String = "skills", source: ResourceInspectorSource? = nil, dismiss: @escaping () -> Void = {}) {
+        self.model = model; self.source = source ?? .workspace(model); self.dismiss = dismiss; tab = initialTab
         super.init(frame: NSRect(origin: .zero, size: Self.size))
         sheet = PiKit.Sheet("Skills, instructions and MCP", subtitle: "Discovered skills, the applied instruction chain, discovery settings and MCP servers for the selected project.", symbol: "book.closed", content: column, actions: [refreshButton, done], footer: footer)
         sheet.width = Self.size.width; sheet.height = Self.size.height
@@ -82,8 +96,7 @@ import AppKit
         budgetToggle.onChange = { [weak self] value in self?.overrideBudget = value; self?.refreshSettings() }
         budgetField.onChange = { [weak self] in self?.byteLimit = $0 }
         saveSettings.onPress = { [weak self] in self?.saveDiscovery() }
-        catalogObserver.observe(publisher: model.$resourceCatalog)
-        stateObserver.observe(publisher: model.$configuration); stateObserver.observe(publisher: model.$mcpRemovalInProgress)
+        startObserving()
         refreshUI(); refreshSettings()
     }
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
@@ -91,19 +104,32 @@ import AppKit
     override func layout() { super.layout(); sheet.frame = bounds }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        guard window != nil, !isPresented else { return }; isPresented = true
+        if window == nil { prepareForRelease(); return }
+        guard !isPresented else { return }; work.resume(); startObserving(); isPresented = true
         originID = model.resourceTargetSessionID ?? model.selectedID
-        initialTask = Task { [weak self] in guard let self else { return }; await self.loadOptions(); await self.refresh() }
+        requestOptions(thenRefresh: true)
     }
     override func viewWillMove(toWindow newWindow: NSWindow?) {
-        if newWindow == nil, window != nil { isPresented = false; initialTask?.cancel(); detailTask?.cancel(); detailGeneration = UUID(); refreshGeneration = UUID() }
+        if newWindow == nil, window != nil { prepareForRelease() }
         super.viewWillMove(toWindow: newWindow)
+    }
+    func prepareForRelease() {
+        isPresented = false; work.cancel(); detailTask?.cancel(); detailTask = nil
+        detailGeneration = UUID(); refreshGeneration = UUID(); originID = nil
+        catalogObserver.reset(); stateObserver.reset(); observing = false; mcpPage.prepareForRelease()
+        searchEntries = []; snapshot = [:]; detail = ""; selectedID = ""; sourceText.text = ""; dismiss = {}
+        policyBusy = false
+    }
+    private func startObserving() {
+        guard !observing else { return }; observing = true
+        catalogObserver.observe(publisher: model.$resourceCatalog)
+        stateObserver.observe(publisher: model.$configuration); stateObserver.observe(publisher: model.$mcpRemovalInProgress)
     }
     private var selected: SkillDescriptor? { filtered.first { $0.id == selectedID } }
     private var filtered: [SkillDescriptor] { SkillSearch.search(searchEntries, query: query, actionable: !management) }
     private func selectTab(_ value: String) {
         guard tab != value else { return }; tab = value; refreshUI()
-        if value == "settings" { Task { [weak self] in await self?.loadOptions() } }
+        if value == "settings" { requestOptions() }
     }
     private func catalogChanged() {
         guard isPresented, model.resourceCatalogSessionID == originID else { return }
@@ -132,11 +158,12 @@ import AppKit
         let page: NSView
         switch tab { case "instructions": page = instructionsPage; case "settings": page = settingsPage; case "mcp": page = mcpPage; default: page = skillsPage }
         column.items = [.view(tabs), .flexible(page, ideal: 500)]
-        done.isEnabled = inheritedEnabled; refreshButton.isEnabled = inheritedEnabled; sheet?.cancelDisabled = !inheritedEnabled
-        managementToggle.isEnabled = inheritedEnabled; filterField.field.isEnabled = inheritedEnabled
-        for control in PiKit.controls(in: settingsColumn) { control.isEnabled = inheritedEnabled }
+        let enabled = inheritedEnabled && work.isActive
+        done.isEnabled = enabled; refreshButton.isEnabled = enabled; sheet?.cancelDisabled = !enabled
+        managementToggle.isEnabled = enabled; filterField.field.isEnabled = enabled
+        for control in PiKit.controls(in: settingsColumn) { control.isEnabled = enabled }
         refreshSkills(); refreshInstructions(); refreshFooter()
-        mcpPage.inheritedEnabled = inheritedEnabled
+        mcpPage.inheritedEnabled = enabled
     }
     private func refreshFooter() {
         status.text = notice.isEmpty ? originID.flatMap({ model.displays[$0]?.skillCatalog.notice }) ?? "" : notice
@@ -231,62 +258,102 @@ import AppKit
         settingsPage.needsLayout = true
     }
     private func saveDiscovery() {
-        Task { [weak self] in guard let self else { return }; do {
-            var saved = self.options
-            saved["codexHome"] = .string(self.home)
-            saved["fallbackNames"] = self.fallbacks.trimmingCharacters(in: .whitespaces).isEmpty ? nil : .array(self.fallbacks.split(separator: ",").map { .string($0.trimmingCharacters(in: .whitespaces)) })
-            saved["maxInstructionBytes"] = self.overrideBudget ? .number(Double(self.byteLimit)) : nil
-            try await self.model.saveResourceSettings(saved, sessionID: self.originID); self.options = saved; self.notice = "Saved. New user turns use the new settings."; await self.refresh()
-        } catch { self.notice = error.localizedDescription } }
-    }
-    private func loadOptions() async {
-        let origin = originID
-        if let id = origin.flatMap(model.record)?.workspaceID ?? model.selectedWorkspaceID {
-            let loaded = (try? await model.editableResourceSettings(workspaceID: id)) ?? [:]
-            guard isPresented, origin == originID, !Task.isCancelled else { return }; options = loaded
+        guard work.isActive, inheritedEnabled else { return }
+        var values = options
+        values["codexHome"] = .string(home)
+        values["fallbackNames"] = fallbacks.trimmingCharacters(in: .whitespaces).isEmpty ? nil : .array(fallbacks.split(separator: ",").map { .string($0.trimmingCharacters(in: .whitespaces)) })
+        values["maxInstructionBytes"] = overrideBudget ? .number(Double(byteLimit)) : nil
+        let saved = values, model = model, origin = originID
+        work.run({ try await model.saveResourceSettings(saved, sessionID: origin) }) { [weak self] outcome in
+            guard let self else { return }
+            switch outcome {
+            case .success: self.options = saved; self.notice = "Saved. New user turns use the new settings."; self.requestRefresh()
+            case .failure(let error): self.notice = error.localizedDescription
+            }
         }
+    }
+    private func applyOptions(_ loaded: [String: WireValue]) {
+        options = loaded
         home = options["codexHome"]?.string ?? ""; fallbacks = options["fallbackNames"]?.array?.compactMap(\.string).joined(separator: ", ") ?? ""
         byteLimit = options["maxInstructionBytes"]?.nonnegativeInteger ?? 32768; overrideBudget = options["maxInstructionBytes"] != nil
         refreshSettings()
     }
+    private func requestOptions(thenRefresh: Bool = false) {
+        guard work.isActive else { return }
+        let origin = originID, source = source
+        guard let id = origin.flatMap(model.record)?.workspaceID ?? model.selectedWorkspaceID else {
+            applyOptions(options); if thenRefresh { requestRefresh() }; return
+        }
+        work.run({ (try? await source.options(id)) ?? [:] }) { [weak self] outcome in
+            guard let self, self.isPresented, origin == self.originID else { return }
+            if case .success(let loaded) = outcome { self.applyOptions(loaded) }
+            if thenRefresh { self.requestRefresh() }
+        }
+    }
     private func addPath(_ key: String) {
+        guard work.isActive, inheritedEnabled else { return }
         let panel = NSOpenPanel(); panel.canChooseDirectories = key != "piInstructionPaths"; panel.canChooseFiles = true; panel.allowsMultipleSelection = true
         panel.message = "Approve read-only resource discovery."
-        Task { [weak self] in guard let self else { return }; let chosen = await PiQuestion.shared.open(panel); guard !chosen.isEmpty else { return }
+        let window = window
+        work.run({ [weak window] in await PiQuestion.shared.open(panel, over: window) }) { [weak self] outcome in
+            guard let self, case .success(let chosen) = outcome, !chosen.isEmpty else { return }
             var paths = self.options[key]?.array?.compactMap(\.string) ?? []
             for url in chosen where !paths.contains(url.path) { paths.append(url.path) }
             self.options[key] = .array(paths.prefix(32).map(WireValue.string)); self.refreshSettings()
         }
     }
     private func policy(_ skill: SkillDescriptor, key: String, enabled: Bool) {
-        guard !policyBusy else { return }; policyBusy = true
-        Task { [weak self] in guard let self else { return }; defer { self.policyBusy = false }; do {
-            await self.loadOptions(); var ids = Set(self.options[key]?.array?.compactMap(\.string) ?? [])
-            if enabled { ids.insert(skill.id) } else { ids.remove(skill.id) }; self.options[key] = .array(ids.sorted().map(WireValue.string))
-            try await self.model.saveResourceSettings(self.options, sessionID: self.originID); await self.refresh()
-        } catch { self.notice = error.localizedDescription } }
+        guard work.isActive, inheritedEnabled, !policyBusy else { return }; policyBusy = true
+        let model = model, origin = originID, source = source, saved = options
+        let workspace = origin.flatMap(model.record)?.workspaceID ?? model.selectedWorkspaceID
+        work.run({
+            var options = saved
+            if let workspace { options = (try? await source.options(workspace)) ?? [:] }
+            try Task.checkCancellation()
+            var ids = Set(options[key]?.array?.compactMap(\.string) ?? [])
+            if enabled { ids.insert(skill.id) } else { ids.remove(skill.id) }; options[key] = .array(ids.sorted().map(WireValue.string))
+            try await model.saveResourceSettings(options, sessionID: origin)
+            return options
+        }) { [weak self] outcome in
+            guard let self else { return }; defer { self.policyBusy = false }
+            switch outcome { case .success(let saved): self.applyOptions(saved); self.requestRefresh(); case .failure(let error): self.notice = error.localizedDescription }
+        }
     }
     private func setEnabled(_ skill: SkillDescriptor, enabled: Bool) {
-        guard !policyBusy else { return }; policyBusy = true
-        Task { [weak self] in guard let self else { return }; defer { self.policyBusy = false }; do {
-            try await self.model.setSkillEnabledInBelloAgent(skill, enabled: enabled)
-            if !enabled { self.management = true }
-            self.notice = enabled ? "Enabled in Bello Agent. Source and project policies still apply." : "Disabled in Bello Agent across all projects. Codex is unchanged."
-            await self.loadOptions(); await self.refresh()
-        } catch { self.notice = error.localizedDescription } }
+        guard work.isActive, inheritedEnabled, !policyBusy else { return }; policyBusy = true
+        let model = model, source = source
+        let workspace = originID.flatMap(model.record)?.workspaceID ?? model.selectedWorkspaceID
+        work.run({
+            try await model.setSkillEnabledInBelloAgent(skill, enabled: enabled); try Task.checkCancellation()
+            if let workspace { return (try? await source.options(workspace)) ?? [:] }
+            return nil as [String: WireValue]?
+        }) { [weak self] outcome in
+            guard let self else { return }; defer { self.policyBusy = false }
+            switch outcome {
+            case .success(let loaded):
+                if !enabled { self.management = true }
+                self.notice = enabled ? "Enabled in Bello Agent. Source and project policies still apply." : "Disabled in Bello Agent across all projects. Codex is unchanged."
+                if let loaded { self.applyOptions(loaded) }; self.requestRefresh()
+            case .failure(let error): self.notice = error.localizedDescription
+            }
+        }
     }
-    private func requestRefresh() { Task { [weak self] in await self?.refresh() } }
-    private func refresh() async {
-        let origin = originID, offset = sourceOffset, generation = UUID(); refreshGeneration = generation
-        await model.loadSkillCatalog(refresh: true, sessionID: origin)
-        guard isPresented, origin == originID, generation == refreshGeneration, !Task.isCancelled else { return }
-        if let catalog = origin.flatMap({ model.displays[$0]?.skillCatalog }) { searchEntries = catalog.entries; notice = catalog.notice; reconcileSelection() }
-        do {
-            let page = try await model.resourceRequest(params: ["sourceOffset": .number(Double(offset)), "refresh": .bool(true)], sessionID: origin)
-            guard isPresented, origin == originID, generation == refreshGeneration, offset == sourceOffset, !Task.isCancelled else { return }
-            snapshot = page; reconcileSelection(); loadBody(); refreshUI()
-        } catch {
-            guard isPresented, origin == originID, generation == refreshGeneration, offset == sourceOffset, !Task.isCancelled else { return }; notice = error.localizedDescription
+    private func requestRefresh() {
+        guard work.isActive, isPresented else { return }
+        let model = model, source = source, origin = originID, offset = sourceOffset, generation = UUID(); refreshGeneration = generation
+        work.run({
+            await source.catalog(origin); try Task.checkCancellation()
+            let catalog = origin.flatMap { model.displays[$0]?.skillCatalog }
+            let page = try await source.request("resources.inspect", ["sourceOffset": .number(Double(offset)), "refresh": .bool(true)], origin)
+            return (page, catalog?.entries, catalog?.notice)
+        }) { [weak self] outcome in
+            guard let self, self.isPresented, origin == self.originID, generation == self.refreshGeneration, offset == self.sourceOffset else { return }
+            switch outcome {
+            case .success(let (page, entries, notice)):
+                if let entries { self.searchEntries = entries; self.notice = notice ?? "" }
+                self.snapshot = page; self.reconcileSelection(); self.loadBody(); self.refreshUI()
+            case .failure(let error): self.notice = error.localizedDescription
+            }
         }
     }
     private var emptyNotice: String {
@@ -298,19 +365,18 @@ import AppKit
         }
     }
     private func loadBody() {
+        guard work.isActive, isPresented else { return }
         detailTask?.cancel(); let generation = UUID(); detailGeneration = generation
         let id = selectedID, offset = bodyOffset, origin = originID
         guard !id.isEmpty else { detail = "Select a skill to inspect its source and policy."; nextBody = nil; refreshSkills(); return }
         let hash = selected?.contentHash, metadata = selected?.metadataHash
         detail = "Loading skill source…"; nextBody = nil; refreshSkills()
-        detailTask = Task { [weak self] in guard let self else { return }; do {
-            let page = try await self.model.resourceRequest("resources.skill.read", params: ["skillId": .string(id), "offset": .number(Double(offset))], sessionID: origin)
-            guard !Task.isCancelled, generation == self.detailGeneration, id == self.selectedID, offset == self.bodyOffset, origin == self.originID, hash == self.selected?.contentHash, metadata == self.selected?.metadataHash else { return }
-            self.detail = page["text"]?.string ?? ""; self.nextBody = page["next"]?.number; self.refreshSkills()
-        } catch {
-            guard !Task.isCancelled, generation == self.detailGeneration, id == self.selectedID, offset == self.bodyOffset, origin == self.originID, hash == self.selected?.contentHash, metadata == self.selected?.metadataHash else { return }
-            self.detail = error.localizedDescription; self.refreshSkills()
-        } }
+        let source = source
+        detailTask = work.run({ try await source.request("resources.skill.read", ["skillId": .string(id), "offset": .number(Double(offset))], origin) }) { [weak self] outcome in
+            guard let self, generation == self.detailGeneration, id == self.selectedID, offset == self.bodyOffset, origin == self.originID, hash == self.selected?.contentHash, metadata == self.selected?.metadataHash else { return }
+            switch outcome { case .success(let page): self.detail = page["text"]?.string ?? ""; self.nextBody = page["next"]?.number; case .failure(let error): self.detail = error.localizedDescription }
+            self.refreshSkills()
+        }
     }
 }
 
@@ -318,11 +384,14 @@ import AppKit
 /// helper; removing the saved servers clears the list without reconnecting.
 @MainActor final class NativeMCPInspector: DashView, InheritsEnabled {
     let model: WorkspaceModel
+    private let source: ResourceInspectorSource
+    private let work = PayloadTaskScope()
     var inheritedEnabled = true { didSet { refreshUI() } }
     private var servers: [String] = [], server = "", tool = "", tools: [[String: WireValue]] = []
     private var targets = "[]", arguments = "{}", result = "", notice = "", configuration = "{\"servers\":{}}"
     private var editingConfiguration = false, configurationRevision: Int64 = 0, configurationProject: String?
     private var busy = false, unknown = false, started = false, confirmationPending = false
+    private var observing = false
     private lazy var observer = ShellObserver { [weak self] in self?.refreshUI() }
     let edit = PiKit.Button("Edit Vault Configuration…", symbol: "key", style: .secondary)
     let refresh = PiKit.Button("Refresh Servers", symbol: "arrow.clockwise", style: .secondary)
@@ -359,8 +428,8 @@ import AppKit
         return PiKit.Box(fill: NSColor.piWarning.piOpacity(0.10), cornerRadius: PiRadius.sm, content: row)
     }()
     private lazy var split = PayloadSplit(leading: PiKit.inset(PayloadEmptyOverlay(content: list, empty: empty)), trailing: detailColumn, minimum: 250, ideal: 300, maximum: 380, trailingMinimum: 500)
-    init(model: WorkspaceModel) {
-        self.model = model
+    init(model: WorkspaceModel, source: ResourceInspectorSource? = nil) {
+        self.model = model; self.source = source ?? .workspace(model)
         super.init(frame: .zero); addSubview(column)
         let actions = ShellStack(.horizontal, spacing: PiSpacing.sm, [.view(edit), .view(refresh), .view(remove), .spacer(8), .view(spinner)])
         let chooser = ShellStack(.horizontal, spacing: PiSpacing.sm, [.view(serverPicker), .view(listTools), .spacer(8)])
@@ -373,41 +442,54 @@ import AppKit
         column.items = [.view(actions), .view(PiKit.Note("MCP configuration and explicit credentials are stored in the single Keychain vault. External configuration files and inherited credential references are retired.")), .view(configurationCard), .view(chooser), .flexible(split, ideal: 400), .view(warning), .view(status)]
         remove.setAccessibilityHelp("Deletes this project's saved MCP server configuration after asking")
         edit.onPress = { [weak self] in self?.editConfiguration() }
-        refresh.onPress = { [weak self] in self?.perform { [weak self] in try await self?.refreshServers() } }
+        refresh.onPress = { [weak self] in self?.refreshServers() }
         remove.onPress = { [weak self] in self?.removeAll() }
-        listTools.onPress = { [weak self] in self?.perform { [weak self] in try await self?.loadTools() } }
+        listTools.onPress = { [weak self] in self?.loadTools() }
         save.onPress = { [weak self] in self?.saveConfiguration() }
         cancelEdit.onPress = { [weak self] in self?.editingConfiguration = false; self?.configuration = "{\"servers\":{}}"; self?.configurationProject = nil; self?.refreshUI() }
-        describe.onPress = { [weak self] in guard let self else { return }; let targets = self.targets; self.perform { [weak self] in guard let self else { return }
-            let value = try self.parse(targets); guard value.array != nil else { throw HostError.failure("Schema targets must be a JSON array") }
-            self.result = WireValue.object(try await self.model.resourceRequest("mcp.describe", params: ["targets": value])).pretty
-        } }
+        describe.onPress = { [weak self] in self?.describeSelected() }
         invokeButton.onPress = { [weak self] in self?.invoke() }; acknowledgeButton.onPress = { [weak self] in self?.acknowledge() }
         serverField.onChange = { [weak self] value in self?.server = value; self?.refreshUI() }
         toolField.onChange = { [weak self] value in self?.tool = value; self?.refreshUI() }
         configurationEditor.onChange = { [weak self] in self?.configuration = $0 }
         targetsEditor.onChange = { [weak self] in self?.targets = $0 }; argumentsEditor.onChange = { [weak self] in self?.arguments = $0 }
         list.spacing = 2; list.insets = NSEdgeInsets(top: PiSpacing.sm, left: PiSpacing.sm, bottom: PiSpacing.sm, right: PiSpacing.sm)
-        observer.observe(publisher: model.$configuration); observer.observe(publisher: model.$selectedWorkspaceID); observer.observe(publisher: model.$mcpRemovalInProgress)
+        startObserving()
         refreshUI()
     }
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
     override func layout() { super.layout(); column.frame = bounds }
-    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); if window != nil, !started { started = true; perform { [weak self] in try await self?.refreshServers() } } }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil, !started { work.resume(); startObserving(); started = true; refreshServers() }
+        else if window == nil { prepareForRelease() }
+    }
+    override func viewWillMove(toWindow newWindow: NSWindow?) { if newWindow == nil, window != nil { prepareForRelease() }; super.viewWillMove(toWindow: newWindow) }
+    func prepareForRelease() {
+        work.cancel(); observer.reset(); observing = false; started = false; busy = false; confirmationPending = false
+        configurationProject = nil; editingConfiguration = false; configuration = "{\"servers\":{}}"
+        servers = []; server = ""; tool = ""; tools = []; result = ""; targets = "[]"; arguments = "{}"; notice = ""; unknown = false
+        refreshUI()
+    }
+    private func startObserving() {
+        guard !observing else { return }; observing = true
+        observer.observe(publisher: model.$configuration); observer.observe(publisher: model.$selectedWorkspaceID); observer.observe(publisher: model.$mcpRemovalInProgress)
+    }
     private func refreshUI() {
-        let enabled = inheritedEnabled && !busy && !confirmationPending
+        let interactive = work.isActive && inheritedEnabled
+        let enabled = interactive && !busy && !confirmationPending
         edit.isEnabled = enabled; refresh.isEnabled = enabled
         remove.isEnabled = enabled && !model.mcpRemovalInProgress && (model.selectedWorkspaceID.map { model.mcpServerCount($0) > 0 } ?? false)
         save.isEnabled = enabled; cancelEdit.isEnabled = enabled
         listTools.isEnabled = enabled && !server.isEmpty; describe.isEnabled = enabled
         invokeButton.isEnabled = enabled && !server.isEmpty && !tool.isEmpty && !unknown
         acknowledgeButton.isEnabled = enabled
-        serverPicker.isEnabled = inheritedEnabled
+        serverPicker.isEnabled = interactive
         serverPicker.items = [("", "Choose a server")] + servers.map { ($0, $0) }; serverPicker.selection = server
         serverField.text = server; toolField.text = tool
-        serverField.field.isEnabled = inheritedEnabled; toolField.field.isEnabled = inheritedEnabled
+        serverField.field.isEnabled = interactive; toolField.field.isEnabled = interactive
         configurationEditor.text = configuration; targetsEditor.text = targets; argumentsEditor.text = arguments
-        for editor in [configurationEditor, targetsEditor, argumentsEditor] { editor.editor.isEditable = inheritedEnabled }
+        for editor in [configurationEditor, targetsEditor, argumentsEditor] { editor.editor.isEditable = interactive }
         configurationCard.isHidden = !editingConfiguration; spinner.isHidden = !busy
         resultText.text = result; empty.isHidden = !tools.isEmpty; warning.isHidden = !unknown
         status.text = busy ? "Operation in progress. No automatic retry will be made." : notice; status.isHidden = status.text.isEmpty
@@ -421,26 +503,41 @@ import AppKit
         }))
         column.needsLayout = true; invalidateIntrinsicContentSize(); PiKit.sizeChanged(self)
     }
-    private func parse(_ text: String) throws -> WireValue {
+    private static func parse(_ text: String) throws -> WireValue {
         guard text.utf8.count <= 262144 else { throw HostError.failure("JSON input exceeds 256 KiB") }
         return try JSONDecoder().decode(WireValue.self, from: Data(text.utf8))
     }
-    private func perform(_ operation: @escaping @MainActor () async throws -> Void) {
-        guard !busy, inheritedEnabled else { return }; busy = true; refreshUI()
-        Task { [weak self] in guard let self else { return }; defer { self.busy = false; self.refreshUI() }
-            do { try await operation() } catch { self.notice = error.localizedDescription }
+    private func perform<Value: Sendable>(_ operation: @escaping @MainActor @Sendable () async throws -> Value,
+                                         completion: @escaping @MainActor @Sendable (Value) -> Void) {
+        guard work.isActive, !busy, inheritedEnabled else { return }; busy = true; refreshUI()
+        work.run(operation) { [weak self] outcome in
+            guard let self else { return }; defer { self.busy = false; self.refreshUI() }
+            switch outcome { case .success(let value): completion(value); case .failure(let error): self.notice = error.localizedDescription }
         }
     }
-    private func refreshServers() async throws {
-        let value = try await model.resourceRequest("mcp.list")
+    private func applyServers(_ value: [String: WireValue]) {
         servers = value["servers"]?.array?.compactMap { $0.object?["server"]?.string } ?? []
         if !servers.contains(server) { server = servers.first ?? ""; tools = [] }
         unknown = value["outcomeUnknown"]?.bool ?? false
         notice = value["notice"]?.string ?? (unknown ? "Previous invocation outcome is unknown. Check effects before acknowledging." : "Connected configuration is approved; tool discovery does not invoke tools.")
     }
-    private func loadTools() async throws {
-        let value = try await model.resourceRequest("mcp.list", params: ["server": .string(server)])
-        tools = value["tools"]?.array?.compactMap(\.object) ?? []; notice = "\(tools.count) tools. Select one or enter several schema targets."
+    private func refreshServers() {
+        let source = source
+        perform({ try await source.request("mcp.list", [:], nil) }) { [weak self] in self?.applyServers($0) }
+    }
+    private func loadTools() {
+        let source = source, server = server
+        perform({ try await source.request("mcp.list", ["server": .string(server)], nil) }) { [weak self] value in
+            guard let self else { return }; self.tools = value["tools"]?.array?.compactMap(\.object) ?? []
+            self.notice = "\(self.tools.count) tools. Select one or enter several schema targets."
+        }
+    }
+    private func describeSelected() {
+        let source = source, targets = targets
+        perform({
+            let value = try Self.parse(targets); guard value.array != nil else { throw HostError.failure("Schema targets must be a JSON array") }
+            return WireValue.object(try await source.request("mcp.describe", ["targets": value], nil)).pretty
+        }) { [weak self] in self?.result = $0 }
     }
     private func editConfiguration() {
         guard let id = model.selectedWorkspaceID else { return }
@@ -449,19 +546,22 @@ import AppKit
     }
     private func saveConfiguration() {
         guard let project = configurationProject else { return }
-        let draft = configuration, revision = configurationRevision
-        confirmThen("Trust these MCP servers?", "Saving this configuration can authorize programs and authenticated endpoints with your account's permissions. Review the JSON first. Only explicit server credentials are sent to that server.", action: "Save in Vault and Connect") { [weak self] in
-            guard let self else { return }
-            try await self.model.saveMCPConfiguration(self.parse(draft), expectedRevision: revision, workspaceID: project)
-            self.editingConfiguration = false; self.configuration = "{\"servers\":{}}"; self.configurationProject = nil
-            if self.model.selectedWorkspaceID == project { try await self.refreshServers() }
+        let draft = configuration, revision = configurationRevision, model = model, source = source
+        confirmThen("Trust these MCP servers?", "Saving this configuration can authorize programs and authenticated endpoints with your account's permissions. Review the JSON first. Only explicit server credentials are sent to that server.", action: "Save in Vault and Connect", operation: {
+            try await model.saveMCPConfiguration(Self.parse(draft), expectedRevision: revision, workspaceID: project)
+            try Task.checkCancellation()
+            if model.selectedWorkspaceID == project { return try await source.request("mcp.list", [:], nil) }
+            return nil as [String: WireValue]?
+        }) { [weak self] value in
+            guard let self else { return }; self.editingConfiguration = false; self.configuration = "{\"servers\":{}}"; self.configurationProject = nil
+            if let value { self.applyServers(value) }
         }
     }
     private func removeAll() {
-        guard !busy, inheritedEnabled, let project = model.selectedWorkspaceID else { return }; busy = true; refreshUI()
-        Task { [weak self] in
-            guard let self else { return }; defer { self.busy = false; self.refreshUI() }
-            guard let outcome = await self.model.confirmAndRemoveAllMCPServers() else { return }
+        guard let project = model.selectedWorkspaceID else { return }
+        let model = model
+        perform({ await model.confirmAndRemoveAllMCPServers() }) { [weak self] outcome in
+            guard let self, let outcome else { return }
             self.notice = outcome
             if self.model.selectedWorkspaceID == project, self.model.mcpServerCount(project) == 0 { self.servers = []; self.server = ""; self.tools = []; self.result = "" }
         }
@@ -470,28 +570,39 @@ import AppKit
         guard let id = model.resourceTargetSessionID ?? model.selectedID, let chat = model.record(id), chat.toolMode == "editing", chat.connectionTest != true else { notice = "Select an editing chat before invoking MCP."; refreshUI(); return }
         // The confirmed target and arguments belong to this press, even if
         // the reader edits another field before the confirmation returns.
-        let server = server, tool = tool, arguments = arguments
-        confirmThen("Invoke \(server) / \(tool)?", "Exactly one invocation will be sent. It may change external state. Inspect the schema and arguments first. No automatic retry is performed.", action: "Invoke Once") { [weak self] in
-            guard let self else { return }
-            let value = try self.parse(arguments); guard value.object != nil else { throw HostError.failure("Invocation arguments must be one JSON object") }
-            _ = try await self.model.open(chat)
-            do { self.result = WireValue.object(try await self.model.resourceRequest("mcp.invoke", params: ["server": .string(server), "tool": .string(tool), "arguments": value], sessionID: id)).pretty }
-            catch { try? await self.refreshServers(); throw error }
-            try await self.refreshServers()
+        let server = server, tool = tool, arguments = arguments, model = model, source = source
+        confirmThen("Invoke \(server) / \(tool)?", "Exactly one invocation will be sent. It may change external state. Inspect the schema and arguments first. No automatic retry is performed.", action: "Invoke Once", operation: {
+            let value = try Self.parse(arguments); guard value.object != nil else { throw HostError.failure("Invocation arguments must be one JSON object") }
+            _ = try await model.open(chat); try Task.checkCancellation()
+            var output: String?, failure: String?
+            do { output = WireValue.object(try await source.request("mcp.invoke", ["server": .string(server), "tool": .string(tool), "arguments": value], id)).pretty }
+            catch { failure = error.localizedDescription }
+            try Task.checkCancellation()
+            var servers: [String: WireValue]?
+            do { servers = try await source.request("mcp.list", [:], nil) }
+            catch { if failure == nil { failure = error.localizedDescription } }
+            return InvocationResult(output: output, servers: servers, failure: failure)
+        }) { [weak self] value in
+            guard let self else { return }; if let output = value.output { self.result = output }
+            if let servers = value.servers { self.applyServers(servers) }; if let failure = value.failure { self.notice = failure }
         }
     }
+    private struct InvocationResult: Sendable { let output: String?; let servers: [String: WireValue]?; let failure: String? }
     private func acknowledge() {
-        confirmThen("Have you checked the previous invocation’s effects?", "Acknowledging permits a new invocation; it does not retry, cancel, or undo the previous one.", action: "I Checked — Acknowledge") { [weak self] in
-            guard let self else { return }; _ = try await self.model.resourceRequest("mcp.acknowledgeUnknown", params: ["confirmed": .bool(true)]); try await self.refreshServers()
-        }
+        let source = source
+        confirmThen("Have you checked the previous invocation’s effects?", "Acknowledging permits a new invocation; it does not retry, cancel, or undo the previous one.", action: "I Checked — Acknowledge", operation: {
+            _ = try await source.request("mcp.acknowledgeUnknown", ["confirmed": .bool(true)], nil); try Task.checkCancellation()
+            return try await source.request("mcp.list", [:], nil)
+        }) { [weak self] in self?.applyServers($0) }
     }
-    private func confirmThen(_ title: String, _ detail: String, action: String, _ operation: @escaping @MainActor () async throws -> Void) {
-        guard !busy, !confirmationPending, inheritedEnabled else { return }; confirmationPending = true; refreshUI()
-        Task { [weak self] in
-            guard let self else { return }
-            let accepted = await PiQuestion.shared.confirm(title, detail, action: action)
-            self.confirmationPending = false; self.refreshUI()
-            guard accepted else { return }; self.perform(operation)
+    private func confirmThen<Value: Sendable>(_ title: String, _ detail: String, action: String,
+                                              operation: @escaping @MainActor @Sendable () async throws -> Value,
+                                              completion: @escaping @MainActor @Sendable (Value) -> Void) {
+        guard work.isActive, !busy, !confirmationPending, inheritedEnabled else { return }; confirmationPending = true; refreshUI()
+        let window = window
+        work.run({ [weak window] in await PiQuestion.shared.confirm(title, detail, action: action, over: window) }) { [weak self] outcome in
+            guard let self else { return }; self.confirmationPending = false; self.refreshUI()
+            guard case .success(true) = outcome else { return }; self.perform(operation, completion: completion)
         }
     }
 }
