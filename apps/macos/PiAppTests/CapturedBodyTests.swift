@@ -1,5 +1,4 @@
 import XCTest
-import SwiftUI
 import AppKit
 @testable import PiApp
 
@@ -26,12 +25,12 @@ final class CapturedBodyTests: XCTestCase {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 650, height: 350), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         var selection = ""
-        let hosted = NSHostingView(rootView: JSONOutlineView(json: stream.outline, selection: Binding(get: { selection }, set: { selection = $0 }), expandRevision: 0, expandAll: false))
+        let hosted = JSONOutlineView(json: stream.outline, selection: selection, expandRevision: 0, expandAll: false, onSelection: { selection = $0 })
         window.contentView = hosted; window.makeKeyAndOrderFront(nil)
         defer { window.contentView = nil; window.close() }
         let outline = try await renderedOutline(in: hosted, window: window)
         let root = try XCTUnwrap(outline.item(atRow: 0) as? JSONOutlineNode), frame = root.child(0)
-        for _ in 0..<100 where frame.prepared == nil { try await Task.sleep(for: .milliseconds(10)) }
+        try await eventually("The visible event row decodes", timeout: .seconds(2)) { frame.prepared != nil }
         XCTAssertNotNil(frame.prepared)
         XCTAssertEqual(frame.summary, "JSON data")
         XCTAssertLessThan(stream.storage.parsedFrames, 100, "Only visible frame rows should parse")
@@ -51,22 +50,21 @@ final class CapturedBodyTests: XCTestCase {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 650, height: 350), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         var selection = ""
-        let binding = Binding(get: { selection }, set: { selection = $0 })
-        let hosted = NSHostingView(rootView: JSONOutlineView(json: stream.outline, selection: binding, expandRevision: 0, expandAll: false))
+        let onSelection: (String) -> Void = { selection = $0 }
+        let hosted = JSONOutlineView(json: stream.outline, selection: selection, expandRevision: 0, expandAll: false, onSelection: onSelection)
         window.contentView = hosted; window.makeKeyAndOrderFront(nil)
         defer { window.contentView = nil; window.close() }
         let outline = try await renderedOutline(in: hosted, window: window)
         let root = try XCTUnwrap(outline.item(atRow: 0) as? JSONOutlineNode)
-        hosted.rootView = JSONOutlineView(json: stream.outline, selection: binding, expandRevision: 1, expandAll: true)
-        for _ in 0..<200 {
+        hosted.update(json: stream.outline, selection: selection, expandRevision: 1, expandAll: true)
+        try await eventually("Expand all reaches the offscreen event", timeout: .seconds(2)) {
             hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
-            if outline.isItemExpanded(root.child(95).child(0).child(0)) { break }
-            try await Task.sleep(for: .milliseconds(10))
+            return outline.isItemExpanded(root.child(95).child(0).child(0))
         }
         XCTAssertTrue(outline.isItemExpanded(root.child(95)), "Expand all must include events outside the viewport")
         XCTAssertTrue(outline.isItemExpanded(root.child(95).child(0).child(0)))
         XCTAssertEqual(root.child(95).child(0).child(0).child(0).detail, "1")
-        hosted.rootView = JSONOutlineView(json: stream.outline, selection: binding, expandRevision: 2, expandAll: false)
+        hosted.update(json: stream.outline, selection: selection, expandRevision: 2, expandAll: false)
         hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
         try await Task.sleep(for: .milliseconds(30))
         XCTAssertEqual(outline.numberOfRows, 97)
@@ -75,8 +73,8 @@ final class CapturedBodyTests: XCTestCase {
     @MainActor func testCollapseSectionUsesTheScrolledPositionAndKeepsOtherSectionsOpen() async throws {
         let json = CapturedJSON(value: ["first": Array(0..<500), "second": Array(0..<500)], formatted: "")
         var selection = ""
-        let binding = Binding(get: { selection }, set: { selection = $0 })
-        let hosted = NSHostingView(rootView: JSONOutlineView(json: json, selection: binding, expandRevision: 0, expandAll: false))
+        let onSelection: (String) -> Void = { selection = $0 }
+        let hosted = JSONOutlineView(json: json, selection: selection, expandRevision: 0, expandAll: false, onSelection: onSelection)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 650, height: 350), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false; window.contentView = hosted; window.makeKeyAndOrderFront(nil)
         defer { window.contentView = nil; window.close() }
@@ -86,7 +84,7 @@ final class CapturedBodyTests: XCTestCase {
         outline.selectRowIndexes(IndexSet(integer: 2), byExtendingSelection: false)
         outline.scrollRowToVisible(outline.numberOfRows - 2)
         XCTAssertGreaterThan(outline.visibleRect.minY, 0)
-        hosted.rootView = JSONOutlineView(json: json, selection: binding, expandRevision: 0, expandAll: false,
+        hosted.update(json: json, selection: selection, expandRevision: 0, expandAll: false,
                                          command: JSONOutlineCommand(action: .collapseSection))
         hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
         try await Task.sleep(for: .milliseconds(50))
@@ -96,7 +94,7 @@ final class CapturedBodyTests: XCTestCase {
         XCTAssertTrue(NSLocationInRange(outline.selectedRow, outline.rows(in: outline.visibleRect)))
         // Repeating the action moves up the containing hierarchy; closing the
         // root restores the top-level overview and the scroll position.
-        hosted.rootView = JSONOutlineView(json: json, selection: binding, expandRevision: 0, expandAll: false,
+        hosted.update(json: json, selection: selection, expandRevision: 0, expandAll: false,
                                          command: JSONOutlineCommand(action: .collapseSection))
         hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
         try await Task.sleep(for: .milliseconds(50))
@@ -106,7 +104,7 @@ final class CapturedBodyTests: XCTestCase {
 
     @MainActor func testBackToTopPreservesExpandedContent() async throws {
         let json = CapturedJSON(value: ["input": Array(0..<500)], formatted: "")
-        let hosted = NSHostingView(rootView: JSONOutlineView(json: json, selection: .constant(""), expandRevision: 0, expandAll: false))
+        let hosted = JSONOutlineView(json: json, selection: "", expandRevision: 0, expandAll: false)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 650, height: 350), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false; window.contentView = hosted; window.makeKeyAndOrderFront(nil)
         defer { window.contentView = nil; window.close() }
@@ -114,7 +112,7 @@ final class CapturedBodyTests: XCTestCase {
         outline.expandItem(nil, expandChildren: true)
         let count = outline.numberOfRows
         outline.scrollRowToVisible(count - 1)
-        hosted.rootView = JSONOutlineView(json: json, selection: .constant(""), expandRevision: 0, expandAll: false,
+        hosted.update(json: json, selection: "", expandRevision: 0, expandAll: false,
                                          command: JSONOutlineCommand(action: .top))
         hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
         try await Task.sleep(for: .milliseconds(50))
@@ -135,17 +133,14 @@ final class CapturedBodyTests: XCTestCase {
             if let scroll = view as? NSScrollView, let outline = scroll.documentView as? NSOutlineView { return outline }
             return view.subviews.compactMap { find($0) }.first
         }
-        // The reader publishes copy text before SwiftUI mounts its native
-        // outline. Wait for the actual attached, populated view and layout,
-        // rather than using the independent text binding as UI readiness.
-        for _ in 0..<200 {
+        var rendered: NSOutlineView?
+        try await eventually("The captured-body outline renders in its window", timeout: .seconds(2)) {
             hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
-            if let outline = find(hosted), outline.window === window,
-               outline.numberOfRows > 1, outline.bounds.width > 0, outline.bounds.height > 0 { return outline }
-            try await Task.sleep(for: .milliseconds(10))
+            guard let outline = find(hosted), outline.window === window,
+                  outline.numberOfRows > 1, outline.bounds.width > 0, outline.bounds.height > 0 else { return false }
+            rendered = outline; return true
         }
-        XCTFail("The captured-body outline did not render in its window")
-        return try XCTUnwrap(find(hosted))
+        return try XCTUnwrap(rendered)
     }
 
     @MainActor func testLoadsAllJSONBytesAndPreservesUnicodeAcrossPageBoundary() async throws {
@@ -315,7 +310,7 @@ final class CapturedBodyTests: XCTestCase {
         XCTAssertEqual((try JSONSerialization.jsonObject(with: Data(emptyJSON.utf8)) as? [Any])?.count, 0)
 
         var selectedDetail = ""
-        let coordinator = JSONOutlineView.Coordinator(selection: Binding(get: { selectedDetail }, set: { selectedDetail = $0 }))
+        let coordinator = JSONOutlineView.Coordinator(onSelection: { selectedDetail = $0 })
         coordinator.root = root
         let outline = NSOutlineView()
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("key"))
@@ -323,7 +318,7 @@ final class CapturedBodyTests: XCTestCase {
         outline.dataSource = coordinator; outline.delegate = coordinator
         outline.reloadData(); outline.expandItem(root)
         XCTAssertEqual(outline.numberOfRows, 3)
-        // The coordinator writes the SwiftUI binding on the next run-loop turn, never inside the outline's own update.
+        // Selection callbacks run on the next turn, after the outline update settles.
         func settle() { RunLoop.main.run(until: Date().addingTimeInterval(0.03)) }
         outline.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
         coordinator.outlineViewSelectionDidChange(Notification(name: NSOutlineView.selectionDidChangeNotification, object: outline))
@@ -448,7 +443,7 @@ final class CapturedBodyTests: XCTestCase {
         XCTAssertEqual(items.cachedChildren, 1, "A selected distant row must not eagerly construct thousands of children")
         XCTAssertEqual(root.child(1).detail, "Line one\nLine two 🌍")
 
-        let coordinator = JSONOutlineView.Coordinator(selection: .constant(""))
+        let coordinator = JSONOutlineView.Coordinator(selection: "")
         coordinator.root = JSONOutlineNode(key: "$", value: ["nested": ["value": true], "other": NSNull()])
         let outline = NSOutlineView()
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("key"))
@@ -537,15 +532,15 @@ final class CapturedBodyTests: XCTestCase {
         description["request"] = .object(["observedBytes": .number(Double(bytes.count))])
         try await model.traces.finish(description)
         var displayed = ""
-        let view = VStack(alignment: .leading, spacing: 14) {
-            Text("Captured request").font(PiFont.title())
-            CapturedHeadersView(headers: ["content-type": .string("application/json"), "authorization": .string("Bearer ••••abcd")])
-            CapturedBodyView(model: model, sessionID: "preview", attemptID: attemptID, kind: "request", retained: true,
-                             displayedText: Binding(get: { displayed }, set: { displayed = $0 }))
-        }.padding(24).background(Color.piContent)
+        let body = CapturedBodyView(model: model, sessionID: "preview", attemptID: attemptID, kind: "request", retained: true,
+                                    onDisplayedText: { displayed = $0 })
+        let view = PayloadColumn(spacing: 14, padding: NSEdgeInsets(top: 24, left: 24, bottom: 24, right: 24), items: [
+            .view(PiKit.TextLine(PiKit.Line("Captured request", font: PiKit.Font.title(), color: .piInk))),
+            .view(CapturedHeadersView(headers: ["content-type": .string("application/json"), "authorization": .string("Bearer ••••abcd")])),
+            .flexible(body)])
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 960, height: 660), styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: .aqua)
-        let hosted = NSHostingView(rootView: view); window.contentView = hosted
+        let hosted = view; window.contentView = hosted; window.backgroundColor = .piContent
         defer { window.orderOut(nil); window.contentView = nil; window.close() }
         window.center(); window.orderFront(nil)
         let outline = try await renderedOutline(in: hosted, window: window)
@@ -585,15 +580,15 @@ final class CapturedBodyTests: XCTestCase {
         description["response"] = .object(["observedBytes": .number(Double(bytes.count))])
         try await model.traces.finish(description)
         var displayed = ""
-        let view = VStack(alignment: .leading, spacing: 14) {
-            Text("Captured response").font(PiFont.title())
-            CapturedHeadersView(headers: ["content-type": .string("text/event-stream"), "x-litellm-model-name": .string("openai/gpt-5.4-mini")])
-            CapturedBodyView(model: model, sessionID: "preview", attemptID: attemptID, kind: "response", retained: true,
-                             displayedText: Binding(get: { displayed }, set: { displayed = $0 }), initialFormat: .combined)
-        }.padding(24).background(Color.piContent)
+        let body = CapturedBodyView(model: model, sessionID: "preview", attemptID: attemptID, kind: "response", retained: true,
+                                    initialFormat: .combined, onDisplayedText: { displayed = $0 })
+        let view = PayloadColumn(spacing: 14, padding: NSEdgeInsets(top: 24, left: 24, bottom: 24, right: 24), items: [
+            .view(PiKit.TextLine(PiKit.Line("Captured response", font: PiKit.Font.title(), color: .piInk))),
+            .view(CapturedHeadersView(headers: ["content-type": .string("text/event-stream"), "x-litellm-model-name": .string("openai/gpt-5.4-mini")])),
+            .flexible(body)])
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 960, height: 780), styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: .aqua)
-        let hosted = NSHostingView(rootView: view); window.contentView = hosted
+        let hosted = view; window.contentView = hosted; window.backgroundColor = .piContent
         defer { window.orderOut(nil); window.contentView = nil; window.close() }
         window.center(); window.orderFront(nil)
         let outline = try await renderedOutline(in: hosted, window: window)

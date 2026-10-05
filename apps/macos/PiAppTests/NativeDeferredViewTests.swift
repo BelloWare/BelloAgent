@@ -1,5 +1,4 @@
 import XCTest
-import SwiftUI
 import AppKit
 @testable import PiApp
 
@@ -22,43 +21,45 @@ final class NativeDeferredViewTests: XCTestCase {
 
     @MainActor func testOutlinePublishesOnlyTheLatestSelectionAfterTheNativeUpdate() async throws {
         var selection = "", writes: [String] = []
-        let coordinator = JSONOutlineView.Coordinator(selection: Binding(get: { selection }, set: { selection = $0; writes.append($0) }))
+        let coordinator = JSONOutlineView.Coordinator(onSelection: { selection = $0; writes.append($0) })
         coordinator.documentID = UUID()
         coordinator.root = JSONOutlineNode(key: "$", value: ["first": "one", "second": "two"])
         let scroll = outline(coordinator), view = try XCTUnwrap(scroll.documentView as? NSOutlineView)
         view.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
         view.selectRowIndexes(IndexSet(integer: 2), byExtendingSelection: false)
-        XCTAssertTrue(writes.isEmpty, "Native selection must not publish during a SwiftUI update")
+        XCTAssertTrue(writes.isEmpty, "Native selection must not publish during a native update")
         await drainDeferredUpdates()
-        for _ in 0..<100 where writes.isEmpty { try await Task.sleep(for:.milliseconds(5)) }
+        try await eventually("The final outline selection is published", timeout: .seconds(1)) { !writes.isEmpty }
         XCTAssertEqual(writes, ["two"], "Superseded selections must not briefly replace the current detail")
         XCTAssertEqual(selection, "two")
     }
 
-    @MainActor func testReplacingTheBodyDiscardsTheOldSelectionBinding() async throws {
+    @MainActor func testReplacingTheBodyDiscardsTheOldSelectionCallback() async throws {
         var oldSelection = "", oldWrites: [String] = [], currentSelection = ""
-        let coordinator = JSONOutlineView.Coordinator(selection: Binding(get: { oldSelection }, set: { oldSelection = $0; oldWrites.append($0) }))
+        let coordinator = JSONOutlineView.Coordinator(onSelection: { oldSelection = $0; oldWrites.append($0) })
         coordinator.documentID = UUID()
         coordinator.root = JSONOutlineNode(key: "$", value: ["old": "old body"])
         let scroll = outline(coordinator), view = try XCTUnwrap(scroll.documentView as? NSOutlineView)
         view.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
-        // updateNSView replaces the binding and immutable root before reloading.
-        coordinator.selection = Binding(get: { currentSelection }, set: { currentSelection = $0 })
+        // The view replaces the callback and immutable root before reloading.
+        coordinator.selection = currentSelection
+        coordinator.onSelection = { currentSelection = $0 }
         coordinator.documentID = UUID()
         coordinator.root = JSONOutlineNode(key: "$", value: ["new": "new body"])
         view.reloadData(); view.expandItem(coordinator.root)
         await drainDeferredUpdates()
-        XCTAssertTrue(oldWrites.isEmpty, "A selection from the previous body must not write through its old binding")
+        XCTAssertTrue(oldWrites.isEmpty, "A selection from the previous body must not write through its old callback")
         XCTAssertEqual(currentSelection, "")
     }
 
     @MainActor func testRemovingTheOutlineCancelsItsPendingSelection() async throws {
         var selection = "", writes: [String] = []
-        let coordinator = JSONOutlineView.Coordinator(selection: Binding(get: { selection }, set: { selection = $0; writes.append($0) }))
+        let coordinator = JSONOutlineView.Coordinator(onSelection: { selection = $0; writes.append($0) })
         coordinator.root = JSONOutlineNode(key: "$", value: ["value": "previous format"])
         let scroll = outline(coordinator), view = try XCTUnwrap(scroll.documentView as? NSOutlineView)
         view.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
-        JSONOutlineView.dismantleNSView(scroll, coordinator: coordinator)
+        coordinator.stopObserving()
+        view.delegate = nil; view.dataSource = nil
         await drainDeferredUpdates()
         XCTAssertTrue(writes.isEmpty, "Changing to UTF-8/Hex or leaving the inspector must not restore stale JSON detail")
     }

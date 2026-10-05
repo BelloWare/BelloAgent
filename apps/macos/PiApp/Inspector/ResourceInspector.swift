@@ -1,287 +1,289 @@
-import SwiftUI
 import AppKit
 
-@MainActor
-struct ResourceInspector: View {
-    @ObservedObject var model: WorkspaceModel
-    @State private var tab = "skills"
-    @State private var query = ""
-    @State private var management = false
-    @State private var selectedID = ""
-    @State private var searchEntries: [SkillSearch.Entry] = []
-    @State private var detailTask: Task<Void, Never>?
-    @State private var detailGeneration = UUID()
-    @State private var originID: String?
-    @State private var refreshGeneration = UUID()
-    @State private var isPresented = false
-    @State private var detail = ""
-    @State private var bodyOffset = 0
-    @State private var nextBody: Double?
-    @State private var snapshot: [String: WireValue] = [:]
-    @State private var sourceOffset = 0
-    @State private var options: [String: WireValue] = [:]
-    @State private var home = ""
-    @State private var fallbacks = ""
-    @State private var byteLimit = 32768
-    @State private var overrideBudget = false
-    @State private var notice = ""
-    @State private var policyBusy = false
-    @PiDismiss private var dismiss
-
-    var body: some View {
-        PiSheet("Skills, instructions and MCP", subtitle: "Discovered skills, the applied instruction chain, discovery settings and MCP servers for the selected project.", symbol: "book.closed", width: 1100, height: 800) {
-            VStack(alignment: .leading, spacing: PiSpacing.md) {
-                PiTabs(selection: $tab, items: [("skills", "Skills"), ("instructions", "Instruction chain"), ("settings", "Discovery settings"), ("mcp", "MCP servers")])
-                if tab == "skills" { skillsView }
-                if tab == "instructions" { instructionsView }
-                if tab == "settings" { settingsView }
-                if tab == "mcp" { NativeMCPInspector(model: model) }
-            }
-            .padding(PiSpacing.xl)
-        } actions: {
-            Button { Task { await refresh() } } label: { Label("Refresh Sources", systemImage: "arrow.clockwise") }
-            Button("Done") { dismiss() }
-        } footer: {
-            if tab != "mcp" {
-                VStack(alignment: .leading, spacing: 4) {
-                    PiStatusLine(text: notice.isEmpty ? originID.flatMap({ model.displays[$0]?.skillCatalog.notice }) ?? "" : notice)
-                    Text("Skill switches apply only to Bello Agent across all projects. Shared skill files and Codex settings are never changed. Running requests retain their frozen inputs; new and queued turns use the updated policy.").font(PiFont.caption).foregroundStyle(Color.piInkTertiary)
-                }
-            } else {
-                Text("Configuration can launch programs with your permissions. Invocation requires an editing chat and is serialized per project. Read-only chats can discover tools but cannot invoke them. Annotations are not authorization.").font(PiFont.caption).foregroundStyle(Color.piInkTertiary)
-            }
-        }
-        .task { isPresented = true; originID = model.resourceTargetSessionID ?? model.selectedID; await loadOptions(); await refresh() }
-        .onReceive(model.$resourceCatalog) { values in
-            guard isPresented, model.resourceCatalogSessionID == originID else { return }
-            searchEntries = values.map(SkillSearch.Entry.init); reconcileSelection(); loadBody()
-        }
-        .onChange(of: query) { _, _ in reconcileSelection() }
-        .onChange(of: management) { _, _ in reconcileSelection() }
-        .onDisappear { isPresented = false; detailTask?.cancel(); detailGeneration = UUID(); refreshGeneration = UUID() }
-        .onChange(of: selectedID) { _, _ in bodyOffset = 0; loadBody() }
-        .onChange(of: tab) { _, value in if value == "settings" { Task { await loadOptions() } } }
+/// Project resource discovery and policy, shown in a native resizable sheet.
+/// The project/chat origin is fixed when the sheet opens.
+@MainActor final class ResourceInspector: DashView, InheritsEnabled {
+    static let size = NSSize(width: 1100, height: 800)
+    let model: WorkspaceModel
+    var dismiss: () -> Void
+    var inheritedEnabled = true { didSet { refreshUI() } }
+    private var tab = "skills", query = "", management = false, selectedID = ""
+    private var searchEntries: [SkillSearch.Entry] = []
+    private var detailTask: Task<Void, Never>?, initialTask: Task<Void, Never>?
+    private var detailGeneration = UUID(), refreshGeneration = UUID()
+    private var originID: String?, isPresented = false
+    private var detail = "", bodyOffset = 0, nextBody: Double?
+    private var snapshot: [String: WireValue] = [:], sourceOffset = 0, options: [String: WireValue] = [:]
+    private var home = "", fallbacks = "", byteLimit = 32768, overrideBudget = false
+    private var notice = "" { didSet { refreshFooter() } }
+    private var policyBusy = false { didSet { refreshUI() } }
+    private lazy var catalogObserver = ShellObserver { [weak self] in self?.catalogChanged() }
+    private lazy var stateObserver = ShellObserver { [weak self] in self?.refreshUI() }
+    private lazy var tabs = PiKit.Tabs(selection: "skills", items: [("skills", "Skills"), ("instructions", "Instruction chain"), ("settings", "Discovery settings"), ("mcp", "MCP servers")]) { [weak self] in self?.selectTab($0) }
+    let done = PiKit.Button("Done", style: .secondary)
+    let refreshButton = PiKit.Button("Refresh Sources", symbol: "arrow.clockwise", style: .secondary)
+    private let column = PayloadColumn(spacing: PiSpacing.md, padding: NSEdgeInsets(top: PiSpacing.xl, left: PiSpacing.xl, bottom: PiSpacing.xl, right: PiSpacing.xl))
+    private let status = ShellNote("", tone: .danger)
+    private let footerText = ShellText("", font: PiKit.Font.caption, color: .piInkTertiary)
+    private lazy var footer = ShellStack(.vertical, spacing: 4, [.view(status, .fill), .view(footerText, .fill)])
+    private var sheet: PiKit.Sheet!
+    let filterField = PiKit.TextField(placeholder: "Filter by name, description or path", icon: "magnifyingglass")
+    let managementToggle = PiKit.Checkbox(isOn: false, label: "Show disabled / needs attention")
+    private let skillList = LazyStackView(frame: .zero)
+    private let skillEmpty = PiKit.TextLine(PiKit.Line("No skills match", font: PiKit.Font.caption, color: .piInkTertiary))
+    private let skillGlide = PiKit.SelectionGlide()
+    private let skillDetails = PayloadColumn()
+    private var skillCard: NSView?, skillCardKey = ""
+    private var skillEnabled: PiKit.Switch?, selectSkill: PiKit.Button?, projectPolicy: PiKit.MenuButton?
+    private let sourceText = PagedTextView(text: "")
+    private lazy var sourceBox = PiKit.inset(sourceText)
+    private let sourceLabel = PiKit.TextLine(PiKit.Line("Skill file · from the start", font: PiKit.Font.body, color: .piInk))
+    private lazy var bodyPager = PiKit.Pager(previousLabel: "Start", nextLabel: "Next", center: sourceLabel, canPrevious: false, canNext: false,
+        previous: { [weak self] in self?.bodyOffset = 0; self?.loadBody() }, next: { [weak self] in guard let self else { return }; self.bodyOffset = Int(self.nextBody ?? 0); self.loadBody() })
+    private lazy var skillsPage: NSView = {
+        let left = PayloadEmptyOverlay(content: skillList, empty: skillEmpty)
+        let split = PayloadSplit(leading: PiKit.inset(left), trailing: skillDetails, minimum: 290, ideal: 340, maximum: 430, trailingMinimum: 480)
+        let row = ShellStack(.horizontal, spacing: PiSpacing.md, [.view(filterField, .fill), .view(managementToggle)])
+        return PayloadColumn(items: [.view(row), .flexible(split)])
+    }()
+    private let instructionRows = ShellStack(.vertical, spacing: 0)
+    private let instructionDetails = ShellStack(.vertical, spacing: 6)
+    private let instructionEmpty = PiKit.TextLine(PiKit.Line("No instruction sources", font: PiKit.Font.caption, color: .piInkTertiary))
+    private let sourceCount = PiKit.TextLine(PiKit.Line("n/a sources", font: PiKit.Font.body, color: .piInk))
+    private lazy var sourcesPager = PiKit.Pager(previousLabel: "Previous Sources", nextLabel: "Next Sources", center: sourceCount, canPrevious: false, canNext: false,
+        previous: { [weak self] in guard let self else { return }; self.sourceOffset = max(0, self.sourceOffset - 32); self.requestRefresh() },
+        next: { [weak self] in self?.sourceOffset += 32; self?.requestRefresh() })
+    private lazy var instructionsPage: NSView = {
+        let list = PayloadEmptyOverlay(content: PayloadScroll(instructionRows), empty: instructionEmpty)
+        return PayloadColumn(items: [.view(PiKit.card(instructionDetails, padding: PiSpacing.md)), .flexible(PiKit.inset(list)), .view(sourcesPager),
+            .view(PiKit.Note("A new user turn refreshes the chain. In-flight requests retain their revision. Descendant guidance is not injected indiscriminately into unrelated directories."))])
+    }()
+    private let settingsColumn = ShellStack(.vertical, spacing: PiSpacing.xl, padding: NSEdgeInsets(top: 2, left: 2, bottom: 2, right: 2))
+    private lazy var settingsPage = PayloadScroll(settingsColumn)
+    let homeField = PiKit.TextField(placeholder: "/Users/you/.codex", mono: true)
+    let fallbacksField = PiKit.TextField(placeholder: "AGENTS.md, CLAUDE.md", mono: true)
+    let budgetToggle = PiKit.Switch(isOn: false, label: "")
+    let budgetField = PiKit.NumberField(placeholder: "Bytes", value: 32768)
+    let saveSettings = PiKit.Button("Save Discovery Settings", style: .primary)
+    private lazy var mcpPage = NativeMCPInspector(model: model)
+    init(model: WorkspaceModel, dismiss: @escaping () -> Void = {}) {
+        self.model = model; self.dismiss = dismiss
+        super.init(frame: NSRect(origin: .zero, size: Self.size))
+        sheet = PiKit.Sheet("Skills, instructions and MCP", subtitle: "Discovered skills, the applied instruction chain, discovery settings and MCP servers for the selected project.", symbol: "book.closed", content: column, actions: [refreshButton, done], footer: footer)
+        sheet.width = Self.size.width; sheet.height = Self.size.height
+        sheet.dismiss = { [weak self] in self?.dismiss() }; addSubview(sheet)
+        done.onPress = { [weak self] in self?.dismiss() }; refreshButton.onPress = { [weak self] in self?.requestRefresh() }
+        filterField.onChange = { [weak self] value in self?.query = value; self?.reconcileSelection(); self?.refreshSkills() }
+        managementToggle.labelFont = PiKit.Font.caption
+        managementToggle.onChange = { [weak self] value in self?.management = value; self?.reconcileSelection(); self?.refreshSkills() }
+        skillList.spacing = 2; skillList.insets = NSEdgeInsets(top: PiSpacing.sm, left: PiSpacing.sm, bottom: PiSpacing.sm, right: PiSpacing.sm)
+        homeField.onChange = { [weak self] in self?.home = $0 }; fallbacksField.onChange = { [weak self] in self?.fallbacks = $0 }
+        budgetToggle.setAccessibilityLabel("Override instruction byte budget")
+        budgetToggle.onChange = { [weak self] value in self?.overrideBudget = value; self?.refreshSettings() }
+        budgetField.onChange = { [weak self] in self?.byteLimit = $0 }
+        saveSettings.onPress = { [weak self] in self?.saveDiscovery() }
+        catalogObserver.observe(publisher: model.$resourceCatalog)
+        stateObserver.observe(publisher: model.$configuration); stateObserver.observe(publisher: model.$mcpRemovalInProgress)
+        refreshUI(); refreshSettings()
+    }
+    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    override var intrinsicContentSize: NSSize { Self.size }
+    override func layout() { super.layout(); sheet.frame = bounds }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard window != nil, !isPresented else { return }; isPresented = true
+        originID = model.resourceTargetSessionID ?? model.selectedID
+        initialTask = Task { [weak self] in guard let self else { return }; await self.loadOptions(); await self.refresh() }
+    }
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow == nil, window != nil { isPresented = false; initialTask?.cancel(); detailTask?.cancel(); detailGeneration = UUID(); refreshGeneration = UUID() }
+        super.viewWillMove(toWindow: newWindow)
     }
     private var selected: SkillDescriptor? { filtered.first { $0.id == selectedID } }
-    private var filtered: [SkillDescriptor] {
-        SkillSearch.search(searchEntries, query: query, actionable: !management)
+    private var filtered: [SkillDescriptor] { SkillSearch.search(searchEntries, query: query, actionable: !management) }
+    private func selectTab(_ value: String) {
+        guard tab != value else { return }; tab = value; refreshUI()
+        if value == "settings" { Task { [weak self] in await self?.loadOptions() } }
+    }
+    private func catalogChanged() {
+        guard isPresented, model.resourceCatalogSessionID == originID else { return }
+        searchEntries = model.resourceCatalog.map(SkillSearch.Entry.init); reconcileSelection(); refreshSkills(); loadBody()
     }
     private func reconcileSelection() {
         if !filtered.contains(where: { $0.id == selectedID }) {
             detailTask?.cancel(); detailGeneration = UUID(); detail = ""; nextBody = nil
-            selectedID = filtered.first?.id ?? ""
+            selectedID = filtered.first?.id ?? ""; bodyOffset = 0; loadBody()
         }
     }
-    private static func policyTone(_ policy: String) -> PiTone {
-        switch policy {
-        case "implicitAllowed": return .success
-        case "explicitOnly": return .info
-        case "disabled": return .neutral
-        case "needsAttention": return .warning
-        default: return .neutral
-        }
+    static func policyTone(_ policy: String) -> PiTone {
+        switch policy { case "implicitAllowed": .success; case "explicitOnly": .info; case "needsAttention": .warning; default: .neutral }
     }
-    /// The wire policy names are Codex's own (`implicitAllowed`,
-    /// `explicitOnly`). They were reaching the badge unchanged, so a reader
-    /// was told a skill was "explicitOnly" rather than what that means for
-    /// them: the model will only use it when they name it with a slash.
     static func policyLabel(_ policy: String) -> String {
         switch policy {
-        case "implicitAllowed": return "Model may use it"
-        case "explicitOnly": return "Only when you ask"
-        case "disabled": return "Off"
-        case "needsAttention": return "Needs attention"
-        default: return policy.isEmpty ? "" : policy.prefix(1).uppercased() + policy.dropFirst()
+        case "implicitAllowed": "Model may use it"
+        case "explicitOnly": "Only when you ask"
+        case "disabled": "Off"
+        case "needsAttention": "Needs attention"
+        default: policy.isEmpty ? "" : policy.prefix(1).uppercased() + policy.dropFirst()
         }
     }
-    private var skillsView: some View {
-        VStack(spacing: PiSpacing.sm) {
-            HStack(spacing: PiSpacing.md) {
-                PiTextField(placeholder: "Filter by name, description or path", text: $query, icon: "magnifyingglass")
-                Toggle("Show disabled / needs attention", isOn: $management).toggleStyle(.piCheckbox).font(PiFont.caption)
-            }
-            HSplitView {
-                ScrollView {
-                    LazyVStack(spacing: 2) {
-                        ForEach(filtered) { skill in
-                            PiSelectableRow(selected: selectedID == skill.id, action: { selectedID = skill.id }) {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text("/" + skill.name).font(PiFont.heading).foregroundStyle(Color.piInk)
-                                    HStack(spacing: 4) {
-                                        PiBadge(text: Self.policyLabel(skill.policy), tone: Self.policyTone(skill.policy)).help("Skill policy · " + skill.policy)
-                                        PiBadge(text: skill.scope)
-                                    }
-                                    Text(skill.path).font(PiFont.caption).foregroundStyle(Color.piInkTertiary).lineLimit(1).truncationMode(.middle)
-                                }
-                            }
-                        }
-                    }.padding(PiSpacing.sm)
-                }
-                .overlay { if filtered.isEmpty { Text(emptyNotice).font(PiFont.caption).foregroundStyle(Color.piInkTertiary) } }
-                .piInset().frame(minWidth: 290, idealWidth: 340, maxWidth: 430).padding(.trailing, PiSpacing.sm)
-                VStack(alignment: .leading, spacing: PiSpacing.sm) {
-                    if let skill = selected {
-                        PiCard(padding: PiSpacing.md) {
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text(skill.description.isEmpty ? "No description" : skill.description).font(PiFont.body).foregroundStyle(Color.piInk)
-                                PiKeyValue(key: "Path", value: skill.path, mono: true)
-                                PiKeyValue(key: "SHA-256", value: skill.contentHash, mono: true)
-                                Toggle("Enabled in Bello Agent",isOn:Binding(get:{ model.skillEnabledInBelloAgent(skill.id) },set:{ enabled in setEnabled(skill,enabled:enabled) }))
-                                    .toggleStyle(.piSwitch).disabled(policyBusy)
-                                    .help("Applies across Bello Agent projects. Enabling does not override Codex or project restrictions.")
-                                Text("Other source and project restrictions still apply. A disabled skill is removed from suggestions and unsent selections.").font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
-                                if !skill.reasons.isEmpty { PiKeyValue(key: "Policy reasons", value: skill.reasons.joined(separator: "\n")) }
-                                if !skill.missingDependencies.isEmpty {
-                                    PiNote("Unavailable dependencies: " + skill.missingDependencies.map { ($0["type"] ?? "") + ":" + ($0["value"] ?? "") }.joined(separator: ", "), tone: .warning)
-                                }
-                                HStack(spacing: PiSpacing.sm) {
-                                    Button {
-                                        if let view = originID.flatMap({ model.displays[$0] }) {
-                                            if model.addSkill(skill, view: view) { dismiss() }
-                                        }
-                                    } label: { Label("Select for Draft", systemImage: "plus.circle") }
-                                        .buttonStyle(.piPrimary).disabled(originID.flatMap({ model.displays[$0] }).map { !model.canSelectSkill(skill, view: $0) || $0.skills.count == 8 || $0.skills.contains(where: { $0.id == skill.id }) } ?? true)
-                                    PiMenuButton(title: "Project Policy", icon: "checkmark.shield", identifier: "skill-project-policy") {
-                                        PiMenuEntry.button("Explicit Only") { policy(skill, key: "explicitOnly", enabled: true) }
-                                        PiMenuEntry.button("Remove App Explicit-only Override") { policy(skill, key: "explicitOnly", enabled: false) }
-                                        PiMenuEntry.divider
-                                        PiMenuEntry.button("Disable for This Project") { policy(skill, key: "disabled", enabled: true) }
-                                        PiMenuEntry.button("Remove Project Disable Override") { policy(skill, key: "disabled", enabled: false) }
-                                    }.disabled(policyBusy)
-                                }.padding(.top, 2)
-                            }
-                        }
-                    }
-                    PagedTextView(text: detail).piInset()
-                    PiPager(previous: { bodyOffset = 0; loadBody() }, next: { bodyOffset = Int(nextBody ?? 0); loadBody() }, canPrevious: bodyOffset != 0, canNext: nextBody != nil, previousLabel: "Start", nextLabel: "Next") {
-                        Text(bodyOffset == 0 ? "Skill file · from the start" : "Skill file · continued").help("Reading the skill file from character \(bodyOffset)")
-                    }
-                }.frame(minWidth: 480).padding(.leading, PiSpacing.sm)
-            }
-        }
+    private func refreshUI() {
+        tabs.selection = tab
+        let page: NSView
+        switch tab { case "instructions": page = instructionsPage; case "settings": page = settingsPage; case "mcp": page = mcpPage; default: page = skillsPage }
+        column.items = [.view(tabs), .flexible(page, ideal: 500)]
+        done.isEnabled = inheritedEnabled; refreshButton.isEnabled = inheritedEnabled; sheet?.cancelDisabled = !inheritedEnabled
+        managementToggle.isEnabled = inheritedEnabled; filterField.field.isEnabled = inheritedEnabled
+        refreshSkills(); refreshInstructions(); refreshFooter()
+        mcpPage.inheritedEnabled = inheritedEnabled
     }
-    private var instructionsView: some View {
-        VStack(alignment: .leading, spacing: PiSpacing.sm) {
-            PiCard(padding: PiSpacing.md) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Global → project root → working directory → explicitly approved additions").font(PiFont.heading)
-                    PiKeyValue(key: "Root", value: snapshot["root"]?.string ?? "", mono: true)
-                    PiKeyValue(key: "Codex home", value: snapshot["codexHome"]?.string ?? "", mono: true)
-                    PiKeyValue(key: "Included", value: "\(snapshot["instructionBytes"]?.nonnegativeInteger.map(String.init) ?? "n/a") / \(snapshot["instructionLimit"]?.nonnegativeInteger.map(String.init) ?? "n/a") UTF-8 bytes")
-                    PiKeyValue(key: "Applied revision", value: snapshot["appliedRevision"]?.string ?? "No turn yet", mono: true)
-                }
-            }
-            ScrollView {
-                // A plain stack: a page of at most 32 sources, and a lazy one in
-                // a sheet makes SwiftUI report a layout cycle when it opens.
-                VStack(spacing: 0) {
-                    ForEach(Array((snapshot["sources"]?.array ?? []).enumerated()), id: \.offset) { index, value in
-                        InstructionSourceRow(position: sourceOffset + index + 1, source: value.object ?? [:])
-                        Rectangle().fill(Color.piHairline).frame(height: 1)
-                    }
-                }
-            }
-            .overlay { if (snapshot["sources"]?.array ?? []).isEmpty { Text("No instruction sources").font(PiFont.caption).foregroundStyle(Color.piInkTertiary) } }
-            .piInset()
-            PiPager(previous: { sourceOffset = max(0, sourceOffset - 32); Task { await refresh() } }, next: { sourceOffset += 32; Task { await refresh() } },
-                    canPrevious: sourceOffset > 0, canNext: sourceOffset + 32 < (snapshot["sourceCount"]?.nonnegativeInteger ?? 0), previousLabel: "Previous Sources", nextLabel: "Next Sources") {
-                Text("\(snapshot["sourceCount"]?.nonnegativeInteger.map(String.init) ?? "n/a") sources")
-            }
-            PiNote("A new user turn refreshes the chain. In-flight requests retain their revision. Descendant guidance is not injected indiscriminately into unrelated directories.")
-        }
+    private func refreshFooter() {
+        status.text = notice.isEmpty ? originID.flatMap({ model.displays[$0]?.skillCatalog.notice }) ?? "" : notice
+        status.isHidden = tab == "mcp" || status.text.isEmpty
+        footerText.set(tab == "mcp"
+            ? "Configuration can launch programs with your permissions. Invocation requires an editing chat and is serialized per project. Read-only chats can discover tools but cannot invoke them. Annotations are not authorization."
+            : "Skill switches apply only to Bello Agent across all projects. Shared skill files and Codex settings are never changed. Running requests retain their frozen inputs; new and queued turns use the updated policy.", color: .piInkTertiary)
+        footer.relayoutAll(); sheet?.needsLayout = true
     }
-    private var settingsView: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: PiSpacing.xl) {
-                PiSettingsGroup(title: "Discovery", footer: "Default discovery includes user and project .agents/skills. No scripts or downloads run during discovery. Arbitrary Pi extensions are not loaded.") {
-                    PiRow(label: "Codex home", detail: "Absolute path") { PiTextField(placeholder: "/Users/you/.codex", text: $home, mono: true) }
-                    PiRow(label: "Fallback basenames", detail: "Comma separated; blank uses config.toml") { PiTextField(placeholder: "AGENTS.md, CLAUDE.md", text: $fallbacks, mono: true) }
-                    PiRow(label: "Override instruction byte budget", last: !overrideBudget) { Toggle("", isOn: $overrideBudget).labelsHidden().accessibilityLabel("Override instruction byte budget") }
-                    if overrideBudget { PiRow(label: "Combined source byte limit", detail: "0–262144", last: true) { PiNumberField(placeholder: "Bytes", value: $byteLimit) } }
+    private func refreshSkills() {
+        managementToggle.isOn = management
+        let skills = filtered
+        skillEmpty.line.text = emptyNotice; skillEmpty.isHidden = !skills.isEmpty
+        skillList.reload(.init(count: skills.count, key: { skills[$0].id }, height: { index, width in ResourceSkillRow.height(skills[index], width: width) }, view: { [weak self] index, existing in
+            guard let self else { return NSView() }; let skill = skills[index]
+            let key = ResourceSkillRow.key(skill)
+            let row = (existing as? ResourceSkillRow).flatMap { $0.contentKey == key ? $0 : nil }
+                ?? ResourceSkillRow(skill: skill, glide: self.skillGlide) { [weak self] in guard let self, self.selectedID != skill.id else { return }; self.selectedID = skill.id; self.bodyOffset = 0; self.loadBody(); self.refreshSkills() }
+            row.row.selected = self.selectedID == skill.id; row.row.isEnabled = self.inheritedEnabled; return row
+        }))
+        var items: [PayloadColumn.Item] = []
+        if let skill = selected {
+            let key = ResourceSkillRow.key(skill) + "|" + skill.reasons.joined(separator: "|") + "|" + String(describing: skill.missingDependencies)
+            if skillCardKey != key {
+                skillCardKey = key
+                let enabled = PiKit.Switch(isOn: model.skillEnabledInBelloAgent(skill.id), label: "Enabled in Bello Agent") { [weak self] in self?.setEnabled(skill, enabled: $0) }
+                enabled.toolTip = "Applies across Bello Agent projects. Enabling does not override Codex or project restrictions."
+                let select = PiKit.Button("Select for Draft", symbol: "plus.circle", style: .primary) { [weak self] in
+                    guard let self, let view = self.originID.flatMap({ self.model.displays[$0] }) else { return }
+                    if self.model.addSkill(skill, view: view) { self.dismiss() }
                 }
-                ForEach(["extraSkillPaths", "piSkillPaths", "piInstructionPaths"], id: \.self) { key in
-                    let paths = options[key]?.array?.compactMap(\.string) ?? []
-                    PiSettingsGroup(title: key) {
-                        if paths.isEmpty {
-                            PiRow(label: "No approved paths", last: true) { Button("Add Approved Path…") { addPath(key) }.buttonStyle(.piSecondaryCompact) }
-                        }
-                        ForEach(Array(paths.enumerated()), id: \.element) { index, path in
-                            PiRow(label: path, last: index == paths.count - 1) {
-                                HStack(spacing: 4) {
-                                    if index == paths.count - 1 { Button("Add…") { addPath(key) }.buttonStyle(.piSecondaryCompact) }
-                                    PiIconButton(symbol: "minus.circle", label: "Remove", size: 24) { options[key] = .array((options[key]?.array ?? []).filter { $0.string != path }) }
-                                }
-                            }
-                        }
-                    }
+                let policy = PiKit.MenuButton(title: "Project Policy", icon: "checkmark.shield", identifier: "skill-project-policy") { [weak self] in
+                    PiMenuEntry.button("Explicit Only") { self?.policy(skill, key: "explicitOnly", enabled: true) }
+                    PiMenuEntry.button("Remove App Explicit-only Override") { self?.policy(skill, key: "explicitOnly", enabled: false) }
+                    PiMenuEntry.divider
+                    PiMenuEntry.button("Disable for This Project") { self?.policy(skill, key: "disabled", enabled: true) }
+                    PiMenuEntry.button("Remove Project Disable Override") { self?.policy(skill, key: "disabled", enabled: false) }
                 }
-                Button("Save Discovery Settings") {
-                    Task { do {
-                        var saved = options
-                        saved["codexHome"] = .string(home)
-                        saved["fallbackNames"] = fallbacks.trimmingCharacters(in: .whitespaces).isEmpty ? nil : .array(fallbacks.split(separator: ",").map { .string($0.trimmingCharacters(in: .whitespaces)) })
-                        saved["maxInstructionBytes"] = overrideBudget ? .number(Double(byteLimit)) : nil
-                        try await model.saveResourceSettings(saved, sessionID: originID); options = saved; notice = "Saved. New user turns use the new settings."; await refresh()
-                    } catch { notice = error.localizedDescription } }
-                }.buttonStyle(.piPrimary)
-            }.padding(2)
+                var rows: [ShellItem] = [
+                    .view(ShellText(skill.description.isEmpty ? "No description" : skill.description, font: PiKit.Font.body, color: .piInk), .fill),
+                    .view(PiKit.KeyValue(key: "Path", value: skill.path, mono: true), .fill), .view(PiKit.KeyValue(key: "SHA-256", value: skill.contentHash, mono: true), .fill),
+                    .view(enabled), .view(ShellText("Other source and project restrictions still apply. A disabled skill is removed from suggestions and unsent selections.", font: PiKit.Font.caption, color: .piInkSecondary), .fill)]
+                if !skill.reasons.isEmpty { rows.append(.view(PiKit.KeyValue(key: "Policy reasons", value: skill.reasons.joined(separator: "\n")), .fill)) }
+                if !skill.missingDependencies.isEmpty { rows.append(.view(PiKit.Note("Unavailable dependencies: " + skill.missingDependencies.map { ($0["type"] ?? "") + ":" + ($0["value"] ?? "") }.joined(separator: ", "), tone: .warning), .fill)) }
+                rows.append(.view(ShellStack(.horizontal, spacing: PiSpacing.sm, padding: NSEdgeInsets(top: 2, left: 0, bottom: 0, right: 0), [.view(select), .view(policy), .spacer(0)]), .fill))
+                skillCard = PiKit.card(ShellStack(.vertical, spacing: 6, rows), padding: PiSpacing.md)
+                skillEnabled = enabled; selectSkill = select; projectPolicy = policy
+            }
+            skillEnabled?.isOn = model.skillEnabledInBelloAgent(skill.id); skillEnabled?.isEnabled = !policyBusy && inheritedEnabled
+            projectPolicy?.isEnabled = !policyBusy && inheritedEnabled
+            selectSkill?.isEnabled = inheritedEnabled && (originID.flatMap({ model.displays[$0] }).map { model.canSelectSkill(skill, view: $0) && $0.skills.count < 8 && !$0.skills.contains(where: { $0.id == skill.id }) } ?? false)
+            if let skillCard { items.append(.view(skillCard)) }
+        } else { skillCardKey = ""; skillCard = nil }
+        sourceText.text = detail
+        sourceLabel.line.text = bodyOffset == 0 ? "Skill file · from the start" : "Skill file · continued"
+        sourceLabel.toolTip = "Reading the skill file from character \(bodyOffset)"
+        bodyPager.canPrevious = bodyOffset != 0 && inheritedEnabled; bodyPager.canNext = nextBody != nil && inheritedEnabled
+        items += [.flexible(sourceBox), .view(bodyPager)]
+        skillDetails.items = items
+    }
+    private func refreshInstructions() {
+        instructionDetails.items = [.view(PiKit.TextLine(PiKit.Line("Global → project root → working directory → explicitly approved additions", font: PiKit.Font.heading, color: .piInk))),
+            .view(PiKit.KeyValue(key: "Root", value: snapshot["root"]?.string ?? "", mono: true), .fill), .view(PiKit.KeyValue(key: "Codex home", value: snapshot["codexHome"]?.string ?? "", mono: true), .fill),
+            .view(PiKit.KeyValue(key: "Included", value: "\(snapshot["instructionBytes"]?.nonnegativeInteger.map(String.init) ?? "n/a") / \(snapshot["instructionLimit"]?.nonnegativeInteger.map(String.init) ?? "n/a") UTF-8 bytes"), .fill),
+            .view(PiKit.KeyValue(key: "Applied revision", value: snapshot["appliedRevision"]?.string ?? "No turn yet", mono: true), .fill)]
+        let sources = snapshot["sources"]?.array ?? []
+        instructionEmpty.isHidden = !sources.isEmpty
+        instructionRows.items = sources.enumerated().flatMap { index, source in [.view(InstructionSourceRow(position: sourceOffset + index + 1, source: source.object ?? [:]), .fill), .view(PayloadHairline(), .fill)] }
+        sourceCount.line.text = "\(snapshot["sourceCount"]?.nonnegativeInteger.map(String.init) ?? "n/a") sources"
+        sourcesPager.canPrevious = sourceOffset > 0 && inheritedEnabled
+        sourcesPager.canNext = sourceOffset + 32 < (snapshot["sourceCount"]?.nonnegativeInteger ?? 0) && inheritedEnabled
+    }
+    private func refreshSettings() {
+        homeField.text = home; fallbacksField.text = fallbacks; budgetToggle.isOn = overrideBudget; budgetField.value = byteLimit
+        var rows = [PiKit.Row(label: "Codex home", detail: "Absolute path", control: homeField), PiKit.Row(label: "Fallback basenames", detail: "Comma separated; blank uses config.toml", control: fallbacksField), PiKit.Row(label: "Override instruction byte budget", last: !overrideBudget, control: budgetToggle)]
+        if overrideBudget { rows.append(PiKit.Row(label: "Combined source byte limit", detail: "0–262144", last: true, control: budgetField)) }
+        var groups: [ShellItem] = [.view(PiKit.SettingsGroup(title: "Discovery", footer: "Default discovery includes user and project .agents/skills. No scripts or downloads run during discovery. Arbitrary Pi extensions are not loaded.", rows: rows), .fill)]
+        for key in ["extraSkillPaths", "piSkillPaths", "piInstructionPaths"] {
+            let paths = options[key]?.array?.compactMap(\.string) ?? []
+            var rows: [PiKit.Row] = []
+            if paths.isEmpty { rows.append(PiKit.Row(label: "No approved paths", last: true, control: PiKit.Button("Add Approved Path…", style: .secondary, compact: true) { [weak self] in self?.addPath(key) })) }
+            for (index, path) in paths.enumerated() {
+                var actions: [ShellItem] = []
+                if index == paths.count - 1 { actions.append(.view(PiKit.Button("Add…", style: .secondary, compact: true) { [weak self] in self?.addPath(key) })) }
+                actions.append(.view(PiKit.IconButton(symbol: "minus.circle", label: "Remove", size: 24) { [weak self] in guard let self else { return }; self.options[key] = .array((self.options[key]?.array ?? []).filter { $0.string != path }); self.refreshSettings() }))
+                rows.append(PiKit.Row(label: path, last: index == paths.count - 1, control: ShellStack(.horizontal, spacing: 4, actions)))
+            }
+            groups.append(.view(PiKit.SettingsGroup(title: key, rows: rows), .fill))
         }
+        groups.append(.view(saveSettings)); settingsColumn.items = groups; settingsPage.needsLayout = true
+    }
+    private func saveDiscovery() {
+        Task { [weak self] in guard let self else { return }; do {
+            var saved = self.options
+            saved["codexHome"] = .string(self.home)
+            saved["fallbackNames"] = self.fallbacks.trimmingCharacters(in: .whitespaces).isEmpty ? nil : .array(self.fallbacks.split(separator: ",").map { .string($0.trimmingCharacters(in: .whitespaces)) })
+            saved["maxInstructionBytes"] = self.overrideBudget ? .number(Double(self.byteLimit)) : nil
+            try await self.model.saveResourceSettings(saved, sessionID: self.originID); self.options = saved; self.notice = "Saved. New user turns use the new settings."; await self.refresh()
+        } catch { self.notice = error.localizedDescription } }
     }
     private func loadOptions() async {
         let origin = originID
         if let id = origin.flatMap(model.record)?.workspaceID ?? model.selectedWorkspaceID {
             let loaded = (try? await model.editableResourceSettings(workspaceID: id)) ?? [:]
-            guard isPresented, origin == originID, !Task.isCancelled else { return }
-            options = loaded
+            guard isPresented, origin == originID, !Task.isCancelled else { return }; options = loaded
         }
         home = options["codexHome"]?.string ?? ""; fallbacks = options["fallbackNames"]?.array?.compactMap(\.string).joined(separator: ", ") ?? ""
         byteLimit = options["maxInstructionBytes"]?.nonnegativeInteger ?? 32768; overrideBudget = options["maxInstructionBytes"] != nil
+        refreshSettings()
     }
     private func addPath(_ key: String) {
         let panel = NSOpenPanel(); panel.canChooseDirectories = key != "piInstructionPaths"; panel.canChooseFiles = true; panel.allowsMultipleSelection = true
         panel.message = "Approve read-only resource discovery."
-        Task {
-            let chosen = await PiQuestion.shared.open(panel)
-            guard !chosen.isEmpty else { return }
-            var paths = options[key]?.array?.compactMap(\.string) ?? []
+        Task { [weak self] in guard let self else { return }; let chosen = await PiQuestion.shared.open(panel); guard !chosen.isEmpty else { return }
+            var paths = self.options[key]?.array?.compactMap(\.string) ?? []
             for url in chosen where !paths.contains(url.path) { paths.append(url.path) }
-            options[key] = .array(paths.prefix(32).map(WireValue.string))
+            self.options[key] = .array(paths.prefix(32).map(WireValue.string)); self.refreshSettings()
         }
     }
     private func policy(_ skill: SkillDescriptor, key: String, enabled: Bool) {
         guard !policyBusy else { return }; policyBusy = true
-        Task { do {
-            defer { policyBusy = false }
-            await loadOptions(); var ids = Set(options[key]?.array?.compactMap(\.string) ?? [])
-            if enabled { ids.insert(skill.id) } else { ids.remove(skill.id) }; options[key] = .array(ids.sorted().map(WireValue.string))
-            try await model.saveResourceSettings(options, sessionID: originID); await refresh()
-        } catch { policyBusy = false; notice = error.localizedDescription } }
+        Task { [weak self] in guard let self else { return }; defer { self.policyBusy = false }; do {
+            await self.loadOptions(); var ids = Set(self.options[key]?.array?.compactMap(\.string) ?? [])
+            if enabled { ids.insert(skill.id) } else { ids.remove(skill.id) }; self.options[key] = .array(ids.sorted().map(WireValue.string))
+            try await self.model.saveResourceSettings(self.options, sessionID: self.originID); await self.refresh()
+        } catch { self.notice = error.localizedDescription } }
     }
     private func setEnabled(_ skill: SkillDescriptor, enabled: Bool) {
         guard !policyBusy else { return }; policyBusy = true
-        Task { defer { policyBusy = false }; do {
-            try await model.setSkillEnabledInBelloAgent(skill,enabled:enabled)
-            if !enabled { management = true }
-            notice = enabled ? "Enabled in Bello Agent. Source and project policies still apply." : "Disabled in Bello Agent across all projects. Codex is unchanged."
-            await loadOptions(); await refresh()
-        } catch { notice = error.localizedDescription } }
+        Task { [weak self] in guard let self else { return }; defer { self.policyBusy = false }; do {
+            try await self.model.setSkillEnabledInBelloAgent(skill, enabled: enabled)
+            if !enabled { self.management = true }
+            self.notice = enabled ? "Enabled in Bello Agent. Source and project policies still apply." : "Disabled in Bello Agent across all projects. Codex is unchanged."
+            await self.loadOptions(); await self.refresh()
+        } catch { self.notice = error.localizedDescription } }
     }
+    private func requestRefresh() { Task { [weak self] in await self?.refresh() } }
     private func refresh() async {
         let origin = originID, offset = sourceOffset, generation = UUID(); refreshGeneration = generation
         await model.loadSkillCatalog(refresh: true, sessionID: origin)
         guard isPresented, origin == originID, generation == refreshGeneration, !Task.isCancelled else { return }
-        if let catalog = origin.flatMap({ model.displays[$0]?.skillCatalog }) {
-            searchEntries = catalog.entries; notice = catalog.notice; reconcileSelection()
-        }
+        if let catalog = origin.flatMap({ model.displays[$0]?.skillCatalog }) { searchEntries = catalog.entries; notice = catalog.notice; reconcileSelection() }
         do {
             let page = try await model.resourceRequest(params: ["sourceOffset": .number(Double(offset)), "refresh": .bool(true)], sessionID: origin)
             guard isPresented, origin == originID, generation == refreshGeneration, offset == sourceOffset, !Task.isCancelled else { return }
-            snapshot = page
-            reconcileSelection()
-            loadBody()
+            snapshot = page; reconcileSelection(); loadBody(); refreshUI()
         } catch {
-            guard isPresented, origin == originID, generation == refreshGeneration, offset == sourceOffset, !Task.isCancelled else { return }
-            notice = error.localizedDescription
+            guard isPresented, origin == originID, generation == refreshGeneration, offset == sourceOffset, !Task.isCancelled else { return }; notice = error.localizedDescription
         }
     }
     private var emptyNotice: String {
@@ -295,126 +297,136 @@ struct ResourceInspector: View {
     private func loadBody() {
         detailTask?.cancel(); let generation = UUID(); detailGeneration = generation
         let id = selectedID, offset = bodyOffset, origin = originID
-        guard !id.isEmpty else { detail = "Select a skill to inspect its source and policy."; nextBody = nil; return }
+        guard !id.isEmpty else { detail = "Select a skill to inspect its source and policy."; nextBody = nil; refreshSkills(); return }
         let hash = selected?.contentHash, metadata = selected?.metadataHash
-        detail = "Loading skill source…"; nextBody = nil
-        detailTask = Task { do {
-            let page = try await model.resourceRequest("resources.skill.read", params: ["skillId": .string(id), "offset": .number(Double(offset))], sessionID: origin)
-            guard !Task.isCancelled, generation == detailGeneration, id == selectedID, offset == bodyOffset, origin == originID, hash == selected?.contentHash, metadata == selected?.metadataHash else { return }
-            detail = page["text"]?.string ?? ""; nextBody = page["next"]?.number
+        detail = "Loading skill source…"; nextBody = nil; refreshSkills()
+        detailTask = Task { [weak self] in guard let self else { return }; do {
+            let page = try await self.model.resourceRequest("resources.skill.read", params: ["skillId": .string(id), "offset": .number(Double(offset))], sessionID: origin)
+            guard !Task.isCancelled, generation == self.detailGeneration, id == self.selectedID, offset == self.bodyOffset, origin == self.originID, hash == self.selected?.contentHash, metadata == self.selected?.metadataHash else { return }
+            self.detail = page["text"]?.string ?? ""; self.nextBody = page["next"]?.number; self.refreshSkills()
         } catch {
-            guard !Task.isCancelled, generation == detailGeneration, id == selectedID, offset == bodyOffset, origin == originID, hash == selected?.contentHash, metadata == selected?.metadataHash else { return }
-            detail = error.localizedDescription
+            guard !Task.isCancelled, generation == self.detailGeneration, id == self.selectedID, offset == self.bodyOffset, origin == self.originID, hash == self.selected?.contentHash, metadata == self.selected?.metadataHash else { return }
+            self.detail = error.localizedDescription; self.refreshSkills()
         } }
     }
 }
 
-// Kept in this already-registered source file: the checked-in Xcode project needs
-// no generated-file edit to make MCP accessible from the existing inspector.
-@MainActor
-private struct NativeMCPInspector: View {
-    @ObservedObject var model: WorkspaceModel
-    @State private var servers: [String] = []
-    @State private var server = ""
-    @State private var tool = ""
-    @State private var tools: [[String: WireValue]] = []
-    @State private var targets = "[]"
-    @State private var arguments = "{}"
-    @State private var result = ""
-    @State private var notice = ""
-    @State private var configuration = "{\"servers\":{}}"
-    @State private var editingConfiguration = false
-    @State private var configurationRevision: Int64 = 0
-    /// The project whose configuration the editor holds, fixed when editing began.
-    @State private var configurationProject: String?
-    @State private var busy = false
-    @State private var unknown = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: PiSpacing.sm) {
-            HStack(spacing: PiSpacing.sm) {
-                Button { editConfiguration() } label: { Label("Edit Vault Configuration…", systemImage: "key") }.disabled(busy)
-                Button { perform { try await refreshServers() } } label: { Label("Refresh Servers", systemImage: "arrow.clockwise") }.disabled(busy)
-                Button { removeAll() } label: { Label("Remove All MCP Servers…", systemImage: "trash") }
-                    .buttonStyle(.piGhost)
-                    .disabled(busy || model.mcpRemovalInProgress || model.selectedWorkspaceID.map { model.mcpServerCount($0) == 0 } ?? true)
-                    .accessibilityHint("Deletes this project's saved MCP server configuration after asking")
-                Spacer()
-                if busy { PiSpinner(controlSize: .small) }
+/// Vault-backed MCP discovery/invocation. Refreshing controls never starts a
+/// helper; removing the saved servers clears the list without reconnecting.
+@MainActor final class NativeMCPInspector: DashView, InheritsEnabled {
+    let model: WorkspaceModel
+    var inheritedEnabled = true { didSet { refreshUI() } }
+    private var servers: [String] = [], server = "", tool = "", tools: [[String: WireValue]] = []
+    private var targets = "[]", arguments = "{}", result = "", notice = "", configuration = "{\"servers\":{}}"
+    private var editingConfiguration = false, configurationRevision: Int64 = 0, configurationProject: String?
+    private var busy = false, unknown = false, started = false, confirmationPending = false
+    private lazy var observer = ShellObserver { [weak self] in self?.refreshUI() }
+    let edit = PiKit.Button("Edit Vault Configuration…", symbol: "key", style: .secondary)
+    let refresh = PiKit.Button("Refresh Servers", symbol: "arrow.clockwise", style: .secondary)
+    let remove = PiKit.Button("Remove All MCP Servers…", symbol: "trash", style: .ghost)
+    let save = PiKit.Button("Save and Connect…", style: .primary)
+    let cancelEdit = PiKit.Button("Cancel Editing", style: .ghost)
+    let listTools = PiKit.Button("List Tools", symbol: "list.bullet", style: .secondary)
+    let describe = PiKit.Button("Describe Selected Tools", style: .secondary, compact: true)
+    let invokeButton = PiKit.Button("Invoke One Tool…", style: .secondary, compact: true)
+    let acknowledgeButton = PiKit.Button("I Reviewed the Previous Invocation’s Effects…", style: .secondary, compact: true)
+    let serverField = PiKit.TextField(placeholder: "One server", mono: true)
+    let toolField = PiKit.TextField(placeholder: "One tool", mono: true)
+    let configurationEditor = NativeCodeEditorView()
+    let targetsEditor = NativeCodeEditorView(text: "[]", accessibilityLabel: "Schema targets JSON")
+    let argumentsEditor = NativeCodeEditorView(text: "{}", accessibilityLabel: "Invocation arguments JSON")
+    private lazy var serverPicker = PiKit.Dropdown(selection: "", items: [("", "Choose a server")], placeholder: "Choose a server", icon: "server.rack", accessibilityName: "MCP server") { [weak self] value in self?.server = value; self?.refreshUI() }
+    private let spinner = PiKit.spinner(controlSize: .small)
+    private let list = LazyStackView(frame: .zero)
+    private let empty = PiKit.TextLine(PiKit.Line("Choose a server and list its tools", font: PiKit.Font.caption, color: .piInkTertiary))
+    private let resultText = PagedTextView(text: "")
+    private lazy var resultBox = PiKit.inset(resultText)
+    private let column = PayloadColumn()
+    private let detailColumn = PayloadColumn()
+    private let status = ShellNote("", tone: .danger)
+    private let glide = PiKit.SelectionGlide()
+    private lazy var configurationCard = PiKit.card(ShellStack(.vertical, spacing: PiSpacing.sm, [
+        .view(PiKit.TextLine(PiKit.Line("Vault MCP configuration", font: PiKit.Font.heading, color: .piInk))),
+        .view(PiKit.inset(PayloadViewport(configurationEditor, height: 160), sunken: true), .fill),
+        .view(ShellStack(.horizontal, spacing: PiSpacing.sm, [.view(save), .view(cancelEdit), .spacer(0)]), .fill)]), padding: PiSpacing.md)
+    private lazy var warning: NSView = {
+        let icon = PiKit.SymbolView(PiKit.Symbol("exclamationmark.triangle.fill", size: 13), color: .piWarning)
+        let words = ShellText("The previous invocation's outcome is unknown. Check its effects before acknowledging.", font: PiKit.Font.caption, color: .piInk)
+        let row = ShellStack(.horizontal, spacing: PiSpacing.sm, padding: NSEdgeInsets(top: PiSpacing.sm, left: PiSpacing.sm, bottom: PiSpacing.sm, right: PiSpacing.sm), [.view(icon), .view(words, .flexible), .spacer(8), .view(acknowledgeButton)])
+        return PiKit.Box(fill: NSColor.piWarning.piOpacity(0.10), cornerRadius: PiRadius.sm, content: row)
+    }()
+    private lazy var split = PayloadSplit(leading: PiKit.inset(PayloadEmptyOverlay(content: list, empty: empty)), trailing: detailColumn, minimum: 250, ideal: 300, maximum: 380, trailingMinimum: 500)
+    init(model: WorkspaceModel) {
+        self.model = model
+        super.init(frame: .zero); addSubview(column)
+        let actions = ShellStack(.horizontal, spacing: PiSpacing.sm, [.view(edit), .view(refresh), .view(remove), .spacer(8), .view(spinner)])
+        let chooser = ShellStack(.horizontal, spacing: PiSpacing.sm, [.view(serverPicker), .view(listTools), .spacer(8)])
+        detailColumn.items = [
+            .view(PiKit.SectionHeader("Describe", subtitle: "Schema targets: a JSON array of {server, tool}; up to 32.", accessory: describe)),
+            .fixed(PiKit.inset(targetsEditor), 60),
+            .view(PiKit.SectionHeader("Invoke once", subtitle: "One server, one tool, one JSON object of arguments.", accessory: invokeButton)),
+            .view(ShellStack(.horizontal, spacing: PiSpacing.sm, [.view(serverField, .fill), .view(toolField, .fill)])),
+            .fixed(PiKit.inset(argumentsEditor), 66), .flexible(resultBox)]
+        column.items = [.view(actions), .view(PiKit.Note("MCP configuration and explicit credentials are stored in the single Keychain vault. External configuration files and inherited credential references are retired.")), .view(configurationCard), .view(chooser), .flexible(split, ideal: 400), .view(warning), .view(status)]
+        remove.setAccessibilityHelp("Deletes this project's saved MCP server configuration after asking")
+        edit.onPress = { [weak self] in self?.editConfiguration() }
+        refresh.onPress = { [weak self] in self?.perform { [weak self] in try await self?.refreshServers() } }
+        remove.onPress = { [weak self] in self?.removeAll() }
+        listTools.onPress = { [weak self] in self?.perform { [weak self] in try await self?.loadTools() } }
+        save.onPress = { [weak self] in self?.saveConfiguration() }
+        cancelEdit.onPress = { [weak self] in self?.editingConfiguration = false; self?.configuration = "{\"servers\":{}}"; self?.configurationProject = nil; self?.refreshUI() }
+        describe.onPress = { [weak self] in guard let self else { return }; let targets = self.targets; self.perform { [weak self] in guard let self else { return }
+            let value = try self.parse(targets); guard value.array != nil else { throw HostError.failure("Schema targets must be a JSON array") }
+            self.result = WireValue.object(try await self.model.resourceRequest("mcp.describe", params: ["targets": value])).pretty
+        } }
+        invokeButton.onPress = { [weak self] in self?.invoke() }; acknowledgeButton.onPress = { [weak self] in self?.acknowledge() }
+        serverField.onChange = { [weak self] value in self?.server = value; self?.refreshUI() }
+        toolField.onChange = { [weak self] value in self?.tool = value; self?.refreshUI() }
+        configurationEditor.onChange = { [weak self] in self?.configuration = $0 }
+        targetsEditor.onChange = { [weak self] in self?.targets = $0 }; argumentsEditor.onChange = { [weak self] in self?.arguments = $0 }
+        list.spacing = 2; list.insets = NSEdgeInsets(top: PiSpacing.sm, left: PiSpacing.sm, bottom: PiSpacing.sm, right: PiSpacing.sm)
+        observer.observe(publisher: model.$configuration); observer.observe(publisher: model.$selectedWorkspaceID); observer.observe(publisher: model.$mcpRemovalInProgress)
+        refreshUI()
+    }
+    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    override func layout() { super.layout(); column.frame = bounds }
+    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); if window != nil, !started { started = true; perform { [weak self] in try await self?.refreshServers() } } }
+    private func refreshUI() {
+        let enabled = inheritedEnabled && !busy && !confirmationPending
+        edit.isEnabled = enabled; refresh.isEnabled = enabled
+        remove.isEnabled = enabled && !model.mcpRemovalInProgress && (model.selectedWorkspaceID.map { model.mcpServerCount($0) > 0 } ?? false)
+        save.isEnabled = enabled; cancelEdit.isEnabled = enabled
+        listTools.isEnabled = enabled && !server.isEmpty; describe.isEnabled = enabled
+        invokeButton.isEnabled = enabled && !server.isEmpty && !tool.isEmpty && !unknown
+        acknowledgeButton.isEnabled = enabled
+        serverPicker.isEnabled = inheritedEnabled
+        serverPicker.items = [("", "Choose a server")] + servers.map { ($0, $0) }; serverPicker.selection = server
+        serverField.text = server; toolField.text = tool
+        serverField.field.isEnabled = inheritedEnabled; toolField.field.isEnabled = inheritedEnabled
+        configurationEditor.text = configuration; targetsEditor.text = targets; argumentsEditor.text = arguments
+        for editor in [configurationEditor, targetsEditor, argumentsEditor] { editor.editor.isEditable = inheritedEnabled }
+        configurationCard.isHidden = !editingConfiguration; spinner.isHidden = !busy
+        resultText.text = result; empty.isHidden = !tools.isEmpty; warning.isHidden = !unknown
+        status.text = busy ? "Operation in progress. No automatic retry will be made." : notice; status.isHidden = status.text.isEmpty
+        let values = tools
+        list.reload(.init(count: values.count, key: { "\($0):" + (values[$0]["name"]?.string ?? "") }, height: { index, width in MCPToolRow.height(values[index], width: width) }, view: { [weak self] index, existing in
+            guard let self else { return NSView() }; let entry = values[index], key = WireValue.object(entry).pretty
+            let row = (existing as? MCPToolRow).flatMap { $0.contentKey == key ? $0 : nil } ?? MCPToolRow(entry: entry, glide: self.glide) { [weak self] in guard let self else { return }
+                self.tool = entry["name"]?.string ?? ""; self.targets = WireValue.array([.object(["server": .string(self.server), "tool": .string(self.tool)])]).pretty; self.refreshUI()
             }
-            PiNote("MCP configuration and explicit credentials are stored in the single Keychain vault. External configuration files and inherited credential references are retired.")
-            if editingConfiguration {
-                PiCard(padding: PiSpacing.md) {
-                    VStack(alignment: .leading, spacing: PiSpacing.sm) {
-                        Text("Vault MCP configuration").font(PiFont.heading)
-                        NativeCodeEditor(text: $configuration).piInset(sunken: true).frame(height: 160)
-                        HStack {
-                            Button("Save and Connect…") { saveConfiguration() }.buttonStyle(.piPrimary).disabled(busy)
-                            Button("Cancel Editing") { editingConfiguration = false; configuration = "{\"servers\":{}}" }.buttonStyle(.piGhost)
-                        }
-                    }
-                }
-            }
-            HStack(spacing: PiSpacing.sm) {
-                PiDropdown(selection: $server, items: [("", "Choose a server")] + servers.map { ($0, $0) }, placeholder: "Choose a server", icon: "server.rack", accessibilityName: "MCP server")
-                Button { perform { try await loadTools() } } label: { Label("List Tools", systemImage: "list.bullet") }.disabled(busy || server.isEmpty)
-                Spacer()
-            }
-            HSplitView {
-                ScrollView {
-                    LazyVStack(spacing: 2) {
-                        ForEach(Array(tools.enumerated()), id: \.offset) { _, entry in
-                            let name = entry["name"]?.string ?? ""
-                            PiSelectableRow(selected: name == tool, action: {
-                                tool = name
-                                targets = WireValue.array([.object(["server": .string(server), "tool": .string(tool)])]).pretty
-                            }) {
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(name).font(PiFont.heading).foregroundStyle(Color.piInk)
-                                    Text(entry["description"]?.string ?? "").font(PiFont.caption).foregroundStyle(Color.piInkSecondary).lineLimit(3)
-                                }
-                            }
-                        }
-                    }.padding(PiSpacing.sm)
-                }
-                .overlay { if tools.isEmpty { Text("Choose a server and list its tools").font(PiFont.caption).foregroundStyle(Color.piInkTertiary) } }
-                .piInset().frame(minWidth: 250, idealWidth: 300, maxWidth: 380).padding(.trailing, PiSpacing.sm)
-                VStack(alignment: .leading, spacing: PiSpacing.sm) {
-                    PiSectionHeader("Describe", subtitle: "Schema targets: a JSON array of {server, tool}; up to 32.") {
-                        Button("Describe Selected Tools") {
-                            perform {
-                                let value = try parse(targets); guard value.array != nil else { throw HostError.failure("Schema targets must be a JSON array") }
-                                result = WireValue.object(try await model.resourceRequest("mcp.describe", params: ["targets": value])).pretty
-                            }
-                        }.buttonStyle(.piSecondaryCompact).disabled(busy)
-                    }
-                    NativeCodeEditor(text: $targets, accessibilityLabel: "Schema targets JSON").piInset().frame(height: 60)
-                    PiSectionHeader("Invoke once", subtitle: "One server, one tool, one JSON object of arguments.") {
-                        Button("Invoke One Tool…") { invoke() }.buttonStyle(.piSecondaryCompact).disabled(busy || server.isEmpty || tool.isEmpty || unknown)
-                    }
-                    HStack { PiTextField(placeholder: "One server", text: $server, mono: true); PiTextField(placeholder: "One tool", text: $tool, mono: true) }
-                    NativeCodeEditor(text: $arguments, accessibilityLabel: "Invocation arguments JSON").piInset().frame(height: 66)
-                    PagedTextView(text: result).piInset()
-                }.frame(minWidth: 500).padding(.leading, PiSpacing.sm)
-            }
-            if unknown {
-                HStack(spacing: PiSpacing.sm) {
-                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Color.piWarning)
-                    Text("The previous invocation's outcome is unknown. Check its effects before acknowledging.").font(PiFont.caption)
-                    Spacer()
-                    Button("I Reviewed the Previous Invocation’s Effects…") { acknowledge() }.buttonStyle(.piSecondaryCompact).disabled(busy)
-                }.padding(PiSpacing.sm).background(Color.piWarning.opacity(0.10), in: RoundedRectangle(cornerRadius: PiRadius.sm, style: .continuous))
-            }
-            PiStatusLine(text: busy ? "Operation in progress. No automatic retry will be made." : notice)
-        }.task { perform { try await refreshServers() } }
+            row.row.selected = entry["name"]?.string == self.tool; row.row.isEnabled = self.inheritedEnabled; return row
+        }))
+        column.needsLayout = true; invalidateIntrinsicContentSize(); PiKit.sizeChanged(self)
     }
     private func parse(_ text: String) throws -> WireValue {
         guard text.utf8.count <= 262144 else { throw HostError.failure("JSON input exceeds 256 KiB") }
         return try JSONDecoder().decode(WireValue.self, from: Data(text.utf8))
     }
     private func perform(_ operation: @escaping @MainActor () async throws -> Void) {
-        guard !busy else { return }; busy = true
-        Task { defer { busy = false }; do { try await operation() } catch { notice = error.localizedDescription } }
+        guard !busy, inheritedEnabled else { return }; busy = true; refreshUI()
+        Task { [weak self] in guard let self else { return }; defer { self.busy = false; self.refreshUI() }
+            do { try await operation() } catch { self.notice = error.localizedDescription }
+        }
     }
     private func refreshServers() async throws {
         let value = try await model.resourceRequest("mcp.list")
@@ -430,77 +442,115 @@ private struct NativeMCPInspector: View {
     private func editConfiguration() {
         guard let id = model.selectedWorkspaceID else { return }
         configuration = (model.configuration.mcp[id] ?? .object(["servers": .object([:])])).pretty
-        configurationRevision = model.configuration.revision; configurationProject = id; editingConfiguration = true
+        configurationRevision = model.configuration.revision; configurationProject = id; editingConfiguration = true; refreshUI()
     }
     private func saveConfiguration() {
         guard let project = configurationProject else { return }
         let draft = configuration, revision = configurationRevision
-        confirmThen("Trust these MCP servers?",
-                    "Saving this configuration can authorize programs and authenticated endpoints with your account's permissions. Review the JSON first. Only explicit server credentials are sent to that server.",
-                    action: "Save in Vault and Connect") {
-            try await model.saveMCPConfiguration(parse(draft), expectedRevision: revision, workspaceID: project)
-            editingConfiguration = false; configuration = "{\"servers\":{}}"; configurationProject = nil
-            if model.selectedWorkspaceID == project { try await refreshServers() }
+        confirmThen("Trust these MCP servers?", "Saving this configuration can authorize programs and authenticated endpoints with your account's permissions. Review the JSON first. Only explicit server credentials are sent to that server.", action: "Save in Vault and Connect") { [weak self] in
+            guard let self else { return }
+            try await self.model.saveMCPConfiguration(self.parse(draft), expectedRevision: revision, workspaceID: project)
+            self.editingConfiguration = false; self.configuration = "{\"servers\":{}}"; self.configurationProject = nil
+            if self.model.selectedWorkspaceID == project { try await self.refreshServers() }
         }
     }
-    /// Asks, then removes the selected project's saved servers. The list is
-    /// cleared here rather than refreshed: refreshing would start a helper.
     private func removeAll() {
-        guard !busy, let project = model.selectedWorkspaceID else { return }
-        busy = true
-        Task {
-            defer { busy = false }
-            guard let outcome = await model.confirmAndRemoveAllMCPServers() else { return }
-            notice = outcome
-            if model.selectedWorkspaceID == project, model.mcpServerCount(project) == 0 { servers = []; server = ""; tools = []; result = "" }
+        guard !busy, inheritedEnabled, let project = model.selectedWorkspaceID else { return }; busy = true; refreshUI()
+        Task { [weak self] in
+            guard let self else { return }; defer { self.busy = false; self.refreshUI() }
+            guard let outcome = await self.model.confirmAndRemoveAllMCPServers() else { return }
+            self.notice = outcome
+            if self.model.selectedWorkspaceID == project, self.model.mcpServerCount(project) == 0 { self.servers = []; self.server = ""; self.tools = []; self.result = "" }
         }
     }
     private func invoke() {
-        guard let id = model.resourceTargetSessionID ?? model.selectedID, let chat = model.record(id), chat.toolMode == "editing", chat.connectionTest != true else { notice = "Select an editing chat before invoking MCP."; return }
-        confirmThen("Invoke \(server) / \(tool)?",
-                    "Exactly one invocation will be sent. It may change external state. Inspect the schema and arguments first. No automatic retry is performed.",
-                    action: "Invoke Once") {
-            let value = try parse(arguments); guard value.object != nil else { throw HostError.failure("Invocation arguments must be one JSON object") }
-            _ = try await model.open(chat)
-            do { result = WireValue.object(try await model.resourceRequest("mcp.invoke", params: ["server": .string(server), "tool": .string(tool), "arguments": value], sessionID: id)).pretty }
-            catch { try? await refreshServers(); throw error }
-            try await refreshServers()
+        guard let id = model.resourceTargetSessionID ?? model.selectedID, let chat = model.record(id), chat.toolMode == "editing", chat.connectionTest != true else { notice = "Select an editing chat before invoking MCP."; refreshUI(); return }
+        // The confirmed target and arguments belong to this press, even if
+        // the reader edits another field before the confirmation returns.
+        let server = server, tool = tool, arguments = arguments
+        confirmThen("Invoke \(server) / \(tool)?", "Exactly one invocation will be sent. It may change external state. Inspect the schema and arguments first. No automatic retry is performed.", action: "Invoke Once") { [weak self] in
+            guard let self else { return }
+            let value = try self.parse(arguments); guard value.object != nil else { throw HostError.failure("Invocation arguments must be one JSON object") }
+            _ = try await self.model.open(chat)
+            do { self.result = WireValue.object(try await self.model.resourceRequest("mcp.invoke", params: ["server": .string(server), "tool": .string(tool), "arguments": value], sessionID: id)).pretty }
+            catch { try? await self.refreshServers(); throw error }
+            try await self.refreshServers()
         }
     }
     private func acknowledge() {
-        confirmThen("Have you checked the previous invocation’s effects?",
-                    "Acknowledging permits a new invocation; it does not retry, cancel, or undo the previous one.",
-                    action: "I Checked — Acknowledge") {
-            _ = try await model.resourceRequest("mcp.acknowledgeUnknown", params: ["confirmed": .bool(true)]); try await refreshServers()
+        confirmThen("Have you checked the previous invocation’s effects?", "Acknowledging permits a new invocation; it does not retry, cancel, or undo the previous one.", action: "I Checked — Acknowledge") { [weak self] in
+            guard let self else { return }; _ = try await self.model.resourceRequest("mcp.acknowledgeUnknown", params: ["confirmed": .bool(true)]); try await self.refreshServers()
         }
     }
-    /// Asks on a sheet and, if the reader agrees, runs the work through the
-    /// same busy guard `perform` uses. A modal run loop would stop the app.
     private func confirmThen(_ title: String, _ detail: String, action: String, _ operation: @escaping @MainActor () async throws -> Void) {
-        guard !busy else { return }
-        Task {
-            guard await PiQuestion.shared.confirm(title, detail, action: action) else { return }
-            perform(operation)
+        guard !busy, !confirmationPending, inheritedEnabled else { return }; confirmationPending = true; refreshUI()
+        Task { [weak self] in
+            guard let self else { return }
+            let accepted = await PiQuestion.shared.confirm(title, detail, action: action)
+            self.confirmationPending = false; self.refreshUI()
+            guard accepted else { return }; self.perform(operation)
         }
     }
 }
 
-private struct InstructionSourceRow: View {
-    let position: Int
-    let source: [String: WireValue]
-    private var state: String { source["state"]?.string ?? "" }
-    var body: some View {
-        HStack(alignment: .top, spacing: PiSpacing.sm) {
-            Text("\(position)").font(PiFont.caption.monospacedDigit()).foregroundStyle(Color.piInkTertiary).frame(width: 22, alignment: .trailing)
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 4) {
-                    PiBadge(text: state, tone: state == "included" ? .success : state == "skipped" || state == "omitted" ? .warning : .neutral)
-                    PiBadge(text: source["scope"]?.string ?? "")
-                }
-                Text(source["path"]?.string ?? "").font(PiFont.mono).foregroundStyle(Color.piInk).textSelection(.enabled).lineLimit(1).truncationMode(.middle)
-                if let reason = source["reason"]?.string, !reason.isEmpty { Text(reason).font(PiFont.caption).foregroundStyle(Color.piInkSecondary) }
-                Text("SHA-256 " + (source["hash"]?.string ?? "unavailable")).font(PiFont.caption).foregroundStyle(Color.piInkTertiary).textSelection(.enabled).lineLimit(1).truncationMode(.middle)
-            }
-        }.padding(.horizontal, PiSpacing.md).padding(.vertical, 8)
+@MainActor private final class ResourceSkillRow: DashView {
+    let row: PiKit.SelectableRow
+    let contentKey: String
+    static func key(_ skill: SkillDescriptor) -> String { [skill.id, skill.name, skill.path, skill.description, skill.contentHash, skill.metadataHash, skill.policy, skill.scope].joined(separator: "|") }
+    init(skill: SkillDescriptor, glide: PiKit.SelectionGlide, action: @escaping () -> Void) {
+        contentKey = Self.key(skill)
+        let policy = PiKit.Badge(text: ResourceInspector.policyLabel(skill.policy), tone: ResourceInspector.policyTone(skill.policy)); policy.toolTip = "Skill policy · " + skill.policy
+        let path = PiKit.TextLine(PiKit.Line(skill.path, font: PiKit.Font.caption, color: .piInkTertiary)); path.truncation = .middle
+        let content = ShellStack(.vertical, spacing: 4, [.view(ShellText("/" + skill.name, font: PiKit.Font.heading, color: .piInk), .fill), .view(ShellStack(.horizontal, spacing: 4, [.view(policy), .view(PiKit.Badge(text: skill.scope)), .spacer(0)]), .fill), .view(path, .fill)])
+        row = PiKit.SelectableRow(content: content, glide: glide, action: action)
+        super.init(frame: .zero); addSubview(row)
     }
+    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    static func height(_ skill: SkillDescriptor, width: CGFloat) -> CGFloat { ShellWrap.height("/" + skill.name, font: PiKit.Font.heading, width: max(0, width - 20)) + 8 + PiKit.Line("Ag", font: PiKit.Font.micro, color: .piInk).lineHeight + 7 + PiKit.Line("Ag", font: PiKit.Font.caption, color: .piInk).lineHeight + 16 }
+    override func layout() { super.layout(); row.frame = bounds }
+}
+
+@MainActor private final class MCPToolRow: DashView {
+    let row: PiKit.SelectableRow
+    let contentKey: String
+    init(entry: [String: WireValue], glide: PiKit.SelectionGlide, action: @escaping () -> Void) {
+        contentKey = WireValue.object(entry).pretty
+        let title = ShellText(entry["name"]?.string ?? "", font: PiKit.Font.heading, color: .piInk)
+        let description = ShellText(entry["description"]?.string ?? "", font: PiKit.Font.caption, color: .piInkSecondary, maximumLines: 3)
+        row = PiKit.SelectableRow(content: ShellStack(.vertical, spacing: 3, [.view(title, .fill), .view(description, .fill)]), glide: glide, action: action)
+        super.init(frame: .zero); addSubview(row)
+    }
+    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    static func height(_ entry: [String: WireValue], width: CGFloat) -> CGFloat {
+        let count = min(3, max(1, ShellWrap.ranges(entry["description"]?.string ?? "", font: PiKit.Font.caption, width: max(0, width - 20)).count))
+        return ShellWrap.height(entry["name"]?.string ?? "", font: PiKit.Font.heading, width: max(0, width - 20)) + 3 + CGFloat(count) * PiKit.Line("Ag", font: PiKit.Font.caption, color: .piInk).lineHeight + 16
+    }
+    override func layout() { super.layout(); row.frame = bounds }
+}
+
+@MainActor final class InstructionSourceRow: DashView, PiKit.WidthSizing {
+    let position: Int, source: [String: WireValue]
+    private let content: ShellStack
+    init(position: Int, source: [String: WireValue]) {
+        self.position = position; self.source = source
+        let state = source["state"]?.string ?? ""
+        let badges = ShellStack(.horizontal, spacing: 4, [.view(PiKit.Badge(text: state, tone: state == "included" ? .success : state == "skipped" || state == "omitted" ? .warning : .neutral)), .view(PiKit.Badge(text: source["scope"]?.string ?? "")), .spacer(0)])
+        let path = PayloadSingleLine(source["path"]?.string ?? "", font: PiKit.Font.mono, color: .piInk)
+        let hash = PayloadSingleLine("SHA-256 " + (source["hash"]?.string ?? "unavailable"), font: PiKit.Font.caption, color: .piInkTertiary)
+        var rows: [ShellItem] = [.view(badges, .fill), .view(path, .fill)]
+        if let reason = source["reason"]?.string, !reason.isEmpty { rows.append(.view(ShellText(reason, font: PiKit.Font.caption, color: .piInkSecondary), .fill)) }
+        rows.append(.view(hash, .fill))
+        let number = ShellStack(.horizontal, spacing: 0, [.spacer(0), .view(PiKit.TextLine(PiKit.Line("\(position)", font: PiKit.Font.monospacedDigits(PiKit.Font.caption), color: .piInkTertiary)))])
+        content = ShellStack(.horizontal, spacing: PiSpacing.sm, alignment: .top, padding: NSEdgeInsets(top: 8, left: PiSpacing.md, bottom: 8, right: PiSpacing.md), [.view(number, .fixed(22)), .view(ShellStack(.vertical, spacing: 3, rows), .fill)])
+        super.init(frame: .zero); addSubview(content)
+    }
+    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    func height(forWidth width: CGFloat) -> CGFloat { content.height(forWidth: width) }
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: height(forWidth: bounds.width > 0 ? bounds.width : 900)) }
+    override func layout() { super.layout(); content.frame = bounds }
+}
+
+@MainActor private final class PayloadHairline: DashView {
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: 1) }
+    override func draw(_ dirtyRect: NSRect) { NSColor.piHairline.setFill(); bounds.fill() }
 }
