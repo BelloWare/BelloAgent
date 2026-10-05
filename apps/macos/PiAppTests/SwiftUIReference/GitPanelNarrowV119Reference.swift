@@ -5,8 +5,8 @@ import GitView
 
 // Frozen narrow History layout from 0.1.119 (e59e41a7), GitPanel.swift.
 // The toolbar, filters, rows, outer VStack and split use the original sizing.
-// Actions are inert and the diff is a clear flexible child: this reference
-// measures panel geometry, rather than duplicating Git reads or diff drawing.
+// Actions are inert. The selected detail retains the original representable
+// factory and hosted SwiftUI heading, rather than a flexible placeholder.
 // Background observers do not participate in layout.
 
 @MainActor enum GitNarrowReferencePart: String, CaseIterable {
@@ -43,19 +43,21 @@ import GitView
     @ObservedObject var controller: GitController
     let geometry: GitNarrowReferenceGeometry
     var project: String? = nil
+    @State private var wide = true
 
     var body: some View {
         VStack(spacing: 0) {
             header.gitNarrowFrame(.header, geometry)
             toolbar.gitNarrowFrame(.toolbar, geometry)
             Rectangle().fill(Color.piHairline).frame(height: 1)
-            GitPanelNarrowSplitV119Reference {
+            GitPanelNarrowSplitV119Reference(wide: wide) {
                 history.gitNarrowFrame(.history, geometry)
                 Rectangle().fill(Color.piHairline)
-                Color.clear.gitNarrowFrame(.detail, geometry)
+                GitPanelDetailNarrowV119Reference(controller: controller).gitNarrowFrame(.detail, geometry)
             }
         }
         .background(Color.piContent)
+        .onGeometryChange(for: Bool.self, of: { $0.size.width >= 900 }) { wide = $0 }
         .gitNarrowFrame(.panel, geometry)
     }
 
@@ -83,20 +85,26 @@ import GitView
                 Label(controller.displayRoot, systemImage: "folder").font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
                     .lineLimit(1).truncationMode(.middle)
                 PiMenuButton(title: controller.status.branch.isEmpty ? "detached" : controller.status.branch,
-                             icon: "arrow.triangle.branch", maxLabelWidth: 150) {
+                             icon: "arrow.triangle.branch", maxLabelWidth: wide ? nil : 150) {
                     PiMenuEntry.button("Fixture") {}
                 }.gitNarrowFrame(.branch, geometry)
                 remoteControls.gitNarrowFrame(.remote, geometry)
                 PiMenuButton(title: "Stash", icon: "tray.and.arrow.down") {
                     PiMenuEntry.button("Fixture") {}
                 }.gitNarrowFrame(.stash, geometry)
-                Spacer(minLength: 0)
+                if wide {
+                    PiTabs(selection: .constant(GitController.Panel.history), items: GitController.Panel.allCases.map { ($0, $0.title) })
+                        .gitNarrowFrame(.tabs, geometry)
+                    Spacer()
+                } else { Spacer(minLength: 0) }
             }.gitNarrowFrame(.firstRow, geometry)
+            if !wide {
             HStack(spacing: PiSpacing.sm) {
                 PiTabs(selection: .constant(GitController.Panel.history),
                        items: GitController.Panel.allCases.map { ($0, $0.title) })
                     .gitNarrowFrame(.tabs, geometry)
                 Spacer()
+            }
             }
         }.padding(.horizontal, PiSpacing.lg).padding(.vertical, PiSpacing.sm)
     }
@@ -203,12 +211,21 @@ import GitView
 // The released narrow half of GitPanelSplit, including its original least
 // height proposal. No native split helper is used by the reference.
 private struct GitPanelNarrowSplitV119Reference: Layout {
+    let wide: Bool
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         proposal.replacingUnspecifiedDimensions()
     }
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         guard subviews.count == 3 else { return }
         let (list, rule, detail) = (subviews[0], subviews[1], subviews[2])
+        if wide {
+            let width = min(340, bounds.width)
+            list.place(at: bounds.origin, proposal: ProposedViewSize(width: width, height: bounds.height))
+            rule.place(at: CGPoint(x: bounds.minX + width, y: bounds.minY), proposal: ProposedViewSize(width: 1, height: bounds.height))
+            detail.place(at: CGPoint(x: bounds.minX + width + 1, y: bounds.minY),
+                         proposal: ProposedViewSize(width: max(0, bounds.width - width - 1), height: bounds.height))
+            return
+        }
         let fixed = list.sizeThatFits(ProposedViewSize(width: bounds.width, height: 0)).height
         let available = max(0, bounds.height - 1), least = fixed + 3 * 44
         let height = min(max((available * 0.45).rounded(), least), max(available - 180, least), available)
