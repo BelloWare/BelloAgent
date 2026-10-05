@@ -111,7 +111,8 @@ import XCTest
             line.origin.y += 1 + PiSpacing.sm; line.size.height -= 1 + PiSpacing.sm
             frames["ledger-row-" + row.id] = rows.convert(line, to: document)
         }
-        put("how-counted", try XCTUnwrap(items.last))
+        let methodology = try XCTUnwrap(items.last)
+        put("how-counted", try XCTUnwrap(views(PiKit.ButtonBase.self, in: methodology).first { $0.accessibilityIdentifier() == "inspector-how-counted" }))
         return frames
     }
 
@@ -180,14 +181,14 @@ import XCTest
         XCTAssertEqual(originalTop.origin, 0, accuracy: 0.25)
         try record("returned-top", kind: "frozen-lazy", snapshot: originalTop, frames: geometry.frames)
 
-        // Keep the exact same original lazy containers, but offer a viewport
-        // tall enough that every chart and ledger row is visible together.
-        // The padded column probe measures content, independently of the
-        // NSScrollView document's minimum viewport height. This also detects
-        // any estimate the old grids restore when earlier cells leave view.
+        // Keep the original chart/figure grids and offer a viewport tall
+        // enough that every item is visible. Resolve the original ledger's
+        // same children eagerly: even an all-visible LazyVStack can retain
+        // an estimated container height and center its realized rows outside
+        // that estimate. Normal lazy initial/bottom/top values stay above.
         let completeSize = CGSize(width: size.width, height: max(6_000, nativeInitial.documentHeight + 400))
         let completeGeometry = InspectorOverviewReferenceGeometry()
-        let complete = NSHostingView(rootView: InspectorOverviewGeometryReference(inspector: inspector, compact: false, geometry: completeGeometry)
+        let complete = NSHostingView(rootView: InspectorOverviewGeometryReference(inspector: inspector, compact: false, geometry: completeGeometry, resolvedLedger: true)
             .frame(width: completeSize.width, height: completeSize.height).environment(\.piReduceMotion, true))
         let completeWindow = NSWindow(contentRect: NSRect(origin: .zero, size: completeSize), styleMask: [.borderless], backing: .buffered, defer: false)
         completeWindow.isReleasedWhenClosed = false; completeWindow.appearance = NSAppearance(named: .aqua)
@@ -204,7 +205,33 @@ import XCTest
         let content = try XCTUnwrap(expected["document"])
         XCTAssertLessThan(content.height, originalComplete.clipHeight, "Every original lazy child is actually inside the final measurement viewport")
         XCTAssertEqual(originalComplete.origin, 0, accuracy: 0.25)
-        try record("all-visible", kind: "frozen-lazy", snapshot: originalComplete, frames: expected)
+        try record("all-visible-resolved-ledger", kind: "frozen-original", snapshot: originalComplete, frames: expected)
+
+        // Record the remaining width differences under a known direct
+        // proposal. These diagnostics do not replace any full-page assertion.
+        for id in ["chart-speed", "chart-cost", "ledger"] {
+            let allocation = try XCTUnwrap(actual[id])
+            let isolatedGeometry = InspectorOverviewReferenceGeometry()
+            let isolated = InspectorOverviewGeometryReference(inspector: inspector, compact: false, geometry: isolatedGeometry, resolvedLedger: true)
+            let host = NSHostingView(rootView: isolated.isolatedCard(id)
+                .frame(width: allocation.width, alignment: .leading)
+                .coordinateSpace(name: InspectorOverviewReferenceGeometry.coordinateSpace)
+                .frame(width: allocation.width, height: allocation.height + 128, alignment: .topLeading)
+                .environment(\.piReduceMotion, true))
+            let isolatedWindow = NSWindow(contentRect: CGRect(x: 0, y: 0, width: allocation.width, height: allocation.height + 128), styleMask: [.borderless], backing: .buffered, defer: false)
+            isolatedWindow.isReleasedWhenClosed = false; isolatedWindow.appearance = NSAppearance(named: .aqua)
+            isolatedWindow.contentView = host; isolatedWindow.orderFront(nil)
+            defer { isolatedWindow.orderOut(nil); isolatedWindow.contentView = nil; isolatedWindow.close() }
+            var previous: CGRect?, stable = 0
+            try await eventually("The isolated original \(id) has a stable exact proposal", timeout: .seconds(5), poll: .milliseconds(50)) {
+                host.layoutSubtreeIfNeeded(); isolatedWindow.displayIfNeeded(); CATransaction.flush()
+                let frame = isolatedGeometry.frames["isolated-" + id]
+                stable = frame != nil && frame == previous ? stable + 1 : 0; previous = frame
+                return stable >= 3
+            }
+            let frame = try XCTUnwrap(previous)
+            print("OVERVIEW-ISOLATED id=\(id) proposedWidth=\(allocation.width) frame=\(frame)")
+        }
 
         XCTAssertEqual(Set(actual.keys), Set(expected.keys), "Every chart/model card, figure and ledger row must have a real original frame")
         for id in actual.keys.sorted() {
