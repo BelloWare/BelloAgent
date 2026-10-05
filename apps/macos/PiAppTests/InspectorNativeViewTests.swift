@@ -119,6 +119,40 @@ import XCTest
         XCTAssertFalse(InspectorExpandFixture.descendants(NSView.self, in: page).contains { $0.accessibilityIdentifier() == "inspector-request-more" })
     }
 
+    func testModelEvidenceKeepsExpandedRoutingDetailsThroughHeaderUpdates() async throws {
+        let fixture = try await InspectorExpandFixture(body: InspectorExpandBodies.request(result: "short tool result"))
+        defer { fixture.close() }
+        let page = try XCTUnwrap(fixture.window.contentView as? InspectorRequestPage)
+        let evidence = try XCTUnwrap(InspectorExpandFixture.descendants(PiKit.ButtonBase.self, in: page).first { $0.accessibilityIdentifier() == "inspector-request-evidence-toggle" })
+        evidence.performClick(nil)
+        let reports = try XCTUnwrap(InspectorExpandFixture.descendants(MessageModelReports.self, in: page).first)
+        let routing = reports.disclosure
+        routing.performClick(nil)
+        XCTAssertTrue(routing.expanded)
+        XCTAssertTrue(fixture.window.makeFirstResponder(routing))
+
+        let more = try XCTUnwrap(InspectorExpandFixture.descendants(PiKit.ButtonBase.self, in: page).first { $0.accessibilityIdentifier() == "inspector-request-more-toggle" })
+        more.performClick(nil)
+        try await eventually("More replaced the expanded model evidence or its keyboard focus") {
+            InspectorExpandFixture.descendants(MessageModelReports.self, in: page).first === reports && routing.expanded && fixture.window.firstResponder === routing
+        }
+        XCTAssertTrue(InspectorExpandFixture.descendants(NSView.self, in: page).contains { $0.accessibilityIdentifier() == "inspector-request-more" })
+        page.compact = true; page.layoutSubtreeIfNeeded()
+        try await eventually("Compact layout lost the routing disclosure state or focus") {
+            InspectorExpandFixture.descendants(MessageModelReports.self, in: page).first === reports && routing.expanded && fixture.window.firstResponder === routing
+        }
+
+        fixture.request.metadataOverride = { _ in ["status": .number(503), "outcome": .string("failed"), "requestedModel": .string("updated-router")] }
+        var updated = try XCTUnwrap(fixture.request.row); updated.outcome = "failed"
+        fixture.request.open(updated, predecessor: nil, previousLabel: nil)
+        try await eventually("Updated metadata did not reach the retained model evidence") {
+            page.layoutSubtreeIfNeeded()
+            return reports.attempt["requestedModel"]?.string == "updated-router" && routing.expanded && fixture.window.firstResponder === routing
+        }
+        XCTAssertTrue(InspectorExpandFixture.descendants(MessageModelReports.self, in: page).first === reports)
+        XCTAssertTrue(routing.window === fixture.window)
+    }
+
     func testSessionViewSourcesContainNoSwiftUIHostsOrImports() throws {
         let tests = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let session = tests.deletingLastPathComponent().appendingPathComponent("PiApp/Inspector/Session")

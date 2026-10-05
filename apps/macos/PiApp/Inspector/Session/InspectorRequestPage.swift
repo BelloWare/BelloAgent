@@ -10,6 +10,8 @@ import AppKit
     private var shownMetadata: [String: WireValue] = [:]
     private var shownHeaderIdentity = ""
     private var header: NSView?
+    private var evidenceReports: MessageModelReports?
+    private var evidenceCard: NSView?
     private var tabs: InspectorInset?
     private lazy var tabControl = PiKit.Tabs(selection: request.tab, items: [(InspectorRequestModel.Tab.conversation, "Conversation"), (.response, "Response"), (.raw, "Raw")]) { [weak request] in request?.tab = $0 }
     private lazy var eventToggle = PiKit.Button("Event log", symbol: "list.bullet.rectangle", style: .ghost) { [weak self] in self?.events.toggle(); self?.refresh() }
@@ -41,6 +43,7 @@ import AppKit
         guard let row = request.row else {
             showContent(InspectorPlaceholder(symbol: "arrow.up.arrow.down", title: "Choose a request", message: "Every request of this session is in the list on the left."))
             header?.removeFromSuperview(); header = nil; tabs?.removeFromSuperview(); tabs = nil; rule.removeFromSuperview(); summary?.removeFromSuperview(); summary = nil
+            evidenceReports = nil; evidenceCard = nil
             needsLayout = true; return
         }
         if shownRow?.id != row.id { events = false; eventBody = nil; eventKey = nil; eventHost = nil; forceHeader = true }
@@ -102,7 +105,14 @@ import AppKit
         }
         var views: [NSView] = [heading, inspectorRow(metrics, spacing: 12, alignment: .firstBaseline)]
         if more { views.append(moreDetails(row)) }
-        if evidence { views.append(PiKit.card(MessageModelReports(attempt: request.metadata), padding: PiSpacing.md, sunken: true)) }
+        if evidence {
+            if let evidenceReports { evidenceReports.update(attempt: request.metadata) }
+            else {
+                let reports = MessageModelReports(attempt: request.metadata)
+                evidenceReports = reports; evidenceCard = PiKit.card(reports, padding: PiSpacing.md, sunken: true)
+            }
+            if let evidenceCard { views.append(evidenceCard) }
+        } else { evidenceReports = nil; evidenceCard = nil }
         let column = inspectorColumn(views, spacing: 10)
         let result = padded(column, top: PiSpacing.lg, bottom: PiSpacing.md)
         result.setAccessibilityIdentifier("inspector-request-header")
