@@ -519,7 +519,7 @@ dependencies = [
 [[package]]
 name = "bello-workbench"
 version = "0.1.0"
-source = "git+https://github.com/BelloWare/BelloBox.git?rev=db679011ced3dd5f5c73a577d9f938fd44d9294b#db679011ced3dd5f5c73a577d9f938fd44d9294b"
+source = "git+https://github.com/BelloWare/BelloBox.git?rev=ee0d27a89aa52524c29b2be5937716b5e799e748#ee0d27a89aa52524c29b2be5937716b5e799e748"
 dependencies = [
  "unicode-normalization",
  "unicode-segmentation",
@@ -528,7 +528,7 @@ dependencies = [
 [[package]]
 name = "bello-workbench-ui"
 version = "0.1.0"
-source = "git+https://github.com/BelloWare/BelloBox.git?rev=db679011ced3dd5f5c73a577d9f938fd44d9294b#db679011ced3dd5f5c73a577d9f938fd44d9294b"
+source = "git+https://github.com/BelloWare/BelloBox.git?rev=ee0d27a89aa52524c29b2be5937716b5e799e748#ee0d27a89aa52524c29b2be5937716b5e799e748"
 dependencies = [
  "bello-workbench",
  "gpui",

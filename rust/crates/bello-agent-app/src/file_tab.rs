@@ -244,6 +244,9 @@ impl FileTabView {
         cx.notify();
     }
     fn toggle_vim(&mut self, cx: &mut Context<Self>) {
+        if self.editor.read(cx).has_marked_text() {
+            return;
+        }
         self.vim = !self.vim;
         self.editor
             .update(cx, |editor, cx| editor.set_vim(self.vim, cx));

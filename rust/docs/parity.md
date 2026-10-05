@@ -68,6 +68,17 @@ and leave read-only text/caret unchanged. Explicit selected ranges stay literal.
 The shared UI crate is unchanged. The lockfile changes only these two Git pins;
 no registry versions, workflows, release artifacts or source Swift code change.
 
+The subsequent shared integration advances both pins together to
+`ee0d27a89aa52524c29b2be5937716b5e799e748`. It adds composed-character ordinary
+arrow navigation and selection collapse, plus guarded IME replacement/commit
+handling and marked-text protection in the shared editor. The file-tab Vim
+toggle now refuses a change while marked text is active, keeping host and editor
+mode state consistent. Lockfile changes remain limited to the two shared Git
+sources. All **96 Agent workspace tests**, strict all-target Clippy, formatting
+and native Linux build pass with that exact dependency revision. Shared callback
+and Unicode tests do not establish real native candidate-window or macOS IME
+behavior; those remain explicitly unvalidated.
+
 Paths in the source column are relative to the repository root. Core source
 paths begin `packages/swift-host/Sources/PiAgentCore/` (abbreviated `Core/` below).
 Native UI paths begin `apps/macos/PiApp/` (abbreviated `App/`).
