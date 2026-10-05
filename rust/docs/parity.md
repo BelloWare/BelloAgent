@@ -310,11 +310,22 @@ requires ordered window-close/app-quit markers and a clean process exit. A watch
 missing capability, unexpected window or failed marker sequence fails the experiment;
 it does not skip or change permissions/TCC. Logs expose only allowlisted markers.
 
-Local Linux checks passed: 141 default Rust tests, 145 feature-enabled tests,
-strict Clippy/build for both configurations, and four Python harness tests.
-The macOS-only probe has **not yet compiled or run**; native evidence requires its
-own exact-commit CI result. Even a successful probe establishes only empty-workspace
-native lifecycle traversal. It does not prove pixels, desktop input, IME, accessibility,
+The first probe at `6966a43d7ef330e9d37d8802a809e000757e736f` compiled and
+launched on macOS, but [run 37275935183](https://github.com/BelloWare/BelloAgent/actions/runs/37275935183)
+failed `native_unexpected_window_count`: `NSApplication.windows` had more than
+one entry before target-title/visibility checks. This does not identify any
+concrete auxiliary window class or establish lifecycle success. Exact Linux CI
+passed [run 37275935176](https://github.com/BelloWare/BelloAgent/actions/runs/37275935176).
+
+The correction retains the exact single GPUI window identity and matches it to
+the main native GPUIWindow with the expected title; unexpected visible/main/key
+windows, GPUI panels, duplicate targets or identity mismatches still fail. It
+emits only bounded numeric category counts, never raw titles or pointers. Local
+checks passed: 141 default Rust tests, 148 feature-enabled tests, strict Clippy/build
+for both configurations, and five Python harness tests. This corrected native
+probe awaits its own exact-commit macOS CI result; the first runtime result remains
+failed until a successor actually passes. Even a successful probe establishes
+only empty-workspace native lifecycle traversal. It does not prove pixels, desktop input, IME, accessibility,
 nonempty draft persistence, Dock reopen, cancellable Quit, or Sparkle behavior.
 Probe code and its feature-gated hooks count as test-support LOC, not shipped
 production code. No macOS lifecycle parity is claimed by adding this diagnostic.

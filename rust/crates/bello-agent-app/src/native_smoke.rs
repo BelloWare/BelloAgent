@@ -87,8 +87,57 @@ pub(super) fn install(cx: &mut gpui::App) {
     }
 }
 
+// NSApplication.windows can contain framework-owned windows. Classify every
+// entry, never select the first one or accept an unexpected visible window.
+#[cfg(any(target_os = "macos", test))]
+#[derive(Clone, Copy, Default)]
+struct WindowCategory {
+    expected_title: bool,
+    gpui_window: bool,
+    gpui_panel: bool,
+    visible: bool,
+    main: bool,
+    key: bool,
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn workspace_index(
+    windows: &[WindowCategory],
+    expected_active: bool,
+) -> Result<Option<usize>, &'static str> {
+    if windows.is_empty() {
+        return Ok(None);
+    }
+    if windows.iter().filter(|w| w.gpui_window).count() != 1
+        || windows.iter().any(|w| w.gpui_panel)
+        || windows.iter().filter(|w| w.expected_title).count() != 1
+    {
+        return Err("unexpected_window_count");
+    }
+    let index = windows
+        .iter()
+        .position(|w| w.gpui_window && w.expected_title)
+        .ok_or("unexpected_window")?;
+    if windows
+        .iter()
+        .enumerate()
+        .any(|(i, w)| i != index && (w.visible || w.main || w.key))
+    {
+        return Err("unexpected_visible_window");
+    }
+    let target = windows[index];
+    if !target.visible || !target.main {
+        return Ok(None);
+    }
+    if !expected_active {
+        return Err("native_identity_mismatch");
+    }
+    Ok(Some(index))
+}
+
 #[cfg(target_os = "macos")]
 mod native {
+    use super::{WindowCategory, workspace_index};
     use cocoa::{
         base::{BOOL, YES, id, nil},
         foundation::{NSArray, NSRect, NSString},
@@ -104,6 +153,11 @@ mod native {
         time::{Duration, Instant},
     };
 
+    struct Probe {
+        app: gpui::AsyncApp,
+        expected: gpui::WindowId,
+        last_counts: Option<String>,
+    }
     static STAGE: AtomicU8 = AtomicU8::new(0);
     static STARTED: OnceLock<Instant> = OnceLock::new();
     #[link(name = "CoreGraphics", kind = "framework")]
@@ -166,6 +220,15 @@ mod native {
             }
             let _: () = msg_send![device, release];
         }
+        let windows = cx.windows();
+        if windows.len() != 1 {
+            fail("unexpected_gpui_window_count");
+        }
+        let probe = Box::new(Probe {
+            app: cx.to_async(),
+            expected: windows[0].window_id(),
+            last_counts: None,
+        });
         mark(0, 1, "environment_ready");
         cx.on_window_closed(|cx| {
             if !cx.windows().is_empty() {
@@ -179,19 +242,35 @@ mod native {
             async {}
         })
         .detach();
-        schedule();
+        schedule(probe);
     }
-    fn schedule() {
+    fn schedule(probe: Box<Probe>) {
         unsafe {
             dispatch_after_f(
                 dispatch_time(0, 100_000_000),
                 std::ptr::addr_of!(_dispatch_main_q),
-                std::ptr::null_mut(),
+                Box::into_raw(probe).cast(),
                 inspect,
             );
         }
     }
-    extern "C" fn inspect(_: *mut c_void) {
+    extern "C" fn inspect(context: *mut c_void) {
+        // A single scheduled main-queue callback owns this box; retries transfer
+        // ownership to the next callback. No App/Window borrow crosses performClose.
+        let mut probe = unsafe { Box::from_raw(context.cast::<Probe>()) };
+        let expected_active = probe
+            .app
+            .update(|cx| {
+                let windows = cx.windows();
+                if windows.len() != 1 || windows[0].window_id() != probe.expected {
+                    fail("unexpected_gpui_window_count");
+                }
+                // Pinned GPUI MacWindow::active_window reads NSApp.mainWindow,
+                // checks GPUIWindow, then returns that native window's stored handle.
+                cx.active_window()
+                    .is_some_and(|handle| handle.window_id() == probe.expected)
+            })
+            .unwrap_or_else(|_| fail("app_unavailable"));
         // Invoked by the native main queue, outside a borrowed GPUI App/Window.
         // performClose: synchronously re-enters GPUI's windowShouldClose delegate.
         if STARTED
@@ -203,36 +282,78 @@ mod native {
         unsafe {
             let app: id = msg_send![class!(NSApplication), sharedApplication];
             let windows: id = msg_send![app, windows];
-            if windows == nil || windows.count() == 0 {
-                schedule();
-                return;
-            }
-            if windows.count() != 1 {
+            let count = if windows == nil { 0 } else { windows.count() };
+            if count > 64 {
                 fail("unexpected_window_count");
             }
-            let window = windows.objectAtIndex(0);
-            let title: id = msg_send![window, title];
             let expected = NSString::alloc(nil).init_str("Bello Agent");
-            let matches: BOOL = msg_send![title, isEqualToString: expected];
-            let _: () = msg_send![expected, release];
-            if matches != YES {
-                fail("unexpected_window");
+            let mut categories = Vec::new();
+            for i in 0..count {
+                let window = windows.objectAtIndex(i);
+                let title: id = msg_send![window, title];
+                let expected_title: BOOL = msg_send![title, isEqualToString: expected];
+                let gpui_window: BOOL = msg_send![window, isKindOfClass: class!(GPUIWindow)];
+                let gpui_panel: BOOL = msg_send![window, isKindOfClass: class!(GPUIPanel)];
+                let visible: BOOL = msg_send![window, isVisible];
+                let main: BOOL = msg_send![window, isMainWindow];
+                let key: BOOL = msg_send![window, isKeyWindow];
+                categories.push(WindowCategory {
+                    expected_title: expected_title == YES,
+                    gpui_window: gpui_window == YES,
+                    gpui_panel: gpui_panel == YES,
+                    visible: visible == YES,
+                    main: main == YES,
+                    key: key == YES,
+                });
             }
-            let visible: BOOL = msg_send![window, isVisible];
+            let _: () = msg_send![expected, release];
+            let tally =
+                |test: fn(&WindowCategory) -> bool| categories.iter().filter(|w| test(w)).count();
+            let counts = format!(
+                "BELLO_NATIVE_WINDOW_COUNTS total={} expected={} gpui={} panels={} visible={} hidden={} main={} key={} matched_active={}",
+                count,
+                tally(|w| w.expected_title),
+                tally(|w| w.gpui_window),
+                tally(|w| w.gpui_panel),
+                tally(|w| w.visible),
+                tally(|w| !w.visible),
+                tally(|w| w.main),
+                tally(|w| w.key),
+                usize::from(expected_active)
+            );
+            if probe.last_counts.as_ref() != Some(&counts) {
+                println!("{counts}");
+                if std::io::stdout().flush().is_err() {
+                    fail("log_write");
+                }
+                probe.last_counts = Some(counts);
+            }
+            let index = match workspace_index(&categories, expected_active) {
+                Ok(Some(index)) => index,
+                Ok(None) => {
+                    schedule(probe);
+                    return;
+                }
+                Err(reason) => fail(reason),
+            };
+            let window = windows.objectAtIndex(index as u64);
+            let native_main: id = msg_send![app, mainWindow];
+            if window != native_main {
+                fail("native_identity_mismatch");
+            }
             let screen: id = msg_send![window, screen];
             let view: id = msg_send![window, contentView];
             if view == nil {
                 fail("no_content_view");
             }
             let bounds: NSRect = msg_send![view, bounds];
-            if visible != YES
-                || screen == nil
+            if screen == nil
                 || !bounds.size.width.is_finite()
                 || !bounds.size.height.is_finite()
                 || bounds.size.width <= 0.0
                 || bounds.size.height <= 0.0
             {
-                schedule();
+                schedule(probe);
                 return;
             }
             mark(1, 2, "window_observed");
@@ -245,6 +366,70 @@ mod native {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn main_window() -> WindowCategory {
+        WindowCategory {
+            expected_title: true,
+            gpui_window: true,
+            visible: true,
+            main: true,
+            key: true,
+            ..Default::default()
+        }
+    }
+    #[test]
+    fn selects_exact_main_gpui_window_after_hidden_auxiliary() {
+        assert_eq!(
+            workspace_index(&[WindowCategory::default(), main_window()], true),
+            Ok(Some(1))
+        );
+    }
+    #[test]
+    fn rejects_unexpected_visible_main_key_or_gpui_windows() {
+        for extra in [
+            WindowCategory {
+                visible: true,
+                ..Default::default()
+            },
+            WindowCategory {
+                main: true,
+                ..Default::default()
+            },
+            WindowCategory {
+                key: true,
+                ..Default::default()
+            },
+            WindowCategory {
+                gpui_window: true,
+                ..Default::default()
+            },
+            WindowCategory {
+                gpui_panel: true,
+                ..Default::default()
+            },
+            WindowCategory {
+                expected_title: true,
+                ..Default::default()
+            },
+        ] {
+            assert!(workspace_index(&[main_window(), extra], true).is_err());
+        }
+    }
+    #[test]
+    fn requires_unique_title_native_identity_and_ready_main_window() {
+        assert_eq!(
+            workspace_index(&[main_window()], false),
+            Err("native_identity_mismatch")
+        );
+        let mut target = main_window();
+        target.main = false;
+        assert_eq!(workspace_index(&[target], false), Ok(None));
+        target = main_window();
+        target.expected_title = false;
+        assert!(workspace_index(&[target], true).is_err());
+        assert_eq!(workspace_index(&[], false), Ok(None));
+        assert!(workspace_index(&[main_window(), main_window()], true).is_err());
+    }
+
     fn fixture() -> (tempfile::TempDir, std::path::PathBuf, Vec<OsString>) {
         let runner = tempfile::tempdir().unwrap();
         let root = runner
