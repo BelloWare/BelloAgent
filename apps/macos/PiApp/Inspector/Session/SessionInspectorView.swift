@@ -104,13 +104,17 @@ import AppKit
         var key: String {
             switch self { case .overview: return "overview"; case .next: return "next"; case .section: return "section"; case .message(let text): return "message:" + text; case .turn(let turn, _, _, _), .version(let turn, _, _): return turn.id; case .compaction(let group, _, _, _): return group.id; case .request(let row, _, _, _, _): return row.id }
         }
-        var height: CGFloat { switch self { case .overview, .next: return 46; case .turn: return 44; case .version: return 36; case .section: return 30; default: return 30 } }
+        var height: CGFloat { switch self { case .overview, .next: return 46; case .turn: return 44; case .version: return 36; case .section: return 31; case .message(let text): return text.contains("older requests") ? 29 : 30; default: return 30 } }
         var selected: Bool {
             switch self { case .overview(_, let selected), .next(let selected), .turn(_, _, _, let selected), .version(_, _, let selected), .request(_, _, _, _, let selected): return selected; case .compaction(_, _, let expanded, let selected): return selected && !expanded; default: return false }
         }
         /// Selection and disclosure changes update the mounted controls.
         var contentIdentity: Descriptor {
             switch self { case .overview(let text, _): return .overview(text, false); case .next: return .next(false); case .turn(let turn, let prompt, _, _): return .turn(turn, prompt, false, false); case .version(let turn, let prompt, _): return .version(turn, prompt, false); case .compaction(let group, let indent, _, _): return .compaction(group, indent, false, false); case .request(let row, let number, let kind, let indent, _): return .request(row, number, kind, indent, false); default: return self }
+        }
+        func canReuse(_ next: Descriptor) -> Bool {
+            if case .turn(let turn, _, _, _) = self, case .turn(let following, _, _, _) = next { return turn.id == following.id }
+            return contentIdentity == next.contentIdentity
         }
     }
     init(inspector: SessionInspectorModel) {
@@ -148,7 +152,7 @@ import AppKit
         let source = LazyStackView.Source(count: built.count, key: { built[$0].key }, height: { index, _ in built[index].height }, view: { [weak self] index, existing in
             guard let self else { return NSView() }
             let descriptor = built[index]
-            if let existing = existing as? Holder, existing.descriptor.contentIdentity == descriptor.contentIdentity {
+            if let existing = existing as? Holder, existing.descriptor.canReuse(descriptor) {
                 existing.update(descriptor); return existing
             }
             return Holder(descriptor: descriptor, content: self.make(descriptor))
@@ -171,17 +175,7 @@ import AppKit
             let row = inspectorRow(items); row.padding = NSEdgeInsets(top: 14, left: 12, bottom: 4, right: 12); row.setAccessibilityRoleDescription("heading"); return row
         case .message(let text): return InspectorInset(inspectorText(text, font: text.contains("older requests") ? PiKit.Font.micro : PiKit.Font.caption, color: .piInkTertiary), insets: NSEdgeInsets(top: 8, left: 14, bottom: 8, right: 14))
         case .turn(let turn, let prompt, let expanded, let selected):
-            let heading = turn.isOther ? "Other requests" : Self.firstLine(prompt) ?? turn.started.map { "Turn at " + Date(timeIntervalSince1970: $0).formatted(date: .omitted, time: .shortened) } ?? "Turn \(turn.number)"
-            var details: [ShellItem] = []
-            if turn.running { details.append(.view(InspectorStatusMark(outcome: "running"))) }
-            details.append(.view(inspectorText(turn.summary, font: PiKit.Font.monospacedDigits(PiKit.Font.micro), color: .piInkTertiary), .flexible))
-            let number = InspectorTurnNumber(turn.isOther ? "·" : "\(turn.number)", selected: selected)
-            let labels = inspectorColumn([inspectorText(heading, font: .systemFont(ofSize: 12.5, weight: .medium)), inspectorRow(details, spacing: 5)], spacing: 1)
-            let face = inspectorRow([.view(number), .view(labels, .flexible), .spacer(0)], spacing: 8)
-            let selectedRow = PiKit.SelectableRow(content: face, selected: selected, glide: glide) { [weak inspector] in inspector?.select(.turn(turn.id)) }
-            let toggle = InspectorDisclosure(expanded: expanded, symbolSize: 9, width: 18, height: 40, label: expanded ? "Hide this turn's requests" : "Show this turn's requests") { [weak inspector] in inspector?.toggle(turn.id) }
-            let row = inspectorRow([.view(toggle, .fixed(18)), .view(selectedRow, .fill)], spacing: 0)
-            row.setAccessibilityIdentifier("inspector-turn-row"); row.setAccessibilityLabel((turn.isOther ? "Other requests" : "Turn \(turn.number)") + ": " + heading + ", " + turn.summary); return row
+            return InspectorTurnNavRow(inspector: inspector, turn: turn, prompt: prompt, expanded: expanded, selected: selected, glide: glide)
         case .version(let version, let prompt, let selected):
             let label = version.version.map { "Version \($0.index) of \($0.count)" } ?? "Earlier version"
             let line = [Self.firstLine(prompt), version.summary].compactMap { $0?.isEmpty == false ? $0 : nil }.joined(separator: " · ")
@@ -202,7 +196,7 @@ import AppKit
             return InspectorInset(row, insets: NSEdgeInsets(top: 0, left: indent, bottom: 0, right: 0))
         }
     }
-    private static func firstLine(_ prompt: String?) -> String? { prompt.flatMap { $0.split(separator: "\n", omittingEmptySubsequences: true).first.map(String.init) }?.trimmingCharacters(in: .whitespaces).nilIfEmpty }
+    fileprivate static func firstLine(_ prompt: String?) -> String? { prompt.flatMap { $0.split(separator: "\n", omittingEmptySubsequences: true).first.map(String.init) }?.trimmingCharacters(in: .whitespaces).nilIfEmpty }
     private func navigation(symbol: String, title: String, subtitle: String, selected: Bool, action: @escaping () -> Void) -> NSView {
         let face = inspectorRow([.view(InspectorNavIcon(symbol: symbol, selected: selected)), .view(inspectorColumn([inspectorText(title, font: .systemFont(ofSize: 13, weight: .semibold)), inspectorText(subtitle, color: .piInkTertiary)], spacing: 1), .flexible), .spacer(0)], spacing: 10)
         let row = PiKit.SelectableRow(content: face, selected: selected, glide: glide, action: action); row.setAccessibilityLabel(title + ", " + subtitle); return row
@@ -216,6 +210,9 @@ import AppKit
         func update(_ descriptor: Descriptor) {
             guard self.descriptor != descriptor else { return }
             self.descriptor = descriptor
+            if case .turn(let turn, let prompt, let expanded, let selected) = descriptor {
+                (content as? InspectorTurnNavRow)?.update(turn: turn, prompt: prompt, expanded: expanded, selected: selected)
+            }
             func update(_ view: NSView) {
                 (view as? PiKit.SelectableRow)?.selected = descriptor.selected
                 (view as? InspectorTurnNumber)?.selected = descriptor.selected
@@ -231,12 +228,59 @@ import AppKit
             }
             update(content)
         }
-        override func layout() { super.layout(); content.frame = bounds }
+        override func layout() {
+            super.layout()
+            // Fixed row wrappers centre their label's natural height; the
+            // background and text can extend half a point beyond the row.
+            let height = PiKit.height(of: content, width: bounds.width)
+            content.frame = CGRect(x: 0, y: PiKit.round((bounds.height - height) / 2, piScale), width: bounds.width, height: height)
+        }
     }
 }
 
+/// Prompts and request metrics arrive independently of selection. Keeping
+/// these controls mounted lets a focused disclosure survive both updates.
+@MainActor private final class InspectorTurnNavRow: DashView, PiKit.WidthSizing {
+    private let heading: ShellText
+    private let detail: ShellText
+    private let running: InspectorStatusMark
+    private let detailLine: ShellStack
+    private let number: InspectorTurnNumber
+    private let disclosure: InspectorDisclosure
+    private let selectedRow: PiKit.SelectableRow
+    private let row: ShellStack
+    init(inspector: SessionInspectorModel, turn: InspectorTurn, prompt: String?, expanded: Bool, selected: Bool, glide: PiKit.SelectionGlide) {
+        let id = turn.id
+        let heading = inspectorText("", font: .systemFont(ofSize: 12.5, weight: .medium)); self.heading = heading
+        let detail = inspectorText("", font: PiKit.Font.monospacedDigits(PiKit.Font.micro), color: .piInkTertiary); self.detail = detail
+        let running = InspectorStatusMark(outcome: "running"); self.running = running
+        let number = InspectorTurnNumber(turn.isOther ? "·" : "\(turn.number)", selected: selected); self.number = number
+        let detailLine = inspectorRow([.view(running), .view(detail, .flexible)], spacing: 5); self.detailLine = detailLine
+        let labels = inspectorColumn([heading, detailLine], spacing: 1)
+        let face = inspectorRow([.view(number), .view(labels, .flexible), .spacer(0)], spacing: 8)
+        let selectedRow = PiKit.SelectableRow(content: face, selected: selected, glide: glide) { [weak inspector] in inspector?.select(.turn(id)) }; self.selectedRow = selectedRow
+        let disclosure = InspectorDisclosure(expanded: expanded, symbolSize: 9, width: 18, height: 40, label: expanded ? "Hide this turn's requests" : "Show this turn's requests") { [weak inspector] in inspector?.toggle(id) }; self.disclosure = disclosure
+        row = inspectorRow([.view(disclosure, .fixed(18)), .view(selectedRow, .fill)], spacing: 0)
+        super.init(frame: .zero); addSubview(row); setAccessibilityIdentifier("inspector-turn-row")
+        update(turn: turn, prompt: prompt, expanded: expanded, selected: selected)
+    }
+    required init?(coder: NSCoder) { nil }
+    func update(turn: InspectorTurn, prompt: String?, expanded: Bool, selected: Bool) {
+        let title = turn.isOther ? "Other requests" : InspectorNavigator.firstLine(prompt) ?? turn.started.map { "Turn at " + Date(timeIntervalSince1970: $0).formatted(date: .omitted, time: .shortened) } ?? "Turn \(turn.number)"
+        heading.set(title, color: .piInk); detail.set(turn.summary, color: .piInkTertiary)
+        number.text = turn.isOther ? "·" : "\(turn.number)"; number.selected = selected; selectedRow.selected = selected
+        if running.isHidden != !turn.running { running.isHidden = !turn.running; detailLine.changed() }
+        disclosure.update(expanded: expanded, label: expanded ? "Hide this turn's requests" : "Show this turn's requests")
+        selectedRow.setAccessibilityLabel(title + ", " + turn.summary)
+        setAccessibilityLabel((turn.isOther ? "Other requests" : "Turn \(turn.number)") + ": " + title + ", " + turn.summary)
+    }
+    func height(forWidth width: CGFloat) -> CGFloat { row.height(forWidth: width) }
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: height(forWidth: bounds.width > 0 ? bounds.width : 262)) }
+    override func layout() { super.layout(); row.frame = bounds }
+}
+
 @MainActor private final class InspectorTurnNumber: DashView {
-    let text: String
+    var text: String { didSet { if text != oldValue { invalidateIntrinsicContentSize(); needsDisplay = true; PiKit.sizeChanged(self) } } }
     var selected: Bool { didSet { if selected != oldValue { needsDisplay = true } } }
     init(_ text: String, selected: Bool) { self.text = text; self.selected = selected; super.init(frame: .zero); setAccessibilityElement(false) }
     required init?(coder: NSCoder) { nil }
