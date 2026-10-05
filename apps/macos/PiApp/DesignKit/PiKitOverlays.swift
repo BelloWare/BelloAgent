@@ -28,6 +28,10 @@ extension PiKit {
         var rollingChange: (from: String, to: String)? { roll.map { ($0.from, $0.to) } }
         /// Shown highlighted whatever the pointer does (its dialog is open).
         var open = false { didSet { refreshFace() } }
+        /// Words that end in "…" where the pill is given less room than they
+        /// need (`PiStatPillFace.truncates`). A figure is never cut: false,
+        /// the reading always takes its whole width.
+        var truncates = false { didSet { if truncates != oldValue { readingLayer.setNeedsDisplay() } } }
         private let ringView: Ring
         /// The reading, a layer of its own so a roll moves the figures only.
         let readingLayer = DrawingLayer()
@@ -220,7 +224,14 @@ extension PiKit {
                 }
             }
             if let hiding, hiding.length > 0, NSMaxRange(hiding) <= whole.length { attributed.addAttribute(clear, value: CGColor.clear, range: hiding) }
-            CTLineDraw(CTLineCreateWithAttributedString(attributed), context)
+            var line = CTLineCreateWithAttributedString(attributed)
+            let room = rect.width - 28 - 7
+            if truncates, CTLineGetTypographicBounds(line, nil, nil, nil) > room + 0.01 {
+                let token = CTLineCreateWithAttributedString(NSAttributedString(string: "…", attributes: [
+                    .font: PiKit.Font.monospacedDigits(PiKit.Font.caption), NSAttributedString.Key(kCTForegroundColorAttributeName as String): NSColor.piInkSecondary.cgColor]))
+                line = CTLineCreateTruncatedLine(line, max(0, room), .end, token) ?? line
+            }
+            CTLineDraw(line, context)
             context.restoreGState()
         }
     }

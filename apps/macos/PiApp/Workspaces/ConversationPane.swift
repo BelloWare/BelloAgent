@@ -4,7 +4,7 @@ import AppKit
 // recovery banner, a starter card) and what sits below it (the queue, the
 // terminal, the composer and the metrics footer).
 //
-// The transcript (Transcript/) and the metrics footer (Inspector/) are still
+// The transcript (Transcript/) is still
 // SwiftUI, each in a hosting view the pane lays out; they are made in
 // ConversationPaneBridges.swift (TEMPORARY), with the `ConversationPane`
 // representable that SwiftUI hosts and tests reach the pane through.
@@ -39,7 +39,8 @@ struct SideActions {
     private let missingFolder = MissingFolderBar()
     private let footer = PaneFooterView()
     let composer: ComposerInputView
-    private let metrics = ShellHostingView.empty()
+    /// The chat's metrics footer (Inspector/), made for each chat and form.
+    private var metrics: MetricsFooter?
     private var observer: ShellObserver?
     private var shown: State?
     private var coverTask: Task<Void, Never>?
@@ -95,12 +96,12 @@ struct SideActions {
         // What stands out past the pane (a composer wider than a narrow
         // pane) is cut at its edges, as the SwiftUI pane cut it.
         clipsToBounds = true
-        for view in [recovered, transcript, starter, cover, missingFolder, footer, metrics] as [NSView] { addSubview(view) }
+        for view in [recovered, transcript, starter, cover, missingFolder, footer] as [NSView] { addSubview(view) }
         // The composer last: its slash-command list floats over everything above it.
         addSubview(composer)
         layer?.addSublayer(sideLine)
         composer.heightChanged = { [weak self] in self?.needsLayout = true }
-        for host in [transcript, metrics] { host.sizeChanged = { [weak self] in self?.needsLayout = true } }
+        transcript.sizeChanged = { [weak self] in self?.needsLayout = true }
         recovered.changed = { [weak self] in self?.needsLayout = true }
         cover.isHidden = true
         starter.removeFromSuperview()
@@ -302,10 +303,14 @@ struct SideActions {
         if before?.sessionID != state.sessionID || before?.contextWindow != state.contextWindow || before?.outputReserve != state.outputReserve
             || (before?.side == nil) != (state.side == nil) || before?.enabled != state.enabled {
             let model = self.model, id = session.id
-            metrics.showMetrics(model: model, session: session, contextWindow: state.contextWindow, outputReserve: state.outputReserve,
-                                compact: state.side != nil, enabled: state.enabled) { [model, id] in
+            let made = MetricsFooter(model: model, session: session, contextWindow: state.contextWindow, outputReserve: state.outputReserve,
+                                     compact: state.side != nil) { [model, id] in
                 model.openInspector(session: id, focus: .overview)
             }
+            made.inheritedEnabled = state.enabled
+            metrics?.removeFromSuperview()
+            addSubview(made, positioned: .below, relativeTo: composer)
+            metrics = made
         }
         needsLayout = true
     }
@@ -428,9 +433,11 @@ struct SideActions {
         }
         // From the bottom up: the figures, the composer or footer, the folder bar, the terminal, the queue.
         var bottom = bounds.height
-        let metricsHeight = metrics.height(forWidth: width)
-        bottom -= metricsHeight
-        frames.append((metrics, CGRect(x: 0, y: bottom, width: width, height: metricsHeight)))
+        if let metrics {
+            let metricsHeight = metrics.height(forWidth: width)
+            bottom -= metricsHeight
+            frames.append((metrics, CGRect(x: 0, y: bottom, width: width, height: metricsHeight)))
+        }
         let lower: NSView = composer.isHidden ? footer : composer
         let lowerHeight = composer.isHidden ? footer.height(forWidth: width) : composer.height(forWidth: width)
         bottom -= lowerHeight
