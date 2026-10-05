@@ -202,6 +202,12 @@ import XCTest
                         print("SEARCH-FRAMES native \(query): " + frames.keys.sorted().map { "\($0)=\(frames[$0]!)" }.joined(separator: " "))
                         let symbol = PiKit.Symbol("chevron.up", size: 12.5, weight: .medium)
                         print("SEARCH-SYMBOL native: layout=\(symbol.layoutSize) image=\(symbol.imageSize)")
+                        for name in ["chevron.up", "chevron.down"] {
+                            if let base = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
+                                .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 12.5, weight: .medium)) {
+                                print("SEARCH-SYMBOL-ALIGNMENT \(name): image=\(base.size) alignment=\(base.alignmentRect)")
+                            }
+                        }
                     } else {
                         print("SEARCH-FRAMES frozen \(query): " + mounted.frames.keys.sorted().map { "\($0)=\(mounted.frames[$0]!)" }.joined(separator: " "))
                     }
