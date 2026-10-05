@@ -112,7 +112,7 @@ struct SessionRequestLedger: Equatable {
         let copy = PiKit.Button("Copy", symbol: "doc.on.doc", style: .secondary, compact: true)
         copy.setAccessibilityIdentifier("session-ledger-copy")
         let subtitle = shown.count < ledger.rows.count ? "Latest \(shown.count) of \(ledger.rows.count) · every request is in the list on the left" : ledger.subtitle
-        heading = DashSectionHeader("Requests", subtitle: subtitle, accessory: copy)
+        heading = DashSectionHeader("Requests", subtitle: subtitle, accessory: SessionLedgerCopyAccessory(copy))
         coverage = ShellText(ledger.coverageNote, font: PiKit.Font.micro, color: .piInkTertiary)
         super.init(frame: .zero); addSubview(box)
         copy.onPress = { [weak self] in
@@ -145,6 +145,18 @@ struct SessionRequestLedger: Equatable {
     func height(forWidth width: CGFloat) -> CGFloat { box.height(forWidth: width) }
     override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: height(forWidth: bounds.width > 0 ? bounds.width : 1_080)) }
     override func layout() { super.layout(); box.frame = bounds }
+}
+
+/// The original Copy label's first baseline is half a point above the
+/// native button's rounded text baseline. Hand that baseline to the header
+/// without changing the button's own drawing or keyboard target.
+@MainActor private final class SessionLedgerCopyAccessory: DashView, ShellBaselined {
+    let button: PiKit.Button
+    init(_ button: PiKit.Button) { self.button = button; super.init(frame: .zero); addSubview(button) }
+    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    var firstBaseline: CGFloat { shellBaseline(button, height: button.intrinsicContentSize.height) - 0.5 }
+    override var intrinsicContentSize: NSSize { button.intrinsicContentSize }
+    override func layout() { super.layout(); button.frame = bounds }
 }
 
 /// A lazy column inside the outer scroll document, without another scroll

@@ -94,7 +94,15 @@ import Combine
         }
     }
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
-    func height(forWidth width: CGFloat) -> CGFloat { 2 * PiKit.Line("Ag", font: Self.font, color: .piInkSecondary).lineHeight }
+    func height(forWidth width: CGFloat) -> CGFloat {
+        // SwiftUI reserves the font's two natural line heights for one line,
+        // but rounds each real wrapped line up. Keep the latest caption's
+        // footprint while selection changes only the drawing.
+        if width > 0, ShellWrap.ranges(latest, font: Self.font, width: width).count >= 2 {
+            return 2 * Foundation.ceil(Self.font.ascender - Self.font.descender + Self.font.leading)
+        }
+        return NSLayoutManager().defaultLineHeight(for: Self.font) * 2
+    }
     override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: height(forWidth: bounds.width)) }
     override func draw(_ dirtyRect: NSRect) {
         SessionStatsRenderCount.captionDrawn()
@@ -104,12 +112,13 @@ import Combine
 
 @MainActor private final class SessionStatsKey: DashView, ShellBaselined {
     let color: NSColor, text: String, line: Bool
-    init(color: NSColor, title: String, line: Bool = false) {
-        self.color = color; text = title; self.line = line; super.init(frame: .zero)
+    private let monospacedDigits: Bool
+    init(color: NSColor, title: String, line: Bool = false, monospacedDigits: Bool = false) {
+        self.color = color; text = title; self.line = line; self.monospacedDigits = monospacedDigits; super.init(frame: .zero)
         setAccessibilityElement(true); setAccessibilityRole(.staticText); setAccessibilityLabel(title)
     }
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
-    private var label: PiKit.Line { PiKit.Line(text, font: PiKit.Font.micro, color: .piInkSecondary) }
+    private var label: PiKit.Line { PiKit.Line(text, font: monospacedDigits ? PiKit.Font.monospacedDigits(PiKit.Font.micro) : PiKit.Font.micro, color: .piInkSecondary) }
     var firstBaseline: CGFloat { label.baseline(scale: piScale) }
     override var firstBaselineOffsetFromTop: CGFloat { firstBaseline }
     override var intrinsicContentSize: NSSize { NSSize(width: (line ? 9 : 7) + 4 + label.size(scale: piScale).width, height: label.lineHeight) }
@@ -257,7 +266,7 @@ import Combine
         let key = speed.averageLabel.map { SessionStatsKey(color: .piInkSecondary, title: $0, line: true) }
         var ends: [ShellItem] = []
         if let first = speed.points.first { ends.append(.view(statsMicro("#\(Int(first.x.rounded()))"))) }
-        ends.append(.spacer(0)); ends += speed.models.map { .view(SessionStatsKey(color: .monitorModel($0.colorIndex), title: $0.id), .flexible) }; ends.append(.spacer(0))
+        ends.append(.spacer(0)); ends += speed.models.map { .view(SessionStatsKey(color: .monitorModel($0.colorIndex), title: $0.id, monospacedDigits: true), .flexible) }; ends.append(.spacer(0))
         if let last = speed.points.last { ends.append(.view(statsMicro("#\(Int(last.x.rounded()))"))) }
         setItems([PiKit.ChartHeader("Speed per request", subtitle: speed.subtitle, accessory: key), surface, ShellStack(.horizontal, spacing: 10, ends),
                   SessionStatsCaption(selection: selection, captions: speed.points.map(\.caption), latest: speed.latestCaption)])
