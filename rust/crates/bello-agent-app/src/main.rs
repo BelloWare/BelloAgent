@@ -7,6 +7,7 @@ mod queue_detail;
 mod queue_presentation;
 mod quick_open;
 mod theme;
+mod workspace_lifetime;
 use bello_agent_core::workspace::{ChatRecord, DraftRecord, SubmissionIntent, WorkspaceStore};
 use bello_agent_core::{Controller, Credential, Lane, Profile, RunState, SessionStore};
 use bello_workbench_ui::{
@@ -103,7 +104,8 @@ struct AgentView {
     selected_file: Option<u64>,
     next_file_id: u64,
     quick_open: Entity<QuickOpenView>,
-    _quick_events: Subscription,
+    _quick_events: Option<Subscription>,
+    window_binding: Option<workspace_lifetime::WindowBinding>,
     project: PathBuf,
     icon: Arc<Image>,
     filter: Entity<EditorView>,
@@ -170,17 +172,6 @@ impl AgentView {
             view.set_panel(WorkbenchPanel::Changes, cx);
         });
         let quick_open = cx.new(|cx| QuickOpenView::new(project.clone(), palette, window, cx));
-        let quick_events =
-            cx.subscribe_in(
-                &quick_open,
-                window,
-                |view, _, event, window, cx| match event {
-                    QuickOpenEvent::Open { path, line } => {
-                        view.open_file(path.clone(), *line, window, cx)
-                    }
-                    QuickOpenEvent::Dismissed => cx.notify(),
-                },
-            );
         let icon = Arc::new(Image::from_bytes(
             ImageFormat::Png,
             include_bytes!("../../../../assets/branding/bello-agent-icon-128.png").to_vec(),
@@ -190,11 +181,6 @@ impl AgentView {
             for chat in view.inactive.values() {
                 let _ = chat.controller.stop();
             }
-        });
-        let weak = cx.weak_entity();
-        window.on_window_should_close(cx, move |window, cx| {
-            weak.update(cx, |view, cx| view.request_close(window, cx))
-                .unwrap_or(true)
         });
         let initial_view = cx.weak_entity();
         cx.defer(move |cx| {
@@ -210,7 +196,7 @@ impl AgentView {
         // Match WorkspaceSelection's selected-chat composer focus. The source
         // Open File command is window-wide; it must work before any mouse click.
         chat.composer.read(cx).focus(window);
-        Self {
+        let mut view = Self {
             chat,
             inactive: BTreeMap::new(),
             records,
@@ -232,7 +218,8 @@ impl AgentView {
             selected_file: None,
             next_file_id: 1,
             quick_open,
-            _quick_events: quick_events,
+            _quick_events: None,
+            window_binding: None,
             project,
             icon,
             filter,
@@ -241,7 +228,85 @@ impl AgentView {
             show_files: false,
             close_dialog: false,
             _release: release,
+        };
+        view.bind_window(window, cx);
+        view
+    }
+    fn bind_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let binding = workspace_lifetime::WindowBinding::new(window.window_handle().window_id());
+        self.window_binding = Some(binding);
+        let weak = cx.weak_entity();
+        window.on_window_should_close(cx, move |window, cx| {
+            weak.update(cx, |view, cx| view.request_close_for(binding, window, cx))
+                .unwrap_or(true)
+        });
+        self._quick_events = Some(cx.subscribe_in(
+            &self.quick_open,
+            window,
+            move |view, _, event, window, cx| {
+                if view.window_binding != Some(binding) {
+                    return;
+                }
+                match event {
+                    QuickOpenEvent::Open { path, line } => {
+                        view.open_file(path.clone(), *line, window, cx)
+                    }
+                    QuickOpenEvent::Dismissed => cx.notify(),
+                }
+            },
+        ));
+        for index in 0..self.files.len() {
+            let id = self.files[index].id;
+            let file = self.files[index].view.clone();
+            let events = self.subscribe_file_events(id, &file, window, cx);
+            self.files[index].dirty = file.read(cx).is_dirty(cx);
+            self.files[index]._events = events;
         }
+        if let Some(file) = self
+            .selected_file
+            .and_then(|id| self.files.iter().find(|file| file.id == id))
+        {
+            file.view.read(cx).focus(window, cx);
+        } else {
+            self.composer.read(cx).focus(window);
+        }
+    }
+    fn request_close_for(
+        &mut self,
+        binding: workspace_lifetime::WindowBinding,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.window_binding != Some(binding) {
+            return true;
+        }
+        self.request_close(window, cx)
+    }
+    fn subscribe_file_events(
+        &self,
+        id: u64,
+        file: &Entity<FileTabView>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Subscription {
+        let binding = self.window_binding;
+        cx.subscribe_in(file, window, move |view, file, event, window, cx| {
+            if view.window_binding != binding {
+                return;
+            }
+            match event {
+                FileTabEvent::CloseReady => view.file_closed(id, window, cx),
+                FileTabEvent::Changed => {
+                    let dirty = file.read(cx).is_dirty(cx);
+                    if let Some(entry) = view.files.iter_mut().find(|entry| entry.id == id)
+                        && entry.dirty != dirty
+                    {
+                        entry.dirty = dirty;
+                        cx.notify();
+                    }
+                }
+            }
+        })
     }
     fn refresh(&mut self, cx: &mut Context<Self>) {
         self.last_revision = self.controller.revision();
@@ -438,22 +503,7 @@ impl AgentView {
                 cx,
             )
         });
-        let events = cx.subscribe_in(
-            &file,
-            window,
-            move |view, file, event, window, cx| match event {
-                FileTabEvent::CloseReady => view.file_closed(id, window, cx),
-                FileTabEvent::Changed => {
-                    let dirty = file.read(cx).is_dirty(cx);
-                    if let Some(entry) = view.files.iter_mut().find(|entry| entry.id == id)
-                        && entry.dirty != dirty
-                    {
-                        entry.dirty = dirty;
-                        cx.notify();
-                    }
-                }
-            },
-        );
+        let events = self.subscribe_file_events(id, &file, window, cx);
         file.read(cx).focus(window, cx);
         self.files.push(FileEntry {
             id,
@@ -2143,30 +2193,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_assets(assets::Assets)
         .run(move |cx: &mut App| {
             bello_workbench_ui::init(cx);
-            let bounds = Bounds::centered(None, initial_size(), cx);
-            cx.open_window(
-                WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    window_min_size: Some(size(px(920.), px(600.))),
-                    ..Default::default()
+            workspace_lifetime::WorkspaceLifetime::launch(
+                LaunchState {
+                    controller,
+                    project,
+                    workspace,
+                    record,
+                    draft,
+                    pending,
                 },
-                move |window, cx| {
-                    window.set_window_title("Bello Agent");
-                    cx.new(|cx| {
-                        AgentView::new(
-                            LaunchState {
-                                controller,
-                                project,
-                                workspace,
-                                record,
-                                draft,
-                                pending,
-                            },
-                            window,
-                            cx,
-                        )
-                    })
-                },
+                cx,
             )
             .expect("Could not create native GPUI window");
             cx.on_window_closed(|cx| {
