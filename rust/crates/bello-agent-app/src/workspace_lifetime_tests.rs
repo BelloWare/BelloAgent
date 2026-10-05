@@ -863,3 +863,193 @@ fn adjacent_chat_preserves_file_ime_through_actual_root_routing(cx: &mut TestApp
     cx.simulate_keystrokes(window.into(), navigation_key(false));
     assert_ne!(cx.read(|cx| root.read(cx).record.id.clone()), current);
 }
+
+#[gpui::test]
+fn dirty_prompt_cancel_from_composer_preserves_prior_focus_and_both_drafts(
+    cx: &mut TestAppContext,
+) {
+    use gpui::Focusable;
+    let (dir, window, root) = fixture(cx);
+    cx.simulate_input(window.into(), "chat draft");
+    let path = dir.path().join("cancel.txt");
+    std::fs::write(&path, "original").unwrap();
+    window
+        .update(cx, |view, window, cx| {
+            view.open_file(path.clone(), None, window, cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+    cx.simulate_input(window.into(), "edited");
+    let file = cx.read(|cx| root.read(cx).files[0].view.clone());
+    let text = cx.read(|cx| file.read(cx).editor_for_test().read(cx).text().to_owned());
+    for key in ["escape", "enter"] {
+        window
+            .update(cx, |view, window, cx| {
+                view.composer.read(cx).focus(window);
+                view.close_selected_tab(window, cx);
+                assert!(file.read(cx).has_close_prompt());
+            })
+            .unwrap();
+        cx.simulate_keystrokes(window.into(), key);
+        window
+            .update(cx, |view, window, cx| {
+                assert!(!file.read(cx).has_close_prompt());
+                assert!(view.composer.read(cx).focus_handle(cx).is_focused(window));
+                assert_eq!(view.composer.read(cx).text(), "chat draft");
+                assert_eq!(file.read(cx).editor_for_test().read(cx).text(), text);
+                assert!(file.read(cx).is_dirty(cx));
+                assert_eq!(view.files.len(), 1);
+                assert!(view.session.messages.is_empty());
+            })
+            .unwrap();
+    }
+    assert_eq!(std::fs::read_to_string(path).unwrap(), "original");
+}
+
+#[gpui::test]
+fn dirty_prompt_cancel_from_file_keeps_file_focus_and_never_saves(cx: &mut TestAppContext) {
+    use gpui::Focusable;
+    let (dir, window, root) = fixture(cx);
+    let path = dir.path().join("focused.txt");
+    std::fs::write(&path, "original").unwrap();
+    window
+        .update(cx, |view, window, cx| {
+            view.open_file(path.clone(), None, window, cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+    cx.simulate_input(window.into(), "edited");
+    let file = cx.read(|cx| root.read(cx).files[0].view.clone());
+    for key in ["escape", "enter"] {
+        file.update(cx, |file, cx| file.request_close(cx));
+        cx.simulate_keystrokes(window.into(), key);
+        window
+            .update(cx, |_, window, cx| {
+                assert!(!file.read(cx).has_close_prompt());
+                assert!(
+                    file.read(cx)
+                        .editor_for_test()
+                        .read(cx)
+                        .focus_handle(cx)
+                        .is_focused(window)
+                );
+                assert!(file.read(cx).is_dirty(cx));
+            })
+            .unwrap();
+    }
+    assert_eq!(std::fs::read_to_string(path).unwrap(), "original");
+}
+
+#[gpui::test]
+fn dirty_prompt_root_and_child_yield_cancel_keys_to_marked_composition(cx: &mut TestAppContext) {
+    use gpui::{EntityInputHandler, KeyDownEvent, Keystroke};
+    let (dir, window, root) = fixture(cx);
+    let path = dir.path().join("composition.txt");
+    std::fs::write(&path, "original").unwrap();
+    window
+        .update(cx, |view, window, cx| {
+            view.open_file(path, None, window, cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+    cx.simulate_input(window.into(), "edited");
+    let file = cx.read(|cx| root.read(cx).files[0].view.clone());
+    for in_file in [false, true] {
+        window
+            .update(cx, |view, window, cx| {
+                let editor = if in_file {
+                    file.read(cx).editor_for_test()
+                } else {
+                    view.composer.clone()
+                };
+                editor.update(cx, |editor, cx| {
+                    editor.focus(window);
+                    editor.replace_and_mark_text_in_range(None, "漢字", Some(2..2), window, cx);
+                });
+                file.update(cx, |file, cx| file.request_close(cx));
+                for key in ["escape", "enter"] {
+                    let event = KeyDownEvent {
+                        keystroke: Keystroke::parse(key).unwrap(),
+                        is_held: false,
+                    };
+                    view.global_key(&event, window, cx);
+                    assert!(file.read(cx).has_close_prompt());
+                    assert!(editor.read(cx).has_marked_text());
+                    if in_file {
+                        assert!(
+                            !file.update(cx, |file, cx| file.close_prompt_key(&event, window, cx))
+                        );
+                    }
+                }
+                editor.update(cx, |editor, cx| editor.unmark_text(window, cx));
+            })
+            .unwrap();
+        cx.simulate_keystrokes(window.into(), "escape");
+        assert!(!cx.read(|cx| file.read(cx).has_close_prompt()));
+    }
+}
+
+#[gpui::test]
+fn dirty_prompt_consumed_enter_repeat_and_keyup_cannot_submit_after_pane_changes(
+    cx: &mut TestAppContext,
+) {
+    use gpui::{KeyDownEvent, KeyUpEvent, Keystroke};
+    let (dir, window, root) = fixture(cx);
+    cx.simulate_input(window.into(), "draft must not send");
+    let path = dir.path().join("repeat.txt");
+    std::fs::write(&path, "original").unwrap();
+    window
+        .update(cx, |view, window, cx| {
+            view.open_file(path, None, window, cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+    cx.simulate_input(window.into(), "edited");
+    window
+        .update(cx, |view, window, cx| {
+            view.composer.read(cx).focus(window);
+            view.close_selected_tab(window, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    let revision = cx.read(|cx| root.read(cx).draft_revision);
+    let enter = Keystroke::parse("enter").unwrap();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    visual.simulate_event(KeyDownEvent {
+        keystroke: enter.clone(),
+        is_held: false,
+    });
+    cx.run_until_parked();
+    root.update(cx, |view, cx| {
+        view.show_files = false;
+        cx.notify();
+    });
+    cx.run_until_parked();
+    for _ in 0..3 {
+        visual.simulate_event(KeyDownEvent {
+            keystroke: enter.clone(),
+            is_held: true,
+        });
+        // A release, including a backend-synthesized one between repeats,
+        // must not activate a button or submit the composer.
+        visual.simulate_event(KeyUpEvent {
+            keystroke: enter.clone(),
+        });
+        cx.run_until_parked();
+    }
+    cx.read(|cx| {
+        let view = root.read(cx);
+        assert_eq!(view.draft_revision, revision);
+        assert_eq!(view.composer.read(cx).text(), "draft must not send");
+        assert!(view.session.messages.is_empty());
+        assert!(view.inflight_submission.is_none());
+        assert!(view.workspace.lock().unwrap().snapshot().intents.is_empty());
+    });
+    // A genuinely fresh non-held press retains the ordinary submit path.
+    // This disconnected fixture has no provider configuration/network access.
+    visual.simulate_event(KeyDownEvent {
+        keystroke: enter,
+        is_held: false,
+    });
+    assert!(cx.read(|cx| root.read(cx).draft_revision) > revision);
+}

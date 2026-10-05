@@ -434,12 +434,43 @@ input was not delivered to the app, consistent with the desktop's workspace
 shortcut bindings. No system shortcuts were changed. Native macOS shortcut
 interaction and source View-menu command entries remain unvalidated or missing.
 
-QA separately found that an existing dirty-file prompt opened while the composer
-owns focus cannot receive Escape through its file-child handler. Keep Editing
-still dismisses it by pointer. The new navigation guard correctly blocks traversal;
-this prompt-focus gap remains tracked separately, not claimed as fixed here.
+QA separately found that an existing Rust dirty-file prompt opened while the
+composer owns focus cannot receive Escape through its file-child handler. The
+following bounded correction addresses that defect; it is not a claim that this
+Rust save dialog reproduces the original Swift file reader's UI.
 No new dependency, provider request, archive behavior or native menu bridge change
 is included.
+
+## Dirty-file prompt keyboard cancellation
+
+The visible file prompt now receives Escape/Enter from the root key handler even
+when the composer still has focus. It uses the same existing Keep Editing state
+transition as the child handler and does not focus the file, save, discard, close
+the tab or alter either draft. Original `WorkspaceTabs.swift:65–85` documents
+preserving prior focus for pane-tab close; the Rust safety dialog itself is an
+existing Rust feature, not a newly ported Swift dialog. Active marked composition
+in the focused composer, filter or file editor takes priority over cancellation.
+Quick Open and other existing root modal handlers keep their prior ordering.
+
+Four GPUI fake-platform regressions cover composer/file focus, both cancel keys,
+unchanged chat/file/disk bytes, root/child composition priority, and explicit
+held-key/KeyUp events across pane hiding followed by a fresh independent Enter.
+An app-owned consumed-press latch prevents a held cancellation Enter from becoming
+a Send after the prompt disappears. macOS and Wayland supply GPUI
+`KeyDownEvent.is_held`; pinned GPUI 0.2.2 X11 reports false on every keypress, so
+physical X11 auto-repeat cannot be distinguished by this guard and remains a
+platform limitation. No GPUI fork or timing heuristic is introduced. The save state
+machine and asynchronous completion policy are unchanged. This targets the
+currently displayed pane tab; broader native dialog/accessibility and hidden-tab
+close presentation remain separate audit scope. All 179 default and 186
+optional diagnostic-feature workspace tests, strict Clippy/build in both
+configurations, formatting and diff checks pass. Independent review reran the four
+focused tests. Fresh Linux binary
+`72af4123bb5948a993b72a1832315000416878c7a58347f5658f386fa6445404`
+passed single Escape/Enter cancellation with composer and file focus, unchanged
+chat/file drafts and disk bytes, and close/restart checks. No message was submitted
+by cancellation. This is real single-press desktop evidence, not physical held-key,
+macOS interaction, native IME or original Swift dialog parity validation.
 
 ## Next implementation priorities
 

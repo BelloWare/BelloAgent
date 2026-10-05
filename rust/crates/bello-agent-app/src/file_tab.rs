@@ -149,6 +149,23 @@ impl FileTabView {
     pub(crate) fn has_close_prompt(&self) -> bool {
         self.lifecycle.close != CloseIntent::None
     }
+    pub(crate) fn close_prompt_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.has_close_prompt() || self.has_focused_composition(window, cx) {
+            return false;
+        }
+        if matches!(event.keystroke.key.as_str(), "escape" | "enter") {
+            // Same Keep Editing transition as the existing child handler.
+            // Never save/discard text or change the prior focus here.
+            self.lifecycle.close = CloseIntent::None;
+            cx.notify();
+        }
+        true
+    }
     pub(crate) fn has_focused_composition(&self, window: &Window, cx: &App) -> bool {
         let editor = self.editor.read(cx);
         editor.focus_handle(cx).is_focused(window) && editor.has_marked_text()
@@ -304,12 +321,8 @@ impl Render for FileTabView {
             .flex_col()
             .bg(rgb(p.content))
             .text_color(rgb(p.ink))
-            .capture_key_down(cx.listener(|view, event: &KeyDownEvent, _, cx| {
-                if view.lifecycle.close != CloseIntent::None {
-                    if matches!(event.keystroke.key.as_str(), "escape" | "enter") {
-                        view.lifecycle.close = CloseIntent::None;
-                        cx.notify();
-                    }
+            .capture_key_down(cx.listener(|view, event: &KeyDownEvent, window, cx| {
+                if view.close_prompt_key(event, window, cx) {
                     cx.stop_propagation();
                     return;
                 }

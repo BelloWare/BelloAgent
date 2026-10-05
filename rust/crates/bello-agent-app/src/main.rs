@@ -100,6 +100,7 @@ struct AgentView {
     shutdown_operation: Option<uuid::Uuid>,
     pin_operations: BTreeMap<String, uuid::Uuid>,
     pin_errors: BTreeMap<String, sidebar_actions::PinError>,
+    cancelled_prompt_key: Option<String>,
     sidebar_menu: Option<sidebar_actions::SidebarMenu>,
     chat_directory: PathBuf,
     unloaded_drafts: BTreeMap<String, DraftRecord>,
@@ -231,6 +232,7 @@ impl AgentView {
             shutdown_operation: None,
             pin_operations: BTreeMap::new(),
             pin_errors: BTreeMap::new(),
+            cancelled_prompt_key: None,
             sidebar_menu: None,
             palette,
             layout,
@@ -572,6 +574,16 @@ impl AgentView {
         }
     }
     fn global_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // Preserve cancellation for the whole consumed press, even if the file
+        // pane closes or focus changes before a repeat. A fresh press owns its
+        // normal behavior. Native macOS/Wayland report repeats via is_held;
+        // pinned GPUI X11 does not, so physical X11 repeat protection is limited.
+        if !event.is_held {
+            self.cancelled_prompt_key = None;
+        } else if self.cancelled_prompt_key.as_deref() == Some(event.keystroke.key.as_str()) {
+            cx.stop_propagation();
+            return;
+        }
         if self.shutting_down {
             cx.stop_propagation();
             return;
@@ -603,6 +615,28 @@ impl AgentView {
                 cx.stop_propagation();
             }
             return;
+        }
+        // A pane tab can be closed while the composer still owns focus.
+        // Route only the existing cancel keys to its visible safety prompt;
+        // keep native text composition ahead of that cancellation intent.
+        if self.show_files && matches!(event.keystroke.key.as_str(), "escape" | "enter") {
+            let composing = [&self.composer, &self.filter].into_iter().any(|editor| {
+                let editor = editor.read(cx);
+                editor.focus_handle(cx).is_focused(window) && editor.has_marked_text()
+            });
+            if !composing
+                && let Some(entry) = self
+                    .files
+                    .iter()
+                    .find(|entry| Some(entry.id) == self.selected_file)
+                && entry
+                    .view
+                    .update(cx, |view, cx| view.close_prompt_key(event, window, cx))
+            {
+                self.cancelled_prompt_key = Some(event.keystroke.key.clone());
+                cx.stop_propagation();
+                return;
+            }
         }
         let navigation_command = if cfg!(target_os = "macos") {
             mods.platform && !mods.control
