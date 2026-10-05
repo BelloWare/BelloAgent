@@ -420,6 +420,67 @@ fn shared_runtime() -> Result<&'static tokio::runtime::Runtime> {
 mod edit_status_tests {
     use super::*;
     use crate::{QueueEditState, session::WriteFault};
+    use std::{collections::BTreeMap, ffi::OsString, path::Path, time::Duration};
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::{TcpListener, TcpStream},
+        time::timeout,
+    };
+
+    const DEADLINE: Duration = Duration::from_secs(5);
+
+    fn retained_files(directory: &Path) -> BTreeMap<OsString, Vec<u8>> {
+        std::fs::read_dir(directory)
+            .unwrap()
+            .map(|entry| {
+                let entry = entry.unwrap();
+                (entry.file_name(), std::fs::read(entry.path()).unwrap())
+            })
+            .collect()
+    }
+
+    async fn read_fixture_request(socket: &mut TcpStream) -> serde_json::Value {
+        timeout(DEADLINE, async {
+            let mut bytes = Vec::new();
+            loop {
+                let mut buffer = [0; 4096];
+                let count = socket.read(&mut buffer).await.unwrap();
+                assert_ne!(count, 0, "worker disconnected before its request");
+                bytes.extend_from_slice(&buffer[..count]);
+                assert!(bytes.len() < 1024 * 1024, "fixture request too large");
+                if let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&bytes[..end]).to_lowercase();
+                    assert_eq!(headers.lines().next(), Some("post /v1/responses http/1.1"));
+                    assert!(headers.contains("authorization: bearer fixture-only\r\n"));
+                    let length: usize = headers
+                        .lines()
+                        .find_map(|line| line.strip_prefix("content-length: "))
+                        .expect("JSON request content length")
+                        .parse()
+                        .unwrap();
+                    if bytes.len() >= end + 4 + length {
+                        return serde_json::from_slice(&bytes[end + 4..end + 4 + length]).unwrap();
+                    }
+                }
+            }
+        })
+        .await
+        .expect("fixture request timed out")
+    }
+
+    async fn await_session(controller: &Controller, predicate: impl Fn(&Session) -> bool) {
+        let mut updates = controller.subscribe();
+        timeout(DEADLINE, async {
+            loop {
+                if predicate(&updates.borrow_and_update()) {
+                    return;
+                }
+                updates.changed().await.expect("session updates closed");
+            }
+        })
+        .await
+        .expect("expected session transition timed out");
+    }
 
     fn held_controller(path: &std::path::Path) -> (Arc<Controller>, String) {
         let mut store = SessionStore::open(path).unwrap();
@@ -512,6 +573,320 @@ mod edit_status_tests {
         assert!(reopened.edit_status("edit").unwrap().current_hold.is_none());
         assert_eq!(reopened.snapshot_shared().pending[0].text, "saved rewrite");
         assert_eq!(std::fs::read(path).unwrap(), committed_bytes);
+    }
+
+    #[tokio::test]
+    async fn shutdown_of_idle_uncertain_store_preserves_bytes_until_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
+        let (controller, turn_id) = held_controller(&path);
+        let cached = controller.snapshot_shared();
+        controller.inner.lock().unwrap().store.fault = WriteFault::AfterRename;
+        assert!(matches!(
+            controller.resolve_edit("edit", "saved", Some("saved despite lost acknowledgement")),
+            Err(Error::PersistenceUncertain(_))
+        ));
+        // Removing the injected failure does not clear real store uncertainty.
+        controller.inner.lock().unwrap().store.fault = WriteFault::None;
+        let retained = retained_files(dir.path());
+        let committed: Session = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(committed.edit.is_none());
+        assert_eq!(
+            committed.pending[0].text,
+            "saved despite lost acknowledgement"
+        );
+        assert!(controller.worker.lock().unwrap().is_none());
+        assert!(!controller.worker_active.load(Ordering::Acquire));
+
+        timeout(DEADLINE, controller.shutdown())
+            .await
+            .expect("idle uncertain shutdown must not wait for storage recovery")
+            .unwrap();
+
+        assert_eq!(retained_files(dir.path()), retained);
+        assert!(Arc::ptr_eq(&cached, &controller.snapshot_shared()));
+        let inner = controller.inner.lock().unwrap();
+        assert!(inner.fatal.is_none());
+        assert!(matches!(
+            inner.store.require_certain(),
+            Err(Error::PersistenceUncertain(_))
+        ));
+        assert_eq!(inner.store.snapshot_revision(), cached.revision);
+        drop(inner);
+        for id in ["edit", "unknown"] {
+            assert!(matches!(
+                controller.edit_status(id),
+                Err(Error::PersistenceUncertain(_))
+            ));
+        }
+        drop(controller);
+
+        let reopened = Controller::new(SessionStore::open(&path).unwrap(), None).unwrap();
+        let status = reopened.edit_status("edit").unwrap();
+        assert!(matches!(status.state, QueueEditState::Saved { .. }));
+        assert!(status.current_hold.is_none());
+        assert_eq!(reopened.snapshot_shared().pending[0].id, turn_id);
+        assert_eq!(
+            reopened.snapshot_shared().pending[0].text,
+            "saved despite lost acknowledgement"
+        );
+        // This idle reopen only confirms the existing checkpoint; it need not rewrite it.
+        assert_eq!(retained_files(dir.path()), retained);
+    }
+
+    #[tokio::test]
+    async fn shutdown_joins_real_gated_worker_after_uncertain_checkpoint_without_more_writes() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let profile: Profile = serde_json::from_value(serde_json::json!({
+            "id":"uncertain-shutdown-fixture", "api":"openai-responses", "providerId":"litellm",
+            "modelId":"local-fixture", "baseUrl":format!("http://{}", listener.local_addr().unwrap()),
+            "contextWindow":32000, "maxOutputTokens":4096
+        })).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
+        let controller = Controller::new(
+            SessionStore::open(&path).unwrap(),
+            Some((profile, Credential::new("fixture-only".into()).unwrap())),
+        )
+        .unwrap();
+        let first = Submission::new("active request".into(), Lane::FollowUp);
+        let first_id = first.id.clone();
+        controller.submit_identified(first).unwrap();
+        let (mut socket, _) = timeout(DEADLINE, listener.accept()).await.unwrap().unwrap();
+        let request = read_fixture_request(&mut socket).await;
+        assert_eq!(request["input"][0]["content"][0]["text"], "active request");
+        assert!(request.get("tools").is_none());
+
+        // Admit the next item before streaming so the accepted delta has its own
+        // journal, which the failed Begin checkpoint must retain unchanged.
+        let queued = Submission::new("queued original\nsecond line".into(), Lane::FollowUp);
+        let queued_id = queued.id.clone();
+        controller.submit_identified(queued).unwrap();
+        timeout(DEADLINE, async {
+            socket.write_all(concat!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n",
+                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"durable partial\"}\n\n"
+            ).as_bytes()).await.unwrap();
+            socket.flush().await.unwrap();
+        })
+        .await
+        .expect("fixture initial delta timed out");
+        await_session(&controller, |session| {
+            session
+                .messages
+                .last()
+                .is_some_and(|message| message.text == "durable partial")
+        })
+        .await;
+        let cached = controller.snapshot_shared();
+        assert_eq!(cached.state, RunState::Running);
+        assert_eq!(cached.stream_sequence, 1);
+        assert_eq!(cached.pending.len(), 1);
+        assert!(!cached.queue_paused);
+        assert!(cached.edit.is_none());
+        let reply_id = cached.active_reply.clone().unwrap();
+        let journal = crate::stream_journal::path(&path, &cached.stream_generation).unwrap();
+        let journal_bytes = std::fs::read(&journal).unwrap();
+        let record: serde_json::Value = serde_json::from_slice(&journal_bytes).unwrap();
+        assert_eq!(record["reply"], reply_id);
+        assert_eq!(record["sequence"], 1);
+        assert_eq!(
+            record["delta"],
+            serde_json::to_value(crate::Delta::Text("durable partial".into())).unwrap()
+        );
+
+        controller.inner.lock().unwrap().store.fault = WriteFault::AfterRename;
+        assert!(matches!(
+            controller.begin_edit(&queued_id, "uncertain-begin"),
+            Err(Error::PersistenceUncertain(_))
+        ));
+        controller.inner.lock().unwrap().store.fault = WriteFault::None;
+        assert!(Arc::ptr_eq(&cached, &controller.snapshot_shared()));
+        assert!(matches!(
+            controller.edit_status("uncertain-begin"),
+            Err(Error::PersistenceUncertain(_))
+        ));
+        let retained = retained_files(dir.path());
+        let committed: Session = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(committed.edit.as_ref().unwrap().edit_id, "uncertain-begin");
+        assert_eq!(committed.messages.last().unwrap().text, "durable partial");
+        assert_ne!(committed.stream_generation, cached.stream_generation);
+        assert_eq!(std::fs::read(&journal).unwrap(), journal_bytes);
+        let cancel = controller.active_cancel.read().unwrap().clone().unwrap();
+        assert!(!cancel.is_cancelled());
+        assert!(controller.worker_active.load(Ordering::Acquire));
+        assert!(
+            !controller
+                .worker
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .is_finished()
+        );
+
+        // The test owns the provider gate: keep the socket open and never send
+        // EOF or a terminal event until the actual production worker has joined.
+        let retained_controller = Arc::clone(&controller);
+        timeout(DEADLINE, controller.shutdown())
+            .await
+            .expect("uncertain storage must not prevent cancelling and joining the worker")
+            .unwrap();
+
+        assert!(cancel.is_cancelled());
+        assert!(!controller.worker_active.load(Ordering::Acquire));
+        assert!(controller.worker.lock().unwrap().is_none());
+        assert!(controller.active_cancel.read().unwrap().is_none());
+        {
+            let inner = controller.inner.lock().unwrap();
+            assert!(!inner.worker_running);
+            assert!(inner.cancel.is_none());
+            assert!(
+                inner
+                    .fatal
+                    .as_ref()
+                    .unwrap()
+                    .contains("persistence is uncertain")
+            );
+            assert!(matches!(
+                inner.store.require_certain(),
+                Err(Error::PersistenceUncertain(_))
+            ));
+            assert_eq!(
+                serde_json::to_value(inner.store.snapshot()).unwrap(),
+                serde_json::to_value(&*cached).unwrap()
+            );
+        }
+        assert_eq!(controller.snapshot_shared().state, RunState::Error);
+        assert!(controller.snapshot_shared().queue_paused);
+        for id in ["uncertain-begin", "unknown"] {
+            assert!(controller.edit_status(id).is_err());
+        }
+        assert_eq!(retained_files(dir.path()), retained);
+
+        let mut end = [0; 1];
+        assert_eq!(
+            timeout(DEADLINE, socket.read(&mut end))
+                .await
+                .unwrap()
+                .unwrap(),
+            0,
+            "cancellation must drop the gated HTTP stream"
+        );
+        // Join is the completion barrier. No timer-based quiet period or mock
+        // JoinHandle stands in for proving this worker cannot dispatch again.
+        let listener = listener.into_std().unwrap();
+        assert!(
+            matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+        );
+        assert_eq!(retained_files(dir.path()), retained);
+        // Joining does not drop the controller's writer lock or its poisoned
+        // store. Reopen is possible only after every retained owner is gone.
+        assert!(
+            matches!(SessionStore::open(&path), Err(Error::Invalid(message)) if message == "This Rust session is already open elsewhere")
+        );
+        drop(controller);
+        assert!(
+            matches!(SessionStore::open(&path), Err(Error::Invalid(message)) if message == "This Rust session is already open elsewhere")
+        );
+        drop(retained_controller);
+
+        let reopened = Controller::new(SessionStore::open(&path).unwrap(), None).unwrap();
+        let recovered = reopened.snapshot_shared();
+        assert_eq!(recovered.state, RunState::Paused);
+        assert!(recovered.queue_paused);
+        assert!(recovered.active.is_none());
+        assert!(recovered.active_reply.is_none());
+        assert_eq!(recovered.retry.as_ref().unwrap().id, first_id);
+        assert_eq!(recovered.pending.len(), 1);
+        assert_eq!(recovered.pending[0].id, queued_id);
+        assert_eq!(recovered.pending[0].text, "queued original\nsecond line");
+        assert_eq!(recovered.messages.len(), 2);
+        let partial = recovered.messages.last().unwrap();
+        assert_eq!(partial.id, reply_id);
+        assert_eq!(partial.text, "durable partial");
+        assert_eq!(partial.state, "interrupted");
+        assert!(!partial.replay_eligible);
+        let status = reopened.edit_status("uncertain-begin").unwrap();
+        assert_eq!(
+            status.state,
+            QueueEditState::Active {
+                turn_id: queued_id,
+                text: "queued original\nsecond line".into(),
+            }
+        );
+        assert_eq!(status.current_hold, committed.edit);
+        // The old generation is retained, but never replays its text twice.
+        assert_eq!(std::fs::read(&journal).unwrap(), journal_bytes);
+        assert!(reopened.worker.lock().unwrap().is_none());
+        assert!(
+            matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_reports_worker_join_failure_separately_from_store_uncertainty() {
+        let controller = Controller::new(SessionStore::pending(), None).unwrap();
+        // A synthetic panicking task covers only JoinError propagation. The
+        // gated-provider test above supplies evidence about the real worker.
+        *controller.worker.lock().unwrap() = Some(tokio::spawn(async {
+            panic!("injected worker task panic");
+        }));
+        let result = timeout(DEADLINE, controller.shutdown()).await.unwrap();
+        assert!(
+            matches!(result, Err(Error::Invalid(message)) if message == "Session worker terminated unexpectedly")
+        );
+        assert!(controller.worker.lock().unwrap().is_none());
+        controller
+            .inner
+            .lock()
+            .unwrap()
+            .store
+            .require_certain()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn shutdown_reports_poisoned_cancellation_and_worker_locks() {
+        let controller = Controller::new(SessionStore::pending(), None).unwrap();
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _guard = controller.active_cancel.write().unwrap();
+                panic!("injected cancellation lock panic");
+            }))
+            .is_err()
+        );
+        let result = timeout(DEADLINE, controller.shutdown()).await.unwrap();
+        assert!(
+            matches!(result, Err(Error::Invalid(message)) if message == "Session is unavailable")
+        );
+        controller
+            .inner
+            .lock()
+            .unwrap()
+            .store
+            .require_certain()
+            .unwrap();
+
+        let controller = Controller::new(SessionStore::pending(), None).unwrap();
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _guard = controller.worker.lock().unwrap();
+                panic!("injected worker lock panic");
+            }))
+            .is_err()
+        );
+        let result = timeout(DEADLINE, controller.shutdown()).await.unwrap();
+        assert!(
+            matches!(result, Err(Error::Invalid(message)) if message == "Worker is unavailable")
+        );
+        controller
+            .inner
+            .lock()
+            .unwrap()
+            .store
+            .require_certain()
+            .unwrap();
     }
 
     #[test]

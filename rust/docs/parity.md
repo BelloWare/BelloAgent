@@ -409,16 +409,57 @@ Close/reopen preserved exact text, and initial Ctrl+P focus routing worked.
 Earlier failure/reconciliation captures retain their 4f97 provenance; final
 screenshots prove the final candidate's targeted smoke checks only.
 
-Remaining limitations are explicit. There is no live-controller reload command:
-reopening while the existing controller still owns the file lock is not a recovery
-route. A truly poisoned controller can also reject the existing Close barrier's
-stop/checkpoint operation. The UI therefore says recovery is unconfirmed and text
-is preserved/blocked, rather than promising an available restart control. No forced
-quit, shutdown bypass or discarded draft was added. Separately, existing global
-typing/Close revision saturation at u64::MAX is not fixed here; this checkpoint's
-checked-overflow proof covers the recovery merge only. Broader checked protocol
-allocation and exact precommand draft flush belong to the next reviewed slice.
-Native macOS IME, pixels and poisoned-state lifecycle recovery remain unvalidated.
+Correction to the initial version of this section: it incorrectly stated that
+session persistence uncertainty makes the Close barrier's stop/checkpoint fail.
+`Controller::stop` only signals cancellation; it does not checkpoint. `shutdown`
+then awaits the worker. A worker can therefore quiesce even when its final write
+is refused by an uncertain store. A successful join neither confirms that write
+nor clears uncertainty. Swift makes the same separation: `Sessions.swift:429–431`
+cancels/awaits the run before releasing its journal; a poisoned journal refuses
+synchronization but still closes (`SessionJournal.swift:236–239,293`). No shutdown
+production change, force quit or persistence bypass was needed.
+
+Four test-only regressions now verify this distinction. An idle, fault-injected post-rename-
+uncertain controller shuts down without changing any retained snapshot/journal
+bytes, while edit status remains unavailable until reopen confirms the actual Save.
+A real Controller worker uses a gated loopback Responses stream: after a durable
+partial fragment, a queued Begin triggers post-rename uncertainty; cancellation
+and join finish without a provider terminal event or a second observed request;
+retained snapshot/journal files remain byte-identical. Reopen preserves the interrupted, non-replayable partial
+text, retry identity and paused pending edit. Retained-Arc checks prove joining
+alone does not release the writer lock. Separate tests continue to reject worker
+join failure and poisoned cancellation/worker locks; these are not persistence
+uncertainty. No production shutdown code changed.
+
+All 147 core tests pass (68 unit and 79 integration). Independent review verified
+and reran all 68 unit tests, the focused reopen-confirmation test and the six
+headless app save/stop checks. The real gated-worker test also passed 50 standalone
+repetitions and 20 further independent repetitions. The complete workspace passes
+252 default and 259 optional native-probe tests, strict all-feature Clippy, build,
+formatting and diff checks. These are storage/loopback and headless lifecycle
+checks, not a syscall trace, physical power-loss experiment, native desktop
+interaction or a live reload feature.
+
+Draft/catalog save failure is a different boundary. Source
+`ApplicationLifecycle.swift:85–104` saves drafts/preferences before waiting for
+helpers and refuses termination if those saves fail. Rust's existing
+`ShutdownPlan` likewise does not reach its stop stage after a draft/catalog save
+failure. Session uncertainty must not be confused with a poisoned synchronization
+lock, worker panic or an uncertain WorkspaceStore; these have distinct failure
+paths. Existing six headless save/stop/lifecycle checks were rerun for this correction.
+
+There is still no live-controller reload command: joining does not release the
+store while an Arc retains the controller, and opening a replacement before
+retiring that owner cannot reacquire its file lock. The UI says recovery is
+unconfirmed and text is preserved/blocked, without promising an in-app reload
+control. A future catalog recovery must also confirm the validated catalog file
+and parent directory before treating reopened cancellation receipts as durable;
+that is separate from SessionStore's confirmation already implemented here.
+Existing global typing/Close revision saturation at u64::MAX is not fixed here;
+this checkpoint's checked-overflow proof covers the recovery merge only. Broader
+checked protocol allocation and exact precommand draft flush belong to the next
+reviewed slice. Native macOS IME, pixels, source window-Close versus true Quit,
+and live-controller recovery remain unvalidated.
 
 ## Queue-header Resume / Send queued
 
