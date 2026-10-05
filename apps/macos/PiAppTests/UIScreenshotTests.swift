@@ -782,8 +782,19 @@ final class UIScreenshotTests: XCTestCase {
         }
         file.openGoToLine(); file.lineQuery = "18"
         try await settle(0.8)
+        // The released gallery showed this populated bar after the keys
+        // returned to the file. Do not capture the injected value as a new
+        // command's select-all state; command-focus behavior has its own tests.
+        let fileText = try XCTUnwrap(file.focusView)
+        XCTAssertTrue(window.makeFirstResponder(fileText))
+        try await until("the file has the keys with its line bar still open") {
+            window.firstResponder === fileText && file.bar == .goToLine
+        }
         for (name, appearance) in appearances {
             NSApp.appearance = NSAppearance(named: appearance); try await settle(1.0)
+            XCTAssertTrue(window.firstResponder === fileText)
+            XCTAssertEqual(file.bar, .goToLine)
+            XCTAssertEqual(file.lineQuery, "18")
             try capture(window, to: gallery.appendingPathComponent("24d-tabs-go-to-line-\(name).png"))
         }
         file.closeBar(); try await settle(0.6)
@@ -887,8 +898,22 @@ final class UIScreenshotTests: XCTestCase {
         }
         model.quickOpen.query = "retry"
         try await until("files found") { model.quickOpen.answered == "retry" && !model.quickOpen.rows.isEmpty }
+        let content = try XCTUnwrap(window.contentView)
+        try await until("the Quick Open field shows the injected query") {
+            self.descendants(NSTextField.self, in: content).first { $0.accessibilityIdentifier() == "quickOpenField" }?.stringValue == "retry"
+        }
+        let queryField = try XCTUnwrap(descendants(NSTextField.self, in: content).first { $0.accessibilityIdentifier() == "quickOpenField" })
+        XCTAssertTrue(window.makeFirstResponder(queryField))
+        let queryEditor = try XCTUnwrap(queryField.currentEditor() as? NSTextView)
+        // Match the released capture's typed, unselected query. Assigning a
+        // model value to an editing AppKit field otherwise selects it all.
+        let end = NSRange(location: (queryEditor.string as NSString).length, length: 0)
+        queryEditor.setSelectedRange(end)
         for (name, appearance) in appearances {
             NSApp.appearance = NSAppearance(named: appearance); try await settle(1.0)
+            XCTAssertTrue(window.firstResponder === queryEditor)
+            XCTAssertEqual(queryEditor.string, "retry")
+            XCTAssertEqual(queryEditor.selectedRange(), end)
             try capture(window, to: gallery.appendingPathComponent("25-quick-open-\(name).png"))
         }
         model.quickOpen.close(restoringFocus: false)
