@@ -5,7 +5,7 @@ import XCTest
 @testable import PiApp
 @testable import GitView
 
-/// The 310pt Changes pane in the released minimum-width main window. The
+/// The 310pt Changes pane in the released minimum-width main window.
 /// Measures both the panel alone and the released ChangesTab hosting topology;
 /// a toolbar's overflow must not be assumed to resize its neighboring children.
 @MainActor final class GitPanelNarrowParityTests: GitPanelTestCase, SerialTestLane {
@@ -72,9 +72,13 @@ import XCTest
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         try start(root)
         let file = root.appendingPathComponent("PaymentClient.swift")
-        try "let delay = 1\n".write(to: file, atomically: true, encoding: .utf8)
+        // The released 24d gallery's actual two commits, not an inert or
+        // smaller diff: default representable sizing is part of the oracle.
+        try "func charge(_ order: Order) async throws -> Receipt {\n    for attempt in 1...3 {\n        if let receipt = try? await gateway.charge(order) { return receipt }\n    }\n    throw PaymentError.exhausted\n}\n"
+            .write(to: file, atomically: true, encoding: .utf8)
         try git(["add", "."], in: root); try git(["commit", "-q", "-m", "Add the payment client and fixture notes"], in: root)
-        try "let delay = 2\n".write(to: file, atomically: true, encoding: .utf8)
+        try "func charge(_ order: Order) async throws -> Receipt {\n    var delay: Duration = .milliseconds(200)\n    for attempt in 1...5 {\n        if let receipt = try? await gateway.charge(order) { return receipt }\n        try await Task.sleep(for: delay); delay *= 2\n    }\n    throw PaymentError.exhausted\n}\n"
+            .write(to: file, atomically: true, encoding: .utf8)
         try git(["commit", "-q", "-a", "-m", "Back off between attempts"], in: root)
         return root
     }
@@ -84,6 +88,10 @@ import XCTest
         }
         controller.selectedCommit = try XCTUnwrap(controller.commits.first)
         try await eventually("The selected commit is ready", timeout: 10) { !controller.commitLoading && controller.detail != nil }
+        controller.detailFile = "PaymentClient.swift"
+        try await eventually("The actual gallery file's selected diff is ready", timeout: 10) {
+            !controller.commitLoading && !controller.detailFileDiff.isEmpty && controller.detailFile == "PaymentClient.swift"
+        }
     }
     private func assertFrames(_ actual: [GitNarrowReferencePart: CGRect], _ expected: [GitNarrowReferencePart: CGRect],
                               parts: [GitNarrowReferencePart], file: StaticString = #filePath, line: UInt = #line) throws {
