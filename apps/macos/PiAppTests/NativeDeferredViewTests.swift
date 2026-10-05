@@ -49,6 +49,7 @@ final class NativeDeferredViewTests: XCTestCase {
         view.reloadData(); view.expandItem(coordinator.root)
         await drainDeferredUpdates()
         XCTAssertTrue(oldWrites.isEmpty, "A selection from the previous body must not write through its old callback")
+        XCTAssertEqual(oldSelection, "", "Replacing the body leaves the old selection untouched")
         XCTAssertEqual(currentSelection, "")
     }
 
@@ -62,5 +63,6 @@ final class NativeDeferredViewTests: XCTestCase {
         view.delegate = nil; view.dataSource = nil
         await drainDeferredUpdates()
         XCTAssertTrue(writes.isEmpty, "Changing to UTF-8/Hex or leaving the inspector must not restore stale JSON detail")
+        XCTAssertEqual(selection, "", "A detached outline must not publish its pending detail")
     }
 }
