@@ -18,11 +18,11 @@ final class TranscriptWorkRowTests: XCTestCase {
     // MARK: Every state of a row
 
     func testARowSaysItsOutcomeInColourAndInOneHiddenWord() {
-        XCTAssertEqual(ActionRowView.state(of: call("running")), .running)
-        XCTAssertEqual(ActionRowView.state(of: call("preparing")), .running)
-        XCTAssertEqual(ActionRowView.state(of: call("completed")), .ok)
-        XCTAssertEqual(ActionRowView.state(of: call("failed")), .failed)
-        XCTAssertEqual(ActionRowView.state(of: call("cancelled")), .stopped,
+        XCTAssertEqual(TranscriptToolRow.state(of: call("running")), .running)
+        XCTAssertEqual(TranscriptToolRow.state(of: call("preparing")), .running)
+        XCTAssertEqual(TranscriptToolRow.state(of: call("completed")), .ok)
+        XCTAssertEqual(TranscriptToolRow.state(of: call("failed")), .failed)
+        XCTAssertEqual(TranscriptToolRow.state(of: call("cancelled")), .stopped,
                        "A call the reader stopped did not fail: it is amber, not red")
         // Colour alone is never the message: assistive technology hears a word.
         XCTAssertNil(TranscriptRowState.ok.spokenStatus)
@@ -35,23 +35,23 @@ final class TranscriptWorkRowTests: XCTestCase {
 
     func testAFailureReplacesTheSummaryRatherThanJoiningIt() {
         let ok = call("completed")
-        XCTAssertEqual(ActionRowView.summary(of: ok), TranscriptActivity.describe(ok).object)
+        XCTAssertEqual(TranscriptToolRow.summary(of: ok), TranscriptActivity.describe(ok).object)
         let failed = call("failed", output: "ENOENT: no such file or directory\n  at readFile (fs.js:1)")
-        XCTAssertEqual(ActionRowView.summary(of: failed), "ENOENT: no such file or directory",
+        XCTAssertEqual(TranscriptToolRow.summary(of: failed), "ENOENT: no such file or directory",
                        "The failure's first line is what the row says, instead of the arguments")
         // A call the reader stopped keeps saying what it was doing.
         let stopped = call("cancelled", output: "")
-        XCTAssertEqual(ActionRowView.summary(of: stopped), TranscriptActivity.describe(stopped).object)
+        XCTAssertEqual(TranscriptToolRow.summary(of: stopped), TranscriptActivity.describe(stopped).object)
     }
 
     func testAChangeCarriesItsTotalOnTheCollapsedRow() {
         var edit = call("completed", name: "edit")
-        XCTAssertNil(ActionRowView.suffix(of: edit), "A call that changed nothing shows no total")
+        XCTAssertNil(TranscriptToolRow.suffix(of: edit), "A call that changed nothing shows no total")
         edit.added = 130; edit.removed = 130
-        XCTAssertEqual(ActionRowView.suffix(of: edit), "+130 −130",
+        XCTAssertEqual(TranscriptToolRow.suffix(of: edit), "+130 −130",
                        "The change size reads without opening the card")
         edit.removed = nil
-        XCTAssertEqual(ActionRowView.suffix(of: edit), "+130 −0")
+        XCTAssertEqual(TranscriptToolRow.suffix(of: edit), "+130 −0")
     }
 
     // MARK: The Think row
@@ -120,8 +120,8 @@ final class TranscriptWorkRowTests: XCTestCase {
         let decoded = TranscriptActivity.argumentBytesDecoded - decodedBefore
         print(String(format: "PERF streamingWriteRow deltas=%d finalBytes=%d decodedBytes=%d totalMs=%.1f perDeltaMs=%.3f",
                      deltas, input.utf8.count, decoded, elapsed, elapsed / Double(deltas)))
-        XCTAssertEqual(ActionRowView.title(of: tool), "Wrote")
-        XCTAssertEqual(ActionRowView.summary(of: tool), "Feature/Big.swift", "The row names the file from the first delta that carries its path")
+        XCTAssertEqual(TranscriptToolRow.title(of: tool), "Wrote")
+        XCTAssertEqual(TranscriptToolRow.summary(of: tool), "Feature/Big.swift", "The row names the file from the first delta that carries its path")
         XCTAssertLessThan(decoded, input.utf8.count,
                           "Drawing a closed card while its arguments stream must not decode the growing document on every delta")
         XCTAssertLessThan(elapsed / Double(deltas) / 1_000, releaseBudget(0.004), "A delta redraws one closed row within a quarter of a frame")

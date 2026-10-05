@@ -17,7 +17,7 @@ final class NativeWorkListViewportTests: XCTestCase {
         let window: NSWindow
         var environment = TranscriptRowEnvironment()
 
-        init(tools: Int, width: CGFloat = 820, height: CGFloat = 560) {
+        init(tools: Int, width: CGFloat = 820, height: CGFloat = 560, edit: Int? = nil) {
             session = SessionDisplay(id: "work-list")
             var reply = TranscriptMessage(id: "a1", role: "assistant",
                                           text: String(repeating: "Here is what changed and why it matters. ", count: 8),
@@ -29,6 +29,13 @@ final class NativeWorkListViewportTests: XCTestCase {
                          output: (0..<6).map { "line \($0) of tool \(index) output that wraps across the card." }.joined(separator: "\n"),
                          durationMs: 12 + Double(index), truncated: false,
                          path: "apps/macos/PiApp/Sources/File\(index).swift")
+            }
+            if let edit {
+                // One call is a long edit, whose card caps its middle.
+                let rows = (1...30).map { "let value\($0) = \($0)" }
+                let input = String(decoding: try! JSONSerialization.data(withJSONObject: ["path": "V.swift", "oldText": rows.joined(separator: "\n"),
+                                                                                         "newText": rows.map { $0 + " // x" }.joined(separator: "\n")]), as: UTF8.self)
+                reply.tools?[edit] = ToolView(id: "t\(edit)", name: "edit", state: "completed", input: input, output: "ok", durationMs: 10, truncated: false, path: "V.swift")
             }
             session.messages = [TranscriptMessage(id: "u1", role: "user", text: "Work through the whole change.", at: 1_000, turn: "u1"), reply]
             // These viewport checks exercise explicitly expanded work.
@@ -84,16 +91,23 @@ final class NativeWorkListViewportTests: XCTestCase {
     @MainActor private func container(_ fixture: Fixture) throws -> NativeWorkListContainer {
         try XCTUnwrap(descendants(NativeWorkListContainer.self, in: fixture.document).first)
     }
-    @MainActor private func textFields(in view: NSView) -> [NSTextField] {
-        (view as? NSTextField).map { [$0] } ?? view.subviews.flatMap { textFields(in: $0) }
+    /// The selectable texts a card draws.
+    @MainActor private func selectableTexts(in view: NSView) -> [String] {
+        if let text = view as? NSTextView { return text.isSelectable ? [text.string] : [] }
+        if let field = view as? NSTextField { return field.isSelectable ? [field.stringValue] : [] }
+        return view.subviews.flatMap { selectableTexts(in: $0) }
     }
     /// Every card that is actually on screen holds no more than the space the
     /// list gave it. Overlap here is one tool call drawn over the next.
     @MainActor private func assertCardsFit(_ container: NativeWorkListContainer, _ what: String,
                                            file: StaticString = #filePath, line: UInt = #line) {
         for host in container.subviews {
-            XCTAssertLessThanOrEqual(ceil(host.fittingSize.height), host.frame.height + 0.5,
-                                     "\(what): a card holds \(host.fittingSize.height) points in a \(host.frame.height) point row",
+            let row = host as? TranscriptNativeActionRow
+            XCTAssertNotNil(row, "\(what): every card is a native row", file: file, line: line)
+            // What the card draws: its line and, open, its card, measured at the width it was given.
+            let needed = ceil(row?.height(width: host.frame.width) ?? .infinity)
+            XCTAssertLessThanOrEqual(needed, host.frame.height + 0.5,
+                                     "\(what): a card holds \(needed) points in a \(host.frame.height) point row",
                                      file: file, line: line)
         }
     }
@@ -106,6 +120,7 @@ final class NativeWorkListViewportTests: XCTestCase {
         XCTAssertEqual(list.retainedRowCount, cards, "every tool call is still there")
         XCTAssertLessThan(list.mountedRowCount, 70, "a \(cards)-call turn must not put every card in the view tree")
         XCTAssertGreaterThan(list.mountedRowCount, 0, "the cards the reader can see are on screen")
+        XCTAssertLessThan(list.builtRowCount, cards / 2 + 10, "a closed card nobody has scrolled near is not built at all")
         assertCardsFit(list, "the settled turn")
 
         // Reading down through the turn: the cards come and go, every one of
@@ -143,7 +158,7 @@ final class NativeWorkListViewportTests: XCTestCase {
         assertCardsFit(list, "with one card open")
 
         // What the card shows is selectable native text, not a picture.
-        let selectable = textFields(in: list).filter(\.isSelectable).map(\.stringValue)
+        let selectable = selectableTexts(in: list)
         XCTAssertTrue(selectable.contains { $0.contains("line 0 of tool 1 output") },
                       "the open card's output must be selectable; found \(selectable.prefix(4))")
 
@@ -152,6 +167,56 @@ final class NativeWorkListViewportTests: XCTestCase {
         await fixture.settle()
         XCTAssertEqual(row.frame.height, tall, accuracy: 1, "closing the card returns the turn to its height")
         assertCardsFit(list, "after the card closed again")
+    }
+
+    /// A card that grows by itself — a diff the reader expands — makes its
+    /// turn taller, and no card is drawn over the next.
+    @MainActor func testExpandingADiffInsideTheListMakesTheTurnTaller() async throws {
+        let fixture = Fixture(tools: 60, edit: 1); defer { fixture.close() }
+        await fixture.settle()
+        let list = try container(fixture)
+        let row = try XCTUnwrap(fixture.blockRow)
+        row.toggleDisclosure(.tool(ToolOccurrence.key("a1", "t1")))
+        fixture.draw()
+        await fixture.settle()
+        await fixture.settle()
+        let open = row.frame.height, listOpen = list.frame.height
+        let more = try XCTUnwrap(descendants(TranscriptCardMoreLines.self, in: list).first, "the open diff caps its middle")
+        XCTAssertTrue(more.accessibilityPerformPress())
+        await fixture.settle()
+        XCTAssertGreaterThan(list.frame.height, listOpen + 40, "the expanded diff made the list taller")
+        XCTAssertEqual(row.frame.height - open, list.frame.height - listOpen, accuracy: 0.5, "and the turn with it")
+        assertCardsFit(list, "with the diff expanded")
+    }
+
+    /// The list moving inside its row (a section above it closing) brings
+    /// the lines of an open, expanded read into view without a scroll.
+    @MainActor func testAListThatMovesBuildsTheLinesNowInView() throws {
+        let tools = (0..<10).map { index in
+            ToolView(id: "t\(index)", name: "read", state: "completed", input: "{\"path\":\"F\(index).swift\"}",
+                     output: (1...400).map { "line \($0)" }.joined(separator: "\n"), durationMs: 10, truncated: false, path: "F\(index).swift")
+        }
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 640, height: 300), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.contentView = nil; window.close() }
+        let scroll = NSScrollView(frame: CGRect(x: 0, y: 0, width: 640, height: 300))
+        let document = TranscriptNativeRowParityTests.ParityCanvas(frame: CGRect(x: 0, y: 0, width: 640, height: 20_000))
+        scroll.documentView = document
+        window.contentView = scroll
+        let list = NativeWorkListContainer()
+        list.update(tools: tools, openTools: ["t0"], fetched: [:], toggle: { _ in }, environment: TranscriptRowEnvironment())
+        document.addSubview(list)
+        // Its first card at the edge of the buffered viewport, its lines past it.
+        list.frame = CGRect(x: 0, y: 520, width: 640, height: list.measure(width: 640).height)
+        list.layoutSubtreeIfNeeded()
+        let card = try XCTUnwrap(descendants(TranscriptNativeReadCard.self, in: list).first)
+        card.setExpanded(true)
+        list.frame.size.height = list.measure(width: 640).height
+        list.layoutSubtreeIfNeeded()
+        let lines = try XCTUnwrap(descendants(TranscriptCardLines.self, in: card).first { $0.lines.count == 400 })
+        XCTAssertEqual(lines.builtCount, 0, "nothing of it is in view yet")
+        list.setFrameOrigin(.zero)
+        XCTAssertGreaterThan(lines.builtCount, 5, "moved into view, its first lines are built")
     }
 
     @MainActor func testFoldingAndUnfoldingASixtyCallTurnDoesNotMeasureEveryCard() async throws {
@@ -208,15 +273,14 @@ final class NativeWorkListViewportTests: XCTestCase {
         let before = list.measure(width: width).height
         let measured = list.rowMeasurementCount
         XCTAssertGreaterThan(before, 0)
-        for change in [{ (value: inout TranscriptRowEnvironment) in value.dynamicTypeSize = .accessibility3 },
-                       { (value: inout TranscriptRowEnvironment) in value.layoutDirection = .rightToLeft },
+        for change in [{ (value: inout TranscriptRowEnvironment) in value.layoutDirection = .rightToLeft },
                        { (value: inout TranscriptRowEnvironment) in value.locale = Locale(identifier: "ar") }] {
             change(&environment)
             let count = list.rowMeasurementCount
             list.update(tools: tools, openTools: [], fetched: [:], toggle: { _ in }, environment: environment)
             let after = list.measure(width: width).height
             XCTAssertGreaterThan(list.rowMeasurementCount, count,
-                                 "after \(environment.dynamicTypeSize), \(environment.layoutDirection), \(environment.locale.identifier) the closed cards still stand at the height the old environment measured")
+                                 "after \(environment.layoutDirection), \(environment.locale.identifier) the closed cards still stand at the height the old environment measured")
             // What a list that only ever knew this environment measures.
             let fresh = NativeWorkListContainer()
             fresh.update(tools: tools, openTools: [], fetched: [:], toggle: { _ in }, environment: environment)

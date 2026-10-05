@@ -84,6 +84,9 @@ final class NativeTranscriptDocumentTests: XCTestCase {
         }
     }
 
+    @MainActor private func plainTexts(in view: NSView) -> [TranscriptPlainTextView] {
+        (view as? TranscriptPlainTextView).map { [$0] } ?? view.subviews.flatMap { plainTexts(in: $0) }
+    }
     @MainActor private func textFields(in view: NSView) -> [NSTextField] {
         (view as? NSTextField).map { [$0] } ?? view.subviews.flatMap { textFields(in: $0) }
     }
@@ -129,10 +132,11 @@ final class NativeTranscriptDocumentTests: XCTestCase {
         try fixture.detach(at: "m4", clipped: 0)
         try await fixture.settle { fixture.mountedRows.contains { $0.itemID == "m4" } }
         let selectedRow = try XCTUnwrap(fixture.rows.first { $0.itemID == "m4" })
-        let field = try XCTUnwrap(textFields(in: selectedRow).first { $0.isSelectable && $0.stringValue.hasPrefix("Question 4.") })
-        let renderedText = field.stringValue
-        field.selectText(nil)
-        let editor = try XCTUnwrap(field.currentEditor())
+        // The message's own selectable text, which holds its selection itself.
+        let field = try XCTUnwrap(plainTexts(in: selectedRow).first { $0.string.hasPrefix("Question 4.") })
+        let renderedText = field.string
+        fixture.window.makeFirstResponder(field)
+        let editor: NSTextView = field
         let range = NSRange(location: 3, length: 12)
         editor.selectedRange = range
         XCTAssertTrue(fixture.window.firstResponder === editor)
@@ -141,19 +145,18 @@ final class NativeTranscriptDocumentTests: XCTestCase {
         try await fixture.settle { fixture.mountedRows.contains { $0.itemID == "m30" } }
         let buffered = fixture.scroll.contentView.bounds.insetBy(dx: 0, dy: -max(400, fixture.scroll.contentView.bounds.height))
         XCTAssertFalse(selectedRow.frame.intersects(buffered), "The selected row must really be outside the mounting buffer")
-        XCTAssertTrue(selectedRow.superview === fixture.document, "The row owning AppKit's shared field editor must remain attached")
+        XCTAssertTrue(selectedRow.superview === fixture.document, "The row owning the selection must remain attached")
         XCTAssertTrue(fixture.window.firstResponder === editor)
-        XCTAssertTrue(field.currentEditor() === editor)
         XCTAssertEqual(editor.selectedRange, range)
         XCTAssertLessThan(fixture.mountedRows.count, 30, "Keeping a selected row alive must not retain every offscreen row")
 
         try fixture.detach(at: "m4", clipped: 0)
         try await fixture.settle { fixture.mountedRows.contains { $0.itemID == "m4" } }
         let returned = try XCTUnwrap(fixture.rows.first { $0.itemID == "m4" })
-        let returnedField = try XCTUnwrap(textFields(in: returned).first { $0.isSelectable && $0.stringValue == renderedText })
+        let returnedField = try XCTUnwrap(plainTexts(in: returned).first { $0.string == renderedText })
         XCTAssertTrue(returned === selectedRow)
         XCTAssertTrue(returnedField === field)
-        XCTAssertTrue(field.currentEditor() === editor)
+        XCTAssertTrue(fixture.window.firstResponder === editor)
         XCTAssertEqual(editor.selectedRange, range)
     }
 

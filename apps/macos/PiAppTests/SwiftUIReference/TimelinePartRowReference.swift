@@ -1,4 +1,9 @@
 import SwiftUI
+import AppKit
+@testable import PiApp
+
+// The SwiftUI views of Transcript/TimelinePartRow.swift before the transcript was AppKit,
+// kept as they were for the parity tests to draw against.
 
 /// One part of a response, at the position it arrived at: the reply's prose,
 /// the reasoning it returned, or the card of the call it made. A call's card is
@@ -43,8 +48,8 @@ struct TimelinePartRow: View {
         default: return "Response part"
         }
     }
-    private var reasoning: Bool { ["reasoningText","reasoningSummary"].contains(part.part.kind) }
-    private var icon: String {
+    var reasoning: Bool { ["reasoningText","reasoningSummary"].contains(part.part.kind) }
+    var icon: String {
         switch part.part.kind {
         case "reasoningSummary", "reasoningText": return "brain"
         case "toolArguments": return "hammer"
@@ -55,7 +60,7 @@ struct TimelinePartRow: View {
     }
     /// A part that was cut off is amber, not red: it did not fail, it was
     /// stopped. Anything still arriving shimmers.
-    private var state: TranscriptRowState {
+    var state: TranscriptRowState {
         if part.state == "interrupted" { return .stopped }
         return source.isStreaming ? .running : .ok
     }

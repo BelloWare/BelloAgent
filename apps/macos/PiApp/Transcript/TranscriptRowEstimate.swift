@@ -116,9 +116,9 @@ enum TranscriptRowEstimate {
             let label = CGFloat(use.name.count + 1 + SkillPillLabel.arguments(use.arguments).count)
             let pill = min(width, 31 + label * 12 * characterFactor)
             if x > 0, x + pill > width { rows += 1; x = 0 }
-            x += pill + TranscriptSkillPills.spacing
+            x += pill + TranscriptSkillPillMetrics.spacing
         }
-        return rows * SkillPillFace.height + (rows - 1) * TranscriptSkillPills.spacing + (text ? MessageRowView.skillGap : 0)
+        return rows * SkillPillFace.height + (rows - 1) * TranscriptSkillPillMetrics.spacing + (text ? TranscriptMessageRows.skillGap : 0)
     }
 
     private static func height(of message: TranscriptMessage, width: CGFloat, inline: Bool, raw: Bool) -> CGFloat {
@@ -145,7 +145,7 @@ enum TranscriptRowEstimate {
             : prose(message.text, width: max(40, body), size: MarkdownStyle.prose.baseSize)
         if message.truncated == true { total += line }
         // Any early end draws its notice line, not only the output limit.
-        if MessageRowView.earlyEnd(message.stopReason) != nil { total += line }
+        if TranscriptMessageRows.earlyEnd(message.stopReason) != nil { total += line }
         total += 22 + 4 + 10
         return max(24, total)
     }

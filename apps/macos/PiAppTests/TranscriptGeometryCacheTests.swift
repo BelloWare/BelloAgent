@@ -19,7 +19,7 @@ final class TranscriptGeometryCacheTests: XCTestCase {
         XCTAssertNil(cache.measurement(sessionID: "session", item: original, fresh: false, environment: environment, width: 700, backingScale: 1))
         XCTAssertNil(cache.measurement(sessionID: "session", item: original, fresh: true, environment: environment, width: 700, backingScale: 2))
         cache.store(size, sessionID: "session", item: original, fresh: false, environment: environment, backingScale: 2)
-        var changed = environment; changed.dynamicTypeSize = .accessibility3
+        var changed = environment; changed.layoutDirection = .rightToLeft
         XCTAssertNil(cache.measurement(sessionID: "session", item: original, fresh: false, environment: changed, width: 700, backingScale: 2))
         cache.store(size, sessionID: "session", item: original, fresh: false, environment: environment, backingScale: 2)
         XCTAssertNil(cache.measurement(sessionID: "session", item: item("row", text: "Updated while hidden"), fresh: false, environment: environment, width: 700, backingScale: 2))
@@ -180,13 +180,13 @@ final class TranscriptGeometryCacheTests: XCTestCase {
                              "A disabled pane measured every row again although nothing in it changed size")
         XCTAssertEqual(try XCTUnwrap(painted.document.retainedRows.first).frame.height, originalHeight, accuracy: 0.5)
         painted.close()
-        // A different type size lays the text out differently: nothing is
-        // borrowed across it.
-        var larger = TranscriptRowEnvironment(); larger.dynamicTypeSize = .xxxLarge
+        // A different writing direction lays the text out differently:
+        // nothing is borrowed across it.
+        var larger = TranscriptRowEnvironment(); larger.layoutDirection = .rightToLeft
         let changed = Fixture(session: session, cache: cache, environment: larger)
         defer { changed.close() }
         try await changed.settle { changed.document.retainedRows.count == 50 && (changed.document.retainedRows.last?.frame.height ?? 0) > 0 }
         XCTAssertEqual(changed.document.retainedRows.reduce(0) { $0 + $1.sharedMeasurementHits }, 0,
-                       "A pane laid out at another type size must not borrow another environment's geometry")
+                       "A pane laid out in another writing direction must not borrow another environment's geometry")
     }
 }

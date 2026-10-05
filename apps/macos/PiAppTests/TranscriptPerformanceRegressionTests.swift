@@ -48,8 +48,11 @@ final class TranscriptPerformanceRegressionTests: XCTestCase {
     }
 
     @MainActor func testMeasuredRowReusesExactHeightAndInvalidatesForWidthAndContent() {
+        // A reply's body, as the planner hands it over (a bare assistant
+        // message is no row the page ever holds).
         var message = TranscriptMessage(id: "measured", role: "assistant", text: String(repeating: "A selectable paragraph with a useful amount of text. ", count: 20))
-        let row = TranscriptRowContainer(item: .message(message), fresh: false, actions: TranscriptActions())
+        func body(_ message: TranscriptMessage) -> TranscriptItem { .block(TranscriptNativeRowParityTests.block("body:measured", .body, message: message)) }
+        let row = TranscriptRowContainer(item: body(message), fresh: false, actions: TranscriptActions())
         let original = row.measure(width: 600)
         XCTAssertGreaterThan(original.height, 50, "The cache must contain real text layout, never a placeholder height")
         let before = row.measurementCount
@@ -71,10 +74,11 @@ final class TranscriptPerformanceRegressionTests: XCTestCase {
         row.frame = NSRect(origin: .zero, size: original)
         row.layoutSubtreeIfNeeded()
         XCTAssertEqual(row.subviews.first?.frame.size, original)
-        XCTAssertEqual(row.subviews.first?.fittingSize.height ?? 0, original.height, accuracy: 1,
+        // The content's own height at the width it is laid out at.
+        XCTAssertEqual((row.subviews.first as? TranscriptRowContent)?.confirmHeight() ?? 0, original.height, accuracy: 1,
                        "A speculative size must never leave native text wrapped for a different viewport")
         message.text += String(repeating: "\n\nAnother complete paragraph.", count: 12)
-        row.update(item: .message(message), fresh: false, actions: TranscriptActions())
+        row.update(item: body(message), fresh: false, actions: TranscriptActions())
         XCTAssertGreaterThan(row.measure(width: 300).height, narrow.height)
     }
 
@@ -245,30 +249,28 @@ final class TranscriptPerformanceRegressionTests: XCTestCase {
         XCTAssertFalse(textFields(in: hosted).filter(\.isSelectable).contains { $0.stringValue.contains("Copy") }, "Copy controls must not inherit content selection")
     }
 
-    func testAttributedSyntaxKeepsUnicodeAndColorsTheFollowingTokensExactly() {
+    @MainActor func testAttributedSyntaxKeepsUnicodeAndColorsTheFollowingTokensExactly() {
         let code = "let cafe\u{301} = \"👩🏽‍💻 🇸🇬 e\u{301}\"\r\n// 🌈 comment with e\u{301}\nreturn 42"
-        let styled = SyntaxHighlighter.attributed(code, language: "swift")
-        XCTAssertEqual(String(styled.characters), code, "Coloring must never rewrite source or split its Unicode text")
-        func runs(_ color: Color) -> [String] {
-            styled.runs.filter { $0.foregroundColor == color }.map { String(styled[$0.range].characters) }
-        }
-        XCTAssertEqual(runs(TranscriptPalette.keyword), ["let", "return"])
-        XCTAssertEqual(runs(TranscriptPalette.string), ["\"👩🏽‍💻 🇸🇬 e\u{301}\""])
-        XCTAssertEqual(runs(TranscriptPalette.comment), ["// 🌈 comment with e\u{301}"])
-        XCTAssertEqual(runs(TranscriptPalette.number), ["42"])
+        let styled = ColouredCode.storage(code)
+        XCTAssertEqual(styled.string, code, "Coloring must never rewrite source or split its Unicode text")
+        func runs(_ color: NSColor) -> [String] { ColouredCode.runs(styled, color) }
+        XCTAssertEqual(runs(TranscriptNSPalette.keyword), ["let", "return"])
+        XCTAssertEqual(runs(TranscriptNSPalette.string), ["\"👩🏽‍💻 🇸🇬 e\u{301}\""])
+        XCTAssertEqual(runs(TranscriptNSPalette.comment), ["// 🌈 comment with e\u{301}"])
+        XCTAssertEqual(runs(TranscriptNSPalette.number), ["42"])
     }
 
-    func testDenseSyntaxNearTheHighlightLimitKeepsEveryTokenAndPlainSpan() {
+    @MainActor func testDenseSyntaxNearTheHighlightLimitKeepsEveryTokenAndPlainSpan() {
         let line = "let value = 42 // 🌈\n"
         let repetitions = 600
         let code = String(repeating: line, count: repetitions)
         XCTAssertLessThan(code.utf8.count, SyntaxHighlighter.limit)
-        let styled = SyntaxHighlighter.attributed(code, language: "swift")
-        XCTAssertEqual(String(styled.characters), code)
-        XCTAssertEqual(styled.runs.filter { $0.foregroundColor == TranscriptPalette.keyword }.count, repetitions)
-        XCTAssertEqual(styled.runs.filter { $0.foregroundColor == TranscriptPalette.number }.count, repetitions)
-        XCTAssertEqual(styled.runs.filter { $0.foregroundColor == TranscriptPalette.comment }.count, repetitions)
-        XCTAssertEqual(styled.runs.filter { $0.foregroundColor == TranscriptPalette.text }.map { String(styled[$0.range].characters) }.joined(), String(repeating: " value =  \n", count: repetitions))
+        let styled = ColouredCode.storage(code)
+        XCTAssertEqual(styled.string, code)
+        XCTAssertEqual(ColouredCode.runs(styled, TranscriptNSPalette.keyword).count, repetitions)
+        XCTAssertEqual(ColouredCode.runs(styled, TranscriptNSPalette.number).count, repetitions)
+        XCTAssertEqual(ColouredCode.runs(styled, TranscriptNSPalette.comment).count, repetitions)
+        XCTAssertEqual(ColouredCode.runs(styled, TranscriptNSPalette.text).joined(), String(repeating: " value =  \n", count: repetitions))
     }
 
     func testCollapsedFileLabelUsesTheResolvedPathAndLegacyLabelsStillUseArguments() {

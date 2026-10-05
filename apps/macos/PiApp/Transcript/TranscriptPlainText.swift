@@ -1,5 +1,4 @@
 import AppKit
-import SwiftUI
 
 // Text shown exactly as it was written: a message as the reader typed it, and
 // a reply's markdown source when the reader asks for it. Nothing in it is
@@ -20,6 +19,12 @@ struct TranscriptPlainTextFace: Equatable, Sendable {
     var characterWidth: CGFloat { monospaced ? 0.6 : 0.52 }
     /// What assistive technology calls the text.
     var label: String
+    /// The face's weight (`NSFont.Weight`'s raw value); regular unless said.
+    var weight: CGFloat = 0
+    /// Figures in fixed-width digits, as `monospacedDigit()` sets them.
+    var monospacedDigits = false
+    /// The system's serif design (New York).
+    var serif = false
 
     /// A message the reader sent: the face, size and colour the bubble has
     /// always read in, the prose's own.
@@ -29,55 +34,14 @@ struct TranscriptPlainTextFace: Equatable, Sendable {
     static let source = TranscriptPlainTextFace(size: MarkdownStyle.prose.baseSize * 0.86, monospaced: true,
                                                 lineSpacing: MarkdownStyle.prose.baseSize * 0.86 * 0.4, label: "Markdown source")
 
-    var font: Font { .system(size: size, design: monospaced ? .monospaced : .default) }
-    var nsFont: NSFont { monospaced ? .monospacedSystemFont(ofSize: size, weight: .regular) : .systemFont(ofSize: size) }
-}
-
-/// Literal text as one selectable text. A short text is SwiftUI's own; a
-/// long one — a paste can be the composer's whole 256 KiB — is a TextKit leaf
-/// that measures its height once per width, as a long code fence is, rather
-/// than one enormous SwiftUI text laid out on every pass.
-struct TranscriptPlainText: View, Equatable {
-    /// From this many bytes on the text is laid out by TextKit.
-    static let textKitBytes = 2_048
-    let text: String
-    let face: TranscriptPlainTextFace
-
-    static func usesTextKit(_ text: String) -> Bool { text.utf8.count >= textKitBytes }
-
-    var body: some View {
-        Group {
-            if text.isEmpty {
-                // A message with nothing typed (its images or skills are the
-                // message) still gives its bubble the full width.
-                Color.clear.frame(height: 0)
-            } else if Self.usesTextKit(text) {
-                NativePlainText(text: text, face: face)
-            } else {
-                Text(verbatim: text)
-                    .font(face.font).foregroundStyle(TranscriptPalette.text)
-                    .lineSpacing(face.lineSpacing)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    nonisolated static func == (a: Self, b: Self) -> Bool { a.face == b.face && a.text.hasSameUTF8(as: b.text) }
-}
-
-/// The TextKit leaf, as SwiftUI sizes it: its height is the one the text
-/// view measured at the width it was offered.
-struct NativePlainText: NSViewRepresentable {
-    let text: String
-    let face: TranscriptPlainTextFace
-    func makeNSView(context: Context) -> TranscriptPlainTextView { TranscriptPlainTextView() }
-    func updateNSView(_ view: TranscriptPlainTextView, context: Context) {
-        view.update(text: text, face: face, environment: TranscriptRowEnvironment(context.environment))
-    }
-    func sizeThatFits(_ proposal: ProposedViewSize, nsView: TranscriptPlainTextView, context: Context) -> CGSize? {
-        nsView.measure(width: proposal.width)
+    var nsFont: NSFont {
+        var font: NSFont = monospaced ? .monospacedSystemFont(ofSize: size, weight: NSFont.Weight(weight)) : .systemFont(ofSize: size, weight: NSFont.Weight(weight))
+        if serif, let descriptor = font.fontDescriptor.withDesign(.serif), let serifFont = NSFont(descriptor: descriptor, size: size) { font = serifFont }
+        guard monospacedDigits else { return font }
+        let descriptor = font.fontDescriptor.addingAttributes([.featureSettings: [[
+            NSFontDescriptor.FeatureKey.typeIdentifier: kNumberSpacingType,
+            NSFontDescriptor.FeatureKey.selectorIdentifier: kMonospacedNumbersSelector]]])
+        return NSFont(descriptor: descriptor, size: size) ?? font
     }
 }
 
@@ -85,6 +49,10 @@ struct NativePlainText: NSViewRepresentable {
 /// wrapping and its selection; nothing in it is interpreted, detected or
 /// edited, and a copy is the plain characters the selection covers.
 @MainActor final class TranscriptPlainTextView: NSTextView {
+    /// From this many bytes a message's text is laid out by TextKit
+    /// directly (a SwiftUI `Text` below it, in the rows this replaced).
+    static let textKitBytes = 2_048
+    static func usesTextKit(_ text: String) -> Bool { text.utf8.count >= textKitBytes }
     // TextKit's back-pointers are weak. Own the storage before constructing
     // the text view, including the interval before super.init adopts it.
     private var ownedStorage: NSTextStorage?
@@ -117,10 +85,57 @@ struct NativePlainText: NSViewRepresentable {
     }
     required init?(coder: NSCoder) { nil }
 
+    /// Lines set in the box SwiftUI gives a `Text` of this face, rather than
+    /// TextKit's own: a short text drawn natively reads exactly as the
+    /// SwiftUI text it replaces. A long text keeps TextKit's box, as it
+    /// always had.
+    private(set) var swiftUILines = false
+    /// The text's colour; the transcript's text colour unless a row says otherwise.
+    private(set) var color: NSColor = TranscriptNSPalette.text
+    func update(text next: String, face: TranscriptPlainTextFace, environment: TranscriptRowEnvironment, swiftUILines: Bool,
+                color: NSColor = TranscriptNSPalette.text) {
+        if swiftUILines != self.swiftUILines || color != self.color {
+            self.swiftUILines = swiftUILines; self.color = color; self.face = nil
+        }
+        update(text: next, face: face, environment: environment)
+    }
+    /// The language the text is code in, coloured as the transcript colours
+    /// code (`SyntaxHighlighter`); nil for text that is not code.
+    var codeLanguage: String? { didSet { if codeLanguage != oldValue { face = nil } } }
+    /// Colours `code`'s tokens in `storage`, as `SyntaxHighlighter.attributed` colours them.
+    static func colour(_ storage: NSTextStorage, code: String, language name: String, font: NSFont) {
+        guard let grammar = SyntaxHighlighter.language(named: name), code.utf8.count <= SyntaxHighlighter.limit,
+              storage.length == (code as NSString).length else { return }
+        // Where each scalar begins in the storage.
+        var utf16 = [0]
+        utf16.reserveCapacity(code.unicodeScalars.count + 1)
+        for scalar in code.unicodeScalars { utf16.append(utf16[utf16.count - 1] + (scalar.value > 0xffff ? 2 : 1)) }
+        for token in SyntaxHighlighter.tokens(code, language: grammar) where token.range.upperBound < utf16.count {
+            let range = NSRange(location: utf16[token.range.lowerBound], length: utf16[token.range.upperBound] - utf16[token.range.lowerBound])
+            let color: NSColor
+            switch token.kind {
+            case .keyword: color = TranscriptNSPalette.keyword
+            case .string: color = TranscriptNSPalette.string
+            case .number, .title: color = TranscriptNSPalette.number
+            case .comment:
+                color = TranscriptNSPalette.comment
+                storage.addAttribute(.font, value: NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask), range: range)
+            }
+            storage.addAttribute(.foregroundColor, value: color, range: range)
+        }
+    }
+    /// SwiftUI's line box for a font: its whole line, rounded up to a point.
+    static func swiftUILine(_ font: NSFont) -> (height: CGFloat, baseline: CGFloat) {
+        // A face whose line SwiftUI sets taller than its metrics give (11
+        // points) has its measured line box.
+        (TranscriptLabel.measured(font)?.height ?? ceil(font.ascender - font.descender + font.leading), ceil(font.ascender))
+    }
     func update(text next: String, face: TranscriptPlainTextFace, environment: TranscriptRowEnvironment) {
         // Bytes, compared as memory: a long paste is not walked a character
         // at a time on every update of its row.
+        // A new writing direction realigns the text, so it is set again.
         let sameText = self.face == face && text.hasSameUTF8(as: next)
+            && environment.layoutDirection == (self.environment?.layoutDirection ?? environment.layoutDirection)
         guard !sameText || self.environment != environment, let storage = textStorage else { return }
         if sameText, let current = self.environment, current.hasSameGeometry(as: environment) {
             // Painted again, measured the same: the colours are dynamic and
@@ -134,14 +149,25 @@ struct NativePlainText: NSViewRepresentable {
             let paragraph = NSMutableParagraphStyle()
             paragraph.lineSpacing = face.lineSpacing
             paragraph.lineBreakMode = .byWordWrapping
-            storage.setAttributedString(NSAttributedString(string: next, attributes: [
-                .font: face.nsFont, .foregroundColor: NSColor(TranscriptPalette.text), .paragraphStyle: paragraph
-            ]))
+            // The text's leading edge, as SwiftUI aligns it.
+            paragraph.alignment = centred ? .center : environment.layoutDirection == .rightToLeft ? .right : .left
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: face.nsFont, .foregroundColor: color, .paragraphStyle: paragraph
+            ]
+            if swiftUILines {
+                let font = face.nsFont, line = Self.swiftUILine(font)
+                paragraph.minimumLineHeight = line.height; paragraph.maximumLineHeight = line.height
+                // SwiftUI's text breaks lines as a label does: it pushes a
+                // word down rather than leave one alone on the last line.
+                paragraph.lineBreakStrategy = .standard
+            }
+            storage.setAttributedString(NSAttributedString(string: Self.limited(next, lines: maximumLines), attributes: attributes))
+            if let codeLanguage { Self.colour(storage, code: next, language: codeLanguage, font: face.nsFont) }
             text = next; self.face = face
             setAccessibilityLabel(face.label)
         }
         self.environment = environment
-        sizes.removeAll(keepingCapacity: true)
+        sizes.removeAll(keepingCapacity: true); exactSizes.removeAll(keepingCapacity: true); ideal = nil
         // New text keeps whatever of the reader's selection still fits it.
         if previousLength > 0 {
             selectedRanges = ranges.map { value in
@@ -152,6 +178,145 @@ struct NativePlainText: NSViewRepresentable {
         needsDisplay = true
     }
 
+    /// Sets the glyphs where SwiftUI draws them in its line box. TextKit puts
+    /// a taller line's extra room above the glyphs; SwiftUI's sit lower. Only
+    /// where the glyphs sit changes, never the line box, so no height does.
+    /// `glyphOffsetOverride` is for the calibration sweep only.
+    nonisolated(unsafe) static var glyphOffsetOverride: CGFloat?
+    /// How far TextKit's glyphs are raised to sit where SwiftUI draws them,
+    /// for a text `height` tall before rounding, drawn at `scale` pixels a
+    /// point. Measured, not derived (TranscriptTextCalibrationTests sweeps
+    /// and checks it): the user's face sits a point lower, less half the room
+    /// SwiftUI's whole-point frame adds below the text, to the nearest pixel;
+    /// 11.5 pt text a point lower; the other faces where TextKit puts them.
+    static func glyphOffset(_ font: NSFont, height: CGFloat, scale: CGFloat) -> CGFloat {
+        if let glyphOffsetOverride { return glyphOffsetOverride }
+        // The faces whose glyphs SwiftUI sets lower by a fixed amount, in
+        // either design (9.5 to 11.5 pt, a read's wrapped line number too).
+        if let fixed = [9.5: 1.0, 10: 1.0, 10.5: 1.0, 11: 1.0, 11.5: 1.0][Double(font.pointSize)] { return CGFloat(fixed) }
+        guard !font.isFixedPitch else { return 0 }
+        // The serif design (New York) a point lower too.
+        if font.fontName.lowercased().contains("newyork") { return 1 }
+        guard font.pointSize == TranscriptPlainTextFace.user.size else { return 0 }
+        let room = (ceil(height) - height) / 2
+        return 1 - (room * scale).rounded() / scale
+    }
+    /// Sets the glyphs for the width the text is drawn at.
+    private var placingGlyphs = false
+    private func placeGlyphsAsSwiftUI(width: CGFloat) {
+        guard swiftUILines, !placingGlyphs, let face, let storage = textStorage, storage.length > 0 else { return }
+        // A text drawn narrower than it was measured (as wide as its widest
+        // line) is measured where it is drawn, once.
+        placingGlyphs = true
+        let height = exactSizes.last(where: { $0.width == width })?.height ?? { _ = measure(width: width); return exactSizes.last(where: { $0.width == width })?.height }()
+        placingGlyphs = false
+        guard let height else { return }
+        let offset = Self.glyphOffset(face.nsFont, height: height, scale: window?.backingScaleFactor ?? 2)
+        guard (storage.attribute(.baselineOffset, at: 0, effectiveRange: nil) as? CGFloat) != offset else { return }
+        storage.addAttribute(.baselineOffset, value: offset, range: NSRange(location: 0, length: storage.length))
+    }
+    /// The text stands on the pixel nearest where it is put, as SwiftUI sets
+    /// a text (in a parent on the pixel grid); the reader's own message on
+    /// the pixel at or above it (its glyph offsets, `glyphOffset`, were
+    /// measured so).
+    var snapsToPixels = true
+    override func setFrameOrigin(_ newOrigin: NSPoint) {
+        let scale = window?.backingScaleFactor ?? 2
+        guard snapsToPixels else {
+            // The reader's own message stands on the pixel at or above its
+            // place, as SwiftUI drew it: measured against SwiftUI in a real
+            // window (the screenshot gallery) and through cacheDisplay (the
+            // parity tests). A view between pixels is composited onto the
+            // grid by the window server, so it must not be left there. A
+            // settled row stands on whole points, so there the superview's
+            // grid is the window's. A row off the window's grid (centred in
+            // an odd width at 1x, or moving in a disclosure) was drawn
+            // between pixels by SwiftUI too, and nothing native matches that
+            // pixel for pixel (measured through the window server).
+            return super.setFrameOrigin(NSPoint(x: (newOrigin.x * scale).rounded(.down) / scale, y: (newOrigin.y * scale).rounded(.down) / scale))
+        }
+        super.setFrameOrigin(NSPoint(x: (newOrigin.x * scale).rounded() / scale, y: (newOrigin.y * scale).rounded() / scale))
+    }
+    /// Lines centred, as `multilineTextAlignment(.center)` sets them.
+    var centred = false { didSet { if centred != oldValue { face = nil } } }
+    /// How wide the text's widest line is at `width`, as SwiftUI sizes a
+    /// text that wraps.
+    func usedWidth(width: CGFloat) -> CGFloat {
+        guard !text.isEmpty, let container = textContainer, let manager = layoutManager else { return 0 }
+        _ = measure(width: width)
+        let previous = container.containerSize
+        container.containerSize = NSSize(width: width, height: CGFloat.greatestFiniteMagnitude)
+        var widest: CGFloat = 0
+        var lastLine = NSRange(location: NSNotFound, length: 0)
+        // A line set from the right leaves its trailing spaces out of its
+        // used rect; SwiftUI counts them, as it does for a line set from the left.
+        let fromRight = environment?.layoutDirection == .rightToLeft && !centred
+        let storage = textStorage
+        manager.enumerateLineFragments(forGlyphRange: manager.glyphRange(for: container)) { _, used, _, glyphs, _ in
+            var line = used.width
+            if fromRight, let storage {
+                let characters = manager.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
+                let typeset = CTLineCreateWithAttributedString(storage.attributedSubstring(from: characters))
+                line = CGFloat(CTLineGetTypographicBounds(typeset, nil, nil, nil))
+            }
+            widest = max(widest, line)
+            lastLine = glyphs
+        }
+        // A centred text cut short by its line limit takes all the room it
+        // was offered, as SwiftUI sizes one (one set from its leading edge
+        // keeps its widest line).
+        let cut = centred && maximumLines > 0 && lastLine.location != NSNotFound
+            && manager.truncatedGlyphRange(inLineFragmentForGlyphAt: lastLine.location).location != NSNotFound
+        container.containerSize = previous
+        if cut { return width }
+        // Up to a whole pixel, as SwiftUI sizes a text; set at that width, the
+        // text wraps where it did.
+        widest = ceil(widest * 2) / 2
+        return min(width, widest)
+    }
+    /// At most this many lines, the last cut short with an ellipsis, as
+    /// SwiftUI's `lineLimit` does; zero for no limit.
+    var maximumLines = 0 {
+        didSet {
+            guard maximumLines != oldValue else { return }
+            textContainer?.maximumNumberOfLines = maximumLines
+            textContainer?.lineBreakMode = maximumLines > 0 ? .byTruncatingTail : .byWordWrapping
+            sizes.removeAll(); exactSizes.removeAll(); ideal = nil
+            face = nil
+        }
+    }
+    /// `text` cut to `lines` written lines, the last ending in an ellipsis
+    /// when anything was cut, as `lineLimit` shows a text with more line
+    /// breaks than it allows (a trailing break counts). Lines that wrap are
+    /// cut by TextKit itself.
+    static func limited(_ text: String, lines: Int) -> String {
+        guard lines > 0 else { return text }
+        // Every newline form is one break (CRLF is one Character).
+        let parts = text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
+        guard parts.count > lines else { return text }
+        return parts.prefix(lines).joined(separator: "\n") + "…"
+    }
+    /// How wide the text is with all the room it wants: its widest line.
+    private var ideal: CGFloat?
+    var idealWidth: CGFloat {
+        if let ideal { return ideal }
+        guard !text.isEmpty, let container = textContainer, let manager = layoutManager else { return 0 }
+        let previous = container.containerSize
+        container.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        manager.ensureLayout(for: container)
+        let width = ceil(manager.usedRect(for: container).width * 2) / 2
+        container.containerSize = previous
+        ideal = width
+        return width
+    }
+    /// The text's height at `width` before it is rounded up to a point.
+    func exactHeight(width: CGFloat) -> CGFloat {
+        guard !text.isEmpty else { return 0 }
+        _ = measure(width: width)
+        return exactSizes.last(where: { $0.width == width })?.height ?? measure(width: width).height
+    }
+    /// What `measure` found at each width before rounding, from the same pass.
+    private var exactSizes: [CGSize] = []
     func measure(width proposed: CGFloat?) -> CGSize {
         if proposed == 0 { return .zero }
         let width = proposed.flatMap { $0.isFinite && $0 > 0 ? $0 : nil } ?? TranscriptMetrics.pageWidth
@@ -166,7 +331,19 @@ struct NativePlainText: NSViewRepresentable {
         layoutPasses += 1
         // The used rect ends at the last line's own box: TextKit puts line
         // spacing between lines, and a trailing line break is a line.
-        let height = max(manager.usedRect(for: container).maxY, manager.extraLineFragmentRect.maxY)
+        var height = max(manager.usedRect(for: container).maxY, manager.extraLineFragmentRect.maxY)
+        if maximumLines > 0 {
+            // No more than the lines allowed, a trailing line break's empty
+            // line included, as SwiftUI's `lineLimit` counts them.
+            var lines = 0, bottom: CGFloat = 0
+            manager.enumerateLineFragments(forGlyphRange: manager.glyphRange(for: container)) { rect, _, _, _, stop in
+                lines += 1; bottom = rect.maxY; if lines == self.maximumLines { stop.pointee = true }
+            }
+            // A trailing break's empty line is a line too, while the limit allows it.
+            if lines < maximumLines, manager.extraLineFragmentRect.height > 0 { bottom = manager.extraLineFragmentRect.maxY }
+            height = min(height, bottom)
+        }
+        if exactSizes.count == 4 { exactSizes.removeFirst() }; exactSizes.append(CGSize(width: width, height: height))
         let result = CGSize(width: width, height: max(1, ceil(height)))
         if sizes.count == 4 { sizes.removeFirst() }; sizes.append(result)
         return result
@@ -175,10 +352,16 @@ struct NativePlainText: NSViewRepresentable {
         super.layout()
         alignTextToBounds()
     }
+    /// Where the glyphs sit depends on the pixel grid they land on.
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        if bounds.width > 0 { placeGlyphsAsSwiftUI(width: bounds.width) }
+    }
     private func alignTextToBounds() {
         if bounds.width > 0, textContainer?.containerSize.width != bounds.width {
             textContainer?.containerSize = NSSize(width: bounds.width, height: CGFloat.greatestFiniteMagnitude)
         }
+        if bounds.width > 0 { placeGlyphsAsSwiftUI(width: bounds.width) }
     }
     /// A right-click on a selection is the text's own: Copy, Look Up. Any
     /// other is the row's, as it is on the rest of the row and on a short
@@ -237,19 +420,4 @@ struct ReplySourceToggle {
     /// Whether the reply reads as its source now.
     let raw: Bool
     let toggle: () -> Void
-}
-
-/// A reply's markdown source exactly as it arrived: one selectable
-/// monospaced text in the panel the transcript's code sits in.
-struct ReplySourceView: View, Equatable {
-    let source: String
-    var body: some View {
-        TranscriptPlainText(text: source, face: .source).equatable()
-            .padding(.horizontal, 14).padding(.vertical, 12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(TranscriptPalette.codeBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(TranscriptPalette.hair, lineWidth: 1))
-            .accessibilityIdentifier("reply-source")
-    }
-    nonisolated static func == (a: Self, b: Self) -> Bool { a.source.hasSameUTF8(as: b.source) }
 }
