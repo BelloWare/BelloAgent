@@ -32,6 +32,7 @@ import GitView
     nonisolated static let wideWidth: CGFloat = 900
     private(set) var wide = true
 
+    let panelBackground = GitPanelBackground()
     private let header: GitPanelHeader
     private let toolbar: GitPanelToolbar
     private let toolbarRule = HairlineView()
@@ -64,7 +65,7 @@ import GitView
         detail = GitPanelDetail(controller: controller, openFile: openFile)
         super.init(frame: .zero)
         wantsLayer = true
-        for view in [probe, header, toolbar, toolbarRule, notRepository, changesList, changesRule, commitBox, history, splitRule, detail] as [NSView] {
+        for view in [panelBackground, probe, header, toolbar, toolbarRule, notRepository, changesList, changesRule, commitBox, history, splitRule, detail] as [NSView] {
             addSubview(view)
         }
         setAccessibilityElement(false)
@@ -164,6 +165,10 @@ import GitView
         toolbar.layoutProposalWidth = width
         let toolbarWidth = toolbar.width(forProposal: width)
         let toolbarHeight = toolbar.height(forWidth: width)
+        // The released stack's background covered its overflowing toolbar's
+        // full width, while the header, history and detail kept the proposal.
+        let backgroundWidth = max(width, toolbarWidth)
+        panelBackground.frame = CGRect(x: (width - backgroundWidth) / 2, y: 0, width: backgroundWidth, height: bounds.height)
         toolbar.frame = CGRect(x: (width - toolbarWidth) / 2, y: 32, width: toolbarWidth, height: toolbarHeight)
         toolbarRule.frame = CGRect(x: 0, y: 32 + toolbarHeight, width: width, height: 1)
         let body = CGRect(x: 0, y: toolbarRule.frame.maxY, width: width, height: max(0, bounds.height - toolbarRule.frame.maxY))
@@ -198,6 +203,16 @@ import GitView
         detail.frame = detailFrame
         _ = scale
     }
+}
+
+/// Paint only: extending the surface must not intercept neighboring controls.
+@MainActor final class GitPanelBackground: FillView {
+    init() {
+        super.init(.piContent)
+        setAccessibilityElement(false)
+    }
+    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
 /// The list and the diff: side by side where the panel is wide, the list

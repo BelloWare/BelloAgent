@@ -46,7 +46,10 @@ import XCTest
               let tabs = views(PiKit.Tabs<GitController.Panel>.self, in: toolbar).first,
               let firstCommit = views(GitCommitRowView.self, in: history).first(where: { $0.row.accessibilityIdentifier() == "git-commit-" + (panel.controller.commits.first?.shortHash ?? "") }),
               let detail = views(GitPanelDetail.self, in: panel).first else { return nil }
-        return [.header: frame(header, in: panel), .toolbar: frame(toolbar, in: panel),
+        // The frozen .panel is the painted stack's logical frame. Keep the
+        // finite native allocation checks separate from this background extent.
+        return [.panel: frame(panel.panelBackground, in: panel),
+                .header: frame(header, in: panel), .toolbar: frame(toolbar, in: panel),
                 .branch: frame(branch, in: panel), .remote: frame(remote, in: panel), .stash: frame(stash, in: panel), .tabs: frame(tabs, in: panel),
                 .history: frame(history, in: panel), .filter: frame(filter, in: panel), .author: frame(author, in: panel),
                 .list: frame(history.list, in: panel), .firstCommit: frame(firstCommit, in: panel), .detail: frame(detail, in: panel)]
@@ -158,7 +161,8 @@ import XCTest
         XCTAssertEqual(toolbar.width(forProposal: pane.width), try XCTUnwrap(expected[.toolbar]).width, accuracy: 0.5,
                        "The actual folder and fixed controls determine the toolbar's width under the pane proposal")
         XCTAssertEqual(native.bounds.width, pane.width, accuracy: 0.5, "Toolbar overflow preserves the panel's pane allocation")
-        try assertFrames(actual, expected, parts: children)
+        try assertFrames(actual, expected, parts: children + [.panel])
+        XCTAssertNil(native.panelBackground.hitTest(NSPoint(x: 1, y: 1)), "The background does not consume input")
         if compareCaption {
             let tabs = try XCTUnwrap(expected[.tabs]), branch = try XCTUnwrap(expected[.branch])
             // Text only: the existing zero-share text parity contract applies;
@@ -211,7 +215,6 @@ import XCTest
                   let backBar = back.superview else { return nil }
             let origin = content.panel.convert(NSPoint.zero, to: content)
             frames = frames.mapValues { $0.offsetBy(dx: origin.x, dy: origin.y) }
-            frames[.panel] = self.frame(content.panel, in: content)
             frames[.backBar] = self.frame(backBar, in: content)
             frames[.tabContent] = content.bounds
             return frames
@@ -232,10 +235,9 @@ import XCTest
         XCTAssertEqual(frozen.frame.width, pane.width, accuracy: 0.5, "The original tab hosting view receives the actual pane allocation")
         XCTAssertEqual(content.bounds.width, pane.width, accuracy: 0.5, "The native tab keeps the same AppKit allocation")
         XCTAssertEqual(content.panel.bounds.width, pane.width, accuracy: 0.5, "The native panel keeps the history and detail's actual width")
-        // SwiftUI reports its overflowing VStack's logical minimum frame;
-        // AppKit reports the allocated host bounds. Their visible children
-        // are the equivalent contract, including the overflowing toolbar.
-        try assertFrames(actual, expected, parts: children + [.backBar])
+        // Compare the logical background separately from the allocated host
+        // bounds above: the released surface occludes neighboring content.
+        try assertFrames(actual, expected, parts: children + [.panel, .backBar])
     }
 
     /// The gallery also has a kept side under its Changes tab. Opacity did
@@ -297,7 +299,7 @@ import XCTest
         try record("frozen-v119-covered-side" + suffix, frames: expected, window: frozenWindow, minimum: sideMinimum)
         try record("native-covered-side" + suffix, frames: actual, window: nativeWindow)
         print("GIT-COVERED-SIDE originalControlsMinimum=\(sideMinimum) nativeComposerMinimum=\(self.views(SidePaneView.self, in: native).first?.pane.minimumWidth ?? 0)")
-        try assertFrames(actual, expected, parts: children)
+        try assertFrames(actual, expected, parts: children + [.panel])
         let mountedSide = try XCTUnwrap(views(SidePaneView.self, in: native).first)
         let releasedBodyWidth = try XCTUnwrap(expected[.header]).width
         XCTAssertEqual(native.bounds.width, pane.width, accuracy: 0.5, "The outer pane keeps its allocation")

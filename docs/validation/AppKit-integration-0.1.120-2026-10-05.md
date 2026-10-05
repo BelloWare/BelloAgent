@@ -563,9 +563,87 @@ The previously completed `2be1b0d6` gate/gallery remain preserved, but the
 new production repair requires a fresh complete gate and final captures
 before release.
 
+## Fresh typing-source gate and complete visual review, 2026-10-06
+
+Source `1aa78749d7b3f68c524463ca90acdf3a3fe6b3d3` ran the complete
+gate in 37 minutes 16 seconds. All native checks pass: 628 serial cases
+(23 skips), 1,937 parallel passes (34 skips), five isolated helper-cost
+checks, 192 gallery captures, 611 helper cases (six skips), 34 wire,
+four concurrent, two acceptance and 72 Python checks. The original gate
+exits one solely because `GitRevealTests.testTheNewestAskWins` assumed
+async-let children entered the controller in declaration order. The test
+now waits for the first call to enter before issuing the superseding call;
+all success, final-line and fresh-token assertions remain. This establishes
+call-entry order, not guaranteed overlapping reads. The complete views
+package rerun passes 167 cases (three skips), and two additional repetitions
+of all ten GitReveal cases pass. Its bounded read-only Codex review reports
+no introduced findings. No test tolerance, timeout or production hook was
+changed. The original failed gate and corrective logs remain available.
+
+All 192 fresh same-sized pairs were actually viewed, assigned 82/24/54/32
+among the four reviewers. Original 2x images, SHA-256 manifest, unmasked
+comparison and per-image notes are preserved. This review found a real
+15.5-point missing background overflow in both `24d-changes-from-blame`
+captures. Window edges and Git header/history/detail frames match, but the
+released Git stack paints its full 367-point logical width over the adjacent
+composer/footer while the native panel painted only its 336-point bounds.
+The independent frozen geometry confirms the exact extent. The review
+manifest records this defect and does not approve parity before correction.
+
+The bounded correction paints a noninteractive full-height Git background
+at the existing resolved toolbar width, preserving all finite child
+proposals and frames. Existing frozen tests now compare the background's
+logical extent separately from allocated host bounds. The first pixel run
+caught transitional light-fill pixels on appearance change. The new flat
+background reuses `FillView`, whose existing appearance invalidation and
+redraw policy paint the view's backing layer directly. All 28 affected
+Git checks pass after byte-for-byte source restoration, including all eight
+strict frozen cases and four exact caption comparisons (zero differing
+pixels; largest channel difference one). Mutation proof removes only the
+background overflow and fails the independent leading/width assertions:
+0 versus -23.75 points and 310 versus 357.5 points. The original source is
+restored, rebuilt and checked again; no oracle, tolerance or wait changed.
+
+The final complete gallery passes in 430.890 seconds with all 192 original
+same-sized captures. The changed Git screens are re-reviewed separately;
+the all-192 `1aa78749` per-image records are reused for unchanged screens.
+Root and the payload reviewer have actually viewed the final narrow composed
+pairs in both appearances, including the reviewer's original 2x inspection:
+the background edge now matches at approximately x581.5, while the Git
+children keep their original frames. The final bounded read-only review
+reports no introduced findings; its explicit limits are that caption crops
+and frames alone do not prove full-window composited paint or hosted input
+routing. Composed images now cover the former; the background remains
+decorative with nil hit testing.
+
+Evidence: `logs/native-git-background-flat-tests.log`,
+`logs/native-git-background-mutation-{driver,build,test}.log`,
+`logs/native-git-background-restored-{build,tests}.log`,
+`logs/native-git-background-final-gallery.log`,
+`logs/native-git-background-fill-review.txt`, and
+`logs/gallery-git-background-final-manifest.json`.
+
+Visible limitations remain explicit: generated paths/IDs and rates can
+change wrapping; initial lazy scroll-thumb estimates differ; activation,
+caret and selection can differ; the optical glyph differences and
+unseen lower rows are not a blanket pixel-equality certification. Strict
+complete-document checks cover Settings, Overview and conversation geometry.
+Adversarial frozen sizing probes emit intentional invalid-geometry warnings;
+the gallery itself contains no geometry/constraint warnings.
+
+Evidence in `/Users/admin/Library/Caches/BelloAgentNext`: original gate
+`logs/native-composer-final-full-gate.log`, archived `final-1aa-verify-logs`
+and `final-1aa-verify-gallery`, corrective
+`logs/native-final-views-test-order-full.log`, the two
+`logs/native-final-views-test-order-repeat-*.log` files, read-only report
+`logs/native-final-git-reveal-order-review.txt`, completed
+`logs/gallery-1aa-review-manifest.json`, four `logs/gallery-*-1aa-review.txt`
+files and `logs/native-final-1aa-unmasked-comparison.log`.
+
 ## Still required
 
-Perform the fresh complete gate/gallery, final-source Release performance
-comparison and actual hour-long Release soak. Owner VoiceOver and real-gateway checks have not been run or
+Finish the remaining affected visual review, final-source Release performance
+comparison and actual hour-long Release soak.
+Owner VoiceOver and real-gateway checks have not been run or
 explicitly deferred for this release. Packaging, signing, website publication
 and the release tag remain pending.
