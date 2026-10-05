@@ -121,6 +121,7 @@ Native UI paths begin `apps/macos/PiApp/` (abbreviated `App/`).
 | Helper JSON protocol / process supervision | Core/HostService.swift; packages/swift-host/Sources/PiHost/Main.swift; App/Host/ | Unported. Rust in-process single-session actor, no Swift-compatible IPC claim |
 | Accessibility / shortcut parity | NEXT-RELEASE.md A1; App/Design/; App/Application/ | Partial GPUI keyboard/text handling. AX tree, VoiceOver, app-wide shortcut audit not validated |
 | macOS distribution / Sparkle update / signing | project.yml; docs/Release.md; App/Application/UpdateController.swift | Missing/unverified. Original Sparkle 2.8.1 includes configured check policy, active-work/install barriers and draft-flush failure handling; Rust has no updater integration. cfg-selected macOS storage path only; no release/tag/feed/assets changed |
+| macOS last-window close, Dock reopen and cancellable Quit | App/Application/ApplicationLifecycle.swift; WindowActivityGuard.swift; PiApp.swift | Missing. Source keeps one app-owned workspace alive, refuses last-close with active work, and separately resolves true Quit. Rust currently shuts down its window-owned workspace and quits after final close on every platform. Verified Linux deferred-quit repair is not macOS lifecycle parity |
 | Performance vs Swift | README.md prior validation; docs/validation/ | Measurement hooks implemented; same-hardware baseline and sustained latency comparison pending. CPU callback timing is not frame presentation |
 
 ## Latest incremental slice
@@ -263,6 +264,48 @@ for isolation, durability, format, permission, recovery, and backup limits.
   [the validation record](validation/multichat-2026-10-04.md).
 
 ## Next implementation priorities
+
+### macOS application lifetime prerequisite (source audit)
+
+The original app deliberately separates three actions:
+
+- `WindowActivityGuard.windowShouldClose` refuses the last visible main-window
+  close while active work or unkept sides remain. Its explanation has one
+  **Keep Window Open** button; stopping work belongs to a separate Quit decision.
+- `ApplicationLifecycle.applicationShouldTerminateAfterLastWindowClosed` returns
+  false. `PiApp` owns `WorkspaceModel` at app scope and one named main window;
+  Dock/menu-bar reopening returns to that model, rather than rebuilding it from
+  a transcript and losing unsaved editor or undo state.
+- `ApplicationLifecycle.applicationShouldTerminate` can defer/cancel true Quit:
+  resolve dirty settings, confirm active work, flush drafts/selection, wait for
+  hosts, and remain open if saving fails. Sparkle's install path uses the same
+  source save/work barrier.
+
+Rust `AgentView::request_close` currently routes close into `begin_shutdown`,
+which flushes drafts, stops controllers and removes the window. Its global
+last-window callback then quits. Simply skipping that final quit on macOS would
+leave no supported restoration owner or reopen path. Keeping/recreating an entity
+also needs explicit rebinding of window-scoped subscriptions and close/focus
+handlers; reloading solely from disk does not preserve unsaved file buffers/undo.
+
+Pinned GPUI **0.2.2** source was inspected: `Application::on_reopen` is supported
+(`src/app.rs`), but `App::on_app_quit` explicitly cannot veto termination. The
+`App::shutdown` also gives quit observers only 100ms to finish. The
+macOS delegate registers `applicationWillTerminate:`, not
+`applicationShouldTerminate:` (`src/platform/mac/platform.rs`). Its native quit
+dispatches `NSApplication.terminate:` on the main queue. An asynchronous cleanup
+observer must not be presented as a cancellable save-failure barrier.
+
+The next proposed implementation boundary is app-owned workspace lifetime plus
+distinct CloseWindow/Reopen/Quit coordination, followed by reviewed native
+termination-veto integration. Preserve active work, chat drafts, unsaved editors
+and undo; recreate only window-scoped bindings. A native delegate bridge must
+retain/forward GPUI's existing delegate behavior, including reopen and quit
+notifications; no unreviewed delegate replacement or implicit veto is acceptable.
+Pure state/flush tests and macOS compilation are groundwork only. Actual Dock
+reopen, repeated Quit/Cancel/save-failure and editor restoration still require
+native macOS desktop validation. No production lifecycle change is made by this
+audit, and the existing safe Linux final-window quit remains unchanged.
 
 1. Preserve the existing UI before extending it: equivalent-state dark/light,
    minimum-size and responsive split/composer checks; close gaps recorded in the
