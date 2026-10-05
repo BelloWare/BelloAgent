@@ -168,8 +168,9 @@ import XCTest
     }
 
     func testLedgerWaitsForTheViewportAndReusesRowsWhenARequestSettles() throws {
-        let history = SessionStatsFixture.session(requests: 100)
-        let ledger = SessionRequestLedger(history: SessionTimingHistory(samples: history.requests, completedRequests: history.requests.count))
+        var samples = SessionStatsFixture.session(requests: 100).requests
+        samples[61] = SessionStatsFixture.request(62, turn: "t16", outcome: "streaming", stream: nil, input: nil, cached: nil, output: nil, cost: nil)
+        let ledger = SessionRequestLedger(history: SessionTimingHistory(samples: samples, completedRequests: samples.count))
         var opened: String?
         let view = SessionRequestLedgerView(ledger: ledger, open: { opened = $0 }, limit: 40)
         let spacer = FixedHeight(NSView(), height: 1500, fills: true)
@@ -182,19 +183,66 @@ import XCTest
         render(scroll); view.rows.tileRows()
         XCTAssertGreaterThan(view.rows.made.count, 0)
         XCTAssertLessThan(view.rows.made.count, 20, "The card makes only rows near the viewport")
-        let retained = try XCTUnwrap(view.rows.made.values.first), retainedID = retained.row.id
-        window.makeFirstResponder(retained)
-        var next = history.requests
-        next.append(SessionStatsFixture.request(101, turn: "t26"))
-        view.update(ledger: SessionRequestLedger(history: SessionTimingHistory(samples: next, completedRequests: next.count)))
+        let retained = try XCTUnwrap(view.rows.made.values.first(where: { $0.row.id == "r62" })), retainedID = retained.row.id
+        XCTAssertEqual(retained.row.status, "streaming")
+        XCTAssertTrue(window.makeFirstResponder(retained))
+        samples[61] = SessionStatsFixture.request(62, turn: "t16", model: "reported-model", input: 2_000, cached: 1_500, output: 350, cost: 0.03)
+        samples.append(SessionStatsFixture.request(101, turn: "t26"))
+        view.update(ledger: SessionRequestLedger(history: SessionTimingHistory(samples: samples, completedRequests: samples.count)))
         render(scroll); view.rows.tileRows()
         XCTAssertTrue(view.rows.made.values.contains(where: { $0 === retained && $0.row.id == retainedID }), "A retained request keeps its row and keyboard target")
         XCTAssertTrue(window.firstResponder === retained)
+        XCTAssertEqual(retained.row, SessionRequestLedgerRow(number: 62, sample: samples[61]), "The retained row draws the settled values")
+        XCTAssertEqual(retained.accessibilityLabel(), retained.row.line)
+        XCTAssertEqual(retained.frame.minY, 0, accuracy: 0.5, "The retained row moves to its new position in the latest-40 window")
+        retained.onPress?(); XCTAssertEqual(opened, retainedID)
         XCTAssertEqual(view.rows.rows.count, 40); XCTAssertEqual(view.rows.rows.last?.id, "r101")
         XCTAssertEqual(view.rows.accessibilityChildren()?.count, 40, "VoiceOver can reach rows outside the current viewport")
         let accessible = try XCTUnwrap(view.rows.accessibilityChildren()?.last as? NSAccessibilityElement)
         XCTAssertTrue(accessible.accessibilityPerformPress())
         XCTAssertEqual(opened, "r101", "VoiceOver opens the updated request represented by its row")
+    }
+
+    func testLedgerAccessibilityActionsKeepTheirRequestIdentityWhenTheWindowAdvances() throws {
+        var samples = SessionStatsFixture.session(requests: 100).requests
+        var opened: String?
+        let view = SessionRequestLedgerView(ledger: SessionRequestLedger(history: SessionTimingHistory(samples: samples, completedRequests: samples.count)), open: { opened = $0 }, limit: 40)
+        view.rows.frame = CGRect(x: 0, y: 0, width: 1080, height: view.rows.height(forWidth: 1080))
+        let before = try XCTUnwrap(view.rows.accessibilityChildren() as? [NSAccessibilityElement])
+        let removed = try XCTUnwrap(before.first), retained = try XCTUnwrap(before.last)
+        samples[99] = SessionStatsFixture.request(100, turn: "t25", model: "settled-model", output: 4_500, cost: 0.08)
+        samples.append(SessionStatsFixture.request(101, turn: "t26"))
+        view.update(ledger: SessionRequestLedger(history: SessionTimingHistory(samples: samples, completedRequests: samples.count)))
+        XCTAssertEqual(retained.accessibilityLabel(), SessionRequestLedgerRow(number: 100, sample: samples[99]).line, "A cached VoiceOver row updates its spoken figures")
+        XCTAssertTrue(retained.accessibilityPerformPress()); XCTAssertEqual(opened, "r100", "The retained action opens its request rather than its old index")
+        XCTAssertFalse(removed.accessibilityPerformPress(), "An evicted request cannot open the row that replaced its index")
+        XCTAssertEqual(opened, "r100")
+        let after = try XCTUnwrap(view.rows.accessibilityChildren() as? [NSAccessibilityElement])
+        XCTAssertEqual(after.count, 40)
+        XCTAssertTrue(after[38] === retained, "A request also retains its virtual accessibility row")
+        XCTAssertTrue(try XCTUnwrap(after.last).accessibilityPerformPress()); XCTAssertEqual(opened, "r101")
+    }
+
+    func testLedgerAccessibilityFramesFollowResizeAndSettledRowHeights() throws {
+        let first = SessionRequestLedgerRow(number: 1, sample: SessionStatsFixture.request(1, input: nil, cached: nil))
+        let second = SessionRequestLedgerRow(number: 2, sample: SessionStatsFixture.request(2))
+        let rows = SessionLedgerRows(rows: [first, second], open: { _ in })
+        rows.frame = CGRect(x: 0, y: 0, width: 1080, height: rows.height(forWidth: 1080))
+        let before = try XCTUnwrap(rows.accessibilityChildren() as? [NSAccessibilityElement])
+        let firstElement = before[0], secondElement = before[1]
+        let secondY = secondElement.accessibilityFrameInParentSpace().minY
+        XCTAssertEqual(firstElement.accessibilityFrameInParentSpace().width, 1080)
+        rows.setFrameSize(CGSize(width: 1260, height: rows.height(forWidth: 1260)))
+        rows.needsLayout = true; rows.layoutSubtreeIfNeeded()
+        XCTAssertEqual(firstElement.accessibilityFrameInParentSpace().width, 1260, "Existing accessibility elements follow a resize before the next child query")
+        let afterResize = try XCTUnwrap(rows.accessibilityChildren() as? [NSAccessibilityElement])
+        XCTAssertTrue(afterResize[0] === firstElement)
+        XCTAssertEqual(afterResize[1].accessibilityFrameInParentSpace().width, 1260)
+        let settled = SessionRequestLedgerRow(number: 1, sample: SessionStatsFixture.request(1, input: 1_000_000, cached: 999_000, write: 2_500))
+        rows.reload([settled, second])
+        XCTAssertGreaterThan(secondElement.accessibilityFrameInParentSpace().minY, secondY, "A newly wrapped detail moves the following accessibility row")
+        XCTAssertEqual(secondElement.accessibilityFrameInParentSpace().minY, 1 + PiSpacing.sm * 2 + SessionLedgerRowView.height(settled), accuracy: 0.5)
+        XCTAssertEqual(firstElement.accessibilityFrameInParentSpace().height, 1 + PiSpacing.sm + SessionLedgerRowView.height(settled), accuracy: 0.5)
     }
 }
 

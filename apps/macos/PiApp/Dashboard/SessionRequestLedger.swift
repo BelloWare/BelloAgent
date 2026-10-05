@@ -171,7 +171,8 @@ struct SessionRequestLedger: Equatable {
     private(set) var made: [Int: SessionLedgerRowView] = [:]
     nonisolated(unsafe) private var boundsObserver: NSObjectProtocol?
     private weak var observedClip: NSClipView?
-    private var accessible: [NSAccessibilityElement]?
+    // A moving history window must not change a cached VoiceOver row's request.
+    private var accessible: [String: SessionLedgerAccessibleRow] = [:]
     init(rows: [SessionRequestLedgerRow], open: ((String) -> Void)?) {
         self.rows = rows; self.open = open; super.init(frame: .zero)
         setAccessibilityElement(true); setAccessibilityRole(.list); setAccessibilityLabel("Requests")
@@ -183,10 +184,13 @@ struct SessionRequestLedger: Equatable {
         let old = Dictionary(uniqueKeysWithValues: made.values.map { ($0.row.id, $0) })
         var next: [Int: SessionLedgerRowView] = [:]
         for (index, row) in rows.enumerated() {
-            if let view = old[row.id], view.row == row { next[index] = view }
+            if let view = old[row.id] { view.update(row: row); next[index] = view }
         }
         for view in made.values where !next.values.contains(where: { $0 === view }) { view.removeFromSuperview() }
-        made = next; self.rows = rows; measuredWidth = -1; accessible = nil
+        made = next; self.rows = rows; measuredWidth = -1
+        let retainedIDs = Set(rows.map(\.id))
+        accessible = accessible.filter { retainedIDs.contains($0.key) }
+        refreshAccessibleRows()
         invalidateIntrinsicContentSize(); needsLayout = true; PiKit.sizeChanged(self)
         tileRows()
     }
@@ -214,7 +218,7 @@ struct SessionRequestLedger: Equatable {
             }
         }
     }
-    override func layout() { super.layout(); observeClip(); tileRows() }
+    override func layout() { super.layout(); observeClip(); tileRows(); refreshAccessibleRows() }
     func tileRows() {
         guard window != nil, bounds.width > 0 else { return }
         measure(bounds.width)
@@ -225,35 +229,46 @@ struct SessionRequestLedger: Equatable {
             for index in rows.indices where offsets[index] <= extent.maxY && offsets[index] + heights[index] >= extent.minY {
                 let view = made[index] ?? SessionLedgerRowView(row: rows[index], open: open)
                 if made[index] == nil { made[index] = view; addSubview(view) }
-                view.frame = CGRect(x: 0, y: offsets[index], width: bounds.width, height: heights[index]); keep.insert(index)
+                keep.insert(index)
             }
         }
         // Keep a focused row until focus leaves it; resize/scroll must not drop the keyboard.
         if let focused = window?.firstResponder as? NSView {
             for (index, view) in made where focused === view || focused.isDescendant(of: view) { keep.insert(index) }
         }
-        for (index, view) in made where !keep.contains(index) { view.removeFromSuperview(); made[index] = nil }
+        for (index, view) in made {
+            if keep.contains(index) { view.frame = CGRect(x: 0, y: offsets[index], width: bounds.width, height: heights[index]) }
+            else { view.removeFromSuperview(); made[index] = nil }
+        }
     }
     override func accessibilityChildren() -> [Any]? {
-        if let accessible { return accessible }
-        let elements: [NSAccessibilityElement] = rows.indices.map { index in
-            let row = SessionLedgerAccessibleRow(owner: self, index: index)
-            row.setAccessibilityRole(open == nil ? .group : .button)
-            row.setAccessibilityLabel(rows[index].line); row.setAccessibilityParent(self)
-            measure(bounds.width)
-            row.setAccessibilityFrameInParentSpace(CGRect(x: 0, y: offsets[index], width: bounds.width, height: heights[index]))
-            return row
+        let elements = rows.map { row in
+            if let element = accessible[row.id] { return element }
+            let element = SessionLedgerAccessibleRow(owner: self, requestID: row.id)
+            element.setAccessibilityRole(open == nil ? .group : .button); element.setAccessibilityParent(self)
+            accessible[row.id] = element
+            return element
         }
-        accessible = elements; return elements
+        refreshAccessibleRows(); return elements
+    }
+    private func refreshAccessibleRows() {
+        guard !accessible.isEmpty else { return }
+        measure(bounds.width)
+        for (index, row) in rows.enumerated() {
+            guard let element = accessible[row.id] else { continue }
+            let label = row.line, frame = CGRect(x: 0, y: offsets[index], width: bounds.width, height: heights[index])
+            if element.accessibilityLabel() != label { element.setAccessibilityLabel(label) }
+            if element.accessibilityFrameInParentSpace() != frame { element.setAccessibilityFrameInParentSpace(frame) }
+        }
     }
 }
 
 private final class SessionLedgerAccessibleRow: NSAccessibilityElement {
     private let press: @MainActor @Sendable () -> Bool
-    @MainActor init(owner: SessionLedgerRows, index: Int) {
+    @MainActor init(owner: SessionLedgerRows, requestID: String) {
         press = { [weak owner] in
-            guard let owner, let open = owner.open, owner.rows.indices.contains(index) else { return false }
-            open(owner.rows[index].id); return true
+            guard let owner, let open = owner.open, owner.rows.contains(where: { $0.id == requestID }) else { return false }
+            open(requestID); return true
         }
         super.init()
     }
@@ -268,7 +283,7 @@ private final class SessionLedgerAccessibleRow: NSAccessibilityElement {
 /// One row's whole press target, with a separator above it. The figures are
 /// drawn as text rather than 20 cells; only the pointer fill is a layer.
 @MainActor final class SessionLedgerRowView: PiKit.ButtonBase {
-    let row: SessionRequestLedgerRow
+    private(set) var row: SessionRequestLedgerRow
     init(row: SessionRequestLedgerRow, open: ((String) -> Void)?) {
         self.row = row; super.init(frame: .zero)
         SessionStatsRenderCount.ledgerRowBuilt(); pressScales = false; showsPointer = open != nil
@@ -278,6 +293,14 @@ private final class SessionLedgerAccessibleRow: NSAccessibilityElement {
         refreshFace(animated: false)
     }
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    func update(row: SessionRequestLedgerRow) {
+        precondition(row.id == self.row.id)
+        guard row != self.row else { return }
+        self.row = row
+        setAccessibilityLabel(row.line)
+        toolTip = showsPointer ? "Open request \(row.number)" : row.model
+        redrawContent()
+    }
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { showsPointer && super.acceptsFirstResponder }
     override var canBecomeKeyView: Bool { showsPointer && super.canBecomeKeyView }
