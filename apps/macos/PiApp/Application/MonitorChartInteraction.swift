@@ -1,23 +1,11 @@
 import AppKit
-import SwiftUI
 
 /// AppKit owns mouse tracking inside the plot only. Wheel events continue up
 /// to the popup's scroll view; leaving the plot during a drag clamps its end.
 /// Keeping the input surface separate also exercises real native mouse events
 /// in tests without requiring an unlocked global desktop.
-@MainActor struct MonitorChartInteraction: NSViewRepresentable {
-    let plot: CGRect
-    let domain: ClosedRange<Date>
-    let hover: (Date?) -> Void
-    let drag: (Double, Double, Double, ClosedRange<Date>) -> Void
-    let finish: (Double, Double) -> Void
-    let reset: () -> Void
-    let step: (Int) -> Void
-    func makeNSView(context: Context) -> Surface { Surface() }
-    func updateNSView(_ view: Surface, context: Context) {
-        view.plot = plot; view.domain = domain
-        view.hover = hover; view.drag = drag; view.finish = finish; view.reset = reset; view.step = step
-    }
+@MainActor enum MonitorChartInteraction {
+    /// Laid over the whole chart; it takes the pointer only inside `plot`.
     final class Surface: NSView {
         var plot = CGRect.zero
         var domain = Date.distantPast...Date.distantFuture

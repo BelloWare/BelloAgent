@@ -1971,3 +1971,28 @@ struct RefSidesPanelRow: View {
     }
 }
 
+
+/// The SwiftUI unread dot as it was (Workspaces/SidebarSwiftUIBridges.swift
+/// at 9ca27dc8), for the references above; the app draws `UnreadDotView`.
+struct UnreadDot: View {
+    var failure = false
+    var body: some View {
+        Circle().fill(failure ? Color.piDanger : Color.piBrandOrange).frame(width: 7, height: 7)
+            .accessibilityLabel(failure ? "Run failed" : "Unread replies").help(failure ? "The last run failed while you were away" : "New replies you have not viewed")
+    }
+}
+
+/// The minute "3m ago" stamps are worked out against (the SwiftUI sidebar's
+/// environment value at 9ca27dc8), for the references above.
+private struct SidebarMinuteKey: EnvironmentKey { static let defaultValue: Date? = nil }
+extension EnvironmentValues {
+    var sidebarMinute: Date? {
+        get { self[SidebarMinuteKey.self] }
+        set { self[SidebarMinuteKey.self] = newValue }
+    }
+}
+struct SidebarMinuteClock: ViewModifier {
+    func body(content: Content) -> some View {
+        TimelineView(.everyMinute) { context in content.environment(\.sidebarMinute, context.date) }
+    }
+}

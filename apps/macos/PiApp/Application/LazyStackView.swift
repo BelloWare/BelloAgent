@@ -130,6 +130,16 @@ import AppKit
         contentView.scroll(to: NSPoint(x: 0, y: max(0, y)))
         reflectScrolledClipView(contentView)
     }
+    /// Scrolls the row at `index` to the middle of the view (`scrollTo(_:anchor: .center)`), as far as the list allows.
+    func scrollToRowCentred(_ index: Int) {
+        measure(width: contentView.bounds.width)
+        guard index < offsets.count else { return }
+        let clip = contentView.bounds
+        let y = min(max(0, offsets[index] + heights[index] / 2 - clip.height / 2), max(0, (documentView?.frame.height ?? 0) - clip.height))
+        guard y != clip.minY else { return }
+        contentView.scroll(to: NSPoint(x: 0, y: y))
+        reflectScrolledClipView(contentView)
+    }
     /// Back to the top.
     func scrollToTop() {
         guard contentView.bounds.minY != 0 else { return }

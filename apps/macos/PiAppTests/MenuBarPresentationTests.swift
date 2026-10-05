@@ -183,7 +183,7 @@ final class MenuBarPresentationTests: XCTestCase {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 720), styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.appearance = NSAppearance(named: .aqua)
-        let hosted = NSHostingView(rootView: view)
+        let hosted = view
         window.contentView = hosted
         defer { controller.setVisible(false); window.orderOut(nil); window.contentView = nil; window.close() }
         window.center(); window.orderFront(nil)

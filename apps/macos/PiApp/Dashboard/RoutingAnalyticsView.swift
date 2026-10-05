@@ -1,4 +1,5 @@
-import SwiftUI
+import AppKit
+import Combine
 
 extension DashboardModelSummary {
     var distributionID: String { model ?? "\(alias) · \(status)" }
@@ -26,37 +27,95 @@ enum ReportThroughputDomain {
     }
 }
 
-/// Only this leaf observes the paced live snapshot. Chart ticks never query
-/// SQLite or rebuild the report's routing, cost or request tables.
-@MainActor struct ReportThroughputPanel: View {
-    @ObservedObject var live: LiveActivityStore
-    let snapshot: DashboardSnapshot
-    let window: DashboardWindow
-    let palette: MonitorModelPalette
-    let controls: () -> AnyView
-    let registerModels: ([String]) -> Void
-    /// The report's selection. The chart's zoom shows and follows it; it is
-    /// never a second copy that has to be synchronised back.
-    var selection: DashboardBrush?
-    /// The reader zoomed or reset the chart: the only way this panel changes the selection.
+/// The report's throughput card: its title and the chart metric picker,
+/// the live rate now, and the rate chart over the report's window. Only this
+/// card follows the paced live snapshot; a chart tick never queries SQLite or
+/// rebuilds the report's routing, cost or request tables.
+@MainActor final class ReportThroughputPanel: DashView, PiKit.WidthSizing, PiKit.SizeObserver {
+    let live: LiveActivityStore
+    private(set) var snapshot: DashboardSnapshot
+    private(set) var reportWindow: DashboardWindow
+    private var palette: MonitorModelPalette
+    /// The report's selection: the chart's zoom shows and follows it.
+    private(set) var selection: DashboardBrush?
+    /// The reader zoomed or reset the chart: the only way this card changes the selection.
     var select: (ClosedRange<Date>?) -> Void = { _ in }
-    @State private var observer = UUID().uuidString
-    @State private var zoom = MonitorChartZoom()
-    @State private var metric: MonitorRateMetric?
+    var registerModels: ([String]) -> Void = { _ in }
+    private let observer = UUID().uuidString
+    private var zoom = MonitorChartZoom()
+    private var metric: MonitorRateMetric?
+    private var liveObserver: ShellObserver!
+    private var registered: Set<String> = []
 
+    private let header: DashSectionHeader
+    private let now = PiKit.TextLine(PiKit.Line("", font: PiKit.Font.monospacedDigits(PiKit.Font.heading), color: .labelColor))
+    private let coverage = PiKit.TextLine(PiKit.Line("", font: PiKit.Font.monospacedDigits(PiKit.Font.micro), color: .piInkSecondary))
+    private lazy var nowRow = ShellStack(.horizontal, spacing: 8, [.view(now), .spacer(8), .view(coverage)])
+    let chart = MonitorRateChart()
+    private let note = ShellText("Showing completed requests matching your filters. Live history is available for whole projects.", font: PiKit.Font.micro, color: .piInkSecondary)
+    private lazy var column = ShellStack(.vertical, spacing: 12, [.view(header, .fill), .view(nowRow, .fill), .view(chart, .fill), .view(note, .fill)])
+    private lazy var card = PiKit.card(column, padding: PiSpacing.md)
+    private let visibility = WindowVisibilityReader.VisibilityView()
+
+    init(live: LiveActivityStore, snapshot: DashboardSnapshot, window: DashboardWindow, palette: MonitorModelPalette, controls: NSView) {
+        self.live = live; self.snapshot = snapshot; self.reportWindow = window; self.palette = palette
+        header = DashSectionHeader("Throughput by model", accessory: controls)
+        super.init(frame: .zero)
+        addSubview(visibility); addSubview(card)
+        setAccessibilityElement(false)
+        setAccessibilityIdentifier("analytics-throughput")
+        visibility.onChange = { [weak self] visible in guard let self else { return }; self.windowVisible = visible; self.applyVisibility() }
+        chart.onSelectMetric = { [weak self] in self?.metric = $0; self?.refresh() }
+        chart.onZoom = { [weak self] next in
+            guard let self else { return }
+            let changed = next.range != self.zoom.range
+            self.zoom = next
+            // A drag in progress stays here; a committed zoom or a reset goes
+            // to the report, whose selection comes back through `update`.
+            if changed { self.select(next.range) }
+            self.refresh()
+        }
+        // A card the report hides (an empty filter) does no live work.
+        liveObserver = ShellObserver { [weak self] in guard let self, !self.isHiddenOrHasHiddenAncestor else { return }; self.refresh() }
+        liveObserver.observe(live)
+        refresh()
+    }
+    private var windowVisible = false
+    private var lastHeight: CGFloat?
+    /// Live updates while the window shows the card and the report has not hidden it.
+    private func applyVisibility() { live.setVisible(windowVisible && window != nil && !isHiddenOrHasHiddenAncestor, owner: observer) }
+    override func viewDidHide() { super.viewDidHide(); applyVisibility() }
+    override func viewDidUnhide() { super.viewDidUnhide(); applyVisibility(); refresh() }
+    /// Its parts' size changes stop here and go on only as a change of the card's height.
+    func contentSizeChanged() { needsLayout = true; reportSize() }
+    /// Tells the page only when the card's height moved: a live tick that
+    /// changes figures, not size, measures nothing else.
+    private func reportSize() {
+        guard bounds.width > 0 else { PiKit.sizeChanged(self); return }
+        let height = self.height(forWidth: bounds.width)
+        guard height != lastHeight else { return }
+        lastHeight = height
+        PiKit.sizeChanged(self)
+    }
+    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil { live.setVisible(false, owner: observer) }
+    }
+
+    func update(snapshot: DashboardSnapshot, window: DashboardWindow, palette: MonitorModelPalette, selection: DashboardBrush?) {
+        self.snapshot = snapshot; self.reportWindow = window; self.palette = palette
+        if selection != self.selection || selection == nil && zoom.range != nil {
+            self.selection = selection
+            // The selection drives the zoom: a refresh that keeps it keeps the
+            // zoom, one that drops it (or a cleared chip) resets it.
+            zoom.show(selection.map { $0.from...$0.until })
+        }
+        refresh()
+    }
     private func chosenMetric(_ samples: [LiveRateSample]) -> MonitorRateMetric {
         guard snapshot.filter.supportsProjectLiveHistory else { return .average }
         return metric ?? (samples.contains { !$0.hasGap(workspace: snapshot.filter.workspaceID) && !$0.models(workspace: snapshot.filter.workspaceID).isEmpty } ? .live : .average)
-    }
-    /// Writes from the chart: a drag in progress stays local; a committed
-    /// zoom or a reset goes to the report, whose selection then comes back
-    /// through `selection` without another round trip.
-    private var chartZoom: Binding<MonitorChartZoom> {
-        Binding(get: { zoom }, set: { next in
-            let changed = next.range != zoom.range
-            zoom = next
-            if changed { select(next.range) }
-        })
     }
     private var retained: MenuBarSnapshot {
         MenuBarSnapshot(period: .day, from: snapshot.filter.from, until: snapshot.filter.until,
@@ -64,60 +123,93 @@ enum ReportThroughputDomain {
             compactionRequests: 0, costUnreported: 0, costInvalid: 0, costConflicts: 0, models: [], modelGroups: 0, offset: 0,
             buckets: snapshot.buckets.map { MenuBarBucket(id: $0.id, start: $0.start, end: $0.end, gateway: $0.gateway) })
     }
-    var body: some View {
-        let liveDomain = ReportThroughputDomain.live(window, observedAt: live.snapshot.observedAt)
+    func refresh() {
+        let names = live.snapshot.rateHistory.modelNames
+        if !names.isSubset(of: registered) { registered.formUnion(names); registerModels(Array(names)) }
+        let liveDomain = ReportThroughputDomain.live(reportWindow, observedAt: live.snapshot.observedAt)
         // Filtered once per update: the metric choice and the chart share it.
         let samples = live.snapshot.rateHistory.samples(in: zoom.domain(following: liveDomain))
         let metric = chosenMetric(samples)
-        PiCard(padding: PiSpacing.md) {
-            VStack(alignment: .leading, spacing: 12) {
-                PiSectionHeader("Throughput by model") { controls() }
-                if snapshot.filter.supportsProjectLiveHistory {
-                    let current = live.snapshot.currentRates(workspace: snapshot.filter.workspaceID)
-                    HStack {
-                        Text("Now \(menuBarRate(current.rate)) tok/s").font(PiFont.heading)
-                        Spacer()
-                        Text("\(current.reported)/\(current.active) requests reporting live").font(PiFont.micro).foregroundStyle(Color.piInkSecondary)
-                    }.monospacedDigit()
-                }
-                MonitorRateChart(samples: samples, usage: retained, workspace: snapshot.filter.workspaceID,
-                    following: ReportThroughputDomain.following(metric: metric, live: liveDomain, retained: snapshot.filter),
-                    zoom: chartZoom, metric: metric, palette: palette, selectMetric: { self.metric = $0 },
-                    showsMetricSelection: snapshot.filter.supportsProjectLiveHistory, chartHeight: 180)
-                if !snapshot.filter.supportsProjectLiveHistory {
-                    Text("Showing completed requests matching your filters. Live history is available for whole projects.")
-                        .font(PiFont.micro).foregroundStyle(Color.piInkSecondary)
-                }
-            }
+        let whole = snapshot.filter.supportsProjectLiveHistory
+        if whole {
+            let current = live.snapshot.currentRates(workspace: snapshot.filter.workspaceID)
+            now.line.text = "Now \(menuBarRate(current.rate)) tok/s"
+            coverage.line.text = "\(current.reported)/\(current.active) requests reporting live"
         }
-        .background(WindowVisibilityReader { live.setVisible($0, owner: observer) })
-        .onDisappear { live.setVisible(false, owner: observer) }
-        .onChange(of: live.snapshot.rateHistory.modelNames, initial: true) { _, names in registerModels(Array(names)) }
-        // The selection drives the zoom; a refresh that keeps it keeps the
-        // zoom, one that drops it (or a cleared chip) resets it.
-        .onChange(of: selection, initial: true) { _, value in zoom.show(value.map { $0.from...$0.until }) }
-        .accessibilityIdentifier("analytics-throughput")
+        nowRow.isHidden = !whole
+        note.isHidden = whole
+        chart.update(MonitorRateChart.Inputs(samples: samples, usage: retained, workspace: snapshot.filter.workspaceID,
+                                             following: ReportThroughputDomain.following(metric: metric, live: liveDomain, retained: snapshot.filter),
+                                             zoom: zoom, metric: metric, palette: palette, showsMetricSelection: whole, chartHeight: 180))
+        column.relayoutAll()
+        reportSize()
     }
+    func height(forWidth width: CGFloat) -> CGFloat { PiKit.height(of: card, width: width) }
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: height(forWidth: bounds.width > 0 ? bounds.width : 600)) }
+    override func layout() { super.layout(); visibility.frame = .zero; card.frame = bounds }
 }
 
-@MainActor struct ReportActiveSessions: View {
-    @ObservedObject var live: LiveActivityStore
-    let workspaceID: String?
-    let activity: () -> MenuBarActivitySnapshot
-    let openSession: (String) -> Void
-    @State private var observer = UUID().uuidString
-    var body: some View {
-        let rows = activity().runningRows.filter { workspaceID == nil || $0.workspaceID == workspaceID }
-        PiCard(padding: PiSpacing.md) {
-            VStack(alignment: .leading, spacing: 8) {
-                PiSectionHeader("Active sessions", subtitle: "Running now in the selected project · \(rows.count) sessions")
-                MonitorSessionRows(rows: rows, snapshot: live.snapshot, openSession: openSession)
-                if rows.isEmpty { Text("All quiet. No sessions are working.").font(PiFont.caption).foregroundStyle(Color.piInkSecondary) }
-                if rows.count > 6 { Text("Showing 6 of \(rows.count) running sessions").font(PiFont.micro).foregroundStyle(Color.piInkSecondary) }
-            }
-        }.background(WindowVisibilityReader { live.setVisible($0, owner: observer) })
-            .onDisappear { live.setVisible(false, owner: observer) }
+/// The sessions running now in the report's project, as the monitor lists them.
+@MainActor final class ReportActiveSessions: DashView, PiKit.WidthSizing, PiKit.SizeObserver {
+    let live: LiveActivityStore
+    private var workspaceID: String?
+    private let activity: () -> MenuBarActivitySnapshot
+    private let openSession: (String) -> Void
+    private let observer = UUID().uuidString
+    private var liveObserver: ShellObserver!
+    private let header = DashSectionHeader("Active sessions", subtitle: "")
+    private let rows = MonitorSessionRows()
+    private let quiet = PiKit.TextLine(PiKit.Line("All quiet. No sessions are working.", font: PiKit.Font.caption, color: .piInkSecondary))
+    private let more = PiKit.TextLine(PiKit.Line("", font: PiKit.Font.micro, color: .piInkSecondary))
+    private lazy var column = ShellStack(.vertical, spacing: 8, [.view(header, .fill), .view(rows, .fill), .view(quiet), .view(more)])
+    private lazy var card = PiKit.card(column, padding: PiSpacing.md)
+    private let visibility = WindowVisibilityReader.VisibilityView()
+    init(live: LiveActivityStore, workspaceID: String?, activity: @escaping () -> MenuBarActivitySnapshot, openSession: @escaping (String) -> Void) {
+        self.live = live; self.workspaceID = workspaceID; self.activity = activity; self.openSession = openSession
+        super.init(frame: .zero)
+        addSubview(visibility); addSubview(card)
+        visibility.onChange = { [weak self] visible in guard let self else { return }; self.windowVisible = visible; self.applyVisibility() }
+        // A card the report hides (an empty filter) does no live work.
+        liveObserver = ShellObserver { [weak self] in guard let self, !self.isHiddenOrHasHiddenAncestor else { return }; self.refresh() }
+        liveObserver.observe(live)
+        refresh()
     }
+    private var windowVisible = false
+    private var lastHeight: CGFloat?
+    /// Live updates while the window shows the card and the report has not hidden it.
+    private func applyVisibility() { live.setVisible(windowVisible && window != nil && !isHiddenOrHasHiddenAncestor, owner: observer) }
+    override func viewDidHide() { super.viewDidHide(); applyVisibility() }
+    override func viewDidUnhide() { super.viewDidUnhide(); applyVisibility(); refresh() }
+    /// Its parts' size changes stop here and go on only as a change of the card's height.
+    func contentSizeChanged() { needsLayout = true; reportSize() }
+    /// Tells the page only when the card's height moved: a live tick that
+    /// changes figures, not size, measures nothing else.
+    private func reportSize() {
+        guard bounds.width > 0 else { PiKit.sizeChanged(self); return }
+        let height = self.height(forWidth: bounds.width)
+        guard height != lastHeight else { return }
+        lastHeight = height
+        PiKit.sizeChanged(self)
+    }
+    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil { live.setVisible(false, owner: observer) }
+    }
+    func update(workspaceID: String?) { if self.workspaceID != workspaceID { self.workspaceID = workspaceID }; refresh() }
+    func refresh() {
+        let running = activity().runningRows.filter { workspaceID == nil || $0.workspaceID == workspaceID }
+        header.setSubtitle("Running now in the selected project · \(running.count) sessions")
+        rows.update(rows: running, snapshot: live.snapshot, project: workspaceID, openSession: openSession)
+        quiet.isHidden = !running.isEmpty
+        more.line.text = "Showing 6 of \(running.count) running sessions"
+        more.isHidden = running.count <= 6
+        column.relayoutAll()
+        reportSize()
+    }
+    func height(forWidth width: CGFloat) -> CGFloat { PiKit.height(of: card, width: width) }
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: height(forWidth: bounds.width > 0 ? bounds.width : 600)) }
+    override func layout() { super.layout(); visibility.frame = .zero; card.frame = bounds }
 }
 
 extension MonitorDistribution {
@@ -142,157 +234,252 @@ extension MonitorDistribution {
     }
 }
 
-/// Bounded native drawing; no chart engine or transcript work per live tick.
-struct ModelDistributionRing: View {
-    let models: [MonitorDistribution]
-    let palette: MonitorModelPalette
-    let metric: MonitorShareMetric
-    let cost: Double?
-    @State private var highlighted: String?
-
-    private func share(_ row: MonitorDistribution) -> Double? { metric == .cost ? row.costShare : row.tokenShare }
-    var body: some View {
-        HStack(spacing: 20) {
-            ZStack {
-                Canvas { context, size in
-                    let center = CGPoint(x: size.width / 2, y: size.height / 2), radius = min(size.width, size.height) / 2 - 9
-                    let circle = CGRect(x: center.x - radius, y: center.y - radius, width: 2 * radius, height: 2 * radius)
-                    context.stroke(Path(ellipseIn: circle), with: .color(Color.piFillStrong), lineWidth: 15)
-                    var start = -90.0
-                    for row in models.prefix(24) {
-                        guard let fraction = share(row), fraction > 0 else { continue }
-                        let end = min(270, start + fraction * 360)
-                        var arc = Path()
-                        arc.addArc(center: center, radius: radius, startAngle: .degrees(start), endAngle: .degrees(end), clockwise: false)
-                        context.stroke(arc, with: .color(Color.monitorModel(palette.index(row.id)).opacity(highlighted == nil || highlighted == row.id ? 1 : 0.25)), lineWidth: 15)
-                        start = end
-                    }
-                }.accessibilityHidden(true)
-                VStack(spacing: 4) {
-                    Text(monitorCost(cost)).font(.system(size: 15, weight: .semibold)).monospacedDigit().minimumScaleFactor(0.65).lineLimit(1)
-                    Text("reported cost").font(.system(size: 10)).foregroundStyle(Color.piInkSecondary)
-                }.padding(.horizontal, 17)
-            }.frame(width: 136, height: 136)
-            VStack(alignment: .leading, spacing: 12) {
-                ForEach(Self.legend(models, metric: metric)) { row in
-                    HStack(spacing: 6) {
-                        Circle().fill(Color.monitorModel(palette.index(row.id))).frame(width: 7, height: 7)
-                        Text(row.id).lineLimit(1).truncationMode(.middle)
-                        Spacer(minLength: 0)
-                        Text(share(row).map { String(format: "%.3f%%", $0 * 100) } ?? "—").monospacedDigit()
-                    }.font(PiFont.caption).contentShape(Rectangle())
-                        .onHover { highlighted = $0 ? row.id : nil }
-                        .help("\(row.id) · \(menuBarTokens(row.tokens)) output · \(gatewayUSD(row.cost))\nRequested as \(row.aliases.sorted().joined(separator: ", "))")
-                }
-                if models.count > 4 { Text("+\(models.count - 4) more models").font(PiFont.micro).foregroundStyle(Color.piInkSecondary) }
-                if models.isEmpty { Text("Awaiting reported usage").font(PiFont.caption).foregroundStyle(Color.piInkSecondary) }
-            }.frame(maxWidth: .infinity, alignment: .leading)
-        }.accessibilityIdentifier("model-distribution-ring")
+/// Each requested alias, branching to the models the gateway returned for it.
+@MainActor final class ModelRoutingMap: DashView, PiKit.WidthSizing {
+    private var rows: [DashboardModelSummary] = []
+    private var palette = MonitorModelPalette()
+    private var loading = false
+    private var showAll = false
+    private let column = ShellStack(.vertical, spacing: 14)
+    private lazy var card = PiKit.card(column, padding: PiSpacing.md)
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        addSubview(card)
+        setAccessibilityElement(false)
+        setAccessibilityIdentifier("analytics-model-routing")
     }
-    /// The four models the legend names, ranked by the share it shows.
-    static func legend(_ models: [MonitorDistribution], metric: MonitorShareMetric) -> [MonitorDistribution] {
-        Array((metric == .cost ? MonitorDistribution.byCost(models) : models).prefix(4))
+    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    func update(rows: [DashboardModelSummary], palette: MonitorModelPalette, loading: Bool) {
+        guard rows != self.rows || palette != self.palette || loading != self.loading || column.items.isEmpty else { return }
+        self.rows = rows; self.palette = palette; self.loading = loading
+        rebuild()
     }
-}
-
-struct ModelRoutingMap: View {
-    let rows: [DashboardModelSummary]
-    let palette: MonitorModelPalette
-    /// The routes have not been read yet: not the same as none reported.
-    var loading = false
-    @State private var showAll = false
     private var aliases: [String] { Array(Set(rows.map(\.alias))).sorted() }
-    var body: some View {
-        PiCard(padding: PiSpacing.md) {
-            VStack(alignment: .leading, spacing: 14) {
-                Text("Model routing").font(PiFont.heading)
-                Text("Requested → returned by the gateway").font(PiFont.micro).foregroundStyle(Color.piInkSecondary)
-                if rows.isEmpty { Text(loading ? "Reading routes…" : "No model routes reported in this range.").font(PiFont.caption).foregroundStyle(Color.piInkSecondary) }
-                ForEach(Array(aliases.prefix(showAll ? 64 : 2)), id: \.self) { alias in
-                    let destinations = rows.filter { $0.alias == alias }
-                    HStack(spacing: 0) {
-                        VStack(spacing: 5) {
-                            Image(systemName: "arrow.triangle.branch").font(.system(size: 18))
-                            Text(alias).font(PiFont.caption.weight(.medium)).lineLimit(3).textSelection(.enabled)
-                        }.padding(9).frame(width: 116).background(Color.piFill, in: RoundedRectangle(cornerRadius: 10)).help(alias)
-                        RoutingBranches(count: min(destinations.count, showAll ? 64 : 4)).frame(width: 30)
-                        VStack(spacing: 8) {
-                            ForEach(Array(destinations.prefix(showAll ? 64 : 4))) { row in
-                                HStack(spacing: 7) {
-                                    Circle().fill(Color.monitorModel(palette.index(row.distributionID))).frame(width: 7, height: 7)
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text(row.resolutionLabel).font(PiFont.caption.weight(.medium)).lineLimit(2)
-                                        Text("\(row.requests) requests · \(monitorCost(row.gateway.costUSD))").font(PiFont.micro).foregroundStyle(Color.piInkSecondary).monospacedDigit()
-                                    }
-                                    Spacer(minLength: 0)
-                                }.padding(9).frame(maxWidth: .infinity, minHeight: 54, alignment: .leading)
-                                    .background(Color.monitorModel(palette.index(row.distributionID)).opacity(0.09), in: RoundedRectangle(cornerRadius: 10))
-                                    .help("\(alias) → \(row.resolutionLabel)\n\(row.gateway.costLabel)")
-                            }
-                        }
-                    }.fixedSize(horizontal: false, vertical: true)
-                }
-                if aliases.count > 2 || aliases.contains(where: { alias in rows.filter { $0.alias == alias }.count > 4 }) {
-                    Button(showAll ? "Show fewer routes" : "Show all \(rows.count) routes") { showAll.toggle() }.buttonStyle(.piGhost)
-                }
-            }.frame(maxWidth: .infinity, alignment: .leading)
-        }.accessibilityIdentifier("analytics-model-routing")
+    private func rebuild() {
+        var items: [ShellItem] = [
+            .view(PiKit.TextLine(PiKit.Line("Model routing", font: PiKit.Font.heading, color: .labelColor))),
+            .view(PiKit.TextLine(PiKit.Line("Requested → returned by the gateway", font: PiKit.Font.micro, color: .piInkSecondary))),
+        ]
+        if rows.isEmpty {
+            items.append(.view(PiKit.TextLine(PiKit.Line(loading ? "Reading routes…" : "No model routes reported in this range.", font: PiKit.Font.caption, color: .piInkSecondary))))
+        }
+        for alias in aliases.prefix(showAll ? 64 : 2) {
+            let destinations = rows.filter { $0.alias == alias }
+            items.append(.view(RoutingGroup(alias: alias, destinations: Array(destinations.prefix(showAll ? 64 : 4)), palette: palette), .fill))
+        }
+        if aliases.count > 2 || aliases.contains(where: { alias in rows.filter { $0.alias == alias }.count > 4 }) {
+            items.append(.view(PiKit.Button(showAll ? "Show fewer routes" : "Show all \(rows.count) routes", style: .ghost) { [weak self] in
+                guard let self else { return }; self.showAll.toggle(); self.rebuild()
+            }))
+        }
+        column.items = items
+        PiKit.sizeChanged(self)
     }
-}
+    func height(forWidth width: CGFloat) -> CGFloat { PiKit.height(of: card, width: width) }
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: height(forWidth: bounds.width > 0 ? bounds.width : 350)) }
+    override func layout() { super.layout(); card.frame = bounds }
 
-private struct RoutingBranches: View {
-    let count: Int
-    var body: some View {
-        Canvas { context, size in
-            for index in 0..<count {
-                let y = (CGFloat(index) + 0.5) * size.height / CGFloat(max(1, count))
-                var path = Path(); path.move(to: CGPoint(x: 0, y: size.height / 2))
-                path.addCurve(to: CGPoint(x: size.width, y: y), control1: CGPoint(x: size.width / 2, y: size.height / 2), control2: CGPoint(x: size.width / 2, y: y))
-                context.stroke(path, with: .color(Color.piAccent.opacity(0.45)), lineWidth: 1.5)
+    /// An alias in its box, curves to each of its models.
+    final class RoutingGroup: DashView, PiKit.WidthSizing {
+        private let aliasBox: AliasBox
+        private let branches: Branches
+        private let destinations: [Destination]
+        init(alias: String, destinations: [DashboardModelSummary], palette: MonitorModelPalette) {
+            aliasBox = AliasBox(alias: alias)
+            branches = Branches(count: destinations.count)
+            self.destinations = destinations.map { Destination(alias: alias, row: $0, color: .monitorModel(palette.index($0.distributionID))) }
+            super.init(frame: .zero)
+            addSubview(aliasBox); addSubview(branches)
+            for view in self.destinations { addSubview(view) }
+        }
+        required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+        private func layoutParts(_ width: CGFloat) -> (CGFloat, [CGRect]) {
+            let inner = max(0, width - 116 - 30)
+            var y: CGFloat = 0
+            var frames: [CGRect] = []
+            for view in destinations {
+                let h = view.height(forWidth: inner)
+                frames.append(CGRect(x: 146, y: y, width: inner, height: h))
+                y += h + 8
             }
-        }.accessibilityHidden(true)
+            let right = destinations.isEmpty ? 0 : y - 8
+            return (max(right, aliasBox.height(forWidth: 116)), frames)
+        }
+        func height(forWidth width: CGFloat) -> CGFloat { layoutParts(width).0 }
+        override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: height(forWidth: bounds.width > 0 ? bounds.width : 350)) }
+        override func layout() {
+            super.layout()
+            let (height, frames) = layoutParts(bounds.width)
+            let box = aliasBox.height(forWidth: 116)
+            aliasBox.frame = CGRect(x: 0, y: PiKit.round((height - box) / 2, piScale), width: 116, height: box)
+            branches.frame = CGRect(x: 116, y: 0, width: 30, height: height)
+            // The destinations' column sits in the middle of the row when the alias is taller.
+            let right = frames.last.map { $0.maxY } ?? 0
+            let offset = PiKit.round((height - right) / 2, piScale)
+            for (view, frame) in zip(destinations, frames) { view.frame = frame.offsetBy(dx: 0, dy: offset) }
+        }
+    }
+    /// The alias: a branch glyph over its name, on a soft fill.
+    final class AliasBox: DashView, PiKit.WidthSizing {
+        private let symbol = PiKit.SymbolView(PiKit.Symbol("arrow.triangle.branch", size: 18), color: .labelColor)
+        private let name: ShellSelectableText
+        init(alias: String) {
+            name = ShellSelectableText(alias, font: .systemFont(ofSize: PiKit.Font.captionSize, weight: .medium), color: .labelColor)
+            super.init(frame: .zero)
+            wantsLayer = true
+            addSubview(symbol); addSubview(name)
+            toolTip = alias
+        }
+        required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+        override var wantsUpdateLayer: Bool { true }
+        override func updateLayer() { layer?.backgroundColor = piCGColor(.piFill); layer?.cornerRadius = 10; layer?.cornerCurve = .continuous }
+        override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); needsDisplay = true }
+        /// `Text` takes its lines' height rounded up to the point (14 for one caption line).
+        private func textHeight(_ width: CGFloat) -> CGFloat { Foundation.ceil(min(name.height(forWidth: width - 18), PiKit.Line("Ag", font: .systemFont(ofSize: PiKit.Font.captionSize, weight: .medium), color: .black).lineHeight * 3) - 0.01) }
+        func height(forWidth width: CGFloat) -> CGFloat { 9 + symbol.intrinsicContentSize.height + 5 + textHeight(width) + 9 }
+        override func layout() {
+            super.layout()
+            let size = symbol.intrinsicContentSize
+            symbol.frame = CGRect(x: PiKit.round((bounds.width - size.width) / 2, piScale), y: 9, width: size.width, height: size.height)
+            let textWidth = min(bounds.width - 18, name.intrinsicContentSize.width)
+            name.frame = CGRect(x: PiKit.round((bounds.width - textWidth) / 2, piScale), y: 9 + size.height + 5, width: textWidth, height: textHeight(bounds.width))
+        }
+    }
+    /// The curves from the alias's middle to each destination's.
+    final class Branches: DashView {
+        let count: Int
+        init(count: Int) { self.count = count; super.init(frame: .zero); setAccessibilityElement(false) }
+        required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func draw(_ dirtyRect: NSRect) {
+            NSColor.piAccent.piOpacity(0.45).setStroke()
+            for index in 0..<count {
+                let y = (CGFloat(index) + 0.5) * bounds.height / CGFloat(max(1, count))
+                let path = NSBezierPath()
+                path.move(to: CGPoint(x: 0, y: bounds.height / 2))
+                path.curve(to: CGPoint(x: bounds.width, y: y), controlPoint1: CGPoint(x: bounds.width / 2, y: bounds.height / 2), controlPoint2: CGPoint(x: bounds.width / 2, y: y))
+                path.lineWidth = 1.5
+                path.stroke()
+            }
+        }
+    }
+    /// A returned model: its dot, name and figures on its colour's wash.
+    final class Destination: DashView, PiKit.WidthSizing {
+        private let color: NSColor
+        private let name: ShellText
+        private let figures: PiKit.TextLine
+        init(alias: String, row: DashboardModelSummary, color: NSColor) {
+            self.color = color
+            name = ShellText(row.resolutionLabel, font: .systemFont(ofSize: PiKit.Font.captionSize, weight: .medium), color: .labelColor, maximumLines: 2)
+            figures = PiKit.TextLine(PiKit.Line("\(row.requests) requests · \(monitorCost(row.gateway.costUSD))", font: PiKit.Font.monospacedDigits(PiKit.Font.micro), color: .piInkSecondary))
+            super.init(frame: .zero)
+            addSubview(name); addSubview(figures)
+            toolTip = "\(alias) → \(row.resolutionLabel)\n\(row.gateway.costLabel)"
+        }
+        required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+        private func textHeight(_ width: CGFloat) -> CGFloat { name.height(forWidth: textWidth(width)) + 3 + figures.intrinsicContentSize.height }
+        private func textWidth(_ width: CGFloat) -> CGFloat { max(0, width - 18 - 7 - 7) }
+        func height(forWidth width: CGFloat) -> CGFloat { max(54, textHeight(width) + 18) }
+        override func draw(_ dirtyRect: NSRect) {
+            color.piOpacity(0.09).setFill()
+            NSBezierPath(roundedRect: bounds, xRadius: 10, yRadius: 10).fill()
+            color.setFill()
+            NSBezierPath(ovalIn: CGRect(x: 9, y: PiKit.round((bounds.height - 7) / 2, piScale), width: 7, height: 7)).fill()
+        }
+        override func layout() {
+            super.layout()
+            let width = textWidth(bounds.width)
+            let top = PiKit.round((bounds.height - textHeight(bounds.width)) / 2, piScale)
+            let nameHeight = name.height(forWidth: width)
+            name.frame = CGRect(x: 23, y: top, width: width, height: nameHeight)
+            let size = figures.intrinsicContentSize
+            figures.frame = CGRect(x: 23, y: top + nameHeight + 3, width: min(width, size.width), height: size.height)
+        }
     }
 }
 
-struct ModelCostBreakdown: View {
-    let models: [MonitorDistribution]
-    let total: GatewayTotals
-    let palette: MonitorModelPalette
-    /// The routes have not been read yet: not the same as no reported cost.
-    var loading = false
-    var body: some View {
-        PiCard(padding: PiSpacing.md) {
-            VStack(alignment: .leading, spacing: 13) {
-                HStack { Text("Cost by model").font(PiFont.heading); Spacer(); Text(monitorCost(total.costUSD)).font(PiFont.caption).monospacedDigit() }
-                ForEach(Self.shown(models)) { row in
-                    VStack(alignment: .leading, spacing: 5) {
-                        HStack {
-                            Circle().fill(Color.monitorModel(palette.index(row.id))).frame(width: 7, height: 7)
-                            Text(row.id).lineLimit(1).truncationMode(.middle)
-                            Spacer(minLength: 8)
-                            Text(monitorCost(row.cost)).monospacedDigit()
-                        }.font(PiFont.caption)
-                        GeometryReader { geometry in
-                            Capsule().fill(Color.piFillStrong)
-                            Capsule().fill(Color.monitorModel(palette.index(row.id)))
-                                .frame(width: geometry.size.width * min(1, max(0, row.costShare ?? 0)))
-                        }.frame(height: 5)
-                    }.help("\(row.id): \(gatewayUSD(row.cost)) · \(row.requests) requests")
-                }
-                if models.isEmpty { Text(loading ? "Reading routes…" : "No model costs reported.").font(PiFont.caption).foregroundStyle(Color.piInkSecondary) }
-                Text("\(total.costSamples)/\(total.requests) requests reported cost · reasoning included in total")
-                    .font(PiFont.micro).foregroundStyle(Color.piInkSecondary)
-            }.frame(maxWidth: .infinity, alignment: .leading)
-        }.accessibilityIdentifier("analytics-model-costs")
+/// The eight costliest routes, each with its share of the cost.
+@MainActor final class ModelCostBreakdown: DashView, PiKit.WidthSizing {
+    private var models: [MonitorDistribution] = []
+    private var total = GatewayTotals()
+    private var palette = MonitorModelPalette()
+    private var loading = false
+    private let column = ShellStack(.vertical, spacing: 13)
+    private lazy var card = PiKit.card(column, padding: PiSpacing.md)
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        addSubview(card)
+        setAccessibilityElement(false)
+        setAccessibilityIdentifier("analytics-model-costs")
+    }
+    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    func update(models: [MonitorDistribution], total: GatewayTotals, palette: MonitorModelPalette, loading: Bool) {
+        guard models != self.models || total != self.total || palette != self.palette || loading != self.loading || column.items.isEmpty else { return }
+        self.models = models; self.total = total; self.palette = palette; self.loading = loading
+        var items: [ShellItem] = [.view(ShellStack(.horizontal, spacing: 8, [
+            .view(PiKit.TextLine(PiKit.Line("Cost by model", font: PiKit.Font.heading, color: .labelColor))), .spacer(8),
+            .view(PiKit.TextLine(PiKit.Line(monitorCost(total.costUSD), font: PiKit.Font.monospacedDigits(PiKit.Font.caption), color: .labelColor)))]), .fill)]
+        for row in Self.shown(models) { items.append(.view(CostRow(row: row, color: .monitorModel(palette.index(row.id))), .fill)) }
+        if models.isEmpty {
+            items.append(.view(PiKit.TextLine(PiKit.Line(loading ? "Reading routes…" : "No model costs reported.", font: PiKit.Font.caption, color: .piInkSecondary))))
+        }
+        items.append(.view(PiKit.TextLine(PiKit.Line("\(total.costSamples)/\(total.requests) requests reported cost · reasoning included in total", font: PiKit.Font.micro, color: .piInkSecondary))))
+        column.items = items
+        PiKit.sizeChanged(self)
     }
     /// The eight costliest routes. The distribution arrives ranked by output
     /// tokens, which could leave an expensive, terse route off a cost card.
     static func shown(_ models: [MonitorDistribution]) -> [MonitorDistribution] { Array(MonitorDistribution.byCost(models).prefix(8)) }
+    func height(forWidth width: CGFloat) -> CGFloat { PiKit.height(of: card, width: width) }
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: height(forWidth: bounds.width > 0 ? bounds.width : 400)) }
+    override func layout() { super.layout(); card.frame = bounds }
+
+    /// A route: its dot, name and cost over a capsule of its share.
+    final class CostRow: DashView, PiKit.WidthSizing {
+        let row: MonitorDistribution
+        let color: NSColor
+        init(row: MonitorDistribution, color: NSColor) {
+            self.row = row; self.color = color
+            super.init(frame: .zero)
+            toolTip = "\(row.id): \(gatewayUSD(row.cost)) · \(row.requests) requests"
+            setAccessibilityElement(true); setAccessibilityRole(.staticText)
+            setAccessibilityLabel(row.id + ", " + monitorCost(row.cost))
+        }
+        required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+        private var name: PiKit.Line { PiKit.Line(row.id, font: PiKit.Font.caption, color: .labelColor) }
+        private var figure: PiKit.Line { PiKit.Line(monitorCost(row.cost), font: PiKit.Font.monospacedDigits(PiKit.Font.caption), color: .labelColor) }
+        func height(forWidth width: CGFloat) -> CGFloat { name.lineHeight + 5 + 5 }
+        override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: height(forWidth: 400)) }
+        override func draw(_ dirtyRect: NSRect) {
+            let scale = piScale
+            let line = name.lineHeight
+            color.setFill()
+            NSBezierPath(ovalIn: CGRect(x: 0, y: PiKit.round((line - 7) / 2, scale), width: 7, height: 7)).fill()
+            let figureSize = figure.size(scale: scale)
+            figure.draw(at: CGPoint(x: bounds.width - figureSize.width, y: 0), scale: scale)
+            let x: CGFloat = 7 + 8
+            name.draw(in: CGRect(x: x, y: 0, width: max(0, min(name.size(scale: scale).width, bounds.width - figureSize.width - 8 - x)), height: line), truncation: .middle, scale: scale)
+            let track = CGRect(x: 0, y: line + 5, width: bounds.width, height: 5)
+            NSColor.piFillStrong.setFill(); NSBezierPath(roundedRect: track, xRadius: 2.5, yRadius: 2.5).fill()
+            let fill = CGRect(x: 0, y: track.minY, width: track.width * min(1, max(0, row.costShare ?? 0)), height: 5)
+            color.setFill(); NSBezierPath(roundedRect: fill, xRadius: min(2.5, fill.width / 2), yRadius: 2.5).fill()
+        }
+    }
 }
 
-struct AnalyticsTokenBreakdown: View {
-    let gateway: GatewayTotals
-    private var accounting: TurnAccounting {
+/// The window's input and output tokens, each split into its two shares.
+@MainActor final class AnalyticsTokenBreakdown: DashView, PiKit.WidthSizing {
+    private var gateway: GatewayTotals?
+    private let column = ShellStack(.vertical, spacing: 16)
+    private lazy var card = PiKit.card(column, padding: PiSpacing.md)
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        addSubview(card)
+        setAccessibilityElement(false)
+        setAccessibilityIdentifier("analytics-token-breakdown")
+    }
+    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    static func accounting(_ gateway: GatewayTotals) -> TurnAccounting {
         var result = TurnAccounting(requests: gateway.requests)
         result.input = gateway.tokens?.input; result.inputSamples = gateway.tokens?.inputSamples ?? 0
         result.cached = gateway.cacheReadTokens; result.cachedSamples = gateway.cacheReadSamples
@@ -303,21 +490,26 @@ struct AnalyticsTokenBreakdown: View {
         result.outputSplit = GatewayTokenSplit.reported(gateway, input: false)
         return result
     }
-    var body: some View {
-        PiCard(padding: PiSpacing.md) {
-            VStack(alignment: .leading, spacing: 16) {
-                Text("Token breakdown").font(PiFont.heading)
-                TurnTokenBar(partition: TurnTokenPartition(accounting, input: true))
-                TurnTokenBar(partition: TurnTokenPartition(accounting, input: false))
-                if let pair = accounting.outputSplit, pair.samples < gateway.requests {
-                    Text("Output split: \(pair.samples)/\(gateway.requests) requests supplied both counters.").font(PiFont.micro).foregroundStyle(Color.piInkSecondary)
-                }
-                if let pair = accounting.inputSplit, pair.samples < gateway.requests {
-                    Text("Input split: \(pair.samples)/\(gateway.requests) requests supplied both counters.").font(PiFont.micro).foregroundStyle(Color.piInkSecondary)
-                }
-                Text("Gateway-reported · cached tokens are part of input; reasoning is part of output.")
-                    .font(PiFont.micro).foregroundStyle(Color.piInkSecondary)
-            }.frame(maxWidth: .infinity, alignment: .leading)
-        }.accessibilityIdentifier("analytics-token-breakdown")
+    func update(gateway: GatewayTotals) {
+        guard gateway != self.gateway else { return }
+        self.gateway = gateway
+        let accounting = Self.accounting(gateway)
+        var items: [ShellItem] = [
+            .view(PiKit.TextLine(PiKit.Line("Token breakdown", font: PiKit.Font.heading, color: .labelColor))),
+            .view(TokenShareBar(partition: TurnTokenPartition(accounting, input: true)), .fill),
+            .view(TokenShareBar(partition: TurnTokenPartition(accounting, input: false)), .fill),
+        ]
+        if let pair = accounting.outputSplit, pair.samples < gateway.requests {
+            items.append(.view(PiKit.TextLine(PiKit.Line("Output split: \(pair.samples)/\(gateway.requests) requests supplied both counters.", font: PiKit.Font.micro, color: .piInkSecondary))))
+        }
+        if let pair = accounting.inputSplit, pair.samples < gateway.requests {
+            items.append(.view(PiKit.TextLine(PiKit.Line("Input split: \(pair.samples)/\(gateway.requests) requests supplied both counters.", font: PiKit.Font.micro, color: .piInkSecondary))))
+        }
+        items.append(.view(PiKit.TextLine(PiKit.Line("Gateway-reported · cached tokens are part of input; reasoning is part of output.", font: PiKit.Font.micro, color: .piInkSecondary))))
+        column.items = items
+        PiKit.sizeChanged(self)
     }
+    func height(forWidth width: CGFloat) -> CGFloat { PiKit.height(of: card, width: width) }
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: height(forWidth: bounds.width > 0 ? bounds.width : 400)) }
+    override func layout() { super.layout(); card.frame = bounds }
 }

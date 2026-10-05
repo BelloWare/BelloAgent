@@ -142,3 +142,27 @@ extension WorkspaceModel {
         }
     }
 }
+
+/// The popover "Raise limit…" opens over its button: the chat's limit editor.
+/// One app-owned popover at a time, like the stats pills' and the skills'.
+@MainActor final class CostLimitPopover {
+    static let shared = CostLimitPopover()
+    let presenter = PiPopoverPresenter()
+    /// The chat whose limit the open popover edits (a test seam).
+    private(set) var sessionID: String?
+    static let width: CGFloat = 380
+    func toggle(model: WorkspaceModel, footer: SessionMetrics, sessionID: String, anchor: NSView) {
+        if presenter.isShown, self.sessionID == sessionID { close(); return }
+        presenter.close()
+        self.sessionID = sessionID
+        presenter.toggle(from: anchor, width: Self.width, maximumHeight: 460, animates: !PiKit.Motion.reduced) { [weak model] in
+            let editor = CostLimitLiveEditor(footer: footer, title: "Raise this chat's limit") { limit in
+                try await model?.setCostLimit(limit, for: sessionID)
+                // Chosen: the popover has done its job.
+                CostLimitPopover.shared.close()
+            }
+            return PaddedView(editor, padding: NSEdgeInsets(top: PiSpacing.lg, left: PiSpacing.lg, bottom: PiSpacing.lg, right: PiSpacing.lg))
+        }
+    }
+    func close() { presenter.close(); sessionID = nil }
+}

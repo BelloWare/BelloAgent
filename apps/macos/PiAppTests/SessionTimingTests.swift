@@ -911,8 +911,11 @@ final class SessionTimingTests: XCTestCase {
         XCTAssertEqual(panel.snapshot, usage)
         let window = NSWindow(contentRect: NSRect(x: 120, y: 120, width: MenuBarPanelLayout.width, height: 720), styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: .aqua)
-        window.contentView = NSHostingView(rootView: MenuBarUsageView(controller: panel, chartMetric: .rate).padding(18)
-            .frame(width: MenuBarPanelLayout.width, height: 720, alignment: .topLeading).background(Color.piSurface))
+        let surface = FillView(.piSurface)
+        let usageView = MenuBarUsageView(controller: panel, chartMetric: .rate)
+        surface.addSubview(usageView)
+        usageView.frame = CGRect(x: 18, y: 18, width: MenuBarPanelLayout.width - 36, height: usageView.height(forWidth: MenuBarPanelLayout.width - 36))
+        window.contentView = surface
         window.orderFront(nil)
         defer { window.orderOut(nil); window.contentView = nil; window.close() }
         let rendered = try await Self.recognizedText(in: window, filename: "menu-usage-rate.jpg")
@@ -927,14 +930,16 @@ final class SessionTimingTests: XCTestCase {
                         SessionTimingHistory(samples: [sample("zero", output: 0)]),
                         SessionTimingHistory(samples: [sample("missing", output: nil)])]
         for reduced in [false, true] {
-            let hosted = NSHostingView(rootView: AnyView(SidebarReportedRate(history: variants[0], sessionTitle: "Fixture").piStableLayout(reduceMotion: reduced)))
+            PiKit.Motion.reducedOverride = reduced
+            defer { PiKit.Motion.reducedOverride = nil }
+            let slot = SidebarRateView()
             var sizes: [NSSize] = []
             for history in variants {
-                hosted.rootView = AnyView(SidebarReportedRate(history: history, sessionTitle: "Fixture").piStableLayout(reduceMotion: reduced))
-                hosted.layoutSubtreeIfNeeded()
-                sizes.append(hosted.fittingSize)
+                slot.presentation = SessionRatePresentation(history: history)
+                slot.layoutSubtreeIfNeeded()
+                sizes.append(slot.intrinsicContentSize)
             }
-            XCTAssertGreaterThan(sizes[0].width, 0); XCTAssertGreaterThan(sizes[0].height, 0)
+            XCTAssertEqual(sizes[0].width, 108); XCTAssertGreaterThan(sizes[0].height, 0)
             for size in sizes.dropFirst() {
                 XCTAssertEqual(size.width, sizes[0].width, accuracy: 0.5, "A completed or missing usage sample must not move neighboring metrics")
                 XCTAssertEqual(size.height, sizes[0].height, accuracy: 0.5)

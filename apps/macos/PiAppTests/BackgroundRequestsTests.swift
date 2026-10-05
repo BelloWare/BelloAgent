@@ -215,3 +215,108 @@ final class BackgroundRequestsTests: XCTestCase {
         await model.store?.close()
     }
 }
+
+extension BackgroundRequestsTests {
+    @MainActor private func all<T: NSView>(_ type: T.Type, in view: NSView) -> [T] {
+        ((view as? T).map { [$0] } ?? []) + view.subviews.flatMap { all(type, in: $0) }
+    }
+
+    /// The AppKit page: a row per request, kept (the same view) while its
+    /// request changes; a click selects it and the details sit beside the list,
+    /// or cover it on a narrow page, where the list takes no clicks; the close
+    /// button and the filter tabs work; a disabled page disables its controls.
+    @MainActor func testThePageShowsRowsAndTheSelectedRequestsDetails() async throws {
+        let root = try scratch()
+        let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        defer { model.backgroundRequests.suspend(); model.shutdown() }
+        let base = Date().addingTimeInterval(-600)
+        model.workspaces = [.init(id: "project", path: root.appendingPathComponent("pi-app").path, trusted: true)]
+        model.profiles = [profile()]
+        model.chats = [
+            ChatRecord(id: "source", workspaceID: "project", title: "Fix the login loop", path: nil, profileID: "profile"),
+            request("title-1", "session-title", started: base, outcome: "completed", result: "Fix the login loop"),
+            request("hook-1", "webhook", started: base.addingTimeInterval(60), outcome: "failed", notice: "The mini model did not answer."),
+            request("hook-2", "webhook", started: base.addingTimeInterval(120)),
+        ]
+        model.backgroundRequestsRunning = ["hook-2"]
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 700), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let page = BackgroundRequestsPage(model: model)
+        window.contentView = page; window.orderFront(nil)
+        defer { window.contentView = nil; window.close() }
+        func settle() async throws { for _ in 0..<5 { try await Task.sleep(for: .milliseconds(15)); page.layoutSubtreeIfNeeded() } }
+        try await settle()
+        var rows = all(PiKit.SelectableRow.self, in: page)
+        XCTAssertEqual(rows.map { $0.accessibilityIdentifier() }, ["backgroundRequest-hook-2", "backgroundRequest-hook-1", "backgroundRequest-title-1"], "Newest first")
+        let running = rows[0]
+
+        // A request ends: its row is the same view, now reading the outcome.
+        await model.finishBackgroundRequest("hook-2", outcome: "completed", notice: nil)
+        model.backgroundRequestsRunning = []
+        model.backgroundRequests.recordsChanged()
+        try await settle()
+        rows = all(PiKit.SelectableRow.self, in: page)
+        XCTAssertTrue(rows[0] === running, "The row is kept")
+        XCTAssertTrue(all(PiKit.Badge.self, in: rows[0]).contains { $0.text == "Done" }, "It reads its new status")
+
+        // Selecting a row shows its details beside the list.
+        rows[1].performClick(nil)
+        try await settle()
+        XCTAssertEqual(model.backgroundRequests.selectedID, "hook-1")
+        let pane = try XCTUnwrap(all(BackgroundRequestDetailPane.self, in: page).first)
+        XCTAssertEqual(pane.frame.width, 440, "Wide pages give the details 440 points")
+        XCTAssertTrue(all(PiKit.Note.self, in: pane).contains { $0.text == "The mini model did not answer." }, "The failure's reason")
+        XCTAssertNotNil(page.hitTest(page.convert(NSPoint(x: 100, y: 200), to: page.superview)), "The list still takes clicks")
+
+        // Narrow, the details cover the list, which takes no clicks.
+        window.setContentSize(NSSize(width: 800, height: 700))
+        try await settle()
+        XCTAssertEqual(pane.frame.width, 800)
+        let point = page.convert(NSPoint(x: 100, y: 200), to: page.superview)
+        XCTAssertFalse(page.hitTest(point).map { $0.isDescendant(of: all(LazyStackView.self, in: page)[0]) } ?? false, "The covered list takes no clicks")
+
+        // Close: back to the list.
+        try XCTUnwrap(all(PiKit.IconButton.self, in: pane).first).performClick(nil)
+        try await settle()
+        XCTAssertNil(model.backgroundRequests.selectedID)
+        XCTAssertTrue(all(BackgroundRequestDetailPane.self, in: page).isEmpty)
+
+        // The tabs filter the list.
+        model.backgroundRequests.filter = .titles
+        try await settle()
+        XCTAssertEqual(all(PiKit.SelectableRow.self, in: page).map { $0.accessibilityIdentifier() }, ["backgroundRequest-title-1"])
+
+        // Disabled with the window: every control, and back again.
+        let before = Dictionary(uniqueKeysWithValues: PiKit.controls(in: page).map { (ObjectIdentifier($0), $0.isEnabled) })
+        page.inheritedEnabled = false
+        XCTAssertTrue(PiKit.controls(in: page).allSatisfy { !$0.isEnabled })
+        page.inheritedEnabled = true
+        XCTAssertTrue(PiKit.controls(in: page).allSatisfy { $0.isEnabled == before[ObjectIdentifier($0)] })
+        await model.store?.close()
+    }
+}
+
+extension BackgroundRequestsTests {
+    /// The journal's read landing changes only the exchange: the result the
+    /// reader may be selecting in, and the action buttons, are the same views.
+    @MainActor func testTheDetailsKeepTheirPartsWhenTheJournalArrives() throws {
+        var record = request("r", "title-suggestions", started: Date().addingTimeInterval(-60), outcome: "completed", result: "Login loop\nAuth bug")
+        record.path = "/nonexistent"
+        let row = try XCTUnwrap(BackgroundRequestRow.rows(records: [record], lookup: { _ in nil }, workspaces: [], profiles: [profile()], running: [], totals: [:]).first)
+        let pane = BackgroundRequestDetailPane(row: row, detail: nil, loading: true, openSource: { _ in }, inspect: { _ in }, close: {})
+        pane.frame = CGRect(x: 0, y: 0, width: 440, height: 700); pane.layoutSubtreeIfNeeded()
+        func find(_ id: String) -> NSView? {
+            func walk(_ view: NSView) -> NSView? { view.accessibilityIdentifier() == id ? view : view.subviews.lazy.compactMap(walk).first }
+            return walk(pane)
+        }
+        let result = try XCTUnwrap(find("backgroundRequestResult"))
+        let open = try XCTUnwrap(find("backgroundRequestOpenSource"))
+        XCTAssertNil(find("backgroundRequestPrompt"))
+        pane.update(row: row, detail: BackgroundRequestDetail(prompt: "Suggest titles", reply: "Login loop"), loading: false)
+        pane.layoutSubtreeIfNeeded()
+        XCTAssertTrue(find("backgroundRequestResult") === result, "The result is the same view")
+        XCTAssertTrue(find("backgroundRequestOpenSource") === open, "So are the actions")
+        XCTAssertNotNil(find("backgroundRequestPrompt"), "The prompt arrived")
+        XCTAssertNotNil(find("backgroundRequestReply"))
+    }
+}

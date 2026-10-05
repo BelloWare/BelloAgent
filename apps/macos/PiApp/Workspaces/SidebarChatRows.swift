@@ -149,7 +149,7 @@ struct ChatRowStats: Equatable {
 }
 
 /// The sidebar's rate slot: the latest completed request's output rate, as
-/// plain text in one stable 108-point slot (the Dashboard's `SidebarReportedRate`).
+/// plain text in one stable 108-point slot.
 @MainActor final class SidebarRateView: NSView {
     static let width: CGFloat = 108
     private let line = PiKit.TextLine(PiKit.Line("", font: SidebarRateView.font, color: .piInkTertiary))

@@ -275,7 +275,8 @@ final class LivePopupTests: LivePopupTestCase {
         let view = MenuBarMetricsView(load: { _,_,_ in throw CaptureFailure.unavailable }, live: model.liveActivity, monitorController: monitor, openApp: {}, openReport: {})
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 576), styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        let hosted = NSHostingView(rootView: view.environment(\.menuBarHeight, 576))
+        view.panelHeight = 576
+        let hosted = view
         window.contentView = hosted; window.center()
         defer { monitor.setVisible(false); window.contentView = nil; window.close() }
         // Let the native hosting view actually mount before measuring warm
@@ -381,7 +382,7 @@ final class LiveMonitorDesignTests: LivePopupTestCase, SerialTestLane {
         let view = MenuBarMetricsView(load: { _,_,_ in throw CaptureFailure.unavailable }, projects: { [MonitorProject(id: "project", title: "Bello Agent")] }, live: live, monitorController: monitor, openApp: {}, openReport: {})
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 720), styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        let hosted = NSHostingView(rootView: view.environment(\.colorScheme, .light))
+        let hosted = view
         window.contentView = hosted; window.center(); window.orderFront(nil)
         defer { monitor.setVisible(false); window.contentView = nil; window.close() }
         try await Task.sleep(for: .milliseconds(150))
@@ -404,7 +405,6 @@ final class LiveMonitorDesignTests: LivePopupTestCase, SerialTestLane {
         }
         for (appearance, name) in [(NSAppearance.Name.aqua, "bello-monitor-light"), (.darkAqua, "bello-monitor-dark")] {
             window.appearance = NSAppearance(named: appearance)
-            hosted.rootView = view.environment(\.colorScheme, appearance == .darkAqua ? .dark : .light)
             try await Task.sleep(for: .milliseconds(150))
             hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
             XCTAssertEqual(hosted.bounds.width, 480, accuracy: 0.5)

@@ -64,7 +64,7 @@ final class SidebarMetricsLayoutTests: XCTestCase {
         var body: some View {
             HStack(spacing: 6) {
                 stateAndCost
-                if let history = stats.timing { SidebarReportedRate(history: history, sessionTitle: title) }
+                if let history = stats.timing { OracleRate(history: history) }
                 if tokens, !stats.busy, let value = stats.tokensLabel { Text("· " + value) }
                 if recency, let value = stats.recencyLabel { Text("· " + value) }
             }
@@ -78,6 +78,19 @@ final class SidebarMetricsLayoutTests: XCTestCase {
                 Text(PiSessionState.label(stats.state)).foregroundStyle(stats.state == "paused" ? Color.piInfo : Color.piDanger).fontWeight(.medium)
             }
             if let cost = stats.costLabel { Text(cost) }
+        }
+    }
+
+    /// The rate slot as SwiftUI drew it (the app's `SidebarRateView` now):
+    /// the latest completed rate in one stable 108-point slot.
+    private struct OracleRate: View {
+        let history: SessionTimingHistory
+        var body: some View {
+            let presentation = SessionRatePresentation(history: history)
+            Text(presentation.label ?? "")
+                .font(PiFont.caption.monospacedDigit()).lineLimit(1)
+                .frame(width: 108, alignment: .leading)
+                .foregroundStyle(presentation.latest == nil ? Color.piInkTertiary : Color.piInkSecondary)
         }
     }
 

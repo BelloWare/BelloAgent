@@ -88,7 +88,7 @@ struct InspectorOverviewPage: View {
     private func costLimit(_ footer: SessionMetrics, _ workspace: WorkspaceModel) -> some View {
         let id = inspector.scope.sessionID
         return PiCard(padding: PiSpacing.lg) {
-            CostLimitLiveEditor(footer: footer, choose: { [weak workspace] limit in try await workspace?.setCostLimit(limit, for: id) })
+            CostLimitEditorHost(footer: footer, choose: { [weak workspace] limit in try await workspace?.setCostLimit(limit, for: id) })
         }
         .accessibilityIdentifier("inspector-cost-limit")
     }
@@ -230,5 +230,17 @@ private struct InspectorModelRow: View {
             Text(value).font(PiFont.caption.monospacedDigit()).foregroundStyle(Color.piInk).lineLimit(1)
             Text(caption).font(PiFont.micro).foregroundStyle(Color.piInkTertiary).lineLimit(1)
         }.frame(width: 118, alignment: .leading)
+    }
+}
+
+// TEMPORARY (until the Inspector is AppKit): the AppKit limit editor in this SwiftUI page.
+private struct CostLimitEditorHost: NSViewRepresentable {
+    let footer: SessionMetrics
+    let choose: @MainActor (CostLimit?) async throws -> Void
+    func makeNSView(context: Context) -> CostLimitLiveEditor { CostLimitLiveEditor(footer: footer, choose: choose) }
+    func updateNSView(_ view: CostLimitLiveEditor, context: Context) { view.footer = footer }
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: CostLimitLiveEditor, context: Context) -> CGSize? {
+        let width = proposal.width ?? 348
+        return CGSize(width: width, height: nsView.height(forWidth: width))
     }
 }

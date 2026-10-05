@@ -28,7 +28,10 @@
 ## Wave 2 (after the components land)
 - [ ] **Workspace shell** (`Workspaces/`, `Composer/`, `Tabs/`, `Terminal/`): sidebar, conversation pane, footer, composer chrome, queue panel, tabs, terminal panel, sheets.
 - [ ] **Inspector and dashboard** (`Inspector/`, `Dashboard/`).
-- [ ] **Settings, onboarding, Git, files** (`Application/` settings and onboarding views, `Git/`, `Files/`, and the two SwiftUI files in `packages/bello-views`).
+  - Dashboard, live monitor, menu-bar panel, chart engine and cost-limit controls integrated and validated on 2026-10-05. Inspector and session-statistics views remain.
+- [x] **Settings, onboarding, Git, files** (`Application/` settings and onboarding views, `Git/`, `Files/`, and the two SwiftUI files in `packages/bello-views`).
+
+Integration checks: [AppKit integration record](docs/validation/AppKit-integration-0.1.120-2026-10-05.md). These are focused checks; the release gate, full gallery and Release soak are still pending.
 
 ## Wave 3
 - [ ] **App shell**: the SwiftUI `App` entry point becomes an `NSApplicationDelegate` with window controllers; menus, Settings window, scenes. No file imports SwiftUI; a test fails if one does.

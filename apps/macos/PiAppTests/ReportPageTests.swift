@@ -2,7 +2,6 @@ import XCTest
 import Combine
 import SwiftUI
 import AppKit
-import Charts
 @testable import PiApp
 
 /// Navigation to the report page and the controller state behind it.
@@ -448,7 +447,7 @@ extension ReportPageTests {
         report.attach(model)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 900), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        let hosted = NSHostingView(rootView: ReportPage(model: model, report: report))
+        let hosted = ReportPage(model: model, report: report)
         window.contentView = hosted; window.orderFront(nil)
         defer { report.suspend(); window.contentView = nil; window.close() }
         func settle(_ done: () -> Bool) async throws {
@@ -543,7 +542,7 @@ extension ReportPageTests {
         let report = ReportController(accounting: { _ in }); report.attach(model)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 900), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        let hosted = NSHostingView(rootView: ReportPage(model: model, report: report))
+        let hosted = ReportPage(model: model, report: report)
         window.contentView = hosted; window.orderFront(nil)
         defer { report.suspend(); window.contentView = nil; window.close() }
         for _ in 0..<300 where report.snapshot == nil || surfaces(hosted).isEmpty { try await Task.sleep(for: .milliseconds(10)); hosted.layoutSubtreeIfNeeded() }
@@ -561,36 +560,40 @@ extension ReportPageTests {
     @MainActor func testDraggingARangeRedrawsOnlyTheSelectionOverlay() async throws {
         let filter = DashboardFilter(from: Date(timeIntervalSince1970: 1_800_000_000), until: Date(timeIntervalSince1970: 1_800_003_600))
         var commits: [DashboardBrush?] = []
-        BrushHostRenders.count = 0
-        let host = BrushHost(filter: filter, commit: { commits.append($0) }, store: BrushHostStore())
+        let chart = PiChartView()
+        var spec = PiChart.Spec()
+        spec.x = PiChart.Scale(kind: .date, domain: .fixed(filter.from.timeIntervalSinceReferenceDate...filter.until.timeIntervalSinceReferenceDate))
+        spec.marks = [.rule(x: filter.from.timeIntervalSinceReferenceDate, y: nil, color: .piAccent, width: 2, dash: [])]
+        chart.spec = spec
+        let brush = ReportBrush()
+        brush.chart = chart; brush.filter = filter; brush.commit = { commits.append($0) }
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 240), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        let hosted = NSHostingView(rootView: host)
+        let hosted = NSView(frame: NSRect(x: 0, y: 0, width: 440, height: 240))
+        for view in [chart, brush] { view.frame = NSRect(x: 20, y: 20, width: 400, height: 200); hosted.addSubview(view) }
         window.contentView = hosted; window.makeKeyAndOrderFront(nil)
         defer { window.contentView = nil; window.close() }
-        for _ in 0..<10 { try await Task.sleep(for: .milliseconds(20)); hosted.layoutSubtreeIfNeeded() }
-        let rendered = BrushHostRenders.count
-        // Straight to the hosting view: a test app is rarely the active one,
-        // and an inactive window takes a first click as activation only.
+        for _ in 0..<10 { try await Task.sleep(for: .milliseconds(20)); hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded() }
+        let drawn = chart.markDraws
         func send(_ type: NSEvent.EventType, x: Double) throws {
             let event = try XCTUnwrap(NSEvent.mouseEvent(with: type, location: NSPoint(x: x, y: 120), modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1))
             switch type {
-            case .leftMouseDown: hosted.mouseDown(with: event)
-            case .leftMouseDragged: hosted.mouseDragged(with: event)
-            default: hosted.mouseUp(with: event)
+            case .leftMouseDown: brush.mouseDown(with: event)
+            case .leftMouseDragged: brush.mouseDragged(with: event)
+            default: brush.mouseUp(with: event)
             }
         }
         try send(.leftMouseDown, x: 110)
         for step in 1...20 {
             try send(.leftMouseDragged, x: 110 + Double(step) * 10)
-            try await Task.sleep(for: .milliseconds(5)); hosted.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(5)); hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
         }
         try send(.leftMouseUp, x: 310)
-        for _ in 0..<10 { try await Task.sleep(for: .milliseconds(20)); hosted.layoutSubtreeIfNeeded() }
+        for _ in 0..<10 { try await Task.sleep(for: .milliseconds(20)); hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded() }
         XCTAssertEqual(commits.count, 1, "The drag committed one range")
         XCTAssertNotNil(commits.first ?? nil)
-        print("PERF range drag of 20 pointer moves re-rendered the chart's owner \(BrushHostRenders.count - rendered) times")
-        XCTAssertLessThanOrEqual(BrushHostRenders.count - rendered, 1, "The owner of the chart does not re-render per pointer move")
+        print("PERF range drag of 20 pointer moves drew the chart's marks \(chart.markDraws - drawn) times")
+        XCTAssertEqual(chart.markDraws, drawn, "A drag draws the selection's overlay alone, never the chart's marks")
     }
 
     /// A short preset's retained averages slid out of view as the live clock
@@ -607,10 +610,12 @@ extension ReportPageTests {
         let live = LiveActivityStore(now: { seconds }, wall: { until.addingTimeInterval(seconds) }, observeSleep: false)
         defer { live.shutdown() }
         let panel = ReportThroughputPanel(live: live, snapshot: snapshot, window: DashboardWindow(from: from, until: until, preset: .fifteenMinutes),
-                                          palette: MonitorModelPalette(), controls: { AnyView(EmptyView()) }, registerModels: { _ in })
+                                          palette: MonitorModelPalette(), controls: NSView())
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 420), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        let hosted = NSHostingView(rootView: panel)
+        let hosted = NSView(frame: NSRect(x: 0, y: 0, width: 700, height: 420))
+        panel.frame = NSRect(x: 0, y: 0, width: 700, height: panel.height(forWidth: 700))
+        hosted.addSubview(panel)
         window.contentView = hosted; window.orderFront(nil)
         defer { window.contentView = nil; window.close() }
         // A full span after the retained window was read, with no refresh.
@@ -659,31 +664,6 @@ extension ReportPageTests {
         await probe.release(); await running.value
         for _ in 0..<200 where report.brush != range || report.loading { try await Task.sleep(for: .milliseconds(10)) }
         XCTAssertEqual(report.brush, range, "The range dragged during the refresh is applied after it")
-    }
-}
-
-@MainActor private enum BrushHostRenders { static var count = 0 }
-
-/// Stands in for the report controller: the chart's owner observes it, as
-/// the report page observes its controller. (Before the fix the drag preview
-/// was one of its published values, bound into the overlay: 20 pointer moves
-/// re-rendered the owner 21 times.)
-@MainActor private final class BrushHostStore: ObservableObject {
-    @Published var selection: DashboardBrush?
-}
-
-/// A chart with the report's drag-to-select overlay, owned by a view that
-/// counts its own renders.
-private struct BrushHost: View {
-    let filter: DashboardFilter
-    let commit: (DashboardBrush?) -> Void
-    @ObservedObject var store: BrushHostStore
-    var body: some View {
-        let _ = { BrushHostRenders.count += 1 }()
-        Chart { RuleMark(x: .value("Start", filter.from)) }
-            .chartXScale(domain: filter.from...filter.until)
-            .dashboardBrush(filter: filter, committed: store.selection, commit: commit)
-            .frame(width: 400, height: 200).padding(20)
     }
 }
 
@@ -824,7 +804,7 @@ extension ReportPageTests {
         window.isReleasedWhenClosed = false
         defer { window.contentView = nil; window.close(); model.report.suspend() }
         func show() async {
-            window.contentView = NSHostingView(rootView: ReportPage(model: model))
+            window.contentView = ReportPage(model: model)
             window.makeKeyAndOrderFront(nil)
             for _ in 0..<6 { window.contentView?.layoutSubtreeIfNeeded(); window.displayIfNeeded(); try? await Task.sleep(for: .milliseconds(10)) }
         }
@@ -835,5 +815,120 @@ extension ReportPageTests {
         model.openReport(); await show()
         XCTAssertTrue(model.report.requestListOpen, "The section is still open")
         XCTAssertEqual(model.report.expandedSessions, ["chat-1"])
+    }
+
+    /// Any change of grouping opens the request list, whoever makes it
+    /// (`.onChange(of: report.grouping)`), not only a click on the tabs.
+    @MainActor func testChangingTheGroupingOpensTheRequestList() async throws {
+        let (model, _) = try makeModel()
+        try await model.reloadConfiguration()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.contentView = nil; window.close(); model.report.suspend() }
+        model.openReport()
+        window.contentView = ReportPage(model: model)
+        window.makeKeyAndOrderFront(nil)
+        XCTAssertFalse(model.report.requestListOpen)
+        model.report.grouping = .models
+        let deadline = ProcessInfo.processInfo.systemUptime + 5
+        while !model.report.requestListOpen, ProcessInfo.processInfo.systemUptime < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertTrue(model.report.requestListOpen, "A grouping set by the controller opens the list")
+        model.report.requestListOpen = false
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertFalse(model.report.requestListOpen, "Closing it by hand without a grouping change keeps it closed")
+    }
+}
+
+extension ReportPageTests {
+    @MainActor private func all<T: NSView>(_ type: T.Type, in view: NSView) -> [T] {
+        ((view as? T).map { [$0] } ?? []) + view.subviews.flatMap { all(type, in: $0) }
+    }
+    @MainActor private func openPage(width: CGFloat = 1200) async throws -> (WorkspaceModel, ReportController, ReportPage, NSWindow) {
+        let (model, _) = try makeModel()
+        try await model.reloadConfiguration(); try await record(model)
+        let report = ReportController(accounting: { _ in }); report.attach(model)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: 900), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let page = ReportPage(model: model, report: report)
+        window.contentView = page; window.orderFront(nil)
+        for _ in 0..<300 where report.snapshot == nil { try await Task.sleep(for: .milliseconds(10)); page.layoutSubtreeIfNeeded() }
+        try await Task.sleep(for: .milliseconds(50)); page.layoutSubtreeIfNeeded()
+        return (model, report, page, window)
+    }
+
+    /// Typing a session id changed the report's filters, which rebuilt the
+    /// whole filter card and took the field (and its caret) away after each
+    /// key. The controls are made once and updated in place.
+    @MainActor func testTypingASessionIDKeepsTheFieldAndItsEditor() async throws {
+        let (_, report, page, window) = try await openPage()
+        defer { report.suspend(); window.contentView = nil; window.close() }
+        report.advancedOpen = true
+        report.chooseSession(ReportController.manualSession)
+        try await Task.sleep(for: .milliseconds(50)); page.layoutSubtreeIfNeeded()
+        let field = try XCTUnwrap(all(PiKit.TextField.self, in: page).first { $0.field.placeholderString == "Session id" })
+        window.makeFirstResponder(field.field)
+        let editor = field.field.currentEditor()
+        XCTAssertNotNil(editor)
+        for typed in ["a", "ab", "abc"] {
+            field.text = typed; field.onChange?(typed)
+            try await Task.sleep(for: .milliseconds(30)); page.layoutSubtreeIfNeeded()
+            XCTAssertTrue(all(PiKit.TextField.self, in: page).contains { $0 === field }, "The field stays after typing \(typed)")
+            XCTAssertTrue(field.field.currentEditor() === editor, "It keeps its editor")
+        }
+        XCTAssertEqual(report.preferences.sessionID, "abc")
+    }
+
+    /// A request row shows the same thing between refreshes: the same view
+    /// (its focus and revealed model stay); new figures for the same request
+    /// make it again.
+    @MainActor func testRequestRowsAreKeptUntilWhatTheyShowChanges() async throws {
+        let (_, report, page, window) = try await openPage()
+        defer { report.suspend(); window.contentView = nil; window.close() }
+        report.requestListOpen = true
+        try await Task.sleep(for: .milliseconds(50)); page.layoutSubtreeIfNeeded()
+        let tabs = try XCTUnwrap(all(PiKit.Tabs<ReportGrouping>.self, in: page).first)
+        let first = all(ReportRequestRow.self, in: page)
+        XCTAssertFalse(first.isEmpty)
+        // A refresh reads the same requests again: the list is laid out again
+        // (loading on and off), its rows are not made again.
+        await report.refresh()
+        try await Task.sleep(for: .milliseconds(50)); page.layoutSubtreeIfNeeded()
+        XCTAssertTrue(all(PiKit.Tabs<ReportGrouping>.self, in: page).first === tabs, "The tabs stay")
+        let second = all(ReportRequestRow.self, in: page)
+        XCTAssertEqual(second.count, first.count)
+        XCTAssertTrue(zip(first, second).allSatisfy { $0 === $1 }, "Unchanged rows are the same views")
+        report.detailsOpen = true
+        try await Task.sleep(for: .milliseconds(50)); page.layoutSubtreeIfNeeded()
+        XCTAssertFalse(all(ReportRequestRow.self, in: page).contains { row in first.contains { $0 === row } }, "Rows that show more are made again")
+    }
+
+    /// Below 1,050 points every overview card takes the full width, one under another.
+    @MainActor func testNarrowOverviewStacksTheCostAndTokenCards() async throws {
+        let (_, report, page, window) = try await openPage(width: 900)
+        defer { report.suspend(); window.contentView = nil; window.close() }
+        let costs = try XCTUnwrap(all(ModelCostBreakdown.self, in: page).first)
+        let tokens = try XCTUnwrap(all(AnalyticsTokenBreakdown.self, in: page).first)
+        XCTAssertEqual(costs.frame.width, tokens.frame.width)
+        XCTAssertEqual(costs.frame.minX, tokens.frame.minX)
+        XCTAssertEqual(tokens.frame.minY, costs.frame.maxY + PiSpacing.lg, accuracy: 0.5)
+    }
+
+    /// `.disabled` over the whole report: every control under it is disabled
+    /// and nothing takes the pointer; enabling it again gives each control
+    /// back its own state.
+    @MainActor func testADisabledReportDisablesEveryControlAndRestoresTheirOwnState() async throws {
+        let (_, report, page, window) = try await openPage()
+        defer { report.suspend(); window.contentView = nil; window.close() }
+        report.advancedOpen = true; report.requestListOpen = true
+        try await Task.sleep(for: .milliseconds(50)); page.layoutSubtreeIfNeeded()
+        let before = Dictionary(uniqueKeysWithValues: PiKit.controls(in: page).map { (ObjectIdentifier($0), $0.isEnabled) })
+        XCTAssertTrue(before.values.contains(true))
+        page.inheritedEnabled = false
+        XCTAssertTrue(PiKit.controls(in: page).allSatisfy { !$0.isEnabled }, "Every control is disabled")
+        XCTAssertNil(page.hitTest(NSPoint(x: 600, y: 400)))
+        page.inheritedEnabled = true
+        for control in PiKit.controls(in: page) where before[ObjectIdentifier(control)] != nil {
+            XCTAssertEqual(control.isEnabled, before[ObjectIdentifier(control)], "\(type(of: control)) has its own state back")
+        }
     }
 }
