@@ -323,7 +323,7 @@ import AppKit
         guard work.isActive, inheritedEnabled, !policyBusy else { return }; policyBusy = true
         let model = model, source = source
         let workspace = originID.flatMap(model.record)?.workspaceID ?? model.selectedWorkspaceID
-        work.run({
+        work.run({ () async throws -> [String: WireValue]? in
             try await model.setSkillEnabledInBelloAgent(skill, enabled: enabled); try Task.checkCancellation()
             if let workspace { return (try? await source.options(workspace)) ?? [:] }
             return nil as [String: WireValue]?
@@ -547,7 +547,7 @@ import AppKit
     private func saveConfiguration() {
         guard let project = configurationProject else { return }
         let draft = configuration, revision = configurationRevision, model = model, source = source
-        confirmThen("Trust these MCP servers?", "Saving this configuration can authorize programs and authenticated endpoints with your account's permissions. Review the JSON first. Only explicit server credentials are sent to that server.", action: "Save in Vault and Connect", operation: {
+        confirmThen("Trust these MCP servers?", "Saving this configuration can authorize programs and authenticated endpoints with your account's permissions. Review the JSON first. Only explicit server credentials are sent to that server.", action: "Save in Vault and Connect", operation: { () async throws -> [String: WireValue]? in
             try await model.saveMCPConfiguration(Self.parse(draft), expectedRevision: revision, workspaceID: project)
             try Task.checkCancellation()
             if model.selectedWorkspaceID == project { return try await source.request("mcp.list", [:], nil) }
