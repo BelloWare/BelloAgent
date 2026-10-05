@@ -155,6 +155,9 @@ import AppKit
         let design = font.isFixedPitch ? "m" : font.fontName.lowercased().contains("newyork") ? "s" : ""
         return swiftUILines[String(format: "%.1f/%.2g", font.pointSize, weight) + design]
     }
+    /// How tall SwiftUI makes an empty `Text`, whatever its font (measured
+    /// from 9 to 17 points in a window).
+    static let emptyTextHeight: CGFloat = 14
     /// The line box SwiftUI gives this font.
     static func lineHeight(_ font: NSFont) -> CGFloat {
         measured(font)?.height ?? ceil(font.ascender - font.descender + font.leading)

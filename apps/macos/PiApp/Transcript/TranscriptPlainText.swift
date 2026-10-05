@@ -227,9 +227,12 @@ struct TranscriptPlainTextFace: Equatable, Sendable {
             // place, as SwiftUI drew it: measured against SwiftUI in a real
             // window (the screenshot gallery) and through cacheDisplay (the
             // parity tests). A view between pixels is composited onto the
-            // grid by the window server, so it must not be left there. The
-            // rows it sits in stand on whole points, so the superview's grid
-            // is the window's.
+            // grid by the window server, so it must not be left there. A
+            // settled row stands on whole points, so there the superview's
+            // grid is the window's. A row off the window's grid (centred in
+            // an odd width at 1x, or moving in a disclosure) was drawn
+            // between pixels by SwiftUI too, and nothing native matches that
+            // pixel for pixel (measured through the window server).
             return super.setFrameOrigin(NSPoint(x: (newOrigin.x * scale).rounded(.down) / scale, y: (newOrigin.y * scale).rounded(.down) / scale))
         }
         super.setFrameOrigin(NSPoint(x: (newOrigin.x * scale).rounded() / scale, y: (newOrigin.y * scale).rounded() / scale))

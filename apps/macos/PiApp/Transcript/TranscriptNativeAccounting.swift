@@ -100,7 +100,9 @@ import AppKit
     }
     /// A text piece: its one line when it fits, else wrapped in what it is offered.
     private func piece(_ label: TranscriptLabel, wrapped: @escaping () -> TranscriptPlainTextView) -> TranscriptLinePiece {
-        let ideal = label.intrinsicSize, single = singleLine
+        // An empty `Text` (the usage of a request that reported only its
+        // model) is no line of its font: SwiftUI gives it its own height.
+        let ideal = label.text.isEmpty ? CGSize(width: 0, height: TranscriptLabel.emptyTextHeight) : label.intrinsicSize, single = singleLine
         return TranscriptLinePiece(minWidth: 0, maxWidth: ideal.width, size: { offered in
             let width = min(ideal.width, max(0, offered))
             guard width < ideal.width else { return ideal }

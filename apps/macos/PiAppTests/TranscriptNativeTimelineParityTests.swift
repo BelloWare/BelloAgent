@@ -122,6 +122,26 @@ extension TranscriptNativeRowParityTests {
         try compare(Self.partFixtures, expectNative: TranscriptNativePartRow.self)
     }
 
+    /// The screenshot gallery's stopped turn, row by row: its reply's words,
+    /// stopped mid-word, and the request's line naming only its model.
+    static var galleryText: String {
+        "Fixture reply: slow: walk through the retry budget one step at a time.\n\nUnicode: 中文🙂 café.\n\n"
+            + (1...80).map { String(format: "stream-%02d", $0) }.joined(separator: " ") + " stream-8"
+    }
+    @MainActor func testTheGallerysStoppedTurnMatchesSwiftUI() throws {
+        var accounting = GatewayTotals(); accounting.requests = 1; accounting.cacheMisses = 1
+        accounting.models = GatewayModelSummary(names: ["ui-fixture"], nameCount: 1, reportedRequests: 0, unreportedRequests: 1,
+                                                routes: [GatewayModelRoute(requested: "ui-fixture", responded: "ui-fixture", latestWall: 1)])
+        accounting.missingUsage = GatewayMissingUsage(stopped: 1)
+        accounting.replyLog = "stopped"
+        var info = TranscriptMessage(id: "gi", role: "assistant", text: "")
+        info.kind = "requestInfo"; info.stopReason = "interrupted"; info.accounting = accounting; info.turn = "q-gi"; info.state = "complete"
+        try compare([Fixture(name: "gallery-part", item: Self.partItem(Self.segment("gt", "text", Self.galleryText))),
+                     Fixture(name: "gallery-part-stopped", item: Self.partItem(Self.segment("gs", "text", Self.galleryText, state: "interrupted")))],
+                    expectNative: TranscriptNativePartRow.self, widths: [840, 792, 520])
+        try compare([Fixture(name: "gallery-info", item: .message(info))], expectNative: TranscriptNativeRequestInfoRow.self, widths: [840, 792, 520])
+    }
+
     static var executionFixtures: [Fixture] {
         func execution(_ id: String, terminal: String? = nil) -> TranscriptItem {
             var message = TranscriptMessage(id: id, role: "assistant", text: "Local execution")
