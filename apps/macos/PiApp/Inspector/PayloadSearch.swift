@@ -1,4 +1,4 @@
-import SwiftUI
+import Combine
 import AppKit
 
 struct PayloadSearchResult: Sendable {
@@ -98,45 +98,41 @@ struct PayloadSearchResult: Sendable {
 
 /// Native selectable, wrapping text with match navigation. No SwiftUI row per
 /// result and no rebuilding attributed strings on every frame or clock tick.
-struct PayloadSearchTextView: NSViewRepresentable {
-    let result: PayloadSearchResult
-    let selected: Int
-    func makeCoordinator() -> Coordinator { Coordinator() }
-    func makeNSView(context: Context) -> NSScrollView {
-        let scroll = NSScrollView()
-        scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true; scroll.drawsBackground = false
-        let editor = NSTextView()
+@MainActor final class PayloadSearchTextView: NSScrollView {
+    let editor = NSTextView()
+    private var id: UUID?, textID: UUID?, selected: Int?
+    init(result: PayloadSearchResult, selected: Int) {
+        super.init(frame: .zero)
+        hasVerticalScroller = true; autohidesScrollers = true; drawsBackground = false
         editor.isEditable = false; editor.isSelectable = true; editor.isRichText = false; editor.drawsBackground = false
         editor.font = .monospacedSystemFont(ofSize: 11, weight: .regular); editor.textColor = .labelColor
         editor.isVerticallyResizable = true; editor.autoresizingMask = [.width]
         editor.textContainer?.widthTracksTextView = true; editor.textContainerInset = NSSize(width: 10, height: 10)
         editor.layoutManager?.allowsNonContiguousLayout = true
         editor.setAccessibilityLabel("Search results in complete body and headers")
-        scroll.documentView = editor
-        return scroll
+        documentView = editor
+        update(result: result, selected: selected)
     }
-    func updateNSView(_ scroll: NSScrollView, context: Context) {
-        guard let editor = scroll.documentView as? NSTextView else { return }
-        let coordinator = context.coordinator
-        if coordinator.id != result.id {
-            coordinator.id = result.id; coordinator.selected = nil
-            if coordinator.textID != result.textID {
-                coordinator.textID = result.textID
+    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    func update(result: PayloadSearchResult, selected: Int) {
+        if id != result.id {
+            id = result.id; self.selected = nil
+            if textID != result.textID {
+                textID = result.textID
                 editor.string = result.text
             } else {
-                // Same text, refined query: only the highlights change, and
-                // the reader keeps their place in the text.
+                // A refined query changes only highlights, preserving the
+                // same text storage and the reader's viewport.
                 editor.layoutManager?.removeTemporaryAttribute(.backgroundColor, forCharacterRange: NSRange(location: 0, length: (editor.string as NSString).length))
             }
             for range in result.matches {
                 editor.layoutManager?.addTemporaryAttribute(.backgroundColor, value: NSColor.systemYellow.withAlphaComponent(0.25), forCharacterRange: range)
             }
         }
-        guard coordinator.selected != selected, result.matches.indices.contains(selected) else { return }
-        coordinator.selected = selected
+        guard self.selected != selected, result.matches.indices.contains(selected) else { return }
+        self.selected = selected
         let range = result.matches[selected]
         editor.setSelectedRange(range)
         editor.scrollRangeToVisible(range)
     }
-    @MainActor final class Coordinator { var id: UUID?; var textID: UUID?; var selected: Int? }
 }
