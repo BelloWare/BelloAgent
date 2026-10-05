@@ -207,10 +207,25 @@ import XCTest
         XCTAssertEqual(originalComplete.origin, 0, accuracy: 0.25)
         try record("all-visible-resolved-ledger", kind: "frozen-original", snapshot: originalComplete, frames: expected)
 
-        // Record the remaining width differences under a known direct
-        // proposal. These diagnostics do not replace any full-page assertion.
+        // Compare the original children under the same exact width proposal.
+        // The full-page SwiftUI proposal is one floating-point ulp larger;
+        // Charts and the ledger round that width up to the next backing pixel.
+        // Keep the raw full-page frames above and bound only that rounding.
+        let scale = completeWindow.backingScaleFactor
+        XCTAssertGreaterThan(scale, 0)
+        XCTAssertEqual(scale, nativeWindow.backingScaleFactor)
+        let rowIDs = Set(inspector.ledger.rows.suffix(40).map { "ledger-row-" + $0.id })
+        var exactProposalFrames: [String: CGRect] = [:]
+        var widthRoundingBounds: [String: CGFloat] = [:]
         for id in ["chart-speed", "chart-cost", "ledger"] {
             let allocation = try XCTUnwrap(actual[id])
+            let originalProposal = id == "ledger" ? content.width - 2 * PiSpacing.xl
+                : (try XCTUnwrap(expected["chart-grid"]).width - PiSpacing.md) / 2
+            XCTAssertLessThanOrEqual(abs(originalProposal - allocation.width), allocation.width.ulp,
+                                     "\(id) proposals differ only by floating-point precision")
+            let roundingBound = (originalProposal * scale).rounded(.up) / scale - allocation.width
+            XCTAssertGreaterThanOrEqual(roundingBound, 0)
+            XCTAssertLessThanOrEqual(roundingBound, 1 / scale, "\(id) rounds by at most one backing pixel")
             let isolatedGeometry = InspectorOverviewReferenceGeometry()
             let isolated = InspectorOverviewGeometryReference(inspector: inspector, compact: false, geometry: isolatedGeometry, resolvedLedger: true)
             let host = NSHostingView(rootView: isolated.isolatedCard(id)
@@ -222,23 +237,44 @@ import XCTest
             isolatedWindow.isReleasedWhenClosed = false; isolatedWindow.appearance = NSAppearance(named: .aqua)
             isolatedWindow.contentView = host; isolatedWindow.orderFront(nil)
             defer { isolatedWindow.orderOut(nil); isolatedWindow.contentView = nil; isolatedWindow.close() }
-            var previous: CGRect?, stable = 0
+            let required = id == "ledger" ? rowIDs.union(["isolated-" + id]) : Set(["isolated-" + id])
+            var previous: [String: CGRect] = [:], stable = 0
             try await eventually("The isolated original \(id) has a stable exact proposal", timeout: .seconds(5), poll: .milliseconds(50)) {
                 host.layoutSubtreeIfNeeded(); isolatedWindow.displayIfNeeded(); CATransaction.flush()
-                let frame = isolatedGeometry.frames["isolated-" + id]
-                stable = frame != nil && frame == previous ? stable + 1 : 0; previous = frame
-                return stable >= 3
+                let frames = isolatedGeometry.frames
+                stable = frames == previous ? stable + 1 : 0; previous = frames
+                return required.isSubset(of: Set(frames.keys)) && stable >= 3
             }
-            let frame = try XCTUnwrap(previous)
-            print("OVERVIEW-ISOLATED id=\(id) proposedWidth=\(allocation.width) frame=\(frame)")
+            let frame = try XCTUnwrap(previous["isolated-" + id])
+            exactProposalFrames[id] = frame; widthRoundingBounds[id] = roundingBound
+            if id == "ledger" {
+                let rawLedger = try XCTUnwrap(expected[id])
+                for rowID in rowIDs {
+                    exactProposalFrames[rowID] = try XCTUnwrap(previous[rowID], rowID)
+                    widthRoundingBounds[rowID] = roundingBound
+                    XCTAssertEqual(try XCTUnwrap(expected[rowID]).width, rawLedger.width - 2 * PiSpacing.md,
+                                   accuracy: 0.25, "\(rowID) inherits the raw card's rounded width")
+                }
+            }
+            print("OVERVIEW-ISOLATED id=\(id) proposedWidth=\(allocation.width) originalProposal=\(originalProposal) scale=\(scale) roundingBound=\(roundingBound) frame=\(frame)")
         }
+        XCTAssertEqual(Set(exactProposalFrames.keys), rowIDs.union(["chart-speed", "chart-cost", "ledger"]))
 
         XCTAssertEqual(Set(actual.keys), Set(expected.keys), "Every chart/model card, figure and ledger row must have a real original frame")
         for id in actual.keys.sorted() {
             let actualFrame = try XCTUnwrap(actual[id]), expectedFrame = try XCTUnwrap(expected[id], id)
             XCTAssertEqual(actualFrame.minX, expectedFrame.minX, accuracy: 0.25, "\(id) x")
             XCTAssertEqual(actualFrame.minY, expectedFrame.minY, accuracy: 0.25, "\(id) y")
-            XCTAssertEqual(actualFrame.width, expectedFrame.width, accuracy: 0.25, "\(id) width")
+            if let exact = exactProposalFrames[id] {
+                XCTAssertEqual(actualFrame.width, exact.width, accuracy: 0.25, "\(id) width at the same exact proposal")
+                XCTAssertEqual(actualFrame.height, exact.height, accuracy: 0.25, "\(id) height at the same exact proposal")
+                let roundingBound = try XCTUnwrap(widthRoundingBounds[id])
+                XCTAssertGreaterThanOrEqual(expectedFrame.width - actualFrame.width, 0, "\(id) raw width rounds up")
+                XCTAssertLessThanOrEqual(expectedFrame.width - actualFrame.width, roundingBound,
+                                         "\(id) raw width differs only by the derived backing-pixel rounding")
+            } else {
+                XCTAssertEqual(actualFrame.width, expectedFrame.width, accuracy: 0.25, "\(id) width")
+            }
             XCTAssertEqual(actualFrame.height, expectedFrame.height, accuracy: 0.25, "\(id) height")
         }
         XCTAssertEqual(nativeInitial.clipWidth, originalBottom.clipWidth, accuracy: 0.25)
