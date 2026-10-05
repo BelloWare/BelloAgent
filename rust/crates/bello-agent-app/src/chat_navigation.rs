@@ -155,6 +155,51 @@ impl AgentView {
             }
         }
     }
+    pub(super) fn select_adjacent_chat(
+        &mut self,
+        forward: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.shutting_down
+            || self
+                .files
+                .iter()
+                .any(|entry| entry.view.read(cx).has_close_prompt())
+        {
+            return;
+        }
+        // Do not move focus away from an active composition. This is only a
+        // guard for the new shortcut; existing mouse navigation is unchanged.
+        let composing = [&self.composer, &self.filter].into_iter().any(|editor| {
+            let editor = editor.read(cx);
+            editor.focus_handle(cx).is_focused(window) && editor.has_marked_text()
+        }) || self
+            .files
+            .iter()
+            .any(|entry| entry.view.read(cx).has_focused_composition(window, cx));
+        if composing {
+            return;
+        }
+        let records = self.visible_sidebar_records(cx);
+        if records.is_empty() {
+            return;
+        }
+        let current = records
+            .iter()
+            .position(|record| record.id == self.record.id);
+        let index = match (current, forward) {
+            (Some(index), true) => (index + 1).min(records.len() - 1),
+            (Some(index), false) => index.saturating_sub(1),
+            (None, true) => 0,
+            (None, false) => records.len() - 1,
+        };
+        let id = records[index].id.clone();
+        if id != self.record.id {
+            self.select_chat(&id, window, cx);
+        }
+    }
+
     pub(super) fn select_chat(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         if self.shutting_down {
             return;

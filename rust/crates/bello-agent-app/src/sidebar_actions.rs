@@ -21,6 +21,32 @@ pub(crate) struct SidebarMenu {
     position: Point<Pixels>,
 }
 impl AgentView {
+    pub(super) fn sidebar_title<'a>(&'a self, record: &'a ChatRecord) -> &'a str {
+        self.chat_ref(&record.id)
+            .map(|chat| {
+                if chat.loading || chat.load_failed {
+                    chat.record.title.as_str()
+                } else {
+                    chat.session.title.as_str()
+                }
+            })
+            .unwrap_or(record.title.as_str())
+    }
+
+    // Rendering and keyboard traversal must share the currently visible order.
+    pub(super) fn visible_sidebar_records(&self, cx: &App) -> Vec<&ChatRecord> {
+        let filter = self.filter.read(cx).text().trim().to_lowercase();
+        let mut records: Vec<_> = self
+            .records
+            .iter()
+            .filter(|record| {
+                filter.is_empty() || self.sidebar_title(record).to_lowercase().contains(&filter)
+            })
+            .collect();
+        records.sort_by(|a, b| a.sidebar_cmp(b));
+        records
+    }
+
     pub(super) fn open_sidebar_menu(
         &mut self,
         id: &str,

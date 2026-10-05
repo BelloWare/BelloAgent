@@ -142,6 +142,17 @@ impl FileTabView {
     pub fn is_saving(&self) -> bool {
         self.lifecycle.saving
     }
+    #[cfg(test)]
+    pub(crate) fn editor_for_test(&self) -> Entity<EditorView> {
+        self.editor.clone()
+    }
+    pub(crate) fn has_close_prompt(&self) -> bool {
+        self.lifecycle.close != CloseIntent::None
+    }
+    pub(crate) fn has_focused_composition(&self, window: &Window, cx: &App) -> bool {
+        let editor = self.editor.read(cx);
+        editor.focus_handle(cx).is_focused(window) && editor.has_marked_text()
+    }
     pub fn focus(&self, window: &mut Window, cx: &App) {
         self.editor.read(cx).focus(window);
     }
@@ -497,5 +508,46 @@ mod tests {
         state.generation += 1;
         assert!(!state.complete_save(id, true, false));
         assert_eq!(state.close, CloseIntent::AfterSave);
+    }
+
+    #[gpui::test]
+    fn adjacent_chat_file_composition_guard_only_tracks_focused_marked_editor(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use super::{FileTabView, Palette};
+        use gpui::EntityInputHandler;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("file.txt");
+        std::fs::write(&path, "original").unwrap();
+        let window = cx.add_window(|window, cx| {
+            FileTabView::new(
+                dir.path().into(),
+                path,
+                None,
+                Palette::for_appearance(gpui::WindowAppearance::Light),
+                window,
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        window
+            .update(cx, |view, window, cx| {
+                assert!(!view.has_focused_composition(window, cx));
+                view.editor.update(cx, |editor, cx| {
+                    editor.focus(window);
+                    editor.replace_and_mark_text_in_range(None, "日本", Some(2..2), window, cx);
+                });
+                assert!(view.has_focused_composition(window, cx));
+                let other = cx.focus_handle();
+                other.focus(window);
+                assert!(!view.has_focused_composition(window, cx));
+                assert!(view.editor.read(cx).has_marked_text());
+                view.editor.update(cx, |editor, cx| {
+                    editor.focus(window);
+                    editor.unmark_text(window, cx);
+                });
+                assert!(!view.has_focused_composition(window, cx));
+            })
+            .unwrap();
     }
 }

@@ -393,13 +393,53 @@ confirmed failure keeps the draft editable, retry clears the matching banner and
 commits the pin, and the same identity/pin/exact draft survive close/restart and a
 clean final close. Earlier normal/minimum-width evidence remains attributed to its
 own candidate, not relabeled as this final binary.
-Native macOS compilation/menu interaction remain unvalidated for this slice; the
-earlier own-window probe does not establish this new menu's runtime behavior. No new library family or package version
+Published `b75dc7cd9bf04e61afd7935a9fc7af78bc0109ac` passed exact
+[Linux CI](https://github.com/BelloWare/BelloAgent/actions/runs/37290801435) and
+[macOS CI](https://github.com/BelloWare/BelloAgent/actions/runs/37290801409),
+including compilation/linking of the native menu source and the limited own-window
+lifecycle probe. Actual native right-click menu interaction remains unvalidated;
+the lifecycle probe does not exercise menu tracking. No new library family or package version
 was added; already-present Cocoa/objc now serve the actual macOS context menu.
 
 Rename remains deferred: the source uses a real parent-attached AppKit sheet and
 manual-title authority over helper snapshots, plus 120-grapheme normalization.
 A generic dialog or scalar truncation would not preserve that contract.
+
+## Next/previous chat shortcuts
+
+`WorkspaceSessionOrganization.swift:93–130` and `PiApp.swift:113–114` define
+Command-Option-Down/Up navigation through the currently visible sidebar order.
+The Rust shortcut uses that same clamped, non-wrapping selection policy; when the
+current chat is filtered out, Down chooses the first visible chat and Up the last.
+Rendering and traversal now share one filtered/pinned-order query. Linux uses
+Control-Alt-Down/Up, matching the existing platform command convention.
+
+Selection reuses the existing per-chat draft/controller and lazy-load generation
+path. The new shortcut does not bypass Quick Open, context menus, close prompts,
+or focused marked-text composition in the composer, filter or file editor.
+The file-tab queries are read-only; existing mouse navigation and Close/Quit
+composition policy are unchanged. Eight real GPUI fake-platform tests cover
+ordering/endpoints, filters, exact modifier rejection, modal routing, pending
+Unicode drafts and rapid lazy selection, and composition guards through actual
+root routing. These callbacks do not validate a native IME candidate window.
+
+Local validation: 175 default and 182 diagnostic-feature workspace tests,
+strict all-target Clippy, formatting and Linux build pass. Independent review
+cleared the final routing and tests. Fresh Linux desktop binary
+`8e62a42c3f6f9bb576fc8bb0626ef6031245df62cb77b6660a9dbf5668053537`
+passed pinned/filter/no-wrap traversal, pending-draft preservation, Quick Open and
+dirty-file prompt interception, 920×600 layout and exact-draft reopen. These tests
+used supported window-targeted keyboard input: full-desktop Control-Alt-arrow
+input was not delivered to the app, consistent with the desktop's workspace
+shortcut bindings. No system shortcuts were changed. Native macOS shortcut
+interaction and source View-menu command entries remain unvalidated or missing.
+
+QA separately found that an existing dirty-file prompt opened while the composer
+owns focus cannot receive Escape through its file-child handler. Keep Editing
+still dismisses it by pointer. The new navigation guard correctly blocks traversal;
+this prompt-focus gap remains tracked separately, not claimed as fixed here.
+No new dependency, provider request, archive behavior or native menu bridge change
+is included.
 
 ## Next implementation priorities
 

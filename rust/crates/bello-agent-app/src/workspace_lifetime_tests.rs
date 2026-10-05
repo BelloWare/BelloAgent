@@ -583,3 +583,283 @@ fn successful_pin_does_not_clear_another_targets_identical_error(cx: &mut TestAp
         })
         .unwrap();
 }
+
+fn navigation_key(forward: bool) -> &'static str {
+    match (cfg!(target_os = "macos"), forward) {
+        (true, true) => "cmd-alt-down",
+        (true, false) => "cmd-alt-up",
+        (false, true) => "ctrl-alt-down",
+        (false, false) => "ctrl-alt-up",
+    }
+}
+
+fn add_navigation_records(window: WindowHandle<AgentView>, cx: &mut TestAppContext) -> Vec<String> {
+    window
+        .update(cx, |view, _, cx| {
+            let mut ids = Vec::new();
+            for (title, order, pin) in [
+                ("Alpha", 10, None),
+                ("Beta", 20, None),
+                ("Gamma", 30, Some(1)),
+            ] {
+                let id = uuid::Uuid::new_v4().to_string();
+                let record = ChatRecord {
+                    id: id.clone(),
+                    title: title.into(),
+                    snapshot: view.project.join(format!("{id}.json")),
+                    sidebar_order: Some(order),
+                    pinned_at: pin,
+                };
+                let draft = DraftRecord {
+                    text: format!("{title} draft"),
+                    ..Default::default()
+                };
+                view.workspace
+                    .lock()
+                    .unwrap()
+                    .register(record.clone(), draft.clone())
+                    .unwrap();
+                view.unloaded_drafts.insert(id.clone(), draft);
+                view.records.push(record);
+                ids.push(id);
+            }
+            cx.notify();
+            ids
+        })
+        .unwrap()
+}
+
+#[gpui::test]
+fn adjacent_chat_uses_visible_pin_order_and_clamps_endpoints(cx: &mut TestAppContext) {
+    let (_dir, window, root) = fixture(cx);
+    let ids = add_navigation_records(window, cx);
+    // Pending initial chat is newer than the legacy records. Select first pin.
+    window
+        .update(cx, |view, window, cx| view.select_chat(&ids[2], window, cx))
+        .unwrap();
+    cx.run_until_parked();
+    cx.simulate_keystrokes(window.into(), navigation_key(false));
+    assert_eq!(cx.read(|cx| root.read(cx).record.id.clone()), ids[2]);
+    cx.simulate_keystrokes(window.into(), navigation_key(true));
+    assert_eq!(cx.read(|cx| root.read(cx).record.id.clone()), ids[1]);
+    cx.simulate_keystrokes(window.into(), navigation_key(true));
+    assert_eq!(cx.read(|cx| root.read(cx).record.id.clone()), ids[0]);
+    cx.simulate_keystrokes(window.into(), navigation_key(true));
+    assert_eq!(cx.read(|cx| root.read(cx).record.id.clone()), ids[0]);
+    cx.simulate_keystrokes(window.into(), navigation_key(false));
+    assert_eq!(cx.read(|cx| root.read(cx).record.id.clone()), ids[1]);
+}
+
+#[gpui::test]
+fn adjacent_chat_filter_missing_current_selects_first_or_last_and_empty_is_noop(
+    cx: &mut TestAppContext,
+) {
+    let (_dir, window, _root) = fixture(cx);
+    let ids = add_navigation_records(window, cx);
+    // Use saved titles while unloaded, matching exactly what the sidebar renders.
+    window
+        .update(cx, |view, window, cx| {
+            view.filter
+                .update(cx, |editor, cx| editor.set_text("a".into(), cx));
+            view.select_adjacent_chat(false, window, cx);
+            assert_eq!(view.record.id, ids[0]);
+        })
+        .unwrap();
+    window
+        .update(cx, |view, window, cx| {
+            view.filter
+                .update(cx, |editor, cx| editor.set_text("Gamma".into(), cx));
+            view.select_adjacent_chat(true, window, cx);
+            assert_eq!(view.record.id, ids[2]);
+            view.filter.update(cx, |editor, cx| {
+                editor.set_text("no matching chat".into(), cx)
+            });
+            view.select_adjacent_chat(false, window, cx);
+            assert_eq!(view.record.id, ids[2]);
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+fn adjacent_chat_preserves_pending_unicode_draft_and_rapid_lazy_selection(cx: &mut TestAppContext) {
+    let (_dir, window, root) = fixture(cx);
+    cx.simulate_input(window.into(), "pending e\u{301} 日本語");
+    let pending = cx.read(|cx| root.read(cx).record.id.clone());
+    let ids = add_navigation_records(window, cx);
+    window
+        .update(cx, |view, window, cx| {
+            view.select_chat(&ids[2], window, cx);
+            view.select_chat(&ids[0], window, cx);
+            view.select_chat(&ids[1], window, cx);
+            view.select_chat(&pending, window, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let view = root.read(cx);
+        assert_eq!(view.record.id, pending);
+        assert_eq!(view.composer.read(cx).text(), "pending e\u{301} 日本語");
+        assert!(view.pending);
+        for (id, text) in ids.iter().zip(["Alpha draft", "Beta draft", "Gamma draft"]) {
+            assert_eq!(view.inactive[id].composer.read(cx).text(), text);
+            assert!(!view.inactive[id].loading);
+        }
+    });
+}
+
+#[gpui::test]
+fn adjacent_chat_modal_and_exact_modifier_routing(cx: &mut TestAppContext) {
+    let (_dir, window, root) = fixture(cx);
+    let ids = add_navigation_records(window, cx);
+    let current = cx.read(|cx| root.read(cx).record.id.clone());
+    window
+        .update(cx, |view, _, _| view.close_dialog = true)
+        .unwrap();
+    cx.simulate_keystrokes(window.into(), navigation_key(false));
+    assert_eq!(cx.read(|cx| root.read(cx).record.id.clone()), current);
+    window
+        .update(cx, |view, window, cx| {
+            view.close_dialog = false;
+            view.quick_open
+                .update(cx, |picker, cx| picker.show(window, cx));
+        })
+        .unwrap();
+    cx.simulate_keystrokes(window.into(), navigation_key(false));
+    assert_eq!(cx.read(|cx| root.read(cx).record.id.clone()), current);
+    cx.simulate_keystrokes(window.into(), "escape");
+    let shifted = if cfg!(target_os = "macos") {
+        "cmd-alt-shift-up"
+    } else {
+        "ctrl-alt-shift-up"
+    };
+    cx.simulate_keystrokes(window.into(), shifted);
+    assert_eq!(cx.read(|cx| root.read(cx).record.id.clone()), current);
+    #[cfg(not(target_os = "macos"))]
+    {
+        window
+            .update(cx, |view, window, cx| {
+                view.open_sidebar_menu(
+                    &ids[0],
+                    gpui::point(gpui::px(80.), gpui::px(150.)),
+                    window,
+                    cx,
+                )
+            })
+            .unwrap();
+        cx.simulate_keystrokes(window.into(), navigation_key(false));
+        assert_eq!(cx.read(|cx| root.read(cx).record.id.clone()), current);
+        cx.simulate_keystrokes(window.into(), "escape");
+    }
+    for key in ["up", "alt-up", "ctrl-up", "cmd-up", "cmd-ctrl-alt-up"] {
+        cx.simulate_keystrokes(window.into(), key);
+        assert_eq!(cx.read(|cx| root.read(cx).record.id.clone()), current);
+    }
+    let _ = ids;
+}
+
+#[gpui::test]
+fn adjacent_chat_keeps_focused_composer_and_filter_composition(cx: &mut TestAppContext) {
+    use gpui::{EntityInputHandler, Focusable};
+    let (_dir, window, root) = fixture(cx);
+    add_navigation_records(window, cx);
+    let current = cx.read(|cx| root.read(cx).record.id.clone());
+    for filter in [false, true] {
+        window
+            .update(cx, |view, window, cx| {
+                let editor = if filter {
+                    view.filter.clone()
+                } else {
+                    view.composer.clone()
+                };
+                editor.update(cx, |editor, cx| {
+                    editor.focus(window);
+                    editor.replace_and_mark_text_in_range(
+                        None,
+                        if filter { "a" } else { "あ" },
+                        Some(1..1),
+                        window,
+                        cx,
+                    );
+                });
+            })
+            .unwrap();
+        cx.simulate_keystrokes(window.into(), navigation_key(false));
+        window
+            .update(cx, |view, window, cx| {
+                assert_eq!(view.record.id, current);
+                let editor = if filter {
+                    view.filter.clone()
+                } else {
+                    view.composer.clone()
+                };
+                assert!(editor.read(cx).has_marked_text());
+                assert!(editor.read(cx).focus_handle(cx).is_focused(window));
+                editor.update(cx, |editor, cx| editor.unmark_text(window, cx));
+            })
+            .unwrap();
+    }
+}
+
+#[gpui::test]
+fn adjacent_chat_does_not_bypass_dirty_file_close_prompt(cx: &mut TestAppContext) {
+    let (dir, window, root) = fixture(cx);
+    add_navigation_records(window, cx);
+    let current = cx.read(|cx| root.read(cx).record.id.clone());
+    let path = dir.path().join("guard.txt");
+    std::fs::write(&path, "original").unwrap();
+    window
+        .update(cx, |view, window, cx| {
+            view.open_file(path.clone(), None, window, cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+    cx.simulate_input(window.into(), "unsaved");
+    let file = cx.read(|cx| root.read(cx).files[0].view.clone());
+    file.update(cx, |view, cx| view.request_close(cx));
+    cx.simulate_keystrokes(window.into(), navigation_key(false));
+    cx.read(|cx| {
+        assert_eq!(root.read(cx).record.id, current);
+        assert!(file.read(cx).has_close_prompt());
+        assert!(file.read(cx).is_dirty(cx));
+    });
+    cx.simulate_keystrokes(window.into(), "escape");
+    assert!(!cx.read(|cx| file.read(cx).has_close_prompt()));
+    cx.simulate_keystrokes(window.into(), navigation_key(false));
+    assert_ne!(cx.read(|cx| root.read(cx).record.id.clone()), current);
+    assert_eq!(std::fs::read_to_string(path).unwrap(), "original");
+}
+
+#[gpui::test]
+fn adjacent_chat_preserves_file_ime_through_actual_root_routing(cx: &mut TestAppContext) {
+    use gpui::{EntityInputHandler, Focusable};
+    let (dir, window, root) = fixture(cx);
+    add_navigation_records(window, cx);
+    let current = cx.read(|cx| root.read(cx).record.id.clone());
+    let path = dir.path().join("ime.txt");
+    std::fs::write(&path, "original").unwrap();
+    window
+        .update(cx, |view, window, cx| {
+            view.open_file(path, None, window, cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+    let editor = cx.read(|cx| root.read(cx).files[0].view.read(cx).editor_for_test());
+    window
+        .update(cx, |_, window, cx| {
+            editor.update(cx, |editor, cx| {
+                editor.replace_and_mark_text_in_range(None, "漢字", Some(2..2), window, cx)
+            })
+        })
+        .unwrap();
+    cx.simulate_keystrokes(window.into(), navigation_key(false));
+    window
+        .update(cx, |view, window, cx| {
+            assert_eq!(view.record.id, current);
+            assert!(editor.read(cx).has_marked_text());
+            assert!(editor.read(cx).focus_handle(cx).is_focused(window));
+            editor.update(cx, |editor, cx| editor.unmark_text(window, cx));
+        })
+        .unwrap();
+    cx.simulate_keystrokes(window.into(), navigation_key(false));
+    assert_ne!(cx.read(|cx| root.read(cx).record.id.clone()), current);
+}

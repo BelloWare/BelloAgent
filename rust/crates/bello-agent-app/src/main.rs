@@ -604,7 +604,19 @@ impl AgentView {
             }
             return;
         }
-        if command && event.keystroke.key == "n" {
+        let navigation_command = if cfg!(target_os = "macos") {
+            mods.platform && !mods.control
+        } else {
+            mods.control && !mods.platform
+        };
+        if navigation_command
+            && mods.alt
+            && !mods.shift
+            && matches!(event.keystroke.key.as_str(), "up" | "down")
+        {
+            self.select_adjacent_chat(event.keystroke.key == "down", window, cx);
+            cx.stop_propagation();
+        } else if command && event.keystroke.key == "n" {
             self.new_chat(window, cx);
             cx.stop_propagation();
         } else if command && event.keystroke.key == "p" {
@@ -1726,23 +1738,9 @@ impl AgentView {
                             .opacity(0.45),
                     ),
             );
-        let filter = self.filter.read(cx).text().trim().to_lowercase();
-        let mut ordered_records: Vec<_> = self.records.iter().collect();
-        ordered_records.sort_by(|a, b| a.sidebar_cmp(b));
-        for record in ordered_records {
+        for record in self.visible_sidebar_records(cx) {
             let chat = self.chat_ref(&record.id);
-            let title = chat
-                .map(|chat| {
-                    if chat.loading || chat.load_failed {
-                        chat.record.title.as_str()
-                    } else {
-                        chat.session.title.as_str()
-                    }
-                })
-                .unwrap_or(record.title.as_str());
-            if !filter.is_empty() && !title.to_lowercase().contains(&filter) {
-                continue;
-            }
+            let title = self.sidebar_title(record);
             let id = record.id.clone();
             let selected = id == self.record.id;
             let menu_id = id.clone();
