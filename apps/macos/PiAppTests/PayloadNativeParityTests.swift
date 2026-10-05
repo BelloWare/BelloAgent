@@ -110,16 +110,46 @@ import XCTest
         }
     }
     func testSearchReaderInsetsAndSelectedMatchRevealMatch() async throws {
+        @MainActor final class Selection: ObservableObject { @Published var index = 0 }
+        @MainActor struct Reference: View {
+            let result: PayloadSearchResult
+            @ObservedObject var selection: Selection
+            var body: some View { PayloadSearchTextReference(result: result, selected: selection.index) }
+        }
+        func editors(in root: NSView) -> [NSTextView] {
+            ((root as? NSTextView).map { [$0] } ?? []) + root.subviews.flatMap { editors(in: $0) }
+        }
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
             for overflowing in [false, true] {
                 let text = "Request headers\naccept: text/event-stream\n\nRequest body\n" + (overflowing
-                    ? (1...90).map { "Retained line \($0)" }.joined(separator: "\n") + "\nREADME.md"
+                    ? "README first match\n" + (1...90).map { "Retained line \($0)" }.joined(separator: "\n") + "\nREADME.md"
                     : "{\"path\":\"README.md\",\"content\":\"Retained request\"}")
                 let result = try PayloadSearchResult.find(text: text, query: "README")
+                let selection = Selection()
+                let native = PayloadSearchTextView(result: result, selected: 0)
+                let index = result.matches.count - 1
                 try await check("payload-search-reader-" + (overflowing ? "overflow" : "fit"),
-                                PayloadSearchTextReference(result: result, selected: 0).frame(width: 700, height: 300),
-                                PayloadViewport(PayloadSearchTextView(result: result, selected: 0), height: 300),
-                                width: 700, appearance: appearance)
+                                Reference(result: result, selection: selection).frame(width: 700, height: 300),
+                                PayloadViewport(native, height: 300), width: 700, appearance: appearance, ready: { root in
+                    // The frozen representable's initial update can run with
+                    // a zero-sized clip view. Navigate after mounting instead,
+                    // as an actual Next press does; both readers reveal it.
+                    root.layoutSubtreeIfNeeded()
+                    selection.index = index
+                    if native.window === root.window { native.update(result: result, selected: index) }
+                    try await eventually("The mounted reader reveals its chosen complete-body match", timeout: .seconds(3)) {
+                        root.layoutSubtreeIfNeeded()
+                        guard let editor = editors(in: root).first, let scroll = editor.enclosingScrollView,
+                              let manager = editor.layoutManager, let container = editor.textContainer,
+                              editor.selectedRange() == result.matches[index] else { return false }
+                        let range = manager.glyphRange(forCharacterRange: result.matches[index], actualCharacterRange: nil)
+                        let glyph = manager.boundingRect(forGlyphRange: range, in: container)
+                        let visible = scroll.contentView.convert(glyph.offsetBy(dx: editor.textContainerOrigin.x,
+                                                                                dy: editor.textContainerOrigin.y), from: editor)
+                        return scroll.contentView.bounds.intersects(visible)
+                            && (!overflowing || scroll.contentView.bounds.minY > 0)
+                    }
+                })
             }
         }
     }
