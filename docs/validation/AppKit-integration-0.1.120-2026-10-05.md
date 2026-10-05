@@ -423,6 +423,60 @@ the quiet gate, final gallery, comparable Release measurements and actual
 3,600-second Release soak against this source before publication. The final
 Release build-for-testing is being rebuilt for this candidate.
 
+## Third complete gate, gallery review and final Git caption correction
+
+The quiet full gate for production source `478d0211` passed in 36 minutes
+44 seconds. The serial lane executed 624 cases (23 skips, no failures);
+the parallel lane reported 1,937 passes (34 skips, no failures). Isolated
+helper cost checks, the 192-image gallery, 611 helper cases (six skips),
+167 views-package cases (three skips), 34 wire, four concurrent, two
+acceptance and 72 Python checks passed. Changes-pane typing measured
+23.2 ms against the unchanged 30 ms limit. There were no geometry or
+constraint warnings and no test-process crash reports. The Release
+build-for-testing also passed. Evidence: `native-final-proposal-full-gate.log`
+and `native-final-proposal-release-build.log`; raw gate logs and captures
+are preserved as `third-gate-478d-verify-{logs,gallery}` in the cache.
+
+All 192 fresh native/baseline pairs were then reviewed side by side, without
+masking or alignment. The manifest `gallery-478d-review-manifest.json`
+records both image hashes and reviewer assignments. The review found a
+real Git toolbar regression with the actual short gallery folder captions;
+the passing older narrow probe used a long generated UUID instead. The
+review is therefore not a blanket gallery pass. Dynamic data, initial lazy
+scrollbar extents and offscreen coverage limits are recorded in the four
+`gallery-*-478d-review.txt` files.
+
+The new same-controller frozen comparisons use both actual gallery folder
+names at 310, 336, 360, 400, 520 and 600 points, plus covered-side running,
+idle, resize and removal transitions. The toolbar now retains the pane's
+proposal while reporting its overflowing natural width. Its folder caption
+measures truncated head, ellipsis and tail separately, matching the
+released Text's natural width; it preserves the compressed first grapheme
+where no ellipsis fits. Adjacent header, History and detail children keep
+their allocated pane width. Existing child-frame limits remain unchanged.
+
+The read-only caption review found a further P2: drawing recomputed the
+cut at the already-truncated natural width, which could drop extra
+characters. Placement now retains its selected cut, while sizing-only
+probes cannot replace it. Appearance-neutral caches resolve ink during
+drawing; proposal and reported-width changes invalidate layout.
+
+All eight narrow parity cases pass in 31.0 seconds. The new rendered-text
+check compares actual window-server crops with the independent frozen
+v119 UI at 400 points (`iiiiiiiiii-WWWWW`) and 420 points (a composed-accent
+name), in light and dark. All four crops have zero differing pixels under
+the existing channel tolerance of eight, with largest channel difference
+one. Removing only the retained drawing cut produces eight assertion
+failures (469–750 differing pixels); the correction was restored. The four
+unmasked caption pairs were also visually reviewed. Evidence:
+`native-git-caption-plan-tests.log`, `native-git-caption-mutation-tests.log`
+and `git-caption-plan/git-caption-pixels` in the cache. The follow-up
+read-only review reports no remaining actionable findings; evidence:
+`native-git-caption-plan-review.txt`.
+
+This final product correction requires a fresh gate and final gallery,
+Release build, comparable performance measurements and actual hour soak.
+
 ## Still required
 
 Perform the complete gallery comparison, Release

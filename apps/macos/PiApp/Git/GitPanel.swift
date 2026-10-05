@@ -161,8 +161,9 @@ import GitView
         // A stack keeps the folder symbol and fixed controls even where
         // their minimum exceeds the pane. Only the toolbar overflows; the
         // history and detail still receive the pane's actual allocation.
-        let toolbarWidth = max(width, toolbar.minimumWidth)
-        let toolbarHeight = toolbar.height(forWidth: toolbarWidth)
+        toolbar.layoutProposalWidth = width
+        let toolbarWidth = toolbar.width(forProposal: width)
+        let toolbarHeight = toolbar.height(forWidth: width)
         toolbar.frame = CGRect(x: (width - toolbarWidth) / 2, y: 32, width: toolbarWidth, height: toolbarHeight)
         toolbarRule.frame = CGRect(x: 0, y: 32 + toolbarHeight, width: width, height: 1)
         let body = CGRect(x: 0, y: toolbarRule.frame.maxY, width: width, height: max(0, bounds.height - toolbarRule.frame.maxY))
@@ -300,6 +301,118 @@ enum GitPanelSplit {
 
 // MARK: - Toolbar
 
+/// The single-root folder caption keeps the natural width of its truncated
+/// text, as the released Label did. Its compressed first grapheme is retained
+/// even where there is not enough room for an ellipsis.
+@MainActor private final class GitRootCaption: NSView {
+    var line = PiKit.Line("", font: PiKit.Font.caption, color: .piInkSecondary) {
+        didSet {
+            source = nil; ellipsis = nil; knownCuts.removeAll(keepingCapacity: true); placedPlan = nil
+            invalidateIntrinsicContentSize(); needsDisplay = true
+            setAccessibilityLabel(line.text)
+        }
+    }
+    private var source: CTLine?, ellipsis: CTLine?
+    private enum CaptionCut {
+        case prefix
+        case pieces([String], CGFloat)
+        case rightToLeft(CTLine, CGFloat)
+        var width: CGFloat? {
+            switch self { case .prefix: nil; case .pieces(_, let width), .rightToLeft(_, let width): width }
+        }
+    }
+    private var knownCuts: [CGFloat: CaptionCut] = [:]
+    private struct CaptionPlan { var width: CGFloat; var cut: CaptionCut? }
+    private var placedPlan: CaptionPlan?
+    private var glyph: PiKit.Symbol { PiKit.Symbol("folder", size: line.font.pointSize, weight: line.font.piWeight) }
+    var symbolWidth: CGFloat { glyph.layoutSize.width + LabelView.spacing }
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        setAccessibilityElement(true); setAccessibilityRole(.staticText); setAccessibilityLabel(line.text)
+    }
+    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    override var isFlipped: Bool { true }
+    override var intrinsicContentSize: NSSize {
+        let text = line.size(scale: piScale), image = glyph.layoutSize
+        return NSSize(width: symbolWidth + text.width, height: max(text.height, image.height))
+    }
+    private func cut(to width: CGFloat) -> CaptionCut {
+        if let known = knownCuts[width] { return known }
+        if source == nil {
+            var attributes = line.attributes()
+            attributes.removeValue(forKey: .foregroundColor)
+            attributes[NSAttributedString.Key(kCTForegroundColorFromContextAttributeName as String)] = true
+            source = CTLineCreateWithAttributedString(NSAttributedString(string: line.shown, attributes: attributes))
+            ellipsis = CTLineCreateWithAttributedString(NSAttributedString(string: "…", attributes: attributes))
+        }
+        let result: CaptionCut
+        let rtl = (CTLineGetGlyphRuns(source!) as? [CTRun] ?? []).contains { CTRunGetStatus($0).contains(.rightToLeft) }
+        if rtl {
+            if let cut = CTLineCreateTruncatedLine(source!, Double(width), .middle, ellipsis!) {
+                result = .rightToLeft(cut, CTLineGetTypographicBounds(cut, nil, nil, nil))
+            } else { result = .prefix }
+        } else if let cut = line.middleCut(width: width) {
+            // The original Text measures the head, ellipsis and tail as
+            // separate runs. It keeps just the ellipsis if no head fits.
+            let pieces = [cut.head, "…", cut.head.isEmpty ? "" : cut.tail].filter { !$0.isEmpty }
+            let naturalWidth = pieces.reduce(CGFloat(0)) { width, text in
+                var part = line; part.text = text
+                return width + part.width
+            }
+            result = .pieces(pieces, naturalWidth)
+        } else { result = .prefix }
+        if knownCuts.count >= 32 { knownCuts.removeAll(keepingCapacity: true) }
+        knownCuts[width] = result
+        return result
+    }
+    func width(forProposal proposal: CGFloat, retainCut: Bool = false) -> CGFloat {
+        let ideal = intrinsicContentSize.width
+        let offered = min(ideal, max(symbolWidth, proposal)), textWidth = offered - symbolWidth
+        let plan: CaptionPlan
+        if offered >= ideal { plan = CaptionPlan(width: ideal, cut: nil) }
+        else {
+            let selected = cut(to: textWidth)
+            let width = selected.width.map { min(offered, symbolWidth + PiKit.ceil($0, piScale)) } ?? PiKit.round(offered, piScale)
+            plan = CaptionPlan(width: width, cut: selected)
+        }
+        // StackLayout first probes zero/infinity, then offers the actual
+        // share. Only placement may retain that final finite proposal.
+        if retainCut, proposal.isFinite { placedPlan = plan }
+        return plan.width
+    }
+    override func draw(_ dirtyRect: NSRect) {
+        let image = glyph.layoutSize, text = line.size(scale: piScale)
+        glyph.draw(centredIn: CGRect(x: 0, y: 0, width: image.width, height: bounds.height), color: line.color, scale: piScale)
+        let rect = CGRect(x: symbolWidth, y: PiKit.round((bounds.height - text.height) / 2, piScale),
+                          width: max(0, bounds.width - symbolWidth), height: text.height)
+        guard rect.width > 0, !line.text.isEmpty else { return }
+        guard rect.width < text.width else { line.draw(at: rect.origin, scale: piScale); return }
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        context.saveGState(); defer { context.restoreGState() }
+        context.clip(to: rect)
+        let selected = placedPlan.flatMap { $0.width == bounds.width ? $0.cut : nil } ?? cut(to: rect.width)
+        switch selected {
+        case .rightToLeft(let cut, _):
+            context.setFillColor(line.color.cgColor)
+            context.textMatrix = CGAffineTransform(scaleX: 1, y: -1)
+            context.textPosition = CGPoint(x: rect.minX, y: rect.minY + line.baseline(scale: piScale))
+            CTLineDraw(cut, context)
+        case .pieces(let pieces, _):
+            var x = rect.minX
+            for text in pieces {
+                var part = line; part.text = text
+                part.draw(at: CGPoint(x: x, y: rect.minY), scale: piScale)
+                x += part.width
+            }
+        case .prefix:
+            var first = line; first.text = String(line.text.prefix(1))
+            first.draw(at: rect.origin, scale: piScale)
+        }
+    }
+    override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); needsDisplay = true }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
 /// The folder, the branch menu, fetch, pull and push, the stash menu, the
 /// Changes and History tabs, and what the last action said: one row where
 /// the panel is wide; where it is narrow, the tabs and what the last action
@@ -322,8 +435,9 @@ enum GitPanelSplit {
     private let controller: GitController
     private var inputs: Inputs?
     private var wide = true
+    var layoutProposalWidth: CGFloat? { didSet { if oldValue != layoutProposalWidth { needsLayout = true } } }
     private var rootDropdown: PiKit.Dropdown<String>?
-    private let rootLabel = LabelView(PiKit.Line("", font: PiKit.Font.caption, color: .piInkSecondary), symbol: "folder")
+    private let rootLabel = GitRootCaption()
     private lazy var branchMenu = PiKit.MenuButton(title: "", icon: "arrow.triangle.branch", identifier: "git-branch-menu") { [weak self, controller] in
         let current = controller.status.branch
         PiMenuEntry.button("New Branch from \(current.isEmpty ? "HEAD" : current)…") { self?.showNewBranch() }
@@ -349,7 +463,6 @@ enum GitPanelSplit {
 
     init(controller: GitController) {
         self.controller = controller
-        rootLabel.truncation = .middle
         remote = GitRemoteControls(controller: controller)
         panelTabs = PiKit.Tabs(selection: controller.panel, items: GitController.Panel.allCases.map { ($0, $0.title) }) { [controller] in controller.panel = $0 }
         super.init(frame: .zero)
@@ -361,6 +474,8 @@ enum GitPanelSplit {
     func apply(_ next: Inputs, wide: Bool) {
         guard next != inputs || wide != self.wide else { return }
         let previousMinimum = minimumWidth
+        let proposal = layoutProposalWidth ?? bounds.width
+        let previousWidth = width(forProposal: proposal)
         inputs = next; self.wide = wide
         RedrawCounter.note("GitPanelToolbar")
         if next.roots.count > 1 {
@@ -398,18 +513,20 @@ enum GitPanelSplit {
             }
         } else { committed?.removeFromSuperview(); committed = nil }
         needsLayout = true
-        let height = bounds.width > 0 ? self.height(forWidth: bounds.width) : 0
-        if height != bounds.height || minimumWidth != previousMinimum { PiKit.sizeChanged(self) }
+        let height = proposal > 0 ? self.height(forWidth: proposal) : 0
+        if height != bounds.height || minimumWidth != previousMinimum || width(forProposal: proposal) != previousWidth {
+            PiKit.sizeChanged(self)
+        }
     }
 
     // MARK: Layout
 
-    private var rootItem: StackLayout.Item {
+    private func rootItem(retainCaptionCut: Bool = false) -> StackLayout.Item {
         // The dropdown and the menus are their own size (`fixedSize`).
         if let rootDropdown { return .fixed(rootDropdown) }
         // The caption can give up its text, but the folder and its label
         // spacing retain the minimum of the original SwiftUI Label.
-        return .view(rootLabel, StackLayout.Sizing(width: { [rootLabel] in min(rootLabel.intrinsicContentSize.width, max(rootLabel.symbolWidth, $0)) },
+        return .view(rootLabel, StackLayout.Sizing(width: { [rootLabel] in rootLabel.width(forProposal: $0, retainCut: retainCaptionCut) },
                                                    height: { [rootLabel] _ in rootLabel.intrinsicContentSize.height }))
     }
     private var outcomeItems: [StackLayout.Item] {
@@ -418,8 +535,8 @@ enum GitPanelSplit {
         if let committed { items.append(.view(committed, .intrinsic(committed))) }
         return items
     }
-    private func firstRow() -> [StackLayout.Item] {
-        var items = [rootItem]
+    private func firstRow(retainCaptionCut: Bool = false) -> [StackLayout.Item] {
+        var items = [rootItem(retainCaptionCut: retainCaptionCut)]
         if inputs?.repository == true {
             items.append(.fixed(branchMenu))
             items.append(.view(remote, remote.sizing))
@@ -436,6 +553,13 @@ enum GitPanelSplit {
         return max(first, second) + PiSpacing.lg * 2
     }
 
+    func width(forProposal width: CGFloat) -> CGFloat {
+        let inner = max(0, width - PiSpacing.lg * 2)
+        let first = StackLayout.width(firstRow(), spacing: PiSpacing.sm, proposal: inner)
+        let second = wide ? 0 : StackLayout.width(secondRow(), spacing: PiSpacing.sm, proposal: inner)
+        return max(width, max(first, second) + PiSpacing.lg * 2)
+    }
+
     func height(forWidth width: CGFloat) -> CGFloat {
         let inner = width - PiSpacing.lg * 2
         var height = StackLayout.height(firstRow(), spacing: PiSpacing.sm, width: inner)
@@ -444,8 +568,11 @@ enum GitPanelSplit {
     }
     override func layout() {
         super.layout()
-        let inner = bounds.width - PiSpacing.lg * 2, scale = piScale
-        let first = firstRow(), firstHeight = StackLayout.height(first, spacing: PiSpacing.sm, width: inner)
+        // SwiftUI reports an overflowing row's width but retains the
+        // parent's original proposal for its children. Feeding the wider
+        // result back would give a short folder caption extra space.
+        let inner = (layoutProposalWidth ?? bounds.width) - PiSpacing.lg * 2, scale = piScale
+        let first = firstRow(retainCaptionCut: true), firstHeight = StackLayout.height(first, spacing: PiSpacing.sm, width: inner)
         StackLayout.place(first, spacing: PiSpacing.sm, in: CGRect(x: PiSpacing.lg, y: PiSpacing.sm, width: inner, height: firstHeight), scale: scale)
         if !wide {
             let second = secondRow(), secondHeight = StackLayout.height(second, spacing: PiSpacing.sm, width: inner)

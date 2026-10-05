@@ -32,13 +32,13 @@
   - All Inspector pages, statistics dialogs, retained bodies, JSON/search, resources and MCP controls now use AppKit. Dashboard, live monitor, menu-bar panel, chart engine and cost-limit controls are integrated. Focused parity, lifetime, selection and accessibility checks pass; the complete gallery and gate remain below.
 - [x] **Settings, onboarding, Git, files** (`Application/` settings and onboarding views, `Git/`, `Files/`, and the two SwiftUI files in `packages/bello-views`).
 
-Integration checks: [AppKit integration record](docs/validation/AppKit-integration-0.1.120-2026-10-05.md). These are focused checks; the release gate, full gallery and Release soak are still pending.
+Integration checks: [AppKit integration record](docs/validation/AppKit-integration-0.1.120-2026-10-05.md). The third complete gate passed for `478d0211`; the subsequent 192-pair review found and corrected a Git caption regression. A fresh gate, final gallery, Release measurements and hour soak remain pending for that correction.
 
 ## Wave 3
 - [x] **App shell**: native `NSApplicationDelegate`, window controllers, menus and Settings window. Production sources in the app and `bello-views` have no SwiftUI imports or hosting views; a test enforces this. Frozen SwiftUI references remain in the test target for parity checks.
 
 ## Before release
-- [x] Codex (gpt-6.1-sol, xhigh) double-checks the whole change from e59e41a7 and gives advice; findings acted on, advice reported to the owner (owner, 2026-10-04). Whole-change and subsequent repair reviews report no findings, including the final pinned-column proposal correction; source candidate `478d0211`. Advice: finish the quiet full gate, final gallery, comparable Release measurements and actual hour soak before publication. See the integration record for the exact review pins and evidence.
+- [x] Codex (gpt-6.1-sol, xhigh) double-checks the whole change from e59e41a7 and gives advice; findings acted on, advice reported to the owner (owner, 2026-10-04). Whole-change and subsequent repair reviews report no findings, including the pinned-column proposal correction and final Git caption placement repair. The eight strict Git checks pass, including frozen rendered-text comparisons and mutation proof. Advice: finish the quiet full gate, final gallery, comparable Release measurements and actual hour soak before publication. See the integration record for the exact review pins and evidence.
 - [ ] Performance compared with the baseline: no measure worse; chat switch and opening a chat faster.
 - [ ] Full gallery compared with 0.1.119: **visually identical** (owner, 2026-10-05) — sub-pixel antialiasing and icon offsets up to about 0.25 pt are accepted; anything visible (layout shifts, colours, wrapping, moves of 1 pt or more) is fixed. Every screen gets a side-by-side check.
 - [ ] Full gate passes (`scripts/verify-release.sh`).

@@ -67,9 +67,11 @@ import XCTest
         }
     }
 
-    private func repositoryFixture() throws -> URL {
-        let root = try repository("git-narrow-history")
-        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+    private func repositoryFixture(displayName: String? = nil) throws -> URL {
+        let base = try repository("git-narrow-history")
+        let root = displayName.map { base.appendingPathComponent($0) } ?? base
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: base) }
         try start(root)
         let file = root.appendingPathComponent("PaymentClient.swift")
         // The released 24d gallery's actual two commits, not an inert or
@@ -106,10 +108,34 @@ import XCTest
     private let children: [GitNarrowReferencePart] = [.header, .toolbar, .branch, .remote, .stash, .tabs, .history, .filter, .author, .list, .firstCommit, .detail]
 
     func testStandaloneNarrowHistoryKeepsItsOriginalToolbarAndChildFrames() async throws {
-        let root = try repositoryFixture()
+        try await assertStandaloneFrames(root: repositoryFixture())
+    }
+
+    func testBothGalleryFolderNamesKeepTheirOriginalNarrowToolbarFrames() async throws {
+        // Both actual gallery captions are offered space before ViewThatFits;
+        // the generated UUID caption in the original probe is offered after it.
+        // Compare each actual caption with the same-controller frozen UI.
+        for name in ["gallery-0.1.119-complete", "verify-gallery"] {
+            for width: CGFloat in [310, 336, 360, 400, 520, 600] {
+                try await assertStandaloneFrames(root: repositoryFixture(displayName: name), paneWidth: width,
+                                                 suffix: "-" + name + "-" + String(Int(width)))
+            }
+        }
+    }
+
+    func testTruncatedCaptionKeepsTheCharactersChosenUnderTheOriginalProposal() async throws {
+        // Measuring again at the truncated text's natural width used to
+        // discard two more i's. The composed accent must also stay intact.
+        for (name, width) in [("iiiiiiiiii-WWWWW", CGFloat(400)), ("cafe\u{301}-iiiiiiiiiiii-WWW", CGFloat(420))] {
+            try await assertStandaloneFrames(root: repositoryFixture(displayName: name), paneWidth: width,
+                                             suffix: "-caption-" + String(Int(width)), compareCaption: true)
+        }
+    }
+
+    private func assertStandaloneFrames(root: URL, paneWidth: CGFloat = 310, suffix: String = "", compareCaption: Bool = false) async throws {
         let controller = GitController(roots: [root.path]); controller.panel = .history
         addTeardownBlock { @MainActor in controller.letGo() }
-        let pane = CGSize(width: 310, height: 540)
+        let pane = CGSize(width: paneWidth, height: 540)
         let native = GitPanelView(controller: controller)
         let nativeWindow = mount(native, size: pane)
         try await ready(controller)
@@ -122,15 +148,48 @@ import XCTest
             .coordinateSpace(name: GitNarrowReferenceGeometry.coordinateSpace))
         let frozenWindow = mount(frozen, size: pane)
         let expected = try await settle(frozen, window: frozenWindow, minimumFrames: 14) { geometry.frames }
-        try record("frozen-v119", frames: expected, window: frozenWindow, minimum: minimum)
-        try record("native", frames: actual, window: nativeWindow)
+        try record("frozen-v119" + suffix, frames: expected, window: frozenWindow, minimum: minimum)
+        try record("native" + suffix, frames: actual, window: nativeWindow)
 
-        XCTAssertGreaterThan(minimum, pane.width, "The released content reports an intrinsic minimum wider than the actual pane allocation")
+        if pane.width == 310 {
+            XCTAssertGreaterThan(minimum, pane.width, "The released content reports an intrinsic minimum wider than the actual pane allocation")
+        }
         let toolbar = try XCTUnwrap(views(GitPanelToolbar.self, in: native).first)
-        XCTAssertEqual(toolbar.minimumWidth, try XCTUnwrap(expected[.toolbar]).width, accuracy: 0.5,
-                       "The actual folder and fixed controls determine the toolbar's nonshrinking minimum")
+        XCTAssertEqual(toolbar.width(forProposal: pane.width), try XCTUnwrap(expected[.toolbar]).width, accuracy: 0.5,
+                       "The actual folder and fixed controls determine the toolbar's width under the pane proposal")
         XCTAssertEqual(native.bounds.width, pane.width, accuracy: 0.5, "Toolbar overflow preserves the panel's pane allocation")
         try assertFrames(actual, expected, parts: children)
+        if compareCaption {
+            let tabs = try XCTUnwrap(expected[.tabs]), branch = try XCTUnwrap(expected[.branch])
+            // Text only: the existing zero-share text parity contract applies;
+            // the folder symbol's different rasterizer is outside this crop.
+            let text = CGRect(x: tabs.minX + 24, y: branch.midY - 7,
+                              width: branch.minX - 8 - tabs.minX - 24, height: 14)
+            for (name, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+                nativeWindow.appearance = NSAppearance(named: appearance); frozenWindow.appearance = NSAppearance(named: appearance)
+                _ = try await settle(native, window: nativeWindow) { self.nativeFrames(native) }
+                _ = try await settle(frozen, window: frozenWindow, minimumFrames: 14) { geometry.frames }
+                func crop(_ window: NSWindow) throws -> NSBitmapImageRep {
+                    let image = try XCTUnwrap(PiKitParity.windowImage(window).cgImage)
+                    let scale = CGFloat(image.width) / pane.width
+                    return NSBitmapImageRep(cgImage: try XCTUnwrap(image.cropping(to:
+                        CGRect(x: text.minX * scale, y: text.minY * scale, width: text.width * scale, height: text.height * scale))))
+                }
+                let old = try crop(frozenWindow), new = try crop(nativeWindow)
+                let difference = PiKitParity.difference(old, new)
+                print("GIT-CAPTION \(suffix)-\(name): \(difference.0)/\(difference.1) pixels, largest channel \(difference.2)")
+                XCTAssertEqual(difference.0, 0, "The frozen caption keeps exactly the same visible characters in \(name)")
+                XCTAssertLessThanOrEqual(difference.2, PiKitParityTests.largestChannel)
+                if let path = testEnvironment("PI_COMPONENT_GALLERY"), !path.isEmpty {
+                    let folder = URL(fileURLWithPath: path).appendingPathComponent("git-caption-pixels")
+                    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                    for (kind, image) in [("frozen-v119", old), ("native", new)] {
+                        try XCTUnwrap(image.representation(using: .png, properties: [:]))
+                            .write(to: folder.appendingPathComponent(kind + suffix + "-" + name + ".png"))
+                    }
+                }
+            }
+        }
     }
 
     func testChangesOpenedFromBlameKeepsTheReleasedHostingFramesInA310PointPane() async throws {
@@ -184,7 +243,17 @@ import XCTest
     /// This checks the actual RightPane rather than attributing a neighboring
     /// pane's proposal to GitPanel's toolbar or translating history rows.
     func testAChangesTabOverTheKeptSideRetainsTheReleasedRightPaneProposal() async throws {
-        let root = try repositoryFixture(), file = root.appendingPathComponent("PaymentClient.swift")
+        try await assertCoveredFrames(root: repositoryFixture())
+    }
+
+    func testBothGalleryFolderNamesKeepTheirOriginalToolbarOverTheKeptSide() async throws {
+        for name in ["gallery-0.1.119-complete", "verify-gallery"] {
+            try await assertCoveredFrames(root: repositoryFixture(displayName: name), suffix: "-" + name)
+        }
+    }
+
+    private func assertCoveredFrames(root: URL, suffix: String = "") async throws {
+        let file = root.appendingPathComponent("PaymentClient.swift")
         let bench = try ConversationPaneTests.workbench(root: root, chats: ["main"])
         addTeardownBlock { @MainActor in bench.model.shutdown() }
         var alternate = bench.profile; alternate.id = "alternate-connection"; alternate.name = "Team fast · Responses"
@@ -225,8 +294,8 @@ import XCTest
         let frozen = NSHostingView(rootView: reference.frame(width: pane.width, height: pane.height).environment(\.piReduceMotion, true))
         let frozenWindow = mount(frozen, size: pane)
         let expected = try await settle(frozen, window: frozenWindow, minimumFrames: GitNarrowReferencePart.allCases.count) { geometry.frames }
-        try record("frozen-v119-covered-side", frames: expected, window: frozenWindow, minimum: sideMinimum)
-        try record("native-covered-side", frames: actual, window: nativeWindow)
+        try record("frozen-v119-covered-side" + suffix, frames: expected, window: frozenWindow, minimum: sideMinimum)
+        try record("native-covered-side" + suffix, frames: actual, window: nativeWindow)
         print("GIT-COVERED-SIDE originalControlsMinimum=\(sideMinimum) nativeComposerMinimum=\(self.views(SidePaneView.self, in: native).first?.pane.minimumWidth ?? 0)")
         try assertFrames(actual, expected, parts: children)
         let mountedSide = try XCTUnwrap(views(SidePaneView.self, in: native).first)
