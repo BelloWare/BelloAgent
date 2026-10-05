@@ -150,7 +150,7 @@ import AppKit
             guard currentPage == key else { return }
             pageText = text; pageTotal = Int(value["total"]?.number ?? 0)
         } catch is CancellationError {
-        } catch { pageText = ""; notice = error.localizedDescription }
+        } catch { if currentPage == key { pageText = ""; notice = error.localizedDescription } }
     }
 
     // MARK: Copy, capture settings and exports

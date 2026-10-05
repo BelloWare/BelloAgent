@@ -83,10 +83,16 @@ import AppKit
         for case let action as InspectorHeaderAction in actionViews { action.named = named }
         let action = shellNaturalSize(actions)
         let titleWidth = min(titleView.naturalWidth, max(0, width - action.width - (badge.width > 0 ? badge.width + 8 : 0) - 18))
-        let height = max(titleView.height(forWidth: titleWidth), badge.height, action.height)
+        let titleHeight = titleView.height(forWidth: titleWidth)
+        let titleBaseline = shellBaseline(titleView, height: titleHeight)
+        let badgeBaseline = badges.items.compactMap { $0.view }.map { shellBaseline($0, height: shellNaturalSize($0).height) }.max() ?? 0
+        let baseline = max(titleBaseline, badgeBaseline)
+        let groupHeight = baseline + max(titleHeight - titleBaseline, badge.height - badgeBaseline)
+        let height = max(groupHeight, action.height)
         if apply {
-            titleView.frame = CGRect(x: 0, y: PiKit.round((height - titleView.intrinsicContentSize.height) / 2, piScale), width: titleWidth, height: titleView.intrinsicContentSize.height)
-            badges.frame = CGRect(x: titleWidth + 8, y: PiKit.round(shellBaseline(titleView, height: titleView.intrinsicContentSize.height) + titleView.frame.minY - (badges.items.compactMap { $0.view }.map { shellBaseline($0, height: shellNaturalSize($0).height) }.max() ?? badge.height), piScale), width: badge.width, height: badge.height)
+            let top = (height - groupHeight) / 2
+            titleView.frame = CGRect(x: 0, y: PiKit.round(top + baseline - titleBaseline, piScale), width: titleWidth, height: titleHeight)
+            badges.frame = CGRect(x: titleWidth + 8, y: PiKit.round(top + baseline - badgeBaseline, piScale), width: badge.width, height: badge.height)
             actions.frame = CGRect(x: max(0, width - action.width), y: PiKit.round((height - action.height) / 2, piScale), width: action.width, height: action.height)
         }
         return height
@@ -104,7 +110,7 @@ import AppKit
 @MainActor class InspectorHeaderAction: DashView {
     private let full: PiKit.Button
     private let icon: PiKit.IconButton
-    var named = true { didSet { guard named != oldValue else { return }; full.isHidden = !named; icon.isHidden = named; invalidateIntrinsicContentSize(); needsLayout = true } }
+    var named = true { didSet { guard named != oldValue else { return }; full.isHidden = !named; icon.isHidden = named; invalidateIntrinsicContentSize(); needsLayout = true; PiKit.sizeChanged(self) } }
     var isEnabled: Bool { get { full.isEnabled } set { full.isEnabled = newValue; icon.isEnabled = newValue } }
     var namedWidth: CGFloat { full.intrinsicContentSize.width }
     init(title: String, symbol: String, help: String, identifier: String, action: @escaping () -> Void) {
