@@ -213,11 +213,11 @@ final class CostLimitTests: XCTestCase {
         XCTAssertNil(chat.session.failureMessage)
     }
 
-    @MainActor static func trigger(_ identifier: String, in view: NSView) -> PiPopoverTriggerButton? {
-        ConversationPaneTests.views(PiPopoverTriggerButton.self, in: view).first { $0.accessibilityIdentifier() == identifier }
+    @MainActor static func trigger(_ identifier: String, in view: NSView) -> NSButton? {
+        ConversationPaneTests.views(NSButton.self, in: view).first { $0.accessibilityIdentifier() == identifier }
     }
-    @MainActor static func waitForTrigger(_ identifier: String, in chat: WireChat) async throws -> PiPopoverTriggerButton {
-        var found: PiPopoverTriggerButton?
+    @MainActor static func waitForTrigger(_ identifier: String, in chat: WireChat) async throws -> NSButton {
+        var found: NSButton?
         try await chat.waitUntil("\(identifier) is on screen") { found = trigger(identifier, in: chat.hosted); return found != nil }
         return try XCTUnwrap(found)
     }
