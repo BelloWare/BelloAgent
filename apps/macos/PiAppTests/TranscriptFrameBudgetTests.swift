@@ -895,7 +895,7 @@ final class ConversationPaneRetentionTests: XCTestCase {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1_200, height: 820),
                               styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        var held: NSView? = NSHostingView(rootView: WorkspaceView(model: model))
+        var held: NSView? = WorkspaceRootView(model: model)
         window.contentView = held
         window.makeKeyAndOrderFront(nil)
         defer { window.contentView = nil; window.close() }
@@ -1014,7 +1014,7 @@ final class ConversationPaneRetentionTests: XCTestCase {
                               styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentView = NSHostingView(rootView: VStack(spacing: 0) {
-            WindowChrome(sidebarWidth: 260, focusedSessionID: nil).frame(height: WindowChrome.height)
+            WindowChromeReference(sidebarWidth: 260, focusedSessionID: nil).frame(height: WindowChrome.height)
             WorkspaceSidebar(model: model, width: 260)
         })
         window.makeKeyAndOrderFront(nil)

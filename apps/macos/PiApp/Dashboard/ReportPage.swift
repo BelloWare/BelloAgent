@@ -375,7 +375,7 @@ enum ReportThroughputTile {
     private let routesText = PiKit.TextLine(PiKit.Line("", font: PiKit.Font.caption, color: .piInkTertiary))
     private lazy var requestControls = ReportRequestControls(tabs: groupingTabs, pager: requestPagerView)
     private let requestList = ShellStack(.vertical, spacing: 0)
-    private lazy var requestGrid = ReportGridScroll(content: ShellInset(requestList), width: 1_100)
+    private lazy var requestGrid = ReportGridScroll(content: PiKit.inset(requestList), width: 1_100)
     /// Each row's view and what it was made from, by the row's identity.
     private var rowViews: [String: (same: (Any) -> Bool, view: NSView)] = [:]
     private var usedRows: Set<String> = []
@@ -1089,7 +1089,7 @@ enum ReportThroughputTile {
         addSubview(scroll)
     }
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
-    private var contentHeight: CGFloat { PiKit.height(of: (content as? ShellInset)?.content ?? content, width: width) }
+    private var contentHeight: CGFloat { PiKit.height(of: (content as? PiKit.Box)?.content ?? content, width: width) }
     func height(forWidth width: CGFloat) -> CGFloat { contentHeight }
     override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: contentHeight) }
     override func layout() {

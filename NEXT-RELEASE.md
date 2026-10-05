@@ -26,16 +26,16 @@
 - [x] **Transcript** (`Transcript/`): rows, cards, chrome, pills, markdown/code surfaces, turn fold, versions, large table — all AppKit inside the existing AppKit scroll view. Chat switch measured against the baseline.
 
 ## Wave 2 (after the components land)
-- [ ] **Workspace shell** (`Workspaces/`, `Composer/`, `Tabs/`, `Terminal/`): sidebar, conversation pane, footer, composer chrome, queue panel, tabs, terminal panel, sheets.
-  - Native metrics footer and session-statistics pills completed on 2026-10-05, including responsive layout, capture controls, run clock and automatic context counting. Temporary shell and transcript adapters remain.
-- [ ] **Inspector and dashboard** (`Inspector/`, `Dashboard/`).
-  - Dashboard, live monitor, menu-bar panel, chart engine, cost-limit controls and metrics footer integrated and validated on 2026-10-05. Inspector pages and session-statistics dialogs remain.
+- [x] **Workspace shell** (`Workspaces/`, `Composer/`, `Tabs/`, `Terminal/`): sidebar, conversation pane, footer, composer chrome, queue panel, tabs, terminal panel, sheets.
+  - Native views are mounted directly. The metrics footer retains responsive layout, capture controls, run clock and automatic context counting; temporary SwiftUI adapters have been removed.
+- [x] **Inspector and dashboard** (`Inspector/`, `Dashboard/`).
+  - All Inspector pages, statistics dialogs, retained bodies, JSON/search, resources and MCP controls now use AppKit. Dashboard, live monitor, menu-bar panel, chart engine and cost-limit controls are integrated. Focused parity, lifetime, selection and accessibility checks pass; the complete gallery and gate remain below.
 - [x] **Settings, onboarding, Git, files** (`Application/` settings and onboarding views, `Git/`, `Files/`, and the two SwiftUI files in `packages/bello-views`).
 
 Integration checks: [AppKit integration record](docs/validation/AppKit-integration-0.1.120-2026-10-05.md). These are focused checks; the release gate, full gallery and Release soak are still pending.
 
 ## Wave 3
-- [ ] **App shell**: the SwiftUI `App` entry point becomes an `NSApplicationDelegate` with window controllers; menus, Settings window, scenes. No file imports SwiftUI; a test fails if one does.
+- [x] **App shell**: native `NSApplicationDelegate`, window controllers, menus and Settings window. Production sources in the app and `bello-views` have no SwiftUI imports or hosting views; a test enforces this. Frozen SwiftUI references remain in the test target for parity checks.
 
 ## Before release
 - [ ] Codex (gpt-6.1-sol, xhigh) double-checks the whole change from e59e41a7 and gives advice; findings acted on, advice reported to the owner (owner, 2026-10-04).
@@ -44,4 +44,4 @@ Integration checks: [AppKit integration record](docs/validation/AppKit-integrati
 - [ ] Full gate passes (`scripts/verify-release.sh`).
 - [ ] Hour-long soak of a Release build passes, no exceptions.
 - [ ] Owner checks, or the owner defers them: VoiceOver; one compaction against a real gateway.
-- [ ] Release notes.
+- [x] Release notes, including the terminal cursor correction (`releases/0.1.120.html`).

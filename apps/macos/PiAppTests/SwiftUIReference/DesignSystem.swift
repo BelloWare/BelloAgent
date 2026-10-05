@@ -1,4 +1,5 @@
 import SwiftUI
+@testable import PiApp
 import AppKit
 
 // The shared visual language in SwiftUI's terms. The tokens themselves —

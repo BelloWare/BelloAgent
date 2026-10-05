@@ -11,7 +11,7 @@ import Combine
 /// AppKit `SkillPillButton` over it taking the press, the pointer, the
 /// keyboard, Copy and the accessibility action, as it always did.
 @MainActor final class TranscriptNativeSkillPill: NSView {
-    static let height = SkillPillFace.height
+    static let height = SkillPillFaceView.height
     static let nameFont = NSFont.systemFont(ofSize: 12, weight: .semibold)
     static let argumentsFont = NSFont.systemFont(ofSize: 12)
     static let padding: CGFloat = 7

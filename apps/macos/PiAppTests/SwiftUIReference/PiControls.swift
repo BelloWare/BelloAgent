@@ -1,4 +1,5 @@
 import SwiftUI
+@testable import PiApp
 import AppKit
 
 // MARK: - Controls

@@ -21,7 +21,7 @@ enum TranscriptRowChrome {
     static let indent: CGFloat = leading + gap
     /// The icon-to-chevron cross-fade, and the chevron's own turn.
     static let chevronSeconds = 0.1
-    /// A fold opening or closing. Quicker than `PiMotion.base`: a disclosure
+    /// A fold opening or closing. Quicker than `PiKit.Motion.base`: a disclosure
     /// is an answer to a click, not an entrance, and at 220 ms a reader
     /// opening several rows in a row waits on the transcript. The curve is the
     /// same ease-out, so nothing else about the motion changes.

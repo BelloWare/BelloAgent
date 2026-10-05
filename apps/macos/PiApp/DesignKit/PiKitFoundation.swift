@@ -287,3 +287,19 @@ extension NSView {
         return resolved
     }
 }
+
+/// A page that hands down the window's reduced motion (`piReduceMotion`).
+@MainActor protocol InheritsReducedMotion: AnyObject { var inheritedReduceMotion: Bool { get } }
+extension NSView {
+    /// Whether motion is reduced here: the system's, or the window's as the
+    /// enclosing page hands it down.
+    var piReducesMotion: Bool {
+        if PiKit.Motion.reduced { return true }
+        var view: NSView? = self
+        while let current = view {
+            if let page = current as? InheritsReducedMotion, page.inheritedReduceMotion { return true }
+            view = current.superview
+        }
+        return false
+    }
+}

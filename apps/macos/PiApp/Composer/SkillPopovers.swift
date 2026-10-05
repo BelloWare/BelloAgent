@@ -125,12 +125,12 @@ import Combine
     // MARK: A sent message's pills
 
     func hoverSent(_ inside: Bool, use: TranscriptSkillUse, anchor: NSView, session: SessionDisplay) {
-        hover(inside, anchor: anchor) { [weak session] in .sent(use, catalog: session?.skillCatalog ?? SkillCatalog()) }
+        hover(inside, anchor: anchor, reduceMotion: anchor.piReducesMotion) { [weak session] in .sent(use, catalog: session?.skillCatalog ?? SkillCatalog()) }
     }
     func pressSent(use: TranscriptSkillUse, messageID: String, anchor: NSView, model: WorkspaceModel, session: SessionDisplay) {
         let waits = loadCatalogIfNeeded(model: model, session: session)
         let actions = SkillPopoverActions(open: fileAction(use.path, reveal: false), reveal: fileAction(use.path, reveal: true))
-        present(key: Self.sentKey(messageID: messageID, skillID: use.id), anchor: anchor, reduceMotion: PiKit.Motion.reduced, waitsForCatalog: waits,
+        present(key: Self.sentKey(messageID: messageID, skillID: use.id), anchor: anchor, reduceMotion: anchor.piReducesMotion, waitsForCatalog: waits,
                 isReady: { Self.catalogAnswered(session) },
                 presented: { [weak session] in (.sent(use, catalog: session?.skillCatalog ?? SkillCatalog()), actions) }) {
             SkillPopoverContentView(session: session, room: $0) { [weak session] in
@@ -171,4 +171,3 @@ struct SkillPopoverActions {
     var remove: (() -> Void)? = nil
     var editable: Bool { editArguments != nil || remove != nil }
 }
-

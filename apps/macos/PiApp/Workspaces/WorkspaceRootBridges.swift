@@ -1,39 +1,11 @@
 import AppKit
-import SwiftUI
 
-// TEMPORARY (0.1.120): where the AppKit workspace window (`WorkspaceRootView`)
-// still meets SwiftUI.
-// - The window scene (Application/PiApp.swift) takes `WorkspaceView`, a
-//   SwiftUI view: it hosts the AppKit root and carries the scene's focused
-//   value for the menu commands.
-// - Sheets are presented in the app's sheet window (Application/PiSheetWindow),
-//   which takes SwiftUI content; the Settings, Conversation Content and
-//   Resources sheets are still SwiftUI (Application/, Inspector/).
-// Each part goes when its other side is AppKit.
+extension ConversationContentView: PiSheetWindowContent {
+    func inherit(_ values: PiSheetWindowInherited) { inheritedEnabled = values.enabled }
+}
 
-/// The workspace window's content, where the SwiftUI scene asks for it.
-struct WorkspaceView: View {
-    @ObservedObject var model: WorkspaceModel
-    init(model: WorkspaceModel) { self.model = model }
-    var body: some View {
-        Root(model: model)
-            .ignoresSafeArea(.container, edges: .top)
-            .frame(minWidth: 920, minHeight: 600)
-            .focusedSceneValue(\.workspaceCommandModel, model)
-    }
-    private struct Root: NSViewRepresentable {
-        let model: WorkspaceModel
-        func makeNSView(context: Context) -> WorkspaceRootView {
-            let view = WorkspaceRootView(model: model)
-            view.inheritedEnabled = context.environment.isEnabled
-            view.inheritedReduceMotion = context.environment.piReduceMotion
-            return view
-        }
-        func updateNSView(_ view: WorkspaceRootView, context: Context) {
-            view.inheritedEnabled = context.environment.isEnabled
-            view.inheritedReduceMotion = context.environment.piReduceMotion
-        }
-    }
+extension ResourceInspector: PiSheetWindowContent {
+    func inherit(_ values: PiSheetWindowInherited) { inheritedEnabled = values.enabled }
 }
 
 /// The pages laid over the chats.
@@ -52,25 +24,25 @@ struct WorkspaceView: View {
     }
 }
 
-/// The workspace's sheets, each in the app's own sheet window while the
-/// model asks for it (`piSheetWindow`), closed again when it stops asking.
+/// The workspace's sheets, each in its native sheet window while the
+/// model asks for it, closed again when it stops asking.
 @MainActor final class WorkspaceSheetPresenter {
     let model: WorkspaceModel
     @MainActor private struct Sheet {
         let coordinator = PiSheetWindowCoordinator()
         let wanted: @MainActor (WorkspaceModel) -> AnyHashable?
         let dismiss: @MainActor (WorkspaceModel, AnyHashable) -> Void
-        let content: @MainActor (WorkspaceModel, AnyHashable) -> AnyView?
+        let content: @MainActor (WorkspaceModel, AnyHashable) -> NSView?
     }
     private let sheets: [Sheet]
     init(model: WorkspaceModel) {
         self.model = model
         func flag(_ get: @escaping @MainActor (WorkspaceModel) -> Bool, _ clear: @escaping @MainActor (WorkspaceModel) -> Void,
-                  _ content: @escaping @MainActor (WorkspaceModel) -> AnyView?) -> Sheet {
+                  _ content: @escaping @MainActor (WorkspaceModel) -> NSView?) -> Sheet {
             Sheet(wanted: { get($0) ? AnyHashable(true) : nil }, dismiss: { model, _ in clear(model) }, content: { model, _ in content(model) })
         }
         func item<Item: Identifiable>(_ get: @escaping @MainActor (WorkspaceModel) -> Item?, _ clear: @escaping @MainActor (WorkspaceModel) -> Void,
-                                      _ content: @escaping @MainActor (WorkspaceModel, Item) -> AnyView) -> Sheet {
+                                      _ content: @escaping @MainActor (WorkspaceModel, Item) -> NSView) -> Sheet {
             Sheet(wanted: { get($0).map { AnyHashable($0.id) } },
                   // Only the sheet still asked for: a closing one never clears its successor.
                   dismiss: { model, identity in if let current = get(model), AnyHashable(current.id) == identity { clear(model) } },
@@ -81,16 +53,16 @@ struct WorkspaceView: View {
         }
         sheets = [
             flag({ $0.showProfiles }, { $0.showProfiles = false }) { model in
-                AnyView(ProfileSettings(model: model, controller: model.settingsSheetEditor(), windowChrome: false).frame(width: 880, height: 780))
+                ProfileSettingsView(model: model, controller: model.settingsSheetEditor(), windowChrome: false, dismiss: { [weak model] in model?.showProfiles = false })
             },
             flag({ $0.showConversationContent }, { $0.showConversationContent = false }) { model in
-                model.contentSessionID.map { AnyView(ConversationContentView(model: model, sessionID: $0)) }
+                model.contentSessionID.map { ConversationContentView(model: model, sessionID: $0, dismiss: { [weak model] in model?.showConversationContent = false }) }
             },
-            flag({ $0.showResources }, { $0.showResources = false }) { model in AnyView(ResourceInspector(model: model)) },
-            flag({ $0.showWorkspaceManager }, { $0.showWorkspaceManager = false }) { model in AnyView(WorkspaceManagerView(model: model)) },
-            item({ $0.renameTarget }, { $0.renameTarget = nil }) { model, target in AnyView(RenameChatSheet(model: model, chatID: target.id)) },
-            item({ $0.topicEditor }, { $0.topicEditor = nil }) { model, target in AnyView(TopicSheet(model: model, target: target)) },
-            item({ $0.webhookPreviewTarget }, { $0.webhookPreviewTarget = nil }) { model, target in AnyView(WebhookPreviewSheet(model: model, chatID: target.id)) },
+            flag({ $0.showResources }, { $0.showResources = false }) { model in ResourceInspector(model: model, dismiss: { [weak model] in model?.showResources = false }) },
+            flag({ $0.showWorkspaceManager }, { $0.showWorkspaceManager = false }) { model in WorkspaceManagerSheetView(model: model, dismiss: { [weak model] in model?.showWorkspaceManager = false }) },
+            item({ $0.renameTarget }, { $0.renameTarget = nil }) { model, target in RenameChatSheetView(model: model, chatID: target.id, dismiss: { [weak model] in if model?.renameTarget?.id == target.id { model?.renameTarget = nil } }) },
+            item({ $0.topicEditor }, { $0.topicEditor = nil }) { model, target in TopicSheetView(model: model, target: target, dismiss: { [weak model] in if model?.topicEditor?.id == target.id { model?.topicEditor = nil } }) },
+            item({ $0.webhookPreviewTarget }, { $0.webhookPreviewTarget = nil }) { model, target in WebhookPreviewSheetView(model: model, chatID: target.id, dismiss: { [weak model] in if model?.webhookPreviewTarget?.id == target.id { model?.webhookPreviewTarget = nil } }) },
         ]
     }
     func attach(_ window: NSWindow) { for sheet in sheets { sheet.coordinator.anchorMoved(to: window) } }

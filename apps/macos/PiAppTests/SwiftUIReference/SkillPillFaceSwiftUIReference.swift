@@ -1,4 +1,5 @@
 import SwiftUI
+@testable import PiApp
 
 // TEMPORARY: the SwiftUI pill face, kept only for the transcript's SwiftUI
 // rows (Transcript/TranscriptSkillPills.swift) until they draw

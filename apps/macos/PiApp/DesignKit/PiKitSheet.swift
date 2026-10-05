@@ -149,7 +149,7 @@ extension PiKit {
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             // The header badge pops in once.
-            if window != nil, let badge, !Motion.reduced, let layer = badge.layer {
+            if window != nil, let badge, !piReducesMotion, let layer = badge.layer {
                 let pop = Motion.pop("transform.scale"); pop.fromValue = 0.6; pop.toValue = 1
                 pop.beginTime = CACurrentMediaTime() + 0.08; pop.fillMode = .backwards
                 let fade = CABasicAnimation(keyPath: "opacity"); fade.fromValue = 0; fade.toValue = 1

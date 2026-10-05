@@ -1,5 +1,5 @@
 import AppKit
-import SwiftUI
+
 
 /// A compact preview card that appears after the pointer has rested on a
 /// control for a moment and goes away the moment it leaves: a richer tooltip.
@@ -26,17 +26,15 @@ import SwiftUI
     /// Test seam: how long the pointer must rest.
     var delay = PiHoverCardPresenter.delay
     /// The app's motion policy for the next card: it fades in unless reduced.
-    var reducesMotion = PiMotion.reducesMotion
+    var reducesMotion = PiKit.Motion.reduced
 
     var isShown: Bool { panel?.isVisible == true }
     var isWaiting: Bool { pending != nil }
     /// The control the card is showing for, or waiting to show for.
     var anchorView: NSView? { anchor }
 
-    /// The pointer entered or left `anchor`. Entering starts the wait; leaving
-    /// the control the card belongs to hides it at once.
-    func hover(_ inside: Bool, over anchor: NSView, width: CGFloat, content: @escaping @MainActor () -> AnyView,
-               native: (@MainActor () -> NSView)? = nil) {
+    /// A native card opens after the pointer rests and closes on leaving.
+    func hover(_ inside: Bool, over anchor: NSView, width: CGFloat, view: @escaping @MainActor () -> NSView) {
         if inside {
             if self.anchor === anchor, isShown || pending != nil { return }
             hide()
@@ -47,16 +45,11 @@ import SwiftUI
                 guard let self, !Task.isCancelled else { return }
                 self.pending = nil
                 guard let anchor, anchor.window != nil, !anchor.isHiddenOrHasHiddenAncestor else { self.anchor = nil; return }
-                if let native { self.show(over: anchor, width: width, view: native()) } else { self.show(over: anchor, width: width, content: content()) }
+                self.show(over: anchor, width: width, view: view())
             }
         } else if self.anchor === anchor {
             hide()
         }
-    }
-
-    /// The same for an AppKit card: `view` at `width`, on the card's surface.
-    func hover(_ inside: Bool, over anchor: NSView, width: CGFloat, view: @escaping @MainActor () -> NSView) {
-        hover(inside, over: anchor, width: width, content: { AnyView(EmptyView()) }, native: view)
     }
 
     func hide() {
@@ -101,25 +94,11 @@ import SwiftUI
         present(over: anchor, host: host)
     }
 
-    private func show(over anchor: NSView, width: CGFloat, content: AnyView) {
-        guard anchor.window != nil else { return }
-        let card = content
-            .frame(width: width, alignment: .leading)
-            .fixedSize(horizontal: false, vertical: true)
-            .background(RoundedRectangle(cornerRadius: PiRadius.md, style: .continuous).fill(Color.piSurface))
-            .overlay(RoundedRectangle(cornerRadius: PiRadius.md, style: .continuous).stroke(Color.piHairlineStrong, lineWidth: 1))
-            .shadow(color: Color.piShadow, radius: 10, y: 3)
-            .padding(Self.shadowMargin)
-            .accessibilityHidden(true)
-        let host = NSHostingView(rootView: AnyView(card))
-        present(over: anchor, host: host)
-    }
-
     private func present(over anchor: NSView, host: NSView) {
         guard let window = anchor.window else { return }
         if let current = Self.current, current !== self { current.hide() }
         host.appearance = anchor.effectiveAppearance
-        let size = host is NSHostingView<AnyView> ? host.fittingSize : host.frame.size
+        let size = host.frame.size
         let onScreen = window.convertToScreen(anchor.convert(anchor.bounds, to: nil))
         let visible = (window.screen ?? NSScreen.main)?.visibleFrame ?? onScreen.insetBy(dx: -2_000, dy: -2_000)
         let panel = PiHoverCardPanel(contentRect: Self.frame(size: size, anchor: onScreen, window: window.frame, visible: visible),
@@ -137,7 +116,7 @@ import SwiftUI
         panel.orderFront(nil)
         if !reduce {
             NSAnimationContext.runAnimationGroup { context in
-                context.duration = Double(PiMotion.quickMilliseconds) / 1_000
+                context.duration = Double(PiKit.Motion.quickMilliseconds) / 1_000
                 panel.animator().alphaValue = 1
             }
         }

@@ -1,6 +1,6 @@
 # Handover: Bello Agent 0.1.120 (AppKit only), 2026-10-05
 
-**Continuation, 2026-10-05:** the transcript and dashboard branches have been merged into `dev/next`, built and tested. The saved native metrics-footer work has also been completed, with regression and visual checks. Follow `NEXT-RELEASE.md` and [the integration record](validation/AppKit-integration-0.1.120-2026-10-05.md) for the current state; the branch table below describes the original handover snapshot. 0.1.120 remains unreleased.
+**Continuation, 2026-10-05:** the entire production app, including the Inspector, statistics, resources, menus and application entry point, now uses AppKit. The three final Inspector workstreams have been merged into `dev/next`; native lifecycle, accessibility, retained archive reads and component parity checks cover the integration. Follow `NEXT-RELEASE.md` and [the integration record](validation/AppKit-integration-0.1.120-2026-10-05.md) for current validation. The branch table and numbered port list below describe the original handover snapshot, not outstanding implementation. The complete gallery, gate, Release measurements and hour soak are in progress. 0.1.120 remains unreleased.
 
 Read this first, then `NEXT-RELEASE.md`, `AGENTS.md`, `docs/appkit-components.md`, `docs/Swift-Test-Handoff.md` and `docs/Release.md`.
 
@@ -51,7 +51,7 @@ Old workstream branches (`dev/appkit-design`, `-shell`, `-settings`, `-kitfix`, 
   - Tests: `TerminalCursorAlignmentTests` (15), which drive real zsh. 0.1.119 has all these bugs.
 - **Performance baseline:** `docs/perf/appkit-baseline.md` and `scripts/perf-transcript.sh`, both on the transcript branch. The baseline Release build of `e59e41a7` was kept at `$S/baseline-0.1.120` (scratch, may be wiped). If it's gone, rebuild that commit for before/after comparisons.
 
-## What is left
+## Original implementation handover (completed on 2026-10-05)
 1. **Integration completed, 2026-10-05.** The transcript and dashboard branches are merged into `dev/next` with their commit identities preserved. Focused builds, behavior checks and parity checks passed; see the integration record. The remaining work below still precedes the release gate.
 2. **Inspector/** (still SwiftUI):
    - `MetricsFooter` and `SessionStatsPills` are now AppKit, with the saved WIP completed and validated;

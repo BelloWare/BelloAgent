@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+@testable import PiApp
 
 // Temporary (0.1.120): ⌘P's list is placed over the window by the SwiftUI
 // workspace view (`WorkspaceView`), which the workspace-shell port replaces.

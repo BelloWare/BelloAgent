@@ -1,4 +1,5 @@
 import SwiftUI
+@testable import PiApp
 
 // MARK: - Sheets
 
@@ -61,7 +62,7 @@ struct PiSheet<Content: View, Actions: View, Footer: View>: View {
                 .padding(.top, windowChrome ? PiSpacing.md : PiSpacing.lg).padding(.bottom, PiSpacing.lg)
             }
             .fixedSize(horizontal: false, vertical: true)
-            .background { if windowChrome { PiWindowBar() } }
+            .background { if windowChrome { PiWindowBarReference() } }
             .background(Color.piWindow)
             Rectangle().fill(Color.piHairline).frame(height: 1)
             content.frame(maxWidth: .infinity, maxHeight: .infinity).background(Color.piContent)

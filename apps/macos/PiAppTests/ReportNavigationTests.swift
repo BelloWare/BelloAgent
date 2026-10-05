@@ -34,7 +34,7 @@ final class ReportNavigationTests: XCTestCase {
         let (model, _) = try await model()
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1400, height: 900), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        let hosted = NSHostingView(rootView: WorkspaceView(model: model))
+        let hosted = WorkspaceRootView(model: model)
         window.contentView = hosted
         defer {
             model.report.suspend(); window.contentView = nil; window.close()

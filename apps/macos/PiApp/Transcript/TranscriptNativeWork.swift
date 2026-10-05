@@ -35,7 +35,7 @@ import AppKit
     private(set) var enabled = true
     private(set) var rightToLeft = false
     /// Under Reduce Motion nothing sweeps and nothing turns.
-    var reduceMotion = PiMotion.reducesMotion
+    var reduceMotion = PiKit.Motion.reducesMotion
 
     private let focusFill = TranscriptPanel()
     private let hoverPanel = TranscriptPanel()

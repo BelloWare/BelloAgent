@@ -8,7 +8,7 @@ import Combine
 /// tab's edits live in `ConnectionSettingsController`, which keeps them across
 /// tab switches, lists models for a connection before it is saved, and saves
 /// against the vault's current revision.
-@MainActor final class ProfileSettingsView: NSView, PiKit.SizeObserver {
+@MainActor final class ProfileSettingsView: NSView, PiKit.SizeObserver, InheritsEnabled {
     let model: WorkspaceModel
     let controller: ConnectionSettingsController
     let windowChrome: Bool
@@ -24,8 +24,7 @@ import Combine
     private let enabled = EnabledState()
     /// Each control's value from the controller, run on every change.
     private var updaters: [() -> Void] = []
-    /// Hosted SwiftUI on the page, disabled with the form.
-    private var hostedViews: [HostedSwiftUI] = []
+    var inheritedEnabled = true { didSet { if oldValue != inheritedEnabled { refresh() } } }
     private var builtKey: StructureKey?
     private var observations: [AnyCancellable] = []
     private var refreshScheduled = false
@@ -37,7 +36,7 @@ import Combine
         footer = SettingsFooter(model: model, controller: controller)
         sheet = PiKit.Sheet("Settings", subtitle: "Your connections, keys, headers, MCP servers and preferences. Everything here is kept in your macOS Keychain and only this signed app can read it.",
                             symbol: "gearshape", windowChrome: windowChrome, content: body, actions: [cancelButton], footer: footer)
-        super.init(frame: .zero)
+        super.init(frame: NSRect(x: 0, y: 0, width: 880, height: 780))
         footer.dismiss = dismiss
         // Cancel is the explicit way out without saving: every unsaved edit
         // goes, and Settings opens next time on what the vault holds.
@@ -57,6 +56,7 @@ import Combine
     }
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
     override var isFlipped: Bool { true }
+    override var intrinsicContentSize: NSSize { NSSize(width: 880, height: 780) }
     func contentSizeChanged() { needsLayout = true; page.needsLayout = true }
 
     override func viewDidMoveToWindow() {
@@ -88,7 +88,7 @@ import Combine
         if let lastProfileID, lastProfileID != controller.draft.profile.id { controller.confirmingTest = false }
         lastSection = section; lastProfileID = controller.draft.profile.id
         sections.update(selection: section, edited: controller.editedSections)
-        sheet.cancelDisabled = controller.saving
+        sheet.cancelDisabled = controller.saving || !inheritedEnabled
         enabled.set(cancelButton, !controller.saving)
         let key = structureKey
         if key != builtKey {
@@ -103,11 +103,10 @@ import Combine
         footer.refresh()
         // A save writes the tabs it captured when it started; nor while the
         // app is quitting or updating: its last save has been decided.
-        let formEnabled = !(controller.busy || model.installPreparing)
+        let formEnabled = inheritedEnabled && !(controller.busy || model.installPreparing)
         enabled.formEnabled = formEnabled
         enabled.apply(to: page, formEnabled: formEnabled)
-        enabled.apply(to: cancelButton, formEnabled: true)
-        for hosted in hostedViews { hosted.disabled = !formEnabled }
+        enabled.apply(to: cancelButton, formEnabled: inheritedEnabled)
         footer.applyEnabled(formEnabled)
         needsLayout = true; page.needsLayout = true
     }
@@ -121,14 +120,14 @@ import Combine
         let draft = controller.draft
         let source = model.catalogProfile(for: draft.profile)
         let note = controller.isSaved && source.id != draft.profile.id
-            ? "Model list follows \(source.name) · \(CatalogModelPicker.sourceLabel(source)). Editing the URL above saves a separate catalog for this connection." : nil
+            ? "Model list follows \(source.name) · \(CatalogModelPickerView.sourceLabel(source)). Editing the URL above saves a separate catalog for this connection." : nil
         return StructureKey(section: model.settingsSection, isSaved: controller.isSaved, supportedAPI: controller.supportedAPI, catalogNote: note,
                             pinned: draft.replayPolicy == "pinned", quotaUnlimited: controller.preferences.capture.quotaUnlimited,
                             profiles: model.profiles.count, profileID: draft.profile.id)
     }
 
     private func build() {
-        updaters = []; hostedViews = []
+        updaters = []
         let items: [NSView]
         switch model.settingsSection {
         case .connections: items = connections()
@@ -674,14 +673,21 @@ import Combine
         let controller = controller, mini = mini
         let draft = controller.draft
         let close = { [weak self] in self?.popover.close() }
-        let content = SettingsBridges.catalogPicker(model: model, profile: controller.listingProfile, current: mini ? draft.profile.miniModelId : draft.profile.modelId,
+        let content = CatalogModelPickerView(model: model, profile: controller.listingProfile, current: mini ? draft.profile.miniModelId : draft.profile.modelId,
                                                     draft: .init(profile: draft.profile, key: draft.key),
                                                     defaultTitle: mini ? "Use catalog Mini default" : nil, defaultSelected: mini && draft.profile.miniModelId == nil,
                                                     useDefault: mini ? { close(); controller.useCatalogMiniDefault() } : nil) { item in
             close()
             if mini { controller.chooseMini(item) } else { controller.choose(item) }
         }
-        popover.showController(content, from: self, edge: .maxX)
+        let viewController = NSViewController()
+        content.frame = NSRect(origin: .zero, size: content.intrinsicContentSize)
+        viewController.view = content; viewController.preferredContentSize = content.intrinsicContentSize
+        content.sizeChanged = { [weak content, weak viewController] in
+            guard let content, let viewController else { return }
+            viewController.preferredContentSize = content.intrinsicContentSize
+        }
+        popover.showController(viewController, from: self, edge: .maxX)
     }
 
     /// Only for a connection whose API lists models.

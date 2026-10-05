@@ -204,7 +204,7 @@ extension PiKit {
     /// A rounded, bordered container for lists and editors, its content clipped.
     @MainActor static func inset(_ content: NSView, sunken: Bool = false) -> Box {
         let box = Box(fill: sunken ? .piSurfaceSunken : .piSurface, stroke: .piHairline, cornerRadius: PiRadius.md, content: content)
-        box.clipsContent = true
+        box.clipsContent = true; box.clipsStroke = true
         return box
     }
     /// A raised surface: white on a hairline with a short, soft shadow.
@@ -217,39 +217,50 @@ extension PiKit {
 
     /// A section's heading, an optional quieter line under it, and an
     /// accessory at the trailing edge on the first line's baseline.
-    @MainActor final class SectionHeader: NSView {
-        private let title: TextLine, subtitle: TextLine?
+    @MainActor final class SectionHeader: NSView, WidthSizing {
+        private let title: TextLine
+        private let subtitle: WrappedText?
         let accessory: NSView?
         init(_ title: String, subtitle: String? = nil, accessory: NSView? = nil) {
             self.title = TextLine(Line(title, font: PiKit.Font.heading, color: .piInk))
-            self.subtitle = subtitle.map { TextLine(Line($0, font: PiKit.Font.caption, color: .piInkSecondary)) }
+            self.subtitle = subtitle.map { WrappedText($0, font: PiKit.Font.caption, color: .piInkSecondary) }
             self.accessory = accessory
             super.init(frame: .zero)
             for view in [self.title, self.subtitle, accessory].compactMap({ $0 }) { addSubview(view) }
         }
         required init?(coder: NSCoder) { fatalError("Not used from a nib") }
         override var isFlipped: Bool { true }
-        private var textHeight: CGFloat { title.intrinsicContentSize.height + (subtitle.map { 2 + $0.intrinsicContentSize.height } ?? 0) }
-        override var intrinsicContentSize: NSSize {
-            NSSize(width: NSView.noIntrinsicMetric, height: max(textHeight, accessory?.fittingSize.height ?? 0))
+        func setSubtitle(_ text: String) {
+            guard let subtitle, subtitle.text != text else { return }
+            subtitle.text = text
+            invalidateIntrinsicContentSize(); needsLayout = true; PiKit.sizeChanged(self)
         }
+        private var accessorySize: NSSize { accessory?.intrinsicContentSize ?? .zero }
+        private func textWidth(_ width: CGFloat) -> CGFloat { max(0, width - (accessory == nil ? 0 : max(0, accessorySize.width) + PiSpacing.md)) }
+        private var titleBaseline: CGFloat { title.line.baseline(scale: piScale) }
+        private var accessoryBaseline: CGFloat { accessory.map { shellBaseline($0, height: max(0, accessorySize.height)) } ?? 0 }
+        private var baseline: CGFloat { max(titleBaseline, accessoryBaseline) }
+        func height(forWidth width: CGFloat) -> CGFloat {
+            let text = title.intrinsicContentSize.height + (subtitle.map { 2 + $0.height(forWidth: textWidth(width)) } ?? 0)
+            return baseline + max(text - titleBaseline, max(0, accessorySize.height) - accessoryBaseline)
+        }
+        override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: height(forWidth: bounds.width > 0 ? bounds.width : 500)) }
+        override func setFrameSize(_ newSize: NSSize) { super.setFrameSize(newSize); needsLayout = true }
         override func layout() {
             super.layout()
-            let size = title.intrinsicContentSize
-            title.frame = CGRect(x: 0, y: 0, width: size.width, height: size.height)
-            if let subtitle { let sub = subtitle.intrinsicContentSize; subtitle.frame = CGRect(x: 0, y: size.height + 2, width: sub.width, height: sub.height) }
+            let size = title.intrinsicContentSize, room = textWidth(bounds.width)
+            let titleY = PiKit.round(baseline - titleBaseline, piScale)
+            title.frame = CGRect(x: 0, y: titleY, width: min(size.width, room), height: size.height)
+            if let subtitle { subtitle.frame = CGRect(x: 0, y: titleY + size.height + 2, width: room, height: subtitle.height(forWidth: room)) }
             if let accessory {
-                let fit = accessory.fittingSize
-                // On the title's first baseline.
-                let baseline = Line("", font: PiKit.Font.heading, color: .piInk).baseline(scale: piScale)
-                let accessoryBaseline = accessory.firstBaselineOffsetFromTop
-                accessory.frame = CGRect(x: bounds.width - fit.width, y: PiKit.round(baseline - accessoryBaseline, piScale), width: fit.width, height: fit.height)
+                let fit = accessorySize
+                accessory.frame = CGRect(x: bounds.width - max(0, fit.width), y: PiKit.round(baseline - accessoryBaseline, piScale), width: max(0, fit.width), height: max(0, fit.height))
             }
         }
     }
 
     /// A key and its value on one baseline, the key in a 120-point column.
-    @MainActor final class KeyValue: NSView {
+    @MainActor final class KeyValue: NSView, WidthSizing {
         let key: TextLine, value: NSTextField
         init(key: String, value: String, mono: Bool = false) {
             self.key = TextLine(Line(key, font: PiKit.Font.caption, color: .piInkSecondary))
@@ -259,20 +270,36 @@ extension PiKit {
             self.value.textColor = .piInk
             self.value.isSelectable = true
             self.value.maximumNumberOfLines = 2
-            self.value.lineBreakMode = .byTruncatingTail
+            self.value.lineBreakMode = .byWordWrapping
+            self.value.cell?.wraps = true; self.value.cell?.isScrollable = false
+            self.value.cell?.truncatesLastVisibleLine = true
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.lineBreakMode = .byWordWrapping; paragraph.lineBreakStrategy = .standard
+            paragraph.tighteningFactorForTruncation = 0
+            self.value.attributedStringValue = NSAttributedString(string: value, attributes: [.font: self.value.font!, .foregroundColor: NSColor.piInk, .paragraphStyle: paragraph])
             addSubview(self.key); addSubview(self.value)
         }
         required init?(coder: NSCoder) { fatalError("Not used from a nib") }
         override var isFlipped: Bool { true }
-        override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: max(key.intrinsicContentSize.height, value.intrinsicContentSize.height)) }
+        private func valueWidth(_ width: CGFloat) -> CGFloat { max(0, width - 120 - 2 * PiSpacing.md) }
+        private var keyBaseline: CGFloat { key.line.baseline(scale: piScale) }
+        private var valueBaseline: CGFloat { value.firstBaselineOffsetFromTop }
+        private var baseline: CGFloat { max(keyBaseline, valueBaseline) }
+        private func valueHeight(_ width: CGFloat) -> CGFloat {
+            let font = value.font ?? PiKit.Font.caption
+            let rows = min(2, PiKit.wrappedLines(value.stringValue, font: font, width: valueWidth(width)).count)
+            return CGFloat(rows) * PiKit.Line(value.stringValue, font: font, color: .piInk).lineHeight
+        }
+        func height(forWidth width: CGFloat) -> CGFloat {
+            baseline + max(key.intrinsicContentSize.height - keyBaseline, valueHeight(width) - valueBaseline)
+        }
+        override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: height(forWidth: bounds.width > 0 ? bounds.width : 500)) }
         override func layout() {
             super.layout()
-            key.frame = CGRect(x: 0, y: 0, width: 120, height: key.intrinsicContentSize.height)
-            let width = max(0, bounds.width - 120 - PiSpacing.md)
+            key.frame = CGRect(x: 0, y: PiKit.round(baseline - keyBaseline, piScale), width: 120, height: key.intrinsicContentSize.height)
+            let width = valueWidth(bounds.width)
             value.preferredMaxLayoutWidth = width
-            let height = value.intrinsicContentSize.height
-            let shift = Line("", font: PiKit.Font.caption, color: .piInk).baseline(scale: piScale) - value.firstBaselineOffsetFromTop
-            value.frame = CGRect(x: 120 + PiSpacing.md - PiKit.fieldInset, y: shift, width: width + PiKit.fieldInset * 2, height: height)
+            value.frame = CGRect(x: 120 + PiSpacing.md - PiKit.fieldInset, y: PiKit.round(baseline - valueBaseline, piScale), width: width + PiKit.fieldInset * 2, height: valueHeight(bounds.width))
         }
     }
 
@@ -367,7 +394,7 @@ extension PiKit {
     @MainActor static func statTile(title: String, value: String, caption: String? = nil, symbol: String? = nil, tone: PiTone = .accent) -> Box {
         card(StatTileContent(title: title, value: value, caption: caption, symbol: symbol, tone: tone), padding: PiSpacing.md)
     }
-    @MainActor final class StatTileContent: NSView {
+    @MainActor final class StatTileContent: NSView, WidthSizing {
         let title: String, value: String, caption: String?, symbol: String?, tone: PiTone
         init(title: String, value: String, caption: String?, symbol: String?, tone: PiTone) {
             self.title = title; self.value = value; self.caption = caption; self.symbol = symbol; self.tone = tone
@@ -377,28 +404,48 @@ extension PiKit {
         }
         required init?(coder: NSCoder) { fatalError("Not used from a nib") }
         override var isFlipped: Bool { true }
-        private var titleLine: Line { Line(title, font: PiKit.Font.micro, color: .piInkSecondary, tracking: 0.5, uppercased: true) }
-        private var valueLine: Line { Line(value, font: PiKit.Font.monospacedDigits(.systemFont(ofSize: 20, weight: .semibold)), color: .piInk) }
-        /// Two caption lines reserved, as `.lineLimit(2, reservesSpace: true)`
-        /// reserves them: the text system's default line height, twice.
-        private var captionHeight: CGFloat { caption == nil ? 0 : NSLayoutManager().defaultLineHeight(for: PiKit.Font.caption) * 2 }
+        override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); needsDisplay = true }
+        private var titleLine: PiKit.Line { PiKit.Line(title, font: PiKit.Font.micro, color: .piInkSecondary, tracking: 0.5, uppercased: true) }
+        private var valueLine: PiKit.Line { PiKit.Line(value, font: PiKit.Font.monospacedDigits(.systemFont(ofSize: 20, weight: .semibold)), color: .piInk) }
+        /// The caption's room, as `.lineLimit(2, reservesSpace: true)` takes it
+        /// (measured against SwiftUI): two wrapped lines take their own height, each
+        /// rounded up to the point (28); a one-line caption reserves the text
+        /// system's two line heights (26).
+        private func captionHeight(_ width: CGFloat) -> CGFloat {
+            guard let caption else { return 0 }
+            let font = PiKit.Font.caption
+            if width > 0, TextWrap.ranges(caption, font: font, width: width).count >= 2 {
+                return 2 * Foundation.ceil(font.ascender - font.descender + font.leading)
+            }
+            return NSLayoutManager().defaultLineHeight(for: font) * 2
+        }
+        func height(forWidth width: CGFloat) -> CGFloat {
+            titleLine.size().height + 6 + PiKit.scaledLine(valueLine, width: width, minimumScale: 0.6).lineHeight + (caption == nil ? 0 : 6 + captionHeight(width))
+        }
         override var intrinsicContentSize: NSSize {
-            let height = titleLine.size().height + 6 + valueLine.size().height + (caption == nil ? 0 : 6 + captionHeight)
-            return NSSize(width: NSView.noIntrinsicMetric, height: height)
+            NSSize(width: NSView.noIntrinsicMetric, height: height(forWidth: bounds.width))
         }
         override func draw(_ dirtyRect: NSRect) {
+            let scale = piScale
             var x: CGFloat = 0
             if let symbol {
-                let glyph = Symbol(symbol, size: 10.5, weight: .semibold)
-                glyph.draw(centredIn: CGRect(x: 0, y: 0, width: glyph.layoutSize.width, height: titleLine.size().height), color: tone.nsColor, scale: piScale)
+                let glyph = PiKit.Symbol(symbol, size: 10.5, weight: .semibold)
+                glyph.draw(centredIn: CGRect(x: 0, y: 0, width: glyph.layoutSize.width, height: titleLine.size().height), color: tone.nsColor, scale: scale)
                 x = glyph.layoutSize.width + 6
             }
-            titleLine.draw(in: CGRect(x: x, y: 0, width: bounds.width - x, height: titleLine.lineHeight), scale: piScale)
+            titleLine.draw(in: CGRect(x: x, y: 0, width: bounds.width - x, height: titleLine.lineHeight), scale: scale)
             let y = titleLine.size().height + 6
-            PiKit.drawScaled(valueLine, in: CGRect(x: 0, y: y, width: bounds.width, height: valueLine.size().height), minimumScale: 0.6, scale: piScale)
-            if let caption {
-                PiKit.drawWrapped(caption, font: PiKit.Font.caption, color: .piInkTertiary,
-                                  in: CGRect(x: 0, y: y + valueLine.size().height + 6, width: bounds.width, height: captionHeight), maximumLines: 2)
+            let value = PiKit.scaledLine(valueLine, width: bounds.width, minimumScale: 0.6)
+            value.draw(in: CGRect(x: 0, y: y, width: bounds.width, height: value.lineHeight), scale: scale)
+            guard let caption else { return }
+            let font = PiKit.Font.caption
+            let shown = TextWrap.cut(caption, font: font, width: bounds.width, lines: 2, scale: scale)
+            let lineHeight = PiKit.Line("Ag", font: font, color: .black).lineHeight
+            var top = y + value.lineHeight + 6
+            for range in TextWrap.ranges(shown, font: font, width: bounds.width).prefix(2) {
+                let text = (shown as NSString).substring(with: range).trimmingCharacters(in: .whitespacesAndNewlines)
+                PiKit.Line(text, font: font, color: .piInkTertiary).draw(at: CGPoint(x: 0, y: top), scale: scale)
+                top += lineHeight
             }
         }
     }

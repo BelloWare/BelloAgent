@@ -10,6 +10,8 @@ extension PiKit {
         var fillColor: NSColor? { didSet { needsDisplay = true } }
         var strokeColor: NSColor? { didSet { needsDisplay = true } }
         var strokeWidth: CGFloat = 1 { didSet { needsLayout = true } }
+        /// A clipped stroke overlay shows only the half inside its edge.
+        var clipsStroke = false { didSet { needsLayout = true } }
         /// Nil: a capsule.
         var cornerRadius: CGFloat? { didSet { needsLayout = true } }
         var shadowColor: NSColor? { didSet { needsDisplay = true } }
@@ -67,6 +69,9 @@ extension PiKit {
             super.layout()
             CATransaction.begin(); CATransaction.setDisableActions(true)
             fillLayer.frame = bounds; fillLayer.cornerRadius = radius
+            layer?.masksToBounds = clipsStroke
+            layer?.cornerRadius = clipsStroke ? radius : 0
+            layer?.cornerCurve = .continuous
             strokeLayer.frame = bounds.insetBy(dx: -strokeWidth / 2, dy: -strokeWidth / 2)
             strokeLayer.cornerRadius = radius + strokeWidth / 2; strokeLayer.borderWidth = strokeWidth
             contentHolder.frame = bounds
@@ -142,6 +147,7 @@ extension PiKit {
                        padding: NSEdgeInsets(top: 7, left: 11, bottom: 7, right: 11))
             PiKit.configurePlain(field, font: mono ? PiKit.Font.mono : PiKit.Font.body, placeholder: placeholder)
             field.delegate = self
+            (field.cell as? NSTextFieldCell)?.sendsActionOnEndEditing = false
             field.target = self; field.action = #selector(submitted)
             addSubview(field)
             if let icon = self.icon {
@@ -230,6 +236,7 @@ extension PiKit {
             field.formatter = formatter
             field.integerValue = value
             field.delegate = self
+            (field.cell as? NSTextFieldCell)?.sendsActionOnEndEditing = false
             field.target = self; field.action = #selector(submitted)
             addSubview(field)
         }

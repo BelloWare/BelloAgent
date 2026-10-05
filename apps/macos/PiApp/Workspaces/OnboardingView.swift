@@ -19,7 +19,7 @@ import Combine
     private let cancelTest = PiKit.Button("Cancel Connection Test", style: .secondary)
     private let enabled = EnabledState()
     private var updaters: [() -> Void] = []
-    private var folders: HostedSwiftUI?
+    private var folders: WorkspaceFolderListView?
     private var builtKey: Key?
     private var observations: [AnyCancellable] = []
     private var refreshScheduled = false
@@ -102,8 +102,8 @@ import Combine
         updaters.forEach { $0() }
         setStatus(setup.message, tone: setup.message.hasPrefix("Saved") ? .success : .danger)
         cancelTest.isHidden = !setup.testingConnection
-        enabled.apply(to: document, formEnabled: !setup.busy)
-        folders?.disabled = setup.busy
+        enabled.apply(to: document, formEnabled: !setup.busy, excluding: folders)
+        folders?.inheritedEnabled = !setup.busy
         needsLayout = true
     }
     private var gatewayHint: String { setup.gatewayHint }
@@ -284,11 +284,11 @@ import Combine
         var items: [NSView] = [trusted
             ? PiKit.SectionHeader("Start your first chat", subtitle: "Your project is ready. Test & Start sends one small request to the selected model, then opens the chat. Add more folders below if a task spans several.")
             : PiKit.SectionHeader("Create a project", subtitle: "Choose the primary folder Bello Agent may read, then add more folders if a task spans several. Editing chats can also run commands and change files there with your permissions.")]
-        if selectedWorkspace != nil {
-            let folders = SettingsBridges.folderList(model: model, workspace: { [weak self] in self?.selectedWorkspace }, onError: { [weak self] in
+        if let workspace = selectedWorkspace {
+            let folders = WorkspaceFolderListView(model: model, workspaceID: workspace.id, onError: { [weak self] in
                 self?.folderError = $0; self?.scheduleRefresh()
             })
-            updaters.append { folders.update() }
+            updaters.append { [weak folders] in folders?.refresh() }
             self.folders = folders
             items.append(folders)
             if !folderError.isEmpty {

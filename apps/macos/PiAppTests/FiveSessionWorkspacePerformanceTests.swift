@@ -121,7 +121,7 @@ final class FiveSessionWorkspacePerformanceTests: XCTestCase {
         let (model, sessions) = try fixture()
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1_400, height: 900), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        let hosted = NSHostingView(rootView: WorkspaceView(model: model))
+        let hosted = WorkspaceRootView(model: model)
         let mountedAt = ProcessInfo.processInfo.systemUptime
         window.contentView = hosted; window.makeKeyAndOrderFront(nil)
         defer { window.contentView = nil; window.close() }

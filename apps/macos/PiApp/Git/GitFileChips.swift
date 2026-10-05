@@ -70,7 +70,7 @@ final class GitFileChipsView: NSView, NSViewToolTipOwner, PiKit.WidthSizing {
     private var elements: [GitFileChipElement] = []
 
     static let spacing: CGFloat = 6
-    static let caption = NSFont.systemFont(ofSize: PiFont.captionSize)
+    static let caption = NSFont.systemFont(ofSize: PiKit.Font.captionSize)
     static let micro = NSFont.systemFont(ofSize: 10.5, weight: .medium)
 
     init() {

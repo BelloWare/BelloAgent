@@ -1,4 +1,5 @@
 import SwiftUI
+@testable import PiApp
 
 /// What a stat pill looks like: the glyph or ring, the reading, and a soft
 /// fill while the pointer is on it or its dialog is open. Shared by the

@@ -257,7 +257,7 @@ import QuartzCore
 
     // MARK: Motion
 
-    /// A row that moved glides from where it was (`PiMotion.glide`).
+    /// A row that moved glides from where it was (`PiKit.Motion.glide`).
     private static func glide(_ view: NSView, from: CGRect, to: CGRect) {
         view.wantsLayer = true
         guard let layer = view.layer else { return }

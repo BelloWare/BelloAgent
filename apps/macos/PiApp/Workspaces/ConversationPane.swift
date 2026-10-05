@@ -29,7 +29,7 @@ struct SideActions {
     private let sideHeader: SideHeaderView
     private let sideLine = CALayer()
     private let recovered = RecoveredBannerView()
-    let transcript = ShellHostingView.empty()
+    let transcript = NativeTranscriptPane()
     private let starter = StarterPanelView()
     private let cover = LoadingCoverView()
     private var queue: QueuePanelView?
@@ -100,7 +100,6 @@ struct SideActions {
         addSubview(composer)
         layer?.addSublayer(sideLine)
         composer.heightChanged = { [weak self] in self?.needsLayout = true }
-        transcript.sizeChanged = { [weak self] in self?.needsLayout = true }
         recovered.changed = { [weak self] in self?.needsLayout = true }
         cover.isHidden = true
         starter.removeFromSuperview()
@@ -411,10 +410,6 @@ struct SideActions {
         super.setFrameSize(newSize)
         if widthChanged { composer.paneWidth = newSize.width }
         needsLayout = true
-    }
-    private func hostHeight(_ host: ShellHostingView?, width: CGFloat) -> CGFloat {
-        guard let host else { return 0 }
-        return host.height(forWidth: width)
     }
     override func layout() {
         super.layout()

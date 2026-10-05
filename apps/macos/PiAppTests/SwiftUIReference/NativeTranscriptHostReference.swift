@@ -1,4 +1,5 @@
 import SwiftUI
+@testable import PiApp
 import AppKit
 
 // The SwiftUI side of the transcript: the pane's own view is AppKit

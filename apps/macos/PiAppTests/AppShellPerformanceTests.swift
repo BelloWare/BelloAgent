@@ -118,7 +118,7 @@ class AppShellTestCase: XCTestCase {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1_280, height: 860),
                               styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: WorkspaceView(model: model))
+        window.contentView = WorkspaceRootView(model: model)
         window.makeKeyAndOrderFront(nil)
         return (window, window.contentView!)
     }

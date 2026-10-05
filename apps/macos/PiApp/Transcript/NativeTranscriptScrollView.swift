@@ -636,7 +636,7 @@ final class TranscriptNativeScrollView: NSScrollView {
     /// Use the same app policy as SwiftUI, independent of macOS Reduce Motion.
     /// Fixtures may explicitly force either path to check geometry restoration.
     static var reducesMotionOverride: Bool?
-    static var reducesMotion: Bool { reducesMotionOverride ?? PiMotion.reducesMotion }
+    static var reducesMotion: Bool { reducesMotionOverride ?? PiKit.Motion.reducesMotion }
 
     private func disclosureChanged(_ row: TranscriptRowContainer) {
         markDirty(from: row.layoutIndex)

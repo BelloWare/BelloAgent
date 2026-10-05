@@ -383,20 +383,11 @@ extension PiKit {
     }
 
     /// Where `text` breaks into lines in `font` at `width`, as `Text` wraps it.
-    static func wrappedRanges(_ text: String, font: NSFont, width: CGFloat) -> [NSRange] {
-        let string = NSAttributedString(string: text, attributes: [.font: font])
-        let typesetter = CTTypesetterCreateWithAttributedString(string)
-        var ranges: [NSRange] = [], start = 0
-        while start < string.length {
-            let count = CTTypesetterSuggestLineBreak(typesetter, start, Double(max(1, width)))
-            guard count > 0 else { break }
-            ranges.append(NSRange(location: start, length: count))
-            start += count
-        }
-        return ranges
+    @MainActor static func wrappedRanges(_ text: String, font: NSFont, width: CGFloat) -> [NSRange] {
+        TextWrap.ranges(text, font: font, width: width)
     }
     /// The lines `text` breaks into in `font` at `width`, without their trailing spaces.
-    static func wrappedLines(_ text: String, font: NSFont, width: CGFloat) -> [String] {
+    @MainActor static func wrappedLines(_ text: String, font: NSFont, width: CGFloat) -> [String] {
         let ns = text as NSString
         let lines = wrappedRanges(text, font: font, width: width).map { range -> String in
             var line = ns.substring(with: range)
@@ -407,24 +398,34 @@ extension PiKit {
     }
     /// The height `text` wraps to in `font` at `width`: one text-system line
     /// height per line, as `Text` stacks its lines.
-    static func wrappedHeight(_ text: String, font: NSFont, width: CGFloat) -> CGFloat {
+    @MainActor static func wrappedHeight(_ text: String, font: NSFont, width: CGFloat) -> CGFloat {
         CGFloat(wrappedLines(text, font: font, width: width).count) * Line(text, font: font, color: .black).lineHeight
     }
     /// Draws one line shrunk to fit `rect`'s width, down to `minimumScale`
     /// of its size and cut with "…" past that, as `.minimumScaleFactor`.
-    static func drawScaled(_ line: Line, in rect: CGRect, minimumScale: CGFloat, scale: CGFloat = 2) {
-        let width = line.width
-        guard width > rect.width, width > 0 else { line.draw(at: rect.origin, scale: scale); return }
-        let factor = max(minimumScale, rect.width / width)
+    static func scaledLine(_ line: Line, width: CGFloat, minimumScale: CGFloat) -> Line {
+        guard line.width > width + 0.01, line.width > 0 else { return line }
+        var factor = max(minimumScale, width / line.width)
         var smaller = line
-        smaller.font = NSFont(descriptor: line.font.fontDescriptor, size: line.font.pointSize * factor) ?? line.font
+        while true {
+            // Text's fitted font uses quarter-point sizes; keep the same
+            // glyph shapes and advance rather than a nearby fractional font.
+            let size = max(line.font.pointSize * minimumScale, Foundation.floor(line.font.pointSize * factor * 4) / 4)
+            smaller.font = NSFont(descriptor: line.font.fontDescriptor, size: size) ?? line.font
+            if smaller.width <= width + 0.01 || factor <= minimumScale { break }
+            factor = max(minimumScale, factor - 0.005)
+        }
+        return smaller
+    }
+    static func drawScaled(_ line: Line, in rect: CGRect, minimumScale: CGFloat, scale: CGFloat = 2) {
+        let smaller = scaledLine(line, width: rect.width, minimumScale: minimumScale)
         // Centred on the full-size line's middle, as a scaled `Text` sits.
         let y = rect.minY + (line.lineHeight - smaller.lineHeight) / 2
         smaller.draw(in: CGRect(x: rect.minX, y: PiKit.round(y, scale), width: rect.width, height: smaller.lineHeight), scale: scale)
     }
     /// Draws `text` wrapped in `rect` (flipped), up to `maximumLines` (the
     /// last cut with "…"); returns the height it took.
-    @discardableResult static func drawWrapped(_ text: String, font: NSFont, color: NSColor, in rect: CGRect, scale: CGFloat = 2, maximumLines: Int = .max) -> CGFloat {
+    @MainActor @discardableResult static func drawWrapped(_ text: String, font: NSFont, color: NSColor, in rect: CGRect, scale: CGFloat = 2, maximumLines: Int = .max) -> CGFloat {
         let lines = wrappedLines(text, font: font, width: rect.width)
         if lines.count > maximumLines {
             // The kept lines as they wrap; the last line is the rest of the
@@ -472,6 +473,7 @@ extension PiKit {
             let paragraph = NSMutableParagraphStyle()
             paragraph.minimumLineHeight = lineHeight; paragraph.maximumLineHeight = lineHeight
             paragraph.lineBreakMode = .byWordWrapping
+            paragraph.lineBreakStrategy = .standard
             // The text system puts a line's baseline at its whole-point offset
             // from the line's top, as `Text` does.
             attributedStringValue = NSAttributedString(string: text, attributes: [.font: textFont, .foregroundColor: textColor ?? .piInk, .paragraphStyle: paragraph])
@@ -550,5 +552,39 @@ extension PiKit {
         override func layout() { super.layout(); faceView.frame = bounds }
         override func styleFace() { fill.backgroundColor = CGColor.clear; stroke.borderColor = CGColor.clear; faceView.alphaValue = CGFloat(isEffectivelyEnabled ? 1 : disabledOpacity) }
         override func hitTest(_ point: NSPoint) -> NSView? { frame.contains(point) ? self : nil }
+    }
+}
+
+extension PiKit {
+    /// Where text breaks into lines as SwiftUI's `Text` breaks it: the text
+    /// system's standard strategy, which pushes a word down rather than leave
+    /// one alone on a paragraph's last line (Core Text's typesetter does not).
+    @MainActor enum TextWrap {
+        private static var cache: [String: [NSRange]] = [:]
+        static func ranges(_ text: String, font: NSFont, width: CGFloat) -> [NSRange] {
+            guard !text.isEmpty else { return [] }
+            let key = "\(font.fontName)|\(font.pointSize)|\(width)|" + text
+            if let known = cache[key] { return known }
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.lineBreakStrategy = .standard; paragraph.lineBreakMode = .byWordWrapping
+            let storage = NSTextStorage(string: text, attributes: [.font: font, .paragraphStyle: paragraph])
+            let layout = NSLayoutManager()
+            let container = NSTextContainer(size: CGSize(width: max(1, width), height: .greatestFiniteMagnitude))
+            container.lineFragmentPadding = 0
+            layout.addTextContainer(container); storage.addLayoutManager(layout)
+            var ranges: [NSRange] = []
+            layout.enumerateLineFragments(forGlyphRange: layout.glyphRange(for: container)) { _, _, _, glyphs, _ in
+                ranges.append(layout.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil))
+            }
+            // A text that ends with a line break has an empty line after it, as
+            // `Text` lays it out.
+            if layout.extraLineFragmentRect.height > 0 { ranges.append(NSRange(location: (text as NSString).length, length: 0)) }
+            if cache.count > 512 { cache.removeAll(keepingCapacity: true) }
+            cache[key] = ranges
+            return ranges
+        }
+        static func height(_ text: String, font: NSFont, width: CGFloat) -> CGFloat {
+            CGFloat(max(1, ranges(text, font: font, width: width).count)) * PiKit.Line("Ag", font: font, color: .black).lineHeight
+        }
     }
 }

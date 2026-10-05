@@ -51,6 +51,8 @@ extension PiKit {
             setButtonType(.momentaryPushIn)
             focusRingType = .exterior
             target = self; action = #selector(pressed(_:))
+            setAccessibilityElement(true)
+            setAccessibilityRole(.button)
             wantsLayer = true
             layerContentsRedrawPolicy = .onSetNeedsDisplay
             layer?.masksToBounds = false
@@ -84,6 +86,11 @@ extension PiKit {
         }
 
         @objc private func pressed(_ sender: Any?) { onPress?() }
+        override func accessibilityPerformPress() -> Bool {
+            guard isEffectivelyEnabled else { return false }
+            performClick(nil)
+            return true
+        }
 
         /// Whether the press is down now.
         var isPressedDown: Bool { cell?.isHighlighted ?? false }
@@ -293,7 +300,8 @@ extension PiKit {
             case .ghostDanger, .danger: return .piDanger
             }
         }
-        private var line: Line { Line(title, font: .systemFont(ofSize: fontSize, weight: weight), color: ink) }
+        var titleFont: NSFont { .systemFont(ofSize: fontSize, weight: weight) }
+        private var line: Line { Line(title, font: titleFont, color: ink) }
         /// The symbol in a label: the label's font at the same size and weight.
         private var glyph: Symbol? { symbol.map { Symbol($0, size: fontSize, weight: weight) } }
         /// Between a label's symbol and its title.

@@ -53,7 +53,7 @@ final class MiniModelSettingsTests: XCTestCase {
         // again after every save, and Settings beside it.
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: WorkspaceView(model: model)); window.makeKeyAndOrderFront(nil)
+        window.contentView = WorkspaceRootView(model: model); window.makeKeyAndOrderFront(nil)
         defer { window.contentView = nil; window.close() }
         let controller = ConnectionSettingsController(model: model)
         let settings = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 880, height: 780), styleMask: [.titled, .resizable], backing: .buffered, defer: false)

@@ -1,4 +1,5 @@
 import SwiftUI
+@testable import PiApp
 import AppKit
 
 // What the reader sees while a turn is running, and how they get back to it:

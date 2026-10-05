@@ -19,7 +19,7 @@ final class ContextReadingTests: XCTestCase {
         let model = WorkspaceModel(stateRoot: setup.state, vault: setup.vault)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 820), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: WorkspaceView(model: model))
+        window.contentView = WorkspaceRootView(model: model)
         window.makeKeyAndOrderFront(nil)
         addTeardownBlock { @MainActor in
             window.contentView = nil; window.close()

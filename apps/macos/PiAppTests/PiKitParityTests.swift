@@ -230,6 +230,33 @@ import XCTest
         }
     }
 
+    func testWrappedHeadersInsetsAndValues() async throws {
+        let subtitle = "Tools resolve paths against the primary folder and discover instructions in every additional folder."
+        try await check("section-wrapped", width: 230, PiSectionHeader("Folders", subtitle: subtitle)) { PiKit.SectionHeader("Folders", subtitle: subtitle) }
+        for width: CGFloat in [260, 440] {
+            try await check("section-accessory-\(Int(width))", width: width,
+                            PiSectionHeader("Instructions", subtitle: subtitle) { SwiftUI.Button("Refresh") {}.buttonStyle(.piSecondaryCompact) }) {
+                PiKit.SectionHeader("Instructions", subtitle: subtitle, accessory: PiKit.Button("Refresh", style: .secondary, compact: true))
+            }
+        }
+        let value = "An exceptionally long connection model name wraps onto a second line"
+        try await check("keyvalue-wrapped", width: 320, PiKeyValue(key: "Model", value: value)) { PiKit.KeyValue(key: "Model", value: value) }
+        try await check("keyvalue-mono", width: 480, PiKeyValue(key: "Requested model", value: "team-router-v1", mono: true)) { PiKit.KeyValue(key: "Requested model", value: "team-router-v1", mono: true) }
+        try await check("inset-clipped", width: 260, Text("Inside the inset").font(PiFont.body).foregroundStyle(Color.piInk).padding(12).frame(maxWidth: .infinity, alignment: .leading).piInset()) {
+            let line = PiKit.TextLine(PiKit.Line("Inside the inset", font: PiKit.Font.body, color: .piInk))
+            let inner = PiKit.Box(padding: NSEdgeInsets(top: 12, left: 12, bottom: 12, right: 12), content: line)
+            return PiKit.inset(inner)
+        }
+        try await check("stattile-scaled-wrapped", width: 140, PiStatTile(title: "Spend", value: "$12,345,678.90", caption: "Covered requests within this selected period")) {
+            PiKit.statTile(title: "Spend", value: "$12,345,678.90", caption: "Covered requests within this selected period")
+        }
+        for width: CGFloat in [170, 180] {
+            try await check("stattile-scaled-\(Int(width))", width: width, PiStatTile(title: "Spend", value: "$98,765,432.10", caption: "Covered requests")) {
+                PiKit.statTile(title: "Spend", value: "$98,765,432.10", caption: "Covered requests")
+            }
+        }
+    }
+
     func testIndicatorsAndSheet() async throws {
         try await check("backtobottom", share: Self.symbolShare, PiBackToBottomPill {}) { PiKit.BackToBottomPill {} }
         try await check("shimmer-still", PiShimmerText(text: "Generating response…")) { PiKit.ShimmerText("Generating response…") }

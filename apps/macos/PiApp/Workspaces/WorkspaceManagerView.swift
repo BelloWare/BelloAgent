@@ -14,34 +14,6 @@ enum WorkspaceLabel {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
-/// `PiSectionHeader(title, subtitle:)`: the heading and, under it, the words
-/// wrapping short of the trailing `Spacer()`.
-@MainActor final class ShellSectionHeader: NSView, PiKit.WidthSizing {
-    private let title: PiKit.TextLine
-    let subtitle: ShellText
-    init(_ title: String, subtitle: String) {
-        self.title = PiKit.TextLine(PiKit.Line(title, font: PiKit.Font.heading, color: .piInk))
-        self.subtitle = ShellText(subtitle, font: PiKit.Font.caption, color: .piInkSecondary)
-        super.init(frame: .zero)
-        addSubview(self.title); addSubview(self.subtitle)
-        self.title.setAccessibilityRole(.staticText)
-    }
-    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
-    override var isFlipped: Bool { true }
-    /// The words take the full width (measured against the SwiftUI header).
-    private func textWidth(_ width: CGFloat) -> CGFloat { max(0, width) }
-    func height(forWidth width: CGFloat) -> CGFloat { title.intrinsicContentSize.height + 2 + subtitle.height(forWidth: textWidth(width)) }
-    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: height(forWidth: bounds.width > 0 ? bounds.width : 500)) }
-    override func setFrameSize(_ newSize: NSSize) { super.setFrameSize(newSize); needsLayout = true }
-    override func layout() {
-        super.layout()
-        let size = title.intrinsicContentSize
-        title.frame = CGRect(x: 0, y: 0, width: min(size.width, bounds.width), height: size.height)
-        let width = textWidth(bounds.width)
-        subtitle.frame = CGRect(x: 0, y: size.height + 2, width: width, height: subtitle.height(forWidth: width))
-    }
-}
-
 /// One folder line: path, primary marker and an optional remove action.
 @MainActor final class WorkspaceFolderRowView: NSView, PiKit.WidthSizing {
     let path: String
@@ -72,7 +44,7 @@ enum WorkspaceLabel {
 /// between, kept by path so a row stays put while others come and go.
 @MainActor final class WorkspaceFolderStack: NSView, PiKit.WidthSizing {
     private let column = ShellStack(.vertical, spacing: 0)
-    private lazy var box = ShellInset(column)
+    private lazy var box = PiKit.inset(column)
     private var rows: [String: WorkspaceFolderRowView] = [:]
     private var lines: [String: ShellHairline] = [:]
     private var head: NSView?
@@ -97,7 +69,7 @@ enum WorkspaceLabel {
         let paths = ["head:" + headKey] + extras
         guard paths != shownPaths || head !== self.head else { return }
         let old = Set(shownPaths ?? [])
-        let animate = shownPaths != nil && window != nil && !PiKit.Motion.reduced
+        let animate = shownPaths != nil && window != nil && !piReducesMotion
         shownPaths = paths; self.head = head
         var items: [ShellItem] = [.view(head, .fill)]
         var arrived: [NSView] = []
@@ -230,7 +202,7 @@ enum WorkspaceLabel {
         let active = model.workspaceHasActiveWork(workspace.id)
         let key = [workspace.path] + workspace.paths + ["\(active)", "\(busy)", "\(inheritedEnabled)", "\(workspace.roots.count)"]
         guard key != shown else { return }
-        let animate = shown != nil && window != nil && !PiKit.Motion.reduced
+        let animate = shown != nil && window != nil && !piReducesMotion
         shown = key
         if primaryRow?.path != workspace.path { primaryRow = WorkspaceFolderRowView(path: workspace.path, primary: true) }
         let model = self.model, id = workspace.id
@@ -274,7 +246,7 @@ extension NSView {
 extension PiKit {
     /// A short fade in, as `.animation(.easeInOut(duration: 0.18))` on a change.
     @MainActor static func fadeIn(_ view: NSView, duration: CFTimeInterval = 0.18) {
-        guard let layer = view.layer, !Motion.reduced else { return }
+        guard let layer = view.layer, !view.piReducesMotion else { return }
         let fade = CABasicAnimation(keyPath: "opacity")
         fade.fromValue = 0; fade.toValue = 1; fade.duration = duration
         fade.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
@@ -504,7 +476,7 @@ struct NewWorkspaceDraft: Equatable {
         view.frame = bounds
         addSubview(view)
         view.layoutSubtreeIfNeeded()
-        let animate = animated && window != nil && !PiKit.Motion.reduced
+        let animate = animated && window != nil && !piReducesMotion
         guard let old else { return }
         guard animate else { old.removeFromSuperview(); return }
         leaving.append(old)
@@ -719,9 +691,9 @@ struct NewWorkspaceDraft: Equatable {
     let switchButton = PiKit.Button("Switch to It", style: .ghost)
     private let current = PiKit.Badge(text: "Current", tone: .accent)
     private let header: ShellStack
-    private let foldersHeader = ShellSectionHeader("Folders", subtitle: "Tools resolve relative paths against the primary folder; skills and instructions are discovered in every folder.")
+    private let foldersHeader = PiKit.SectionHeader("Folders", subtitle: "Tools resolve relative paths against the primary folder; skills and instructions are discovered in every folder.")
     let folders: WorkspaceFolderListView
-    private let removeHeader = ShellSectionHeader("Remove", subtitle: "")
+    private let removeHeader = PiKit.SectionHeader("Remove", subtitle: "")
     let removeButton = PiKit.Button("Remove Project…", symbol: "trash", style: .danger)
     private let question = ShellText("", font: PiKit.Font.caption, color: .piDanger)
     let keep = PiKit.Button("Keep", style: .secondary, compact: true)
@@ -773,9 +745,9 @@ struct NewWorkspaceDraft: Equatable {
         let isCurrent = model.selectedWorkspaceID == workspace.id
         switchButton.isHidden = isCurrent; current.isHidden = !isCurrent
         switchButton.isEnabled = enabled
-        removeHeader.subtitle.set(chats > 0 ? "Delete its \(WorkspaceLabel.chats(chats)) first; a project with chats cannot be removed."
+        removeHeader.setSubtitle(chats > 0 ? "Delete its \(WorkspaceLabel.chats(chats)) first; a project with chats cannot be removed."
             : hasTopics ? "Remove this project's topics first. Removing a topic keeps its chats."
-            : "Forget this project. Its folders on disk stay untouched.", color: .piInkSecondary)
+            : "Forget this project. Its folders on disk stay untouched.")
         question.set("Remove “\(WorkspaceLabel.name(workspace))”? Bello Agent forgets this project and its folder trust. Nothing on disk is deleted.", color: .piDanger)
         removeButton.isEnabled = chats == 0 && !hasTopics && !busy && enabled
         keep.isEnabled = enabled; confirmRemove.isEnabled = !busy && enabled
@@ -807,7 +779,7 @@ struct NewWorkspaceDraft: Equatable {
     private var clipWatcher: ShellClipWatcher?
     private let document = FlippedDocument()
     private let column = ShellStack(.vertical, spacing: PiSpacing.lg, padding: NSEdgeInsets(top: PiSpacing.xl, left: PiSpacing.xl, bottom: PiSpacing.xl, right: PiSpacing.xl))
-    private let header = ShellSectionHeader("New project", subtitle: "Pick the primary folder first. Add more folders when a task spans several repositories.")
+    private let header = PiKit.SectionHeader("New project", subtitle: "Pick the primary folder first. Add more folders when a task spans several repositories.")
     private let folders = WorkspaceFolderStack()
     private let noPrimary = ShellStack(.horizontal, spacing: PiSpacing.sm, padding: NSEdgeInsets(top: 8, left: PiSpacing.md, bottom: 8, right: PiSpacing.md), [
         .view(PiKit.SymbolView(PiKit.Symbol("house", size: 11, weight: .medium), color: .piInkTertiary), .fixed(14)),

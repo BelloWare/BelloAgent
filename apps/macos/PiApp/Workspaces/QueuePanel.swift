@@ -90,7 +90,12 @@ enum QueuePanel {
     /// The follow-ups' order after a drag of `source` to `destination`, as
     /// the list showed them when the drag began.
     static func reordered(_ ids: [String], moving source: IndexSet, to destination: Int) -> [String] {
-        var order = ids; order.move(fromOffsets: source, toOffset: destination); return order
+        let source = source.intersection(IndexSet(ids.indices))
+        let moved = source.map { ids[$0] }
+        var order = ids.enumerated().filter { !source.contains($0.offset) }.map(\.element)
+        let insertion = max(0, min(order.count, destination - source.count(in: 0..<max(0, destination))))
+        order.insert(contentsOf: moved, at: insertion)
+        return order
     }
     static func listHeight(rows: Int, sections: Int = 1, room: CGFloat = .infinity) -> CGFloat {
         let content = CGFloat(rows) * rowHeight + CGFloat(sections) * sectionHeaderHeight

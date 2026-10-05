@@ -120,8 +120,8 @@ import AppKit
         set(environment: environment, toggle: toggle)
         // Closed, it points to where the line reads from: SwiftUI mirrors the turned chevron with the row.
         chevron.mirroredAcross = environment.layoutDirection == .rightToLeft
-        // `PiMotion.base`, as `TranscriptFoldHeader` turned it.
-        chevron.setRotation(open ? 0 : -90, animated: turning && !PiMotion.reducesMotion, duration: Double(PiMotion.baseMilliseconds) / 1_000)
+        // `PiKit.Motion.base`, as `TranscriptFoldHeader` turned it.
+        chevron.setRotation(open ? 0 : -90, animated: turning && !PiKit.Motion.reducesMotion, duration: Double(PiKit.Motion.baseMilliseconds) / 1_000)
         toolTip = open ? help.open : help.closed
         setAccessibilityLabel(open ? "Hide \(text)" : "Show \(text)")
         refresh()

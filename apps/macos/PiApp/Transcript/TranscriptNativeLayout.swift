@@ -183,7 +183,7 @@ enum TranscriptStackLayout {
         needsDisplay = true
     }
     private func startTurning() {
-        guard !PiMotion.reducesMotion, window != nil, turn.animation(forKey: "turn") == nil else { return }
+        guard !PiKit.Motion.reducesMotion, window != nil, turn.animation(forKey: "turn") == nil else { return }
         let spin = CABasicAnimation(keyPath: "transform.rotation.z")
         // Clockwise on screen, a turn every 0.8 s.
         spin.fromValue = 0; spin.toValue = Double.pi * 2

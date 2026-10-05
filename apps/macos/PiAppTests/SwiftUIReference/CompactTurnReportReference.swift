@@ -81,8 +81,8 @@ struct TurnReportMetrics: View {
         TurnReportMetricsLayout { duration; input; output }
             .frame(maxWidth: .infinity, alignment: .leading)
     }
-    private var input: some View { TurnTokenBar(partition: TurnTokenPartition(turn.accounting, input: true, running: turn.isRunning)) }
-    private var output: some View { TurnTokenBar(partition: TurnTokenPartition(turn.accounting, input: false, running: turn.isRunning)) }
+    private var input: some View { TurnTokenBarReference(partition: TurnTokenPartition(turn.accounting, input: true, running: turn.isRunning)) }
+    private var output: some View { TurnTokenBarReference(partition: TurnTokenPartition(turn.accounting, input: false, running: turn.isRunning)) }
     private var duration: some View { TurnDurationMetrics(turn: turn) }
 }
 

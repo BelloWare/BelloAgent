@@ -246,7 +246,7 @@ enum MenuBarChartMetric: String, CaseIterable { case requests, tokens, cost, rat
         }
     }
 
-    private lazy var modelsHeader = ShellSectionHeader("Model distribution", subtitle: "Requested → resolved · share of requests")
+    private lazy var modelsHeader = PiKit.SectionHeader("Model distribution", subtitle: "Requested → resolved · share of requests")
     private let modelsEmpty = PiKit.TextLine(PiKit.Line("No dispatched requests in this scope.", font: PiKit.Font.caption, color: .piInkSecondary))
     private let pageRange = PiKit.TextLine(PiKit.Line("", font: PiKit.Font.caption, color: .piInkSecondary))
     private lazy var pager = PiKit.Pager(center: pageRange, canPrevious: false, canNext: false,
@@ -304,7 +304,7 @@ enum MenuBarChartMetric: String, CaseIterable { case requests, tokens, cost, rat
         if c.interrupted > 0 { badgeViews.append(PiKit.Badge(text: "\(c.interrupted) interrupted", tone: .warning, dot: true)) }
         for badge in badgeViews { badges.addSubview(badge) }
         let activity = ShellStack(.vertical, spacing: 6, [
-            .view(ShellSectionHeader("\(c.dispatched) requests", subtitle: "\(snapshot.sessions) sessions · \(snapshot.workspaces) projects"), .fill),
+            .view(PiKit.SectionHeader("\(c.dispatched) requests", subtitle: "\(snapshot.sessions) sessions · \(snapshot.workspaces) projects"), .fill),
             .view(badges, .fill),
             .view(PiKit.TextLine(PiKit.Line("All statuses · tool rounds included · \(snapshot.compactionRequests) compaction requests", font: PiKit.Font.micro, color: .piInkTertiary)))])
         var scope: [ShellItem] = [.view(ShellText("As of " + (snapshot.summaryReadAt ?? snapshot.until).formatted(date: .abbreviated, time: .standard), font: PiKit.Font.micro, color: .piInkTertiary), .fill)]
@@ -383,7 +383,7 @@ enum MenuBarChartMetric: String, CaseIterable { case requests, tokens, cost, rat
 /// open, its requests, cost and rate.
 @MainActor final class UsageModelRow: DashView, PiKit.WidthSizing {
     private let group: DisclosureGroupView
-    private let inset: ShellInset
+    private let inset: PiKit.Box
     private(set) var item: MenuBarModelDistribution
     private let aliasLine = PiKit.TextLine(PiKit.Line("", font: .systemFont(ofSize: 13, weight: .semibold), color: .piInk))
     private let share = PiKit.TextLine(PiKit.Line("", font: PiKit.Font.monospacedDigits(PiKit.Font.caption), color: .piInkSecondary))
@@ -405,7 +405,7 @@ enum MenuBarChartMetric: String, CaseIterable { case requests, tokens, cost, rat
                                                      .view(cost, .fill), .view(rate, .fill)])
         group = DisclosureGroupView(Self.label(item), font: PiKit.Font.caption, color: .labelColor, content: content)
         let padded = ShellStack(.vertical, spacing: 0, padding: NSEdgeInsets(top: PiSpacing.md, left: PiSpacing.md, bottom: PiSpacing.md, right: PiSpacing.md), [.view(group, .fill)])
-        inset = ShellInset(padded)
+        inset = PiKit.inset(padded)
         super.init(frame: .zero)
         addSubview(inset)
         apply()
@@ -441,7 +441,7 @@ enum MenuBarChartMetric: String, CaseIterable { case requests, tokens, cost, rat
         guard let resolved = item.resolvedModel, resolved != alias else { return alias }
         return alias + " → " + resolved
     }
-    func height(forWidth width: CGFloat) -> CGFloat { PiKit.height(of: inset.content, width: width) }
+    func height(forWidth width: CGFloat) -> CGFloat { inset.height(forWidth: width) }
     override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: height(forWidth: bounds.width > 0 ? bounds.width : 444)) }
     override func layout() { super.layout(); inset.frame = bounds }
 }

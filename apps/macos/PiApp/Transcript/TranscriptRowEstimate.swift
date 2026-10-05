@@ -118,7 +118,7 @@ enum TranscriptRowEstimate {
             if x > 0, x + pill > width { rows += 1; x = 0 }
             x += pill + TranscriptSkillPillMetrics.spacing
         }
-        return rows * SkillPillFace.height + (rows - 1) * TranscriptSkillPillMetrics.spacing + (text ? TranscriptMessageRows.skillGap : 0)
+        return rows * SkillPillFaceView.height + (rows - 1) * TranscriptSkillPillMetrics.spacing + (text ? TranscriptMessageRows.skillGap : 0)
     }
 
     private static func height(of message: TranscriptMessage, width: CGFloat, inline: Bool, raw: Bool) -> CGFloat {

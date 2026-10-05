@@ -1,4 +1,5 @@
 import SwiftUI
+@testable import PiApp
 
 // MARK: - Badges and chips
 

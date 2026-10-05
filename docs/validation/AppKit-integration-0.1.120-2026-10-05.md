@@ -17,8 +17,8 @@ Development validation only. 0.1.120 has not been released.
   The conversation pane now uses the AppKit footer directly, including its
   statistic pills, context ring, capture control, notice and running clock.
   The footer and statistics presentation models no longer import SwiftUI.
-  The remaining Inspector's unchanged SwiftUI ring lives with the legacy
-  design components until those consumers are ported.
+  The remaining Inspector consumers have subsequently been ported, and legacy
+  design components now live only in the parity test target.
 
 ## Checks performed
 
@@ -95,10 +95,42 @@ were corrected and rerun in `SessionTimingTests.log`; the other classes in
 that batch passed. Conversation and shell integration logs use their test
 class names.
 
+## Complete production integration
+
+The session Inspector, retained payload/resource views and session-statistics
+workstreams are merged into `dev/next` with their original commits preserved.
+The application uses an `NSApplicationDelegate`, cached native workspace and
+Settings window controllers, native menus and direct transcript/composer views.
+Production sources in `PiApp` and `bello-views` contain no SwiftUI imports or
+hosting views; `NativeApplicationTests` enforce this. Frozen references remain
+only in `PiAppTests/SwiftUIReference` for comparison with the former UI.
+
+Shared component corrections preserve measured baselines, wrapped text, scaled
+values, section subtitles, button fonts, clipping and inherited motion. Field
+blur no longer submits a form. Native custom buttons explicitly expose their
+role and accessibility press action; selectable resource rows expose names,
+selection, descriptions and paths. Window tests exercise actual key events,
+minimize/close/Dock reopen, and reuse of the Settings editor.
+
+The whole-change read-only Codex review found two regressions, both corrected:
+retained Inspector views now switch their read source when a live capture is
+archived, and resource rows expose their spoken names. Archive transition tests
+cover request, response and event bodies with helper access unavailable. Read
+scopes cancel when their view detaches, and delayed reads do not retain it.
+Statistics ledger rows and accessibility children keep their identities across
+updates and reject removed entries. SwiftUI scroll replacements use overlay
+indicators to preserve their original full-width viewport.
+
+Focused final results include 10 Inspector controls and 24 Inspector parity
+comparisons, 5 statistics controls and 46 statistics parity comparisons,
+38 shared PiKit controls, 8 native application cases and 9 window-presentation
+cases, all passing. Payload and complete gallery results are recorded after
+their final viewport corrections. These are development checks; they do not
+substitute for the complete release gate or Release soak.
+
 ## Still required
 
-Finish the Inspector and app-shell ports; remove the remaining SwiftUI
-imports and bridges. Perform the complete gallery comparison, Release
+Perform the complete gallery comparison, Release
 performance comparison, full release gate and hour-long soak. Owner VoiceOver
 and real-gateway checks remain subject to the release checklist. No packaging,
 signing, website publication or release tag was performed by this integration.

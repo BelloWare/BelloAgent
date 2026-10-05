@@ -52,7 +52,12 @@ import AppKit
     deinit { NotificationCenter.default.removeObserver(self) }
     // Covered or minimised, a window is still open: only its close takes the
     // form down. Changed on the next turn, out of AppKit's own window handling.
-    @objc private func closing() { DispatchQueue.main.async { [weak self] in MainActor.assumeIsolated { self?.setOpen(false) } } }
+    @objc private func closing() {
+        DispatchQueue.main.async { [weak self] in MainActor.assumeIsolated {
+            guard let self, self.window?.isVisible != true else { return }
+            self.setOpen(false)
+        } }
+    }
     @objc private func shown() {
         guard window?.isVisible == true else { return }
         window?.applyPiWindowChrome()

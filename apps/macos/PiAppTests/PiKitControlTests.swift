@@ -491,19 +491,24 @@ import XCTest
     /// with no name, so a control named after the same words is the only
     /// element named so.
     func testTextIsAValueNotAName() async throws {
-        let stack = PiKit.Box.ClipView(frame: NSRect(x: 0, y: 0, width: 300, height: 80))
+        let stack = PiKit.Box.ClipView(frame: NSRect(x: 0, y: 0, width: 300, height: 160))
         let line = PiKit.TextLine(PiKit.Line("Include untracked", font: PiKit.Font.body, color: .piInk))
         let wrapped = PiKit.WrappedText("Checks once a day", font: PiKit.Font.caption, color: .piInk)
         let tick = PiKit.Checkbox(isOn: true, label: "Include untracked")
         line.frame = NSRect(x: 0, y: 0, width: 160, height: 18); wrapped.frame = NSRect(x: 0, y: 20, width: 160, height: 18)
         tick.frame = NSRect(x: 0, y: 44, width: 200, height: 22)
         for view in [line, wrapped, tick] as [NSView] { stack.addSubview(view) }
-        let window = try await hosted(stack, size: CGSize(width: 340, height: 120))
+        let row = PiKit.Row(label: "Override instruction byte budget", detail: "Applies to discovered resources", last: true,
+                            control: PiKit.Checkbox(isOn: false, label: "Override instruction byte budget"))
+        row.frame = NSRect(x: 0, y: 80, width: 300, height: row.height(forWidth: 300))
+        stack.addSubview(row)
+        let window = try await hosted(stack, size: CGSize(width: 340, height: 200))
         _ = try await AXClient.find(in: window) { $0.role == "AXCheckBox" }
         let nodes = try await AXClient.all(in: window)
         XCTAssertEqual(nodes.filter { $0.label == "Include untracked" }.map(\.role), ["AXCheckBox"], "only the checkbox is named so")
+        XCTAssertEqual(nodes.filter { $0.label == "Override instruction byte budget" }.map(\.role), ["AXCheckBox"])
         let texts = nodes.filter { $0.role == "AXStaticText" }
-        XCTAssertEqual(Set(texts.map(\.value)), ["Include untracked", "Checks once a day"])
+        XCTAssertEqual(Set(texts.map(\.value)), ["Include untracked", "Checks once a day", "Override instruction byte budget", "Applies to discovered resources"])
         XCTAssertTrue(texts.allSatisfy { $0.label.isEmpty }, "text has no name of its own: \(texts.map(\.label))")
         line.line = PiKit.Line("Include ignored", font: PiKit.Font.body, color: .piInk)
         wrapped.text = "Checks twice a day"

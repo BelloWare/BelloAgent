@@ -32,10 +32,10 @@ final class TabPaneTests: XCTestCase {
         model.sides[chat.id] = SideRecord(id: side.id, parentID: chat.id, workspaceID: "w", profileID: profile.id, title: "Side")
         return (model, root)
     }
-    @MainActor private func window(_ model: WorkspaceModel) -> (NSWindow, NSHostingView<WorkspaceView>) {
+    @MainActor private func window(_ model: WorkspaceModel) -> (NSWindow, WorkspaceRootView) {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1400, height: 900), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        let hosted = NSHostingView(rootView: WorkspaceView(model: model))
+        let hosted = WorkspaceRootView(model: model)
         window.contentView = hosted
         window.makeKeyAndOrderFront(nil)
         addTeardownBlock { @MainActor in model.report.suspend(); window.contentView = nil; window.close() }

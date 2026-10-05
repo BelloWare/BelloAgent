@@ -1,4 +1,5 @@
 import SwiftUI
+@testable import PiApp
 
 // The small pieces the chart popovers are built from. None of them formats a
 // figure or walks data: every string and fraction arrives precomputed, so a
@@ -8,12 +9,6 @@ import SwiftUI
 /// observed by it. Only the parts that follow the pointer — a rule, a band,
 /// the caption under the chart — observe it, so a hover never rebuilds the
 /// chart's marks or the panel around them.
-@MainActor final class PiChartSelection: ObservableObject {
-    @Published private(set) var index: Int?
-    /// Every pointer event lands here; a step within the same item publishes nothing.
-    func select(_ index: Int?) { if self.index != index { self.index = index } }
-}
-
 /// A figure at the top of a panel: the reading, what it is, and a quieter line
 /// under it. Partial coverage reads in warning ink, as in the stat dialogs.
 struct PiFigure: View {

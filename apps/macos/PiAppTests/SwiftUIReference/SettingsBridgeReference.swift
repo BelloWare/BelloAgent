@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+@testable import PiApp
 
 // Temporary (0.1.120): where the settings and onboarding screens, now
 // AppKit, meet SwiftUI. Their SwiftUI hosts (the sheet `WorkspaceView`

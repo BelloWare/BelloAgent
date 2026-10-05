@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+@testable import PiApp
 
 // The app's own switch, checkbox, progress bar and date field, in place of
 // the stock AppKit ones. Each takes the stock control's room, so a row keeps

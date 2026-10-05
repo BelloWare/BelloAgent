@@ -104,6 +104,16 @@ final class TranscriptSurfaceMarker: NSView {
         MainActor.assumeIsolated { earlierTimer?.invalidate(); newerTimer?.invalidate() }
     }
 
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        var current = TranscriptRowEnvironment(view: self)
+        current.locale = environment.locale; current.isEnabled = environment.isEnabled
+        current.forks = environment.forks; current.opensFiles = environment.opensFiles
+        guard current != environment else { return }
+        environment = current
+        if session != nil { refresh() }
+    }
+
     /// What the pane above hands down: the chat, its run state, the actions
     /// every row calls and the values the rows are drawn under.
     func update(session: SessionDisplay, state: String, actions: TranscriptActions, environment: TranscriptRowEnvironment, reduceMotion: Bool) {

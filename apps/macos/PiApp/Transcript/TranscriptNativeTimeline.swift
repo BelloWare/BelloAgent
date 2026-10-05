@@ -124,7 +124,7 @@ import AppKit
         label.text = text
         set(environment: environment, toggle: toggle)
         chevron.mirroredAcross = rightToLeft
-        chevron.setRotation(open ? 0 : -90, animated: turning && !PiMotion.reducesMotion)
+        chevron.setRotation(open ? 0 : -90, animated: turning && !PiKit.Motion.reducesMotion)
         let help = open ? "Hide this turn's work" : "Show this turn's work"
         if toolTip != help { toolTip = help }
         setAccessibilityLabel(text)

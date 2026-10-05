@@ -206,8 +206,8 @@ import Combine
     }
 
     /// Marking rows takes a strip above the list; the list moves down to
-    /// make room rather than jumping (`PiMotion.base`), and the strip comes
-    /// down from under the filter (`PiMotion.reveal`).
+    /// make room rather than jumping (`PiKit.Motion.base`), and the strip comes
+    /// down from under the filter (`PiKit.Motion.reveal`).
     private func showBar(_ shown: Bool) {
         let before = scroll.frame.minY
         selectionBar.isHidden = false

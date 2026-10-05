@@ -40,7 +40,7 @@ import AppKit
     private let band = CAGradientLayer()
     private let glow = CALayer()
     private let mask = CALayer()
-    var reduceMotion = PiMotion.reducesMotion { didSet { if reduceMotion != oldValue { needsLayout = true } } }
+    var reduceMotion = PiKit.Motion.reducesMotion { didSet { if reduceMotion != oldValue { needsLayout = true } } }
     var text: String {
         get { label.text }
         set { guard newValue != label.text else { return }; label.text = newValue; setAccessibilityLabel(newValue); needsLayout = true }
@@ -73,7 +73,7 @@ import AppKit
         CATransaction.begin(); CATransaction.setDisableActions(true)
         glow.frame = bounds; mask.frame = bounds
         glow.isHidden = reduceMotion || bounds.width <= 0
-        let width = max(24, bounds.width * PiShimmerText.band)
+        let width = max(24, bounds.width * PiKit.ShimmerText.band)
         effectiveAppearance.performAsCurrentDrawingAppearance {
             band.colors = [NSColor.clear.cgColor, TranscriptNSPalette.text.withAlphaComponent(0.9).cgColor, NSColor.clear.cgColor]
         }
@@ -94,10 +94,10 @@ import AppKit
         if let running = band.animation(forKey: key) as? CABasicAnimation, (running.toValue as? CGFloat) == to { return }
         let animation = CABasicAnimation(keyPath: "position.x")
         animation.fromValue = -width / 2; animation.toValue = to
-        animation.duration = PiShimmerText.period; animation.repeatCount = .infinity
+        animation.duration = PiKit.ShimmerText.period; animation.repeatCount = .infinity
         animation.isRemovedOnCompletion = false
         // On the clock, as the SwiftUI line's timeline is.
-        animation.beginTime = CACurrentMediaTime() - Date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: PiShimmerText.period)
+        animation.beginTime = CACurrentMediaTime() - Date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: PiKit.ShimmerText.period)
         band.add(animation, forKey: key)
     }
 }
@@ -409,7 +409,7 @@ import AppKit
     private let noteLabel = TranscriptLabel()
     private var noteText: TranscriptPlainTextView?
     /// Whether the working line's highlight stands still.
-    var reduceMotion = PiMotion.reducesMotion { didSet { shimmer?.reduceMotion = reduceMotion } }
+    var reduceMotion = PiKit.Motion.reducesMotion { didSet { shimmer?.reduceMotion = reduceMotion } }
     /// Told when the report's height may have changed without new content.
     var heightChanged: () -> Void = {}
     override var isFlipped: Bool { true }

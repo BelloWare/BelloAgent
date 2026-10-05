@@ -125,7 +125,7 @@ import AppKit
 
 /// Views in a row, laid out as an `HStack` lays them out and centred on the
 /// row's middle. Its own width is its children's ideal unless `flexible`.
-@MainActor final class HStackView: NSView, PiKit.WidthSizing {
+@MainActor final class HStackView: NSView, PiKit.WidthSizing, ShellBaselined {
     var spacing: CGFloat
     /// Takes the width it is given (it holds a field), rather than its ideal.
     var flexible: Bool
@@ -140,6 +140,18 @@ import AppKit
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
     override var isFlipped: Bool { true }
     func height(forWidth width: CGFloat) -> CGFloat { StackLayout.height(items(), spacing: spacing, width: width) }
+    var firstBaseline: CGFloat {
+        let children = items()
+        let width = bounds.width > 0 ? bounds.width : .infinity
+        let height = StackLayout.height(children, spacing: spacing, width: width)
+        let widths = StackLayout.widths(children, spacing: spacing, proposal: width)
+        for (item, width) in zip(children, widths) {
+            guard let view = item.view else { continue }
+            let childHeight = item.sizing.height(width)
+            return PiKit.round((height - childHeight) / 2, piScale) + shellBaseline(view, height: childHeight)
+        }
+        return height
+    }
     override var intrinsicContentSize: NSSize {
         let items = items()
         return NSSize(width: flexible ? NSView.noIntrinsicMetric : StackLayout.width(items, spacing: spacing, proposal: .infinity),
@@ -164,8 +176,9 @@ import AppKit
     /// Applies the form's state under `root`: a control is enabled when the
     /// form is and its own state allows (what was set here, or what the
     /// control says of itself).
-    func apply(to root: NSView, formEnabled: Bool) {
+    func apply(to root: NSView, formEnabled: Bool, excluding independent: NSView? = nil) {
         for control in PiKit.controls(in: root) {
+            if let independent, control === independent || control.isDescendant(of: independent) { continue }
             let own = self.own[ObjectIdentifier(control)] ?? (control as? OwnEnabled)?.ownEnabled ?? true
             let enabled = formEnabled && own
             if control.isEnabled != enabled { control.isEnabled = enabled }
@@ -201,81 +214,7 @@ import AppKit
 /// this one stays for what it adds: controls that size to what they are
 /// offered (`ProposedWidthSizing`), `TextBlock` text and any row in a
 /// `SettingsCard`.
-@MainActor final class SettingsRow: NSView, PiKit.WidthSizing {
-    let label: String, detail: String?
-    let control: NSView?
-    let last: Bool
-    private let labelView: TextBlock
-    private let detailView: TextBlock?
-    private let rule = HairlineView()
-    init(label: String, detail: String? = nil, last: Bool = false, control: NSView?) {
-        self.label = label; self.detail = detail; self.control = control; self.last = last
-        labelView = TextBlock(label, font: PiKit.Font.body, color: .piInk)
-        detailView = detail.map { TextBlock($0, font: PiKit.Font.caption, color: .piInkSecondary) }
-        super.init(frame: .zero)
-        for view in [labelView, detailView, control].compactMap({ $0 }) as [NSView] { addSubview(view) }
-        if !last { addSubview(rule) }
-    }
-    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
-    override var isFlipped: Bool { true }
-
-    /// A wrapping text's width when offered `width`: its widest line there.
-    private func textWidth(_ block: TextBlock, _ width: CGFloat) -> CGFloat {
-        let scale = window?.backingScaleFactor ?? 2
-        return PiKit.wrappedLines(block.text, font: block.font, width: width).map { PiKit.Line($0, font: block.font, color: .black).size(scale: scale).width }.max() ?? 0
-    }
-    private var textItem: StackLayout.Item {
-        StackLayout.Item(view: nil, sizing: StackLayout.Sizing(width: { [weak self] proposal in
-            guard let self else { return 0 }
-            let offered = max(proposal, 180)
-            let width = max(self.textWidth(self.labelView, offered), self.detailView.map { self.textWidth($0, offered) } ?? 0)
-            return max(180, min(width, offered))
-        }, height: { [weak self] width in self?.textHeight(width) ?? 0 }))
-    }
-    private func textHeight(_ width: CGFloat) -> CGFloat {
-        labelView.height(forWidth: width) + (detailView.map { 2 + $0.height(forWidth: width) } ?? 0)
-    }
-    /// The control's frame: as wide as offered up to 380, never narrower than a control of fixed width.
-    private var controlItem: StackLayout.Item? {
-        guard let control else { return nil }
-        if let sized = control as? ProposedWidthSizing {
-            // The frame takes what it is offered up to 380; what is in it, its own width there.
-            return StackLayout.Item(view: nil, sizing: StackLayout.Sizing(width: { proposal in
-                min(380, max(sized.width(forProposal: 0), proposal.isFinite ? proposal : 380))
-            }, height: { width in PiKit.height(of: control, width: sized.width(forProposal: width)) }))
-        }
-        return StackLayout.Item(view: nil, sizing: StackLayout.Sizing(width: { proposal in
-            let ideal = control.intrinsicContentSize.width
-            let least = ideal == NSView.noIntrinsicMetric ? 0 : ideal
-            return min(380, max(least, proposal.isFinite ? proposal : 380))
-        }, height: { width in
-            let ideal = control.intrinsicContentSize.width
-            return PiKit.height(of: control, width: ideal == NSView.noIntrinsicMetric ? width : min(ideal, width))
-        }))
-    }
-    private var items: [StackLayout.Item] { [textItem, .spacer(0)] + (controlItem.map { [$0] } ?? []) }
-    func height(forWidth width: CGFloat) -> CGFloat {
-        StackLayout.height(items, spacing: PiSpacing.lg, width: width - PiSpacing.lg * 2) + 20 + (last ? 0 : 1)
-    }
-    override func layout() {
-        super.layout()
-        let inner = CGRect(x: PiSpacing.lg, y: 10, width: bounds.width - PiSpacing.lg * 2, height: bounds.height - 20 - (last ? 0 : 1))
-        let frames = StackLayout.place(items, spacing: PiSpacing.lg, in: inner, scale: piScale)
-        let text = frames[0]
-        let labelHeight = labelView.height(forWidth: text.width)
-        labelView.frame = CGRect(x: text.minX, y: text.minY, width: text.width, height: labelHeight)
-        if let detailView { detailView.frame = CGRect(x: text.minX, y: text.minY + labelHeight + 2, width: text.width, height: detailView.height(forWidth: text.width)) }
-        if let control, frames.count > 2 {
-            // The control at the trailing edge of its frame, at its own width when it has one.
-            let frame = frames[2], ideal = control.intrinsicContentSize.width
-            let width = (control as? ProposedWidthSizing)?.width(forProposal: frame.width)
-                ?? (ideal == NSView.noIntrinsicMetric ? frame.width : min(ideal, frame.width))
-            let height = PiKit.height(of: control, width: width)
-            control.frame = CGRect(x: frame.maxX - width, y: PiKit.round(inner.minY + (inner.height - height) / 2, piScale), width: width, height: height)
-        }
-        rule.frame = CGRect(x: PiSpacing.lg, y: bounds.height - 1, width: bounds.width - PiSpacing.lg, height: 1)
-    }
-}
+typealias SettingsRow = PiKit.Row
 
 /// Gives a `PiKit.Note` an accessibility identifier on the element VoiceOver
 /// reads: its text.

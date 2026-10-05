@@ -54,7 +54,7 @@ final class SidebarSideClickTests: XCTestCase {
         model.chats = chats
         let window = RecordingWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 820), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: WorkspaceView(model: model).transaction { $0.animation = nil; $0.disablesAnimations = true })
+        window.contentView = WorkspaceRootView(model: model)
         window.makeKeyAndOrderFront(nil)
         addTeardownBlock { @MainActor in
             window.contentView = nil; window.close(); model.report.suspend(); model.shutdown(); try? await model.traces.close(); await model.store?.close()

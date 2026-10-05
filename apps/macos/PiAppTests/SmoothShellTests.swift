@@ -74,7 +74,7 @@ class SmoothShellTestCase: XCTestCase {
     @MainActor final class Shell {
         let model: WorkspaceModel
         let window: NSWindow
-        let hosted: NSHostingView<AnyView>
+        let hosted: WorkspaceRootView
         let root: URL
         let project: WorkspaceRecord
         let chats: [ChatRecord]
@@ -87,7 +87,7 @@ class SmoothShellTestCase: XCTestCase {
             window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: height),
                               styleMask: [.titled, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false
-            hosted = NSHostingView(rootView: AnyView(WorkspaceView(model: model)))
+            hosted = WorkspaceRootView(model: model)
             window.contentView = hosted
             window.center(); window.makeKeyAndOrderFront(nil)
         }

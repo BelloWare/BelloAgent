@@ -55,7 +55,7 @@ enum ReportThroughputDomain {
     private let note = ShellText("Showing completed requests matching your filters. Live history is available for whole projects.", font: PiKit.Font.micro, color: .piInkSecondary)
     private lazy var column = ShellStack(.vertical, spacing: 12, [.view(header, .fill), .view(nowRow, .fill), .view(chart, .fill), .view(note, .fill)])
     private lazy var card = PiKit.card(column, padding: PiSpacing.md)
-    private let visibility = WindowVisibilityReader.VisibilityView()
+    private let visibility = WindowVisibilityView()
 
     init(live: LiveActivityStore, snapshot: DashboardSnapshot, window: DashboardWindow, palette: MonitorModelPalette, controls: NSView) {
         self.live = live; self.snapshot = snapshot; self.reportWindow = window; self.palette = palette
@@ -163,7 +163,7 @@ enum ReportThroughputDomain {
     private let more = PiKit.TextLine(PiKit.Line("", font: PiKit.Font.micro, color: .piInkSecondary))
     private lazy var column = ShellStack(.vertical, spacing: 8, [.view(header, .fill), .view(rows, .fill), .view(quiet), .view(more)])
     private lazy var card = PiKit.card(column, padding: PiSpacing.md)
-    private let visibility = WindowVisibilityReader.VisibilityView()
+    private let visibility = WindowVisibilityView()
     init(live: LiveActivityStore, workspaceID: String?, activity: @escaping () -> MenuBarActivitySnapshot, openSession: @escaping (String) -> Void) {
         self.live = live; self.workspaceID = workspaceID; self.activity = activity; self.openSession = openSession
         super.init(frame: .zero)

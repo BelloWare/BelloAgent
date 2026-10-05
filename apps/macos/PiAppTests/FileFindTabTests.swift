@@ -30,10 +30,10 @@ final class FileFindTabTests: XCTestCase {
         model.displays = [main.id: main]
         return (model, root)
     }
-    @MainActor private func window(_ model: WorkspaceModel) -> (NSWindow, NSHostingView<WorkspaceView>) {
+    @MainActor private func window(_ model: WorkspaceModel) -> (NSWindow, WorkspaceRootView) {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1400, height: 900), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        let hosted = NSHostingView(rootView: WorkspaceView(model: model))
+        let hosted = WorkspaceRootView(model: model)
         window.contentView = hosted
         window.makeKeyAndOrderFront(nil)
         addTeardownBlock { @MainActor in model.report.suspend(); window.contentView = nil; window.close() }
@@ -211,7 +211,7 @@ final class FileFindTabTests: XCTestCase {
     /// Opens a file, finds "line 1" with case matched, and steps to the
     /// fifth of its 111 matches (line 13), the field keeping the keys with
     /// part of its text selected.
-    @MainActor private func findingInFile(_ name: String) async throws -> (WorkspaceModel, NSWindow, NSHostingView<WorkspaceView>, FileTab, FileTextView, NSTextView, URL) {
+    @MainActor private func findingInFile(_ name: String) async throws -> (WorkspaceModel, NSWindow, WorkspaceRootView, FileTab, FileTextView, NSTextView, URL) {
         let (model, root) = try await model()
         let (window, hosted) = window(model)
         let url = try file(root, name)

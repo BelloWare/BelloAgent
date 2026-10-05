@@ -45,7 +45,7 @@ final class RedrawCostProbeTests: XCTestCase, SerialTestLane {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 820), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         let hosted: NSView = testEnvironment("PI_PROBE_REDUCE_MOTION") == "1"
-            ? NSHostingView(rootView: WorkspaceView(model: model).environment(\.piReduceMotion, true)) : NSHostingView(rootView: WorkspaceView(model: model))
+            ? NSHostingView(rootView: WorkspaceView(model: model).environment(\.piReduceMotion, true)) : WorkspaceRootView(model: model)
         window.contentView = hosted
         window.makeKeyAndOrderFront(nil)
         addTeardownBlock { @MainActor in

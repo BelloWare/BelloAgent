@@ -21,15 +21,13 @@ import SwiftUI
 final class LazyListAppKitControlTests: XCTestCase {
     @MainActor private func descendants(_ view: NSView) -> [NSView] { view.subviews.flatMap { [$0] + descendants($0) } }
 
-    /// The AppKit views under `view` that change their own size when SwiftUI
-    /// updates them. A menu or popover press target never does: its size is
-    /// the face's, and it keeps its title, font and image.
+    /// Stock pop-up buttons and progress indicators were the controls whose
+    /// SwiftUI adapters recursively invalidated layout. Native text and Pi
+    /// buttons retain their frames and are checked by the native view tests.
     @MainActor static func selfSizingControls(in view: NSView) -> [String] {
         func walk(_ view: NSView) -> [NSView] { view.subviews.flatMap { [$0] + walk($0) } }
-        return walk(view).filter { view in
-            if view is PiPopoverTriggerButton { return false }
-            return view is NSControl || view is NSProgressIndicator
-        }.map { String(describing: type(of: $0)) }
+        return walk(view).filter { $0 is NSPopUpButton || $0 is NSProgressIndicator }
+            .map { String(describing: type(of: $0)) }
     }
 
     /// Three projects, topics, a chat compacting in the background and the
@@ -66,7 +64,7 @@ final class LazyListAppKitControlTests: XCTestCase {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1240, height: 820),
                               styleMask: [.titled, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        let hosted = NSHostingView(rootView: WorkspaceView(model: model))
+        let hosted = WorkspaceRootView(model: model)
         window.contentView = hosted
         window.makeKeyAndOrderFront(nil)
         return (model, window, hosted)

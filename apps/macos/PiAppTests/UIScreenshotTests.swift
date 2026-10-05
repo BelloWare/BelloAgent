@@ -106,9 +106,20 @@ final class UIScreenshotTests: XCTestCase {
         for window in NSApp.windows { window.orderOut(nil) }
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.title = "Bello Agent"; window.titleVisibility = .hidden; window.titlebarAppearsTransparent = true; window.styleMask.insert(.fullSizeContentView)
-        window.contentView = NSHostingView(rootView: WorkspaceView(model: model))
+        window.contentView = WorkspaceRootView(model: model)
         window.center(); window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
         defer { window.orderOut(nil); NSApp.appearance = nil }
+        let application = try XCTUnwrap(NSApp.delegate as? BelloAgentApplication)
+        let previousMenu = NSApp.mainMenu, previousServices = NSApp.servicesMenu, previousWindows = NSApp.windowsMenu
+        let menus = ApplicationMenus(model: application.workspaceModel, updates: application.updates,
+                                     workspaceWindow: { [weak window] in window },
+                                     revealWorkspace: { [weak window] in window?.makeKeyAndOrderFront(nil) },
+                                     showSettings: { [weak application] in application?.showSettings() })
+        menus.install()
+        defer {
+            NSApp.mainMenu = previousMenu; NSApp.servicesMenu = previousServices; NSApp.windowsMenu = previousWindows
+            withExtendedLifetime(menus) {}
+        }
         try await settle(1.5)
 
         let appearances: [(String, NSAppearance.Name)] = [("light", .aqua), ("dark", .darkAqua)]
@@ -422,7 +433,7 @@ final class UIScreenshotTests: XCTestCase {
         await fresh.restore()
         let onboarding = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1240, height: 800), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         onboarding.titleVisibility = .hidden; onboarding.titlebarAppearsTransparent = true; onboarding.styleMask.insert(.fullSizeContentView)
-        onboarding.contentView = NSHostingView(rootView: WorkspaceView(model: fresh))
+        onboarding.contentView = WorkspaceRootView(model: fresh)
         onboarding.center(); onboarding.makeKeyAndOrderFront(nil)
         for (name, appearance) in appearances {
             NSApp.appearance = NSAppearance(named: appearance); try await settle(1.2)
@@ -1393,7 +1404,7 @@ final class UIScreenshotTests: XCTestCase {
     }
 
     /// Opens Settings as the app menu does, photographs its window, closes it.
-    /// SwiftUI keeps the closed Settings window and shows the same one again,
+    /// The app keeps the closed Settings window and shows the same one again,
     /// so the window to find is the one that became visible, not a new one.
     @MainActor private func settingsWindow(name: String, into gallery: URL) async throws {
         let before = Set(NSApp.windows.filter(\.isVisible).map { ObjectIdentifier($0) })

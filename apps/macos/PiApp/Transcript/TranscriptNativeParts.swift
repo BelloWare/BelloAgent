@@ -19,12 +19,12 @@ import AppKit
     }
 }
 
-/// The quick ease the rows' decorative changes use (`PiMotion.quick`).
+/// The quick ease the rows' decorative changes use (`PiKit.Motion.quick`).
 @MainActor enum TranscriptMotion {
     static func fade(_ view: NSView, to alpha: CGFloat) {
         guard view.alphaValue != alpha else { return }
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = Double(PiMotion.quickMilliseconds) / 1_000
+            context.duration = Double(PiKit.Motion.quickMilliseconds) / 1_000
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             view.animator().alphaValue = alpha
         }
@@ -35,7 +35,7 @@ import AppKit
         view.alphaValue = 0
         view.setFrameOrigin(CGPoint(x: final.minX, y: final.minY + 2))
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = Double(PiMotion.quickMilliseconds) / 1_000
+            context.duration = Double(PiKit.Motion.quickMilliseconds) / 1_000
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             view.animator().alphaValue = 1
             view.animator().setFrameOrigin(final.origin)
@@ -50,7 +50,7 @@ import AppKit
         // A pill on its way out acts on nothing while it fades.
         (view as? TranscriptPillButton)?.enabled = false
         NSAnimationContext.runAnimationGroup({ context in
-            context.duration = Double(PiMotion.quickMilliseconds) / 1_000
+            context.duration = Double(PiKit.Motion.quickMilliseconds) / 1_000
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             view.animator().alphaValue = 0
             view.animator().setFrameOrigin(CGPoint(x: view.frame.minX, y: view.frame.minY + 2))

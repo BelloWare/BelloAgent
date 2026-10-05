@@ -1,4 +1,5 @@
 import SwiftUI
+@testable import PiApp
 
 /// App-owned selection rows, shared by composer, settings and report controls.
 /// Saved choices stay separate from keyboard focus: moving through the list

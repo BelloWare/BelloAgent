@@ -20,6 +20,12 @@ struct TranscriptRowEnvironment: Equatable {
     /// Whether file tools' paths open their files (`transcriptOpensFiles`).
     var opensFiles = false
     init() {}
+    @MainActor init(view: NSView) {
+        let match = view.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua])
+        colorScheme = match == .darkAqua ? .dark : .light
+        increasedContrast = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
+        layoutDirection = view.userInterfaceLayoutDirection
+    }
     /// Whether a row measured under these values is as tall under those.
     /// The writing direction and the locale decide how text wraps; the
     /// colour scheme, the contrast and whether the pane takes input only

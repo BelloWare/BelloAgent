@@ -471,7 +471,7 @@ import AppKit
 /// line as an `HStack` shares it and wrapping when it is short.
 @MainActor final class TranscriptCodeSections: NSView {
     static let buttonFace = TranscriptPlainTextFace(size: NSFont.systemFontSize, monospaced: false, lineSpacing: 0, label: "Button")
-    static let face = TranscriptPlainTextFace(size: PiFont.captionSize, monospaced: false, lineSpacing: 0, label: "Code section")
+    static let face = TranscriptPlainTextFace(size: PiKit.Font.captionSize, monospaced: false, lineSpacing: 0, label: "Code section")
     private let previous = TranscriptWrappingButton()
     private let next = TranscriptWrappingButton()
     private let label = TranscriptPlainTextView()

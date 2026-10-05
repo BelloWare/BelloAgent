@@ -36,7 +36,7 @@ import XCTest
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 880, height: 780), styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         let recorder = Recorder(); window.delegate = recorder
-        window.contentView = NSHostingView(rootView: SettingsWindowContent(model: model))
+        window.contentView = SettingsWindowView(model: model)
         window.orderFront(nil)
         addTeardownBlock { @MainActor in window.delegate = nil; window.orderOut(nil) }
         try await eventually("the editor loaded") { model.settingsEditors.allObjects.contains { $0.loaded } }
@@ -84,7 +84,7 @@ import XCTest
         @ObservedObject var model: WorkspaceModel
         var body: some View {
             Color.clear.frame(width: 1000, height: 860)
-                .background(WindowActivityGuard(model: model))
+                .background(WindowActivityGuardReference(model: model))
                 .piSheetWindow(isPresented: $model.showProfiles) {
                     ProfileSettings(model: model, controller: model.settingsSheetEditor(), windowChrome: false).frame(width: 880, height: 780)
                 }

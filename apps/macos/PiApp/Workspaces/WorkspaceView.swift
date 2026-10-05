@@ -5,7 +5,7 @@ import Combine
 /// its resize handle, and the content column — the error strip over the
 /// chat (or what shows in its place) with its pane beside it, the pages laid
 /// over them, and the sides panel at the right edge or docked as a column.
-@MainActor final class WorkspaceRootView: NSView {
+@MainActor final class WorkspaceRootView: NSView, InheritsReducedMotion {
     let model: WorkspaceModel
     /// The pane's tabs beside the chat: the window's, whatever chat is shown.
     let pane: TabContainer
@@ -484,7 +484,7 @@ enum SplitPane {
 /// OK. The strip stays until dismissed and never steals focus. Its room is
 /// taken and given back in one step, so the conversation's edge never drags
 /// the line the reader is on; the banner itself comes down from above and
-/// fades in (`PiMotion.reveal`), and fades up and out as it goes.
+/// fades in (`PiKit.Motion.reveal`), and fades up and out as it goes.
 @MainActor final class WorkspaceErrorStrip: NSView {
     var dismiss: (() -> Void)?
     /// The strip's height changed: the column lays out again.
@@ -522,7 +522,7 @@ enum SplitPane {
         needsLayout = true
         heightChanged?()
     }
-    /// Down from above and in, or up and out (`.move(edge: .top)` with opacity, `PiMotion.base`).
+    /// Down from above and in, or up and out (`.move(edge: .top)` with opacity, `PiKit.Motion.base`).
     private func move(_ view: ErrorBannerView, arriving: Bool) {
         view.wantsLayer = true
         guard let layer = view.layer else { if !arriving { view.removeFromSuperview() }; return }

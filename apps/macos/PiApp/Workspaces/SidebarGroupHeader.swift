@@ -81,7 +81,7 @@ struct TopicHeaderState: Equatable {
         }
     }
     /// The chevron on a layer of its own, so opening and closing turn it
-    /// (`.rotationEffect` under `PiMotion.glide`) rather than redraw it.
+    /// (`.rotationEffect` under `PiKit.Motion.glide`) rather than redraw it.
     private let chevron = PiKit.DrawingLayer()
     init(_ face: Face) {
         faceState = face

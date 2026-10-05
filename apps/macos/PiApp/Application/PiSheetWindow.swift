@@ -1,88 +1,4 @@
-import SwiftUI
 import AppKit
-
-/// Closes the sheet a view is in when the app presented it in a window of its
-/// own (`piSheetWindow`). Nil in SwiftUI's own sheets, where `dismiss` does.
-private struct PiSheetCloseKey: EnvironmentKey { static let defaultValue: (@MainActor () -> Void)? = nil }
-extension EnvironmentValues {
-    var piSheetClose: (@MainActor () -> Void)? {
-        get { self[PiSheetCloseKey.self] }
-        set { self[PiSheetCloseKey.self] = newValue }
-    }
-}
-
-/// Closes the sheet a view is in, however it was presented: through the
-/// window's own close in a `piSheetWindow`, and through SwiftUI's `dismiss`
-/// in a `.sheet` or a window of its own (the ⌘, Settings window). A sheet
-/// declares `@PiDismiss private var dismiss` and calls `dismiss()` as before.
-@propertyWrapper struct PiDismiss: DynamicProperty {
-    @Environment(\.dismiss) private var dismiss
-    @Environment(\.piSheetClose) private var sheetClose
-    init() {}
-    var wrappedValue: PiDismissAction { PiDismissAction(dismiss: dismiss, sheetClose: sheetClose) }
-}
-struct PiDismissAction {
-    fileprivate let dismiss: DismissAction
-    fileprivate let sheetClose: (@MainActor () -> Void)?
-    @MainActor func callAsFunction() { if let sheetClose { sheetClose() } else { dismiss() } }
-}
-
-extension View {
-    /// `.sheet(isPresented:)`, in a sheet window the app makes and lets go of
-    /// whole once the sheet has closed. The sheet looks and closes as SwiftUI's
-    /// does: the same window, sized to its content, on the same AppKit sheet.
-    /// Its content is made as it opens; what it shows after that comes from
-    /// what the content itself observes. (SwiftUI's own sheets seemed to keep
-    /// every closed sheet's window and views, still observing the model, but
-    /// only in tests: XCTest keeps whatever AppKit autoreleases until a test
-    /// returns. In the app their windows go as they close, and at most the
-    /// last closed sheet's views stay, no longer updated.)
-    func piSheetWindow<Content: View>(isPresented: Binding<Bool>, @ViewBuilder content: @escaping () -> Content) -> some View {
-        background(PiSheetWindowAnchor(wanted: isPresented.wrappedValue ? AnyHashable(true) : nil,
-                                       dismiss: { _ in isPresented.wrappedValue = false },
-                                       content: { _ in AnyView(content()) }))
-    }
-    /// `.sheet(item:)`, in a sheet window of the app's own (see above): up
-    /// while the item is set, closed and presented again for another item
-    /// when its identity changes, and the item set to nil when the sheet
-    /// closes itself.
-    func piSheetWindow<Item: Identifiable, Content: View>(item: Binding<Item?>, @ViewBuilder content: @escaping (Item) -> Content) -> some View {
-        background(PiSheetWindowAnchor(wanted: item.wrappedValue.map { AnyHashable($0.id) },
-                                       dismiss: { identity in
-                                           // Only the sheet still asked for: a closing one never clears its successor.
-                                           if let current = item.wrappedValue, AnyHashable(current.id) == identity { item.wrappedValue = nil }
-                                       },
-                                       content: { identity in
-                                           guard let current = item.wrappedValue, AnyHashable(current.id) == identity else { return nil }
-                                           return AnyView(content(current))
-                                       }))
-    }
-}
-
-/// Where a `piSheetWindow` is presented from: the window it is in, and the
-/// environment the sheet inherits, as a SwiftUI sheet inherits it from the
-/// view that presents it.
-private struct PiSheetWindowAnchor: NSViewRepresentable {
-    /// Which sheet is asked for: its identity, or nil for none.
-    let wanted: AnyHashable?
-    let dismiss: (AnyHashable) -> Void
-    let content: (AnyHashable) -> AnyView?
-
-    func makeCoordinator() -> PiSheetWindowCoordinator { PiSheetWindowCoordinator() }
-    func makeNSView(context: Context) -> PiSheetWindowAnchorView {
-        let view = PiSheetWindowAnchorView()
-        view.coordinator = context.coordinator
-        return view
-    }
-    func updateNSView(_ view: PiSheetWindowAnchorView, context: Context) {
-        context.coordinator.update(wanted: wanted,
-                                   inherited: PiSheetWindowInherited(reduceMotion: context.environment.piReduceMotion, enabled: context.environment.isEnabled),
-                                   dismiss: dismiss, content: content)
-    }
-    static func dismantleNSView(_ view: PiSheetWindowAnchorView, coordinator: PiSheetWindowCoordinator) {
-        coordinator.anchorGone()
-    }
-}
 
 /// What the presenting view's environment hands the sheet.
 struct PiSheetWindowInherited: Equatable {
@@ -100,27 +16,23 @@ final class PiSheetWindowAnchorView: NSView {
     }
 }
 
-/// Presents and closes one sheet as its binding says, on the next turn of the
-/// run loop: SwiftUI calls `updateNSView` inside its own update, and a sheet
-/// window shown from there would lay out and draw within it.
+/// Presents and closes one sheet as its owner asks, on the next turn of the
+/// run loop: a sheet is reconciled after model changes settle.
 @MainActor final class PiSheetWindowCoordinator {
     private var wanted: AnyHashable?
     private var inherited = PiSheetWindowInherited(reduceMotion: false, enabled: true)
     private var dismiss: (AnyHashable) -> Void = { _ in }
-    private var content: (AnyHashable) -> AnyView? = { _ in nil }
+    private var content: (AnyHashable) -> NSView? = { _ in nil }
     private weak var parent: NSWindow?
     private var presented: (identity: AnyHashable, sheet: PiSheetWindow)?
     private var scheduled = false
-    /// The window and hosting view the last sheet was in, emptied, for the
+    /// The window and content host the last sheet was in, emptied, for the
     /// next one: one of each a sheet, filled again each time it opens,
     /// instead of new ones for every opening.
     private var spare: PiSheetWindow.Reusable?
 
-    /// Called from `updateNSView`, inside SwiftUI's update. What the sheet
-    /// inherits reaches it with the rest, on the next turn (`reconcile`):
-    /// set here, its settings published inside that update, which SwiftUI
-    /// reports as "Publishing changes from within view updates".
-    func update(wanted: AnyHashable?, inherited: PiSheetWindowInherited, dismiss: @escaping (AnyHashable) -> Void, content: @escaping (AnyHashable) -> AnyView?) {
+    /// Inherited state reaches the sheet after its owner has finished changing.
+    func update(wanted: AnyHashable?, inherited: PiSheetWindowInherited, dismiss: @escaping (AnyHashable) -> Void, content: @escaping (AnyHashable) -> NSView?) {
         self.wanted = wanted; self.dismiss = dismiss; self.content = content; self.inherited = inherited
         schedule()
     }
@@ -183,18 +95,17 @@ final class PiSheetWindowAnchorView: NSView {
     }
 }
 
-/// One presented sheet: the window, the hosting view in it, and what happens
+/// One presented sheet: the window, the content host in it, and what happens
 /// once it has closed. Nothing of its content outlives the sheet; the window
-/// and the hosting view, emptied, are the next sheet's of the same kind.
+/// and the content host, emptied, are the next sheet's of the same kind.
 @MainActor final class PiSheetWindow {
-    /// A closed sheet's window and hosting view, emptied, for the next sheet.
+    /// A closed sheet's window and content host, emptied, for the next sheet.
     struct Reusable {
         let window: NSWindow
-        let host: NSHostingView<PiSheetWindowRoot>
+        let host: PiSheetContentHost
     }
     private var window: NSWindow?
-    private var host: NSHostingView<PiSheetWindowRoot>?
-    private let settings: PiSheetWindowSettings
+    private var host: PiSheetContentHost?
     private weak var parent: NSWindow?
     private var ending = false
     /// Whether its owner closed it, rather than the window it was on.
@@ -203,7 +114,7 @@ final class PiSheetWindowAnchorView: NSView {
     /// Called once, when the sheet has closed and let go of its window, with
     /// whether its owner asked for that.
     var onEnded: ((Bool) -> Void)?
-    /// Takes the window and hosting view back, emptied, once the sheet has
+    /// Takes the window and content host back, emptied, once the sheet has
     /// closed; without it the window is closed.
     var recycle: ((Reusable) -> Void)?
 
@@ -216,11 +127,9 @@ final class PiSheetWindowAnchorView: NSView {
     /// lets go of it here, while its views can still be laid out once.
     static let willRelease = Notification.Name("PiSheetWindowWillRelease")
 
-    init(reusing reusable: Reusable? = nil, content: AnyView, inherited: PiSheetWindowInherited, close: @escaping @MainActor () -> Void) {
-        settings = PiSheetWindowSettings(inherited)
-        let root = PiSheetWindowRoot(content: content, settings: settings, close: close)
-        let host: NSHostingView<PiSheetWindowRoot>
-        if let reusable { host = reusable.host; host.rootView = root } else { host = NSHostingView(rootView: root) }
+    init(reusing reusable: Reusable? = nil, content: NSView, inherited: PiSheetWindowInherited, close: @escaping @MainActor () -> Void) {
+        let host = reusable?.host ?? PiSheetContentHost()
+        host.show(content, inherited: inherited, close: close)
         let window = reusable?.window ?? Self.makeWindow()
         window.contentView = host
         window.initialFirstResponder = host
@@ -253,8 +162,7 @@ final class PiSheetWindowAnchorView: NSView {
     /// Only what changed: a published setting set to the same value still
     /// redraws the sheet.
     func inherit(_ inherited: PiSheetWindowInherited) {
-        if settings.reduceMotion != inherited.reduceMotion { settings.reduceMotion = inherited.reduceMotion }
-        if settings.enabled != inherited.enabled { settings.enabled = inherited.enabled }
+        host?.inherit(inherited)
     }
 
     func present(on parent: NSWindow) {
@@ -313,13 +221,10 @@ final class PiSheetWindowAnchorView: NSView {
         // the view is this sheet's again next time. In a test something does:
         // XCTest keeps whatever AppKit autoreleases until the test returns,
         // and a sheet closed with the pointer over a hover region (every Pi
-        // button has one), the app in front, left its hosting view held that
+        // button has one), the app in front, left its content host held that
         // long, and its content's controller with it. In the app nothing
         // else holds the view once the closing turn is over.
-        host.rootView = PiSheetWindowRoot(content: AnyView(EmptyView()), settings: settings, close: {})
-        host.needsLayout = true
-        host.layoutSubtreeIfNeeded()
-        host.display()
+        host.clear()
         DispatchQueue.main.async { [self] in MainActor.assumeIsolated { finishRelease() } }
     }
     private func finishRelease() {
@@ -327,7 +232,7 @@ final class PiSheetWindowAnchorView: NSView {
         if let parentObserver { NotificationCenter.default.removeObserver(parentObserver) }
         parentObserver = nil
         window.orderOut(nil)
-        // The window and the hosting view, emptied, hold nothing more: the
+        // The window and the content host, emptied, hold nothing more: the
         // next sheet of the same kind opens in both (`recycle`), or the window
         // is closed.
         window.initialFirstResponder = nil
@@ -342,23 +247,49 @@ final class PiSheetWindowAnchorView: NSView {
     }
 }
 
-/// The values a presented sheet inherits and follows while it is up.
-@MainActor final class PiSheetWindowSettings: ObservableObject {
-    @Published var reduceMotion: Bool
-    @Published var enabled: Bool
-    init(_ inherited: PiSheetWindowInherited) { reduceMotion = inherited.reduceMotion; enabled = inherited.enabled }
+
+/// Optional inherited state and release hooks for native sheet roots.
+@MainActor protocol PiSheetWindowContent: AnyObject {
+    func inherit(_ values: PiSheetWindowInherited)
+    func setClose(_ close: @escaping @MainActor () -> Void)
+    func prepareForRelease()
+}
+extension PiSheetWindowContent {
+    func setClose(_ close: @escaping @MainActor () -> Void) {}
+    func prepareForRelease() {}
 }
 
-/// The sheet's content with what it inherits from the view that presented it,
-/// and the close action its Done and Escape use in place of `dismiss`.
-struct PiSheetWindowRoot: View {
-    let content: AnyView
-    @ObservedObject var settings: PiSheetWindowSettings
-    let close: @MainActor () -> Void
-    var body: some View {
-        content
-            .environment(\.piReduceMotion, settings.reduceMotion)
-            .disabled(!settings.enabled)
-            .environment(\.piSheetClose, close)
+/// Reused only while empty: closed content never keeps its model or tasks alive.
+@MainActor final class PiSheetContentHost: NSView, InheritsReducedMotion {
+    private var content: NSView?
+    private(set) var inheritedReduceMotion = false
+    override var isFlipped: Bool { true }
+    override var intrinsicContentSize: NSSize {
+        guard let content else { return .zero }
+        let natural = content.intrinsicContentSize
+        let fitting = content.fittingSize
+        return NSSize(width: natural.width > 0 ? natural.width : max(fitting.width, content.bounds.width),
+                      height: natural.height > 0 ? natural.height : max(fitting.height, content.bounds.height))
     }
+    override var fittingSize: NSSize { intrinsicContentSize }
+    func show(_ content: NSView, inherited: PiSheetWindowInherited, close: @escaping @MainActor () -> Void) {
+        clear()
+        self.content = content
+        (content as? PiSheetWindowContent)?.setClose(close)
+        inherit(inherited)
+        addSubview(content)
+        invalidateIntrinsicContentSize(); needsLayout = true
+    }
+    func inherit(_ values: PiSheetWindowInherited) {
+        inheritedReduceMotion = values.reduceMotion
+        (content as? InheritsEnabled)?.inheritedEnabled = values.enabled
+        (content as? PiSheetWindowContent)?.inherit(values)
+    }
+    func clear() {
+        (content as? PiSheetWindowContent)?.prepareForRelease()
+        content?.removeFromSuperview(); content = nil
+        inheritedReduceMotion = false
+        invalidateIntrinsicContentSize()
+    }
+    override func layout() { super.layout(); content?.frame = bounds }
 }

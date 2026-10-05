@@ -42,7 +42,7 @@ final class ChangesTabTests: GitPanelTestCase {
         model.selectedWorkspaceID = project.id; model.focusedSessionID = chat.id
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: WorkspaceView(model: model))
+        window.contentView = WorkspaceRootView(model: model)
         window.makeKeyAndOrderFront(nil)
         addTeardownBlock { @MainActor in model.tabs.tearDown(); model.report.suspend(); window.contentView = nil; window.close() }
         window.contentView?.layoutSubtreeIfNeeded()

@@ -229,79 +229,9 @@ enum DashPalette {
     }
 }
 
-/// `PiStatTile` with its caption wrapped as SwiftUI's `Text` wraps it
-/// (`ShellWrap`: the standard line-break strategy, which DesignKit's
-/// `statTile` does not use, so a lone last word could differ).
+/// Shared Pi tile, including wrapped captions and scaled values.
 @MainActor func dashStatTile(title: String, value: String, caption: String? = nil, symbol: String? = nil, tone: PiTone = .accent) -> PiKit.Box {
-    PiKit.card(DashStatTileContent(title: title, value: value, caption: caption, symbol: symbol, tone: tone), padding: PiSpacing.md)
-}
-
-@MainActor final class DashStatTileContent: DashView, PiKit.WidthSizing {
-    let title: String, value: String, caption: String?, symbol: String?, tone: PiTone
-    init(title: String, value: String, caption: String?, symbol: String?, tone: PiTone) {
-        self.title = title; self.value = value; self.caption = caption; self.symbol = symbol; self.tone = tone
-        super.init(frame: .zero)
-        setAccessibilityElement(true); setAccessibilityRole(.group)
-        setAccessibilityLabel([title, value, caption].compactMap { $0 }.joined(separator: ", "))
-    }
-    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
-    private var titleLine: PiKit.Line { PiKit.Line(title, font: PiKit.Font.micro, color: .piInkSecondary, tracking: 0.5, uppercased: true) }
-    private var valueLine: PiKit.Line { PiKit.Line(value, font: PiKit.Font.monospacedDigits(.systemFont(ofSize: 20, weight: .semibold)), color: .piInk) }
-    /// The caption's room, as `.lineLimit(2, reservesSpace: true)` takes it
-    /// (measured against SwiftUI): two wrapped lines take their own height, each
-    /// rounded up to the point (28); a one-line caption reserves the text
-    /// system's two line heights (26).
-    private func captionHeight(_ width: CGFloat) -> CGFloat {
-        guard let caption else { return 0 }
-        let font = PiKit.Font.caption
-        if width > 0, ShellWrap.ranges(caption, font: font, width: width).count >= 2 {
-            return 2 * Foundation.ceil(font.ascender - font.descender + font.leading)
-        }
-        return NSLayoutManager().defaultLineHeight(for: font) * 2
-    }
-    func height(forWidth width: CGFloat) -> CGFloat {
-        titleLine.size().height + 6 + valueLine.size().height + (caption == nil ? 0 : 6 + captionHeight(width))
-    }
-    override var intrinsicContentSize: NSSize {
-        NSSize(width: NSView.noIntrinsicMetric, height: height(forWidth: bounds.width))
-    }
-    /// `.minimumScaleFactor(0.6)`: shrinks the value until its whole width fits
-    /// (a font's width is not exactly linear in its size, so it steps down
-    /// rather than trusting one ratio), cutting it only below 60 per cent.
-    static func drawScaled(_ line: PiKit.Line, in rect: CGRect, minimumScale: CGFloat = 0.6, scale: CGFloat) {
-        guard line.width > rect.width + 0.01, line.width > 0 else { line.draw(at: rect.origin, scale: scale); return }
-        var factor = max(minimumScale, rect.width / line.width)
-        var smaller = line
-        while true {
-            smaller.font = NSFont(descriptor: line.font.fontDescriptor, size: line.font.pointSize * factor) ?? line.font
-            if smaller.width <= rect.width + 0.01 || factor <= minimumScale { break }
-            factor = max(minimumScale, factor - 0.005)
-        }
-        let y = rect.minY + (line.lineHeight - smaller.lineHeight) / 2
-        smaller.draw(in: CGRect(x: rect.minX, y: PiKit.round(y, scale), width: rect.width, height: smaller.lineHeight), scale: scale)
-    }
-    override func draw(_ dirtyRect: NSRect) {
-        let scale = piScale
-        var x: CGFloat = 0
-        if let symbol {
-            let glyph = PiKit.Symbol(symbol, size: 10.5, weight: .semibold)
-            glyph.draw(centredIn: CGRect(x: 0, y: 0, width: glyph.layoutSize.width, height: titleLine.size().height), color: tone.nsColor, scale: scale)
-            x = glyph.layoutSize.width + 6
-        }
-        titleLine.draw(in: CGRect(x: x, y: 0, width: bounds.width - x, height: titleLine.lineHeight), scale: scale)
-        let y = titleLine.size().height + 6
-        Self.drawScaled(valueLine, in: CGRect(x: 0, y: y, width: bounds.width, height: valueLine.size().height), scale: scale)
-        guard let caption else { return }
-        let font = PiKit.Font.caption
-        let shown = ShellWrap.cut(caption, font: font, width: bounds.width, lines: 2, scale: scale)
-        let lineHeight = PiKit.Line("Ag", font: font, color: .black).lineHeight
-        var top = y + valueLine.size().height + 6
-        for range in ShellWrap.ranges(shown, font: font, width: bounds.width).prefix(2) {
-            let text = (shown as NSString).substring(with: range).trimmingCharacters(in: .whitespacesAndNewlines)
-            PiKit.Line(text, font: font, color: .piInkTertiary).draw(at: CGPoint(x: 0, y: top), scale: scale)
-            top += lineHeight
-        }
-    }
+    PiKit.statTile(title: title, value: value, caption: caption, symbol: symbol, tone: tone)
 }
 
 /// The report's disclosure motion: SwiftUI's `.easeOut(duration: 0.2)` over a
@@ -359,22 +289,6 @@ enum DashPalette {
             context.allowsImplicitAnimation = true
             layout()
         }
-    }
-}
-
-/// A page that hands down the window's reduced motion (`piReduceMotion`).
-@MainActor protocol InheritsReducedMotion: AnyObject { var inheritedReduceMotion: Bool { get } }
-extension NSView {
-    /// Whether motion is reduced here: the system's, or the window's as the
-    /// enclosing page hands it down.
-    var piReducesMotion: Bool {
-        if PiKit.Motion.reduced { return true }
-        var view: NSView? = self
-        while let current = view {
-            if let page = current as? InheritsReducedMotion { return page.inheritedReduceMotion }
-            view = current.superview
-        }
-        return false
     }
 }
 

@@ -1,4 +1,5 @@
 import SwiftUI
+@testable import PiApp
 
 // TEMPORARY: `NativeCodeEditorView` inside SwiftUI, for the views that are
 // still SwiftUI (Settings' JSON fields, the Resource Inspector). It goes

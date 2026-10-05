@@ -1,14 +1,7 @@
-import SwiftUI
 import AppKit
 
-struct WindowActivityGuard: NSViewRepresentable {
-    let model: WorkspaceModel
-    func makeCoordinator() -> Coordinator { Coordinator(model) }
-    func makeNSView(context: Context) -> HookView {
-        let view = HookView(); view.attached = { [weak coordinator = context.coordinator] window in coordinator?.attach(window) }; return view
-    }
-    func updateNSView(_ view: HookView, context: Context) { context.coordinator.attach(view.window) }
-    static func dismantleNSView(_ view: HookView, coordinator: Coordinator) { coordinator.detach() }
+/// Keeps the last workspace window open while active work needs it.
+@MainActor enum WindowActivityGuard {
     final class HookView: NSView {
         var attached: ((NSWindow?) -> Void)?
         override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); attached?(window) }

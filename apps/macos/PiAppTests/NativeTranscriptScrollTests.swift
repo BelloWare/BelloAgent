@@ -22,7 +22,7 @@ final class NativeTranscriptScrollTests: XCTestCase {
         model.focusedSessionID = chat.id; model.selectedWorkspaceID = project.id; model.profileChoice = profile.id
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1240, height: 800), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        let hosted = NSHostingView(rootView: WorkspaceView(model: model))
+        let hosted = WorkspaceRootView(model: model)
         window.contentView = hosted
         defer { model.report.suspend(); model.shutdown(); window.contentView = nil; window.close(); try? FileManager.default.removeItem(at: root) }
         window.center(); window.makeKeyAndOrderFront(nil)
@@ -66,7 +66,7 @@ final class NativeTranscriptScrollTests: XCTestCase {
         model.focusedSessionID = chat.id; model.selectedWorkspaceID = project.id; model.profileChoice = profile.id
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1240, height: 800), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        let hosted = NSHostingView(rootView: WorkspaceView(model: model))
+        let hosted = WorkspaceRootView(model: model)
         window.contentView = hosted
         defer { model.report.suspend(); model.shutdown(); window.contentView = nil; window.close(); try? FileManager.default.removeItem(at: root) }
         window.center(); window.makeKeyAndOrderFront(nil)
@@ -194,7 +194,7 @@ final class NativeTranscriptScrollTests: XCTestCase {
         model.focusedSessionID = chat.id; model.selectedWorkspaceID = project.id; model.profileChoice = profile.id
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1240, height: 700), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        let hosted = NSHostingView(rootView: WorkspaceView(model: model))
+        let hosted = WorkspaceRootView(model: model)
         window.contentView = hosted
         defer { model.report.suspend(); model.shutdown(); window.contentView = nil; window.close(); try? FileManager.default.removeItem(at: root) }
         window.center(); window.makeKeyAndOrderFront(nil)

@@ -100,7 +100,7 @@ enum CostLimitText {
                 room = max(0, bounds.width - size.width - PiSpacing.sm)
             }
             // `.minimumScaleFactor(0.8)`, then cut.
-            DashStatTileContent.drawScaled(headline, in: CGRect(x: 0, y: 0, width: room, height: headline.lineHeight), minimumScale: 0.8, scale: scale)
+            PiKit.drawScaled(headline, in: CGRect(x: 0, y: 0, width: room, height: headline.lineHeight), minimumScale: 0.8, scale: scale)
         }
     }
 

@@ -46,37 +46,7 @@ import Combine
     }
 }
 
-/// Where text breaks into lines as SwiftUI's `Text` breaks it: the text
-/// system's standard strategy, which pushes a word down rather than leave
-/// one alone on a paragraph's last line (Core Text's typesetter does not).
-@MainActor enum ShellWrap {
-    private static var cache: [String: [NSRange]] = [:]
-    static func ranges(_ text: String, font: NSFont, width: CGFloat) -> [NSRange] {
-        guard !text.isEmpty else { return [] }
-        let key = "\(font.fontName)|\(font.pointSize)|\(width)|" + text
-        if let known = cache[key] { return known }
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.lineBreakStrategy = .standard; paragraph.lineBreakMode = .byWordWrapping
-        let storage = NSTextStorage(string: text, attributes: [.font: font, .paragraphStyle: paragraph])
-        let layout = NSLayoutManager()
-        let container = NSTextContainer(size: CGSize(width: max(1, width), height: .greatestFiniteMagnitude))
-        container.lineFragmentPadding = 0
-        layout.addTextContainer(container); storage.addLayoutManager(layout)
-        var ranges: [NSRange] = []
-        layout.enumerateLineFragments(forGlyphRange: layout.glyphRange(for: container)) { _, _, _, glyphs, _ in
-            ranges.append(layout.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil))
-        }
-        // A text that ends with a line break has an empty line after it, as
-        // `Text` lays it out.
-        if layout.extraLineFragmentRect.height > 0 { ranges.append(NSRange(location: (text as NSString).length, length: 0)) }
-        if cache.count > 512 { cache.removeAll(keepingCapacity: true) }
-        cache[key] = ranges
-        return ranges
-    }
-    static func height(_ text: String, font: NSFont, width: CGFloat) -> CGFloat {
-        CGFloat(max(1, ranges(text, font: font, width: width).count)) * PiKit.Line("Ag", font: font, color: .black).lineHeight
-    }
-}
+typealias ShellWrap = PiKit.TextWrap
 
 /// Text that wraps as SwiftUI's `Text` wraps it, up to `maximumLines` lines
 /// (the last cut with "…"), in one font with runs of different colors.
@@ -737,23 +707,7 @@ extension PiKit.Symbol {
     }
 }
 
-extension PiKit.Button {
-    /// The title's face, as the button draws it (`PiKitButtons.swift`), for
-    /// lining a row up on its baseline. (DesignKit does not expose it yet.)
-    var titleFont: NSFont {
-        let size: CGFloat, weight: NSFont.Weight
-        switch style {
-        case .primary, .secondary: size = compact ? 12 : 13
-        case .ghost, .ghostDanger: size = 12.5
-        case .danger: size = 12
-        }
-        switch style {
-        case .primary, .danger: weight = .semibold
-        case .secondary, .ghost, .ghostDanger: weight = .medium
-        }
-        return .systemFont(ofSize: size, weight: weight)
-    }
-}
+
 
 extension NSScrollView {
     /// Gives `document` the clip view's width and the height `height` says
@@ -851,31 +805,6 @@ extension NSScrollView {
             t = min(1, max(0, t - current / derivative))
         }
         return bezier(t, 0, 1)
-    }
-}
-
-/// `.piInset()`: the surface in a rounded rectangle, its hairline stroked
-/// on the edge and clipped with the content, so only the inner half shows.
-/// (PiKit.inset strokes the whole line outside the edge, a half point wider
-/// and darker than the SwiftUI inset; a DesignKit gap, reported.)
-@MainActor final class ShellInset: NSView {
-    let content: NSView
-    init(_ content: NSView) {
-        self.content = content
-        super.init(frame: .zero)
-        wantsLayer = true
-        layer?.masksToBounds = true
-        layer?.cornerRadius = PiRadius.md; layer?.cornerCurve = .continuous
-        layer?.borderWidth = 0.5
-        addSubview(content)
-    }
-    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
-    override var isFlipped: Bool { true }
-    override func layout() { super.layout(); content.frame = bounds }
-    override var wantsUpdateLayer: Bool { true }
-    override func updateLayer() {
-        layer?.backgroundColor = piCGColor(.piSurface)
-        layer?.borderColor = piCGColor(.piHairline)
     }
 }
 

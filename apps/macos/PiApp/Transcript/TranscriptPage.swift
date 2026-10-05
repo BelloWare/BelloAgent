@@ -1096,7 +1096,7 @@ struct ContentGeometry: Equatable {
         scrollView?.transcriptReading.readerMoved()
         followsBottom = true; jumping = true; detached = false
         pendingAnchor = nil; openingPlacementPending = false; openingReadingAnchor = nil
-        let animated = !PiMotion.reducesMotion
+        let animated = !PiKit.Motion.reducesMotion
         let generation = generation
         scrollToBottom(animated: animated) { [weak self] in
             guard let self, self.generation == generation, self.jumping else { return }

@@ -1,4 +1,5 @@
 import SwiftUI
+@testable import PiApp
 
 /// The transcript's colours for the SwiftUI views outside the transcript
 /// that still draw with them (the shimmer and Back to bottom of

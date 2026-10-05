@@ -93,7 +93,7 @@ import Combine
         if new.collapsed {
             if let list {
                 self.list = nil
-                // `.transition(.opacity)` under `PiMotion.quick`.
+                // `.transition(.opacity)` under `PiKit.Motion.quick`.
                 if window != nil, !PiKit.Motion.reduced {
                     PiKit.Motion.layers(PiKit.Motion.quick) { list.layer?.opacity = 0 }
                     DispatchQueue.main.asyncAfter(deadline: .now() + PiKit.Motion.quick) { list.removeFromSuperview() }

@@ -248,7 +248,7 @@ struct SidesPanelActivity: Equatable {
         }
         needsLayout = true
     }
-    /// In from the trailing edge and back out (`.transition(.move(edge: .trailing))`, `PiMotion.glide`).
+    /// In from the trailing edge and back out (`.transition(.move(edge: .trailing))`, `PiKit.Motion.glide`).
     private func slide(in arriving: Bool, animated: Bool) {
         guard let layer = panelBox.layer else { panelBox.isHidden = !arriving; return }
         let width = panelBox.frame.width + 40

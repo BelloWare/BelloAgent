@@ -3,7 +3,7 @@ import SwiftUI
 import XCTest
 @testable import PiApp
 
-final class WindowPresentationTests: XCTestCase {
+final class WindowPresentationTests: XCTestCase, SerialTestLane {
     @MainActor private func descendants<T: NSView>(_ type: T.Type, in view: NSView) -> [T] {
         (view as? T).map { [$0] } ?? view.subviews.flatMap { descendants(type, in: $0) }
     }
@@ -112,19 +112,19 @@ final class WindowPresentationTests: XCTestCase {
         XCTAssertEqual(window.frame, original)
     }
 
-    /// Bare NSWindow fixtures previously passed while WindowGroup restored a
-    /// conflicting native strip afterward. Exercise the application's real
-    /// scene after SwiftUI has had time to apply its own style and safe areas.
-    @MainActor func testProductionWindowGroupKeepsCustomHeaderAtTopAfterSwiftUILayoutAndResize() async throws {
-        var sceneWindow: NSWindow?
-        try await waitFor({
-            sceneWindow = NSApp.windows.first { window in
-                guard window.windowController != nil, let content = window.contentView else { return false }
-                return !self.descendants(WindowChromeView.self, in: content).isEmpty
-            }
-            return sceneWindow != nil
-        }, message: "The application-hosted SwiftUI WindowGroup did not create its custom header")
-        let window = try XCTUnwrap(sceneWindow), content = try XCTUnwrap(window.contentView)
+    /// Exercise the production window controller with an isolated model,
+    /// including the view's deferred chrome attachment and resizing.
+    @MainActor func testProductionApplicationKeepsCustomHeaderAtTopAfterLayoutAndResize() async throws {
+        let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("native-window-chrome-" + UUID().uuidString)
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        let application = BelloAgentApplication(model: model)
+        application.revealWorkspace()
+        let window = try XCTUnwrap(application.workspaceWindow?.window), content = try XCTUnwrap(window.contentView)
+        defer {
+            window.close(); model.shutdown()
+            try? FileManager.default.removeItem(at: root)
+        }
+        try await waitFor({ !self.descendants(WindowChromeView.self, in: content).isEmpty }, message: "The native application did not create its custom header")
         let chrome = try XCTUnwrap(descendants(WindowChromeView.self, in: content).first)
         let original = window.frame
         defer { window.setFrame(original, display: true, animate: false) }
@@ -153,7 +153,7 @@ final class WindowPresentationTests: XCTestCase {
         model.focusedSessionID = chat.id; model.selectedWorkspaceID = project.id; model.profileChoice = profile.id
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1240, height: 800), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false; window.title = "Bello Agent — Synthetic Window Fixture"
-        let hosted = NSHostingView(rootView: WorkspaceView(model: model))
+        let hosted = WorkspaceRootView(model: model)
         window.contentView = hosted
         defer {
             model.report.suspend(); model.shutdown(); window.contentView = nil; window.close()

@@ -58,7 +58,7 @@ enum MenuBarTab: String, CaseIterable { case live = "Live", usage = "Usage" }
     private let bottomRule = DividerView()
     private lazy var openAppButton = PiKit.Button("Open app", symbol: "arrow.up.forward.app", style: .secondary, compact: true) { [weak self] in self?.openApp() }
     private lazy var reportButton = PiKit.Button("Usage report", symbol: "chart.bar", style: .secondary, compact: true) { [weak self] in self?.openReport() }
-    private let visibility = WindowVisibilityReader.VisibilityView()
+    private let visibility = WindowVisibilityView()
     private var observer: ShellObserver!
 
     init(load: @escaping MenuBarMetricsLoader, scopedLoad: MenuBarScopedMetricsLoader? = nil, projects: @escaping () -> [MonitorProject] = { [] },
@@ -107,7 +107,7 @@ enum MenuBarTab: String, CaseIterable { case live = "Live", usage = "Usage" }
     }
 
     /// The app's Settings, through the app menu's own Settings… item (the
-    /// SwiftUI scene answers it; the legacy `showSettingsWindow:` no longer does).
+    /// menu command opens the native Settings window).
     static func openAppSettings() {
         guard let menu = NSApp.mainMenu?.items.first?.submenu,
               let index = menu.items.firstIndex(where: { $0.keyEquivalent == "," && $0.keyEquivalentModifierMask == .command }) else { return }

@@ -48,7 +48,7 @@ private struct InspectorTitleBarReference: View {
     @ObservedObject var inspector: SessionInspectorModel
     var body: some View {
         ZStack(alignment: .leading) {
-            PiWindowBar()
+            PiWindowBarReference()
             HStack(spacing: PiSpacing.sm) {
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Session Inspector").font(PiFont.title(14)).foregroundStyle(Color.piInk)

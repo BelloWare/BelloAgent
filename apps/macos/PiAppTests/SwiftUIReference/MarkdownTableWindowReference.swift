@@ -13,7 +13,7 @@ struct MarkdownTableWindowView: View {
     var body: some View {
         VStack(spacing: 0) {
             ZStack(alignment: .leading) {
-                PiWindowBar()
+                PiWindowBarReference()
                 HStack(spacing: PiSpacing.sm) {
                     VStack(alignment: .leading, spacing: 1) {
                         Text("Table").font(PiFont.title(14)).foregroundStyle(Color.piInk)

@@ -175,103 +175,82 @@ extension PiKit {
     @MainActor final class Row: NSView, WidthSizing {
         let label: String, detail: String?
         let control: NSView?
-        /// No hairline under it, whatever its place (the SwiftUI row's `last`).
         var last: Bool { didSet { needsLayout = true } }
-        /// Whether it is the last row of its group; the group sets it.
         var lastInGroup = false { didSet { needsLayout = true } }
         private var hidesSeparator: Bool { last || lastInGroup }
-        private let labelView: WrappedText
-        private let detailView: WrappedText?
-        private let separator = CALayer()
-
+        private let labelView: TextBlock
+        private let detailView: TextBlock?
+        private let rule = HairlineView()
         init(label: String, detail: String? = nil, last: Bool = false, control: NSView?) {
             self.label = label; self.detail = detail; self.control = control; self.last = last
-            labelView = WrappedText(label, font: PiKit.Font.body, color: .piInk)
-            detailView = detail.map { WrappedText($0, font: PiKit.Font.caption, color: .piInkSecondary) }
+            labelView = TextBlock(label, font: PiKit.Font.body, color: .piInk)
+            detailView = detail.map { TextBlock($0, font: PiKit.Font.caption, color: .piInkSecondary) }
             super.init(frame: .zero)
-            wantsLayer = true
-            addSubview(labelView)
-            if let detailView { addSubview(detailView) }
-            if let control { addSubview(control) }
-            layer?.addSublayer(separator)
+            StaticTextAccessibility.asValues(in: labelView)
+            if let detailView { StaticTextAccessibility.asValues(in: detailView) }
+            for view in [labelView, detailView, control].compactMap({ $0 }) as [NSView] { addSubview(view) }
+            addSubview(rule)
         }
         required init?(coder: NSCoder) { fatalError("Not used from a nib") }
         override var isFlipped: Bool { true }
-        /// The text column and the control's frame as `PiRow`'s `HStack`
-        /// shares the row: the text at least 180 wide, the control in a frame
-        /// up to 380, a spacer between them. The less flexible of the two is
-        /// offered half the room first (a long label: half, not all the
-        /// control leaves), the other what remains, the spacer the rest.
-        private func shares(_ width: CGFloat) -> (text: CGFloat, control: CGFloat) {
-            let inner = max(0, width - PiSpacing.lg * 2)
-            guard control != nil else { return (textSizing(inner), 0) }
-            let available = max(0, inner - PiSpacing.lg * 2)
-            let textFlexibility = textSizing(.infinity) - textSizing(0)
-            let controlFlexibility = controlFrame(.infinity) - controlFrame(0)
-            if textFlexibility <= controlFlexibility {
-                let text = textSizing(available / 2)
-                return (text, controlFrame(max(0, available - text)))
-            }
-            let frame = controlFrame(available / 2)
-            return (textSizing(max(0, available - frame)), frame)
+
+        /// A wrapping text's width when offered `width`: its widest line there.
+        private func textWidth(_ block: TextBlock, _ width: CGFloat) -> CGFloat {
+            let scale = window?.backingScaleFactor ?? 2
+            return PiKit.wrappedLines(block.text, font: block.font, width: width).map { PiKit.Line($0, font: block.font, color: .black).size(scale: scale).width }.max() ?? 0
         }
-        /// The text's width when offered `proposal`: its widest wrapped line,
-        /// never under 180 (`.frame(minWidth: 180)`).
-        private func textSizing(_ proposal: CGFloat) -> CGFloat {
-            let offered = max(proposal, 180)
-            let scale = piScale
-            func widest(_ text: String, _ font: NSFont) -> CGFloat {
-                guard offered.isFinite else { return Line(text, font: font, color: .black).size(scale: scale).width }
-                return PiKit.wrappedLines(text, font: font, width: offered).map { Line($0, font: font, color: .black).size(scale: scale).width }.max() ?? 0
-            }
-            let natural = max(widest(label, PiKit.Font.body), detail.map { widest($0, PiKit.Font.caption) } ?? 0)
-            return max(180, min(natural, offered))
-        }
-        /// The control's frame when offered `proposal`: what it is offered up
-        /// to 380, never narrower than a control of fixed width (`.frame(maxWidth: 380)`).
-        private func controlFrame(_ proposal: CGFloat) -> CGFloat {
-            guard let control else { return 0 }
-            let ideal = control.intrinsicContentSize.width
-            let least = ideal == NSView.noIntrinsicMetric ? 0 : ideal
-            return min(380, max(least, proposal.isFinite ? proposal : 380))
+        private var textItem: StackLayout.Item {
+            StackLayout.Item(view: nil, sizing: StackLayout.Sizing(width: { [weak self] proposal in
+                guard let self else { return 0 }
+                let offered = max(proposal, 180)
+                let width = max(self.textWidth(self.labelView, offered), self.detailView.map { self.textWidth($0, offered) } ?? 0)
+                return max(180, min(width, offered))
+            }, height: { [weak self] width in self?.textHeight(width) ?? 0 }))
         }
         private func textHeight(_ width: CGFloat) -> CGFloat {
-            let column = shares(width).text
-            return labelView.height(forWidth: column) + (detailView.map { 2 + $0.height(forWidth: column) } ?? 0)
+            labelView.height(forWidth: width) + (detailView.map { 2 + $0.height(forWidth: width) } ?? 0)
         }
-        /// The control at its own width in its frame (all of it when it has none).
-        private func controlSize(width: CGFloat) -> CGSize {
-            guard let control else { return .zero }
-            let frame = shares(width).control
-            let intrinsic = control.intrinsicContentSize.width
-            let controlWidth = intrinsic == NSView.noIntrinsicMetric ? frame : min(frame, intrinsic)
-            return CGSize(width: controlWidth, height: PiKit.height(of: control, width: controlWidth))
+        /// The control's frame: as wide as offered up to 380, never narrower than a control of fixed width.
+        private var controlItem: StackLayout.Item? {
+            guard let control else { return nil }
+            if let sized = control as? ProposedWidthSizing {
+                // The frame takes what it is offered up to 380; what is in it, its own width there.
+                return StackLayout.Item(view: nil, sizing: StackLayout.Sizing(width: { proposal in
+                    min(380, max(sized.width(forProposal: 0), proposal.isFinite ? proposal : 380))
+                }, height: { width in PiKit.height(of: control, width: sized.width(forProposal: width)) }))
+            }
+            return StackLayout.Item(view: nil, sizing: StackLayout.Sizing(width: { proposal in
+                let ideal = control.intrinsicContentSize.width
+                let least = ideal == NSView.noIntrinsicMetric ? 0 : ideal
+                return min(380, max(least, proposal.isFinite ? proposal : 380))
+            }, height: { width in
+                let ideal = control.intrinsicContentSize.width
+                return PiKit.height(of: control, width: ideal == NSView.noIntrinsicMetric ? width : min(ideal, width))
+            }))
         }
+        private var items: [StackLayout.Item] { [textItem, .spacer(0)] + (controlItem.map { [$0] } ?? []) }
         func height(forWidth width: CGFloat) -> CGFloat {
-            max(textHeight(width), controlSize(width: width).height) + 20 + (hidesSeparator ? 0 : 1)
+            StackLayout.height(items, spacing: PiSpacing.lg, width: width - PiSpacing.lg * 2) + 20 + (hidesSeparator ? 0 : 1)
         }
         override func layout() {
             super.layout()
-            // The text block and the control are each centred in the row
-            // inside its 10-point padding, as an HStack centres them.
-            let inner = bounds.height - (hidesSeparator ? 0 : 1) - 20
-            let column = shares(bounds.width).text
-            var y = 10 + PiKit.round((inner - textHeight(bounds.width)) / 2, piScale)
-            labelView.frame = CGRect(x: PiSpacing.lg, y: y, width: column, height: labelView.height(forWidth: column))
-            y += labelView.frame.height + 2
-            if let detailView { detailView.frame = CGRect(x: PiSpacing.lg, y: y, width: column, height: detailView.height(forWidth: column)) }
-            if let control {
-                let size = controlSize(width: bounds.width)
-                control.frame = CGRect(x: bounds.width - PiSpacing.lg - size.width, y: 10 + PiKit.round((inner - size.height) / 2, piScale), width: size.width, height: size.height)
+            let inner = CGRect(x: PiSpacing.lg, y: 10, width: bounds.width - PiSpacing.lg * 2, height: bounds.height - 20 - (hidesSeparator ? 0 : 1))
+            let frames = StackLayout.place(items, spacing: PiSpacing.lg, in: inner, scale: piScale)
+            let text = frames[0]
+            let labelHeight = labelView.height(forWidth: text.width)
+            labelView.frame = CGRect(x: text.minX, y: text.minY, width: text.width, height: labelHeight)
+            if let detailView { detailView.frame = CGRect(x: text.minX, y: text.minY + labelHeight + 2, width: text.width, height: detailView.height(forWidth: text.width)) }
+            if let control, frames.count > 2 {
+                // The control at the trailing edge of its frame, at its own width when it has one.
+                let frame = frames[2], ideal = control.intrinsicContentSize.width
+                let width = (control as? ProposedWidthSizing)?.width(forProposal: frame.width)
+                    ?? (ideal == NSView.noIntrinsicMetric ? frame.width : min(ideal, frame.width))
+                let height = PiKit.height(of: control, width: width)
+                control.frame = CGRect(x: frame.maxX - width, y: PiKit.round(inner.minY + (inner.height - height) / 2, piScale), width: width, height: height)
             }
-            CATransaction.begin(); CATransaction.setDisableActions(true)
-            separator.isHidden = hidesSeparator
-            separator.frame = CGRect(x: PiSpacing.lg, y: bounds.height - 1, width: bounds.width - PiSpacing.lg, height: 1)
-            CATransaction.commit()
-            updateLayer()
+            rule.isHidden = hidesSeparator
+            rule.frame = CGRect(x: PiSpacing.lg, y: bounds.height - 1, width: bounds.width - PiSpacing.lg, height: 1)
         }
-        override var wantsUpdateLayer: Bool { true }
-        override func updateLayer() { separator.backgroundColor = piCGColor(.piHairline) }
     }
 
     // MARK: - Resize handle
