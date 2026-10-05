@@ -227,9 +227,12 @@ struct InspectorFigure: Identifiable, Equatable {
     }
     required init?(coder: NSCoder) { nil }
     func height(forWidth width: CGFloat) -> CGFloat { flow.height(forWidth: width) }
-    /// A wrapped strip keeps its first line aligned with the disclosures
-    /// beside it; using the flow's bottom would align them to its last line.
-    var firstBaseline: CGFloat { textBaseline }
+    /// PiFlow propagates the first row's alignment baseline 1.5 points below
+    /// its TextKit drawing baseline at this fixed caption/13-point scale.
+    /// This is container alignment only: a standalone strip draws unchanged.
+    /// Keeping the first line's baseline also keeps a wrapped strip aligned
+    /// with its disclosures rather than with the bottom of its last line.
+    var firstBaseline: CGFloat { flow.subviews.isEmpty ? 0 : textBaseline + 1.5 }
     override var intrinsicContentSize: NSSize { flow.intrinsicContentSize }
     override func layout() { super.layout(); flow.frame = bounds }
 }

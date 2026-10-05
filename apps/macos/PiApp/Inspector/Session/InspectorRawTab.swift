@@ -296,13 +296,16 @@ import AppKit
     func controlTextDidChange(_ notification: Notification) { clear.isHidden = field.stringValue.isEmpty; needsLayout = true; changed(field.stringValue) }
     func controlTextDidBeginEditing(_ notification: Notification) { strokeColor = NSColor.piAccent.piOpacity(0.5) }
     func controlTextDidEndEditing(_ notification: Notification) { strokeColor = .piHairline }
-    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: PiKit.Line("Ag", font: PiKit.Font.caption, color: .black).lineHeight + 12) }
+    // A plain SwiftUI caption field gives its native cell a one-point taller
+    // slot than static Text. The cell sits at the bottom of that slot.
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: field.intrinsicContentSize.height + 1 + 12) }
     override func layout() {
         super.layout(); let icon = search.intrinsicContentSize
-        search.frame = CGRect(x: 9, y: (bounds.height - icon.height) / 2, width: icon.width, height: icon.height)
+        search.frame = CGRect(x: 9, y: (bounds.height - 1 - icon.height) / 2, width: icon.width, height: icon.height)
         let clearSize = clear.intrinsicContentSize
         let x = 9 + icon.width + 6, clearWidth: CGFloat = clear.isHidden ? 0 : clearSize.width + 6
-        field.frame = CGRect(x: x - PiKit.fieldInset, y: 6, width: max(0, bounds.width - x - 9 - clearWidth) + 2 * PiKit.fieldInset, height: bounds.height - 12)
+        let textHeight = field.intrinsicContentSize.height
+        field.frame = CGRect(x: x - PiKit.fieldInset, y: bounds.height - 6 - textHeight, width: max(0, bounds.width - x - 9 - clearWidth) + 2 * PiKit.fieldInset, height: textHeight)
         clear.frame = CGRect(x: bounds.width - 9 - clearSize.width, y: (bounds.height - clearSize.height) / 2, width: clearSize.width, height: clearSize.height)
     }
 }

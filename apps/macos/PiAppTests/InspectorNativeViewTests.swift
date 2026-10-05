@@ -452,7 +452,10 @@ import XCTest
     func testRawSearchKeepsItsClearSymbolAndTextInsetsAtBothWidths() async throws {
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
             for width: CGFloat in [250, 180] {
-                try await check("inspector-raw-search-\(Int(width))-\(appearance.rawValue)", width: width, appearance: appearance, reference: InspectorSearchFieldReference(text: "README"), native: InspectorSearchField(text: "README", changed: { _ in }))
+                for text in ["README", ""] {
+                    let state = text.isEmpty ? "-empty" : ""
+                    try await check("inspector-raw-search\(state)-\(Int(width))-\(appearance.rawValue)", width: width, appearance: appearance, reference: InspectorSearchFieldReference(text: text), native: InspectorSearchField(text: text, changed: { _ in }))
+                }
             }
         }
     }
