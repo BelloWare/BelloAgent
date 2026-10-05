@@ -42,7 +42,8 @@ jobs:
       - name: Capture current Linux software-rendered UI
         timeout-minutes: 4
         run: |
-          export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          VK_ICD_FILENAMES=$(find /usr/share/vulkan/icd.d -maxdepth 1 -name "lvp_icd*.json" -print -quit)
+          export VK_ICD_FILENAMES
           test -f "$VK_ICD_FILENAMES"
           xvfb-run --auto-servernum --server-args="-screen 0 1600x1000x24 -nolisten tcp" \
             sh -eu -c 'openbox >/dev/null 2>&1 & wm=$!; trap "kill $wm || true" EXIT; python3 scripts/linux-ui-smoke.py agent target/debug/bello-agent "$RUNNER_TEMP/ui-evidence"'
