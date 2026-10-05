@@ -278,14 +278,14 @@ import AppKit
     }
 }
 
-@MainActor private final class InspectorSearchField: PiKit.Box, NSTextFieldDelegate {
+@MainActor final class InspectorSearchField: PiKit.Box, NSTextFieldDelegate {
     let field = NSTextField(string: "")
     private let search = PiKit.SymbolView(PiKit.Symbol("magnifyingglass", size: 11, weight: .medium), color: .piInkTertiary)
-    private let clear: PiKit.IconButton
+    private let clear = InspectorSearchClearButton(frame: .zero)
     private let changed: (String) -> Void
     var text: String { get { field.stringValue } set { if field.stringValue != newValue { field.stringValue = newValue }; clear.isHidden = newValue.isEmpty; needsLayout = true } }
     init(text: String, changed: @escaping (String) -> Void) {
-        self.changed = changed; clear = PiKit.IconButton(symbol: "xmark.circle.fill", label: "Clear the search", size: 14)
+        self.changed = changed
         super.init(fill: .piSurface, stroke: .piHairline, cornerRadius: 8)
         PiKit.configurePlain(field, font: PiKit.Font.caption, placeholder: "Find in body and headers")
         field.setAccessibilityIdentifier("inspector-raw-search"); field.delegate = self
@@ -300,8 +300,24 @@ import AppKit
     override func layout() {
         super.layout(); let icon = search.intrinsicContentSize
         search.frame = CGRect(x: 9, y: (bounds.height - icon.height) / 2, width: icon.width, height: icon.height)
-        let x = 9 + icon.width + 6, clearWidth: CGFloat = clear.isHidden ? 0 : 20
+        let clearSize = clear.intrinsicContentSize
+        let x = 9 + icon.width + 6, clearWidth: CGFloat = clear.isHidden ? 0 : clearSize.width + 6
         field.frame = CGRect(x: x - PiKit.fieldInset, y: 6, width: max(0, bounds.width - x - 9 - clearWidth) + 2 * PiKit.fieldInset, height: bounds.height - 12)
-        clear.frame = CGRect(x: bounds.width - 9 - 14, y: (bounds.height - 14) / 2, width: 14, height: 14)
+        clear.frame = CGRect(x: bounds.width - 9 - clearSize.width, y: (bounds.height - clearSize.height) / 2, width: clearSize.width, height: clearSize.height)
     }
+}
+
+/// The search's plain body-size symbol has no icon-button scale or hover
+/// circle: it matches the original Image-only clear action.
+@MainActor private final class InspectorSearchClearButton: PiKit.ButtonBase {
+    private let glyph = PiKit.Symbol("xmark.circle.fill", size: 13, weight: .regular)
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect); pressScales = false
+        setAccessibilityIdentifier("inspector-raw-search-clear")
+        setAccessibilityLabel("Clear the search")
+    }
+    required init?(coder: NSCoder) { nil }
+    override var intrinsicContentSize: NSSize { glyph.layoutSize }
+    override func styleFace() { fill.backgroundColor = CGColor.clear; stroke.borderColor = CGColor.clear }
+    override func drawContent(in rect: CGRect) { glyph.drawPlaced(centredIn: rect, color: .piInkTertiary, scale: piScale) }
 }

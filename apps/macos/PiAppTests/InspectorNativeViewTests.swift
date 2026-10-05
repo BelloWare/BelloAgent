@@ -39,6 +39,14 @@ import XCTest
         let inspector = controller.inspector, window = try XCTUnwrap(controller.window)
         let root = try XCTUnwrap(window.contentView as? SessionInspectorView)
         try await eventually("The Inspector did not list its requests") { inspector.index.requests.count == 12 }
+        let frame = window.frame
+        root.layoutSubtreeIfNeeded()
+        let bar = try XCTUnwrap(InspectorExpandFixture.descendants(PiWindowBarView.self, in: root).first)
+        let navigator = try XCTUnwrap(InspectorExpandFixture.descendants(InspectorNavigator.self, in: root).first)
+        XCTAssertEqual(bar.frame.minY, 28, accuracy: 0.5, "The app bar starts below the native title-bar space")
+        XCTAssertEqual(bar.frame.height, 48, accuracy: 0.5)
+        XCTAssertEqual(navigator.frame.minY, 77, accuracy: 0.5)
+        XCTAssertEqual(navigator.frame.height, root.bounds.height - 77, accuracy: 0.5)
         let request = try XCTUnwrap(inspector.index.requests.dropFirst().first)
         inspector.select(.request(request.id))
         func key(_ text: String) throws -> NSEvent {
@@ -56,6 +64,9 @@ import XCTest
             guard let search = InspectorExpandFixture.descendants(NSTextField.self, in: root).first(where: { $0.accessibilityIdentifier() == "inspector-raw-search" }) else { return false }
             return search.currentEditor() === window.firstResponder && inspector.request.tab == .raw && inspector.request.raw == .request
         }
+        XCTAssertEqual(window.frame, frame, "Restoring title-bar space and navigating keep the window's saved dimensions")
+        XCTAssertEqual(bar.frame.minY, 28, accuracy: 0.5)
+        XCTAssertEqual(navigator.frame.minY, 77, accuracy: 0.5)
     }
 
     func testMetadataArrivalKeepsTheFocusedRequestTab() async throws {
@@ -97,6 +108,63 @@ import XCTest
         page.compact = false; page.layoutSubtreeIfNeeded()
         XCTAssertEqual(search.superview?.frame.width ?? 0, 250, accuracy: 0.5)
         XCTAssertTrue(fixture.window.firstResponder === headers, "Resizing the toolbar retains tab focus")
+        fixture.request.query = "README"
+        try await eventually("The clear-search action did not appear") {
+            page.layoutSubtreeIfNeeded()
+            return search.stringValue == "README" && InspectorExpandFixture.descendants(PiKit.ButtonBase.self, in: raw).contains { $0.accessibilityIdentifier() == "inspector-raw-search-clear" && !$0.isHidden }
+        }
+        let clear = try XCTUnwrap(InspectorExpandFixture.descendants(PiKit.ButtonBase.self, in: raw).first { $0.accessibilityIdentifier() == "inspector-raw-search-clear" })
+        XCTAssertEqual(clear.accessibilityLabel(), "Clear the search")
+        XCTAssertGreaterThan(clear.frame.height, 10, "The plain clear action retains its body-size symbol")
+        XCTAssertTrue(clear.accessibilityPerformPress())
+        try await eventually("The accessibility clear action did not empty the query") { fixture.request.query.isEmpty && search.stringValue.isEmpty && clear.isHidden }
+        XCTAssertTrue(fixture.window.firstResponder === headers)
+    }
+
+    func testCompactionGroupHasItsSemanticNameAndCanOpenItsRequestThroughAccessibility() async throws {
+        let archiveRoot = scratchRoot("inspector-compaction-accessibility")
+        defer { try? FileManager.default.removeItem(at: archiveRoot) }
+        let archive = PayloadArchive(root: archiveRoot)
+        try await archive.configure(quota: 8_388_608, bodyRetention: 1_000_000, metricRetention: 400_000_000)
+        let requestID = UUID().uuidString
+        var metadata = SessionStatsPopoverTests.metadata(for: SessionStatsFixture.request(1), session: "compaction-accessibility")
+        metadata["attemptId"] = .string(requestID); metadata["purpose"] = .string("compaction")
+        try await archive.begin(metadata, workspace: "project"); try await archive.finish(metadata)
+        let inspector = SessionInspectorModel(scope: SessionUsageScope(sessionID: "compaction-accessibility", workspaceID: "project"), title: "Compaction accessibility", archive: archive, workspace: nil, usageLoader: { _, _, _ in throw CaptureFailure.unavailable }, cache: InspectorDocumentCache())
+        let controller = SessionInspectorWindowController(inspector: inspector)
+        let window = try XCTUnwrap(controller.window), root = try XCTUnwrap(window.contentView as? SessionInspectorView)
+        defer { controller.close() }
+        controller.present(.overview)
+        let navigator = try XCTUnwrap(InspectorExpandFixture.descendants(InspectorNavigator.self, in: root).first)
+        try await eventually("The compaction was not listed") { inspector.indexLoaded && inspector.index.compaction(containing: requestID) != nil }
+        let group = try XCTUnwrap(inspector.index.compaction(containing: requestID))
+        let turn = try XCTUnwrap(inspector.index.turn(containing: requestID))
+        inspector.select(.turn(turn.id))
+        if inspector.expanded.contains(group.id) { inspector.toggle(group.id) }
+        try await eventually("The compaction's native action did not mount") {
+            root.layoutSubtreeIfNeeded()
+            guard let holder = navigator.list.madeView(for: group.id) else { return false }
+            return InspectorExpandFixture.descendants(PiKit.SelectableRow.self, in: holder).contains { $0.accessibilityIdentifier() == "inspector-compaction-open" }
+        }
+        let holder = try XCTUnwrap(navigator.list.madeView(for: group.id))
+        let action = try XCTUnwrap(InspectorExpandFixture.descendants(PiKit.SelectableRow.self, in: holder).first { $0.accessibilityIdentifier() == "inspector-compaction-open" })
+        XCTAssertEqual(action.accessibilityLabel(), group.title + ", " + compactGatewayUSD(0.001))
+        XCTAssertEqual(action.accessibilityRole(), .button)
+        XCTAssertFalse(action.isAccessibilitySelected())
+        XCTAssertTrue(action.accessibilityPerformPress())
+        try await eventually("Pressing the accessible compaction action did not open its request") {
+            root.layoutSubtreeIfNeeded()
+            return inspector.page == .request(requestID) && inspector.expanded.contains(group.id) && navigator.list.madeView(for: group.id) === holder
+        }
+        XCTAssertFalse(action.isAccessibilitySelected(), "The expanded group delegates selection to its visible request")
+        inspector.toggle(group.id)
+        try await eventually("The collapsed group did not expose the selected request") {
+            root.layoutSubtreeIfNeeded()
+            return !inspector.expanded.contains(group.id) && navigator.list.madeView(for: group.id) === holder && action.isAccessibilitySelected()
+        }
+        XCTAssertEqual(action.accessibilityLabel(), group.title + ", " + compactGatewayUSD(0.001))
+        XCTAssertTrue(action.accessibilityPerformPress())
+        try await eventually("The selected group could not reopen its request") { inspector.expanded.contains(group.id) && !action.isAccessibilitySelected() }
     }
 
     func testRequestDisclosureCanBeToggledAgainFromItsKeptKeyboardFocus() async throws {
@@ -359,6 +427,32 @@ import XCTest
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
             for width: CGFloat in [760, 320] {
                 try await check("inspector-figures-\(Int(width))-\(appearance.rawValue)", width: width, appearance: appearance, reference: InspectorFigureStripReference(figures: figures), native: InspectorFigureStrip(figures: figures))
+            }
+        }
+    }
+
+    func testRequestFiguresAlignWithTheFirstLineOfTheirDisclosures() async throws {
+        let fixture = try await InspectorExpandFixture(body: InspectorExpandBodies.request(result: "A short result"))
+        defer { fixture.close() }
+        var row = try XCTUnwrap(fixture.request.row)
+        row.input = 30; row.cached = 10; row.output = 20; row.cost = 0.00125
+        row.ttft = 2; row.decode = 112; row.duration = 114
+        fixture.request.open(row, predecessor: nil, previousLabel: nil)
+        try await eventually("The metric fixture did not settle") { fixture.request.metadataLoaded && fixture.request.conversation.value != nil }
+        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            for width: CGFloat in [889, 513] {
+                let page = InspectorRequestPage(inspector: fixture.inspector, request: fixture.request, compact: width < 600)
+                let strip = try XCTUnwrap(InspectorExpandFixture.descendants(InspectorFigureStrip.self, in: page).first)
+                let metrics = try XCTUnwrap(strip.superview as? ShellStack)
+                try await check("inspector-request-metrics-\(Int(width))-\(appearance.rawValue)", width: width, appearance: appearance, reference: InspectorRequestMetricsReference(figures: row.figures), native: metrics)
+            }
+        }
+    }
+
+    func testRawSearchKeepsItsClearSymbolAndTextInsetsAtBothWidths() async throws {
+        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            for width: CGFloat in [250, 180] {
+                try await check("inspector-raw-search-\(Int(width))-\(appearance.rawValue)", width: width, appearance: appearance, reference: InspectorSearchFieldReference(text: "README"), native: InspectorSearchField(text: "README", changed: { _ in }))
             }
         }
     }
