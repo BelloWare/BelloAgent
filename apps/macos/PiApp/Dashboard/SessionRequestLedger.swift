@@ -240,9 +240,11 @@ struct SessionRequestLedger: Equatable {
     weak var owner: SessionLedgerRows?
     let index: Int
     init(owner: SessionLedgerRows, index: Int) { self.owner = owner; self.index = index; super.init() }
-    override func accessibilityPerformPress() -> Bool {
-        guard let owner, let open = owner.open, owner.rows.indices.contains(index) else { return false }
-        open(owner.rows[index].id); return true
+    nonisolated override func accessibilityPerformPress() -> Bool {
+        MainActor.assumeIsolated {
+            guard let owner, let open = owner.open, owner.rows.indices.contains(index) else { return false }
+            open(owner.rows[index].id); return true
+        }
     }
 }
 
