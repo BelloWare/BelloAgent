@@ -6,6 +6,8 @@ use bello_agent_core::{
     Controller, SessionStore,
     workspace::{ChatRecord, DraftRecord, WorkspaceStore},
 };
+#[cfg(not(target_os = "macos"))]
+use gpui::Focusable;
 use gpui::{Entity, TestAppContext, VisualTestContext, WindowHandle};
 use std::sync::{
     Arc, Mutex,
@@ -30,6 +32,8 @@ fn fixture(
             WorkspaceStore::open(project.join("session.workspace.json"), &project).unwrap(),
         )),
         record: ChatRecord {
+            sidebar_order: None,
+            pinned_at: None,
             id: snapshot.id,
             title: snapshot.title,
             snapshot: project.join("session.json"),
@@ -309,4 +313,273 @@ fn successful_barrier_cannot_remove_a_rebound_window_generation(cx: &mut TestApp
     cx.run_until_parked();
     assert!(cx.read(|cx| root.read(cx).close_ready));
     assert_eq!(cx.read(|cx| cx.windows().len()), 1);
+}
+
+#[cfg(not(target_os = "macos"))]
+#[gpui::test]
+fn pin_context_menu_keeps_other_chat_selection_focus_and_draft(cx: &mut TestAppContext) {
+    let (_dir, window, root) = fixture(cx);
+    cx.simulate_input(window.into(), "first draft");
+    let first_id = cx.read(|cx| root.read(cx).record.id.clone());
+    window
+        .update(cx, |view, window, cx| view.new_chat(window, cx))
+        .unwrap();
+    cx.run_until_parked();
+    let second_id = cx.read(|cx| root.read(cx).record.id.clone());
+    assert_ne!(first_id, second_id);
+    window
+        .update(cx, |view, window, cx| {
+            view.open_sidebar_menu(
+                &first_id,
+                gpui::point(gpui::px(80.), gpui::px(150.)),
+                window,
+                cx,
+            )
+        })
+        .unwrap();
+    assert_eq!(cx.read(|cx| root.read(cx).record.id.clone()), second_id);
+    cx.simulate_keystrokes(window.into(), "x");
+    assert!(cx.read(|cx| root.read(cx).composer.read(cx).text().is_empty()));
+    cx.simulate_keystrokes(window.into(), "escape");
+    assert!(cx.read(|cx| root.read(cx).sidebar_menu.is_none()));
+    assert!(cx.read(|cx| root.read(cx).pin_operations.is_empty()));
+    window
+        .update(cx, |view, window, cx| {
+            assert!(view.composer.read(cx).focus_handle(cx).is_focused(window));
+            view.open_sidebar_menu(
+                &first_id,
+                gpui::point(gpui::px(80.), gpui::px(150.)),
+                window,
+                cx,
+            );
+        })
+        .unwrap();
+    cx.simulate_keystrokes(window.into(), "enter");
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let view = root.read(cx);
+        assert_eq!(view.record.id, second_id);
+        assert!(view.composer.read(cx).text().is_empty());
+        assert!(
+            view.records
+                .iter()
+                .find(|record| record.id == first_id)
+                .unwrap()
+                .pinned_at
+                .is_some()
+        );
+        assert_eq!(
+            view.inactive[&first_id].composer.read(cx).text(),
+            "first draft"
+        );
+        assert!(!view.inactive[&first_id].pending);
+    });
+}
+
+#[gpui::test]
+fn pending_pin_survives_navigation_and_does_not_steal_new_chat(cx: &mut TestAppContext) {
+    let (_dir, window, root) = fixture(cx);
+    let original = cx.read(|cx| root.read(cx).record.id.clone());
+    window
+        .update(cx, |view, window, cx| {
+            view.set_chat_pinned(&original, true, cx);
+            let token = view.pin_operations[&original];
+            view.set_chat_pinned(&original, false, cx);
+            assert_eq!(view.pin_operations[&original], token);
+            view.new_chat(window, cx);
+            assert_ne!(view.record.id, original);
+        })
+        .unwrap();
+    let next = cx.read(|cx| root.read(cx).record.id.clone());
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let view = root.read(cx);
+        assert_eq!(view.record.id, next);
+        assert!(view.records.iter().any(|record| record.id == original));
+        assert!(!view.inactive[&original].pending);
+        let state = view.workspace.lock().unwrap().snapshot();
+        assert!(
+            state
+                .chats
+                .iter()
+                .any(|record| record.id == original && record.pinned_at.is_some())
+        );
+        assert!(!state.chats.iter().any(|record| record.id == next));
+    });
+}
+
+#[gpui::test]
+fn failed_pin_keeps_pending_draft_editable_and_retry_succeeds(cx: &mut TestAppContext) {
+    let (dir, window, root) = fixture(cx);
+    cx.simulate_input(window.into(), "keep pin draft");
+    let collision = dir.path().join("session.workspace.json");
+    std::fs::create_dir(&collision).unwrap();
+    window
+        .update(cx, |view, _, cx| {
+            view.set_chat_pinned(&view.record.id.clone(), true, cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let view = root.read(cx);
+        assert!(view.pending);
+        assert!(view.record.pinned_at.is_none());
+        assert!(view.pin_operations.is_empty());
+        assert!(
+            view.error
+                .as_ref()
+                .unwrap()
+                .contains("Chat pin could not be saved")
+        );
+    });
+    cx.simulate_input(window.into(), "!");
+    std::fs::remove_dir(collision).unwrap();
+    window
+        .update(cx, |view, _, cx| {
+            view.set_chat_pinned(&view.record.id.clone(), true, cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let view = root.read(cx);
+        assert!(!view.pending);
+        assert!(view.record.pinned_at.is_some());
+        assert!(
+            view.error.is_none(),
+            "successful retry must clear its stale pin error"
+        );
+        assert_eq!(view.composer.read(cx).text(), "keep pin draft!");
+        assert_eq!(
+            view.workspace.lock().unwrap().snapshot().drafts[&view.record.id].text,
+            "keep pin draft!"
+        );
+    });
+}
+
+#[gpui::test]
+fn stale_pin_completion_cannot_replace_title_or_project_and_close_waits(cx: &mut TestAppContext) {
+    let (_dir, window, _root) = fixture(cx);
+    window
+        .update(cx, |view, window, cx| {
+            let id = view.record.id.clone();
+            let project = view.project.clone();
+            let operation = uuid::Uuid::new_v4();
+            view.pin_operations.insert(id.clone(), operation);
+            let mut saved = view.record.clone();
+            saved.pinned_at = Some(10);
+            saved.title = "stale title".into();
+            view.record.title = "latest title".into();
+            view.records[0].title = "latest title".into();
+            view.finish_pin(&id, &project, uuid::Uuid::new_v4(), Ok(saved.clone()), cx);
+            assert!(view.record.pinned_at.is_none());
+            view.finish_pin(
+                &id,
+                &project.join("other-project"),
+                operation,
+                Ok(saved.clone()),
+                cx,
+            );
+            assert!(view.record.pinned_at.is_none());
+            view.begin_shutdown(window, cx);
+            assert!(!view.shutting_down);
+            assert!(
+                view.error
+                    .as_ref()
+                    .unwrap()
+                    .contains("Wait for chat operations")
+            );
+            view.finish_pin(&id, &project, operation, Ok(saved), cx);
+            assert!(view.pin_operations.is_empty());
+            assert_eq!(view.record.pinned_at, Some(10));
+            assert_eq!(view.record.title, "latest title");
+            assert_eq!(view.records[0].title, "latest title");
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+fn edits_during_pending_pin_are_durable_after_idle_even_after_navigation(cx: &mut TestAppContext) {
+    let (_dir, window, root) = fixture(cx);
+    let original = cx.read(|cx| root.read(cx).record.id.clone());
+    window
+        .update(cx, |view, window, cx| {
+            view.set_chat_pinned(&original, true, cx); // Captures the empty pending draft.
+            view.composer.update(cx, |editor, cx| {
+                editor.set_text("typed while pinning 你好".into(), cx)
+            });
+            view.draft_changed(&original, cx);
+            view.new_chat(window, cx);
+        })
+        .unwrap();
+    let selected = cx.read(|cx| root.read(cx).record.id.clone());
+    assert_ne!(selected, original);
+    cx.run_until_parked();
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(200));
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let view = root.read(cx);
+        assert_eq!(view.record.id, selected);
+        assert_eq!(
+            view.inactive[&original].composer.read(cx).text(),
+            "typed while pinning 你好"
+        );
+        let saved = view.workspace.lock().unwrap().snapshot();
+        assert_eq!(saved.drafts[&original].text, "typed while pinning 你好");
+        assert!(saved.drafts[&original].revision > 0);
+    });
+}
+
+#[gpui::test]
+fn successful_pin_does_not_clear_a_newer_unrelated_error(cx: &mut TestAppContext) {
+    let (_dir, window, _root) = fixture(cx);
+    window
+        .update(cx, |view, _, cx| {
+            let id = view.record.id.clone();
+            let project = view.project.clone();
+            let first = uuid::Uuid::new_v4();
+            view.pin_operations.insert(id.clone(), first);
+            view.finish_pin(&id, &project, first, Err("old pin failure".into()), cx);
+            assert!(view.error.as_ref().unwrap().contains("old pin failure"));
+            view.error = Some("newer unrelated failure".into());
+            let retry = uuid::Uuid::new_v4();
+            view.pin_operations.insert(id.clone(), retry);
+            let mut saved = view.record.clone();
+            saved.pinned_at = Some(4);
+            view.finish_pin(&id, &project, retry, Ok(saved), cx);
+            assert_eq!(view.error.as_deref(), Some("newer unrelated failure"));
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+fn successful_pin_does_not_clear_another_targets_identical_error(cx: &mut TestAppContext) {
+    let (_dir, window, _root) = fixture(cx);
+    window
+        .update(cx, |view, _, cx| {
+            let id = view.record.id.clone();
+            let project = view.project.clone();
+            let other = uuid::Uuid::new_v4().to_string();
+            for target in [&id, &other] {
+                let operation = uuid::Uuid::new_v4();
+                view.pin_operations.insert(target.clone(), operation);
+                view.finish_pin(
+                    target,
+                    &project,
+                    operation,
+                    Err("same storage failure".into()),
+                    cx,
+                );
+            }
+            let retry = uuid::Uuid::new_v4();
+            view.pin_operations.insert(id.clone(), retry);
+            let mut saved = view.record.clone();
+            saved.pinned_at = Some(4);
+            view.finish_pin(&id, &project, retry, Ok(saved), cx);
+            assert_eq!(
+                view.error.as_deref(),
+                Some("Chat pin could not be saved: same storage failure")
+            );
+        })
+        .unwrap();
 }

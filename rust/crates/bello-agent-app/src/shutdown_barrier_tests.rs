@@ -16,6 +16,8 @@ fn fixture() -> (tempfile::TempDir, ShutdownPlan) {
     let controller = Controller::new(SessionStore::pending(), None).unwrap();
     let snapshot = controller.snapshot();
     let record = ChatRecord {
+        sidebar_order: None,
+        pinned_at: None,
         id: snapshot.id,
         title: snapshot.title,
         snapshot: project.join("session.json"),

@@ -106,6 +106,45 @@ pub struct ChatRecord {
     pub id: String,
     pub title: String,
     pub snapshot: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sidebar_order: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned_at: Option<u64>,
+}
+impl ChatRecord {
+    pub fn new(id: String, title: String, snapshot: PathBuf) -> Self {
+        Self {
+            id,
+            title,
+            snapshot,
+            sidebar_order: Some(organization_timestamp()),
+            pinned_at: None,
+        }
+    }
+    /// Source ChatRecord.sidebarPrecedes, without the unported manual drag order.
+    pub fn sidebar_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        other
+            .pinned_at
+            .is_some()
+            .cmp(&self.pinned_at.is_some())
+            .then_with(|| match (self.pinned_at, other.pinned_at) {
+                (Some(a), Some(b)) => a.cmp(&b),
+                _ => std::cmp::Ordering::Equal,
+            })
+            .then_with(|| {
+                other
+                    .sidebar_order
+                    .unwrap_or(0)
+                    .cmp(&self.sidebar_order.unwrap_or(0))
+            })
+            .then_with(|| self.id.cmp(&other.id))
+    }
+}
+pub fn organization_timestamp() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_micros().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(0)
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SubmissionIntent {
@@ -143,8 +182,21 @@ impl WorkspaceSnapshot {
         }
     }
     fn validate(&self) -> Result<()> {
-        if self.version != 1 || self.chats.len() > MAX_CHATS || self.intents.len() > MAX_CHATS {
+        if !matches!(self.version, 1 | 2)
+            || self.chats.len() > MAX_CHATS
+            || self.intents.len() > MAX_CHATS
+        {
             return Err(invalid("Unsupported or oversized Rust workspace catalog"));
+        }
+        if self.version == 1
+            && self
+                .chats
+                .iter()
+                .any(|chat| chat.sidebar_order.is_some() || chat.pinned_at.is_some())
+        {
+            return Err(invalid(
+                "Organization metadata requires Rust workspace catalog version 2",
+            ));
         }
         let mut ids = std::collections::HashSet::new();
         for chat in &self.chats {
@@ -291,6 +343,59 @@ impl WorkspaceStore {
                 .ok_or_else(|| invalid("Chat is no longer registered"))?;
             chat.title = title.into();
             Ok(())
+        })
+    }
+    /// Commit only organization metadata for existing chats. A pending chat's
+    /// record, captured draft and pin are materialized together, with no transient
+    /// empty saved chat and no transcript/controller mutation.
+    pub fn set_pinned(
+        &mut self,
+        record: ChatRecord,
+        draft: DraftRecord,
+        pinned: bool,
+        at: u64,
+    ) -> Result<ChatRecord> {
+        if self.uncertain {
+            return Err(invalid(
+                "Workspace persistence is uncertain. Reopen before continuing.",
+            ));
+        }
+        if let Some(existing) = self.state.chats.iter().find(|chat| chat.id == record.id) {
+            if existing.snapshot != record.snapshot {
+                return Err(invalid("Chat identity is already registered differently"));
+            }
+            if existing.pinned_at.is_some() == pinned {
+                return Ok(existing.clone());
+            }
+        } else {
+            draft.validate()?;
+        }
+        self.transact(|state| {
+            let index =
+                if let Some(index) = state.chats.iter().position(|chat| chat.id == record.id) {
+                    index
+                } else {
+                    if state.chats.len() >= MAX_CHATS {
+                        return Err(invalid(
+                            "This development workspace supports up to 512 chats",
+                        ));
+                    }
+                    state.drafts.insert(record.id.clone(), draft);
+                    state.chats.push(record.clone());
+                    state.chats.len() - 1
+                };
+            let chat = &mut state.chats[index];
+            // Legacy Rust catalogs appended records in creation order. A caller
+            // may have reconstructed that order without rewriting the old file.
+            if chat.sidebar_order.is_none() {
+                chat.sidebar_order = record.sidebar_order;
+            }
+            chat.pinned_at = if pinned {
+                Some(chat.pinned_at.unwrap_or(at))
+            } else {
+                None
+            };
+            Ok(chat.clone())
         })
     }
     /// Returns false for obsolete writes without changing the current draft.
@@ -507,6 +612,13 @@ impl WorkspaceStore {
         }
         let mut state = self.state.clone();
         let result = change(&mut state)?;
+        if state
+            .chats
+            .iter()
+            .any(|chat| chat.sidebar_order.is_some() || chat.pinned_at.is_some())
+        {
+            state.version = 2;
+        }
         state.revision = state
             .revision
             .checked_add(1)
@@ -575,6 +687,8 @@ mod tests {
         let store = WorkspaceStore::open(dir.path().join("workspace.json"), dir.path()).unwrap();
         let id = Uuid::new_v4().to_string();
         let chat = ChatRecord {
+            sidebar_order: None,
+            pinned_at: None,
             snapshot: store.chat_path(&id).unwrap(),
             id,
             title: "New chat".into(),
@@ -820,6 +934,42 @@ mod tests {
             .snapshot();
         assert!(restored.drafts[&chat.id].text.is_empty());
         assert_eq!(restored.intents[&intent.id], intent);
+    }
+    #[test]
+    fn pin_commit_failure_preserves_old_state_or_marks_uncertain_until_reopen() {
+        let (dir, mut store, chat) = fixture();
+        let draft = DraftRecord {
+            revision: 3,
+            text: "keep draft".into(),
+            queued_edit: None,
+        };
+        store.register(chat.clone(), draft.clone()).unwrap();
+        let path = dir.path().join("workspace.json");
+        let before = std::fs::read(&path).unwrap();
+        store.fault = Fault::BeforeRename;
+        assert!(
+            store
+                .set_pinned(chat.clone(), draft.clone(), true, 7)
+                .is_err()
+        );
+        assert!(store.snapshot().chats[0].pinned_at.is_none());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        store.fault = Fault::AfterRename;
+        assert!(matches!(
+            store.set_pinned(chat.clone(), draft.clone(), true, 9),
+            Err(Error::PersistenceUncertain(_))
+        ));
+        assert!(store.snapshot().chats[0].pinned_at.is_none());
+        assert!(
+            store
+                .set_pinned(chat.clone(), draft.clone(), false, 10)
+                .is_err()
+        );
+        drop(store);
+        let restored = WorkspaceStore::open(path, dir.path()).unwrap().snapshot();
+        assert_eq!(restored.version, 2);
+        assert_eq!(restored.chats[0].pinned_at, Some(9));
+        assert_eq!(restored.drafts[&chat.id], draft);
     }
     #[test]
     fn lock_and_project_binding_are_checked() {

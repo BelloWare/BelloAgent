@@ -97,6 +97,7 @@ impl AgentView {
         let id = outgoing.record.id.clone();
         if outgoing.pending
             && !outgoing.busy
+            && !self.pin_operations.contains_key(&id)
             && outgoing.inflight_submission.is_none()
             && outgoing.saved_draft(cx).is_empty()
             && !self.recoveries.values().any(|intent| intent.chat_id == id)
@@ -113,7 +114,11 @@ impl AgentView {
         if self.shutting_down {
             return;
         }
-        if self.pending && !self.busy && self.saved_draft(cx).is_empty() {
+        if self.pending
+            && !self.busy
+            && !self.pin_operations.contains_key(&self.record.id)
+            && self.saved_draft(cx).is_empty()
+        {
             self.composer.read(cx).focus(window);
             return;
         }
@@ -127,11 +132,11 @@ impl AgentView {
         ) {
             Ok(controller) => {
                 let id = controller.snapshot_shared().id.clone();
-                let record = ChatRecord {
-                    id: id.clone(),
-                    title: "New chat".into(),
-                    snapshot: self.chat_directory.join(format!("{id}.json")),
-                };
+                let record = ChatRecord::new(
+                    id.clone(),
+                    "New chat".into(),
+                    self.chat_directory.join(format!("{id}.json")),
+                );
                 let chat = ChatState::new(
                     controller,
                     record.clone(),
@@ -620,7 +625,10 @@ impl AgentView {
         if self.shutting_down {
             return;
         }
-        if self.busy || self.loading || self.inactive.values().any(|chat| chat.busy || chat.loading)
+        if !self.pin_operations.is_empty()
+            || self.busy
+            || self.loading
+            || self.inactive.values().any(|chat| chat.busy || chat.loading)
         {
             self.error = Some("Wait for chat operations to finish before closing.".into());
             cx.notify();

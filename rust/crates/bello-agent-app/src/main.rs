@@ -3,12 +3,15 @@ mod chat;
 mod chat_navigation;
 mod file_tab;
 mod layout;
+#[cfg(any(target_os = "macos", test))]
+mod native_menu;
 #[cfg(feature = "native-lifecycle-smoke")]
 mod native_smoke;
 mod queue_detail;
 mod queue_presentation;
 mod quick_open;
 mod shutdown_barrier;
+mod sidebar_actions;
 mod theme;
 mod transcript_actions;
 mod workspace_lifetime;
@@ -95,6 +98,9 @@ struct AgentView {
     shutting_down: bool,
     close_ready: bool,
     shutdown_operation: Option<uuid::Uuid>,
+    pin_operations: BTreeMap<String, uuid::Uuid>,
+    pin_errors: BTreeMap<String, sidebar_actions::PinError>,
+    sidebar_menu: Option<sidebar_actions::SidebarMenu>,
     chat_directory: PathBuf,
     unloaded_drafts: BTreeMap<String, DraftRecord>,
     recoveries: BTreeMap<String, SubmissionIntent>,
@@ -152,6 +158,16 @@ impl AgentView {
             .unwrap()
             .to_owned();
         let mut records = state.chats.clone();
+        // Legacy catalogs appended records in creation order. Recover a stable
+        // ordering for presentation without rewriting those files on open.
+        for (index, record) in records.iter_mut().enumerate() {
+            record.sidebar_order.get_or_insert(index as u64 + 1);
+        }
+        let record = records
+            .iter()
+            .find(|item| item.id == record.id)
+            .cloned()
+            .unwrap_or(record);
         if !records.iter().any(|item| item.id == record.id) {
             records.insert(0, record.clone());
         }
@@ -213,6 +229,9 @@ impl AgentView {
             shutting_down: false,
             close_ready: false,
             shutdown_operation: None,
+            pin_operations: BTreeMap::new(),
+            pin_errors: BTreeMap::new(),
+            sidebar_menu: None,
             palette,
             layout,
             layout_store,
@@ -239,6 +258,7 @@ impl AgentView {
         view
     }
     fn bind_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sidebar_menu = None;
         let binding = workspace_lifetime::WindowBinding::new(window.window_handle().window_id());
         self.window_binding = Some(binding);
         let weak = cx.weak_entity();
@@ -553,6 +573,10 @@ impl AgentView {
     }
     fn global_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         if self.shutting_down {
+            cx.stop_propagation();
+            return;
+        }
+        if self.sidebar_menu_key(event, cx) {
             cx.stop_propagation();
             return;
         }
@@ -1703,7 +1727,9 @@ impl AgentView {
                     ),
             );
         let filter = self.filter.read(cx).text().trim().to_lowercase();
-        for record in &self.records {
+        let mut ordered_records: Vec<_> = self.records.iter().collect();
+        ordered_records.sort_by(|a, b| a.sidebar_cmp(b));
+        for record in ordered_records {
             let chat = self.chat_ref(&record.id);
             let title = chat
                 .map(|chat| {
@@ -1719,6 +1745,7 @@ impl AgentView {
             }
             let id = record.id.clone();
             let selected = id == self.record.id;
+            let menu_id = id.clone();
             let status = chat
                 .map(|chat| {
                     if chat.loading {
@@ -1748,6 +1775,13 @@ impl AgentView {
                     .on_click(
                         cx.listener(move |view, _, window, cx| view.select_chat(&id, window, cx)),
                     )
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |view, event: &MouseDownEvent, window, cx| {
+                            view.open_sidebar_menu(&menu_id, event.position, window, cx);
+                            cx.stop_propagation();
+                        }),
+                    )
                     .child(self.icon("chat", 16.))
                     .child(
                         div()
@@ -1758,10 +1792,21 @@ impl AgentView {
                             .gap(px(2.))
                             .child(
                                 div()
-                                    .text_size(px(13.))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .truncate()
-                                    .child(title.to_owned()),
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(4.))
+                                    .min_w_0()
+                                    .child(
+                                        div()
+                                            .min_w_0()
+                                            .text_size(px(13.))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .truncate()
+                                            .child(title.to_owned()),
+                                    )
+                                    .when(record.pinned_at.is_some(), |row| {
+                                        row.child(self.icon("pin", 9.).text_color(rgb(p.tertiary)))
+                                    }),
                             )
                             .child(
                                 div()
@@ -2059,6 +2104,9 @@ impl Render for AgentView {
             );
             self.queue_detail = Some(detail);
         }
+        if let Some(menu) = self.sidebar_menu_element(cx) {
+            element = element.child(menu);
+        }
         if self.quick_open.read(cx).is_open() {
             element = element.child(
                 div()
@@ -2194,11 +2242,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             SessionStore::pending()
         };
         let snapshot = store.snapshot();
-        let record = ChatRecord {
-            id: snapshot.id,
-            title: snapshot.title,
-            snapshot: session,
-        };
+        let record = ChatRecord::new(snapshot.id, snapshot.title, session);
         if existing {
             workspace.register(record.clone(), DraftRecord::default())?;
         }

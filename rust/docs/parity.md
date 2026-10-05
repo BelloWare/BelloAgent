@@ -107,6 +107,7 @@ Native UI paths begin `apps/macos/PiApp/` (abbreviated `App/`).
 | Historical message edits/versions | Core/SessionVersions.swift; Core/EditReplayPlan.swift; Core/MessageVersions.swift | Unported |
 | Branch/fork/side conversations | Core/SessionBranching.swift; Core/SessionSide.swift; Core/SessionPersistence.swift | Unported |
 | Multiple projects/topics/chat organization | App/Workspaces/WorkspaceModel.swift; WorkspaceTopics.swift; WorkspaceTabs.swift | Partial: independent chats in one explicitly selected project, existing New Chat/sidebar controls, draft/selection persistence and deferred creation. Projects manager, multiple roots, topics and organization remain unported |
+| Sidebar chat Pin/Unpin | App/Workspaces/SidebarChatRow.swift; SidebarGroups.swift SessionOrganizationActions; Storage/MetadataStore.swift sidebarPrecedes | Implemented source context-menu entry and committed pin marker/order. Pending chat record/draft/pin materialize atomically; selection, streaming title and newer typing are preserved. Native NSMenu bridge reuses existing GPUI Cocoa/objc versions. Independent review/headless validation recorded below; actual Linux/macOS runtime scope remains explicit. Rename, archive, multi-select and manual drag ordering remain missing |
 | Native transcript/composer | App/Transcript/; App/Workspaces/ComposerInput.swift | Partial source-matched GPUI shell/transcript/composer with shared IME-aware proportional input, source tokens/geometry, adjacent pane, source Enter/Shift-Enter intent, persisted sidebar/split resizing. Markdown/links/rich tool cards and many interaction surfaces remain unported; initial transcript window explicitly paged |
 | Transcript Copy | App/Transcript/TranscriptRows.swift RowActionsView/TranscriptPillStyle; App/Workspaces/ConversationPane.swift | Implemented hover Copy slice with source 22pt reserved band, trailing pill and raw message text. Resolves current active chat/message identity at click; stale/missing identities leave clipboard unchanged. Five lookup/headless clipboard/layout tests pass; native runtime scope below. Other transcript actions and accessibility parity remain missing |
 | Quick Open / adjacent file tabs | App/Files/QuickOpen.swift; App/Files/QuickOpenPanel.swift; App/Files/WorkspaceQuickOpen.swift; App/Workspaces/WorkspaceTabs.swift | Source-shaped Ctrl/⌘P popup, bounded background fuzzy search, :line, recent files, independent file tabs and dirty-close flows. Core/lifecycle tests pass; latest native interaction QA pending |
@@ -340,6 +341,65 @@ prove pixels, desktop input, IME, accessibility,
 nonempty draft persistence, Dock reopen, cancellable Quit, or Sparkle behavior.
 Probe code and its feature-gated hooks count as test-support LOC, not shipped
 production code. No macOS lifecycle parity is claimed by adding this diagnostic.
+
+## Sidebar Pin/Unpin slice
+
+The original right-click entry point supplies only the working `Pin Chat` or
+`Unpin Chat` action, with the source pin symbol and 9pt sidebar indicator. No new
+toolbar or inert rename/archive commands are substituted. Pinned chats sort first,
+oldest pin first, followed by newest creation order and stable ID ties; repeated
+Pin retains its original timestamp. Legacy Rust catalogs' append order is used
+for stable creation-order presentation without rewriting the file on open.
+
+Organization metadata is distinct from streamed session titles. Existing-record
+pin writes patch only organization fields and leave current drafts, submission
+receipts and selection unchanged. Pending record, captured draft and pin commit
+in one catalog transaction. A successful pending materialization then queues its
+current revision through receipt-aware autosave, including edits typed during the
+write or after navigation; an earlier missing-autosave race was reproduced and
+fixed before publication. In-flight pin writes prevent pending-empty discard and
+make Close wait, without freezing typing or stealing a newer chat's focus.
+
+Legacy v1 catalogs remain readable without an open-time rewrite. Organization
+metadata promotes a successful transaction to catalog v2, so older Rust binaries
+reject rather than silently remove it; mislabeled v1 metadata is rejected without
+rewriting. Before-rename failure preserves previous bytes; after-rename uncertainty
+requires reopen and preserves the durable result. This is the Rust catalog only,
+not Swift journal compatibility.
+
+The macOS bridge uses native NSMenu and existing Cocoa/objc package versions.
+It validates the expected GPUI/native window, locates exactly one attached GPUIView
+child inside the AppKit content container, converts the anchor in that hierarchy,
+and tracks the menu on the main queue outside GPUI borrows. It records action intent
+only inside the native callback and invokes the identity-checked completion after
+tracking ends. Linux uses the same right-click action through a GPUI context popup.
+
+Local gates: 167 default and 174 diagnostic-feature Rust tests, strict Clippy/build
+in both configurations, formatting and diff checks passed. Coverage includes
+ordering/idempotency, old formats, pending materialization, receipt/draft isolation,
+project/identity rejection, write failure and uncertainty, menu cancellation/focus,
+newer typing after idle/navigation, stale callbacks, and native hierarchy/ownership
+policy tests. Linux desktop candidate
+`a0fde624e0f1ecbe5d53de090efc5b229f5b9f898e7e382d174d8643fcc4667e`
+passed right-click Pin/Unpin on a nonselected chat without changing selection or
+draft, pin/creation ordering, Escape, pending creation, restart and minimum-size
+checks. A real disposable catalog-write failure preserved editability and pin
+rollback, but retry left its obsolete error banner. The final candidate
+`36c327267df0425aefd9ba3bbd6c6c82347f3a8f00b4275679f44506e2f99e9e`
+clears only its target/display-owned matching pin notice on confirmed success;
+newer unrelated errors and another target's identical notice remain. Independent
+re-review and regression tests pass. Fresh desktop validation of that final binary
+confirmed failure keeps the draft editable, retry clears the matching banner and
+commits the pin, and the same identity/pin/exact draft survive close/restart and a
+clean final close. Earlier normal/minimum-width evidence remains attributed to its
+own candidate, not relabeled as this final binary.
+Native macOS compilation/menu interaction remain unvalidated for this slice; the
+earlier own-window probe does not establish this new menu's runtime behavior. No new library family or package version
+was added; already-present Cocoa/objc now serve the actual macOS context menu.
+
+Rename remains deferred: the source uses a real parent-attached AppKit sheet and
+manual-title authority over helper snapshots, plus 120-grapheme normalization.
+A generic dialog or scalar truncation would not preserve that contract.
 
 ## Next implementation priorities
 

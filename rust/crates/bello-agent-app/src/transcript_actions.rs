@@ -220,6 +220,8 @@ mod tests {
                 WorkspaceStore::open(project.join("session.workspace.json"), &project).unwrap(),
             )),
             record: ChatRecord {
+                sidebar_order: None,
+                pinned_at: None,
                 id: snapshot.id,
                 title: snapshot.title,
                 snapshot: path,
