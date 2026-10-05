@@ -110,6 +110,13 @@ import Combine
     override func layout() {
         flush()
         super.layout()
+        // The workspace can resize this pane after its model update (for
+        // example when pinning the sides panel). Give the composer the
+        // current enclosing proposal before measuring its control minimum.
+        if width != bounds.width, let side, let sideView {
+            width = bounds.width
+            updateSideView?(sideView, side.info, side.session, width)
+        }
         var top: CGFloat = 0
         if let strip { strip.frame = CGRect(x: 0, y: 0, width: bounds.width, height: TabStripView.height); top = TabStripView.height }
         // Opacity kept the side in the released ZStack's layout. Its fixed
