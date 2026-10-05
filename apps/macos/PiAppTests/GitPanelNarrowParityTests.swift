@@ -262,4 +262,63 @@ import XCTest
             return abs(content.panel.bounds.width - pane.width) <= 0.5 && self.views(SidePaneView.self, in: native).isEmpty
         }
     }
+
+    /// A visible side's flexible transcript keeps the enclosing proposal,
+    /// even when the side's fixed controls report a larger stack minimum.
+    /// This differs from the covered tab sibling measured above and keeps
+    /// a pinned sides-panel column outside the conversation's viewport.
+    func testVisibleSideTranscriptKeepsTheReleasedAllocationUnderItsControlMinimum() async throws {
+        let root = try repositoryFixture()
+        let bench = try ConversationPaneTests.workbench(root: root, chats: ["main"])
+        addTeardownBlock { @MainActor in bench.model.shutdown() }
+        var alternate = bench.profile; alternate.id = "alternate-connection"; alternate.name = "Team fast · Responses"
+        bench.model.profiles.append(alternate)
+        let parent = bench.chats[0]
+        var side = SideRecord(id: "visible-side", parentID: parent.id, workspaceID: bench.workspace.id,
+                              profileID: parent.profileID, title: "Fixture reply: Generate a one-line summary.", kept: true)
+        let session = SessionDisplay(id: side.id); session.historyState = .empty
+        session.messages = [TranscriptMessage(id: "side-reply", role: "assistant", text: "The visible side keeps its transcript in the allocated column.")]
+        bench.model.displays[side.id] = session
+        let host = bench.model.tabs; host.showsWindows = false
+        addTeardownBlock { @MainActor in host.tearDown() }
+        let pane = CGSize(width: 310, height: 540)
+        let native = RightPaneView(model: bench.model, host: host, pane: host.pane)
+        native.makeSideView = { info, display, width in SidePaneView(model: bench.model, session: display, info: info, paneWidth: width) }
+        native.updateSideView = { view, info, _, width in (view as? SidePaneView)?.update(info: info, paneWidth: width) }
+        let nativeWindow = mount(native, size: pane)
+        for kept in [true, false] {
+            side.kept = kept; bench.model.sides[parent.id] = side
+            native.update(side: (side, session), width: pane.width)
+            try await eventually("The visible side's transcript and model listing are ready", timeout: 10) {
+                native.layoutSubtreeIfNeeded(); nativeWindow.displayIfNeeded()
+                return (self.views(TranscriptNativeScrollView.self, in: native).first?.bounds.width ?? 0) > 0
+                    && !bench.model.catalogEntry(for: bench.profile).loading
+            }
+            let mountedSide = try XCTUnwrap(views(SidePaneView.self, in: native).first)
+            let nativeScroll = try XCTUnwrap(views(TranscriptNativeScrollView.self, in: mountedSide).first)
+            var frozenScroll: TranscriptNativeScrollView?
+            let sideReference = KeptSideMinimumV119Reference(title: side.title,
+                reading: ModelSwitchPills.reading(model: bench.model, session: session), paneWidth: pane.width,
+                kept: kept, transcriptProbe: { frozenScroll = $0 })
+            let frozen = NSHostingView(rootView: RightPaneMinimumV119Reference(tab: nil, side: sideReference)
+                .frame(width: pane.width, height: pane.height).environment(\.piReduceMotion, true))
+            let frozenWindow = mount(frozen, size: pane)
+            var previous = CGRect.null, stable = 0
+            try await eventually("The original visible-side transcript proposal settles") {
+                frozen.layoutSubtreeIfNeeded(); frozenWindow.displayIfNeeded()
+                guard let frozenScroll, frozenScroll.window != nil, frozenScroll.bounds.width > 0 else { return false }
+                let rect = frozenScroll.convert(frozenScroll.bounds, to: frozen)
+                stable = rect == previous ? stable + 1 : 0; previous = rect
+                return stable >= 3
+            }
+            native.layoutSubtreeIfNeeded()
+            let actual = nativeScroll.convert(nativeScroll.bounds, to: native)
+            print("RIGHT-PANE-VISIBLE kept=\(kept) originalTranscript=\(previous) nativeTranscript=\(actual) controlsMinimum=\(mountedSide.minimumWidth)")
+            XCTAssertGreaterThan(mountedSide.minimumWidth, pane.width, "The real controls exercise the overflowing minimum")
+            XCTAssertEqual(previous.minX, 0, accuracy: 0.5, "The original flexible transcript keeps the pane's leading boundary")
+            XCTAssertEqual(previous.width, pane.width, accuracy: 0.5, "The original flexible transcript retains its enclosing allocation")
+            XCTAssertEqual(actual.minX, previous.minX, accuracy: 0.5, "The visible transcript keeps the released leading boundary")
+            XCTAssertEqual(actual.width, previous.width, accuracy: 0.5, "The visible transcript keeps the released allocation")
+        }
+    }
 }
