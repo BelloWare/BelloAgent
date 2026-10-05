@@ -6,7 +6,8 @@ import XCTest
 
 /// Measures Settings beyond the initial viewport. The frozen lazy stack's
 /// initial document estimate is recorded separately from its realized size;
-/// every group and the complete native document must match the eager oracle.
+/// every group and the complete native document must match the original lazy
+/// page after realization. The eager copy is a supplemental content measure.
 @MainActor final class SettingsFullDocumentGeometryTests: XCTestCase, SerialTestLane {
     override func setUp() async throws { PiKit.Motion.reducedOverride = true }
     override func tearDown() async throws { PiKit.Motion.reducedOverride = nil }
@@ -150,6 +151,7 @@ import XCTest
         }
         XCTAssertEqual(Set(lazyGeometry.groups.keys), Set(SettingsReferenceGroup.allCases))
         let lazyBottom = try await settle(lazy, window: lazyWindow, scroll: lazyScroll, phase: "frozen-lazy-bottom")
+        let lazyBottomFrames = lazyGeometry.groups
         XCTAssertGreaterThan(lazyBottom.origin, 0)
         try record("bottom", kind: "frozen-lazy", snapshot: lazyBottom, groups: lazyGeometry.groups, window: lazyWindow)
         // The header's id follows 24pt padding. Use the actual scroller's
@@ -161,8 +163,9 @@ import XCTest
         XCTAssertEqual(lazyTop.origin, 0, accuracy: 0.5, "The old page returns to its original reading position")
         try record("returned-top", kind: "frozen-lazy", snapshot: lazyTop, groups: lazyGeometry.groups, window: lazyWindow)
 
-        // Identical frozen children measured eagerly reveal the actual full
-        // document independently of the lazy stack's provisional estimate.
+        // Measure the same children eagerly as a supplemental check. SwiftUI's
+        // different VStack context can round a wrapped footer a point shorter;
+        // the original resolved LazyVStack remains the strict release oracle.
         let eagerGeometry = SettingsReferenceGeometry()
         let eager = NSHostingView(rootView: ProfileSettingsConnectionsV119Reference(model: model, controller: controller,
             geometry: eagerGeometry, layout: .eager).frame(width: size.width, height: size.height))
@@ -177,18 +180,23 @@ import XCTest
 
         let nativeFrames = frames(page)
         for group in SettingsReferenceGroup.allCases {
-            let expected = try XCTUnwrap(eagerGeometry.groups[group])
+            let expected = try XCTUnwrap(lazyBottomFrames[group])
             let actual = try XCTUnwrap(nativeFrames[group])
-            let realized = try XCTUnwrap(lazyGeometry.groups[group])
-            XCTAssertEqual(actual.width, expected.width, accuracy: 0.5, "\(group.rawValue) actual complete width")
-            XCTAssertEqual(actual.height, expected.height, accuracy: 1.01, "\(group.rawValue) actual complete height")
-            XCTAssertEqual(actual.minY, expected.minY, accuracy: 1.01, "\(group.rawValue) actual complete position")
-            XCTAssertEqual(realized.height, expected.height, accuracy: 0.5, "\(group.rawValue) lazy and eager frozen heights")
+            let eagerFrame = try XCTUnwrap(eagerGeometry.groups[group])
+            XCTAssertEqual(actual.width, expected.width, accuracy: 0.5, "\(group.rawValue) original complete width")
+            XCTAssertEqual(actual.height, expected.height, accuracy: 0.5, "\(group.rawValue) original complete height")
+            XCTAssertEqual(actual.minY, expected.minY, accuracy: 0.5, "\(group.rawValue) original complete position")
+            XCTAssertEqual(actual.width, eagerFrame.width, accuracy: 0.5, "\(group.rawValue) supplemental eager width")
+            XCTAssertEqual(actual.height, eagerFrame.height, accuracy: 1.01, "\(group.rawValue) supplemental eager height")
+            XCTAssertEqual(actual.minY, eagerFrame.minY, accuracy: 1.01, "\(group.rawValue) supplemental eager position")
         }
+        XCTAssertEqual(nativeInitial.clipWidth, lazyBottom.clipWidth, accuracy: 0.5)
+        XCTAssertEqual(nativeInitial.clipHeight, lazyBottom.clipHeight, accuracy: 0.5)
+        XCTAssertEqual(nativeInitial.documentHeight, lazyBottom.documentHeight, accuracy: 0.5, "The native page retains the original complete content height")
+        XCTAssertEqual(nativeInitial.knob, lazyBottom.knob, accuracy: 0.001, "The native thumb matches the original fully realized page")
         XCTAssertEqual(nativeInitial.clipWidth, eagerComplete.clipWidth, accuracy: 0.5)
         XCTAssertEqual(nativeInitial.clipHeight, eagerComplete.clipHeight, accuracy: 0.5)
         XCTAssertEqual(nativeInitial.documentHeight, eagerComplete.documentHeight, accuracy: 1.01, "The native page retains the complete old content height")
-        XCTAssertEqual(lazyBottom.documentHeight, eagerComplete.documentHeight, accuracy: 0.5, "The fully realized old page matches the complete content")
         XCTAssertEqual(lazyBottom.knob, eagerComplete.knob, accuracy: 0.001, "The old thumb at the bottom reflects the complete content")
         XCTAssertEqual(nativeInitial.knob, eagerComplete.knob, accuracy: 0.001, "The native thumb reflects the complete old content")
         print("SETTINGS-LAZY-ESTIMATE initialHeight=\(lazyInitial.documentHeight) realizedHeight=\(lazyBottom.documentHeight) returnedTopHeight=\(lazyTop.documentHeight) nativeHeight=\(nativeInitial.documentHeight) initialKnob=\(lazyInitial.knob) realizedKnob=\(lazyBottom.knob) returnedTopKnob=\(lazyTop.knob)")
