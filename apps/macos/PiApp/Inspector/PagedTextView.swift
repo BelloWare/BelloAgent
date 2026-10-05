@@ -156,22 +156,37 @@ import AppKit
 @MainActor final class PayloadScroll: NSScrollView {
     let content: NSView
     private let document = DashView()
+    private var sizing = false
     init(_ content: NSView) {
         self.content = content
         super.init(frame: .zero)
-        hasVerticalScroller = true; autohidesScrollers = true; drawsBackground = false; borderType = .noBorder
-        // SwiftUI's replaced ScrollView overlays its indicators. Reserving
-        // a legacy scroller here takes 15 points from the settings and
-        // instruction layouts even while that scroller is hidden.
-        scrollerStyle = .overlay
+        hasVerticalScroller = false; hasHorizontalScroller = false
+        autohidesScrollers = true; drawsBackground = false; borderType = .noBorder
         document.addSubview(content); documentView = document
     }
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
     override func layout() {
         super.layout()
+        guard !sizing, bounds.width > 0, bounds.height > 0 else { return }
+        sizing = true
+        defer { sizing = false }
+        // Decide whether an indicator is needed at the unobstructed width.
+        // A hidden legacy scroller must return its space to short documents;
+        // overflowing documents retain the user's visible scroller style.
+        let fullWidth = max(0, bounds.width - contentInsets.left - contentInsets.right)
+        let fullHeight = max(0, bounds.height - contentInsets.top - contentInsets.bottom)
+        let naturalHeight = PiKit.height(of: content, width: fullWidth)
+        let scrolling = naturalHeight > fullHeight
+        if hasVerticalScroller != scrolling {
+            document.frame = CGRect(x: 0, y: 0, width: fullWidth, height: max(fullHeight, naturalHeight))
+            hasVerticalScroller = scrolling
+            tile()
+        }
         let width = contentView.bounds.width, height = max(contentView.bounds.height, PiKit.height(of: content, width: width))
-        document.frame = CGRect(x: 0, y: 0, width: width, height: height)
-        content.frame = document.bounds
+        let frame = CGRect(x: 0, y: 0, width: width, height: height)
+        if document.frame != frame { document.frame = frame }
+        if content.frame != document.bounds { content.frame = document.bounds }
+        reflectScrolledClipView(contentView)
     }
 }
 

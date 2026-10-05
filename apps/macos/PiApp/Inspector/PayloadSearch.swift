@@ -101,6 +101,7 @@ struct PayloadSearchResult: Sendable {
 @MainActor final class PayloadSearchTextView: NSScrollView {
     let editor = NSTextView()
     private var id: UUID?, textID: UUID?, selected: Int?
+    private var pendingScroll: NSRange?
     init(result: PayloadSearchResult, selected: Int) {
         super.init(frame: .zero)
         hasVerticalScroller = true; autohidesScrollers = true; drawsBackground = false
@@ -114,9 +115,24 @@ struct PayloadSearchResult: Sendable {
         update(result: result, selected: selected)
     }
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    override func layout() {
+        super.layout()
+        scrollToPendingMatch()
+    }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil, pendingScroll != nil { needsLayout = true }
+    }
+    private func scrollToPendingMatch() {
+        guard let range = pendingScroll, window != nil,
+              contentView.bounds.width > 0, contentView.bounds.height > 0 else { return }
+        pendingScroll = nil
+        if let container = editor.textContainer { editor.layoutManager?.ensureLayout(for: container) }
+        editor.scrollRangeToVisible(range)
+    }
     func update(result: PayloadSearchResult, selected: Int) {
         if id != result.id {
-            id = result.id; self.selected = nil
+            id = result.id; self.selected = nil; pendingScroll = nil
             if textID != result.textID {
                 textID = result.textID
                 editor.string = result.text
@@ -133,6 +149,10 @@ struct PayloadSearchResult: Sendable {
         self.selected = selected
         let range = result.matches[selected]
         editor.setSelectedRange(range)
-        editor.scrollRangeToVisible(range)
+        // Selecting while the new reader has a zero-sized viewport can
+        // scroll away its top inset before wrapping reaches its final width.
+        // Keep selection immediate, and reveal it after the scroll view tiles.
+        pendingScroll = range
+        needsLayout = true
     }
 }

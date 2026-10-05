@@ -55,6 +55,7 @@ import AppKit
     let nextMatch = PiKit.Button("", symbol: "chevron.down", style: .ghost)
     private let searchLoading = PiKit.ShimmerText("Searching body and headers…", size: 11)
     private lazy var searchBar = ShellStack(.horizontal, spacing: 8, [.view(searchCount), .view(searchLoading), .spacer(8), .view(searchUpdating), .view(previousMatch), .view(nextMatch)])
+    private let searchResults = PayloadColumn(spacing: 7)
     private var textBox: PiKit.Box?, outlineBox: PiKit.Box?, searchBox: PiKit.Box?
     private lazy var selectionBox = PiKit.inset(selectionText, sunken: true)
 
@@ -201,13 +202,14 @@ import AppKit
                 previousMatch.isEnabled = !result.matches.isEmpty; nextMatch.isEnabled = !result.matches.isEmpty
                 if let searchText { searchText.update(result: result, selected: search.selected) }
                 else { searchText = PayloadSearchTextView(result: result, selected: search.selected); searchBox = PiKit.inset(searchText!, sunken: true) }
-                items += [.view(searchBar), .flexible(searchBox!)]
+                searchResults.items = [.view(searchBar), .flexible(searchBox!)]
             } else {
                 searchCount.isHidden = true; searchLoading.isHidden = !search.loading
                 searchUpdating.isHidden = true; previousMatch.isHidden = true; nextMatch.isHidden = true
                 empty.set(search.notice, color: .piInkSecondary)
-                items += [.view(searchBar), .flexible(PayloadCentered(empty))]
+                searchResults.items = [.view(searchBar), .flexible(PayloadCentered(empty))]
             }
+            items.append(.flexible(searchResults))
         } else if let document = controller.document {
             if let json = document.structured(format: activeFormat) {
                 let key = "\(sessionID):\(attemptID):\(kind):\(activeFormat.rawValue)"

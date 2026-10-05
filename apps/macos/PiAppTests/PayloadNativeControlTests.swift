@@ -69,6 +69,40 @@ import XCTest
             }
         }
     }
+    func testWrappingDocumentReturnsTheLegacyScrollerSpaceWhenItBecomesShort() async throws {
+        let document = PayloadViewport(NSView(), height: 600)
+        let column = PayloadColumn(items: [.fixed(document, 100)])
+        let scroll = PayloadScroll(column)
+        scroll.scrollerStyle = .legacy
+        let window = attach(scroll, size: CGSize(width: 700, height: 300))
+        for height: CGFloat in [100, 600, 100] {
+            column.items = [.fixed(document, height)]
+            scroll.needsLayout = true
+            try await eventually("The \(height)-point document tiles its legacy scroller", timeout: .seconds(3)) {
+                scroll.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+                let overflow = height > 300
+                return scroll.hasVerticalScroller == overflow
+                    && (scroll.verticalScroller?.isHidden ?? true) == !overflow
+                    && abs(scroll.contentView.bounds.width - (overflow ? 685 : 700)) <= 0.5
+                    && abs(document.bounds.width - scroll.contentView.bounds.width) <= 0.5
+            }
+        }
+    }
+    func testFittedSearchReaderRevealsItsMatchAfterLayoutWithoutLosingTheTopInset() async throws {
+        let result = try PayloadSearchResult.find(text: "Request headers\naccept: text/event-stream\n\nRequest body\nREADME.md", query: "README")
+        let view = PayloadSearchTextView(result: result, selected: 0)
+        let window = attach(view, size: CGSize(width: 700, height: 300))
+        try await eventually("The fitted search reader retains its complete leading inset", timeout: .seconds(3)) {
+            view.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            return abs(view.contentView.bounds.minY) <= 0.5 && view.editor.selectedRange() == result.matches[0]
+        }
+        let container = try XCTUnwrap(view.editor.textContainer)
+        let manager = try XCTUnwrap(view.editor.layoutManager)
+        manager.ensureLayout(for: container)
+        let first = manager.boundingRect(forGlyphRange: NSRange(location: 0, length: 1), in: container)
+        let point = view.contentView.convert(NSPoint(x: first.minX, y: first.minY + view.editor.textContainerOrigin.y), from: view.editor)
+        XCTAssertGreaterThanOrEqual(point.y - view.contentView.bounds.minY, 10, "The first header glyph retains the 10-point reader inset")
+    }
     func testSkillSelectionButtonNamesItsSkillAndExposesSelectionAndPress() {
         let skill = SkillDescriptor(id: "skill", name: "review-code", path: "/skills/review-code/SKILL.md", description: "Review code", scope: "project", contentHash: "hash", metadataHash: "meta", policy: "explicitOnly", reasons: [], missingDependencies: [])
         var presses = 0
@@ -77,6 +111,18 @@ import XCTest
         view.layoutSubtreeIfNeeded(); window.displayIfNeeded()
         XCTAssertEqual(view.row.accessibilityRole(), .button)
         XCTAssertEqual(view.row.accessibilityLabel(), "/review-code, Only when you ask, project, /skills/review-code/SKILL.md")
+        XCTAssertFalse(view.row.isAccessibilitySelected())
+        view.row.selected = true; XCTAssertTrue(view.row.isAccessibilitySelected())
+        XCTAssertTrue(view.row.accessibilityPerformPress()); XCTAssertEqual(presses, 1)
+    }
+    func testConversationSelectionButtonNamesItsPreviewAndExposesSelectionAndPress() {
+        let hit = ContentHit(id: "message", position: 4, preview: "Completed retained reply.")
+        var presses = 0
+        let view = ConversationHitRow(hit: hit, glide: PiKit.SelectionGlide()) { presses += 1 }
+        let window = attach(view, size: CGSize(width: 700, height: ConversationHitRow.height(hit, width: 700)))
+        view.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+        XCTAssertEqual(view.row.accessibilityRole(), .button)
+        XCTAssertEqual(view.row.accessibilityLabel(), "Message 4, Completed retained reply.")
         XCTAssertFalse(view.row.isAccessibilitySelected())
         view.row.selected = true; XCTAssertTrue(view.row.isAccessibilitySelected())
         XCTAssertTrue(view.row.accessibilityPerformPress()); XCTAssertEqual(presses, 1)

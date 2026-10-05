@@ -86,6 +86,73 @@ import XCTest
             }
         }
     }
+    func testConversationHitRowsAndScrollersMatchForShortAndOverflowingResults() async throws {
+        let seed = [ContentHit(id: "first", position: 1, preview: "Completed retained reply."),
+                    ContentHit(id: "empty", position: 3, preview: ""),
+                    ContentHit(id: "next", position: 4, preview: "The next retained preview follows the empty message.")]
+        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            for overflowing in [false, true] {
+                let hits = overflowing ? seed + (5..<30).map { ContentHit(id: "hit-\($0)", position: $0, preview: "Retained result \($0) with selectable preview text.") } : seed
+                let reference = ScrollView {
+                    LazyVStack(spacing: 2) {
+                        ForEach(hits) { ConversationHitRowReference(hit: $0) }
+                    }.padding(PiSpacing.sm)
+                }.piInset().frame(width: 700, height: 180)
+                let list = LazyStackView(frame: .zero), glide = PiKit.SelectionGlide()
+                list.spacing = 2; list.insets = NSEdgeInsets(top: PiSpacing.sm, left: PiSpacing.sm, bottom: PiSpacing.sm, right: PiSpacing.sm)
+                list.reload(.init(count: hits.count, key: { hits[$0].id },
+                                  height: { ConversationHitRow.height(hits[$0], width: $1) },
+                                  view: { index, _ in ConversationHitRow(hit: hits[index], glide: glide, action: {}) }))
+                try await check("payload-conversation-results-" + (overflowing ? "overflow" : "short"), reference,
+                                PayloadViewport(PiKit.inset(list), height: 180), width: 700, appearance: appearance)
+            }
+        }
+    }
+    func testSearchReaderInsetsAndSelectedMatchRevealMatch() async throws {
+        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            for overflowing in [false, true] {
+                let text = "Request headers\naccept: text/event-stream\n\nRequest body\n" + (overflowing
+                    ? (1...90).map { "Retained line \($0)" }.joined(separator: "\n") + "\nREADME.md"
+                    : "{\"path\":\"README.md\",\"content\":\"Retained request\"}")
+                let result = try PayloadSearchResult.find(text: text, query: "README")
+                try await check("payload-search-reader-" + (overflowing ? "overflow" : "fit"),
+                                PayloadSearchTextReference(result: result, selected: 0).frame(width: 700, height: 300),
+                                PayloadViewport(PayloadSearchTextView(result: result, selected: 0), height: 300),
+                                width: 700, appearance: appearance)
+            }
+        }
+    }
+    func testCompleteBodySearchCountChevronsAndPanelMatch() async throws {
+        let bytes = Data(#"{"path":"README.md","content":"Read the retained README before editing."}"#.utf8)
+        let headers: [String: WireValue] = ["accept": .string("text/event-stream")]
+        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            for query in ["README", "missing-query"] {
+                let value = source(bytes)
+                let reference = CapturedBodyViewReference(source: value, sessionID: "s", attemptID: "search", kind: "request", retained: false,
+                                                         searchQuery: query, searchHeaders: headers).frame(width: 700, height: 500)
+                let view = CapturedBodyView(source: value, sessionID: "s", attemptID: "search", kind: "request", retained: false,
+                                            searchQuery: query, searchHeaders: headers)
+                try await check("payload-complete-search-" + (query == "README" ? "matches" : "none"), reference,
+                                PayloadViewport(view, height: 500), width: 700, appearance: appearance)
+            }
+        }
+    }
+    func testWrappingDocumentsMatchWithShortAndVisibleLegacyScrollers() async throws {
+        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            for overflowing in [false, true] {
+                let lines = (1...(overflowing ? 40 : 3)).map { "Retained instruction \($0): inspect the complete captured request." }
+                let reference = ScrollView {
+                    VStack(alignment: .leading, spacing: PiSpacing.sm) {
+                        ForEach(lines, id: \.self) { Text($0).font(PiFont.body).foregroundStyle(Color.piInk).frame(maxWidth: .infinity, alignment: .leading) }
+                    }.padding(PiSpacing.sm)
+                }.frame(width: 700, height: 180)
+                let column = ShellStack(.vertical, spacing: PiSpacing.sm, padding: NSEdgeInsets(top: PiSpacing.sm, left: PiSpacing.sm, bottom: PiSpacing.sm, right: PiSpacing.sm),
+                                        lines.map { .view(ShellText($0, font: PiKit.Font.body, color: .piInk), .fill) })
+                try await check("payload-wrapping-scroll-" + (overflowing ? "overflow" : "short"), reference,
+                                PayloadViewport(PayloadScroll(column), height: 180), width: 700, appearance: appearance)
+            }
+        }
+    }
     func testConversationAndResourceSheetsMatchWithEmptyRetainedData() async throws {
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
             let root = scratchRoot("payload-sheet-parity")
