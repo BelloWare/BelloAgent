@@ -128,8 +128,10 @@ import AppKit
     }
 
     private func loadPage(_ row: InspectorRequestRow, key: PageKey) async {
+        guard currentPage == key, !Task.isCancelled else { return }
         pageLoading = true; pageText = ""
         defer { if currentPage == key { pageLoading = false; refreshContent() } }
+        refreshContent()
         do {
             let value: [String: WireValue]
             if key.part == .links {
