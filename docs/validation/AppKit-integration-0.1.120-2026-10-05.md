@@ -201,6 +201,154 @@ differently. Earlier failed assumptions about lazy estimates and that eager
 reference are retained in the logs. No production padding or fake document
 height was added. Evidence: `native-final-symbol-settings-focused.log`.
 
+## First complete gate and native test repairs
+
+The complete gate ran alone at shipping source `cc34d8f8` from 21:37:25 to
+22:17:54 SGT on October 5. Builds, the 192-capture gallery, helper cost and
+remaining helper/views/wire/concurrent/acceptance/Python checks passed. The
+native serial lane executed 608 cases (23 optional skips) with three failing
+methods; the parallel lane reported 1,939 passes, four failing methods and
+34 skips. This first gate failed; its logs are retained.
+
+Six failures were stale native-test assumptions: an expired retained-body
+fixture, the intentionally bare XCTest application's Settings menu, two
+helpers looking for the former SwiftUI stat-pill class, the error strip's
+old private view name, and dynamic NSColor provider identity. The repaired
+tests keep their behavioral, lifetime, geometry and bounded-I/O assertions.
+Syntax colors are compared as resolved sRGB RGBA in both appearances at
+`1e-6`; no screenshot or functional tolerance was relaxed. The existing
+short-page offer failure did not reproduce in the focused run. A separate
+viewport-only regression proves a real missing recheck: the initial 900-point
+document settles correctly at clip origin 300, an 800-point viewport settles
+at 100 with the same rows and live tail, but the earlier offer stays absent.
+`native-viewport-regression-before.log` retains this failing counterfactual.
+The correction rechecks the existing guarded earlier-edge policy only after
+the resize's deferred following/restoration placement settles. The new
+viewport regression then passes, together with chat-open placement, history
+edge/timing/edit and streamed-reply checks. That 37-case run found one
+intermittent reading-test failure: no paint occurred when every appended
+character was below the viewport. The earlier and repaired binaries both
+pass the class on their own. The fixture now explicitly invalidates the
+visible text for a real paint and retains its source-anchor, selection and
+focus assertions; all six reading tests pass.
+
+All seven affected classes then ran together serially: **40 executed, two
+existing optional skips, no failures**, in 148.7 seconds. This covers
+`InspectorFrameTests`, `LayoutCycleTests`, `StreamedReplyEndTests`,
+`SessionStatsPopoverTests`, `FileSyntaxTests`, `SmoothReadingPositionTests`
+and `CostLimitTests`. Evidence:
+`logs/native-gate-repairs-build.log`, `logs/native-gate-repairs-tests.log`
+and `first-gate-cc34-verify-logs` under
+`/Users/admin/Library/Caches/BelloAgentNext`. The original 192 captures are
+preserved in `first-gate-cc34-verify-gallery` before the gate rerun. A subsequent
+16-case run also passes all nine syntax cases against independently frozen
+baseline RGBA values in both appearances, the six reading cases and the
+complete-body search comparison. Evidence:
+`logs/native-raw-reader-before-and-reading.log` and
+`logs/native-overview-document-geometry.log` (the latter still records the
+new Overview comparison's failures, not a passing release check).
+
+Every final gallery pair from this gate was viewed: root 82, Inspector
+session 24, payloads/files 54 and statistics 32, totaling 192. The review
+records are `logs/gallery-{root,session,payloads,statistics}-final-review.txt`.
+The review still requires a measured narrow Git layout correction and the
+final recapture. The narrow main-window pair was subsequently recaptured at
+the shipped 920×628 minimum and viewed in both appearances; its conversation,
+queue, composer and footer now align. Initial lazy-scroll thumb estimates
+are recorded separately from settled geometry; no estimated padding was added.
+The gallery log contains no invalid-view-geometry or unsatisfiable-constraint
+warnings.
+
+## Mounted search and complete document measurements
+
+The real Inspector sequence reproduced a ten-point raw-search shift in both
+appearances: a 478.5-point viewport moved to origin 10 although its first match
+was fully visible at glyph y351 plus the ten-point text origin. A component
+fixture alone did not reproduce it. A new real-window regression retains the
+synthetic request and follows expanded-text selection/focus, Response, then
+Raw and the README query. It exposes the same failure. The initial visible-
+match guard was insufficient and its failed run is retained.
+
+A temporary trace showed origin 0 throughout text assignment, selection and
+attachment; the first zero-to-874-point width adjustment grew the document
+from 1,770 to 1,959 points and moved the clip to 10 before the first layout.
+The final correction saves the pre-update origin with the pending match and
+restores it only when the match fits the final viewport at that origin.
+It uses no inset-derived offset and retains AppKit's offscreen navigation.
+The mounted regression now passes at origin 0 with its ten-point header
+inset, together with all 22 payload controls including nonzero-viewport,
+distant-match and bounded noncontiguous-layout checks. The temporary
+production trace was removed. Evidence: `native-raw-gallery-diagnostics.log`,
+`native-raw-trace-conversation.log`, `native-search-flow-overview-check.log`
+and `native-final-viewports-check.log` in the cache log directory.
+
+Conversation search measures all 13 original previews, including empty text,
+the 240-byte boundary and trailing newline. Every realized row frame agrees
+exactly, as do the 726-point document, 837×332.5 clip, 393.5 bottom origin and
+0.4579889807 scrollbar proportion. The original lazy document initially
+estimates 648 points and 0.51311728395; after visiting every row it agrees with
+the native document at both the bottom and returned top. This explains the
+initial thumb difference without changing production geometry.
+
+The complete Overview's original row heights and gaps also agree. Its lazy
+ledger can retain an internally inconsistent height estimate even when all
+rows are visible. The original children in a resolved stack measure
+3,270.5738525 points versus native 3,270.5, within the unchanged 0.25-point
+geometry bound. Independent original cards at the exact native proposal
+agree at 431 and 874 points. The full-page SwiftUI proposal differs by one
+CGFloat ulp and rounds some widths up one backing pixel; the diagnostic
+retains those raw frames, derives that rounding bound from backing scale,
+and strictly compares every child at the same exact proposal. All positions,
+heights, complete document and scrollbar checks remain strict and pass.
+Evidence: `native-raw-trace-conversation.log` and
+`native-final-viewports-check.log`. The latter has ten failures confined to
+the two new Git comparisons; it is not recorded as a passing release gate.
+
+The read-only whole-change follow-up reports no actionable source/test
+findings through `d052ddc14549` and the inspected working repairs. It advises
+finishing the remaining geometry checks, freezing the source, and running
+the quiet full gate, final gallery, comparable Release measurements and
+actual 3,600-second soak. Evidence: `native-release-delta-review.txt`.
+
+## Narrow Git pane measurements
+
+The real 310-point Changes pane's original toolbar has a 357.5-point minimum
+from its folder symbol and fixed controls. It overflows symmetrically at
+x −23.75 while the header, history and detail retain their pane allocation.
+The correction derives that minimum from the actual layout items and centers
+only the toolbar. Both standalone and Changes-from-Blame comparisons now
+pass, including every visible child's unchanged 0.5-point frame bound.
+Evidence: `native-git-toolbar-after-tests.log` (two cases, no failures).
+
+A separate original RightPane topology probe retains the opacity-zero kept
+side beneath Changes. It reproduces the full gallery's history discrepancy:
+the old header/history/detail receive 336 points at x −13, while the native
+body receives 310 at x 0. Filter widths are 320 versus 294, and first-row
+widths are 305 versus 279. This establishes the hidden side's control minimum
+as the cause; no history-row translation or fixed padding is justified.
+Evidence: `native-git-kept-side-before-tests.log`, with saved frames/captures
+under `git-narrow-before` in the cache.
+
+The released composer's default eight-point spacer minimum and empty idle
+run-control row's four-point outer gap account for the missing twelve points
+in the native side's 324-point minimum. Restoring those real layout children
+produces 336 points. The header also publishes its fixed badge/action minimum
+and preserves the original fixed-size non-kept title; the kept title can
+truncate. Side/RightPane size notifications keep the covered body's proposal
+current, while the outer pane/strip and the composer's trial proposal retain
+310 points. All visible child frames now agree with the original, including
+history x −13/width 336 and first-row x −5/width 305. Running-to-idle changes,
+a 600-point wider pane and side removal also pass without rebuilding the tab.
+The three narrow probes and affected ConversationPane, ShellComposer,
+ComposerBarLayout, Git width/layout classes pass together: **102 cases, no
+failures**, in 81.5 seconds. Evidence: `native-right-pane-after-tests.log`
+and `git-narrow-after` saved frames/captures.
+
+The read-only review through `5cdff8e8` reports no findings in the correct
+saved-origin raw search, toolbar, viewport paging and native fixture repairs.
+Evidence: `native-final-layout-review.txt`. The final covered-side delta is
+receiving its separate review before the source freeze.
+
 ## Still required
 
 Perform the complete gallery comparison, Release

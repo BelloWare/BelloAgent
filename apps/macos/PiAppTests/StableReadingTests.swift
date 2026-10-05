@@ -3,7 +3,9 @@ import SwiftUI
 import XCTest
 @testable import PiApp
 
-final class StableReadingTests: XCTestCase {
+// Paint-time anchor checks need their window and text selection to stay
+// visible while the shared window server serves the test host.
+final class StableReadingTests: XCTestCase, SerialTestLane {
     @MainActor private func descendants<T: NSView>(_ type: T.Type, _ view: NSView) -> [T] {
         (view as? T).map { [$0] } ?? view.subviews.flatMap { descendants(type, $0) }
     }
@@ -32,14 +34,21 @@ final class StableReadingTests: XCTestCase {
                 drawCount += 1
                 XCTAssertEqual(body.displacement(of: anchor) ?? .infinity, 0, accuracy: 1 / stage.window.backingScaleFactor)
             }
+            let reply = try XCTUnwrap(descendants(MarkdownTextView.self, body).first)
             var text: MarkdownTextView?
-            if selected, let reply = descendants(MarkdownTextView.self, body).first {
+            if selected {
                 stage.window.makeFirstResponder(reply); reply.setSelectedRange(NSRange(location: 0, length: 5)); text = reply
             }
             for i in 0..<12 {
                 await withCheckedContinuation { c in DispatchQueue.main.async { c.resume() } }
                 session.messages[1].text += "\n\nTail \(i)."
-                stage.refresh(); stage.window.displayIfNeeded()
+                stage.refresh()
+                // Appending below the viewport need not invalidate visible
+                // text. Request a real draw to observe the anchor at paint
+                // time even when AppKit would otherwise coalesce every paint.
+                XCTAssertFalse(reply.visibleRect.isEmpty)
+                reply.setNeedsDisplay(reply.visibleRect)
+                stage.window.displayIfNeeded()
                 if let text { XCTAssertTrue(stage.window.firstResponder === text); XCTAssertEqual(text.selectedRange(), NSRange(location: 0, length: 5)) }
             }
             XCTAssertGreaterThan(drawCount, 0)

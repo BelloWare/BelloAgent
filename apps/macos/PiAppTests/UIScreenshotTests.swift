@@ -1569,6 +1569,17 @@ final class UIScreenshotTests: XCTestCase {
             for (name, appearance) in appearances {
                 NSApp.appearance = NSAppearance(named: appearance); try await settle(hold)
                 try capture(panel, to: gallery.appendingPathComponent("\(scene)-\(name).png"))
+                if scene == "11e-inspector-raw-search", let root = panel.contentView {
+                    for reader in descendants(PayloadSearchTextView.self, in: root) {
+                        let editor = reader.editor, selected = editor.selectedRange()
+                        var match = NSRect.zero
+                        if selected.location != NSNotFound, selected.length > 0,
+                           let manager = editor.layoutManager, let container = editor.textContainer {
+                            match = manager.boundingRect(forGlyphRange: manager.glyphRange(forCharacterRange: selected, actualCharacterRange: nil), in: container)
+                        }
+                        print("GALLERY-RAW-SEARCH \(name) clip=\(reader.contentView.bounds) editor=\(editor.frame) inset=\(editor.textContainerInset) origin=\(editor.textContainerOrigin) selected=\(selected) match=\(match)")
+                    }
+                }
             }
         }
         try await until("the Inspector's Overview") {

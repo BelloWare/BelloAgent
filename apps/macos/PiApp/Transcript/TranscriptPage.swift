@@ -692,7 +692,16 @@ struct ContentGeometry: Equatable {
     /// Puts the page where it belongs after rows change: at the bottom while
     /// following, or with the anchored row back where the reader left it.
     private func settle() {
-        defer { viewportResizePending = false }
+        defer {
+            let resized = viewportResizePending
+            viewportResizePending = false
+            // The live bar can close without changing any row's height.
+            // Reconsider the earlier edge at the resize's final position,
+            // after following/restoration has put the reader back in place.
+            if resized, !jumping, !awaitingFirstPlacement, documentSettled {
+                requestEarlierIfNearTop(scrollY: position.offset)
+            }
+        }
         // An explicit jump owns scrolling until it lands. A reply arriving
         // during that animation must not snap the clip view on every delta.
         guard !jumping else { requestReadCheck(); return }
