@@ -107,6 +107,7 @@ import XCTest
         XCTAssertEqual(search.superview?.frame.width ?? 0, 180, accuracy: 0.5)
         page.compact = false; page.layoutSubtreeIfNeeded()
         XCTAssertEqual(search.superview?.frame.width ?? 0, 250, accuracy: 0.5)
+        XCTAssertEqual(search.superview?.frame.height ?? 0, 25, accuracy: 0.5)
         XCTAssertTrue(fixture.window.firstResponder === headers, "Resizing the toolbar retains tab focus")
         fixture.request.query = "README"
         try await eventually("The clear-search action did not appear") {
@@ -114,10 +115,13 @@ import XCTest
             return search.stringValue == "README" && InspectorExpandFixture.descendants(PiKit.ButtonBase.self, in: raw).contains { $0.accessibilityIdentifier() == "inspector-raw-search-clear" && !$0.isHidden }
         }
         let clear = try XCTUnwrap(InspectorExpandFixture.descendants(PiKit.ButtonBase.self, in: raw).first { $0.accessibilityIdentifier() == "inspector-raw-search-clear" })
+        XCTAssertEqual(search.superview?.frame.height ?? 0, 27, accuracy: 0.5)
         XCTAssertEqual(clear.accessibilityLabel(), "Clear the search")
         XCTAssertGreaterThan(clear.frame.height, 10, "The plain clear action retains its body-size symbol")
         XCTAssertTrue(clear.accessibilityPerformPress())
         try await eventually("The accessibility clear action did not empty the query") { fixture.request.query.isEmpty && search.stringValue.isEmpty && clear.isHidden }
+        page.layoutSubtreeIfNeeded()
+        XCTAssertEqual(search.superview?.frame.height ?? 0, 25, accuracy: 0.5, "Clearing shrinks the original field slot in place")
         XCTAssertTrue(fixture.window.firstResponder === headers)
     }
 
