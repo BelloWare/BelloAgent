@@ -108,8 +108,9 @@ import AppKit
         var selected: Bool {
             switch self { case .overview(_, let selected), .next(let selected), .turn(_, _, _, let selected), .version(_, _, let selected), .request(_, _, _, _, let selected): return selected; case .compaction(_, _, let expanded, let selected): return selected && !expanded; default: return false }
         }
-        var unselected: Descriptor {
-            switch self { case .overview(let text, _): return .overview(text, false); case .next: return .next(false); case .turn(let turn, let prompt, let expanded, _): return .turn(turn, prompt, expanded, false); case .version(let turn, let prompt, _): return .version(turn, prompt, false); case .compaction(let group, let indent, let expanded, _): return .compaction(group, indent, expanded, false); case .request(let row, let number, let kind, let indent, _): return .request(row, number, kind, indent, false); default: return self }
+        /// Selection and disclosure changes update the mounted controls.
+        var contentIdentity: Descriptor {
+            switch self { case .overview(let text, _): return .overview(text, false); case .next: return .next(false); case .turn(let turn, let prompt, _, _): return .turn(turn, prompt, false, false); case .version(let turn, let prompt, _): return .version(turn, prompt, false); case .compaction(let group, let indent, _, _): return .compaction(group, indent, false, false); case .request(let row, let number, let kind, let indent, _): return .request(row, number, kind, indent, false); default: return self }
         }
     }
     init(inspector: SessionInspectorModel) {
@@ -147,7 +148,7 @@ import AppKit
         let source = LazyStackView.Source(count: built.count, key: { built[$0].key }, height: { index, _ in built[index].height }, view: { [weak self] index, existing in
             guard let self else { return NSView() }
             let descriptor = built[index]
-            if let existing = existing as? Holder, existing.descriptor.unselected == descriptor.unselected {
+            if let existing = existing as? Holder, existing.descriptor.contentIdentity == descriptor.contentIdentity {
                 existing.update(descriptor); return existing
             }
             return Holder(descriptor: descriptor, content: self.make(descriptor))
@@ -219,6 +220,13 @@ import AppKit
                 (view as? PiKit.SelectableRow)?.selected = descriptor.selected
                 (view as? InspectorTurnNumber)?.selected = descriptor.selected
                 (view as? InspectorNavIcon)?.selected = descriptor.selected
+                if let disclosure = view as? InspectorDisclosure {
+                    switch descriptor {
+                    case .turn(_, _, let expanded, _): disclosure.update(expanded: expanded, label: expanded ? "Hide this turn's requests" : "Show this turn's requests")
+                    case .compaction(_, _, let expanded, _): disclosure.update(expanded: expanded, label: expanded ? "Hide this compaction's requests" : "Show this compaction's requests")
+                    default: break
+                    }
+                }
                 for child in view.subviews { update(child) }
             }
             update(content)
@@ -237,9 +245,14 @@ import AppKit
     override func draw(_ dirtyRect: NSRect) { (selected ? NSColor.piAccentSoft : .piFill).setFill(); NSBezierPath(roundedRect: bounds, xRadius: 6, yRadius: 6).fill(); let size = line.size(scale: piScale); line.draw(at: CGPoint(x: PiKit.round((bounds.width - size.width) / 2, piScale), y: PiKit.round((bounds.height - size.height) / 2, piScale)), scale: piScale) }
 }
 @MainActor private final class InspectorDisclosure: PiKit.ButtonBase {
-    let expanded: Bool, symbolSize: CGFloat, width: CGFloat, height: CGFloat
+    private(set) var expanded: Bool
+    let symbolSize: CGFloat, width: CGFloat, height: CGFloat
     init(expanded: Bool, symbolSize: CGFloat, width: CGFloat, height: CGFloat, label: String, action: @escaping () -> Void) { self.expanded = expanded; self.symbolSize = symbolSize; self.width = width; self.height = height; super.init(frame: .zero); pressScales = false; onPress = action; setAccessibilityLabel(label); setAccessibilityValue(expanded ? "Expanded" : "Collapsed") }
     required init?(coder: NSCoder) { nil }
+    func update(expanded: Bool, label: String) {
+        guard self.expanded != expanded else { return }
+        self.expanded = expanded; setAccessibilityLabel(label); setAccessibilityValue(expanded ? "Expanded" : "Collapsed"); redrawContent()
+    }
     override var intrinsicContentSize: NSSize { NSSize(width: width, height: height) }
     override func styleFace() { fill.backgroundColor = CGColor.clear; stroke.borderColor = CGColor.clear }
     override func drawContent(in rect: CGRect) { PiKit.Symbol(expanded ? "chevron.down" : "chevron.right", size: symbolSize, weight: .semibold).draw(centredIn: rect, color: .piInkTertiary, scale: piScale) }
