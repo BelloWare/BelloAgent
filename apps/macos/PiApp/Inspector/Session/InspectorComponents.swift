@@ -21,6 +21,25 @@ import AppKit
     ShellStack(.horizontal, spacing: spacing, alignment: alignment, items)
 }
 
+/// The route is tracked separately from body identity: a helper's running
+/// request can become a durable capture without changing its attempt ID.
+enum InspectorBodyRoute: Equatable {
+    case archive, live
+    static func resolve(row: InspectorRequestRow, kind: String, metadata: [String: WireValue], hasWorkspace: Bool) -> Self {
+        guard hasWorkspace else { return .archive }
+        let descriptor = metadata[kind]?.object ?? [:]
+        let stored = row.source != .live || descriptor["savedToLog"]?.bool == true
+        return stored && MessageBodyReader.canReadRetained(descriptor["state"]?.string ?? "") ? .archive : .live
+    }
+    @MainActor func source(inspector: SessionInspectorModel, request: InspectorRequestModel, row: InspectorRequestRow, kind: String) -> CapturedBodySource {
+        if let overridden = request.sourceOverride?(row, kind) { return overridden }
+        if self == .live, let workspace = inspector.workspace {
+            return .live(workspace, sessionID: inspector.scope.sessionID, attemptID: row.id, kind: kind)
+        }
+        return .archive(inspector.archive, attemptID: row.id, kind: kind)
+    }
+}
+
 /// A refreshed card can replace or temporarily detach its button. Keep
 /// keyboard focus on the same accessible action after the new layout lands.
 @MainActor struct InspectorButtonFocus {

@@ -26,6 +26,7 @@ import AppKit
     private var summary: NSView?
     private var eventBody: CapturedBodyView?
     private var eventKey: String?
+    private var eventRoute: InspectorBodyRoute?
     private var eventHost: InspectorInset?
     private lazy var raw = InspectorRawTab(inspector: inspector, request: request, compact: compact)
     private lazy var observer = ShellObserver { [weak self] in self?.refresh() }
@@ -46,7 +47,7 @@ import AppKit
             evidenceReports = nil; evidenceCard = nil
             needsLayout = true; return
         }
-        if shownRow?.id != row.id { events = false; eventBody = nil; eventKey = nil; eventHost = nil; forceHeader = true }
+        if shownRow?.id != row.id { events = false; eventBody = nil; eventKey = nil; eventRoute = nil; eventHost = nil; forceHeader = true }
         let position = inspector.index.position(of: row.id)
         let headerIdentity = [position.map { "\($0.index):\($0.count)" } ?? "", inspector.summaryLabel(row.id) ?? "", inspector.index.kind(of: row.id), inspector.workspace?.canForkFromReply(inspector.scope.sessionID) == true ? "fork" : ""].joined(separator: "|")
         if forceHeader || shownRow != row || shownMetadata != request.metadata || shownHeaderIdentity != headerIdentity {
@@ -194,10 +195,15 @@ import AppKit
     private func showResponse(_ row: InspectorRequestRow) {
         if events {
             let key = row.id + ":events"
+            let route = InspectorBodyRoute.resolve(row: row, kind: "response", metadata: request.metadata, hasWorkspace: inspector.workspace != nil)
             if eventKey != key {
-                eventKey = key
-                eventBody = CapturedBodyView(source: responseSource(row), sessionID: inspector.scope.sessionID, attemptID: row.id, kind: "response", retained: row.source != .live, initialFormat: .json, growingBytes: request.growingBytes)
-            } else { eventBody?.update(growingBytes: request.growingBytes) }
+                eventKey = key; eventRoute = route
+                eventBody = CapturedBodyView(source: route.source(inspector: inspector, request: request, row: row, kind: "response"), sessionID: inspector.scope.sessionID, attemptID: row.id, kind: "response", retained: route == .archive, initialFormat: .json, growingBytes: request.growingBytes)
+            } else if eventRoute != route {
+                eventRoute = route
+                eventBody?.update(source: route.source(inspector: inspector, request: request, row: row, kind: "response"), retained: route == .archive)
+            }
+            eventBody?.update(growingBytes: request.growingBytes)
             if let eventBody {
                 if eventHost == nil { eventHost = InspectorInset(eventBody, insets: NSEdgeInsets(top: 12, left: inset, bottom: 12, right: inset)) }
                 eventHost?.insets = NSEdgeInsets(top: 12, left: inset, bottom: 12, right: inset)
@@ -228,12 +234,6 @@ import AppKit
             views.append(inspectorRow([.view(inspectorText(RequestDocument.byteLabel(grown) + " so far · showing the first " + RequestDocument.byteLabel(request.responseBytes), font: PiKit.Font.monospacedDigits(PiKit.Font.caption), color: .piInkSecondary), .flexible), .view(button)], spacing: 8))
         }
         return inspectorColumn(views, spacing: 8)
-    }
-    private func responseSource(_ row: InspectorRequestRow) -> CapturedBodySource {
-        let state = request.metadata["response"]?.object?["state"]?.string ?? ""
-        if row.source != .live, MessageBodyReader.canReadRetained(state) || inspector.workspace == nil { return .archive(inspector.archive, attemptID: row.id, kind: "response") }
-        if let workspace = inspector.workspace { return .live(workspace, sessionID: inspector.scope.sessionID, attemptID: row.id, kind: "response") }
-        return .archive(inspector.archive, attemptID: row.id, kind: "response")
     }
     override func layout() {
         super.layout()
