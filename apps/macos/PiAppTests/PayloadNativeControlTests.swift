@@ -103,6 +103,31 @@ import XCTest
         let point = view.contentView.convert(NSPoint(x: first.minX, y: first.minY + view.editor.textContainerOrigin.y), from: view.editor)
         XCTAssertGreaterThanOrEqual(point.y - view.contentView.bounds.minY, 10, "The first header glyph retains the 10-point reader inset")
     }
+    func testSearchRevealLeavesDistantTextUnlaidUntilThatMatchIsChosen() async throws {
+        let text = "README near the start\n" + String(repeating: "A distant payload line that is outside the viewport.\n", count: 10_000) + "README at the end"
+        let result = try PayloadSearchResult.find(text: text, query: "README")
+        XCTAssertEqual(result.matches.count, 2)
+        let view = PayloadSearchTextView(result: result, selected: 0)
+        let window = attach(view, size: CGSize(width: 700, height: 300))
+        try await eventually("The first match is revealed in the mounted reader", timeout: .seconds(3)) {
+            view.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            return view.editor.selectedRange() == result.matches[0] && abs(view.contentView.bounds.minY) <= 0.5
+        }
+        let manager = try XCTUnwrap(view.editor.layoutManager)
+        let container = try XCTUnwrap(view.editor.textContainer)
+        XCTAssertTrue(manager.allowsNonContiguousLayout)
+        XCTAssertLessThan(manager.firstUnlaidCharacterIndex, result.matches[1].location,
+                          "Revealing an early match must not force layout of the complete large body")
+        view.update(result: result, selected: 1)
+        try await eventually("Choosing the final match realizes and reveals it", timeout: .seconds(3)) {
+            view.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            let glyphs = manager.glyphRange(forCharacterRange: result.matches[1], actualCharacterRange: nil)
+            let glyph = manager.boundingRect(forGlyphRange: glyphs, in: container)
+            let rect = view.contentView.convert(glyph.offsetBy(dx: view.editor.textContainerOrigin.x,
+                                                              dy: view.editor.textContainerOrigin.y), from: view.editor)
+            return view.editor.selectedRange() == result.matches[1] && view.contentView.bounds.intersects(rect)
+        }
+    }
     func testSkillSelectionButtonNamesItsSkillAndExposesSelectionAndPress() {
         let skill = SkillDescriptor(id: "skill", name: "review-code", path: "/skills/review-code/SKILL.md", description: "Review code", scope: "project", contentHash: "hash", metadataHash: "meta", policy: "explicitOnly", reasons: [], missingDependencies: [])
         var presses = 0
