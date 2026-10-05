@@ -518,9 +518,54 @@ visually certified. Evidence: `native-final-2be1-unmasked-comparison.log` and
 the four `gallery-*-2be1-review.txt` files in the cache. This distinction
 preserves the actual observations and independent test coverage.
 
+## Final typing measurement and bounded repair, 2026-10-06
+
+The quiet baseline/final Release comparison completed all 16 invocations
+per build, three rounds per group, using `scripts/perf-transcript.sh`, the
+same fixtures/seed and a one-minute start-load limit of four. Opening,
+streaming, scrolling and typical typing improve. The first final candidate
+has a reproducible higher worst typing sample: 15–17 ms versus 8–10 ms,
+despite its roughly 2 ms median versus roughly 4 ms. Three isolated
+typing-only repetitions confirm this, so the regression was investigated
+rather than omitted from the record. Raw data is in `perf-2be1` in the cache;
+complete final-source measurements remain pending.
+
+The composer's first nonempty character changes only its placeholder overlay
+and Send readiness. It now compares every other State field exactly and
+updates those two states without invalidating the card/bar/pane geometry.
+Native editor updates and real field-height callbacks still run first.
+The footer also caches the existing off-window context-label width
+measurement, keyed against the same main-screen scale and bounded at 64
+entries. It stores widths only; rendering, capture room, motion and
+accessibility remain unchanged.
+
+Eight affected Release checks pass, including frozen light/dark footer
+comparisons at wide/narrow/side widths, controls, and the new actual-typing
+case. The latter verifies arming/clearing/whitespace preserve field and Send
+frames without a height notification, while a wrapped draft still grows.
+The combined repair measures typing medians 1.9/1.8/2.0 ms, p90
+2.3/2.2/2.3 ms and worst samples 9.6/9.7/10.4 ms in three isolated runs.
+This substantially reduces the earlier peak; these samples include deferred
+main-thread work during each 30 ms test suspension and are not hard input
+latency guarantees. Evidence: `composer-width-cache-parity-tests.log` and
+`typing-width-cache-{1,2,3}.log` under `perf-2be1`.
+
+The bounded read-only Codex review reports no introduced findings in the
+complete three-file repair. It checks the exact State guard, native height
+callbacks, motion/accessibility, sizing formula, scale key and cache bound.
+Advice: verify wrapped-draft shrinking, IME and screen-scale transitions.
+Existing growing/shrinking, marked-text round-trip and IME cases are included
+in the fresh full gate. The physical VM display remains 2x; a physical
+main-screen switch between 1x and 2x has not been exercised. Evidence:
+`native-composer-typing-review.txt`.
+
+The previously completed `2be1b0d6` gate/gallery remain preserved, but the
+new production repair requires a fresh complete gate and final captures
+before release.
+
 ## Still required
 
-Perform the comparable Release performance comparison and actual hour-long
-Release soak. Owner VoiceOver and real-gateway checks have not been run or
+Perform the fresh complete gate/gallery, final-source Release performance
+comparison and actual hour-long Release soak. Owner VoiceOver and real-gateway checks have not been run or
 explicitly deferred for this release. Packaging, signing, website publication
 and the release tag remain pending.

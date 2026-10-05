@@ -116,6 +116,49 @@ extension ConversationPaneTests {
 // MARK: - The placeholder
 
 extension ConversationPaneTests {
+    @MainActor func testArmingSendKeepsTheComposerSizeAndStillAllowsWrapping() async throws {
+        let pane = try Pane(width: 900, height: 620); defer { pane.close() }
+        await pane.settle(16)
+        let editor = try XCTUnwrap(pane.editor)
+        let composer = try XCTUnwrap(Self.views(ComposerInputView.self, in: pane.hosted).first)
+        let field = try XCTUnwrap(editor.enclosingScrollView)
+        let fieldFrame = field.frame, sendFrame = composer.send.frame
+        var heightChanges = 0
+        let originalHeightChanged = composer.heightChanged
+        composer.heightChanged = { heightChanges += 1; originalHeightChanged?() }
+        pane.window.makeFirstResponder(editor)
+
+        type("a", into: editor)
+        await pane.settle(8)
+        XCTAssertEqual(editor.string, "a")
+        XCTAssertTrue(composer.send.isEnabled)
+        XCTAssertEqual(composer.send.accessibilityLabel(), "Send")
+        XCTAssertEqual(field.frame, fieldFrame)
+        XCTAssertEqual(composer.send.frame, sendFrame)
+        XCTAssertEqual(heightChanges, 0, "Arming Send and hiding the placeholder do not resize the composer")
+
+        pane.session.draft = ""
+        await pane.settle(8)
+        XCTAssertFalse(composer.send.isEnabled)
+        XCTAssertEqual(field.frame, fieldFrame)
+        XCTAssertEqual(heightChanges, 0, "Clearing a single-line draft restores only the placeholder and Send state")
+
+        pane.session.draft = " "
+        await pane.settle(8)
+        XCTAssertFalse(composer.send.isEnabled)
+        XCTAssertEqual(field.frame, fieldFrame)
+        XCTAssertEqual(heightChanges, 0, "Whitespace changes only the placeholder")
+        pane.session.draft = ""
+        await pane.settle(8)
+        XCTAssertEqual(heightChanges, 0)
+
+        pane.session.draft = String(repeating: "A long wrapped draft. ", count: 100)
+        await pane.settle(12)
+        XCTAssertTrue(composer.send.isEnabled)
+        XCTAssertGreaterThan(field.frame.height, fieldFrame.height)
+        XCTAssertGreaterThan(heightChanges, 0, "The native field still reports real line-wrap height changes")
+    }
+
     /// The keyboard hints are the empty composer's placeholder, so they must
     /// sit exactly where the first character will appear, not a few points off.
     @MainActor func testThePlaceholderSitsWhereTheTypedTextWill() async throws {

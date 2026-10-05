@@ -273,6 +273,18 @@ import AppKit
     }
 
     private func apply(_ state: State, before: State?, session: SessionDisplay) {
+        if let before {
+            // The first character only hides an overlay and arms Send. Neither
+            // changes the card's size; keep the toolbar and pane measurements.
+            // Every other state field still takes the complete layout path.
+            var layoutState = state
+            layoutState.placeholder = before.placeholder
+            layoutState.canSend = before.canSend
+            if layoutState == before {
+                applyInputState(state, before: before)
+                return
+            }
+        }
         // Banners above the field.
         loadingLine.isHidden = !(state.editPreparing && !state.editing)
         if state.editing {
@@ -314,9 +326,6 @@ import AppKit
         }
         chips.isHidden = state.attachments.isEmpty
         for control in PiKit.controls(in: chips) { control.isEnabled = !state.disabled }
-        // The keyboard hints are the empty composer's placeholder; they leave once typing starts.
-        placeholder.isHidden = state.placeholder == nil
-        if let text = state.placeholder { placeholder.line.text = text }
         // The bar.
         attach.isEnabled = state.draftReady && !state.queueEditing && state.supportsImages && !state.disabled
         skills.isEnabled = !state.queueEditing && !state.disabled
@@ -351,14 +360,7 @@ import AppKit
         if send.symbol != symbol { send.symbol = symbol }
         send.setAccessibilityLabel(name)
         send.toolTip = state.queueEditing ? "Save Queued Message" : state.editing ? (state.editBlocker ?? "Resend Edited Message") : name
-        if before?.canSend != state.canSend || before == nil {
-            PiKit.Motion.layers(PiKit.Motion.quick, animated: before != nil) {
-                send.fillColor = state.canSend ? .piBrandOrange : .piFillStrong
-                send.ink = state.canSend ? .piOnAccent : .piInkTertiary
-                send.glows = state.canSend
-            }
-        }
-        send.isEnabled = state.canSend && !state.disabled
+        applyInputState(state, before: before)
         let stopping = state.busy
         if stop.isHidden == stopping {
             stop.isHidden = !stopping
@@ -370,6 +372,20 @@ import AppKit
         completions.isHidden = !state.completionVisible
         if state.completionVisible { updateCompletions(session) }
         contentHeightChanged()
+    }
+
+    private func applyInputState(_ state: State, before: State?) {
+        // The keyboard hints are an overlay on the native field.
+        placeholder.isHidden = state.placeholder == nil
+        if let text = state.placeholder { placeholder.line.text = text }
+        if before?.canSend != state.canSend || before == nil {
+            PiKit.Motion.layers(PiKit.Motion.quick, animated: before != nil) {
+                send.fillColor = state.canSend ? .piBrandOrange : .piFillStrong
+                send.ink = state.canSend ? .piOnAccent : .piInkTertiary
+                send.glows = state.canSend
+            }
+        }
+        send.isEnabled = state.canSend && !state.disabled
     }
 
     private func updateCompletions(_ session: SessionDisplay) {

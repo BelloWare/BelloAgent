@@ -388,6 +388,8 @@ import CoreText
     let gauge = PiKit.StatPill(symbol: "gauge.with.dots.needle.67percent", label: "")
     let usage = PiKit.StatPill(symbol: "cylinder.split.1x2", label: "")
     let contextPill = PiKit.StatPill(symbol: "square.stack.3d.up", ring: .some(nil), label: "")
+    private var contextLabelWidths: [String: CGFloat] = [:]
+    private var contextLabelWidthScale: CGFloat?
     /// The usage pill's two faces (`ViewThatFits`): the token split, else the compact one.
     typealias Face = (label: String, warningTail: String?)
     private var usageFaces: (full: Face, compact: Face)?
@@ -446,12 +448,23 @@ import CoreText
         contextPill.truncates = figure == nil
         contextPill.accessibilityName = reading.map { "\($0)% of context used" } ?? meter.detailLabel
         contextPill.toolTip = meter.detailLabel + " Opens the next request in the Session Inspector."
-        contextSlotWidth = slot.labels.map { Self.pillWidth(label: $0) }.max() ?? Self.pillWidth(label: label)
+        contextSlotWidth = slot.labels.map { pillWidth(label: $0) }.max() ?? pillWidth(label: label)
         chooseUsageFace(width: bounds.width > 0 ? bounds.width : .infinity)
         needsLayout = true
     }
-    private static func pillWidth(label: String) -> CGFloat {
-        PiKit.StatPill(symbol: "square.stack.3d.up", ring: .some(nil), label: label).intrinsicContentSize.width
+    private func pillWidth(label: String) -> CGFloat {
+        // The measuring pill is off-window and uses the main screen's scale.
+        // Its fonts and glyph are fixed; repeated readings keep the same width.
+        let scale = NSScreen.main?.backingScaleFactor ?? 2
+        if contextLabelWidthScale != scale {
+            contextLabelWidthScale = scale
+            contextLabelWidths.removeAll(keepingCapacity: true)
+        }
+        if let width = contextLabelWidths[label] { return width }
+        let width = PiKit.StatPill(symbol: "square.stack.3d.up", ring: .some(nil), label: label).intrinsicContentSize.width
+        if contextLabelWidths.count >= 64 { contextLabelWidths.removeAll(keepingCapacity: true) }
+        contextLabelWidths[label] = width
+        return width
     }
     /// The full usage face when it fits the row's width, else the compact one.
     private func chooseUsageFace(width: CGFloat) {
