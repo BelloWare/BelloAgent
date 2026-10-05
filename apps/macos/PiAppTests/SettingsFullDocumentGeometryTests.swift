@@ -152,8 +152,10 @@ import XCTest
         let lazyBottom = try await settle(lazy, window: lazyWindow, scroll: lazyScroll, phase: "frozen-lazy-bottom")
         XCTAssertGreaterThan(lazyBottom.origin, 0)
         try record("bottom", kind: "frozen-lazy", snapshot: lazyBottom, groups: lazyGeometry.groups, window: lazyWindow)
-        // The header's id follows24pt padding. Use the actual scroller's
-        // top edge to return to0 rather than anchoring that padded header.
+        // The header's id follows 24pt padding. Use the actual scroller's
+        // top edge to return to 0 rather than anchoring that padded header.
+        // The original LazyVStack estimates the off-screen groups again;
+        // record that estimate separately from its complete bottom snapshot.
         scroll(lazyScroll, toBottom: false)
         let lazyTop = try await settle(lazy, window: lazyWindow, scroll: lazyScroll, phase: "frozen-lazy-returned-top")
         XCTAssertEqual(lazyTop.origin, 0, accuracy: 0.5, "The old page returns to its original reading position")
@@ -186,9 +188,9 @@ import XCTest
         XCTAssertEqual(nativeInitial.clipWidth, eagerComplete.clipWidth, accuracy: 0.5)
         XCTAssertEqual(nativeInitial.clipHeight, eagerComplete.clipHeight, accuracy: 0.5)
         XCTAssertEqual(nativeInitial.documentHeight, eagerComplete.documentHeight, accuracy: 1.01, "The native page retains the complete old content height")
-        XCTAssertEqual(lazyTop.documentHeight, eagerComplete.documentHeight, accuracy: 0.5, "Realizing the old page resolves its initial estimate")
-        XCTAssertEqual(lazyTop.knob, eagerComplete.knob, accuracy: 0.001, "The old thumb after bottom/back reflects the complete content")
+        XCTAssertEqual(lazyBottom.documentHeight, eagerComplete.documentHeight, accuracy: 0.5, "The fully realized old page matches the complete content")
+        XCTAssertEqual(lazyBottom.knob, eagerComplete.knob, accuracy: 0.001, "The old thumb at the bottom reflects the complete content")
         XCTAssertEqual(nativeInitial.knob, eagerComplete.knob, accuracy: 0.001, "The native thumb reflects the complete old content")
-        print("SETTINGS-LAZY-ESTIMATE initialHeight=\(lazyInitial.documentHeight) realizedHeight=\(lazyTop.documentHeight) nativeHeight=\(nativeInitial.documentHeight) initialKnob=\(lazyInitial.knob) realizedKnob=\(lazyTop.knob)")
+        print("SETTINGS-LAZY-ESTIMATE initialHeight=\(lazyInitial.documentHeight) realizedHeight=\(lazyBottom.documentHeight) returnedTopHeight=\(lazyTop.documentHeight) nativeHeight=\(nativeInitial.documentHeight) initialKnob=\(lazyInitial.knob) realizedKnob=\(lazyBottom.knob) returnedTopKnob=\(lazyTop.knob)")
     }
 }
