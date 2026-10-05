@@ -182,6 +182,10 @@ final class HistoryEdgeTests: HistoryEdgeTestCase {
 /// spinner: moments measured on the wall clock, so this runs in the serial
 /// lane (`scripts/test-lanes.py`).
 final class HistoryEdgeTimingTests: HistoryEdgeTestCase, SerialTestLane {
+    @MainActor private final class ViewportDocument: NSView {
+        override var isFlipped: Bool { true }
+    }
+
     /// Closing a live bar can make the existing page short without changing
     /// any row. The earlier edge must reconsider the settled viewport.
     @MainActor func testAFullPageOffersEarlierRowsWhenOnlyItsViewportGrows() async throws {
@@ -206,7 +210,7 @@ final class HistoryEdgeTimingTests: HistoryEdgeTestCase, SerialTestLane {
         let scroll = NSScrollView(frame: CGRect(x: 0, y: 0, width: 700, height: 600))
         scroll.borderType = .noBorder
         scroll.hasVerticalScroller = false; scroll.hasHorizontalScroller = false
-        let document = NSView(frame: CGRect(x: 0, y: 0, width: 700, height: 900))
+        let document = ViewportDocument(frame: CGRect(x: 0, y: 0, width: 700, height: 900))
         scroll.documentView = document
         page.attach(scroll, host: document)
         defer { page.attach(nil, host: document); scroll.documentView = nil }
