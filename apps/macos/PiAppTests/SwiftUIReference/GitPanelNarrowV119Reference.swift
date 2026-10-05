@@ -12,10 +12,12 @@ import GitView
 @MainActor enum GitNarrowReferencePart: String, CaseIterable {
     case panel, header, toolbar, firstRow, branch, remote, stash, tabs
     case history, filter, author, list, firstCommit, detail
+    case tabContent, backBar
 }
 
 @MainActor final class GitNarrowReferenceGeometry {
     var frames: [GitNarrowReferencePart: CGRect] = [:]
+    var globalCoordinates = false
     static let coordinateSpace = "git-narrow-v119-pane"
 }
 
@@ -24,7 +26,7 @@ import GitView
     let geometry: GitNarrowReferenceGeometry
     var body: some View {
         GeometryReader { proxy in
-            let frame = proxy.frame(in: .named(GitNarrowReferenceGeometry.coordinateSpace))
+            let frame = proxy.frame(in: geometry.globalCoordinates ? .global : .named(GitNarrowReferenceGeometry.coordinateSpace))
             Color.clear.onAppear { geometry.frames[part] = frame }
                 .onChange(of: frame) { _, value in geometry.frames[part] = value }
         }
@@ -40,6 +42,7 @@ import GitView
 @MainActor struct GitPanelNarrowV119Reference: View {
     @ObservedObject var controller: GitController
     let geometry: GitNarrowReferenceGeometry
+    var project: String? = nil
 
     var body: some View {
         VStack(spacing: 0) {
@@ -59,6 +62,11 @@ import GitView
     private var header: some View {
         HStack(spacing: PiSpacing.sm) {
             HStack(spacing: 4) {
+                if let project {
+                    Text(project).font(PiFont.caption.weight(.medium)).foregroundStyle(Color.piInkSecondary)
+                        .lineLimit(1).truncationMode(.middle).layoutPriority(1)
+                    Image(systemName: "chevron.right").font(.system(size: 8, weight: .semibold)).foregroundStyle(Color.piInkTertiary)
+                }
                 Text("\(controller.status.branch) · \(controller.status.entries.count) changed")
                     .font(PiFont.caption).foregroundStyle(Color.piInkSecondary).lineLimit(1).truncationMode(.tail)
             }
@@ -164,6 +172,31 @@ import GitView
                 }.font(PiFont.micro).foregroundStyle(Color.piInkTertiary)
             }
         }
+    }
+}
+
+// The released ChangesTabContent wrapper used by the gallery's Show Change
+// action. Its root is hosted without a SwiftUI fixed frame, as TabContentView
+// was, rather than proposing 310pt through an extra SwiftUI frame modifier.
+@MainActor struct ChangesTabNarrowV119Reference: View {
+    @ObservedObject var controller: GitController
+    let geometry: GitNarrowReferenceGeometry
+    let project: String
+    let returnName: String
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: PiSpacing.sm) {
+                Button {} label: { Label("Back to \(returnName)", systemImage: "chevron.left") }
+                    .buttonStyle(.piSecondaryCompact).fixedSize()
+                Text("Opened from its blame").font(PiFont.micro).foregroundStyle(Color.piInkTertiary)
+                    .lineLimit(1).truncationMode(.tail).layoutPriority(-1)
+                Spacer()
+            }
+            .padding(.horizontal, PiSpacing.md).padding(.vertical, 6)
+            .overlay(alignment: .bottom) { Rectangle().fill(Color.piHairline).frame(height: 1) }
+            .gitNarrowFrame(.backBar, geometry)
+            GitPanelNarrowV119Reference(controller: controller, geometry: geometry, project: project)
+        }.gitNarrowFrame(.tabContent, geometry)
     }
 }
 
