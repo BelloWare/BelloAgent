@@ -4,8 +4,8 @@ import XCTest
 @testable import PiApp
 
 @MainActor final class PayloadNativeParityTests: XCTestCase, SerialTestLane {
-    override func setUp() { super.setUp(); PiKit.Motion.reducedOverride = true }
-    override func tearDown() { PiKit.Motion.reducedOverride = nil; super.tearDown() }
+    override func setUp() async throws { PiKit.Motion.reducedOverride = true }
+    override func tearDown() async throws { PiKit.Motion.reducedOverride = nil }
     private func check<V: View>(_ name: String, _ reference: V, _ native: NSView, width: CGFloat,
                                appearance: NSAppearance.Name) async throws {
         let result = try await PiKitParity.compare(name + (appearance == .aqua ? "-light" : "-dark"), appearance: appearance,
