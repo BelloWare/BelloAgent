@@ -48,6 +48,27 @@ import XCTest
         XCTAssertGreaterThanOrEqual(split.arrangedSubviews[0].frame.width, 297.5, "The list must retain its minimum width")
         XCTAssertGreaterThanOrEqual(split.arrangedSubviews[1].frame.width, 487.5, "The payload must retain its minimum width")
     }
+    func testSettingsControlsFollowTheScrollViewportWhenItsWidthChanges() async throws {
+        let group = PiKit.SettingsGroup(title: "Discovery", rows: [
+            PiKit.Row(label: "Codex home", detail: "Absolute path", control: PiKit.TextField(placeholder: "/Users/you/.codex", mono: true)),
+            PiKit.Row(label: "Override instruction byte budget", control: PiKit.Switch(isOn: false)),
+            PiKit.Row(label: "No approved paths", last: true, control: PiKit.Button("Add Approved Path…", style: .secondary, compact: true))])
+        let column = ShellStack(.vertical, spacing: PiSpacing.xl, padding: NSEdgeInsets(top: 2, left: 2, bottom: 2, right: 2), [.view(group, .fill)])
+        let scroll = PayloadScroll(column)
+        scroll.scrollerStyle = .legacy
+        let window = attach(scroll, size: CGSize(width: 720, height: 460))
+        for width: CGFloat in [720, 1000, 620] {
+            window.setContentSize(NSSize(width: width, height: 460)); scroll.needsLayout = true
+            try await eventually("Settings controls follow the \(width)-point viewport", timeout: .seconds(3)) {
+                scroll.layoutSubtreeIfNeeded()
+                return abs(group.bounds.width - (scroll.contentView.bounds.width - 4)) <= 0.5
+                    && group.rows.allSatisfy { row in
+                        abs(row.bounds.width - group.bounds.width) <= 0.5
+                            && abs((row.control?.frame.maxX ?? row.bounds.maxX) - (row.bounds.maxX - PiSpacing.lg)) <= 0.5
+                    }
+            }
+        }
+    }
     func testSkillSelectionButtonNamesItsSkillAndExposesSelectionAndPress() {
         let skill = SkillDescriptor(id: "skill", name: "review-code", path: "/skills/review-code/SKILL.md", description: "Review code", scope: "project", contentHash: "hash", metadataHash: "meta", policy: "explicitOnly", reasons: [], missingDependencies: [])
         var presses = 0
