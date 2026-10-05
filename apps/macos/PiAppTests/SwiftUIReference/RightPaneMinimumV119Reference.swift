@@ -9,16 +9,20 @@ import SwiftUI
 // transcript/editor space is clear because this probe only measures their
 // surrounding controls' minimum; it does not claim pixel parity for a side.
 @MainActor struct RightPaneMinimumV119Reference: View {
-    let tab: ChangesTabNarrowV119Reference
+    let tab: ChangesTabNarrowV119Reference?
     let side: KeptSideMinimumV119Reference
     var body: some View {
         VStack(spacing: 0) {
             // The released horizontal TabStrip scroll view had no horizontal
             // content minimum; its fixed height is the original 36pt.
-            ScrollView(.horizontal, showsIndicators: false) { Color.clear.frame(width: 1, height: 36) }.frame(height: 36)
+            if tab != nil {
+                ScrollView(.horizontal, showsIndicators: false) { Color.clear.frame(width: 1, height: 36) }.frame(height: 36)
+            }
             ZStack {
-                side.opacity(0).allowsHitTesting(false).accessibilityHidden(true)
-                KeptTabContentHostV119Reference(root: AnyView(tab.buttonStyle(.piSecondary).toggleStyle(.piSwitch).background(Color.piContent)))
+                side.opacity(tab == nil ? 1 : 0).allowsHitTesting(tab == nil).accessibilityHidden(tab != nil)
+                if let tab {
+                    KeptTabContentHostV119Reference(root: AnyView(tab.buttonStyle(.piSecondary).toggleStyle(.piSwitch).background(Color.piContent)))
+                }
             }
         }.background(Color.piContent)
     }
@@ -28,11 +32,14 @@ import SwiftUI
     let title: String
     let reading: ModelSwitchPills.Reading
     let paneWidth: CGFloat
+    var kept = true
+    var transcriptProbe: ((TranscriptNativeScrollView) -> Void)?
     var body: some View {
         VStack(spacing: 0) {
             header
             Rectangle().fill(Color.piHairline).frame(height: 1)
-            Color.clear
+            if let transcriptProbe { SideTranscriptSurfaceV119Reference(onMake: transcriptProbe) }
+            else { Color.clear }
             composer
             Color.clear.frame(height: 30)
         }
@@ -41,15 +48,22 @@ import SwiftUI
         HStack(alignment: .center, spacing: PiSpacing.sm) {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
-                    Button {} label: { Text(title).foregroundStyle(Color.piInk).lineLimit(1).truncationMode(.tail) }
-                        .buttonStyle(.plain).font(PiFont.title(15))
-                    PiBadge(text: "Saved · Read-only", tone: .success, icon: "arrow.triangle.branch").fixedSize()
+                    if kept {
+                        Button {} label: { Text(title).foregroundStyle(Color.piInk).lineLimit(1).truncationMode(.tail) }
+                            .buttonStyle(.plain).font(PiFont.title(15))
+                    } else {
+                        Text("Side conversation").font(PiFont.title(15)).foregroundStyle(Color.piInk).fixedSize()
+                    }
+                    PiBadge(text: kept ? "Saved · Read-only" : "In memory", tone: kept ? .success : .warning, icon: "arrow.triangle.branch").fixedSize()
                 }
                 Text("Shares the parent's context as of when it opened")
                     .font(PiFont.caption).foregroundStyle(Color.piInkTertiary).lineLimit(1).truncationMode(.tail)
             }
             Spacer(minLength: PiSpacing.sm)
             PiIconButton(symbol: "arrow.uturn.backward", label: "Bring Back to Parent Draft…") {}
+            if !kept {
+                Button {} label: { Label("Keep", systemImage: "pin") }.buttonStyle(.piSecondaryCompact)
+            }
             Image(systemName: "ellipsis").font(.system(size: 13, weight: .semibold)).frame(width: 28, height: 28)
             PiIconButton(symbol: "xmark", label: "Close side", size: 26) {}
         }
@@ -93,6 +107,24 @@ import SwiftUI
             }.piElevated(radius: 16)
         }.padding(.horizontal, PiSpacing.lg).padding(.top, PiSpacing.sm).padding(.bottom, 6)
     }
+}
+
+// The released TranscriptScrollSurface had no sizeThatFits override. Keep
+// its actual native scroll class and configuration so default representable
+// sizing, rather than an explicit width shim, supplies the width oracle.
+// Rows are omitted: this probe asserts horizontal allocation, not height.
+@MainActor private struct SideTranscriptSurfaceV119Reference: NSViewRepresentable {
+    let onMake: (TranscriptNativeScrollView) -> Void
+    func makeNSView(context: Context) -> TranscriptNativeScrollView {
+        let scroll = TranscriptNativeScrollView()
+        scroll.hasVerticalScroller = true; scroll.hasHorizontalScroller = false
+        scroll.autohidesScrollers = true; scroll.drawsBackground = false
+        scroll.contentView.drawsBackground = false; scroll.borderType = .noBorder
+        scroll.horizontalScrollElasticity = .none
+        onMake(scroll)
+        return scroll
+    }
+    func updateNSView(_ view: TranscriptNativeScrollView, context: Context) { }
 }
 
 // Original TabContentHost/TabContentContainer proposal and AppKit attachment.
