@@ -85,8 +85,7 @@ import XCTest
         let width: CGFloat
         let divider: CGFloat
         let leading: NSRect, trailing: NSRect
-        let leadingFit: NSSize, trailingFit: NSSize
-        var description: String { "width=\(width) divider=\(divider) panes=\(leading) / \(trailing) fits=\(leadingFit) / \(trailingFit)" }
+        var description: String { "width=\(width) divider=\(divider) panes=\(leading) / \(trailing)" }
     }
     var reference: Frame?, native: Frame?
     var description: String { "SwiftUI \(reference?.description ?? "missing"); AppKit \(native?.description ?? "missing")" }
@@ -97,11 +96,10 @@ import XCTest
     }
     private func record(_ view: NSView) {
         if let split = view as? NSSplitView, split.isVertical, split.arrangedSubviews.count == 2,
-           abs(split.bounds.width - 1052) < 1 {
+           abs(split.bounds.width - (ResourceInspector.size.width - PiSpacing.xl * 2)) < 1 {
             let left = split.arrangedSubviews[0], right = split.arrangedSubviews[1]
             let frame = Frame(width: split.bounds.width, divider: split.dividerThickness,
-                              leading: left.frame, trailing: right.frame,
-                              leadingFit: left.fittingSize, trailingFit: right.fittingSize)
+                              leading: left.frame, trailing: right.frame)
             if split is PayloadSplit { native = frame } else { reference = frame }
         }
         for child in view.subviews { record(child) }
