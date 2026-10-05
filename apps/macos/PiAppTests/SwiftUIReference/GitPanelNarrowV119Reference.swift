@@ -169,7 +169,7 @@ import GitView
 
 // The released narrow half of GitPanelSplit, including its original least
 // height proposal. No native split helper is used by the reference.
-@MainActor private struct GitPanelNarrowSplitV119Reference: Layout {
+private struct GitPanelNarrowSplitV119Reference: Layout {
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         proposal.replacingUnspecifiedDimensions()
     }
