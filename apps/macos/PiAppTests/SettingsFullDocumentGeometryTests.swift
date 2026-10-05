@@ -49,7 +49,7 @@ import XCTest
     private struct Snapshot: Equatable {
         let width: CGFloat, clipWidth: CGFloat, clipHeight: CGFloat
         let documentHeight: CGFloat, origin: CGFloat, knob: CGFloat
-        init(_ scroll: NSScrollView) {
+        @MainActor init(_ scroll: NSScrollView) {
             width = scroll.bounds.width; clipWidth = scroll.contentView.bounds.width
             clipHeight = scroll.contentView.bounds.height; documentHeight = scroll.documentView?.frame.height ?? 0
             let visible = scroll.documentView?.convert(scroll.contentView.bounds, from: scroll.contentView) ?? .zero
