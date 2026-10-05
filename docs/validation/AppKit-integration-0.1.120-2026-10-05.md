@@ -355,8 +355,73 @@ working changes in the preceding pass. Together with the whole-change
 review from `e59e41a7`, this covers the frozen source candidate `8a27e5b3`.
 The candidate is committed and pushed to `dev/next`; its working tree is
 clean. Debug executable and implementation dylib have no direct SwiftUI or
-Charts linkage. Release compilation is in progress, followed by the quiet
-gate, final gallery and measured Release validation.
+Charts linkage. The Release build-for-testing also compiles successfully,
+and its executable has no direct SwiftUI or Charts linkage. Evidence:
+`native-frozen-release-build.log` and `native-frozen-release-linkage.txt`.
+
+## Second complete gate and pinned-column regression
+
+The second quiet gate at `5b55bff6` (the same product source as `8a27e5b3`)
+completed in 37 minutes 48 seconds and **failed**. The serial lane executed
+622 cases, with 23 skips and one failure; the parallel lane reported 1,936
+passes, 34 skips and one failure. The helper cost checks, all 192 gallery
+captures, 611 helper cases (six skips), 167 views-package cases (three skips),
+34 wire, four concurrent, two acceptance and 72 Python checks passed.
+Evidence: `native-frozen-full-gate.log`; the complete logs and captures are
+preserved under `second-gate-5b55-verify-{logs,gallery}` in the cache.
+
+The serial failure measured the Changes pane's synchronous 21-character
+typing step at 32.8255 ms against the unchanged 30 ms limit. An isolated
+rerun passed at 22.2 ms, with no layout cycles or diff rows built. This is
+not yet a passing complete gate; the limit remains unchanged.
+
+The pinned sides-panel test reproducibly fails its existing column bound:
+the side transcript ends at x 1,034.25 instead of at or before 1,032.
+The immutable 0.1.119 Release build passes the same test, establishing an
+introduced regression. A temporary test diagnostic measures the actual side
+allocation shrinking from 489 to 365 points while the composer's trial
+proposal incorrectly remains 489. Its 371.5-point minimum then overlaps
+the reserved column. The original layout probe also confirms that fixed
+controls can expand a visible side; simply clamping every visible transcript
+would change the released behavior. The correction must refresh the trial
+proposal before measuring those controls. The temporary diagnostic was removed;
+its measurements remain in `native-pinned-probe.log`. Evidence:
+`native-second-gate-failures-alone.log` and
+`native-pinned-panel-v119-baseline.log`.
+
+The exact single-profile original/native probe reproduces the resize at
+489 → 365 → 489 points without a new side/model update. With the correction
+removed, it fails the proposal, leading boundary, width and reserved-column
+assertions: the original transcript is x 0/width 365, while native is
+x −3.25/width 371.5 with proposal 489. Restoring the proposal update makes
+the minimum 290.5 at width 365 and both transcript bounds agree. The same
+side and composer remain mounted throughout. This is a proposal correction,
+not a clamp: the independent kept/in-memory cases still retain the original
+336/457-point overflowing minima at a 310-point allocation.
+
+The existing affected pane/composer/Git/side-panel classes pass: 109 cases,
+no failures, in 96.1 seconds. The five narrow probes and seven side-panel
+cases then pass together, including both new comparisons, in 21.2 seconds.
+No existing assertion or threshold was changed. Evidence:
+`native-pinned-proposal-affected-tests.log`, `native-pinned-resize-before.log`
+and `native-pinned-resize-after.log`.
+
+Three fresh isolated Changes-pane runs pass the unchanged 30 ms typing
+limit at 23.7, 24.7 and 22.4 ms. Each reports zero layout cycles and zero
+diff rows built for that synchronous 21-character step. The machine's
+one-minute load was 1.83 before these runs; no build, review or agent UI
+work ran alongside them. Evidence: `native-pinned-typing-confidence-{1,2,3}.log`.
+
+The final read-only review reports no introduced source/test findings in
+`5b55bff6..d98446c1` and the proposal repair's working source blob
+`a8388fab2492ce566dc8cd391469616d110b7c92`. It checks refresh ordering,
+notifications, reuse/removal, detached/zero-size states, covered tabs and
+the strict frozen width comparisons. That exact production blob is committed
+as `478d0211d8abea59d053a0752aba6f61102ad2af`, the new source candidate.
+Evidence: `native-final-pinned-pane-review.txt`. Advice remains to complete
+the quiet gate, final gallery, comparable Release measurements and actual
+3,600-second Release soak against this source before publication. The final
+Release build-for-testing is being rebuilt for this candidate.
 
 ## Still required
 
