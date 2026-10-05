@@ -46,6 +46,19 @@ import XCTest
         XCTAssertFalse(model.mcpRemovalInProgress)
     }
 
+    func testCancellingTheOwnerRejectsAnAcceptedRemovalAnswer() async throws {
+        let (model, storage, a, b) = try await fixture()
+        let before = storage.writes, aBefore = model.configuration.mcp[a.id], bBefore = model.configuration.mcp[b.id]
+        answer(.alertFirstButtonReturn) { withUnsafeCurrentTask { $0?.cancel() } }
+        let removal = Task { await model.confirmAndRemoveAllMCPServers() }
+        let notice = await removal.value
+        XCTAssertNil(notice)
+        XCTAssertEqual(questions.count, 1)
+        XCTAssertEqual(storage.writes, before, "A confirmation from a closed owner must not write the vault")
+        XCTAssertEqual(model.configuration.mcp[a.id], aBefore); XCTAssertEqual(model.configuration.mcp[b.id], bBefore)
+        XCTAssertFalse(model.mcpRemovalInProgress); XCTAssertTrue(model.hosts.isEmpty)
+    }
+
     func testTheQuestionNamesTheProjectDefaultsToCancelAndHoldsNoSecret() async throws {
         let (model, _, a, _) = try await fixture()
         answer(.alertSecondButtonReturn)

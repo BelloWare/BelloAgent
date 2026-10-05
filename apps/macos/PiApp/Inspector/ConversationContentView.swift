@@ -9,10 +9,24 @@ enum ConversationSearchPaging {
     }
 }
 
+@MainActor struct ConversationContentSource: Sendable {
+    let search: @MainActor @Sendable (String, Int) async throws -> ContentSearch
+    let page: @MainActor @Sendable (Int, Int, ContentCursor, String) async throws -> ContentPage
+    let reveal: @MainActor @Sendable (ContentHit) async throws -> Void
+    static func workspace(_ model: WorkspaceModel, sessionID: String) -> Self {
+        Self(search: { try await model.searchConversation(sessionID, query: $0, start: $1) },
+             page: { try await model.conversationPage(sessionID, first: $0, last: $1, cursor: $2, revision: $3) },
+             reveal: { try await model.revealConversationHit(sessionID, hit: $0) })
+    }
+}
+
 @MainActor final class ConversationContentView: DashView, InheritsEnabled {
     static let size = NSSize(width: 900, height: 700)
     let model: WorkspaceModel
     let sessionID: String
+    private let source: ConversationContentSource
+    private let pasteboard: NSPasteboard
+    private let work = PayloadTaskScope()
     var dismiss: () -> Void
     var inheritedEnabled = true { didSet { refresh() } }
     let queryField = PiKit.TextField(placeholder: "Find in retained conversation", icon: "magnifyingglass")
@@ -38,11 +52,12 @@ enum ConversationSearchPaging {
     private var result = ContentSearch(hits: [], total: 0, next: nil, revision: "")
     private var busy = false { didSet { refresh() } }
     private var started = false
-    private var task: Task<Void, Never>?
     private let glide = PiKit.SelectionGlide()
     private var selected: ContentHit? { result.hits.first { $0.id == selectedID } }
-    init(model: WorkspaceModel, sessionID: String, dismiss: @escaping () -> Void = {}) {
-        self.model = model; self.sessionID = sessionID; self.dismiss = dismiss
+    init(model: WorkspaceModel, sessionID: String, source: ConversationContentSource? = nil,
+         pasteboard: NSPasteboard = .general, dismiss: @escaping () -> Void = {}) {
+        self.model = model; self.sessionID = sessionID; self.source = source ?? .workspace(model, sessionID: sessionID)
+        self.pasteboard = pasteboard; self.dismiss = dismiss
         super.init(frame: NSRect(origin: .zero, size: Self.size))
         let searchRow = ShellStack(.horizontal, spacing: PiSpacing.sm, [.view(queryField, .fill), .view(searchButton), .view(spinner)])
         let results = PayloadEmptyOverlay(content: list, empty: empty)
@@ -78,18 +93,26 @@ enum ConversationSearchPaging {
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
     override var intrinsicContentSize: NSSize { Self.size }
     override func layout() { super.layout(); sheet.frame = bounds }
-    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); if window != nil, !started { started = true; search() } }
-    override func viewWillMove(toWindow newWindow: NSWindow?) { if newWindow == nil, window != nil { task?.cancel() }; super.viewWillMove(toWindow: newWindow) }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil, !started { work.resume(); started = true; search() }
+        else if window == nil { prepareForRelease() }
+    }
+    override func viewWillMove(toWindow newWindow: NSWindow?) { if newWindow == nil, window != nil { prepareForRelease() }; super.viewWillMove(toWindow: newWindow) }
+    func prepareForRelease() {
+        work.cancel(); started = false; busy = false; dismiss = {}
+        result = ContentSearch(hits: [], total: 0, next: nil, revision: ""); selectedID = nil; refresh()
+    }
     private func refresh() {
-        let enabled = !busy && inheritedEnabled
+        let enabled = work.isActive && !busy && inheritedEnabled
         searchButton.isEnabled = enabled && queryField.text.count <= 256
         next.isEnabled = enabled && result.next != nil; reveal.isEnabled = enabled && selected != nil
         startSelection.isEnabled = enabled && selected != nil; endSelection.isEnabled = enabled && selected != nil
         done.isEnabled = enabled; exportButton.isEnabled = enabled && result.total > 0
         copyRange.isEnabled = enabled && firstField.value >= 1 && lastField.value >= firstField.value && lastField.value <= result.total
         copyAll.isEnabled = enabled && result.total > 0
-        queryField.field.isEnabled = inheritedEnabled; firstField.field.isEnabled = inheritedEnabled; lastField.field.isEnabled = inheritedEnabled
-        spinner.isHidden = !busy; sheet?.cancelDisabled = busy || !inheritedEnabled
+        queryField.field.isEnabled = work.isActive && inheritedEnabled; firstField.field.isEnabled = work.isActive && inheritedEnabled; lastField.field.isEnabled = work.isActive && inheritedEnabled
+        spinner.isHidden = !busy; sheet?.cancelDisabled = busy || !inheritedEnabled || !work.isActive
         count.line.text = "\(result.hits.count) matches on this page · \(result.total) retained messages"
         empty.line.text = busy ? "Searching…" : "No matches on this page"; empty.isHidden = !result.hits.isEmpty
         status.isHidden = status.text.isEmpty
@@ -104,58 +127,72 @@ enum ConversationSearchPaging {
         column.needsLayout = true; sheet?.needsLayout = true
     }
     private func search(_ text: String? = nil, start: Int = 0) {
-        guard !busy, inheritedEnabled else { return }; busy = true
-        let text = text ?? queryField.text
-        task = Task { [weak self] in
+        guard work.isActive, !busy, inheritedEnabled else { return }; busy = true
+        let text = text ?? queryField.text, source = source
+        work.run({ try await source.search(text, start) }) { [weak self] outcome in
             guard let self else { return }; defer { self.busy = false }
-            do {
-                let found = try await self.model.searchConversation(self.sessionID, query: text, start: start)
-                try Task.checkCancellation()
+            switch outcome {
+            case .success(let found):
                 if self.result.revision.isEmpty { self.lastField.value = max(1, found.total) }
                 self.result = found; self.searched = text; self.selectedID = nil; self.status.text = ""
-            } catch { if !(error is CancellationError) { self.status.text = error.localizedDescription } }
+            case .failure(let error): self.status.text = error.localizedDescription
+            }
         }
     }
     private func showSelected() {
-        guard !busy, let selected else { return }; busy = true
-        task = Task { [weak self] in guard let self else { return }; defer { self.busy = false }; do {
-            try await self.model.revealConversationHit(self.sessionID, hit: selected); try Task.checkCancellation(); self.dismiss()
-        } catch { if !(error is CancellationError) { self.status.text = error.localizedDescription } } }
+        guard work.isActive, !busy, let selected else { return }; busy = true
+        let source = source
+        work.run({ try await source.reveal(selected) }) { [weak self] outcome in
+            guard let self else { return }; defer { self.busy = false }
+            switch outcome { case .success: self.dismiss(); case .failure(let error): self.status.text = error.localizedDescription }
+        }
     }
-    private func collect(first: Int, last: Int, limit: Int, failure: String) async throws -> Data {
-        let revision = result.revision
+    private static func collect(source: ConversationContentSource, revision: String, first: Int, last: Int, limit: Int, failure: String) async throws -> Data {
         var bytes = Data(), cursor: ContentCursor? = .init(index: first, offset: 0)
         while let next = cursor {
             try Task.checkCancellation()
-            let page = try await model.conversationPage(sessionID, first: first, last: last, cursor: next, revision: revision)
+            let page = try await source.page(first, last, next, revision)
             guard bytes.count + page.text.utf8.count <= limit else { throw HostError.failure(failure) }
             bytes.append(contentsOf: page.text.utf8); cursor = page.next
         }
         try Task.checkCancellation(); return bytes
     }
     private func copy(first: Int, last: Int) {
-        guard !busy else { return }; busy = true; status.text = "Reading retained text…"
-        task = Task { [weak self] in guard let self else { return }; defer { self.busy = false }; do {
-            let bytes = try await self.collect(first: first, last: last, limit: 8 * 1024 * 1024, failure: "This copy exceeds 8 MiB. Choose a smaller message range. The clipboard was not changed.")
-            guard let text = String(data: bytes, encoding: .utf8) else { throw StoreError.invalidRecord }
-            NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string)
-            self.status.text = "Copied messages \(first)–\(last) (\(bytes.count) UTF-8 bytes)."
-        } catch { if !(error is CancellationError) { self.status.text = error.localizedDescription } } }
+        guard work.isActive, !busy, inheritedEnabled else { return }; busy = true; status.text = "Reading retained text…"
+        let source = source, revision = result.revision
+        work.run({ try await Self.collect(source: source, revision: revision, first: first, last: last, limit: 8 * 1024 * 1024, failure: "This copy exceeds 8 MiB. Choose a smaller message range. The clipboard was not changed.") }) { [weak self] outcome in
+            guard let self else { return }; defer { self.busy = false }
+            switch outcome {
+            case .success(let bytes):
+                guard let text = String(data: bytes, encoding: .utf8) else { self.status.text = StoreError.invalidRecord.localizedDescription; return }
+                self.pasteboard.clearContents(); self.pasteboard.setString(text, forType: .string)
+                self.status.text = "Copied messages \(first)–\(last) (\(bytes.count) UTF-8 bytes)."
+            case .failure(let error): self.status.text = error.localizedDescription
+            }
+        }
     }
     private func export() {
-        guard !busy, result.total > 0 else { return }
+        guard work.isActive, !busy, inheritedEnabled, result.total > 0 else { return }
         let panel = NSSavePanel(); panel.canCreateDirectories = true
         panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText, .plainText]
         panel.nameFieldStringValue = (model.record(sessionID)?.title ?? "Conversation").replacingOccurrences(of: "/", with: "-") + ".md"
         panel.message = "Save the retained conversation as Markdown text."
-        task = Task { [weak self] in
-            guard let self, let url = await PiQuestion.shared.save(panel), !Task.isCancelled else { return }
-            self.busy = true; self.status.text = "Reading retained text…"; defer { self.busy = false }
-            do {
-                let bytes = try await self.collect(first: 1, last: self.result.total, limit: 64 * 1024 * 1024, failure: "This conversation exceeds 64 MiB. Copy explicit ranges instead. No file was written.")
-                try bytes.write(to: url, options: .atomic)
-                self.status.text = "Exported \(self.result.total) messages (\(bytes.count) UTF-8 bytes) to \(url.lastPathComponent)."
-            } catch { if !(error is CancellationError) { self.status.text = error.localizedDescription } }
+        let source = source, revision = result.revision, total = result.total, window = window
+        busy = true
+        work.run({ [weak window] in
+            guard let url = await PiQuestion.shared.save(panel, over: window) else { return nil as (URL, Data)? }
+            try Task.checkCancellation()
+            let bytes = try await Self.collect(source: source, revision: revision, first: 1, last: total, limit: 64 * 1024 * 1024, failure: "This conversation exceeds 64 MiB. Copy explicit ranges instead. No file was written.")
+            return (url, bytes)
+        }) { [weak self] outcome in
+            guard let self else { return }; defer { self.busy = false }
+            switch outcome {
+            case .success(let value):
+                guard let (url, bytes) = value else { return }
+                do { try bytes.write(to: url, options: .atomic); self.status.text = "Exported \(total) messages (\(bytes.count) UTF-8 bytes) to \(url.lastPathComponent)." }
+                catch { self.status.text = error.localizedDescription }
+            case .failure(let error): self.status.text = error.localizedDescription
+            }
         }
     }
 }

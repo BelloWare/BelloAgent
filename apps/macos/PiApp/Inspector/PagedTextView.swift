@@ -1,5 +1,38 @@
 import AppKit
 
+/// Async reads belong to the visible sheet. Operations capture their model
+/// and immutable inputs; a completion reacquires its view only after await.
+/// Closing cancels every operation and rejects even an uncancellable answer.
+@MainActor final class PayloadTaskScope {
+    private var tasks: [UUID: Task<Void, Never>] = [:]
+    private var generation = UUID()
+    private(set) var isActive = true
+    var pendingCount: Int { tasks.count }
+    func resume() { if !isActive { generation = UUID(); isActive = true } }
+    func cancel() {
+        generation = UUID(); isActive = false
+        let pending = tasks.values; tasks.removeAll()
+        for task in pending { task.cancel() }
+    }
+    @discardableResult
+    func run<Value: Sendable>(_ operation: @escaping @MainActor @Sendable () async throws -> Value,
+                             completion: @escaping @MainActor @Sendable (Result<Value, Error>) -> Void) -> Task<Void, Never>? {
+        guard isActive else { return nil }
+        let id = UUID(), current = generation
+        let task = Task { [weak self] in
+            let outcome: Result<Value, Error>
+            do { try Task.checkCancellation(); let value = try await operation(); try Task.checkCancellation(); outcome = .success(value) }
+            catch { outcome = .failure(error) }
+            guard let self else { return }
+            self.tasks.removeValue(forKey: id)
+            guard self.isActive, self.generation == current, !Task.isCancelled else { return }
+            completion(outcome)
+        }
+        tasks[id] = task
+        return task
+    }
+}
+
 /// A native, selectable retained text surface. Text is installed only when it
 /// changes; scrolling or a progress publication never copies the payload.
 @MainActor final class PagedTextView: NSScrollView {
