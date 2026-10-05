@@ -216,19 +216,21 @@ struct TranscriptPlainTextFace: Equatable, Sendable {
         storage.addAttribute(.baselineOffset, value: offset, range: NSRange(location: 0, length: storage.length))
     }
     /// The text stands on the pixel nearest where it is put, as SwiftUI sets
-    /// a text (in a parent on the pixel grid). The reader's own message keeps
-    /// its exact place: its glyph offsets (`glyphOffset`) were measured so.
+    /// a text (in a parent on the pixel grid); the reader's own message on
+    /// the pixel at or above it (its glyph offsets, `glyphOffset`, were
+    /// measured so).
     var snapsToPixels = true
     override func setFrameOrigin(_ newOrigin: NSPoint) {
         let scale = window?.backingScaleFactor ?? 2
         guard snapsToPixels else {
-            // The view itself stands on the pixel grid — a layer between
-            // pixels is drawn by the window shifted onto it — and the text
-            // keeps its exact place inside it.
-            let snapped = NSPoint(x: (newOrigin.x * scale).rounded(.down) / scale, y: (newOrigin.y * scale).rounded(.down) / scale)
-            let inset = NSSize(width: newOrigin.x - snapped.x, height: newOrigin.y - snapped.y)
-            if textContainerInset != inset { textContainerInset = inset }
-            return super.setFrameOrigin(snapped)
+            // The reader's own message stands on the pixel at or above its
+            // place, as SwiftUI drew it: measured against SwiftUI in a real
+            // window (the screenshot gallery) and through cacheDisplay (the
+            // parity tests). A view between pixels is composited onto the
+            // grid by the window server, so it must not be left there. The
+            // rows it sits in stand on whole points, so the superview's grid
+            // is the window's.
+            return super.setFrameOrigin(NSPoint(x: (newOrigin.x * scale).rounded(.down) / scale, y: (newOrigin.y * scale).rounded(.down) / scale))
         }
         super.setFrameOrigin(NSPoint(x: (newOrigin.x * scale).rounded() / scale, y: (newOrigin.y * scale).rounded() / scale))
     }
