@@ -1,6 +1,6 @@
 # Next release: 0.1.120
 
-**Not released.** 0.1.119 (build 123, tag `v0.1.119`) is the latest release; its record is `docs/validation/Bello-Agent-0.1.119-2026-10-03.md`.
+**Handover: read `docs/HANDOVER-0.1.120.md` first.** **Not released.** 0.1.119 (build 123, tag `v0.1.119`) is the latest release; its record is `docs/validation/Bello-Agent-0.1.119-2026-10-03.md`.
 
 **Scope (owner, 2026-10-04): no SwiftUI.** Every view, window and the app itself move to AppKit, for predictable layout and real performance across the board. The look stays pixel-identical (screenshot gallery before/after) apart from run-to-run data. Behaviour, keyboard, focus and accessibility stay the same or better. **One release at the end**, when no file imports SwiftUI, the gate passes and the hour soak is clean.
 
