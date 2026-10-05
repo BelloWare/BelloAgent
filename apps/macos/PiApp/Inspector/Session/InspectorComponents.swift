@@ -21,6 +21,40 @@ import AppKit
     ShellStack(.horizontal, spacing: spacing, alignment: alignment, items)
 }
 
+/// A refreshed card can replace a button while its action is running. Keep
+/// keyboard focus on the same accessible action after the new layout lands.
+@MainActor struct InspectorButtonFocus {
+    private weak var window: NSWindow?
+    private let previous: PiKit.ButtonBase
+    private let identifier: String?
+    private let label: String?
+    init?(in view: NSView) {
+        guard let window = view.window, let button = window.firstResponder as? PiKit.ButtonBase,
+              button.isDescendant(of: view) else { return nil }
+        let identifier = button.accessibilityIdentifier(), label = button.accessibilityLabel()
+        guard identifier?.isEmpty == false || label?.isEmpty == false else { return nil }
+        self.window = window; previous = button; self.identifier = identifier; self.label = label
+    }
+    func restore(in view: NSView) {
+        guard let window, previous.window !== window, view.window === window else { return }
+        DispatchQueue.main.async { [weak view, weak window, previous = self.previous, identifier = self.identifier, label = self.label] in
+            guard let view, let window, view.window === window, previous.window !== window else { return }
+            // A different control may have deliberately taken focus meanwhile.
+            if let focused = window.firstResponder as? NSView, focused !== previous,
+               focused is NSControl || focused is NSText { return }
+            view.layoutSubtreeIfNeeded()
+            @MainActor func find(in view: NSView) -> PiKit.ButtonBase? {
+                guard !view.isHidden else { return nil }
+                if let button = view as? PiKit.ButtonBase, button.isEnabled,
+                   identifier != nil ? button.accessibilityIdentifier() == identifier : button.accessibilityLabel() == label { return button }
+                for child in view.subviews { if let found = find(in: child) { return found } }
+                return nil
+            }
+            if let button = find(in: view) { window.makeFirstResponder(button) }
+        }
+    }
+}
+
 /// Pads native content while keeping its width-dependent height.
 @MainActor final class InspectorInset: DashView, PiKit.WidthSizing {
     let content: NSView
