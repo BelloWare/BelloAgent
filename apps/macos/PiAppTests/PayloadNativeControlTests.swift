@@ -98,7 +98,7 @@ import XCTest
         model.configuration.mcp["project"] = .object(["servers": .object(["local": .object(["command": .string("fixture-command")])])])
         let view = NativeMCPInspector(model: model)
         XCTAssertTrue(view.remove.isEnabled)
-        XCTAssertNil(view.window)
+        XCTAssertNil(view.window); XCTAssertTrue(model.hosts.isEmpty)
         view.inheritedEnabled = false
         XCTAssertFalse(view.remove.isEnabled); XCTAssertFalse(view.refresh.isEnabled)
         XCTAssertFalse(view.configurationEditor.editor.isEditable)
@@ -111,5 +111,6 @@ import XCTest
         try await eventually("The empty configuration reaches the native controls", timeout: .seconds(1)) { view.refresh.isEnabled }
         XCTAssertFalse(view.remove.isEnabled)
         XCTAssertEqual(model.mcpServerCount("project"), 0)
+        XCTAssertTrue(model.hosts.isEmpty, "Removing configuration must never reconnect a helper while refreshing controls")
     }
 }

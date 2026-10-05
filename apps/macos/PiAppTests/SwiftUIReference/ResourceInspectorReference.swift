@@ -31,6 +31,8 @@ struct ResourceInspectorReference: View {
     @State private var policyBusy = false
     @PiDismiss private var dismiss
 
+    init(model: WorkspaceModel, initialTab: String = "skills") { self.model = model; _tab = State(initialValue: initialTab) }
+
     var body: some View {
         PiSheet("Skills, instructions and MCP", subtitle: "Discovered skills, the applied instruction chain, discovery settings and MCP servers for the selected project.", symbol: "book.closed", width: 1100, height: 800) {
             VStack(alignment: .leading, spacing: PiSpacing.md) {

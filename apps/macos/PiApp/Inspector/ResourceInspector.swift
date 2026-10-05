@@ -66,8 +66,8 @@ import AppKit
     let budgetField = PiKit.NumberField(placeholder: "Bytes", value: 32768)
     let saveSettings = PiKit.Button("Save Discovery Settings", style: .primary)
     private lazy var mcpPage = NativeMCPInspector(model: model)
-    init(model: WorkspaceModel, dismiss: @escaping () -> Void = {}) {
-        self.model = model; self.dismiss = dismiss
+    init(model: WorkspaceModel, initialTab: String = "skills", dismiss: @escaping () -> Void = {}) {
+        self.model = model; self.dismiss = dismiss; tab = initialTab
         super.init(frame: NSRect(origin: .zero, size: Self.size))
         sheet = PiKit.Sheet("Skills, instructions and MCP", subtitle: "Discovered skills, the applied instruction chain, discovery settings and MCP servers for the selected project.", symbol: "book.closed", content: column, actions: [refreshButton, done], footer: footer)
         sheet.width = Self.size.width; sheet.height = Self.size.height
@@ -134,6 +134,7 @@ import AppKit
         column.items = [.view(tabs), .flexible(page, ideal: 500)]
         done.isEnabled = inheritedEnabled; refreshButton.isEnabled = inheritedEnabled; sheet?.cancelDisabled = !inheritedEnabled
         managementToggle.isEnabled = inheritedEnabled; filterField.field.isEnabled = inheritedEnabled
+        for control in PiKit.controls(in: settingsColumn) { control.isEnabled = inheritedEnabled }
         refreshSkills(); refreshInstructions(); refreshFooter()
         mcpPage.inheritedEnabled = inheritedEnabled
     }
@@ -225,7 +226,9 @@ import AppKit
             }
             groups.append(.view(PiKit.SettingsGroup(title: key, rows: rows), .fill))
         }
-        groups.append(.view(saveSettings)); settingsColumn.items = groups; settingsPage.needsLayout = true
+        groups.append(.view(saveSettings)); settingsColumn.items = groups
+        for control in PiKit.controls(in: settingsColumn) { control.isEnabled = inheritedEnabled }
+        settingsPage.needsLayout = true
     }
     private func saveDiscovery() {
         Task { [weak self] in guard let self else { return }; do {

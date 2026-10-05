@@ -54,7 +54,9 @@ import XCTest
             let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
             defer { model.shutdown() }
             try await check("payload-conversation", ConversationContentReference(model: model, sessionID: "missing"), ConversationContentView(model: model, sessionID: "missing"), width: 900, appearance: appearance)
-            try await check("payload-resources", ResourceInspectorReference(model: model), ResourceInspector(model: model), width: 1100, appearance: appearance)
+            for tab in ["skills", "instructions", "settings", "mcp"] {
+                try await check("payload-resources-" + tab, ResourceInspectorReference(model: model, initialTab: tab), ResourceInspector(model: model, initialTab: tab), width: 1100, appearance: appearance)
+            }
         }
     }
 }
