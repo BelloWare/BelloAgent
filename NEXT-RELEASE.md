@@ -27,8 +27,9 @@
 
 ## Wave 2 (after the components land)
 - [ ] **Workspace shell** (`Workspaces/`, `Composer/`, `Tabs/`, `Terminal/`): sidebar, conversation pane, footer, composer chrome, queue panel, tabs, terminal panel, sheets.
+  - Native metrics footer and session-statistics pills completed on 2026-10-05, including responsive layout, capture controls, run clock and automatic context counting. Temporary shell and transcript adapters remain.
 - [ ] **Inspector and dashboard** (`Inspector/`, `Dashboard/`).
-  - Dashboard, live monitor, menu-bar panel, chart engine and cost-limit controls integrated and validated on 2026-10-05. Inspector and session-statistics views remain.
+  - Dashboard, live monitor, menu-bar panel, chart engine, cost-limit controls and metrics footer integrated and validated on 2026-10-05. Inspector pages and session-statistics dialogs remain.
 - [x] **Settings, onboarding, Git, files** (`Application/` settings and onboarding views, `Git/`, `Files/`, and the two SwiftUI files in `packages/bello-views`).
 
 Integration checks: [AppKit integration record](docs/validation/AppKit-integration-0.1.120-2026-10-05.md). These are focused checks; the release gate, full gallery and Release soak are still pending.

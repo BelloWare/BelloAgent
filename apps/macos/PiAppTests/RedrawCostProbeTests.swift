@@ -368,7 +368,12 @@ final class RedrawCostProbeTests: XCTestCase, SerialTestLane {
                 holder.addSubview(composer)
                 return holder
             }),
-            ("footer", { hosted(MetricsFooter(model: model, session: session, contextWindow: nil, outputReserve: nil, compact: false) {}.frame(width: 980)) }),
+            ("footer", {
+                let footer = MetricsFooter(model: model, session: session, contextWindow: nil, outputReserve: nil, compact: false) {}
+                footer.frame = NSRect(x: 0, y: 0, width: 980, height: footer.height(forWidth: 980))
+                let holder = NSView(frame: NSRect(x: 0, y: 0, width: 980, height: 820)); holder.addSubview(footer)
+                return holder
+            }),
         ]
         var lines: [String] = []
         for (name, make) in parts {

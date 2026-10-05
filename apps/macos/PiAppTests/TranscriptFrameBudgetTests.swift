@@ -1149,7 +1149,7 @@ private struct SelectedFooterOnly: View {
     var realAction = false
     var body: some View {
         if let session = model.selected {
-            MetricsFooter(model: model, session: session, contextWindow: nil, outputReserve: nil, compact: false) { [model, realAction, id = session.id] in
+            HostedMetricsFooter(model: model, session: session, compact: false) { [model, realAction, id = session.id] in
                 if realAction { model.inspect(id) }
             }
         }
@@ -1163,7 +1163,7 @@ private struct SelectedPaneParts: View {
             VStack(spacing: 0) {
                 NativeTranscriptView(session: session, state: session.state, actions: TranscriptActions())
                 ComposerInputBridge(model: model, session: session, paneWidth: 1_000)
-                MetricsFooter(model: model, session: session, contextWindow: nil, outputReserve: nil, compact: false) {}
+                HostedMetricsFooter(model: model, session: session, compact: false)
             }
         }
     }

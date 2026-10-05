@@ -108,7 +108,7 @@ extension ConversationPaneTests {
         await pane.settle(12)
         XCTAssertEqual(card.convert(card.bounds, to: nil).height, idle.height, accuracy: 0.5, "Nothing about the compaction goes into the input box")
         XCTAssertEqual(try XCTUnwrap(editor.enclosingScrollView).frame.height, 44, accuracy: 0.5, "The field keeps its height")
-        XCTAssertEqual(SessionRunLine(session: pane.session, footer: pane.session.footer).action, "Summarizing earlier work…",
+        XCTAssertEqual(SessionRunLine.action(pane.session), "Summarizing earlier work…",
                        "The run line under the composer says what the chat is doing")
         pane.session.state = "idle"; pane.session.runStatus = "idle"; pane.session.compactionProgress = nil
         await pane.settle(12)

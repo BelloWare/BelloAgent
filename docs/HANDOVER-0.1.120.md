@@ -1,5 +1,7 @@
 # Handover: Bello Agent 0.1.120 (AppKit only), 2026-10-05
 
+**Continuation, 2026-10-05:** the transcript and dashboard branches have been merged into `dev/next`, built and tested. The saved native metrics-footer work has also been completed, with regression and visual checks. Follow `NEXT-RELEASE.md` and [the integration record](validation/AppKit-integration-0.1.120-2026-10-05.md) for the current state; the branch table below describes the original handover snapshot. 0.1.120 remains unreleased.
+
 Read this first, then `NEXT-RELEASE.md`, `AGENTS.md`, `docs/appkit-components.md`, `docs/Swift-Test-Handoff.md` and `docs/Release.md`.
 
 ## Goal and owner decisions
@@ -50,9 +52,9 @@ Old workstream branches (`dev/appkit-design`, `-shell`, `-settings`, `-kitfix`, 
 - **Performance baseline:** `docs/perf/appkit-baseline.md` and `scripts/perf-transcript.sh`, both on the transcript branch. The baseline Release build of `e59e41a7` was kept at `$S/baseline-0.1.120` (scratch, may be wiped). If it's gone, rebuild that commit for before/after comparisons.
 
 ## What is left
-1. **Integrate.** Build and test `wip/next-plus-transcript`, then fast-forward `dev/next` to it. Merge `dev/appkit-dash`; expect conflicts around `ConversationPaneBridges`, `WorkspaceBridges`, `SettingsBridge` and the project file. Resolve the project file by taking either side, then running `xcodegen generate`.
+1. **Integration completed, 2026-10-05.** The transcript and dashboard branches are merged into `dev/next` with their commit identities preserved. Focused builds, behavior checks and parity checks passed; see the integration record. The remaining work below still precedes the release gate.
 2. **Inspector/** (still SwiftUI):
-   - `MetricsFooter` and `SessionStatsPills` (WIP on `dev/appkit-dash-wip`);
+   - `MetricsFooter` and `SessionStatsPills` are now AppKit, with the saved WIP completed and validated;
    - `SessionStatsPopovers`, `SessionUsageView`, `SessionRequestLedger`;
    - the Session Inspector window and pages;
    - `CapturedBody*`, `JSONOutline`, `PayloadSearch`, `PagedTextView`, `MessageModelReports`, `ConversationContentView`;

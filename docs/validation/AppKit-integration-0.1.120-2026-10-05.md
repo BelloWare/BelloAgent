@@ -13,6 +13,12 @@ Development validation only. 0.1.120 has not been released.
   Dashboard pages, live monitor, menu-bar panel, chart engine and cost-limit
   controls now use AppKit. One trailing blank line in a test reference was
   removed.
+- Metrics footer: completed the saved `d23ba5d4` work on `dev/appkit-dash-wip`.
+  The conversation pane now uses the AppKit footer directly, including its
+  statistic pills, context ring, capture control, notice and running clock.
+  The footer and statistics presentation models no longer import SwiftUI.
+  The remaining Inspector's unchanged SwiftUI ring lives with the legacy
+  design components until those consumers are ported.
 
 ## Checks performed
 
@@ -27,6 +33,20 @@ class ran alone. The helper bundle was built and staged before the app build.
 | PiChartParityTests | 6 | 0 | 0 |
 | MonitorParityTests | 3 | 0 | 0 |
 | CostLimitParityTests | 3 | 0 | 0 |
+| MetricsFooterControlTests | 4 | 0 | 0 |
+| MetricsFooterParityTests (44 light/dark comparisons) | 2 | 0 | 0 |
+| SessionTimingTests | 25 | 0 | 0 |
+| StatPillRollTests | 2 | 0 | 0 |
+| AutomaticContextTests | 11 | 0 | 0 |
+| WorkspaceRedrawTests | 1 | 0 | 0 |
+| ConversationPaneRetentionTests | 6 | 0 | 0 |
+| PiKitControlTests | 38 | 0 | 0 |
+| ConversationPaneTests | 80 | 0 | 0 |
+| ShellParityTests | 16 | 0 | 0 |
+
+Final selected results total 464 cases, with six existing optional skips
+and no remaining failures. This is focused development validation, not the
+complete release gate.
 
 Transcript coverage: native-renderer source guard, message kinds, row and
 pane behavior, tool-card behavior, row/turn/work visual parity, and real-zsh
@@ -38,14 +58,46 @@ builders, cost-limit behavior and chart ticks. The skip is an opt-in menu-bar
 capture. The separate parity classes compare light and dark appearances with
 the original SwiftUI/Swift Charts references at their existing thresholds.
 
+Footer coverage: idle and running states at 1600, 1200, 900, 520 and 300
+points; notices, preparation, unavailable capture and side footers at 1600,
+900, 520 and 300 points, each in light and dark appearance. The frozen footer
+reference comes from `e97ec9e5`. Height agreement is held to 0.5 points;
+pixel thresholds remain 1.2% overall and 0.2% for strong differences.
+
+Four added control regressions were verified to fail before their fixes:
+the narrow badge kept its caption, resizing measured the wrong usage face
+and rolled between forms, configuration changes missed an automatic context
+recount, and disabling a pane recreated its footer and widened the reserved
+capture slot by 30 points. They now pass. The native layout also preserves
+context-slot wrapping, trailing notice alignment and clipping at the footer
+edge. The prior narrow-pane capture/cost overlap is retained.
+
+The migrated timing tests still cover stable row geometry, independent
+press-target sizes and live clock/usage readings through screen OCR. Their
+AppKit test wrapper now measures without invalidating layout; updates and
+layout happen before geometry is read. Native stat-pill tests retain the
+scope-switch contract and check that a roll avoids drawing the entire pill
+every frame. Retention and redraw checks passed.
+The conversation-pane suite also passed with the footer mounted alongside
+the composer, queue, terminal and side panes. The existing shell parity
+class passed at its unchanged thresholds.
+
 Local evidence is under `~/Library/Caches/BelloAgentNext/logs/`:
 `transcript-integration.log`, `dashboard-build.log`, `dashboard-functional.log`,
 `PiChartParityTests.log`, `MonitorParityTests.log`, `CostLimitParityTests.log`.
 Dashboard parity captures are in `appkit-integration-gallery/` beside `logs/`.
+Footer captures are in `footer-gallery/`. Additional logs:
+`footer-final-build.log`, `footer-before-tests.log`,
+`footer-lifecycle-before.log`, `MetricsFooterControlTests.log`,
+`footer-parity.log`, `SessionTimingTests.log`, `StatPillRollTests.log` and
+`footer-functional.log`. The last functional batch's timing geometry checks
+were corrected and rerun in `SessionTimingTests.log`; the other classes in
+that batch passed. Conversation and shell integration logs use their test
+class names.
 
 ## Still required
 
-Finish the footer, Inspector and app-shell ports; remove the remaining SwiftUI
+Finish the Inspector and app-shell ports; remove the remaining SwiftUI
 imports and bridges. Perform the complete gallery comparison, Release
 performance comparison, full release gate and hour-long soak. Owner VoiceOver
 and real-gateway checks remain subject to the release checklist. No packaging,

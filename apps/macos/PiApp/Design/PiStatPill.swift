@@ -44,3 +44,23 @@ struct PiStatPillFace: View {
         .piAnimation(PiMotion.quick, value: highlighted)
     }
 }
+
+// The SwiftUI ring still used by the remaining Inspector and design references.
+struct ContextRing: View {
+    let fraction: Double?
+    /// 23 pt in the inspector's header; 14 pt as a pill's glyph.
+    var size: CGFloat = 23
+    private var bounded: Double { min(1, max(0, fraction.map { $0.isFinite ? $0 : 0 } ?? 0)) }
+    private var tint: Color { bounded >= 0.95 ? .piDanger : bounded >= 0.8 ? .piWarning : .piAccent }
+    private var stroke: CGFloat { size < 18 ? 2 : 2.5 }
+    var body: some View {
+        ZStack {
+            Circle().stroke(Color.piHairlineStrong, lineWidth: stroke)
+            Circle().trim(from: 0, to: bounded).stroke(tint, style: StrokeStyle(lineWidth: stroke, lineCap: .round)).rotationEffect(.degrees(-90))
+                .piAnimation(PiMotion.base, value: bounded)
+            // The glyph only fits at the inspector's size; the pill's ring is
+            // the reading, and its percentage is right beside it.
+            if size >= 18 { Image(systemName: "square.stack.3d.up").font(.system(size: 9, weight: .medium)).foregroundStyle(tint) }
+        }.frame(width: size, height: size).accessibilityHidden(true)
+    }
+}

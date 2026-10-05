@@ -1,11 +1,10 @@
 import AppKit
 import SwiftUI
 
-// TEMPORARY (0.1.120): the SwiftUI the conversation pane still hosts — the
-// transcript (Transcript/, `NativeTranscriptView`) and the metrics footer
-// (Inspector/, `MetricsFooter`) — and the `ConversationPane` representable
-// through which SwiftUI (and tests) host the AppKit pane. Each part goes
-// when its owner's AppKit view lands.
+// TEMPORARY (0.1.120): the SwiftUI adapter for the native transcript
+// (`NativeTranscriptView`) and the `ConversationPane` representable through
+// which SwiftUI (and tests) host the AppKit pane. These go when the remaining
+// shell and Inspector consumers use their AppKit views directly.
 
 extension ShellHostingView {
     /// A hosting view with nothing in it yet.
@@ -13,12 +12,6 @@ extension ShellHostingView {
     /// The chat's transcript, filling what it is given.
     func showTranscript(model: WorkspaceModel, session: SessionDisplay, state: String, canFork: Bool, canQuote: Bool, enabled: Bool) {
         setRoot(AnyView(TranscriptBridge(model: model, session: session, state: state, canFork: canFork, canQuote: canQuote).disabled(!enabled)), reportsHeight: false)
-    }
-    /// The chat's metrics footer, as tall as it says.
-    func showMetrics(model: WorkspaceModel, session: SessionDisplay, contextWindow: Int?, outputReserve: Int?, compact: Bool, enabled: Bool,
-                     open: @escaping () -> Void) {
-        setRoot(AnyView(MetricsFooter(model: model, session: session, contextWindow: contextWindow, outputReserve: outputReserve, compact: compact, inspect: open)
-            .disabled(!enabled).piShellBridged()))
     }
 }
 
@@ -167,4 +160,3 @@ struct ConversationPane: View {
 
     }
 }
-
