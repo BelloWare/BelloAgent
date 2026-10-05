@@ -447,7 +447,10 @@ import AppKit
             .view(PiKit.SectionHeader("Invoke once", subtitle: "One server, one tool, one JSON object of arguments.", accessory: invokeButton)),
             .view(ShellStack(.horizontal, spacing: PiSpacing.sm, [.view(serverField, .fill), .view(toolField, .fill)])),
             .fixed(PiKit.inset(argumentsEditor), 66), .flexible(resultBox)]
-        column.items = [.view(actions), .view(PiKit.Note("MCP configuration and explicit credentials are stored in the single Keychain vault. External configuration files and inherited credential references are retired.")), .view(configurationCard), .view(chooser), .flexible(split, ideal: 400), .view(warning), .view(status)]
+        // The key label occupied 31.5 points in the original action row.
+        // AppKit's symbol image rounds the button to 32; keep the page's
+        // vertical allocation so all controls below it retain their positions.
+        column.items = [.fixed(actions, 31.5), .view(PiKit.Note("MCP configuration and explicit credentials are stored in the single Keychain vault. External configuration files and inherited credential references are retired.")), .view(configurationCard), .view(chooser), .flexible(split, ideal: 400), .view(warning), .view(status)]
         remove.setAccessibilityHelp("Deletes this project's saved MCP server configuration after asking")
         edit.onPress = { [weak self] in self?.editConfiguration() }
         refresh.onPress = { [weak self] in self?.refreshServers() }
