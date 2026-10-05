@@ -45,7 +45,7 @@ enum ConversationSearchPaging {
     let exportButton = PiKit.Button("Export…", symbol: "square.and.arrow.up", style: .secondary)
     let copyRange = PiKit.Button("Copy Range", symbol: "doc.on.doc", style: .secondary)
     let copyAll = PiKit.Button("Copy Conversation", symbol: "doc.on.doc.fill", style: .primary)
-    private let status = ShellNote("", tone: .danger)
+    private let status = ShellNote("", tone: .neutral)
     private let column = PayloadColumn(spacing: PiSpacing.md, padding: NSEdgeInsets(top: PiSpacing.xl, left: PiSpacing.xl, bottom: PiSpacing.xl, right: PiSpacing.xl))
     private var sheet: PiKit.Sheet!
     private var searched = "", selectedID: String?
@@ -66,7 +66,7 @@ enum ConversationSearchPaging {
         let card = PiKit.card(ShellStack(.vertical, spacing: PiSpacing.sm, [.view(PiKit.TextLine(PiKit.Line("Copy range", font: PiKit.Font.heading, color: .piInk))), .view(range, .fill)]), padding: PiSpacing.md)
         column.items = [.view(searchRow), .flexible(PiKit.inset(results)), .view(paging), .view(card), .view(status)]
         let foot = ShellStack(.horizontal, spacing: PiSpacing.sm, [.view(ShellText("Copy limit: 8 MiB. Larger conversations can be copied in explicit ranges.", font: PiKit.Font.caption, color: .piInkSecondary), .flexible), .spacer(8), .view(exportButton), .view(copyRange), .view(copyAll)])
-        sheet = PiKit.Sheet("Search and copy conversation", subtitle: "Completed retained messages, including exposed reasoning and tool results. Opaque provider state and image bytes are omitted. Search covers the full retained branch; the transcript stays paged.", symbol: "magnifyingglass", content: column, actions: [done], footer: foot)
+        sheet = PiKit.Sheet("Search and copy conversation", subtitle: "Completed retained messages, including exposed reasoning and tool results. Opaque provider state and image bytes are omitted. Search covers the full retained branch; the transcript stays paged.", symbol: "magnifyingglass", content: column, actions: [done], footer: PayloadColumn(spacing: 0, items: [.view(foot)]))
         sheet.width = Self.size.width; sheet.height = Self.size.height
         sheet.dismiss = { @MainActor @Sendable [weak self] in self?.dismiss() }
         addSubview(sheet)

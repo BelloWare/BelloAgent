@@ -90,6 +90,7 @@ struct JSONOutlineCommand: Equatable {
 @MainActor final class JSONOutlineView: NSScrollView {
     let coordinator: Coordinator
     let outline = NSOutlineView()
+    private var preferredColumnWidth: CGFloat = 0
     var onSelection: ((String) -> Void)? {
         didSet { coordinator.onSelection = onSelection }
     }
@@ -107,6 +108,9 @@ struct JSONOutlineCommand: Equatable {
         let key = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("key")); key.width = 240; key.minWidth = 100
         let value = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("value")); value.width = 420; value.minWidth = 120
         outline.addTableColumn(key); outline.addTableColumn(value); outline.outlineTableColumn = key
+        preferredColumnWidth = outline.tableColumns.reduce(0) { $0 + $1.width }
+            + outline.intercellSpacing.width * CGFloat(outline.tableColumns.count)
+        outline.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
         outline.dataSource = coordinator; outline.delegate = coordinator
         outline.setAccessibilityLabel("Expandable captured JSON")
         documentView = outline
@@ -114,6 +118,19 @@ struct JSONOutlineCommand: Equatable {
         update(json: json, selection: selection, expandRevision: expandRevision, expandAll: expandAll, command: command, stateKey: stateKey)
     }
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+
+    override func layout() {
+        super.layout()
+        // A native retained outline is populated before its viewport has a
+        // size. Fit its document once the clip view has room, retaining
+        // horizontal scrolling when the columns cannot fit a narrow reader.
+        let width = max(preferredColumnWidth, contentView.bounds.width)
+        if outline.frame.width != width {
+            outline.setFrameSize(NSSize(width: width, height: outline.frame.height))
+            outline.sizeLastColumnToFit()
+            reflectScrolledClipView(contentView)
+        }
+    }
 
     /// An immutable document is rebuilt only after a new read. The same
     /// body's newer document carries disclosure, selection and scroll state.

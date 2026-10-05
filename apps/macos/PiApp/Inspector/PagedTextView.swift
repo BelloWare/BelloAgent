@@ -79,6 +79,31 @@ import AppKit
     override func layout() { super.layout(); content.frame = bounds }
 }
 
+/// A text footer takes the width of its longest wrapped line. The sheet
+/// can then centre the same measured text block without changing its wraps.
+@MainActor final class PayloadHuggedFooter: DashView, PiKit.WidthSizing {
+    private let content: NSView
+    private let words: ShellText
+    private let status: NSView
+    private var offeredWidth: CGFloat?
+    init(_ content: NSView, words: ShellText, status: NSView) {
+        self.content = content; self.words = words; self.status = status
+        super.init(frame: .zero); words.hugsLines = true; addSubview(content)
+    }
+    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    func height(forWidth width: CGFloat) -> CGFloat {
+        offeredWidth = width
+        return PiKit.height(of: content, width: width)
+    }
+    override var intrinsicContentSize: NSSize {
+        guard let width = offeredWidth else { return NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric) }
+        let statusWidth = status.isHidden ? 0 : max(0, status.intrinsicContentSize.width)
+        let natural = min(width, max(min(words.naturalWidth, words.cutWidth(width)), statusWidth))
+        return NSSize(width: natural, height: PiKit.height(of: content, width: width))
+    }
+    override func layout() { super.layout(); content.frame = bounds }
+}
+
 /// A page column in which explicit viewports take the spare height. Controls
 /// above and below remain reachable when the reader scrolls a large payload.
 @MainActor final class PayloadColumn: DashView, PiKit.WidthSizing {

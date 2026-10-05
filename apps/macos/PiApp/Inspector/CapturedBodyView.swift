@@ -32,7 +32,7 @@ import AppKit
     private lazy var tabs = PiKit.Tabs(selection: .json, items: [(CapturedBodyFormat.json, "JSON"), (.text, "UTF-8"), (.hex, "Hex")], accessibilityName: "Captured body format") { [weak self] in self?.setFormat($0) }
     private lazy var tabsRow = ShellStack(.horizontal, spacing: PiSpacing.sm, [.view(tabs), .spacer(8)])
     private let note = ShellText("", font: PiKit.Font.micro, color: .piInkTertiary)
-    private let summary = PiKit.SelectableText("", font: PiKit.Font.micro, color: .piInkSecondary)
+    private let summary = ShellSelectableText("", font: PiKit.Font.micro, color: .piInkSecondary)
     private let warning = ShellText("", font: PiKit.Font.micro, color: .piWarning)
     private let empty = ShellText("", font: PiKit.Font.caption, color: .piInkSecondary)
     private let progress = PiKit.ProgressBar(value: 0, total: 1)
@@ -228,7 +228,7 @@ import AppKit
             items.append(.flexible(empty))
         }
         if let document = controller.document {
-            summary.stringValue = document.metadata.summary; items.append(.view(summary))
+            summary.text = document.metadata.summary; items.append(.view(summary))
             if searchQuery.isEmpty, let growingBytes, growingBytes > document.bytes.count {
                 growthText.line.text = "\(growingBytes.formatted()) bytes so far · showing the first \(document.bytes.count.formatted())"
                 updating.isHidden = !controller.loading; latestButton.isHidden = controller.loading
