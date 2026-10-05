@@ -6,8 +6,8 @@ import XCTest
 @testable import GitView
 
 /// The 310pt Changes pane in the released minimum-width main window. The
-/// toolbar's nonshrinking menus and icon controls determine a shared minimum;
-/// every child follows that width, including the History filters and rows.
+/// Measures both the panel alone and the released ChangesTab hosting topology;
+/// a toolbar's overflow must not be assumed to resize its neighboring children.
 @MainActor final class GitPanelNarrowParityTests: GitPanelTestCase, SerialTestLane {
     override func setUp() async throws { PiKit.Motion.reducedOverride = true }
     override func tearDown() async throws { PiKit.Motion.reducedOverride = nil }
@@ -67,7 +67,7 @@ import XCTest
         }
     }
 
-    func testHistoryChildrenShareTheReleasedToolbarMinimumInA310PointPane() async throws {
+    private func repositoryFixture() throws -> URL {
         let root = try repository("git-narrow-history")
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         try start(root)
@@ -76,16 +76,35 @@ import XCTest
         try git(["add", "."], in: root); try git(["commit", "-q", "-m", "Add the payment client and fixture notes"], in: root)
         try "let delay = 2\n".write(to: file, atomically: true, encoding: .utf8)
         try git(["commit", "-q", "-a", "-m", "Back off between attempts"], in: root)
-        let controller = GitController(roots: [root.path]); controller.panel = .history
-        addTeardownBlock { @MainActor in controller.letGo() }
-        let pane = CGSize(width: 310, height: 540)
-        let native = GitPanelView(controller: controller)
-        let nativeWindow = mount(native, size: pane)
+        return root
+    }
+    private func ready(_ controller: GitController) async throws {
         try await eventually("The real repository and its two History rows are ready", timeout: 10) {
             controller.statusRead && !controller.loading && controller.status.branch == "main" && controller.commits.count == 2
         }
         controller.selectedCommit = try XCTUnwrap(controller.commits.first)
         try await eventually("The selected commit is ready", timeout: 10) { !controller.commitLoading && controller.detail != nil }
+    }
+    private func assertFrames(_ actual: [GitNarrowReferencePart: CGRect], _ expected: [GitNarrowReferencePart: CGRect],
+                              parts: [GitNarrowReferencePart], file: StaticString = #filePath, line: UInt = #line) throws {
+        for part in parts {
+            let old = try XCTUnwrap(expected[part]), new = try XCTUnwrap(actual[part])
+            XCTAssertEqual(new.minX, old.minX, accuracy: 0.5, "\(part.rawValue) leading position", file: file, line: line)
+            XCTAssertEqual(new.minY, old.minY, accuracy: 0.5, "\(part.rawValue) top position", file: file, line: line)
+            XCTAssertEqual(new.width, old.width, accuracy: 0.5, "\(part.rawValue) width", file: file, line: line)
+            XCTAssertEqual(new.height, old.height, accuracy: 0.5, "\(part.rawValue) height", file: file, line: line)
+        }
+    }
+    private let children: [GitNarrowReferencePart] = [.header, .toolbar, .branch, .remote, .stash, .tabs, .history, .filter, .author, .list, .firstCommit, .detail]
+
+    func testStandaloneNarrowHistoryKeepsItsOriginalToolbarAndChildFrames() async throws {
+        let root = try repositoryFixture()
+        let controller = GitController(roots: [root.path]); controller.panel = .history
+        addTeardownBlock { @MainActor in controller.letGo() }
+        let pane = CGSize(width: 310, height: 540)
+        let native = GitPanelView(controller: controller)
+        let nativeWindow = mount(native, size: pane)
+        try await ready(controller)
         let actual = try await settle(native, window: nativeWindow) { self.nativeFrames(native) }
 
         let geometry = GitNarrowReferenceGeometry()
@@ -94,21 +113,52 @@ import XCTest
         let frozen = NSHostingView(rootView: reference.frame(width: pane.width, height: pane.height)
             .coordinateSpace(name: GitNarrowReferenceGeometry.coordinateSpace))
         let frozenWindow = mount(frozen, size: pane)
-        let expected = try await settle(frozen, window: frozenWindow, minimumFrames: GitNarrowReferencePart.allCases.count) { geometry.frames }
+        let expected = try await settle(frozen, window: frozenWindow, minimumFrames: 14) { geometry.frames }
         try record("frozen-v119", frames: expected, window: frozenWindow, minimum: minimum)
         try record("native", frames: actual, window: nativeWindow)
 
         XCTAssertGreaterThan(minimum, pane.width, "The original nonshrinking toolbar determines the minimum at this real narrow pane width")
-        let expectedPanel = try XCTUnwrap(expected[.panel])
-        let actualToolbar = try XCTUnwrap(actual[.toolbar])
-        XCTAssertEqual(actualToolbar.width, expectedPanel.width, accuracy: 0.5, "The minimum propagates to the whole panel, rather than only overflowing the toolbar")
-        XCTAssertEqual(actualToolbar.minX, expectedPanel.minX, accuracy: 0.5, "The original wider panel is centered on the available pane")
-        for part in [GitNarrowReferencePart.header, .toolbar, .branch, .remote, .stash, .tabs, .history, .filter, .author, .list, .firstCommit, .detail] {
-            let old = try XCTUnwrap(expected[part]), new = try XCTUnwrap(actual[part])
-            XCTAssertEqual(new.minX, old.minX, accuracy: 0.5, "\(part.rawValue) leading position")
-            XCTAssertEqual(new.minY, old.minY, accuracy: 0.5, "\(part.rawValue) top position")
-            XCTAssertEqual(new.width, old.width, accuracy: 0.5, "\(part.rawValue) width")
-            XCTAssertEqual(new.height, old.height, accuracy: 0.5, "\(part.rawValue) height")
+        try assertFrames(actual, expected, parts: children)
+    }
+
+    func testChangesOpenedFromBlameKeepsTheReleasedHostingFramesInA310PointPane() async throws {
+        let root = try repositoryFixture(), file = root.appendingPathComponent("PaymentClient.swift")
+        let host = TabHost(defaults: nil); host.showsWindows = false
+        addTeardownBlock { @MainActor in host.tearDown() }
+        let fileTab = try XCTUnwrap(host.open(kind: FileTab.kind, key: FileTab.key(for: file)) { FileTab(url: file, projectID: "git-narrow") } as? FileTab)
+        let tab = try XCTUnwrap(host.open(kind: ChangesTab.kind, key: "git-narrow") {
+            ChangesTab(projectID: "git-narrow", name: root.lastPathComponent, roots: [root.path])
+        } as? ChangesTab)
+        tab.cameFrom(fileTab); tab.controller.panel = .history
+        let pane = CGSize(width: 310, height: 540)
+        let content = try XCTUnwrap(tab.contentView.content as? ChangesTabContent)
+        let nativeWindow = mount(tab.contentView, size: pane)
+        try await ready(tab.controller)
+        let actual = try await settle(tab.contentView, window: nativeWindow, minimumFrames: 15) {
+            guard var frames = self.nativeFrames(content.panel),
+                  let back = self.views(PiKit.Button.self, in: content).first(where: { $0.accessibilityIdentifier() == "changes-back-to-file" }),
+                  let backBar = back.superview else { return nil }
+            let origin = content.panel.convert(NSPoint.zero, to: content)
+            frames = frames.mapValues { $0.offsetBy(dx: origin.x, dy: origin.y) }
+            frames[.panel] = self.frame(content.panel, in: content)
+            frames[.backBar] = self.frame(backBar, in: content)
+            frames[.tabContent] = content.bounds
+            return frames
         }
+        let geometry = GitNarrowReferenceGeometry(); geometry.globalCoordinates = true
+        let reference = ChangesTabNarrowV119Reference(controller: tab.controller, geometry: geometry,
+                                                      project: tab.name, returnName: fileTab.title).environment(\.piReduceMotion, true)
+        let minimum = NSHostingController(rootView: reference).sizeThatFits(in: CGSize(width: 0, height: pane.height)).width
+        let frozen = NSHostingView(rootView: reference)
+        // TabContentContainer.show set these AppKit frames and autoresizing
+        // masks. There was no SwiftUI fixed frame inside TabContentView.
+        let canvas = NSView(frame: NSRect(origin: .zero, size: pane))
+        frozen.frame = canvas.bounds; frozen.autoresizingMask = [.width, .height]; canvas.addSubview(frozen)
+        let frozenWindow = mount(canvas, size: pane)
+        let expected = try await settle(canvas, window: frozenWindow, minimumFrames: GitNarrowReferencePart.allCases.count) { geometry.frames }
+        try record("frozen-v119-tab", frames: expected, window: frozenWindow, minimum: minimum)
+        try record("native-tab", frames: actual, window: nativeWindow)
+        XCTAssertEqual(frozen.frame.width, pane.width, accuracy: 0.5, "The original tab hosting view receives the actual pane allocation")
+        try assertFrames(actual, expected, parts: children + [.panel, .backBar, .tabContent])
     }
 }
