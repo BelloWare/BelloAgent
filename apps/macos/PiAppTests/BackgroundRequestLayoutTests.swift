@@ -108,10 +108,10 @@ import XCTest
         }
     }
 
-    /// Captures the actual page's existing header children. The page is kept
-    /// off-window so its controller never starts queries or changes the fixture.
+    /// Captures the actual page's existing header children. The temporary
+    /// page stays off-window and releases its observer before the capture,
+    /// so its queued initial publication cannot replace the fixed caption.
     private final class HeaderCapture: DashView {
-        private let page: BackgroundRequestsPage
         private let size: CGSize
         init(model: WorkspaceModel, width: CGFloat) throws {
             let page = BackgroundRequestsPage(model: model)
@@ -121,7 +121,7 @@ import XCTest
             page.layoutSubtreeIfNeeded()
             let rule = try XCTUnwrap(page.subviews.compactMap { $0 as? HairlineView }.first)
             let size = CGSize(width: width, height: rule.frame.maxY)
-            self.page = page; self.size = size
+            self.size = size
             super.init(frame: CGRect(origin: .zero, size: size))
             for child in page.subviews where child === rule || child is PiKit.Button || child is PiKit.TextLine || child is PiKit.Tabs<BackgroundRequestFilter> {
                 addSubview(child)
