@@ -1,10 +1,9 @@
 import XCTest
 import Network
-import SwiftUI
 import AppKit
 @testable import PiApp
 
-final class TitleGenerationTests: XCTestCase {
+final class TitleGenerationTests: XCTestCase, SerialTestLane {
     private func scratch() throws -> URL {
         let base = scratchBase()
         let root = URL(fileURLWithPath: base).appendingPathComponent("title-generation-" + UUID().uuidString)
@@ -260,6 +259,8 @@ final class TitleGenerationTests: XCTestCase {
     /// tools, and none of the owner's global instructions. It opened them as
     /// an ordinary chat request, with the whole agent prompt and AGENTS.md.
     @MainActor func testPackagedHelperAsksForTitleSuggestionsAsAUtilityRequest() async throws {
+        let assistive = HostedAccessibility.begin()
+        defer { HostedAccessibility.end(restoring: assistive) }
         let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
         let gateway = try TitleGenerationGateway(); defer { gateway.stop() }
         let base = try await gateway.start()
@@ -280,8 +281,27 @@ final class TitleGenerationTests: XCTestCase {
         let source = ChatRecord(id: "source", workspaceID: "project", title: "Improve the model selection please", path: nil, profileID: profile.id)
         model.chats = [source]
         try await model.store?.put(source, kind: "chat", id: source.id)
-        let titles = try await model.suggestTitles(for: source.id)
+        let sheet = RenameChatSheetView(model: model, chatID: source.id, dismiss: {})
+        let window = NSWindow(contentRect: NSRect(origin: .zero, size: RenameChatSheetView.size), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.title = "title-suggestions-" + UUID().uuidString
+        let group = PiKit.Box.ClipView(frame: NSRect(origin: .zero, size: RenameChatSheetView.size))
+        group.setAccessibilityElement(true); group.setAccessibilityRole(.group)
+        group.addSubview(sheet)
+        window.contentView = group; window.makeKeyAndOrderFront(nil)
+        defer { window.contentView = nil; window.close() }
+        func rows(_ view: NSView) -> [PiKit.SelectableRow] {
+            ((view as? PiKit.SelectableRow).map { [$0] } ?? []) + view.subviews.flatMap { rows($0) }
+        }
+        for _ in 0..<600 where rows(sheet).count != 3 { sheet.layoutSubtreeIfNeeded(); try await Task.sleep(for: .milliseconds(25)) }
+        let choices = rows(sheet)
+        let titles = choices.map { $0.accessibilityLabel() ?? "" }
         XCTAssertEqual(titles, ["Improve the model picker", "Pick a model faster", "Model picker polish"])
+        XCTAssertTrue(choices.allSatisfy { $0.accessibilityRole() == .button && !$0.isAccessibilitySelected() })
+        let choice = try await AXClient.find(in: window) { $0.role == "AXButton" && $0.label == "Pick a model faster" }
+        XCTAssertTrue(AXClient.press(choice))
+        XCTAssertEqual(sheet.field.text, "Pick a model faster")
+        XCTAssertEqual(choices.map { $0.isAccessibilitySelected() }, [false, true, false])
         let request = try XCTUnwrap(gateway.requests.last)
         let split = try XCTUnwrap(request.range(of: "\r\n\r\n"))
         let body = try JSONDecoder().decode(WireValue.self, from: Data(request[split.upperBound...].utf8)).object ?? [:]
@@ -379,7 +399,7 @@ extension TitleGenerationTests {
         model.displays[source.id] = display; model.selected = display
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 440), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        let hosted = NSHostingView(rootView: AnyView(RenameChatSheet(model: model, chatID: source.id)))
+        let hosted = RenameChatSheetView(model: model, chatID: source.id, dismiss: {})
         window.contentView = hosted; window.makeKeyAndOrderFront(nil)
         defer { window.contentView = nil; window.close() }
         func asking() -> Bool { model.chats.contains { $0.backgroundTask == "title-suggestions" && $0.backgroundTaskOutcome == nil } }
@@ -387,7 +407,7 @@ extension TitleGenerationTests {
         XCTAssertEqual(gateway.held, 1, "The open sheet asked the mini model for suggestions")
         XCTAssertTrue(asking())
         // The sheet closes while the model is still thinking.
-        hosted.rootView = AnyView(EmptyView())
+        window.contentView = nil
         for _ in 0..<200 where asking() { hosted.layoutSubtreeIfNeeded(); try await Task.sleep(for: .milliseconds(25)) }
         XCTAssertFalse(asking(), "Closing the sheet ends its request instead of polling on")
         let stopped = try XCTUnwrap(model.chats.first { $0.backgroundTask == "title-suggestions" }, "The request is kept")

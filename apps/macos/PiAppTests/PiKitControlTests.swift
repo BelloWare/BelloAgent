@@ -232,6 +232,19 @@ import XCTest
         XCTAssertEqual(clicks, 1)
     }
 
+    func testASelectableRowNamesShellAndWrappedText() async throws {
+        let content = ShellStack(.vertical, spacing: 2, [
+            .view(ShellText("Visible title", font: PiKit.Font.body, color: .piInk)),
+            .view(TextBlock("Visible preview", font: PiKit.Font.caption, color: .piInkSecondary))
+        ])
+        var pressed = false
+        let row = PiKit.SelectableRow(content: content, action: { pressed = true })
+        let window = try await hosted(row, size: CGSize(width: 300, height: 100))
+        let element = try await AXClient.find(in: window) { $0.role == "AXButton" && $0.label == "Visible title, Visible preview" }
+        XCTAssertTrue(AXClient.press(element))
+        XCTAssertTrue(pressed)
+    }
+
     func testAClickOnAResizeHandleIsNotADrag() async throws {
         var changes: [CGFloat] = [], ends: [CGFloat] = []
         let handle = PiKit.ResizeHandle(orientation: .vertical, label: "Sidebar width", changed: { changes.append($0) }, ended: { ends.append($0) })

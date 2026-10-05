@@ -21,7 +21,7 @@ final class NativeApplicationTests: XCTestCase, SerialTestLane {
         let first = try XCTUnwrap(application.workspaceWindow?.window)
         defer { first.close() }
         XCTAssertTrue(first.contentView is WorkspaceRootView)
-        XCTAssertEqual(first.contentMinSize, NSSize(width: 920, height: 600))
+        XCTAssertEqual(first.contentMinSize, NSSize(width: 920, height: 628))
         first.miniaturize(nil)
         try await eventually("workspace to minimize") { first.isMiniaturized }
         XCTAssertFalse(application.applicationShouldHandleReopen(NSApp, hasVisibleWindows: false))
@@ -33,6 +33,24 @@ final class NativeApplicationTests: XCTestCase, SerialTestLane {
         XCTAssertTrue(first.isVisible)
     }
 
+    @MainActor func testTranscriptWaitsForTheVaultBeforeApplyingItsSavedDisplay() async throws {
+        let (model, root) = try fixture()
+        let previous = TranscriptDisplay.mode
+        TranscriptDisplay.use(.normal)
+        defer { TranscriptDisplay.use(previous); model.shutdown(); try? FileManager.default.removeItem(at: root) }
+        let application = BelloAgentApplication(model: model)
+        defer { withExtendedLifetime(application) {} }
+        model.settingsSection = .usage
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+        XCTAssertFalse(model.configurationLoaded)
+        XCTAssertEqual(TranscriptDisplay.mode, .normal, "An unrelated publish cannot fold the transcript before the vault answers")
+        try await model.reloadConfiguration()
+        XCTAssertEqual(model.configuration.transcriptDisplay, .compact)
+        try await eventually("the loaded transcript preference to apply") { TranscriptDisplay.mode == .compact }
+    }
+
     @MainActor func testSettingsReopensWithTheSameEditorAndWindow() async throws {
         let (model, root) = try fixture()
         defer { model.shutdown(); try? FileManager.default.removeItem(at: root) }
@@ -41,6 +59,10 @@ final class NativeApplicationTests: XCTestCase, SerialTestLane {
         let first = try XCTUnwrap(application.settingsWindow?.window)
         let content = try XCTUnwrap(first.contentView as? SettingsWindowView)
         defer { first.close() }
+        content.layoutSubtreeIfNeeded()
+        let form = try XCTUnwrap(content.subviewsOfType(ProfileSettingsView.self).first)
+        XCTAssertEqual(content.bounds.size, NSSize(width: 880, height: 808))
+        XCTAssertEqual(form.frame, NSRect(x: 0, y: 28, width: 880, height: 780))
         first.close()
         try await eventually("closed Settings form to detach") { content.subviewsOfType(ProfileSettingsView.self).isEmpty }
         application.showSettings()
@@ -48,6 +70,8 @@ final class NativeApplicationTests: XCTestCase, SerialTestLane {
         XCTAssertTrue(application.settingsWindow?.window === first)
         XCTAssertTrue(first.contentView === content)
         XCTAssertTrue((first.contentView as? SettingsWindowView)?.controller === content.controller)
+        content.layoutSubtreeIfNeeded()
+        XCTAssertEqual(content.subviewsOfType(ProfileSettingsView.self).first?.frame, form.frame)
     }
 
     @MainActor func testMenusKeepShortcutsAndConversationFocus() async throws {

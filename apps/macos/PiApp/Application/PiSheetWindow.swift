@@ -130,7 +130,15 @@ final class PiSheetWindowAnchorView: NSView {
     init(reusing reusable: Reusable? = nil, content: NSView, inherited: PiSheetWindowInherited, close: @escaping @MainActor () -> Void) {
         let host = reusable?.host ?? PiSheetContentHost()
         host.show(content, inherited: inherited, close: close)
-        let window = reusable?.window ?? Self.makeWindow()
+        // A native sheet knows its size before it joins a window. Laying
+        // out its scroll/stack children at the zero-sized initial content
+        // rect can otherwise send infinite geometry into AppKit.
+        let size = host.fittingSize
+        if size.width.isFinite, size.height.isFinite, size.width > 0, size.height > 0 {
+            host.setFrameSize(size)
+            host.layoutSubtreeIfNeeded()
+        }
+        let window = reusable?.window ?? Self.makeWindow(contentSize: host.frame.size)
         window.contentView = host
         window.initialFirstResponder = host
         self.host = host; self.window = window
@@ -140,8 +148,8 @@ final class PiSheetWindowAnchorView: NSView {
     /// SwiftUI's own sheet window: titled for the sheet's frame, document
     /// modal, resizable only between the content's own minimum and maximum,
     /// not opaque, on the window background.
-    private static func makeWindow() -> NSWindow {
-        let window = NSWindow(contentRect: .zero, styleMask: [.titled, .resizable, .docModalWindow], backing: .buffered, defer: false)
+    private static func makeWindow(contentSize: NSSize) -> NSWindow {
+        let window = NSWindow(contentRect: NSRect(origin: .zero, size: contentSize), styleMask: [.titled, .resizable, .docModalWindow], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.isOpaque = false
         window.backgroundColor = .windowBackgroundColor

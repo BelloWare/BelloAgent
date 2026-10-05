@@ -39,7 +39,8 @@ import XCTest
     /// Compares `swiftUI` with `appKit` in `appearance`. `hover` puts the
     /// pointer on the centre of both, one after the other.
     static func compare<V: View>(_ name: String, appearance: NSAppearance.Name = .aqua, hover: Bool = false,
-                                 swiftUI: V, appKit: NSView, canvas: NSColor = .piContent, width: CGFloat? = nil) async throws -> Result {
+                                 swiftUI: V, appKit: NSView, canvas: NSColor = .piContent, width: CGFloat? = nil,
+                                 ready: (@MainActor (NSView) async throws -> Void)? = nil) async throws -> Result {
         let root = swiftUI.environment(\.piReduceMotion, true)
         // Both drawn from the same top-left corner: centring would leave
         // each to round a half pixel its own way.
@@ -56,8 +57,8 @@ import XCTest
         }
         let size = CGSize(width: ceil(max(swiftUIFit.width, appKitFit.width) + margin * 2),
                           height: ceil(max(swiftUIFit.height, appKitFit.height) + margin * 2))
-        let first = try await capture(host, fit: nil, size: size, appearance: appearance, hover: hover, canvas: canvas)
-        let second = try await capture(appKit, fit: appKitFit, size: size, appearance: appearance, hover: hover, canvas: canvas)
+        let first = try await capture(host, fit: nil, size: size, appearance: appearance, hover: hover, canvas: canvas, ready: ready)
+        let second = try await capture(appKit, fit: appKitFit, size: size, appearance: appearance, hover: hover, canvas: canvas, ready: ready)
         if let folder = testEnvironment("PI_COMPONENT_GALLERY"), !folder.isEmpty {
             for (kind, image) in [("swiftui", first), ("appkit", second)] {
                 let directory = URL(fileURLWithPath: folder).appendingPathComponent(kind)
@@ -74,7 +75,7 @@ import XCTest
     /// content, in a borderless window of `size`.
     /// `fit` nil fills the window (a hosting view centres its own content).
     private static func capture(_ view: NSView, fit: CGSize?, size: CGSize, appearance: NSAppearance.Name, hover: Bool,
-                                canvas: NSColor) async throws -> NSBitmapImageRep {
+                                canvas: NSColor, ready: (@MainActor (NSView) async throws -> Void)?) async throws -> NSBitmapImageRep {
         let screen = NSScreen.screens.first?.visibleFrame ?? .zero
         let window = NSWindow(contentRect: NSRect(x: screen.minX + 40, y: screen.maxY - 40 - size.height, width: size.width, height: size.height),
                               styleMask: [.borderless], backing: .buffered, defer: false)
@@ -95,6 +96,9 @@ import XCTest
         // selected. A view that takes the keys itself (a choice list) keeps them.
         if window.firstResponder is NSText { window.makeFirstResponder(nil) }
         defer { view.removeFromSuperview(); window.orderOut(nil); window.contentView = nil }
+        // An asynchronous fixture waits for its actual mounted controller,
+        // then uses the same window-server stability check as every capture.
+        if let ready { try await ready(view) }
         if hover {
             // The app the reader points at is the active one: tracking areas
             // report the pointer there, as in use.

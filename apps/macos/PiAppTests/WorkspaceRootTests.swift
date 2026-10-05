@@ -4,7 +4,7 @@ import XCTest
 
 /// The workspace window's AppKit root: the sidebar's handle, the pages over
 /// the chats, the error strip's easing, and the install cover.
-final class WorkspaceRootTests: XCTestCase {
+final class WorkspaceRootTests: XCTestCase, SerialTestLane {
     @MainActor private func root(_ name: String) throws -> (WorkspaceModel, WorkspaceRootView, NSWindow) {
         let folder = URL(fileURLWithPath: scratchBase()).appendingPathComponent("root-\(name)-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -18,6 +18,38 @@ final class WorkspaceRootTests: XCTestCase {
         addTeardownBlock { @MainActor in window.contentView = nil; window.close() }
         view.layoutSubtreeIfNeeded()
         return (model, view, window)
+    }
+
+    @MainActor func testALazyListReclaimsTheLegacyGutterAndKeepsRows() throws {
+        let list = LazyStackView(frame: NSRect(x: 0, y: 0, width: 300, height: 200))
+        list.scrollerStyle = .legacy
+        let window = NSWindow(contentRect: list.frame, styleMask: [], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = list
+        defer { window.contentView = nil; window.close() }
+        var count = 2, made = 0, measurements = 0
+        func source() -> LazyStackView.Source {
+            LazyStackView.Source(count: count, key: { $0 }, height: { _, _ in measurements += 1; return 40 }, view: { _, existing in
+                if let existing { return existing }
+                made += 1; return NSView()
+            })
+        }
+        list.reload(source()); list.layoutSubtreeIfNeeded()
+        XCTAssertFalse(list.hasVerticalScroller)
+        XCTAssertEqual(list.contentView.bounds.width, 300, accuracy: 0.5)
+        let first = list.madeView(for: 0)
+        let measured = measurements
+        for _ in 0..<10 { list.layout(); list.contentView.scroll(to: .zero) }
+        XCTAssertEqual(measurements, measured, "Unchanged widths never remeasure rows while scrolling")
+        count = 20; list.reload(source()); list.layoutSubtreeIfNeeded()
+        XCTAssertTrue(list.hasVerticalScroller)
+        XCTAssertLessThan(list.contentView.bounds.width, 300)
+        XCTAssertEqual(list.documentView?.frame.width, list.contentView.bounds.width)
+        XCTAssertTrue(list.madeView(for: 0) === first)
+        XCTAssertLessThan(made, count, "Only visible and overscan rows are made")
+        count = 2; list.reload(source()); list.layoutSubtreeIfNeeded()
+        XCTAssertFalse(list.hasVerticalScroller)
+        XCTAssertEqual(list.contentView.bounds.width, 300, accuracy: 0.5)
+        XCTAssertTrue(list.madeView(for: 0) === first)
     }
 
     /// Dragging the sidebar's handle moves the boundary as it goes and keeps

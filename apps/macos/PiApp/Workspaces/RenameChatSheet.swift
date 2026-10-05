@@ -113,6 +113,7 @@ struct RenameTarget: Identifiable, Equatable { let id: String }
             let text = ShellText(suggestion, font: PiKit.Font.body, color: .piInk, maximumLines: 2)
             let row = PiKit.SelectableRow(content: text, selected: field.text == suggestion)
             row.setAccessibilityIdentifier("title-suggestion")
+            row.setAccessibilityLabel(suggestion)
             row.onPress = { [weak self] in self?.field.text = suggestion; self?.refresh() }
             return row
         }

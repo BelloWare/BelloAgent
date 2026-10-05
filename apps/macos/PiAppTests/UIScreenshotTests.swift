@@ -15,6 +15,12 @@ final class UIScreenshotTests: XCTestCase {
         guard let path = testEnvironment("PI_APP_UI_SCREENSHOT_ROOT") else {
             throw XCTSkip("Set PI_APP_UI_SCREENSHOT_ROOT to render the synthetic screenshot gallery.")
         }
+        // This gallery has always shown the loose transcript. The native
+        // test host keeps observing its own model even with its app window
+        // hidden, so explicitly isolate this fixture's display mode.
+        let previousDisplay = TranscriptDisplay.mode
+        TranscriptDisplay.use(.normal)
+        defer { TranscriptDisplay.use(previousDisplay) }
         let folder = URL(fileURLWithPath: path, isDirectory: true)
         let gallery = folder.appendingPathComponent("screenshots", isDirectory: true)
         try FileManager.default.createDirectory(at: gallery, withIntermediateDirectories: true)
@@ -392,7 +398,7 @@ final class UIScreenshotTests: XCTestCase {
             }
             model.settingsSection = .connections
             // 05b · Settings from the app menu: a window of its own.
-            try await settingsWindow(name: "05b-settings-window-\(name)", into: gallery)
+            try await settingsWindow(name: "05b-settings-window-\(name)", into: gallery, fixture: model)
             try await sheet(window, name: "06-resources-\(name)", into: gallery, open: { model.inspectResources(main.id) }, close: { model.showResources = false })
             try await sheet(window, name: "07-search-\(name)", into: gallery, open: { model.inspectConversation(main.id) }, close: { model.showConversationContent = false })
             try await sheet(window, name: "08-workspaces-\(name)", into: gallery, open: { model.showWorkspaceManager = true }, close: { model.showWorkspaceManager = false })
@@ -1165,6 +1171,10 @@ final class UIScreenshotTests: XCTestCase {
             inspector.summaryLabel(group.requests[0].id) != nil && inspector.request.conversation.value?.summary != nil
         }
         XCTAssertEqual(inspector.summaryLabel(group.requests[0].id), "continuation checkpoint")
+        // The request can appear after the initial index read. Capture the
+        // selected compaction's expansion state independently of that timing.
+        let selectedTurn = try XCTUnwrap(inspector.index.turn(containing: group.requests[0].id))
+        inspector.expanded = Set([selectedTurn.version?.latest ?? selectedTurn.id, selectedTurn.id, group.id])
         for (name, appearance) in appearances {
             NSApp.appearance = NSAppearance(named: appearance); try await settle(1.0)
             try capture(panel, to: gallery.appendingPathComponent("20-compaction-requests-\(name).png"))
@@ -1406,7 +1416,12 @@ final class UIScreenshotTests: XCTestCase {
     /// Opens Settings as the app menu does, photographs its window, closes it.
     /// The app keeps the closed Settings window and shows the same one again,
     /// so the window to find is the one that became visible, not a new one.
-    @MainActor private func settingsWindow(name: String, into gallery: URL) async throws {
+    @MainActor private func settingsWindow(name: String, into gallery: URL, fixture: WorkspaceModel) async throws {
+        let display = TranscriptDisplay.mode
+        defer {
+            TranscriptDisplay.use(display)
+            for session in fixture.displays.values { session.publishTranscript() }
+        }
         let before = Set(NSApp.windows.filter(\.isVisible).map { ObjectIdentifier($0) })
         let appMenu = try XCTUnwrap(NSApp.mainMenu?.items.first?.submenu, "The app menu is missing")
         let item = try XCTUnwrap(appMenu.items.first { $0.keyEquivalent == "," }, "The app menu has no Settings item")

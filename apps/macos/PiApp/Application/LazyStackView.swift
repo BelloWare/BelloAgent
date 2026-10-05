@@ -23,6 +23,9 @@ import AppKit
     private var offsets: [CGFloat] = []
     private var heights: [CGFloat] = []
     private var measuredWidth: CGFloat = -1
+    private var unobstructedWidth: CGFloat = -1
+    private var unobstructedHeight: CGFloat = 0
+    private var tilingRows = false
     private var made: [AnyHashable: NSView] = [:]
 
     final class Document: NSView {
@@ -54,6 +57,7 @@ import AppKit
     }
     private func invalidateRows() {
         measuredWidth = -1
+        unobstructedWidth = -1
         needsLayout = true
         tileRows()
     }
@@ -88,6 +92,26 @@ import AppKit
 
     /// Makes the rows in view, places them, and lets go of the rest.
     private func tileRows() {
+        guard !tilingRows else { return }
+        tilingRows = true
+        defer { tilingRows = false }
+        // Decide overflow at the width without a scroller. A legacy
+        // scroller otherwise keeps its gutter even after it autohides,
+        // leaving a short list narrower than SwiftUI's ScrollView.
+        let full = NSScrollView.contentSize(forFrameSize: bounds.size,
+            horizontalScrollerClass: nil, verticalScrollerClass: nil,
+            borderType: borderType, controlSize: .regular, scrollerStyle: scrollerStyle)
+        let fullWidth = max(0, full.width - contentInsets.left - contentInsets.right)
+        guard fullWidth > 0 else { return }
+        if fullWidth != unobstructedWidth {
+            unobstructedWidth = fullWidth
+            unobstructedHeight = contentHeight(forWidth: fullWidth)
+        }
+        let overflow = unobstructedHeight > max(0, full.height - contentInsets.top - contentInsets.bottom)
+        if hasVerticalScroller != overflow {
+            hasVerticalScroller = overflow
+            tile()
+        }
         let width = contentView.bounds.width
         guard width > 0 else { return }
         measure(width: width)

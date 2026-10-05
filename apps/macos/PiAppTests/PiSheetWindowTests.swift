@@ -91,6 +91,22 @@ final class PiSheetWindowTests: XCTestCase {
         return window
     }
 
+    @MainActor func testNativeContentHasItsFittedBoundsBeforeItJoinsTheSheetWindow() throws {
+        final class Content: NSView {
+            var firstWindowBounds: NSRect?
+            override var intrinsicContentSize: NSSize { NSSize(width: 420, height: 260) }
+            override func viewDidMoveToWindow() {
+                super.viewDidMoveToWindow()
+                if window != nil, firstWindowBounds == nil { firstWindowBounds = bounds }
+            }
+        }
+        let content = Content(frame: .zero)
+        let sheet = PiSheetWindow(content: content,
+            inherited: PiSheetWindowInherited(reduceMotion: true, enabled: true), close: {})
+        defer { sheet.end(animated: false, requested: true) }
+        XCTAssertEqual(try XCTUnwrap(content.firstWindowBounds).size, NSSize(width: 420, height: 260))
+    }
+
     @MainActor private func eventually(_ what: String, seconds: Double = 10, file: StaticString = #filePath, line: UInt = #line, _ condition: () -> Bool) async throws {
         let deadline = ProcessInfo.processInfo.systemUptime + seconds
         while ProcessInfo.processInfo.systemUptime < deadline {

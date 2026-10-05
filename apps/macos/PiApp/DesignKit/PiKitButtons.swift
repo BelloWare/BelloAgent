@@ -314,6 +314,7 @@ extension PiKit {
             let text = line.size(scale: piScale)
             guard let glyph else { return text }
             let image = glyph.layoutSize
+            if title.isEmpty { return image }
             return CGSize(width: text.width + (title.isEmpty ? 0 : spacing) + image.width, height: max(text.height, image.height))
         }
         override var intrinsicContentSize: NSSize {
@@ -328,7 +329,7 @@ extension PiKit {
             let text = line.size(scale: piScale)
             if let glyph {
                 let image = glyph.layoutSize
-                let imageX = symbolTrailing ? x + text.width + spacing : x
+                let imageX = symbolTrailing && !title.isEmpty ? x + text.width + spacing : x
                 glyph.draw(centredIn: CGRect(x: imageX, y: y, width: image.width, height: label.height), color: ink, scale: piScale)
                 let textX = symbolTrailing ? x : x + image.width + (title.isEmpty ? 0 : spacing)
                 line.draw(at: CGPoint(x: textX, y: y + (label.height - text.height) / 2), scale: piScale)

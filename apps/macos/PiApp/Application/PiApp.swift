@@ -93,7 +93,7 @@ import Combine
             window.title = "Bello Agent"
             window.identifier = NSUserInterfaceItemIdentifier("main")
             window.isReleasedWhenClosed = false
-            window.contentMinSize = NSSize(width: 920, height: 600)
+            window.contentMinSize = WorkspaceRootView.minimumWindowSize
             window.applyPiWindowChrome()
             window.contentView = WorkspaceRootView(model: workspaceModel)
             window.center()
@@ -137,7 +137,7 @@ import Combine
         if before?.loaded != next.loaded || before?.automaticChecks != next.automaticChecks {
             updates.configure(automaticChecks: next.automaticChecks, configurationAvailable: next.loaded)
         }
-        if before?.loaded != next.loaded || before?.transcript != next.transcript { model.applyTranscriptDisplay() }
+        if next.loaded, before?.loaded != next.loaded || before?.transcript != next.transcript { model.applyTranscriptDisplay() }
     }
 
     private func installMenuBar() {

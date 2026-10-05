@@ -7,6 +7,9 @@ import AppKit
 /// controller kept here, so a closed window still opens on what the reader
 /// left unsaved.
 @MainActor final class SettingsWindowView: NSView {
+    // The former Settings scene laid its 780-point form below the 28-point
+    // title bar. The native full-size content view includes that space.
+    static let titleBarSpace: CGFloat = 28
     let model: WorkspaceModel
     let controller: ConnectionSettingsController
     private var form: ProfileSettingsView?
@@ -17,18 +20,28 @@ import AppKit
         self.model = model
         controller = ConnectionSettingsController(model: model)
         guardian = SettingsCloseGuard(controller)
-        super.init(frame: NSRect(x: 0, y: 0, width: 880, height: 780))
+        super.init(frame: NSRect(x: 0, y: 0, width: 880, height: 780 + Self.titleBarSpace))
+        wantsLayer = true
         showForm()
     }
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
     override var isFlipped: Bool { true }
-    override var intrinsicContentSize: NSSize { NSSize(width: 880, height: 780) }
+    override var intrinsicContentSize: NSSize { NSSize(width: 880, height: 780 + Self.titleBarSpace) }
+    override func layout() {
+        super.layout()
+        form?.frame = NSRect(x: 0, y: Self.titleBarSpace, width: bounds.width,
+                             height: max(0, bounds.height - Self.titleBarSpace))
+    }
+    override var wantsUpdateLayer: Bool { true }
+    override func updateLayer() { layer?.backgroundColor = piCGColor(.piWindow) }
 
     private func showForm() {
         guard form == nil else { return }
         // The window closes itself; nothing else does.
         let form = ProfileSettingsView(model: model, controller: controller, windowChrome: true, dismiss: { [weak self] in self?.window?.performClose(nil) })
-        form.frame = bounds; form.autoresizingMask = [.width, .height]
+        form.frame = NSRect(x: 0, y: Self.titleBarSpace, width: bounds.width,
+                            height: max(0, bounds.height - Self.titleBarSpace))
+        form.autoresizingMask = [.width, .height]
         addSubview(form)
         self.form = form
     }

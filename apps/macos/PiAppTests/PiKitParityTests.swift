@@ -90,6 +90,15 @@ import XCTest
         }
     }
 
+    func testImageOnlyGhostButtonsUseTheSymbolsOwnHeight() async throws {
+        for symbol in ["chevron.up", "chevron.down"] {
+            try await check("ghost-image-" + symbol, share: Self.symbolShare,
+                SwiftUI.Button {} label: { Image(systemName: symbol) }.buttonStyle(.piGhost)) {
+                PiKit.Button("", symbol: symbol, style: .ghost)
+            }
+        }
+    }
+
     // MARK: Controls
 
     func testSwitchesAndCheckboxes() async throws {

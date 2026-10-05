@@ -118,15 +118,67 @@ archived, and resource rows expose their spoken names. Archive transition tests
 cover request, response and event bodies with helper access unavailable. Read
 scopes cancel when their view detaches, and delayed reads do not retain it.
 Statistics ledger rows and accessibility children keep their identities across
-updates and reject removed entries. SwiftUI scroll replacements use overlay
-indicators to preserve their original full-width viewport.
+updates and reject removed entries. Native lists preserve the preferred scroller
+style and reserve a legacy gutter only when their content overflows.
 
-Focused final results include 10 Inspector controls and 24 Inspector parity
+Focused integration results include 10 Inspector controls and 24 Inspector parity
 comparisons, 5 statistics controls and 46 statistics parity comparisons,
 38 shared PiKit controls, 8 native application cases and 9 window-presentation
 cases, all passing. Payload and complete gallery results are recorded after
 their final viewport corrections. These are development checks; they do not
 substitute for the complete release gate or Release soak.
+
+## Whole-gallery corrections and additional checks
+
+The first complete native gallery and the immutable 0.1.119 gallery each
+contain 192 captures. Every pair was reviewed. That review identified measured
+corrections to standalone Settings/Inspector title-bar space, the workspace
+minimum height, empty conversation-search row height, narrow composer wrapping,
+search reader insets, raw-search controls, request metrics, dashboard truncation
+and routing alias image slots. The workstream commits remain in the integration
+history. A final capture of the corrected candidate is still required.
+
+The second whole-change read-only review found that selectable rows containing
+`ShellText` did not inherit their spoken names. Shared text extraction and
+explicit resource/compaction/title labels now cover that case. Real accessibility
+press/selection tests exercise the mounted controls.
+
+Additional passing checks, including passing classes within coordinated runs
+whose other classes were still under repair:
+
+| Checks | Cases | Result |
+| --- | ---: | --- |
+| Native application, including saved-display startup ordering | 9 | Pass |
+| Settings rows, including exact field and cost-choice leading edges at three widths | 5 | Pass |
+| Composer controls, including narrow-pane wrapping and retained caret | 5 | Pass |
+| Payload controls, including a 500 KB reader that lays out only the chosen match | 21 | Pass |
+| Native sheet lifecycle and initial fitted bounds | 11 | Pass |
+| Background header/headline controls and frozen layout parity | 4 | Pass |
+| Routing alias controls and frozen layout parity | 2 | Pass |
+| Report headers, request rows, resolved tables and complete scroll documents | 3 | Pass |
+| Packaged helper title suggestions and mounted accessibility press | 1 | Pass |
+
+Report geometry agrees exactly with the frozen original: 29-point headers,
+43/44/58-point request rows, 426/516-point resolved tables and 1,297-point
+outer documents at 620, 1,139 and 1,440 points wide. No speculative document
+padding correction was made.
+
+The new sheet-bounds regression failed before its correction: content first
+joined its window at 0×0 rather than its fitted 420×260 points. Sizing the host
+and new window before attachment fixes that transition; all 11 sheet tests pass
+and their invalid-view-geometry warnings are gone. The production transcript
+also waits for the vault to load before applying saved display preferences.
+The gallery explicitly restores its own transcript display state after opening
+the separate Settings window, which uses a different fixture model.
+
+Evidence: `native-all-gallery-repairs-check.log`,
+`native-payload-settings-final-check.log`,
+`native-report-inspector-sheet-diagnostics.log`,
+`native-sheet-payload-ready-check.log` and the per-screen
+`gallery-{root,session,payloads,statistics}-review.txt` records under the same
+cache log directory. Failed asynchronous captures were diagnosed and retained;
+mounted-fixture readiness and real match navigation replace pre-mount timing
+assumptions. Existing parity thresholds remain unchanged.
 
 ## Still required
 

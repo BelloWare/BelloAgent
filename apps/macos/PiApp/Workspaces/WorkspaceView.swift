@@ -6,6 +6,8 @@ import Combine
 /// chat (or what shows in its place) with its pane beside it, the pages laid
 /// over them, and the sides panel at the right edge or docked as a column.
 @MainActor final class WorkspaceRootView: NSView, InheritsReducedMotion {
+    // SwiftUI's 600pt minimum excluded the titlebar's safe-area space.
+    static let minimumWindowSize = NSSize(width: 920, height: 628)
     let model: WorkspaceModel
     /// The pane's tabs beside the chat: the window's, whatever chat is shown.
     let pane: TabContainer
@@ -146,6 +148,7 @@ import Combine
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if let window {
+            window.contentMinSize = Self.minimumWindowSize
             chromeController.attach(window, chrome: chrome)
             sheets.attach(window)
             quickOpen.attach(window)

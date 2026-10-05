@@ -111,6 +111,8 @@ extension PiKit {
     @MainActor static func spokenText(of view: NSView) -> String {
         if let line = view as? TextLine { return line.line.text }
         if let text = view as? WrappedText { return text.text }
+        if let text = view as? ShellText { return text.text }
+        if let text = view as? TextBlock { return text.text }
         if let field = view as? NSTextField { return field.stringValue }
         return view.subviews.map { spokenText(of: $0) }.filter { !$0.isEmpty }.joined(separator: ", ")
     }
@@ -197,7 +199,12 @@ extension PiKit {
         /// A wrapping text's width when offered `width`: its widest line there.
         private func textWidth(_ block: TextBlock, _ width: CGFloat) -> CGFloat {
             let scale = window?.backingScaleFactor ?? 2
-            return PiKit.wrappedLines(block.text, font: block.font, width: width).map { PiKit.Line($0, font: block.font, color: .black).size(scale: scale).width }.max() ?? 0
+            let text = block.text as NSString
+            // Text includes a wrapping line's trailing space in the width
+            // it reports to an HStack, though that space has no ink.
+            return PiKit.wrappedRanges(block.text, font: block.font, width: width).map {
+                PiKit.Line(text.substring(with: $0).trimmingCharacters(in: .newlines), font: block.font, color: .black).size(scale: scale).width
+            }.max() ?? 0
         }
         private var textItem: StackLayout.Item {
             StackLayout.Item(view: nil, sizing: StackLayout.Sizing(width: { [weak self] proposal in
