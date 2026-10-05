@@ -65,8 +65,18 @@ import AppKit
     override var intrinsicContentSize: NSSize { let words = line.size(scale: piScale); return NSSize(width: 12 + words.width, height: max(glyph.layoutSize.height, words.height) + 8) }
     override func styleFace() { fill.backgroundColor = CGColor.clear; stroke.borderColor = CGColor.clear }
     override func drawContent(in rect: CGRect) {
-        glyph.draw(centredIn: CGRect(x: 0, y: 0, width: 8, height: rect.height), color: .tertiaryLabelColor, scale: piScale)
-        line.draw(in: CGRect(x: 12, y: 0, width: max(0, rect.width - 12), height: rect.height), scale: piScale)
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            let tint = NSColor.tertiaryLabelColor.usingColorSpace(.deviceRGB) ?? .piInkTertiary
+            let context = NSGraphicsContext.current?.cgContext
+            // The symbol tinting surface is opaque. Apply the system label
+            // alpha when compositing it, rather than tinting black with a
+            // translucent black sourceAtop fill.
+            context?.saveGState(); context?.setAlpha(tint.alphaComponent)
+            glyph.draw(centredIn: CGRect(x: 0, y: 0, width: 8, height: rect.height), color: tint.withAlphaComponent(1), scale: piScale)
+            context?.restoreGState()
+            let height = line.size(scale: piScale).height
+            line.draw(in: CGRect(x: 12, y: PiKit.round((rect.height - height) / 2, piScale), width: max(0, rect.width - 12), height: height), scale: piScale)
+        }
     }
 }
 
