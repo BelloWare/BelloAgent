@@ -180,6 +180,27 @@ cache log directory. Failed asynchronous captures were diagnosed and retained;
 mounted-fixture readiness and real match navigation replace pre-mount timing
 assumptions. Existing parity thresholds remain unchanged.
 
+The final shared-control/Settings/search run executes 23 tests (one existing
+opt-in hover-gallery case skipped) with no failures. The complete-body search
+bar, previous/next buttons and reader match the original measured frames
+within 0.25 points in both appearances and for matching/empty results. An
+image-only ghost chevron keeps the original 8.5-point logical height and
+half-point ink offset; other symbols and text labels keep their existing
+drawing. The shared PiKit parity class executes 21 cases with no failures
+and the one opt-in skip, preserving its existing limits.
+
+The complete Settings document measures 1,721 points in both the native page
+and the original frozen lazy page after every group has been realized. All
+six group frames agree exactly, including the final 130-point editor, and the
+resolved scrollbar proportion agrees. The original lazy page initially
+estimates 2,378 points and estimates 2,068 after returning to the top; the
+native document keeps its measured 1,721-point height. The regression compares
+the native page strictly against the original realized geometry. An eager
+test-only reference remains a supplemental check; it can round one point
+differently. Earlier failed assumptions about lazy estimates and that eager
+reference are retained in the logs. No production padding or fake document
+height was added. Evidence: `native-final-symbol-settings-focused.log`.
+
 ## Still required
 
 Perform the complete gallery comparison, Release
