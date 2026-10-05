@@ -161,4 +161,26 @@ import XCTest
             }
         }
     }
+
+    func testRequestPagesKeepTheirFixedChromeAndOutlineAtBothWidths() async throws {
+        let fixture = try await InspectorExpandFixture(body: InspectorExpandBodies.request(result: InspectorExpandBodies.toolResult(lines: 12)))
+        defer { fixture.close() }
+        for tab in [InspectorRequestModel.Tab.conversation, .response] {
+            fixture.request.tab = tab
+            try await eventually("The parity request did not settle on \(tab.rawValue)") {
+                switch tab {
+                case .conversation: return fixture.request.conversation.value != nil && fixture.request.delta != nil
+                case .response: if case .failed = fixture.request.response { return true }; return false
+                case .raw: return false
+                }
+            }
+            for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+                for (width, compact) in [(CGFloat(820), false), (CGFloat(550), true)] {
+                    let reference = InspectorRequestPageReference(inspector: fixture.inspector, request: fixture.request, compact: compact).frame(width: width, height: 720)
+                    let native = InspectorFixedSize(InspectorRequestPage(inspector: fixture.inspector, request: fixture.request, compact: compact), width: width, height: 720)
+                    try await check("inspector-request-\(tab.rawValue)-\(Int(width))-\(appearance.rawValue)", width: width, appearance: appearance, reference: reference, native: native)
+                }
+            }
+        }
+    }
 }
