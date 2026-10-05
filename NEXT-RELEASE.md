@@ -32,7 +32,7 @@
   - All Inspector pages, statistics dialogs, retained bodies, JSON/search, resources and MCP controls now use AppKit. Dashboard, live monitor, menu-bar panel, chart engine and cost-limit controls are integrated. Focused parity, lifetime, selection and accessibility checks pass; the complete gallery and gate remain below.
 - [x] **Settings, onboarding, Git, files** (`Application/` settings and onboarding views, `Git/`, `Files/`, and the two SwiftUI files in `packages/bello-views`).
 
-Integration checks: [AppKit integration record](docs/validation/AppKit-integration-0.1.120-2026-10-05.md). The third complete gate passed for `478d0211`; the subsequent 192-pair review found and corrected a Git caption regression. A fresh gate, final gallery, Release measurements and hour soak remain pending for that correction.
+Integration checks: [AppKit integration record](docs/validation/AppKit-integration-0.1.120-2026-10-05.md). Final source `2be1b0d6` passes the complete gate and Release build. All 192 fresh pairs have been reviewed, including the corrected Git caption. Comparable Release measurements and the actual hour soak remain pending.
 
 ## Wave 3
 - [x] **App shell**: native `NSApplicationDelegate`, window controllers, menus and Settings window. Production sources in the app and `bello-views` have no SwiftUI imports or hosting views; a test enforces this. Frozen SwiftUI references remain in the test target for parity checks.
@@ -40,8 +40,8 @@ Integration checks: [AppKit integration record](docs/validation/AppKit-integrati
 ## Before release
 - [x] Codex (gpt-6.1-sol, xhigh) double-checks the whole change from e59e41a7 and gives advice; findings acted on, advice reported to the owner (owner, 2026-10-04). Whole-change and subsequent repair reviews report no findings, including the pinned-column proposal correction and final Git caption placement repair. The eight strict Git checks pass, including frozen rendered-text comparisons and mutation proof. Advice: finish the quiet full gate, final gallery, comparable Release measurements and actual hour soak before publication. See the integration record for the exact review pins and evidence.
 - [ ] Performance compared with the baseline: no measure worse; chat switch and opening a chat faster.
-- [ ] Full gallery compared with 0.1.119: **visually identical** (owner, 2026-10-05) — sub-pixel antialiasing and icon offsets up to about 0.25 pt are accepted; anything visible (layout shifts, colours, wrapping, moves of 1 pt or more) is fixed. Every screen gets a side-by-side check.
-- [ ] Full gate passes (`scripts/verify-release.sh`).
+- [x] Full gallery compared with 0.1.119: **visually identical** (owner, 2026-10-05) — sub-pixel antialiasing and icon offsets up to about 0.25 pt are accepted; anything visible (layout shifts, colours, wrapping, moves of 1 pt or more) is fixed. Every screen gets a side-by-side check. All 192 final pairs were viewed; the integration record preserves initial lazy scroll-thumb, focus, optical and offscreen coverage differences rather than claiming blanket pixel equality.
+- [x] Full gate passes (`scripts/verify-release.sh`): final source `2be1b0d6`, 627 serial cases and 1,937 parallel passes, zero failures; complete helper/views/wire/Python and fresh gallery checks pass.
 - [ ] Hour-long soak of a Release build passes, no exceptions.
 - [ ] Owner checks, or the owner defers them: VoiceOver; one compaction against a real gateway.
 - [x] Release notes, including the terminal cursor correction (`releases/0.1.120.html`).

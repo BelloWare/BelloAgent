@@ -477,9 +477,50 @@ read-only review reports no remaining actionable findings; evidence:
 This final product correction requires a fresh gate and final gallery,
 Release build, comparable performance measurements and actual hour soak.
 
+## Final source gate and gallery, 2026-10-06
+
+Production source `2be1b0d6ef1abc9897d32861104062bf7a2176a0` passes the
+fresh complete gate in 37 minutes 51 seconds. The serial lane executes 627
+cases (23 skips, zero failures); the parallel lane reports 1,937 passes
+(34 skips, zero failures). Helper cost checks pass, followed by the fresh
+192-image gallery, 611 helper cases (six skips), 167 views-package cases
+(three skips), 34 wire, four concurrent, two acceptance and 72 Python checks.
+The three covered Changes-pane typing measurements are 25.8, 23.2 and
+27.8 ms, below the unchanged 30 ms bound, with no synchronous layout cycles
+or diff rows built. There are no geometry/constraint warnings or test-process
+crash reports. Evidence: `native-git-caption-final-full-gate.log` and
+`build/verify-logs` in the cache.
+
+The final Release build-for-testing passes in 8 minutes 56 seconds. Neither
+the Release executable nor the Debug executable/debug dylib/preview directly
+links SwiftUI or Charts. The production-source check passes; independent
+frozen SwiftUI references remain test-only. Evidence:
+`native-git-caption-final-release-build.log` and
+`native-git-caption-final-linkage.txt`.
+
+All 192 fresh pairs have matching filenames and original image dimensions,
+and all were actually viewed without masks or alignment. The four reviewers
+cover 82/24/54/32 files; the completed `gallery-2be1-review-manifest.json`
+records original baseline/native SHA-256 hashes and exact assignments.
+The actual narrow Git toolbar now matches in both themes, including original
+2x inspection. The original-resolution dark back-to-bottom button also
+matches. No new actionable owned layout/color/wrapping defect was identified
+within the visible coverage.
+
+This is not a blanket pixel-equality claim: `compare-captures.py` exits one
+with 192 same-sized pairs containing unmasked differences. Reviewer records
+retain generated paths/IDs/timing, caret/activation/selection, initial lazy
+scroll-thumb estimates and optical differences. Report initial thumb ends
+differ by 1–8 points; Overview and Settings lazy estimates also differ,
+while strict complete-document parity tests pass. Screens named for lower
+tables sometimes show only the top viewport, so offscreen rows are not
+visually certified. Evidence: `native-final-2be1-unmasked-comparison.log` and
+the four `gallery-*-2be1-review.txt` files in the cache. This distinction
+preserves the actual observations and independent test coverage.
+
 ## Still required
 
-Perform the complete gallery comparison, Release
-performance comparison, full release gate and hour-long soak. Owner VoiceOver
-and real-gateway checks remain subject to the release checklist. No packaging,
-signing, website publication or release tag was performed by this integration.
+Perform the comparable Release performance comparison and actual hour-long
+Release soak. Owner VoiceOver and real-gateway checks have not been run or
+explicitly deferred for this release. Packaging, signing, website publication
+and the release tag remain pending.
