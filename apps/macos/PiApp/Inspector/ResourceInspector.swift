@@ -615,7 +615,7 @@ import AppKit
     }
 }
 
-@MainActor private final class ResourceSkillRow: DashView {
+@MainActor final class ResourceSkillRow: DashView {
     let row: PiKit.SelectableRow
     let contentKey: String
     static func key(_ skill: SkillDescriptor) -> String { [skill.id, skill.name, skill.path, skill.description, skill.contentHash, skill.metadataHash, skill.policy, skill.scope].joined(separator: "|") }
@@ -625,6 +625,8 @@ import AppKit
         let path = PiKit.TextLine(PiKit.Line(skill.path, font: PiKit.Font.caption, color: .piInkTertiary)); path.truncation = .middle
         let content = ShellStack(.vertical, spacing: 4, [.view(ShellText("/" + skill.name, font: PiKit.Font.heading, color: .piInk), .fill), .view(ShellStack(.horizontal, spacing: 4, [.view(policy), .view(PiKit.Badge(text: skill.scope)), .spacer(0)]), .fill), .view(path, .fill)])
         row = PiKit.SelectableRow(content: content, glide: glide, action: action)
+        row.setAccessibilityLabel(["/" + skill.name, ResourceInspector.policyLabel(skill.policy), skill.scope, skill.path]
+            .filter { !$0.isEmpty }.joined(separator: ", "))
         super.init(frame: .zero); addSubview(row)
     }
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
@@ -632,7 +634,7 @@ import AppKit
     override func layout() { super.layout(); row.frame = bounds }
 }
 
-@MainActor private final class MCPToolRow: DashView {
+@MainActor final class MCPToolRow: DashView {
     let row: PiKit.SelectableRow
     let contentKey: String
     init(entry: [String: WireValue], glide: PiKit.SelectionGlide, action: @escaping () -> Void) {
@@ -640,6 +642,7 @@ import AppKit
         let title = ShellText(entry["name"]?.string ?? "", font: PiKit.Font.heading, color: .piInk)
         let description = ShellText(entry["description"]?.string ?? "", font: PiKit.Font.caption, color: .piInkSecondary, maximumLines: 3)
         row = PiKit.SelectableRow(content: ShellStack(.vertical, spacing: 3, [.view(title, .fill), .view(description, .fill)]), glide: glide, action: action)
+        row.setAccessibilityLabel([title.text, description.text].filter { !$0.isEmpty }.joined(separator: ", "))
         super.init(frame: .zero); addSubview(row)
     }
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
