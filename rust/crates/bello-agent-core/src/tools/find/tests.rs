@@ -39,6 +39,8 @@ impl FixtureScanner {
 }
 
 impl Scanner for FixtureScanner {
+    type Resource = ();
+
     fn root(&self) -> &Candidate {
         &self.root
     }
@@ -91,6 +93,7 @@ fn candidate(path: &str) -> Candidate {
         path: path.to_owned(),
         basename: path.rsplit('/').next().unwrap_or("").to_owned(),
         is_symbolic_link: false,
+        resource: (),
     }
 }
 

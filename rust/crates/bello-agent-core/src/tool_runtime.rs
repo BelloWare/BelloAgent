@@ -32,7 +32,7 @@ pub struct RuntimeOptions {
 /// Construct only after the host has obtained explicit project trust and chosen
 /// read-only tools. Roots resolve relative paths; absolute/parent/tilde/symlink
 /// paths may leave them, exactly as in the source. Construction performs no
-/// discovery; explicit macOS Find may resolve named-user paths when invoked.
+/// discovery; explicit macOS file searches may resolve named-user paths when invoked.
 #[derive(Clone)]
 pub struct TrustedReadOnlyTools {
     native: NativeTools,
@@ -412,8 +412,64 @@ async fn run_call(
             "Tool interrupted. Its output is unknown. No automatic replay.",
             ToolOutcome::Unknown,
         ),
-        Err(error) => ToolResultRow::error(error.to_string(), ToolOutcome::Failed),
+        Err(error) => failed_tool_result(error, cancel.is_cancelled()),
     }
+}
+
+fn failed_tool_result(error: ToolError, cancelled: bool) -> ToolResultRow {
+    // Cancellation wins over a simultaneous synchronous native failure, just
+    // as SessionTools checks Task.isCancelled before classifying its error.
+    if cancelled {
+        return ToolResultRow::error(
+            "Tool interrupted. Its output is unknown. No automatic replay.",
+            ToolOutcome::Unknown,
+        );
+    }
+    // SessionTools preserves AgentError messages, but hides native NSError
+    // details behind its generic failure text. Native reads remain Failed.
+    let text = match error {
+        ToolError::Native { .. } => "Tool failed; inspect its effects before retrying.".to_owned(),
+        other => other.to_string(),
+    };
+    ToolResultRow::error(text, ToolOutcome::Failed)
+}
+
+#[cfg(test)]
+#[test]
+fn native_tool_failure_uses_source_generic_text_and_failed_outcome() {
+    let result = failed_tool_result(
+        ToolError::Native {
+            domain: "NSCocoaErrorDomain".into(),
+            code: 2048,
+            message: "localized regex details".into(),
+        },
+        false,
+    );
+    assert_eq!(
+        result.text,
+        "Tool failed; inspect its effects before retrying."
+    );
+    assert_eq!(result.outcome, ToolOutcome::Failed);
+    let result = failed_tool_result(
+        ToolError::Failure {
+            code: "invalid_params",
+            message: "Invalid pattern".into(),
+        },
+        false,
+    );
+    assert_eq!(result.text, "Invalid pattern");
+    assert_eq!(result.outcome, ToolOutcome::Failed);
+    let result = failed_tool_result(
+        ToolError::Native {
+            domain: "NSCocoaErrorDomain".into(),
+            code: 2048,
+            message: "localized regex details".into(),
+        },
+        true,
+    );
+    assert_eq!(result.outcome, ToolOutcome::Unknown);
+    assert!(result.text.contains("No automatic replay"));
+    assert!(!result.text.contains("localized regex"));
 }
 
 fn retain_output(directory: &Path, text: &str) -> crate::tools::ToolResult<String> {

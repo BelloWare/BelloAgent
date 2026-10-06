@@ -1808,3 +1808,29 @@ rejects an unterminated bracket pattern while glibc matches the literal bracket.
 The production matcher already delegates to native fnmatch as Swift does. The
 fixture now checks each supported platform's behavior explicitly; the focused
 Linux case passes. macOS Swift-oracle/runtime acceptance still awaits fresh CI.
+
+### Opt-in macOS Grep and bounded native reads
+
+The explicit core selector now supports Foundation-backed Grep on macOS. It
+shares Find's capped scan and retains original NSURL resources through matching,
+uses native regex/literal/case behavior and UTF-16 ranges, and validates opened
+file descriptors before one bounded Foundation UTF-8 read. Source ordering,
+zero-limit skip behavior, line previews and exact footers are preserved. Native
+NSError identity is available to direct callers; session results use the source's
+generic failure text, with cancellation taking precedence. Existing constructors
+remain ls-only and Linux refuses explicit Grep before any provider offer. No app,
+trust, authority or credential enablement was added.
+
+Twenty-two Grep engine/preparation checks, all 19 affected Find checks, one native
+failure/cancellation rendering check and three platform/default checks pass.
+Formatting, strict core all-target Clippy, actual Darwin engine/adapter metadata
+compilation and a test-only host Rust API check pass. Negative controls catch
+incorrect skipped-read limit handling and leaked native error text; both were
+restored. Independent review found no remaining blocker.
+
+The shared Swift oracle adds native regex dialect, Unicode, decoding, size,
+zero-limit and FIFO fixtures inside a bounded test subprocess; mixed tool-loop
+coverage verifies raw arguments, continuation, failed regex output and durable
+reopen without reexecution. Actual macOS execution remains pending CI. No hard
+native regex timeout, user-home access, real mount fixture or GUI readiness is
+claimed. See `native-grep-contract.md` for the exact boundary.

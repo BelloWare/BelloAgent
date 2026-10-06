@@ -771,3 +771,31 @@ fn unsupported_find_is_rejected_before_any_provider_offer() {
         .is_ok()
     );
 }
+
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn unsupported_grep_is_rejected_before_any_provider_offer() {
+    let root = TempDir::new().unwrap();
+    for capabilities in [
+        vec![Capability::Grep],
+        vec![Capability::Ls, Capability::Find, Capability::Grep],
+    ] {
+        let error = NativeTools::new(root.path().into(), [], root.path().into(), capabilities)
+            .err()
+            .expect("unsupported Grep must fail construction");
+        assert_eq!(error.code(), Some("tool_unavailable"));
+        assert_eq!(
+            error.to_string(),
+            "Grep requires the macOS Foundation implementation"
+        );
+    }
+    assert!(
+        bello_agent_core::runtime::TrustedReadOnlyTools::new_with_capabilities(
+            root.path().into(),
+            vec![],
+            root.path().into(),
+            [Capability::Grep]
+        )
+        .is_err()
+    );
+}

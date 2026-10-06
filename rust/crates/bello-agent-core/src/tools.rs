@@ -1,4 +1,4 @@
-//! Source-backed native tools: `ls`, plus Foundation-backed `find` on macOS.
+//! Source-backed native tools: `ls`, plus Foundation `find` and `grep` on macOS.
 //!
 //! This module never independently offers tools to a provider. The Controller's
 //! explicit TrustedReadOnlyTools option can invoke it; desktop constructors keep
@@ -10,16 +10,17 @@
 //! context, NOT a sandbox: absolute, parent, tilde and symlink paths may leave
 //! them. The injected home directory permits isolated fixtures without reading
 //! the process's home configuration. Named-user `~user` remains unavailable in ls;
-//! macOS Find uses Foundation's invocation-time expansion.
+//! macOS Find and Grep use Foundation's invocation-time expansion.
 //!
 //! `invoke` matches NativeTools' native validation; `invoke_prepared` additionally
-//! applies SessionTools' schema preparation, for the offered ls/find schemas. The general
+//! applies SessionTools' schema preparation, for the offered ls/find/grep schemas. The general
 //! JSON Schema coercer remains a separate gap. The opt-in core
 //! Controller retains text above 64 KiB in private files (32 KiB preview,
 //! 16 MiB maximum), checkpoints call/result history, and continues the tool loop.
 //! Native ls itself has an entry bound, not a byte bound, and no `stats` field.
 
 mod find;
+mod grep;
 
 use crate::provider::ToolCall;
 use serde::{Deserialize, Serialize};
@@ -45,6 +46,14 @@ pub enum ToolError {
     Failure { code: &'static str, message: String },
     #[error("Stopped")]
     Cancelled,
+    // Keep native Foundation failure identity for direct callers and fixtures.
+    // The session runtime renders the source's generic non-AgentError message.
+    #[error("{message}")]
+    Native {
+        domain: String,
+        code: i64,
+        message: String,
+    },
     // Foundation also throws its native filesystem error here. Its localized
     // wording is platform-specific and is not fabricated on another platform.
     #[error("{0}")]
@@ -78,6 +87,7 @@ fn check_cancelled(token: &CancellationToken) -> ToolResult<()> {
 pub enum Capability {
     Ls,
     Find,
+    Grep,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -108,6 +118,19 @@ fn find_definition() -> ToolDefinition {
         schema: json!({
             "type": "object",
             "properties": {"pattern": {"type": "string"}, "path": {"type": "string"}, "limit": {"type": "integer", "minimum": 1}},
+            "required": ["pattern"],
+            "additionalProperties": false
+        }),
+    }
+}
+
+fn grep_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "grep".into(),
+        description: "Search UTF-8 files for a literal string or regular expression. Results include path and line number.".into(),
+        schema: json!({
+            "type": "object",
+            "properties": {"pattern": {"type": "string"}, "path": {"type": "string"}, "literal": {"type": "boolean"}, "ignoreCase": {"type": "boolean"}, "limit": {"type": "integer", "minimum": 1}},
             "required": ["pattern"],
             "additionalProperties": false
         }),
@@ -150,10 +173,14 @@ impl NativeTools {
         }
         let capabilities: BTreeSet<_> = capabilities.into_iter().collect();
         #[cfg(not(target_os = "macos"))]
-        if capabilities.contains(&Capability::Find) {
+        if capabilities.contains(&Capability::Find) || capabilities.contains(&Capability::Grep) {
             return Err(ToolError::failure(
                 "tool_unavailable",
-                "Find requires the macOS Foundation implementation",
+                if capabilities.contains(&Capability::Grep) {
+                    "Grep requires the macOS Foundation implementation"
+                } else {
+                    "Find requires the macOS Foundation implementation"
+                },
             ));
         }
         Ok(Self {
@@ -185,6 +212,9 @@ impl NativeTools {
         if self.capabilities.contains(&Capability::Find) {
             definitions.push(find_definition());
         }
+        if self.capabilities.contains(&Capability::Grep) {
+            definitions.push(grep_definition());
+        }
         definitions
     }
 
@@ -196,6 +226,9 @@ impl NativeTools {
         if self.capabilities.contains(&Capability::Find) {
             ids.push("find");
         }
+        if self.capabilities.contains(&Capability::Grep) {
+            ids.push("grep");
+        }
         ids
     }
 
@@ -203,6 +236,7 @@ impl NativeTools {
         match name {
             "ls" => self.capabilities.contains(&Capability::Ls),
             "find" => self.capabilities.contains(&Capability::Find),
+            "grep" => self.capabilities.contains(&Capability::Grep),
             _ => false,
         }
     }
@@ -218,13 +252,18 @@ impl NativeTools {
         let Some(fields) = prepared.arguments.as_object_mut() else {
             return prepared;
         };
-        // Path and limit are optional and neither schema accepts null.
-        for key in ["path", "limit"] {
-            if fields.get(key).is_some_and(Value::is_null) {
-                fields.remove(key);
+        // Optional properties do not accept null in their source schemas.
+        let optional = if call.name == "grep" {
+            &["path", "limit", "literal", "ignoreCase"][..]
+        } else {
+            &["path", "limit"][..]
+        };
+        for key in optional {
+            if fields.get(*key).is_some_and(Value::is_null) {
+                fields.remove(*key);
             }
         }
-        for key in if call.name == "find" {
+        for key in if matches!(call.name.as_str(), "find" | "grep") {
             &["path", "pattern"][..]
         } else {
             &["path"][..]
@@ -241,6 +280,23 @@ impl NativeTools {
                     }
                 }
                 _ => {}
+            }
+        }
+        if call.name == "grep" {
+            for key in ["literal", "ignoreCase"] {
+                let Some(value) = fields.get_mut(key) else {
+                    continue;
+                };
+                let flag = match value {
+                    Value::String(text) if text == "true" => Some(true),
+                    Value::String(text) if text == "false" => Some(false),
+                    Value::Number(number) if number.as_f64() == Some(1.0) => Some(true),
+                    Value::Number(number) if number.as_f64() == Some(0.0) => Some(false),
+                    _ => None,
+                };
+                if let Some(flag) = flag {
+                    *value = Value::Bool(flag);
+                }
             }
         }
         if let Some(value) = fields.get_mut("limit") {
@@ -287,10 +343,14 @@ impl NativeTools {
             ToolError::failure("tool_arguments", "Tool arguments must be an object")
         })?;
         let is_find = call.name == "find";
-        if fields
-            .keys()
-            .any(|key| key != "path" && key != "limit" && !(is_find && key == "pattern"))
-            || (is_find && !fields.contains_key("pattern"))
+        let is_grep = call.name == "grep";
+        let is_search = is_find || is_grep;
+        if fields.keys().any(|key| {
+            key != "path"
+                && key != "limit"
+                && !(is_search && key == "pattern")
+                && !(is_grep && (key == "literal" || key == "ignoreCase"))
+        }) || (is_search && !fields.contains_key("pattern"))
         {
             return Err(ToolError::failure(
                 "tool_arguments",
@@ -307,7 +367,9 @@ impl NativeTools {
                 if let Some(callback) = before_read {
                     callback();
                 }
-                if is_find {
+                if is_grep {
+                    grep::invoke(&paths, &arguments, &cancel)
+                } else if is_find {
                     find::invoke(&paths, &arguments, &cancel)
                 } else {
                     paths.ls(&arguments, &cancel)
@@ -775,3 +837,7 @@ impl Drop for CancelOnDrop {
 #[cfg(test)]
 #[path = "tools/find_preparation_tests.rs"]
 mod find_preparation_tests;
+
+#[cfg(test)]
+#[path = "tools/grep_preparation_tests.rs"]
+mod grep_preparation_tests;

@@ -414,12 +414,12 @@ async fn streamed_argument_fallback_retains_the_call_used_for_execution_and_repl
 
 #[cfg(target_os = "macos")]
 #[tokio::test]
-async fn explicit_find_and_ls_batch_continues_and_reopens_without_reexecution() {
+async fn explicit_find_grep_and_ls_batch_continues_and_reopens_without_reexecution() {
     use bello_agent_core::tools::Capability;
     let dir = tempfile::tempdir().unwrap();
     let project = dir.path().join("project");
     std::fs::create_dir(&project).unwrap();
-    std::fs::write(project.join("alpha.txt"), "fixture").unwrap();
+    std::fs::write(project.join("alpha.txt"), "Alpha\nbeta\n").unwrap();
     std::fs::write(project.join("zeta.bin"), [0, 255]).unwrap();
     let path = dir.path().join("session.json");
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -434,7 +434,7 @@ async fn explicit_find_and_ls_batch_continues_and_reopens_without_reexecution() 
                     project.clone(),
                     vec![],
                     project.clone(),
-                    [Capability::Find, Capability::Ls],
+                    [Capability::Grep, Capability::Find, Capability::Ls],
                 )
                 .unwrap(),
             ),
@@ -450,13 +450,19 @@ async fn explicit_find_and_ls_batch_continues_and_reopens_without_reexecution() 
                 .iter()
                 .map(|tool| tool["name"].as_str().unwrap())
                 .collect::<Vec<_>>(),
-            ["ls", "find"]
+            ["ls", "find", "grep"]
         );
         reply(
             socket,
             terminal(vec![
                 call("find-one", "find", json!({"pattern":"*.txt","limit":"100"})),
                 call("ls-two", "ls", json!({})),
+                call(
+                    "grep-three",
+                    "grep",
+                    json!({"pattern":"alpha","literal":"true","ignoreCase":1}),
+                ),
+                call("grep-four", "grep", json!({"pattern":"["})),
             ]),
         )
         .await;
@@ -467,7 +473,7 @@ async fn explicit_find_and_ls_batch_continues_and_reopens_without_reexecution() 
             .iter()
             .filter(|row| row["type"] == "function_call_output")
             .collect();
-        assert_eq!(outputs.len(), 2);
+        assert_eq!(outputs.len(), 4);
         assert_eq!(outputs[0]["call_id"], "find-one");
         assert_eq!(
             outputs[0]["output"],
@@ -475,6 +481,16 @@ async fn explicit_find_and_ls_batch_continues_and_reopens_without_reexecution() 
         );
         assert_eq!(outputs[1]["call_id"], "ls-two");
         assert_eq!(outputs[1]["output"], "alpha.txt\nzeta.bin");
+        assert_eq!(outputs[2]["call_id"], "grep-three");
+        assert_eq!(
+            outputs[2]["output"],
+            "alpha.txt:1: Alpha\n[Binary and >2 MiB files, .git/node_modules/.build are skipped by grep.]"
+        );
+        assert_eq!(outputs[3]["call_id"], "grep-four");
+        assert_eq!(
+            outputs[3]["output"],
+            "Tool failed; inspect its effects before retrying."
+        );
         reply(socket, final_text()).await;
     });
     control
@@ -489,6 +505,35 @@ async fn explicit_find_and_ls_batch_continues_and_reopens_without_reexecution() 
     })
     .await;
     server.await.unwrap();
+    let recorded = complete
+        .messages
+        .iter()
+        .find_map(|row| match &row.tool_record {
+            Some(ToolRecord::Assistant(record)) => Some(record),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        recorded.calls[2].arguments,
+        json!({"pattern":"alpha","literal":"true","ignoreCase":1})
+    );
+    let outcomes: Vec<_> = complete
+        .messages
+        .iter()
+        .filter_map(|row| match &row.tool_record {
+            Some(ToolRecord::Result(record)) => Some(record.outcome),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        outcomes,
+        [
+            ToolOutcome::Completed,
+            ToolOutcome::Completed,
+            ToolOutcome::Completed,
+            ToolOutcome::Failed
+        ]
+    );
     control.retire_and_wait().await.unwrap();
     // Remove the source file after settlement. Reopening must replay the durable
     // result, never re-run the historical read against the changed fixture.
@@ -510,6 +555,6 @@ async fn explicit_find_and_ls_batch_continues_and_reopens_without_reexecution() 
             .iter()
             .filter(|row| row.role == "toolResult")
             .count(),
-        2
+        4
     );
 }

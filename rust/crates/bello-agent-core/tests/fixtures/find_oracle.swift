@@ -1,4 +1,4 @@
-// This is a test runner, not a second implementation of Find. The Rust test
+// This is a test runner, not a second implementation of Find/Grep. The Rust test
 // fills each SOURCE marker with verbatim declarations or branches from the
 // checked-in Swift host before compiling this file in a temporary directory.
 // No app, provider, user home, or network configuration is loaded.
@@ -24,9 +24,13 @@ private enum PiProviderRules {
     }
 }
 
-private func findDefinition() -> ToolDefinition {
+private func searchDefinition(_ name: String) -> ToolDefinition {
     let s: JSON = ["type":"string"], n: JSON = ["type":"integer","minimum":1]
-    return /* SOURCE_DEFINITION */
+    switch name {
+    case "find": return /* SOURCE_FIND_DEFINITION */
+    case "grep": return /* SOURCE_GREP_DEFINITION */
+    default: preconditionFailure("Unsupported oracle tool")
+    }
 }
 
 private func validate(_ call: ToolCall, definition: ToolDefinition) throws {
@@ -34,7 +38,8 @@ private func validate(_ call: ToolCall, definition: ToolDefinition) throws {
 }
 
 private func run(_ request: JSON) -> JSON {
-    let definition = findDefinition()
+    let name = request["tool"].text!
+    let definition = searchDefinition(name)
     let cwd = URL(fileURLWithPath: request["cwd"].text!)
     let roots = request["roots"].list.map { URL(fileURLWithPath: $0.text!) }
     let context = FileToolContext(cwd: cwd, roots: workspaceRoots(primary: cwd, additional: roots))
@@ -42,7 +47,7 @@ private func run(_ request: JSON) -> JSON {
         // SessionTools.piPrepared applies exactly this source coercer with
         // the offered definition before NativeTools performs key validation.
         let prepared = PiProviderRules.coerceArguments(item["arguments"], schema: definition.schema)
-        let call = ToolCall(id: "find-oracle", name: "find", arguments: prepared)
+        let call = ToolCall(id: "file-search-oracle", name: name, arguments: prepared)
         let cancellation = BlockingWorkCancellation()
         if item["cancelled"].flag == true { cancellation.cancel() }
         var response: JSON = ["prepared": prepared]

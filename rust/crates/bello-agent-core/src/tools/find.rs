@@ -1,4 +1,4 @@
-//! The source Find loop, separated from Foundation's directory enumerator.
+//! The source Find loop and shared Find/Grep candidate collection.
 //!
 //! Production traversal is deliberately macOS-only. Unix unit fixtures exercise
 //! the pure loop and the platform fnmatch without presenting Linux traversal as
@@ -9,7 +9,7 @@ use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 #[cfg(target_os = "macos")]
-mod macos;
+pub(in crate::tools) mod macos;
 
 pub(super) fn invoke(
     context: &FileToolContext,
@@ -35,31 +35,34 @@ pub(super) fn invoke(
 use self::source::{Candidate, ScanControl, Scanner, execute};
 
 #[cfg(any(target_os = "macos", all(test, unix)))]
-mod source {
+pub(in crate::tools) mod source {
     use super::*;
     use crate::tools::result_text;
     use std::ffi::{c_char, c_int};
     use unicode_normalization::UnicodeNormalization;
     use unicode_segmentation::UnicodeSegmentation;
 
-    const CANDIDATE_LIMIT: usize = 20_000;
-    const OUTPUT_BYTES: usize = 32_768;
-    const LIMITED_FOOTER: &str = "\n[Search limited; narrow the path/pattern. Large/binary files and .git/node_modules/.build are skipped.]";
-    const COMPLETE_FOOTER: &str =
+    pub(in crate::tools) const CANDIDATE_LIMIT: usize = 20_000;
+    pub(in crate::tools) const OUTPUT_BYTES: usize = 32_768;
+    pub(in crate::tools) const LIMITED_FOOTER: &str = "\n[Search limited; narrow the path/pattern. Large/binary files and .git/node_modules/.build are skipped.]";
+    pub(in crate::tools) const COMPLETE_FOOTER: &str =
         "\n[Binary and >2 MiB files, .git/node_modules/.build are skipped by grep.]";
 
     /// Foundation supplies its URL.path and lastPathComponent without Rust
     /// filesystem/path conversions. Directories and special files are entries,
     /// too; Find never reads candidate contents or filters by file type.
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub(super) struct Candidate {
+    pub(in crate::tools) struct Candidate<Resource = ()> {
         pub path: String,
         pub basename: String,
         pub is_symbolic_link: bool,
+        // Native adapters retain the original enumerated URL, including its
+        // resource cache. Pure fixtures need no platform object here.
+        pub resource: Resource,
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub(super) enum ScanControl {
+    pub(in crate::tools) enum ScanControl {
         Continue,
         SkipDescendants,
         Stop,
@@ -69,21 +72,29 @@ mod source {
     /// A native enumeration error ends scanning silently, as the source's
     /// errorHandler returning false does. Construction errors are reported
     /// before this interface is entered.
-    pub(super) trait Scanner {
-        fn root(&self) -> &Candidate;
+    pub(in crate::tools) trait Scanner {
+        type Resource: Clone;
+
+        fn root(&self) -> &Candidate<Self::Resource>;
         fn is_directory(&self) -> bool;
         fn scan(
             &mut self,
-            visit: &mut dyn FnMut(Candidate) -> ToolResult<ScanControl>,
+            visit: &mut dyn FnMut(Candidate<Self::Resource>) -> ToolResult<ScanControl>,
         ) -> ToolResult<()>;
     }
 
-    pub(super) fn execute(
-        scanner: &mut impl Scanner,
-        pattern: &str,
-        limit: usize,
+    pub(in crate::tools) struct Scanned<Resource> {
+        pub root: Candidate<Resource>,
+        pub candidates: Vec<Candidate<Resource>>,
+        pub scan_truncated: bool,
+    }
+
+    /// Keep source traversal and its cap before regex construction and sorting.
+    /// This seam is shared by Find and Grep; neither adds a second traversal.
+    pub(in crate::tools) fn collect_candidates<S: Scanner>(
+        scanner: &mut S,
         cancellation: &CancellationToken,
-    ) -> ToolResult<Value> {
+    ) -> ToolResult<Scanned<S::Resource>> {
         check_cancelled(cancellation)?;
         let root = scanner.root().clone();
         let mut candidates = Vec::new();
@@ -112,9 +123,31 @@ mod source {
             // A selected file is not subject to the traversal exclusions.
             candidates.push(root.clone());
         }
+        Ok(Scanned {
+            root,
+            candidates,
+            scan_truncated,
+        })
+    }
+
+    pub(in crate::tools) fn sort_candidates<Resource>(candidates: &mut [Candidate<Resource>]) {
         // Swift String.< compares canonically normalized Unicode scalars. Sort
         // full paths stably and keep each original spelling for matching/output.
         candidates.sort_by_cached_key(|candidate| candidate.path.nfc().collect::<String>());
+    }
+
+    pub(super) fn execute(
+        scanner: &mut impl Scanner,
+        pattern: &str,
+        limit: usize,
+        cancellation: &CancellationToken,
+    ) -> ToolResult<Value> {
+        let Scanned {
+            root,
+            mut candidates,
+            scan_truncated,
+        } = collect_candidates(scanner, cancellation)?;
+        sort_candidates(&mut candidates);
         let mut hits = Vec::new();
         for candidate in candidates {
             check_cancelled(cancellation)?;
@@ -128,6 +161,14 @@ mod source {
                 break;
             }
         }
+        Ok(search_result(hits, limit, scan_truncated))
+    }
+
+    pub(in crate::tools) fn search_result(
+        hits: Vec<String>,
+        limit: usize,
+        scan_truncated: bool,
+    ) -> Value {
         let output = hits.join("\n");
         let limited = hits.len() >= limit || scan_truncated || output.len() > OUTPUT_BYTES;
         let mut text = preview(&output, OUTPUT_BYTES);
@@ -136,10 +177,13 @@ mod source {
         } else {
             COMPLETE_FOOTER
         });
-        Ok(result_text(text, false))
+        result_text(text, false)
     }
 
-    fn relative_path<'a>(candidate: &'a Candidate, root: &Candidate) -> &'a str {
+    pub(in crate::tools) fn relative_path<'a, Resource>(
+        candidate: &'a Candidate<Resource>,
+        root: &Candidate<Resource>,
+    ) -> &'a str {
         let path = candidate.path.as_str();
         let root_path = root.path.as_str();
         let normalized_path: String = path.nfc().collect();
@@ -169,7 +213,7 @@ mod source {
             .all(|prefix| text.next().is_some_and(|part| part.nfc().eq(prefix.nfc())))
     }
 
-    fn preview(text: &str, bytes: usize) -> String {
+    pub(in crate::tools) fn preview(text: &str, bytes: usize) -> String {
         // String(decoding: UTF8.prefix(bytes), as: UTF8.self) is lossy. Swift
         // then trims actual U+FFFD at BOTH ends, even without byte truncation.
         String::from_utf8_lossy(&text.as_bytes()[..text.len().min(bytes)])

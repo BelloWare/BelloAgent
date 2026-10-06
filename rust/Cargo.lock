@@ -529,6 +529,7 @@ version = "0.1.0"
 dependencies = [
  "block2",
  "futures-util",
+ "libc",
  "objc2",
  "objc2-foundation",
  "reqwest",

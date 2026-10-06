@@ -1,4 +1,4 @@
-//! Foundation's URL resolver and directory enumerator for native `find`.
+//! Foundation's URL resolver and shared native Find/Grep directory enumerator.
 //!
 //! This entry point is called only inside the existing blocking worker. All
 //! Objective-C objects, including the enumerator and its block, are created and
@@ -74,7 +74,7 @@ fn appended(root: &NSURL, component: &NSString) -> ToolResult<Retained<NSURL>> {
 fn effective_roots(context: &FileToolContext) -> ToolResult<Vec<Retained<NSURL>>> {
     // Resources.workspaceRoots uses URL.path and Swift Set<String> equality.
     // NativeTools' shared Rust context only removes byte-identical PathBufs;
-    // restore the source's canonical Unicode equality for Find alone. Preserve
+    // restore the source's canonical Unicode equality for Find/Grep. Preserve
     // the first spelling, including the primary root, for actual resolution.
     let mut seen = BTreeSet::new();
     let mut roots = Vec::new();
@@ -88,7 +88,7 @@ fn effective_roots(context: &FileToolContext) -> ToolResult<Vec<Retained<NSURL>>
     Ok(roots)
 }
 
-fn resolve_path(
+pub(in crate::tools) fn resolve_path(
     context: &FileToolContext,
     value: &Value,
     manager: &NSFileManager,
@@ -140,8 +140,8 @@ fn resolve_path(
 
 type ErrorHandler = RcBlock<dyn Fn(NonNull<NSURL>, NonNull<NSError>) -> Bool>;
 
-struct FoundationScanner<'a> {
-    root: Candidate,
+pub(in crate::tools) struct FoundationScanner<'a> {
+    root: Candidate<Retained<NSURL>>,
     iterator: Option<Retained<NSDirectoryEnumerator<NSURL>>>,
     symbolic_link_keys: Retained<NSArray<NSURLResourceKey>>,
     // Keep the block alive through enumeration as well as the creation call.
@@ -150,9 +150,9 @@ struct FoundationScanner<'a> {
 }
 
 impl<'a> FoundationScanner<'a> {
-    fn new(
+    pub(in crate::tools) fn new(
         manager: &NSFileManager,
-        root: &NSURL,
+        root: &Retained<NSURL>,
         cancellation: &'a CancellationToken,
     ) -> ToolResult<Self> {
         let mut is_directory = Bool::NO;
@@ -188,7 +188,7 @@ impl<'a> FoundationScanner<'a> {
             None
         };
         Ok(Self {
-            root: candidate(root, false)?,
+            root: candidate(root.clone(), false)?,
             iterator,
             symbolic_link_keys,
             _error_handler: error_handler,
@@ -208,19 +208,27 @@ impl<'a> FoundationScanner<'a> {
     }
 }
 
-fn candidate(url: &NSURL, is_symbolic_link: bool) -> ToolResult<Candidate> {
+fn candidate(
+    url: Retained<NSURL>,
+    is_symbolic_link: bool,
+) -> ToolResult<Candidate<Retained<NSURL>>> {
     Ok(Candidate {
-        path: url_path(url)?.to_string(),
+        path: url_path(&url)?.to_string(),
         basename: url
             .lastPathComponent()
             .ok_or_else(invalid_path)?
             .to_string(),
         is_symbolic_link,
+        // Carry the enumerator's original URL through sorting and matching;
+        // reconstructing from its path would discard prefetched metadata.
+        resource: url,
     })
 }
 
 impl Scanner for FoundationScanner<'_> {
-    fn root(&self) -> &Candidate {
+    type Resource = Retained<NSURL>;
+
+    fn root(&self) -> &Candidate<Self::Resource> {
         &self.root
     }
 
@@ -230,17 +238,17 @@ impl Scanner for FoundationScanner<'_> {
 
     fn scan(
         &mut self,
-        visit: &mut dyn FnMut(Candidate) -> ToolResult<ScanControl>,
+        visit: &mut dyn FnMut(Candidate<Self::Resource>) -> ToolResult<ScanControl>,
     ) -> ToolResult<()> {
         let Some(iterator) = &self.iterator else {
             return Ok(());
         };
         while let Some(url) = iterator.nextObject() {
             check_cancelled(self.cancellation)?;
-            let mut entry = candidate(&url, false)?;
+            let mut entry = candidate(url, false)?;
             // Source checks excluded basenames before fetching resource values.
             if !matches!(entry.basename.as_str(), ".git" | "node_modules" | ".build") {
-                entry.is_symbolic_link = self.is_symbolic_link(&url);
+                entry.is_symbolic_link = self.is_symbolic_link(&entry.resource);
             }
             match visit(entry)? {
                 ScanControl::Continue => {}
