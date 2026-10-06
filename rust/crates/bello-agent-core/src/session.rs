@@ -605,6 +605,7 @@ pub struct SessionStore {
     _lock: Option<File>,
     session: Session,
     uncertain: bool,
+    retired: bool,
     journal: Option<File>,
     encoded_bytes: usize,
     snapshot_limit: usize,
@@ -623,6 +624,7 @@ impl SessionStore {
             _lock: None,
             session,
             uncertain: false,
+            retired: false,
             journal: None,
             encoded_bytes,
             snapshot_limit: MAX_SNAPSHOT_BYTES,
@@ -645,6 +647,7 @@ impl SessionStore {
         self._lock.is_some()
     }
     pub fn persist_to(&mut self, path: impl AsRef<Path>) -> Result<()> {
+        self.require_live_writer()?;
         if self.is_persistent() {
             let requested = if path.as_ref().is_absolute() {
                 path.as_ref().to_owned()
@@ -766,6 +769,7 @@ impl SessionStore {
             _lock: Some(lock),
             session,
             uncertain: false,
+            retired: false,
             journal: None,
             encoded_bytes,
             snapshot_limit: MAX_SNAPSHOT_BYTES,
@@ -785,10 +789,25 @@ impl SessionStore {
         self.session.queue_edit_status(edit_id)
     }
     pub(crate) fn require_certain(&self) -> Result<()> {
+        self.require_live_writer()?;
         if self.uncertain {
             return Err(Error::PersistenceUncertain(
                 "Reopen the session before checking or changing a queued edit".into(),
             ));
+        }
+        Ok(())
+    }
+    /// Controller-only ownership transfer: admission must already be fenced and
+    /// every worker successfully joined. Cached snapshots remain readable, but
+    /// this store can never regain write or authoritative recovery access.
+    pub(crate) fn retire_writer(&mut self) {
+        self.retired = true;
+        self.journal = None;
+        self._lock = None;
+    }
+    fn require_live_writer(&self) -> Result<()> {
+        if self.retired {
+            return Err(invalid("This session writer is permanently retired"));
         }
         Ok(())
     }
@@ -799,6 +818,7 @@ impl SessionStore {
         self.session.clone()
     }
     pub fn transact<T>(&mut self, change: impl FnOnce(&mut Session) -> Result<T>) -> Result<T> {
+        self.require_live_writer()?;
         if !self.is_persistent() {
             return Err(invalid("Materialize this New chat before accepting input"));
         }
@@ -846,6 +866,7 @@ impl SessionStore {
     /// Append and synchronize only the new stream fragment. Accepted input and
     /// queue/edit commands still use atomic full checkpoints through transact.
     pub fn append_delta(&mut self, reply_id: &str, delta: Delta) -> Result<()> {
+        self.require_live_writer()?;
         if !self.is_persistent() {
             return Err(invalid("Materialize this New chat before accepting output"));
         }
@@ -921,6 +942,7 @@ impl SessionStore {
         Ok(())
     }
     fn write(&self, session: &Session, reserve_recovery: bool) -> Result<usize> {
+        self.require_live_writer()?;
         let parent = self
             .path
             .parent()

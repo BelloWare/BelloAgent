@@ -312,6 +312,7 @@ impl AgentView {
         chat.error = None;
         let record = chat.record.clone();
         let config = chat.controller.configuration();
+        let source = Arc::downgrade(&chat.controller);
         let id = id.to_owned();
         let task = cx.background_executor().spawn(async move {
             let store = if record.snapshot.exists() {
@@ -332,14 +333,43 @@ impl AgentView {
             let _ = view.update(cx, |view, cx| {
                 if view
                     .chat_ref(&id)
-                    .is_none_or(|chat| chat.load_generation != generation)
+                    .is_none_or(|chat| chat.load_generation != generation || !source.ptr_eq(&Arc::downgrade(&chat.controller)))
                 {
                     return;
                 }
                 if let Some(chat) = view.chat_mut(&id) {
                     chat.loading = false;
                     match loaded {
-                        Ok(controller) => chat.replace_controller(controller, cx),
+                        Ok(controller) => {
+                            let outgoing = chat.controller.clone();
+                            // This production path replaces a pending loader. A
+                            // future same-path runtime replacement must retire
+                            // and join BEFORE opening its new SessionStore.
+                            if let Err(error) = outgoing.retire() {
+                                chat.load_failed = true;
+                                chat.error = Some(format!("Previous chat runtime could not be retired: {error}"));
+                                cx.notify();
+                                return;
+                            }
+                            let replacement = Arc::downgrade(&controller);
+                            let retired_id = id.clone();
+                            let retirement = cx.background_executor().spawn(async move {
+                                outgoing.retire_and_wait().await.map_err(|error| error.to_string())
+                            });
+                            cx.spawn(async move |view, cx| {
+                                if let Err(error) = retirement.await {
+                                    let _ = view.update(cx, |view, cx| {
+                                        if let Some(chat) = view.chat_mut(&retired_id)
+                                            && replacement.ptr_eq(&Arc::downgrade(&chat.controller))
+                                        {
+                                            chat.error = Some(format!("Previous chat runtime could not finish retiring: {error}"));
+                                            cx.notify();
+                                        }
+                                    });
+                                }
+                            }).detach();
+                            chat.replace_controller(controller, cx);
+                        },
                         Err(error) => {
                             chat.load_failed = true;
                             chat.error = Some(format!("Chat could not be opened: {error}"));
@@ -350,9 +380,9 @@ impl AgentView {
                     let snapshot = view
                         .chat_ref(&id)
                         .filter(|chat| chat.controller.is_persistent())
-                        .map(|chat| chat.session.clone());
-                    if let Some(snapshot) = snapshot {
-                        view.receive_snapshot(&id, snapshot, cx);
+                        .map(|chat| (Arc::downgrade(&chat.controller), chat.session.clone()));
+                    if let Some((source, snapshot)) = snapshot {
+                        view.receive_snapshot(&id, &source, snapshot, cx);
                     }
                     view.reconcile_edit(&id, cx);
                     view.reconcile_intents(&id, cx);
@@ -551,9 +581,17 @@ impl AgentView {
     pub(crate) fn receive_snapshot(
         &mut self,
         id: &str,
+        source: &std::sync::Weak<Controller>,
         snapshot: Arc<bello_agent_core::Session>,
         cx: &mut Context<Self>,
     ) {
+        // Reject before title writes, edit recovery, errors or notifications.
+        if self
+            .chat_ref(id)
+            .is_none_or(|chat| !source.ptr_eq(&Arc::downgrade(&chat.controller)))
+        {
+            return;
+        }
         let mut title = None;
         let mut notify = self.record.id == id;
         if let Some(chat) = self.chat_mut(id) {
@@ -577,17 +615,15 @@ impl AgentView {
             }
             let id = id.to_owned();
             let workspace = self.workspace.clone();
+            let source = source.clone();
+            let saved_id = id.clone();
             let task = cx.background_executor().spawn(async move {
                 catalog_operation(&workspace, |store| store.name_chat(&id, &title))
             });
             cx.spawn(async move |view, cx| {
                 let outcome = task.await;
                 let _ = view.update(cx, |view, cx| {
-                    view.observe_catalog_uncertainty(outcome.uncertain, cx);
-                    if let Err(error) = outcome.display_result() {
-                        view.error = Some(format!("Chat title could not be saved: {error}"));
-                        cx.notify();
-                    }
+                    view.finish_snapshot_title(&saved_id, &source, outcome, cx);
                 });
             })
             .detach();
@@ -605,6 +641,24 @@ impl AgentView {
             self.reconcile_edit(id, cx);
         }
         if notify {
+            cx.notify();
+        }
+    }
+    pub(crate) fn finish_snapshot_title(
+        &mut self,
+        id: &str,
+        source: &std::sync::Weak<Controller>,
+        outcome: crate::chat_organization::CatalogOutcome<()>,
+        cx: &mut Context<Self>,
+    ) {
+        // Catalog uncertainty is workspace-wide even if this chat generation
+        // was replaced while its already-admitted title write was finishing.
+        self.observe_catalog_uncertainty(outcome.uncertain, cx);
+        if let Some(chat) = self.chat_mut(id)
+            && source.ptr_eq(&Arc::downgrade(&chat.controller))
+            && let Err(error) = outcome.display_result()
+        {
+            chat.error = Some(format!("Chat title could not be saved: {error}"));
             cx.notify();
         }
     }

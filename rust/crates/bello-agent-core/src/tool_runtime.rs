@@ -221,6 +221,9 @@ impl Controller {
             .map(|tools| tools.native.definitions())
             .unwrap_or_default();
         loop {
+            if self.is_retired() {
+                cancel.cancel();
+            }
             let reply_id = snapshot
                 .active_reply
                 .clone()
@@ -251,7 +254,7 @@ impl Controller {
             let prepared = {
                 let mut inner = self.inner.lock().expect("session mutex poisoned");
                 // Stop wins a terminal response already in flight.
-                let response = if cancel.is_cancelled() {
+                let response = if self.is_retired() || cancel.is_cancelled() {
                     Err(Error::Cancelled)
                 } else {
                     response
@@ -326,7 +329,7 @@ impl Controller {
             )
             .await;
             let mut inner = self.inner.lock().expect("session mutex poisoned");
-            let stopped = cancel.is_cancelled();
+            let stopped = self.is_retired() || cancel.is_cancelled();
             if let Err(error) = inner
                 .store
                 .transact(|session| session.settle_tools(&reply_id, results, stopped))
@@ -708,6 +711,15 @@ mod tests {
 
     #[tokio::test]
     async fn shutdown_awaits_an_entered_read_before_reporting_the_batch_settled() {
+        joined_entered_read(false).await;
+    }
+
+    #[tokio::test]
+    async fn retirement_joins_entered_read_for_concurrent_and_cancelled_waiters() {
+        joined_entered_read(true).await;
+    }
+
+    async fn joined_entered_read(retire: bool) {
         use std::{
             io::{Read, Write},
             sync::{Condvar, Mutex},
@@ -784,18 +796,70 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        let shutdown = control.shutdown();
-        tokio::pin!(shutdown);
-        // Poll the real shutdown future once: Stop is requested, then the
-        // worker join must still be pending while the entered read is held.
-        assert!(futures_util::poll!(&mut shutdown).is_pending());
-        assert_eq!(workers.occupancy().active, 1);
-        assert_eq!(control.snapshot().state, RunState::Running);
-        drop(release);
-        tokio::time::timeout(Duration::from_secs(5), shutdown)
-            .await
-            .unwrap()
-            .unwrap();
+        let path = dir.path().join("session.json");
+        // Preserve queued/edit-held state while the entered syscall settles.
+        let queued = Submission::new("queued after tool".into(), Lane::FollowUp);
+        control.submit_identified(queued.clone()).unwrap();
+        control.begin_edit(&queued.id, "tool-hold").unwrap();
+        if retire {
+            control.retire().unwrap();
+            assert!(control.resume().is_err());
+            assert!(control.retry().is_err());
+            assert!(
+                control
+                    .cancel_edit_certain("tool-hold", &queued.id)
+                    .is_err()
+            );
+            let mut abandoned = Box::pin(control.retire_and_wait());
+            assert!(futures_util::poll!(&mut abandoned).is_pending());
+            let mut second = Box::pin(control.retire_and_wait());
+            assert!(futures_util::poll!(&mut second).is_pending());
+            drop(abandoned);
+            assert!(futures_util::poll!(&mut second).is_pending());
+            assert_eq!(workers.occupancy().active, 1);
+            assert_eq!(control.snapshot().state, RunState::Running);
+            assert!(
+                SessionStore::open(&path).is_err(),
+                "entered read still owns storage"
+            );
+            assert!(
+                control.inner.try_lock().is_ok(),
+                "join must not hold actor lock"
+            );
+            assert!(
+                control.worker.try_lock().is_ok(),
+                "join must not hold handle lock"
+            );
+            drop(release);
+            tokio::time::timeout(Duration::from_secs(5), second)
+                .await
+                .unwrap()
+                .unwrap();
+            let reopened = Controller::new(SessionStore::open(&path).unwrap(), None).unwrap();
+            assert_eq!(reopened.snapshot().pending[0].id, queued.id);
+            assert_eq!(
+                reopened.snapshot().edit.as_ref().unwrap().edit_id,
+                "tool-hold"
+            );
+            assert!(
+                control
+                    .submit("stale owner".into(), Lane::FollowUp)
+                    .is_err()
+            );
+        } else {
+            let mut shutdown = Box::pin(control.shutdown());
+            // The real worker join must remain pending while the read is held.
+            assert!(futures_util::poll!(&mut shutdown).is_pending());
+            assert_eq!(workers.occupancy().active, 1);
+            assert_eq!(control.snapshot().state, RunState::Running);
+            drop(release);
+            tokio::time::timeout(Duration::from_secs(5), shutdown)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(!control.is_retired());
+            assert!(SessionStore::open(&path).is_err());
+        }
         let snapshot = control.snapshot();
         assert_eq!(snapshot.state, RunState::Paused);
         assert!(snapshot.messages.iter().any(|row|matches!(&row.tool_record,Some(ToolRecord::Result(record)) if record.outcome==ToolOutcome::Unknown)));

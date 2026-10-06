@@ -187,12 +187,15 @@ impl ChatState {
         cx: &mut Context<AgentView>,
     ) -> Task<()> {
         let mut updates = controller.subscribe();
+        // Weak identity neither retains the writer lock nor allows an old
+        // publication to address a replacement with the same chat ID.
+        let source = Arc::downgrade(controller);
         cx.spawn(async move |view, cx| {
             while updates.changed().await.is_ok() {
                 let snapshot = updates.borrow_and_update().clone();
                 if view
                     .update(cx, |view, cx| {
-                        view.receive_snapshot(&id, snapshot, cx);
+                        view.receive_snapshot(&id, &source, snapshot, cx);
                     })
                     .is_err()
                 {
@@ -201,6 +204,8 @@ impl ChatState {
             }
         })
     }
+    /// Presentation replacement only. The owner must explicitly retire/join
+    /// any outgoing runtime before transferring persistent-store authority.
     pub fn replace_controller(&mut self, controller: Arc<Controller>, cx: &mut Context<AgentView>) {
         if !Arc::ptr_eq(&self.controller, &controller) {
             self.transcript = None;

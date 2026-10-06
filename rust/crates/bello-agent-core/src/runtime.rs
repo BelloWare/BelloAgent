@@ -6,6 +6,10 @@ use crate::{
     Credential, Lane, Profile, QueueEditState, QueueEditStatus, ResponsesClient, Result, RunState,
     Session, SessionStore, Submission, invalid,
 };
+use futures_util::{
+    FutureExt,
+    future::{BoxFuture, Shared, join_all},
+};
 use std::sync::{
     Arc, Mutex, OnceLock, RwLock,
     atomic::{AtomicBool, AtomicU64, Ordering},
@@ -18,6 +22,8 @@ struct Inner {
     cancel: Option<CancellationToken>,
     fatal: Option<String>,
 }
+type WorkerJoin = Shared<BoxFuture<'static, std::result::Result<(), String>>>;
+
 pub struct Configuration {
     profile: Profile,
     credential: Credential,
@@ -30,12 +36,14 @@ pub struct Controller {
     published_revision: AtomicU64,
     active_cancel: RwLock<Option<CancellationToken>>,
     stop_requested: AtomicBool,
+    retired: AtomicBool,
     worker_active: AtomicBool,
     config: Option<Arc<Configuration>>,
     options: RuntimeOptions,
     client: ResponsesClient,
     runtime: tokio::runtime::Handle,
     worker: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    worker_joins: Mutex<Vec<(tokio::task::Id, WorkerJoin)>>,
 }
 impl Controller {
     pub fn new(
@@ -77,6 +85,7 @@ impl Controller {
             published_revision: AtomicU64::new(0),
             active_cancel: RwLock::new(None),
             stop_requested: AtomicBool::new(false),
+            retired: AtomicBool::new(false),
             worker_active: AtomicBool::new(false),
             inner: Mutex::new(Inner {
                 store,
@@ -89,6 +98,7 @@ impl Controller {
             client: ResponsesClient::new()?,
             runtime: shared_runtime()?.handle().clone(),
             worker: Mutex::new(None),
+            worker_joins: Mutex::new(Vec::new()),
         }))
     }
     pub fn configuration(&self) -> Option<Arc<Configuration>> {
@@ -104,6 +114,7 @@ impl Controller {
             .inner
             .lock()
             .map_err(|_| invalid("Session is unavailable"))?;
+        self.require_admission()?;
         inner.store.persist_to(path)?;
         self.publish(&inner);
         Ok(())
@@ -150,12 +161,11 @@ impl Controller {
         self.submit_identified(Submission::new(text, lane))
     }
     pub fn submit_identified(self: &Arc<Self>, mut item: Submission) -> Result<()> {
+        self.require_admission()?;
         let config=self.config.as_ref().ok_or_else(||invalid("No connection configured. Launch with --profile and --credential-stdin; no credentials are discovered automatically."))?;
         item.model = Some(config.profile.model_id.clone());
         item.effort = Some(config.profile.thinking_level.clone());
-        self.change(|s| s.submit(item))?;
-        self.launch(None);
-        Ok(())
+        self.change_and_launch(|session| session.submit(item).map(|()| None))
     }
     pub fn stop(&self) -> Result<()> {
         if self.worker_active.load(Ordering::Acquire) {
@@ -171,33 +181,126 @@ impl Controller {
         }
         Ok(())
     }
-    /// Cancel and await the current worker before dropping or reopening storage.
-    /// Callers should prevent new submissions during shutdown.
+    /// Permanently reject new commands and worker continuations on this controller.
+    /// This synchronous fence never releases its SessionStore ownership. Already
+    /// admitted work may settle; retire_and_wait releases the writer only after
+    /// every worker successfully joins, even when stale Arcs still exist.
+    pub fn retire(&self) -> Result<()> {
+        self.retired.store(true, Ordering::Release);
+        let stopped = self.stop();
+        // Admission, checkpointing, reservation and handle registration share the
+        // actor lock. Cross that barrier after fencing, so no admitted launch can
+        // register behind the join snapshot. Never hold it while awaiting a task.
+        let admitted = self
+            .inner
+            .lock()
+            .map(|_| ())
+            .map_err(|_| invalid("Session is unavailable"));
+        stopped.and(admitted)
+    }
+    pub fn is_retired(&self) -> bool {
+        self.retired.load(Ordering::Acquire)
+    }
+    pub async fn retire_and_wait(&self) -> Result<()> {
+        let retired = self.retire();
+        // Even a cancellation failure must not skip joining an owned worker.
+        let joined = self.join_workers().await;
+        joined?;
+        retired?;
+        self.inner
+            .lock()
+            .map_err(|_| invalid("Session is unavailable"))?
+            .store
+            .retire_writer();
+        Ok(())
+    }
+    /// Cancel and await existing workers, retaining admission for ordinary
+    /// window close/reopen. Callers must prevent new commands during shutdown.
+    /// Permanent replacement instead requires retire_and_wait.
     pub async fn shutdown(&self) -> Result<()> {
-        self.stop()?;
-        let worker = self
-            .worker
+        let stopped = self.stop();
+        // Include already-admitted commands still checkpointing/registering.
+        let admitted = self
+            .inner
+            .lock()
+            .map(|_| ())
+            .map_err(|_| invalid("Session is unavailable"));
+        let stopped_after_admission = self.stop();
+        // A failed stop/barrier must not abandon a still-owned worker handle.
+        self.join_workers().await?;
+        {
+            let inner = self
+                .inner
+                .lock()
+                .map_err(|_| invalid("Session is unavailable"))?;
+            // Stop may observe an active worker just before its final exit and
+            // set the flag just after worker_finished. A joined idle generation
+            // must not carry that late flag into an explicit reopen/Resume.
+            if !inner.worker_running {
+                self.stop_requested.store(false, Ordering::Release);
+            }
+        }
+        stopped.and(admitted).and(stopped_after_admission)
+    }
+    async fn join_workers(&self) -> Result<()> {
+        let joins = {
+            // Lock order is actor -> worker -> joins; no lock crosses await.
+            let mut worker = self
+                .worker
+                .lock()
+                .map_err(|_| invalid("Worker is unavailable"))?;
+            let mut joins = self
+                .worker_joins
+                .lock()
+                .map_err(|_| invalid("Worker is unavailable"))?;
+            if let Some(worker) = worker.take() {
+                Self::remember_worker(&mut joins, worker);
+            }
+            joins.clone()
+        };
+        // A caller dropping this future cannot detach or consume the only join.
+        // Concurrent callers see the same result, including a worker panic.
+        let results = join_all(joins.iter().map(|(_, join)| join.clone())).await;
+        self.worker_joins
             .lock()
             .map_err(|_| invalid("Worker is unavailable"))?
-            .take();
-        if let Some(worker) = worker {
-            worker
-                .await
-                .map_err(|_| invalid("Session worker terminated unexpectedly"))?;
+            .retain(|(id, _)| {
+                !joins
+                    .iter()
+                    .zip(&results)
+                    .any(|((joined, _), result)| id == joined && result.is_ok())
+            });
+        for result in results {
+            result.map_err(invalid)?;
         }
         Ok(())
     }
+    fn remember_worker(
+        joins: &mut Vec<(tokio::task::Id, WorkerJoin)>,
+        worker: tokio::task::JoinHandle<()>,
+    ) {
+        // Polling a completed join is nonblocking. Keep errors and unfinished
+        // tails; errors remain sticky, while successful old tails can be freed.
+        joins.retain(|(_, join)| !matches!(join.clone().now_or_never(), Some(Ok(()))));
+        let id = worker.id();
+        let joined = async move {
+            worker
+                .await
+                .map_err(|_| "Session worker terminated unexpectedly".to_owned())
+        }
+        .boxed()
+        .shared();
+        if !matches!(joined.clone().now_or_never(), Some(Ok(()))) {
+            joins.push((id, joined));
+        }
+    }
     pub fn resume(self: &Arc<Self>) -> Result<()> {
         self.require_config()?;
-        self.change(Session::resume)?;
-        self.launch(None);
-        Ok(())
+        self.change_and_launch(|session| session.resume().map(|()| None))
     }
     pub fn retry(self: &Arc<Self>) -> Result<()> {
         self.require_config()?;
-        let item = self.change(Session::retry_turn)?;
-        self.launch(Some(item));
-        Ok(())
+        self.change_and_launch(|session| session.retry_turn().map(Some))
     }
     /// Recovery reads serialize with edits and commits. Published snapshots may
     /// remain stale after an uncertain write and are never used for this answer.
@@ -206,6 +309,7 @@ impl Controller {
             .inner
             .lock()
             .map_err(|_| invalid("Session is unavailable"))?;
+        self.require_admission()?;
         if let Some(error) = &inner.fatal {
             return Err(invalid(error.clone()));
         }
@@ -222,11 +326,12 @@ impl Controller {
         edit_id: &str,
         turn_id: &str,
     ) -> Result<QueueEditStatus> {
-        let (status, launch) = {
+        {
             let mut inner = self
                 .inner
                 .lock()
                 .map_err(|_| invalid("Session is unavailable"))?;
+            self.require_admission()?;
             if let Some(error) = &inner.fatal {
                 return Err(invalid(error.clone()));
             }
@@ -261,15 +366,10 @@ impl Controller {
                 && snapshot.edit.is_none()
                 && !snapshot.pending.is_empty();
             if launch {
-                inner.worker_running = true;
-                self.worker_active.store(true, Ordering::Release);
+                self.launch(&mut inner, None);
             }
-            (status, launch)
-        };
-        if launch {
-            self.spawn_reserved_worker(None);
+            Ok(status)
         }
-        Ok(status)
     }
     pub fn resolve_edit(
         self: &Arc<Self>,
@@ -277,14 +377,12 @@ impl Controller {
         outcome: &str,
         text: Option<&str>,
     ) -> Result<()> {
-        self.change(|s| s.resolve_edit(edit_id, outcome, text))?;
-        self.launch(None);
-        Ok(())
+        self.change_and_launch(|session| {
+            session.resolve_edit(edit_id, outcome, text).map(|()| None)
+        })
     }
     pub fn remove(self: &Arc<Self>, id: &str) -> Result<()> {
-        self.change(|s| s.remove(id))?;
-        self.launch(None);
-        Ok(())
+        self.change_and_launch(|session| session.remove(id).map(|()| None))
     }
     pub fn reorder(&self, ids: &[String]) -> Result<()> {
         self.change(|s| s.reorder(ids))
@@ -303,7 +401,14 @@ impl Controller {
             |s| s.promote_to_steering(id),
         )
     }
+    fn require_admission(&self) -> Result<()> {
+        if self.is_retired() {
+            return Err(invalid("This session controller is permanently retired"));
+        }
+        Ok(())
+    }
     fn require_config(&self) -> Result<()> {
+        self.require_admission()?;
         if self.config.is_none() {
             return Err(invalid("No connection configured"));
         }
@@ -321,6 +426,7 @@ impl Controller {
             .inner
             .lock()
             .map_err(|_| invalid("Session is unavailable"))?;
+        self.require_admission()?;
         if let Some(error) = &inner.fatal {
             return Err(invalid(error.clone()));
         }
@@ -331,6 +437,24 @@ impl Controller {
             self.publish(&inner);
         }
         result
+    }
+    fn change_and_launch(
+        self: &Arc<Self>,
+        action: impl FnOnce(&mut Session) -> Result<Option<Submission>>,
+    ) -> Result<()> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| invalid("Session is unavailable"))?;
+        self.require_admission()?;
+        if let Some(error) = &inner.fatal {
+            return Err(invalid(error.clone()));
+        }
+        inner.store.require_certain()?;
+        let first = inner.store.transact(action)?;
+        self.publish(&inner);
+        self.launch(&mut inner, first);
+        Ok(())
     }
     fn stream_delta(&self, reply_id: &str, delta: crate::Delta) -> Result<()> {
         let mut inner = self
@@ -344,43 +468,51 @@ impl Controller {
         self.publish(&inner);
         Ok(())
     }
-    fn launch(self: &Arc<Self>, first: Option<Submission>) {
-        if self.config.is_none() {
+    /// The caller has admitted its command and still owns the actor lock.
+    /// A concurrent retirement joins even a worker registered after its fence;
+    /// that worker sees retirement before it can start any external request.
+    fn launch(self: &Arc<Self>, inner: &mut Inner, first: Option<Submission>) {
+        if self.config.is_none() || inner.worker_running || inner.fatal.is_some() {
             return;
         }
-        {
-            let mut inner = self.inner.lock().expect("session mutex poisoned");
-            if inner.worker_running || inner.fatal.is_some() {
+        if first.is_none() {
+            let snapshot = inner.store.snapshot();
+            if snapshot.state == RunState::Running
+                || snapshot.queue_paused
+                || snapshot.edit.is_some()
+                || snapshot.pending.is_empty()
+            {
                 return;
             }
-            if first.is_none() {
-                let snapshot = inner.store.snapshot();
-                if snapshot.state == RunState::Running
-                    || snapshot.queue_paused
-                    || snapshot.edit.is_some()
-                    || snapshot.pending.is_empty()
-                {
-                    return;
-                }
-            }
-            inner.worker_running = true;
-            self.worker_active.store(true, Ordering::Release);
         }
-        self.spawn_reserved_worker(first);
-    }
-    fn spawn_reserved_worker(self: &Arc<Self>, first: Option<Submission>) {
+        inner.worker_running = true;
+        self.worker_active.store(true, Ordering::Release);
+        let mut worker = self.worker.lock().expect("worker handle lock poisoned");
+        if let Some(previous) = worker.take() {
+            Self::remember_worker(
+                &mut self
+                    .worker_joins
+                    .lock()
+                    .expect("worker joins lock poisoned"),
+                previous,
+            );
+        }
         let this = Arc::clone(self);
-        let worker = self.runtime.spawn(async move {
+        *worker = Some(self.runtime.spawn(async move {
             this.run(first).await;
-        });
-        *self.worker.lock().expect("worker handle lock poisoned") = Some(worker);
+        }));
     }
     async fn run(self: Arc<Self>, mut first: Option<Submission>) {
         loop {
             let prepared = {
                 let mut inner = self.inner.lock().expect("session mutex poisoned");
-                if first.is_none() && self.stop_requested.swap(false, Ordering::AcqRel) {
+                if self.is_retired()
+                    || (first.is_none() && self.stop_requested.swap(false, Ordering::AcqRel))
+                {
                     let result = inner.store.transact(|session| {
+                        if let Some(reply_id) = session.active_reply.clone() {
+                            return session.finish(&reply_id, Err(crate::Error::Cancelled));
+                        }
                         session.queue_paused = true;
                         session.state = RunState::Paused;
                         Ok(())
@@ -400,7 +532,7 @@ impl Controller {
                     Ok(Some(item)) => {
                         let snapshot = inner.store.snapshot();
                         let cancel = CancellationToken::new();
-                        if self.stop_requested.swap(false, Ordering::AcqRel) {
+                        if self.is_retired() || self.stop_requested.swap(false, Ordering::AcqRel) {
                             cancel.cancel();
                         }
                         inner.cancel = Some(cancel.clone());
@@ -436,7 +568,7 @@ impl Controller {
             }
             inner.cancel = None;
             self.publish(&inner);
-            if inner.store.snapshot().state != RunState::Idle {
+            if self.is_retired() || inner.store.snapshot().state != RunState::Idle {
                 self.worker_finished(&mut inner);
                 self.stop_requested.store(false, Ordering::Release);
                 return;
@@ -1482,6 +1614,319 @@ mod edit_status_tests {
             .store
             .require_certain()
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn retirement_rejects_every_mutation_and_releases_only_joined_writer() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
+        let mut store = SessionStore::open(&path).unwrap();
+        let queued = Submission::new("queued original 日本語".into(), Lane::FollowUp);
+        store
+            .transact(|session| {
+                session.submit(queued.clone())?;
+                session.retry = Some(Submission::new("retry original".into(), Lane::FollowUp));
+                session.begin_edit(&queued.id, "held-edit")?;
+                Ok(())
+            })
+            .unwrap();
+        let (controller, listener) = configured_fixture(store);
+        let stale_owner = controller.clone();
+        let cached = controller.snapshot_shared();
+        let bytes = retained_files(dir.path());
+        let revision = controller.revision();
+        controller.retire().unwrap();
+        assert!(controller.is_retired());
+        assert!(
+            SessionStore::open(&path).is_err(),
+            "fencing alone must retain the writer"
+        );
+        for result in [
+            controller.submit("late submit".into(), Lane::FollowUp),
+            controller.submit_identified(Submission::new("late identified".into(), Lane::Steering)),
+            controller.resume(),
+            controller.retry(),
+            controller.begin_edit(&queued.id, "late-edit").map(|_| ()),
+            controller.resolve_edit("held-edit", "saved", Some("late rewrite")),
+            controller.resolve_edit("held-edit", "cancelled", None),
+            controller.resolve_edit("held-edit", "removed", None),
+            controller
+                .cancel_edit_certain("held-edit", &queued.id)
+                .map(|_| ()),
+            controller
+                .cancel_edit_certain("unknown", &queued.id)
+                .map(|_| ()),
+            controller.remove(&queued.id),
+            controller.reorder(std::slice::from_ref(&queued.id)),
+            controller.promote_to_steering(&queued.id),
+            controller.materialize(&path),
+        ] {
+            assert!(
+                matches!(result, Err(Error::Invalid(message)) if message.contains("permanently retired"))
+            );
+        }
+        controller.stop().unwrap();
+        controller.retire().unwrap();
+        assert_never_launched(&controller, &listener);
+        assert_eq!(retained_files(dir.path()), bytes);
+        assert_eq!(controller.revision(), revision);
+        assert!(Arc::ptr_eq(&cached, &controller.snapshot_shared()));
+        // Ordinary stop/join must not release a retired writer accidentally.
+        controller.shutdown().await.unwrap();
+        assert!(SessionStore::open(&path).is_err());
+        controller.retire_and_wait().await.unwrap();
+        assert!(controller.edit_status("held-edit").is_err());
+        let reopened = Controller::with_configuration(
+            SessionStore::open(&path).unwrap(),
+            controller.configuration(),
+        )
+        .unwrap();
+        assert!(!reopened.is_retired());
+        stale_owner.retire_and_wait().await.unwrap();
+        assert!(
+            SessionStore::open(&path).is_err(),
+            "repeated old retirement must not release replacement ownership"
+        );
+        assert_eq!(
+            reopened.snapshot().pending[0].text,
+            "queued original 日本語"
+        );
+        assert_eq!(
+            reopened.snapshot().edit.as_ref().unwrap().edit_id,
+            "held-edit"
+        );
+        assert!(stale_owner.resume().is_err());
+        assert!(Arc::ptr_eq(&cached, &stale_owner.snapshot_shared()));
+        reopened
+            .cancel_edit_certain("held-edit", &queued.id)
+            .unwrap();
+        reopened.resume().unwrap();
+        let listener = TcpListener::from_std(listener).unwrap();
+        let (mut socket, _) = timeout(DEADLINE, listener.accept()).await.unwrap().unwrap();
+        let request = read_fixture_request(&mut socket).await;
+        assert_eq!(
+            request["input"][0]["content"][0]["text"],
+            "queued original 日本語"
+        );
+        complete_fixture(&mut socket).await;
+        await_session(&reopened, |session| session.state == RunState::Idle).await;
+        reopened.shutdown().await.unwrap();
+        assert!(
+            !reopened.is_retired(),
+            "ordinary shutdown must remain reusable"
+        );
+        assert!(
+            SessionStore::open(&path).is_err(),
+            "ordinary shutdown retains ownership"
+        );
+        // Stop can pause the idle tail; explicit Resume preserves that policy.
+        reopened.resume().unwrap();
+        reopened
+            .submit("after ordinary shutdown".into(), Lane::FollowUp)
+            .unwrap();
+        let (mut socket, _) = timeout(DEADLINE, listener.accept()).await.unwrap().unwrap();
+        read_fixture_request(&mut socket).await;
+        complete_fixture(&mut socket).await;
+        await_session(&reopened, |session| session.state == RunState::Idle).await;
+        reopened.shutdown().await.unwrap();
+        // Direct storage entry points also fail closed after ownership transfer.
+        let mut inner = stale_owner.inner.lock().unwrap();
+        assert!(inner.store.persist_to(&path).is_err());
+        assert!(inner.store.transact(|_| Ok(())).is_err());
+        assert!(
+            inner
+                .store
+                .append_delta("stale", crate::Delta::Text("late".into()))
+                .is_err()
+        );
+        assert!(inner.store.edit_status("held-edit").is_err());
+    }
+
+    #[tokio::test]
+    async fn retirement_waits_for_admitted_reservation_before_collecting_join() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
+        let (controller, listener) = configured_fixture(SessionStore::open(&path).unwrap());
+        // Freeze real handle registration after the submit transaction and
+        // worker reservation, while the submitting thread owns the actor lock.
+        let registering = controller.clone();
+        let (entered, registration_ready) = tokio::sync::oneshot::channel();
+        let (release_registration, release) = std::sync::mpsc::channel();
+        let registration = std::thread::spawn(move || {
+            let _guard = registering.worker.lock().unwrap();
+            entered.send(()).unwrap();
+            // Dropping the sender during a failing assertion also opens the gate.
+            let _ = release.recv();
+        });
+        timeout(DEADLINE, registration_ready)
+            .await
+            .unwrap()
+            .unwrap();
+        let submitting = controller.clone();
+        let submit = std::thread::spawn(move || {
+            submitting.submit("admitted before retirement".into(), Lane::FollowUp)
+        });
+        timeout(DEADLINE, async {
+            while !controller.worker_active.load(Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let retiring = controller.clone();
+        let (done, mut completion) = tokio::sync::oneshot::channel();
+        let retirement = std::thread::spawn(move || {
+            let result = retiring.retire();
+            done.send(result).unwrap();
+        });
+        timeout(DEADLINE, async {
+            while !controller.is_retired() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(matches!(
+            completion.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+        release_registration.send(()).unwrap();
+        registration.join().unwrap();
+        submit.join().unwrap().unwrap();
+        timeout(DEADLINE, completion)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        retirement.join().unwrap();
+        timeout(DEADLINE, controller.retire_and_wait())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_never_launched(&controller, &listener);
+        assert_eq!(controller.snapshot().state, RunState::Paused);
+        assert_eq!(
+            controller.snapshot().pending[0].text,
+            "admitted before retirement"
+        );
+        assert!(SessionStore::open(&path).is_ok());
+    }
+
+    #[tokio::test]
+    async fn retirement_joins_real_provider_and_preserves_partial_and_pending_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
+        let (controller, listener) = configured_fixture(SessionStore::open(&path).unwrap());
+        let listener = TcpListener::from_std(listener).unwrap();
+        controller
+            .submit("active provider".into(), Lane::FollowUp)
+            .unwrap();
+        let (mut socket, _) = timeout(DEADLINE, listener.accept()).await.unwrap().unwrap();
+        read_fixture_request(&mut socket).await;
+        socket.write_all(concat!(
+            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"retained partial\"}\n\n"
+        ).as_bytes()).await.unwrap();
+        await_session(&controller, |session| {
+            session
+                .messages
+                .last()
+                .is_some_and(|row| row.text == "retained partial")
+        })
+        .await;
+        let queued = Submission::new("never dispatched".into(), Lane::FollowUp);
+        controller.submit_identified(queued.clone()).unwrap();
+        controller.retire().unwrap();
+        assert!(SessionStore::open(&path).is_err());
+        timeout(DEADLINE, controller.retire_and_wait())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(controller.snapshot().state, RunState::Paused);
+        assert_eq!(controller.snapshot().pending[0].id, queued.id);
+        assert_eq!(
+            controller.snapshot().messages.last().unwrap().text,
+            "retained partial"
+        );
+        let mut byte = [0];
+        assert_eq!(
+            timeout(DEADLINE, socket.read(&mut byte))
+                .await
+                .unwrap()
+                .unwrap(),
+            0
+        );
+        let listener = listener.into_std().unwrap();
+        assert_never_launched(&controller, &listener);
+        let replacement = Controller::new(SessionStore::open(&path).unwrap(), None).unwrap();
+        assert_eq!(replacement.snapshot().pending[0].id, queued.id);
+        assert_eq!(
+            replacement.snapshot().messages.last().unwrap().text,
+            "retained partial"
+        );
+        assert!(controller.retry().is_err());
+    }
+
+    #[tokio::test]
+    async fn retirement_releases_uncertain_writer_without_clearing_or_rewriting_uncertainty() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
+        let (controller, turn_id) = held_controller(&path);
+        let cached = controller.snapshot_shared();
+        controller.inner.lock().unwrap().store.fault = WriteFault::AfterRename;
+        assert!(matches!(
+            controller.resolve_edit("edit", "saved", Some("disk has saved rewrite")),
+            Err(Error::PersistenceUncertain(_))
+        ));
+        let bytes = retained_files(dir.path());
+        controller.retire_and_wait().await.unwrap();
+        assert_eq!(retained_files(dir.path()), bytes);
+        assert!(Arc::ptr_eq(&cached, &controller.snapshot_shared()));
+        assert!(controller.edit_status("edit").is_err());
+        assert!(controller.cancel_edit_certain("edit", &turn_id).is_err());
+        let reopened = Controller::new(SessionStore::open(&path).unwrap(), None).unwrap();
+        assert_eq!(
+            reopened.snapshot().pending[0].text,
+            "disk has saved rewrite"
+        );
+        assert!(matches!(
+            reopened.edit_status("edit").unwrap().state,
+            QueueEditState::Saved { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn retirement_join_failure_survives_cancelled_and_concurrent_waiters() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
+        let controller = Controller::new(SessionStore::open(&path).unwrap(), None).unwrap();
+        let (release, gate) = tokio::sync::oneshot::channel();
+        *controller.worker.lock().unwrap() = Some(tokio::spawn(async move {
+            gate.await.unwrap();
+            panic!("injected retirement worker panic");
+        }));
+        let mut abandoned = Box::pin(controller.retire_and_wait());
+        assert!(futures_util::poll!(&mut abandoned).is_pending());
+        let mut second = Box::pin(controller.retire_and_wait());
+        assert!(futures_util::poll!(&mut second).is_pending());
+        drop(abandoned);
+        assert!(futures_util::poll!(&mut second).is_pending());
+        assert!(SessionStore::open(&path).is_err());
+        release.send(()).unwrap();
+        let result = timeout(DEADLINE, second).await.unwrap();
+        assert!(
+            matches!(result, Err(Error::Invalid(message)) if message == "Session worker terminated unexpectedly")
+        );
+        let result = controller.retire_and_wait().await;
+        assert!(
+            matches!(result, Err(Error::Invalid(message)) if message == "Session worker terminated unexpectedly")
+        );
+        assert!(controller.is_retired());
+        assert!(
+            SessionStore::open(&path).is_err(),
+            "failed join must not transfer ownership"
+        );
+        assert!(controller.materialize(&path).is_err());
     }
 
     #[test]

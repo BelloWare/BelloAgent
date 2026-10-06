@@ -1669,3 +1669,20 @@ prevents that root default after child handlers have already run, preserving
 editor focus and drag/click behavior. The existing drag assertion fails before
 this correction and passes afterward. All24 affected drag/sidebar/Stop/held-key
 checks and strict app all-target Clippy pass; native macOS code is unchanged.
+
+### Permanent controller retirement and replacement ownership
+
+Controller retirement now closes admission synchronously and joins every admitted
+provider/tool worker before releasing the session writer lock. Old controller
+references reject all mutations; a confirmed retired writer keeps its readable
+snapshot while allowing a new controller to open the same path. Join failure
+retains the lock, and uncertain storage remains uncertain. Ordinary shutdown
+keeps its separate reusable behavior. Snapshot, lazy-load and deferred callbacks
+must still match the current controller identity before changing a chat.
+
+Six integrated retirement tests pass, including admitted-launch races, concurrent
+and cancelled waiters, partial streaming/tool cancellation, failed joins, old
+references and same-path replacement. Focused ordinary shutdown, cancellation,
+queue and snapshot-generation checks passed during independent review; strict
+core/app Clippy passes after integration. This supplies lifecycle boundaries for
+future host configuration changes; it does not enable tools or a native vault.

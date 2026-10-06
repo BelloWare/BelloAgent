@@ -255,14 +255,22 @@ impl AgentView {
             }
         });
         let initial_view = cx.weak_entity();
+        let initial_controller = Arc::downgrade(&chat.controller);
+        let initial_chat = chat.record.id.clone();
         cx.defer(move |cx| {
             let _ = initial_view.update(cx, |view, cx| {
-                let id = view.record.id.clone();
-                if view.controller.is_persistent() {
-                    view.receive_snapshot(&id, view.session.clone(), cx);
+                let Some(chat) = view
+                    .chat_ref(&initial_chat)
+                    .filter(|chat| initial_controller.ptr_eq(&Arc::downgrade(&chat.controller)))
+                else {
+                    return;
+                };
+                if chat.controller.is_persistent() {
+                    let snapshot = chat.session.clone();
+                    view.receive_snapshot(&initial_chat, &initial_controller, snapshot, cx);
                 }
-                view.reconcile_edit(&id, cx);
-                view.reconcile_intents(&id, cx);
+                view.reconcile_edit(&initial_chat, cx);
+                view.reconcile_intents(&initial_chat, cx);
             });
         });
         // Match WorkspaceSelection's selected-chat composer focus. The source

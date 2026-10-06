@@ -200,7 +200,12 @@ fn snapshot_change(
         let mut session = (*view.session).clone();
         change(&mut session);
         let id = view.record.id.clone();
-        view.receive_snapshot(&id, Arc::new(session), cx);
+        view.receive_snapshot(
+            &id,
+            &Arc::downgrade(&view.controller),
+            Arc::new(session),
+            cx,
+        );
     });
     cx.run_until_parked();
 }
@@ -1058,7 +1063,12 @@ fn fresh_session_arc_same_ids_reasoning_state_and_order_invalidate(cx: &mut Test
     let count = renders(&child, cx);
     root.update(cx, |view, cx| {
         let id = view.record.id.clone();
-        view.receive_snapshot(&id, view.session.clone(), cx);
+        view.receive_snapshot(
+            &id,
+            &Arc::downgrade(&view.controller),
+            view.session.clone(),
+            cx,
+        );
     });
     cx.run_until_parked();
     assert_eq!(
@@ -1857,4 +1867,133 @@ fn mixed_native_wheel_units_and_reversals_match_original_div_semantics() {
         distance += crate::transcript_view::vertical_wheel_distance(delta, px(26.));
         assert_eq!(distance, px(expected));
     }
+}
+
+#[gpui::test]
+fn controller_snapshot_generation_rejects_late_selected_and_inactive_publications(
+    cx: &mut TestAppContext,
+) {
+    let (directory, window, root) = fixture(cx, messages(2), 1);
+    let old = cx.read(|cx| root.read(cx).controller.clone());
+    let id = cx.read(|cx| root.read(cx).record.id.clone());
+    let mut store = SessionStore::pending_with_id(&id).unwrap();
+    store
+        .persist_to(directory.path().join("replacement.json"))
+        .unwrap();
+    store
+        .transact(|session| {
+            *session = old.snapshot();
+            session.messages[1].text = "replacement publication".into();
+            Ok(())
+        })
+        .unwrap();
+    let replacement = Controller::new(store, None).unwrap();
+    let source = Arc::downgrade(&old);
+    let mut stale = old.snapshot();
+    stale.title = "late old title must never reach catalog".into();
+    stale.error = Some("late old error".into());
+    stale.state = RunState::Running;
+    stale.pending.clear();
+    stale.edit = None;
+    let stale = Arc::new(stale);
+    let token = uuid::Uuid::new_v4();
+    window
+        .update(cx, |view, window, cx| {
+            view.chat.replace_controller(replacement.clone(), cx);
+            view.queue_operation = Some(token);
+            view.error = Some("current owned error".into());
+            view.editing = Some("current deferred edit".into());
+            view.edit_recovery.blocked = true;
+            view.composer.update(cx, |editor, cx| {
+                editor.replace_and_mark_text_in_range(None, "漢字", Some(2..2), window, cx);
+            });
+            let before = view.session.clone();
+            let text = view.composer.read(cx).text().to_owned();
+            let title = view.record.title.clone();
+            let revision = view.last_revision;
+            view.receive_snapshot(&id, &source, stale.clone(), cx);
+            view.finish_snapshot_title(
+                &id,
+                &source,
+                crate::chat_organization::CatalogOutcome {
+                    result: Err(bello_agent_core::Error::Invalid(
+                        "late title failure".into(),
+                    )),
+                    uncertain: false,
+                },
+                cx,
+            );
+            assert!(Arc::ptr_eq(&before, &view.session));
+            assert_eq!(view.record.title, title);
+            assert_eq!(view.last_revision, revision);
+            assert_eq!(view.error.as_deref(), Some("current owned error"));
+            assert_eq!(view.queue_operation, Some(token));
+            assert_eq!(view.editing.as_deref(), Some("current deferred edit"));
+            assert!(view.edit_recovery.blocked);
+            assert!(!view.edit_recovery.has_live_check());
+            assert!(view.composer.read(cx).has_marked_text());
+            assert_eq!(view.composer.read(cx).text(), text);
+            view.new_chat(window, cx);
+            assert_ne!(view.record.id, id);
+            let selected = view.session.clone();
+            view.receive_snapshot(&id, &source, stale.clone(), cx);
+            let chat = &view.inactive[&id];
+            assert!(Arc::ptr_eq(&before, &chat.session));
+            assert_eq!(chat.queue_operation, Some(token));
+            assert!(chat.composer.read(cx).has_marked_text());
+            assert!(Arc::ptr_eq(&selected, &view.session));
+            // The replacement's publications still reach the captured background
+            // chat, without changing selection or losing the deferred IME token.
+            let mut fresh = replacement.snapshot();
+            fresh.messages[1].text = "fresh current-controller update".into();
+            view.receive_snapshot(&id, &Arc::downgrade(&replacement), Arc::new(fresh), cx);
+            assert_eq!(
+                view.inactive[&id].session.messages[1].text,
+                "fresh current-controller update"
+            );
+            assert_eq!(view.inactive[&id].queue_operation, Some(token));
+            assert!(Arc::ptr_eq(&selected, &view.session));
+            view.finish_snapshot_title(
+                &id,
+                &Arc::downgrade(&replacement),
+                crate::chat_organization::CatalogOutcome {
+                    result: Err(bello_agent_core::Error::Invalid(
+                        "current title failure".into(),
+                    )),
+                    uncertain: false,
+                },
+                cx,
+            );
+            assert!(
+                view.inactive[&id]
+                    .error
+                    .as_deref()
+                    .unwrap()
+                    .contains("current title failure")
+            );
+            assert!(view.error.is_none());
+        })
+        .unwrap();
+    cx.run_until_parked();
+    root.update(cx, |view, _| {
+        assert_ne!(
+            view.records
+                .iter()
+                .find(|record| record.id == id)
+                .unwrap()
+                .title,
+            stale.title
+        );
+        assert_eq!(view.inactive[&id].queue_operation, Some(token));
+        let catalog = view.workspace.lock().unwrap().snapshot();
+        assert_ne!(
+            catalog
+                .chats
+                .iter()
+                .find(|record| record.id == id)
+                .unwrap()
+                .title,
+            stale.title
+        );
+    });
 }
