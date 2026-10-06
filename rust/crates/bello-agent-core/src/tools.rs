@@ -1,4 +1,4 @@
-//! Source-backed native-tool implementation. Only `ls` is ported.
+//! Source-backed native tools: `ls`, plus Foundation-backed `find` on macOS.
 //!
 //! This module never independently offers tools to a provider. The Controller's
 //! explicit TrustedReadOnlyTools option can invoke it; desktop constructors keep
@@ -9,14 +9,17 @@
 //! BlockingWorkExecutor,PiProviderRules}.swift. Workspace roots are resolution
 //! context, NOT a sandbox: absolute, parent, tilde and symlink paths may leave
 //! them. The injected home directory permits isolated fixtures without reading
-//! the process's home configuration. Named-user `~user` lookup is not ported.
+//! the process's home configuration. Named-user `~user` remains unavailable in ls;
+//! macOS Find uses Foundation's invocation-time expansion.
 //!
 //! `invoke` matches NativeTools' native validation; `invoke_prepared` additionally
-//! applies SessionTools' schema preparation, for the ls schema only. The general
-//! JSON Schema coercer and source tool cards remain unported. The opt-in core
+//! applies SessionTools' schema preparation, for the offered ls/find schemas. The general
+//! JSON Schema coercer remains a separate gap. The opt-in core
 //! Controller retains text above 64 KiB in private files (32 KiB preview,
 //! 16 MiB maximum), checkpoints call/result history, and continues the tool loop.
 //! Native ls itself has an entry bound, not a byte bound, and no `stats` field.
+
+mod find;
 
 use crate::provider::ToolCall;
 use serde::{Deserialize, Serialize};
@@ -74,6 +77,7 @@ fn check_cancelled(token: &CancellationToken) -> ToolResult<()> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Capability {
     Ls,
+    Find,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -92,6 +96,19 @@ fn ls_definition() -> ToolDefinition {
             "type": "object",
             "properties": {"path": {"type": "string"}, "limit": {"type": "integer", "minimum": 1}},
             "required": [],
+            "additionalProperties": false
+        }),
+    }
+}
+
+fn find_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "find".into(),
+        description: "Find paths matching a shell-style glob, relative to path (default workspace). No shell execution.".into(),
+        schema: json!({
+            "type": "object",
+            "properties": {"pattern": {"type": "string"}, "path": {"type": "string"}, "limit": {"type": "integer", "minimum": 1}},
+            "required": ["pattern"],
             "additionalProperties": false
         }),
     }
@@ -131,9 +148,17 @@ impl NativeTools {
                 "Tool context paths must be absolute",
             ));
         }
+        let capabilities: BTreeSet<_> = capabilities.into_iter().collect();
+        #[cfg(not(target_os = "macos"))]
+        if capabilities.contains(&Capability::Find) {
+            return Err(ToolError::failure(
+                "tool_unavailable",
+                "Find requires the macOS Foundation implementation",
+            ));
+        }
         Ok(Self {
             paths: FileToolContext { cwd, roots, home },
-            capabilities: capabilities.into_iter().collect(),
+            capabilities,
             workers: BlockingWorkExecutor::shared(),
             #[cfg(test)]
             before_read: None,
@@ -153,18 +178,32 @@ impl NativeTools {
     }
 
     pub fn definitions(&self) -> Vec<ToolDefinition> {
+        let mut definitions = Vec::new();
         if self.capabilities.contains(&Capability::Ls) {
-            vec![ls_definition()]
-        } else {
-            vec![]
+            definitions.push(ls_definition());
         }
+        if self.capabilities.contains(&Capability::Find) {
+            definitions.push(find_definition());
+        }
+        definitions
     }
 
     pub fn capability_ids(&self) -> Vec<&'static str> {
+        let mut ids = Vec::new();
         if self.capabilities.contains(&Capability::Ls) {
-            vec!["ls"]
-        } else {
-            vec![]
+            ids.push("ls");
+        }
+        if self.capabilities.contains(&Capability::Find) {
+            ids.push("find");
+        }
+        ids
+    }
+
+    fn offers(&self, name: &str) -> bool {
+        match name {
+            "ls" => self.capabilities.contains(&Capability::Ls),
+            "find" => self.capabilities.contains(&Capability::Find),
+            _ => false,
         }
     }
 
@@ -173,20 +212,28 @@ impl NativeTools {
     /// The original call is never mutated.
     pub fn prepare_call(&self, call: &ToolCall) -> ToolCall {
         let mut prepared = call.clone();
-        if call.name != "ls" || !self.capabilities.contains(&Capability::Ls) {
+        if !self.offers(&call.name) {
             return prepared;
         }
         let Some(fields) = prepared.arguments.as_object_mut() else {
             return prepared;
         };
-        // Both properties are optional and neither schema accepts null.
+        // Path and limit are optional and neither schema accepts null.
         for key in ["path", "limit"] {
             if fields.get(key).is_some_and(Value::is_null) {
                 fields.remove(key);
             }
         }
-        if let Some(value) = fields.get_mut("path") {
+        for key in if call.name == "find" {
+            &["path", "pattern"][..]
+        } else {
+            &["path"][..]
+        } {
+            let Some(value) = fields.get_mut(*key) else {
+                continue;
+            };
             match value {
+                Value::Null if *key == "pattern" => *value = Value::String(String::new()),
                 Value::Bool(flag) => *value = Value::String(flag.to_string()),
                 Value::Number(number) => {
                     if let Some(number) = number.as_f64() {
@@ -230,7 +277,7 @@ impl NativeTools {
         cancellation: CancellationToken,
     ) -> ToolResult<Value> {
         check_cancelled(&cancellation)?;
-        if call.name != "ls" || !self.capabilities.contains(&Capability::Ls) {
+        if !self.offers(&call.name) {
             return Err(ToolError::failure(
                 "tool_unavailable",
                 format!("Tool {} not found", call.name),
@@ -239,7 +286,12 @@ impl NativeTools {
         let fields = call.arguments.as_object().ok_or_else(|| {
             ToolError::failure("tool_arguments", "Tool arguments must be an object")
         })?;
-        if fields.keys().any(|key| key != "path" && key != "limit") {
+        let is_find = call.name == "find";
+        if fields
+            .keys()
+            .any(|key| key != "path" && key != "limit" && !(is_find && key == "pattern"))
+            || (is_find && !fields.contains_key("pattern"))
+        {
             return Err(ToolError::failure(
                 "tool_arguments",
                 "Missing or unsupported tool arguments",
@@ -255,7 +307,11 @@ impl NativeTools {
                 if let Some(callback) = before_read {
                     callback();
                 }
-                paths.ls(&arguments, &cancel)
+                if is_find {
+                    find::invoke(&paths, &arguments, &cancel)
+                } else {
+                    paths.ls(&arguments, &cancel)
+                }
             })
             .await
     }
@@ -715,3 +771,7 @@ impl Drop for CancelOnDrop {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "tools/find_preparation_tests.rs"]
+mod find_preparation_tests;

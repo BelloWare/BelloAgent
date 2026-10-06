@@ -411,3 +411,105 @@ async fn streamed_argument_fallback_retains_the_call_used_for_execution_and_repl
     server.await.unwrap();
     control.shutdown().await.unwrap();
 }
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn explicit_find_and_ls_batch_continues_and_reopens_without_reexecution() {
+    use bello_agent_core::tools::Capability;
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("project");
+    std::fs::create_dir(&project).unwrap();
+    std::fs::write(project.join("alpha.txt"), "fixture").unwrap();
+    std::fs::write(project.join("zeta.bin"), [0, 255]).unwrap();
+    let path = dir.path().join("session.json");
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let profile: Profile = serde_json::from_value(json!({"id":"fixture","api":"openai-responses","providerId":"litellm","modelId":"fixture-model","baseUrl":format!("http://{}",listener.local_addr().unwrap()),"contextWindow":32000,"maxOutputTokens":4096})).unwrap();
+    let control = Controller::new_with_options(
+        SessionStore::open(&path).unwrap(),
+        Some((profile, Credential::new("fixture-only".into()).unwrap())),
+        RuntimeOptions {
+            instructions: String::new(),
+            tools: Some(
+                TrustedReadOnlyTools::new_with_capabilities(
+                    project.clone(),
+                    vec![],
+                    project.clone(),
+                    [Capability::Find, Capability::Ls],
+                )
+                .unwrap(),
+            ),
+        },
+    )
+    .unwrap();
+    let server = tokio::spawn(async move {
+        let (socket, first) = request(&listener).await;
+        assert_eq!(
+            first["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|tool| tool["name"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["ls", "find"]
+        );
+        reply(
+            socket,
+            terminal(vec![
+                call("find-one", "find", json!({"pattern":"*.txt","limit":"100"})),
+                call("ls-two", "ls", json!({})),
+            ]),
+        )
+        .await;
+        let (socket, next) = request(&listener).await;
+        let outputs: Vec<_> = next["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["type"] == "function_call_output")
+            .collect();
+        assert_eq!(outputs.len(), 2);
+        assert_eq!(outputs[0]["call_id"], "find-one");
+        assert_eq!(
+            outputs[0]["output"],
+            "alpha.txt\n[Binary and >2 MiB files, .git/node_modules/.build are skipped by grep.]"
+        );
+        assert_eq!(outputs[1]["call_id"], "ls-two");
+        assert_eq!(outputs[1]["output"], "alpha.txt\nzeta.bin");
+        reply(socket, final_text()).await;
+    });
+    control
+        .submit("find fixture".into(), Lane::FollowUp)
+        .unwrap();
+    let complete = wait(&control, |session| {
+        session.state == RunState::Idle
+            && session
+                .messages
+                .last()
+                .is_some_and(|row| row.text == "Finished fixture")
+    })
+    .await;
+    server.await.unwrap();
+    control.retire_and_wait().await.unwrap();
+    // Remove the source file after settlement. Reopening must replay the durable
+    // result, never re-run the historical read against the changed fixture.
+    std::fs::remove_file(project.join("alpha.txt")).unwrap();
+    let reopened = SessionStore::open(&path).unwrap().snapshot();
+    assert_eq!(
+        serde_json::to_value(&reopened.messages).unwrap(),
+        serde_json::to_value(&complete.messages).unwrap()
+    );
+    assert!(
+        reopened
+            .messages
+            .iter()
+            .any(|row| row.text.starts_with("alpha.txt\n[Binary"))
+    );
+    assert_eq!(
+        reopened
+            .messages
+            .iter()
+            .filter(|row| row.role == "toolResult")
+            .count(),
+        2
+    );
+}

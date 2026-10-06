@@ -1,4 +1,4 @@
-//! Opt-in Controller integration for the source's read-only `ls` capability.
+//! Opt-in Controller integration for source read-only file capabilities.
 //! Desktop constructors stay disabled. This is an explicit host trust assertion,
 //! not a filesystem sandbox or a saved authorization inferred from conversation.
 use super::Controller;
@@ -31,15 +31,26 @@ pub struct RuntimeOptions {
 
 /// Construct only after the host has obtained explicit project trust and chosen
 /// read-only tools. Roots resolve relative paths; absolute/parent/tilde/symlink
-/// paths may leave them, exactly as in the source. No environment is consulted.
+/// paths may leave them, exactly as in the source. Construction performs no
+/// discovery; explicit macOS Find may resolve named-user paths when invoked.
 #[derive(Clone)]
 pub struct TrustedReadOnlyTools {
     native: NativeTools,
 }
 impl TrustedReadOnlyTools {
     pub fn new(cwd: PathBuf, additional_roots: Vec<PathBuf>, home: PathBuf) -> Result<Self> {
+        Self::new_with_capabilities(cwd, additional_roots, home, [Capability::Ls])
+    }
+    /// Explicit immutable tool selection after host trust and read-only mode.
+    /// Unsupported platform capabilities fail rather than being silently offered.
+    pub fn new_with_capabilities(
+        cwd: PathBuf,
+        additional_roots: Vec<PathBuf>,
+        home: PathBuf,
+        capabilities: impl IntoIterator<Item = Capability>,
+    ) -> Result<Self> {
         Ok(Self {
-            native: NativeTools::new(cwd, additional_roots, home, [Capability::Ls])
+            native: NativeTools::new(cwd, additional_roots, home, capabilities)
                 .map_err(|error| invalid(error.to_string()))?,
         })
     }

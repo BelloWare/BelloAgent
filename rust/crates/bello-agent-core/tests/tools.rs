@@ -735,3 +735,39 @@ async fn worker_panic_does_not_leak_capacity_or_prevent_later_jobs() {
         12
     );
 }
+
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn unsupported_find_is_rejected_before_any_provider_offer() {
+    let root = TempDir::new().unwrap();
+    for capabilities in [
+        vec![Capability::Find],
+        vec![Capability::Ls, Capability::Find],
+    ] {
+        let error = NativeTools::new(root.path().into(), [], root.path().into(), capabilities)
+            .err()
+            .expect("unsupported Find must fail construction");
+        assert_eq!(error.code(), Some("tool_unavailable"));
+        assert_eq!(
+            error.to_string(),
+            "Find requires the macOS Foundation implementation"
+        );
+    }
+    assert!(
+        bello_agent_core::runtime::TrustedReadOnlyTools::new_with_capabilities(
+            root.path().into(),
+            vec![],
+            root.path().into(),
+            [Capability::Find]
+        )
+        .is_err()
+    );
+    assert!(
+        bello_agent_core::runtime::TrustedReadOnlyTools::new(
+            root.path().into(),
+            vec![],
+            root.path().into()
+        )
+        .is_ok()
+    );
+}

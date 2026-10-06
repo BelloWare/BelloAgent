@@ -1777,3 +1777,28 @@ fail when explicit unlock is removed. The 17 inspection checks, the exact failed
 tool-result persistence check, 10 retirement-filtered checks, formatting and
 strict core all-target Clippy pass. Independent review is clear; fresh CI remains
 the integration gate.
+
+### Opt-in macOS Find and source oracle
+
+The explicit core capability selector now supports Foundation-backed Find on
+macOS, preserving source schema preparation, path resolution, native enumeration
+and fnmatch, pre-sort scan limits, Unicode relative paths, cancellation and exact
+result footers. Find-only root resolution deduplicates canonical Unicode URL
+paths before deciding whether an additional-root match is unique. Existing
+constructors remain ls-only; Linux rejects explicit Find selection before any
+provider offer. App tools and production authority remain unavailable.
+
+Nineteen focused engine/preparation checks and two platform/default checks pass,
+as do formatting and strict core all-target Clippy. Negative controls detect an
+incorrect scan cap and fnmatch flags, then pass after restoration. The exact
+Foundation adapter passes an offline aarch64-apple-darwin binding check. A
+separate test-only host type check validates the macOS oracle/loopback Rust APIs;
+it does not execute them or substitute for native compilation. Independent
+review is clear.
+
+The macOS integration test assembles a bounded Swift oracle from current source
+and compares disposable fixtures; a mixed Find/ls loopback fixture checks durable
+continuation/reopen without historical reexecution. These native tests remain
+pending CI. Real mount fixtures, inaccessible-directory behavior, named-user home
+expansion and user-desktop acceptance are not claimed. The precise platform and
+validation boundary is recorded in `native-find-contract.md`.
