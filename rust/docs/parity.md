@@ -266,6 +266,35 @@ for isolation, durability, format, permission, recovery, and backup limits.
   race fixes and unverified native interactions are recorded in
   [the validation record](validation/multichat-2026-10-04.md).
 
+## Portable manual transcript measurement (2026-10-06)
+
+An ignored, test-only GPUI benchmark and standard-library Python runner/parser make
+future measurements reproducible from repository source. Production behavior and
+normal CI timing policy are unchanged. Two small Rust checks and Python parser tests
+validate configuration, statistics, complete workload records, profiles, counts,
+budget exhaustion, mismatched comparisons and output preservation. The manual test
+remains skipped unless explicitly invoked through the runner.
+
+Generic mode measures full draws without child probes; it does not disable caching.
+Cached mode labels parent composition and direct-child work separately. Source and
+binary hashes, actual Cargo profile/fingerprint, and sanitized compiler identity are
+checked; no raw environment, credential-derived Cargo config hashes or process logs
+are retained. Fixture data is synthetic and isolated from ancestor Git discovery.
+Comparison requires identical harness/method hashes and matching modes/profiles/matrix.
+
+See [the method and commands](transcript-benchmark.md). The old direct-rustc baseline
+is not automatically compatible with this Cargo harness. The final portable CLI completed all 12 cached workloads and a four-workload generic
+pilot on the frozen source. A same-report comparison accepted all eight generic draw
+rows, while a cached/generic comparison failed visibly without a valid comparison.
+These are tool-validation runs, separate from the earlier performance comparison.
+**364 default Rust tests /371 with the optional feature**, both strict Clippy modes,
+formatting and workspace build pass; each routine suite explicitly skips the one
+manual timing test. **32 Python tests** pass. The Linux workflow adds only their
+cheap self-test command, with no timing invocation or policy/permission changes.
+Existing original raw benchmark evidence
+remains local-only, while this checkpoint backs up the reusable tool rather than large
+binaries or environment diagnostics. No native frame/IME/desktop parity claim follows.
+
 ## Populated transcript invalidation (2026-10-06)
 
 Status: **implemented app-only optimization; headless and running Linux validated;

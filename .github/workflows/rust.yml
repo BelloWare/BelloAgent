@@ -41,6 +41,8 @@ jobs:
         run: cargo build --locked --workspace
       - name: UI evidence harness self-tests
         run: python3 -m unittest discover -s scripts -p 'test_linux_ui_smoke.py' -v
+      - name: Transcript benchmark parser self-tests
+        run: python3 -m unittest discover -s scripts -p 'test_transcript_benchmark.py' -v
       - name: Capture current Linux software-rendered UI
         timeout-minutes: 4
         run: |

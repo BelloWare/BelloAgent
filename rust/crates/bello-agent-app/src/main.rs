@@ -22,6 +22,9 @@ mod shutdown_barrier;
 mod sidebar_actions;
 mod theme;
 mod transcript_actions;
+#[cfg(test)]
+#[path = "../../../benches/transcript.rs"]
+mod transcript_benchmark;
 mod transcript_view;
 #[cfg(test)]
 mod transcript_view_tests;
