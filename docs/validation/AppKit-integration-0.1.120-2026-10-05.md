@@ -477,7 +477,7 @@ read-only review reports no remaining actionable findings; evidence:
 This final product correction requires a fresh gate and final gallery,
 Release build, comparable performance measurements and actual hour soak.
 
-## Final source gate and gallery, 2026-10-06
+## Pre-typing-repair gate and gallery, 2026-10-06
 
 Production source `2be1b0d6ef1abc9897d32861104062bf7a2176a0` passes the
 fresh complete gate in 37 minutes 51 seconds. The serial lane executes 627
@@ -487,9 +487,12 @@ cases (23 skips, zero failures); the parallel lane reports 1,937 passes
 (three skips), 34 wire, four concurrent, two acceptance and 72 Python checks.
 The three covered Changes-pane typing measurements are 25.8, 23.2 and
 27.8 ms, below the unchanged 30 ms bound, with no synchronous layout cycles
-or diff rows built. There are no geometry/constraint warnings or test-process
-crash reports. Evidence: `native-git-caption-final-full-gate.log` and
-`build/verify-logs` in the cache.
+or diff rows built. The gallery has no geometry/constraint warnings and
+there are no test-process crash reports. The serial log includes 708
+invalid-geometry messages from the frozen sizing probes; it has zero
+unsatisfiable-constraint messages. These are not a claim of warning-free
+logs. Evidence: `native-git-caption-final-full-gate.log` and the archived
+`final-2be1-verify-logs` in the cache.
 
 The final Release build-for-testing passes in 8 minutes 56 seconds. Neither
 the Release executable nor the Debug executable/debug dylib/preview directly
@@ -607,6 +610,9 @@ restored, rebuilt and checked again; no oracle, tolerance or wait changed.
 The final complete gallery passes in 430.890 seconds with all 192 original
 same-sized captures. The changed Git screens are re-reviewed separately;
 the all-192 `1aa78749` per-image records are reused for unchanged screens.
+All 12 affected final Git pairs have actually been viewed with no remaining
+actionable visible discrepancy; this does not claim 192 fresh post-repair
+views. Code is committed and pushed as `70812d5fee0087ba493a3436033cf37fa32f93dc`.
 Root and the payload reviewer have actually viewed the final narrow composed
 pairs in both appearances, including the reviewer's original 2x inspection:
 the background edge now matches at approximately x581.5, while the Git
@@ -621,7 +627,8 @@ Evidence: `logs/native-git-background-flat-tests.log`,
 `logs/native-git-background-restored-{build,tests}.log`,
 `logs/native-git-background-final-gallery.log`,
 `logs/native-git-background-fill-review.txt`, and
-`logs/gallery-git-background-final-manifest.json`.
+`logs/gallery-git-background-final-manifest.json` and the per-image
+`logs/gallery-git-background-final-review.txt`.
 
 Visible limitations remain explicit: generated paths/IDs and rates can
 change wrapping; initial lazy scroll-thumb estimates differ; activation,
@@ -640,10 +647,53 @@ and `final-1aa-verify-gallery`, corrective
 `logs/gallery-1aa-review-manifest.json`, four `logs/gallery-*-1aa-review.txt`
 files and `logs/native-final-1aa-unmasked-comparison.log`.
 
+## Final optimized build and comparable performance, 2026-10-06
+
+Source `70812d5fee0087ba493a3436033cf37fa32f93dc` builds for testing in
+Release with explicit `ENABLE_TESTABILITY=YES`. The first invocation lacked
+that flag and failed the test target's `@testable` imports; the corrected
+invocation passes. All 15 affected optimized checks pass: seven ChangesTab
+cases and eight frozen narrow cases, including all four zero-difference
+caption crops. The final executable has no direct SwiftUI/Charts links,
+and production app/`bello-views` sources have zero SwiftUI imports.
+Evidence: `logs/native-final-70812-testable-release-build.log`,
+`logs/native-final-70812-release-affected-tests.log` and
+`logs/native-final-70812-linkage.txt` in the cache.
+
+All 16 comparable baseline and 16 final measurement invocations pass.
+The baseline production sources match `v0.1.119`; both use the same host,
+Release/testability configuration, fixtures, seed and start-load limit.
+Opening/reopening, streaming, scrolling and typical/p90 typing improve.
+Whole-window switching is broadly similar. Typing maxima remain slightly
+higher than baseline (9.9–10.8 versus 7.9–9.7 ms), reduced from the earlier
+candidate's 15–17 ms. Short-soak durations/action totals and retained
+models/windows are recorded explicitly; they do not certify bounded memory.
+See [the final measurements](../perf/appkit-0.1.120-final.md) for all rounds,
+raw evidence, actual timing and limits. No blanket "every metric better"
+claim is made.
+
+The actual 3,600-second mixed-action Release soak starts at 2026-10-05
+23:51:48 UTC with seed `1790822043708`, switch-only/draw modes unset and
+unchanged 250 ms stall/2,000 ms launch limits. It passes in 3,608.017 test
+seconds; its report covers 3,607 seconds and 177 launches. There are zero
+stalls over 250 ms, zero idle-row jumps, zero slow/missing launches and zero
+quit failures. Sidebar median/max are 256/349 ms. Main-thread answers over
+100/150/200 ms are 5/0/0, with a longest answer of 115 ms. Actions include
+304 sends, 82 long sends, 2,350 selections and 549 switches.
+
+Footprint rises 102→922 MB, peak 922 MB, 4.66 MB per cycle. At the final
+report six recent models (cycles 172–177), all 177 windows and zero closed
+views remain alive. The in-process test teardown is unchanged from
+`v0.1.119` apart from replacing its hosted root. The previous release also
+records all 181 test windows retained and 4.06 MB growth per launch; the
+0.1.115 record documents this harness behavior. These observations do not
+prove bounded memory or attribute every byte of growth to the test windows.
+No responsiveness threshold was waived or relaxed. Evidence:
+`logs/native-final-hour-soak.log`, `logs/native-final-hour-soak-metadata.json`
+and the complete `logs/native-final-hour-soak.txt` report.
+
 ## Still required
 
-Finish the remaining affected visual review, final-source Release performance
-comparison and actual hour-long Release soak.
 Owner VoiceOver and real-gateway checks have not been run or
 explicitly deferred for this release. Packaging, signing, website publication
 and the release tag remain pending.
