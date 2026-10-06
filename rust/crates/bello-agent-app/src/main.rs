@@ -754,6 +754,23 @@ impl AgentView {
         {
             self.select_adjacent_chat(event.keystroke.key == "down", window, cx);
             cx.stop_propagation();
+        } else if navigation_command
+            && mods.shift
+            && !mods.alt
+            && !mods.function
+            && event.keystroke.key == "g"
+        {
+            // PiApp's Changes and History command opens/reuses the tab even
+            // from editable tab text; it is not a focused-chat command. Keep
+            // the existing Rust dirty-file safety prompt visible until resolved.
+            if !self
+                .files
+                .iter()
+                .any(|entry| entry.view.read(cx).has_close_prompt())
+            {
+                self.open_changes(cx);
+            }
+            cx.stop_propagation();
         } else if command && event.keystroke.key == "n" {
             self.new_chat(window, cx);
             cx.stop_propagation();

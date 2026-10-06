@@ -1436,3 +1436,33 @@ Linux native shortcut evidence, not macOS keyboard or OS IME acceptance.
 The exact shared dependency checkpoint also passed both
 [Linux CI](https://github.com/BelloWare/BelloBox/actions/runs/37418779184) and
 [macOS CI](https://github.com/BelloWare/BelloBox/actions/runs/37418779183).
+
+## Changes and History keyboard command (2026-10-06)
+
+`PiApp.swift:107–110` exposes Changes and History with Command-Shift-G.
+Rust now routes the same exact shortcut (Control-Shift-G on Linux) through its
+existing `open_changes` action. Like `WorkspaceChanges.showChanges` and
+`TabHost.open/activate`, repeated use reuses the workbench and preserves its
+current panel, chat selection and existing file entities. It does not replace
+text or force focus. This command remains available from editable file text;
+the focused-chat Stop exclusion does not apply to a command that opens a tab.
+Existing Quick Open/context-menu/close-dialog ownership and the Rust dirty-file
+safety prompt keep priority. Native View-menu entries are still separate scope.
+
+Three GPUI root-routing regressions cover repeated History reuse, exact modifiers,
+composer/file marked text, file draft and undo retention, and modal prompt
+cancellation/retry. Removing the activation makes the targeted regression fail.
+The final scoped gate passed all eight Stop/Changes shortcut tests, strict app
+all-target Clippy, formatting and a native Linux build. This checkpoint did not
+rerun a broad workspace/feature matrix. Native desktop evidence is recorded
+separately; fake-platform composition checks do not establish OS IME behavior.
+
+Fresh Linux desktop binary
+`c109bb3ea72044aebe1446dfb9d846c79ecb5427aa425dc7a34e0a27413db869`
+passed the focused native gate: Control-Shift-G opened the pane from the composer
+without changing its draft, repeated activation retained the existing History
+panel, and activation from an edited file preserved its buffer and undo when
+returning. Quick Open and a dirty-file close prompt intercepted the command until
+dismissal. The fixture used an isolated local repository without a connection,
+credential or provider request. Screenshots and the QA observation record support
+these Linux results; native macOS shortcut/OS IME behavior remains unvalidated.

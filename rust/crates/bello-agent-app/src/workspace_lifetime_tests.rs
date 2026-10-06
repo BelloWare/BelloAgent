@@ -1477,3 +1477,153 @@ fn stop_shortcut_embedded_workbench_focus_respects_visibility_and_readonly(
         "editable embedded file"
     );
 }
+
+fn changes_key() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "cmd-shift-g"
+    } else {
+        "ctrl-shift-g"
+    }
+}
+
+#[gpui::test]
+fn changes_shortcut_reuses_existing_history_and_preserves_composer(cx: &mut TestAppContext) {
+    use gpui::{EntityInputHandler, Focusable};
+    let (_dir, window, root) = fixture(cx);
+    let (workbench, selected) = cx.read(|cx| {
+        (
+            root.read(cx).workbench.clone(),
+            root.read(cx).record.id.clone(),
+        )
+    });
+    window
+        .update(cx, |view, window, cx| {
+            view.composer.update(cx, |editor, cx| {
+                editor.replace_and_mark_text_in_range(None, "保持 e\u{301}", Some(2..2), window, cx)
+            });
+            view.pane_history = true;
+            view.workbench.update(cx, |workbench, cx| {
+                workbench.set_panel(crate::WorkbenchPanel::History, cx)
+            });
+        })
+        .unwrap();
+    let text = cx.read(|cx| root.read(cx).composer.read(cx).text().to_owned());
+    for _ in 0..2 {
+        cx.simulate_keystrokes(window.into(), changes_key());
+        window
+            .update(cx, |view, window, cx| {
+                assert!(view.show_files && view.changes_open && view.pane_history);
+                assert!(view.selected_file.is_none());
+                assert_eq!(view.workbench.entity_id(), workbench.entity_id());
+                assert_eq!(view.record.id, selected);
+                assert_eq!(view.composer.read(cx).text(), text);
+                assert!(view.composer.read(cx).has_marked_text());
+                assert!(view.composer.read(cx).focus_handle(cx).is_focused(window));
+            })
+            .unwrap();
+    }
+}
+
+#[gpui::test]
+fn changes_shortcut_works_from_editable_tab_without_losing_buffer_or_undo(cx: &mut TestAppContext) {
+    use gpui::EntityInputHandler;
+    let (dir, window, root) = fixture(cx);
+    let path = dir.path().join("changes-command.txt");
+    std::fs::write(&path, "original").unwrap();
+    window
+        .update(cx, |view, window, cx| {
+            view.open_file(path.clone(), None, window, cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+    cx.simulate_input(window.into(), "draft ");
+    let file = cx.read(|cx| root.read(cx).files[0].view.clone());
+    let editor = cx.read(|cx| file.read(cx).editor_for_test());
+    window
+        .update(cx, |_, window, cx| {
+            editor.update(cx, |editor, cx| {
+                editor.replace_and_mark_text_in_range(None, "漢字", Some(2..2), window, cx)
+            });
+        })
+        .unwrap();
+    let before = cx.read(|cx| editor.read(cx).text().to_owned());
+    cx.simulate_keystrokes(window.into(), changes_key());
+    window
+        .update(cx, |view, window, cx| {
+            assert!(view.changes_open && view.show_files && view.selected_file.is_none());
+            assert_eq!(view.files.len(), 1);
+            assert_eq!(view.files[0].view.entity_id(), file.entity_id());
+            assert_eq!(editor.read(cx).text(), before);
+            assert!(editor.read(cx).has_marked_text());
+            editor.update(cx, |editor, cx| editor.unmark_text(window, cx));
+            view.open_file(path.clone(), None, window, cx);
+        })
+        .unwrap();
+    cx.simulate_keystrokes(
+        window.into(),
+        if cfg!(target_os = "macos") {
+            "cmd-z"
+        } else {
+            "ctrl-z"
+        },
+    );
+    assert_ne!(cx.read(|cx| editor.read(cx).text().to_owned()), before);
+    assert_eq!(std::fs::read_to_string(path).unwrap(), "original");
+}
+
+#[gpui::test]
+fn changes_shortcut_exact_modifiers_and_modal_guards(cx: &mut TestAppContext) {
+    let (dir, window, root) = fixture(cx);
+    let wrong_platform = if cfg!(target_os = "macos") {
+        "ctrl-shift-g"
+    } else {
+        "cmd-shift-g"
+    };
+    for key in [
+        "g",
+        "shift-g",
+        "ctrl-g",
+        "cmd-g",
+        wrong_platform,
+        "cmd-ctrl-shift-g",
+        "cmd-alt-shift-g",
+        "ctrl-alt-shift-g",
+        "cmd-fn-shift-g",
+        "ctrl-fn-shift-g",
+    ] {
+        cx.simulate_keystrokes(window.into(), key);
+        assert!(!cx.read(|cx| root.read(cx).changes_open));
+    }
+    window
+        .update(cx, |view, _, _| view.close_dialog = true)
+        .unwrap();
+    cx.simulate_keystrokes(window.into(), changes_key());
+    assert!(!cx.read(|cx| root.read(cx).changes_open));
+    window
+        .update(cx, |view, window, cx| {
+            view.close_dialog = false;
+            view.quick_open
+                .update(cx, |picker, cx| picker.show(window, cx));
+        })
+        .unwrap();
+    cx.simulate_keystrokes(window.into(), changes_key());
+    assert!(!cx.read(|cx| root.read(cx).changes_open));
+    cx.simulate_keystrokes(window.into(), "escape");
+    let path = dir.path().join("changes-prompt.txt");
+    std::fs::write(&path, "original").unwrap();
+    window
+        .update(cx, |view, window, cx| {
+            view.open_file(path, None, window, cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+    cx.simulate_input(window.into(), "unsaved");
+    let file = cx.read(|cx| root.read(cx).files[0].view.clone());
+    file.update(cx, |file, cx| file.request_close(cx));
+    cx.simulate_keystrokes(window.into(), changes_key());
+    assert!(!cx.read(|cx| root.read(cx).changes_open));
+    assert!(cx.read(|cx| file.read(cx).has_close_prompt()));
+    cx.simulate_keystrokes(window.into(), "escape");
+    cx.simulate_keystrokes(window.into(), changes_key());
+    assert!(cx.read(|cx| root.read(cx).changes_open));
+}
