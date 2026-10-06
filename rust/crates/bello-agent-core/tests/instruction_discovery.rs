@@ -44,7 +44,10 @@ fn instructions_precedence_repository_chains_and_shared_ancestors() {
         vec!["GLOBAL", "ROOT", "OVERRIDE", "FALLBACK"]
     );
     assert_eq!(s.roots.len(), 2);
-    assert_eq!(s.repository_root, root.join("project"));
+    assert_eq!(
+        s.repository_root,
+        fs::canonicalize(root.join("project")).unwrap()
+    );
     assert!(!s.instructions.contains("OUTSIDE"));
     assert!(!s.instructions.contains("IGNORED"));
     assert_eq!(s.sources[0].scope, "global");
@@ -67,7 +70,10 @@ fn instructions_blank_override_and_global_fallback_exclusion() {
     assert_eq!(s.sources.len(), 1);
     assert_eq!(s.sources[0].text.as_deref(), Some("LOCAL"));
     assert!(!s.instructions.contains("PARENT"));
-    assert_eq!(s.repository_root, root.join("project"));
+    assert_eq!(
+        s.repository_root,
+        fs::canonicalize(root.join("project")).unwrap()
+    );
 }
 #[test]
 fn instructions_budget_utf8_diagnostics_and_source_identity() {
@@ -158,7 +164,10 @@ fn instructions_symlinks_are_resolution_context_not_a_sandbox() {
     o.roots.push(root.join("alias"));
     let s = discover(&o).unwrap();
     assert_eq!(s.roots.len(), 1);
-    assert_eq!(s.sources[0].path, root.join("outside"));
+    assert_eq!(
+        s.sources[0].path,
+        fs::canonicalize(root.join("outside")).unwrap()
+    );
     assert!(s.instructions.ends_with("OUTSIDE"));
 }
 
