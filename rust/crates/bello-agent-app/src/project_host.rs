@@ -6,9 +6,12 @@ use bello_agent_core::{
     project_authority::{AuthorityError, LoadedProjects, ProjectAuthority, SavedProject},
     runtime::IdleAdmissionGuard,
     session::SessionInspectionLease,
-    workspace::ChatRecord,
+    workspace::{ChatRecord, WorkspaceSnapshot, WorkspaceStore},
 };
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+};
 
 pub(crate) struct LoadedChat {
     pub record: ChatRecord,
@@ -21,11 +24,40 @@ pub(crate) struct Replacement {
 }
 pub(crate) struct ProjectChange {
     pub authority: Arc<ProjectAuthority>,
+    pub workspace: Arc<Mutex<WorkspaceStore>>,
     pub baseline: LoadedProjects,
     pub primary: PathBuf,
     pub extras: Vec<PathBuf>,
     pub loaded: Vec<LoadedChat>,
     pub unloaded: Vec<ChatRecord>,
+}
+
+/// A bound catalog must resolve its immutable ID and exact original root.
+/// Legacy unbound catalogs may display a unique saved root, but loading never
+/// binds them or turns that display into runtime authority.
+pub(crate) fn resolve_saved_project<'a>(
+    loaded: &'a LoadedProjects,
+    primary: &Path,
+    project_id: Option<&str>,
+) -> Result<Option<&'a SavedProject>, AuthorityError> {
+    if let Some(id) = project_id {
+        return loaded
+            .projects()
+            .iter()
+            .find(|saved| saved.id == id)
+            .filter(|saved| saved.path == primary)
+            .map(Some)
+            .ok_or(AuthorityError::Conflict);
+    }
+    let mut matches = loaded
+        .projects()
+        .iter()
+        .filter(|saved| saved.path == primary);
+    let saved = matches.next();
+    if matches.next().is_some() {
+        return Err(AuthorityError::Conflict);
+    }
+    Ok(saved)
 }
 pub(crate) struct ChangedProject {
     pub loaded: LoadedProjects,
@@ -54,10 +86,53 @@ impl ProjectChangeFailure {
             unconfirmed,
         }
     }
+    fn catalog_binding(error: bello_agent_core::Error, uncertain: bool) -> Self {
+        let unconfirmed =
+            uncertain || matches!(error, bello_agent_core::Error::PersistenceUncertain(_));
+        Self::after_write(
+            format!("Project folders were saved; workspace identity could not be saved: {error}"),
+            unconfirmed,
+        )
+    }
+}
+
+fn validate_catalog_identity(
+    primary: &Path,
+    catalog: &WorkspaceSnapshot,
+    uncertain: bool,
+) -> Result<(), ProjectChangeFailure> {
+    if uncertain {
+        return Err(ProjectChangeFailure::after_write(
+            "The workspace has an unconfirmed save. New chat actions remain blocked.",
+            true,
+        ));
+    }
+    if catalog.project != primary {
+        return Err(ProjectChangeFailure::before_write(
+            "The workspace identity changed.",
+        ));
+    }
+    Ok(())
 }
 
 impl ProjectChange {
     pub async fn apply(mut self) -> Result<ChangedProject, ProjectChangeFailure> {
+        let bound_id = {
+            let catalog = self
+                .workspace
+                .lock()
+                .map_err(|_| ProjectChangeFailure::before_write("The workspace is unavailable."))?;
+            let snapshot = catalog.snapshot();
+            validate_catalog_identity(&self.primary, &snapshot, catalog.is_uncertain())?;
+            snapshot.project_id
+        };
+        // Reject ID/root disagreement before any authority mutation; a different
+        // saved project with the same path cannot replace this binding.
+        let existing = resolve_saved_project(&self.baseline, &self.primary, bound_id.as_deref())
+            .map_err(ProjectChangeFailure::before_write)?;
+        let id = existing
+            .map(|p| p.id.clone())
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         // Nonblocking lock acquisition in stable order. Any prewrite error drops
         // already acquired guards and leases, so partial acquisition is harmless.
         self.loaded.sort_by(|a, b| {
@@ -98,14 +173,6 @@ impl ProjectChange {
                     .map_err(ProjectChangeFailure::before_write)?,
             );
         }
-        let existing = self
-            .baseline
-            .projects()
-            .iter()
-            .find(|project| project.path == self.primary);
-        let id = existing
-            .map(|p| p.id.clone())
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let mut draft = self.baseline.edit();
         let project = draft
             .trust_project(&id, &self.primary, &self.extras)
@@ -127,8 +194,9 @@ impl ProjectChange {
         for guard in guards {
             guard.retain_fence();
         }
-        self.authority
-            .confirm_project(&saved, &project)
+        let binding = self
+            .authority
+            .confirm_project_binding(&saved, &project)
             .map_err(|error| {
                 ProjectChangeFailure::after_write(
                     format!(
@@ -137,6 +205,19 @@ impl ProjectChange {
                     error == AuthorityError::Unconfirmed,
                 )
             })?;
+        // Authority I/O has finished before taking the catalog mutex. Any
+        // catalog error is post-authority-save and must retain admission fences.
+        {
+            let mut catalog = self.workspace.lock().map_err(|_| {
+                ProjectChangeFailure::after_write(
+                    "Project folders were saved; the workspace is unavailable.",
+                    false,
+                )
+            })?;
+            catalog.bind_project_identity(binding).map_err(|error| {
+                ProjectChangeFailure::catalog_binding(error, catalog.is_uncertain())
+            })?;
+        }
         // Set every permanent fence before waiting for any one runtime.
         let mut retirement_error = None;
         for chat in &self.loaded {

@@ -2,7 +2,10 @@
 //! WorkspaceFolders.swift. Draft folders are never runtime authority.
 use crate::{
     AgentView, Palette,
-    project_host::{ChangedProject, LoadedChat, ProjectChange, ProjectChangeFailure},
+    chat_tool_mode::{ChangedChatMode, ChatModeChange, ChatModeFailure},
+    project_host::{
+        ChangedProject, LoadedChat, ProjectChange, ProjectChangeFailure, resolve_saved_project,
+    },
     project_manager_view::{
         ProjectFolderTarget, ProjectManagerAvailability as Availability, ProjectManagerEvent,
         ProjectManagerIntent as Intent, ProjectManagerNotice, ProjectManagerPresentation,
@@ -13,12 +16,13 @@ use crate::{
 };
 use bello_agent_core::{
     Controller, RunState,
-    project_authority::{AuthorityError, LoadedProjects, ProjectAuthority},
+    project_authority::{AuthorityError, LoadedProjects, ProjectAuthority, SavedProject},
+    workspace::{ChatToolMode, WorkspaceStore},
 };
 use gpui::*;
 use std::{
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 use uuid::Uuid;
 
@@ -116,11 +120,12 @@ impl ProjectManagerController {
         }
     }
 
-    fn install_loaded(&mut self, loaded: LoadedProjects, trusted: bool) {
-        let saved = loaded
-            .projects()
-            .iter()
-            .find(|p| p.path == self.presentation.primary);
+    fn install_loaded(
+        &mut self,
+        loaded: LoadedProjects,
+        saved: Option<&SavedProject>,
+        trusted: bool,
+    ) {
         self.presentation.project_id = saved.map(|p| p.id.clone());
         self.presentation.extra_roots = saved.map(|p| p.paths.clone()).unwrap_or_default();
         self.presentation.trusted = trusted;
@@ -282,6 +287,16 @@ impl AgentView {
             self.projects.publish(cx);
             return;
         }
+        let bound_id = match self.workspace.try_lock() {
+            Ok(store) if !store.is_uncertain() => store.snapshot().project_id,
+            _ => {
+                self.projects.presentation.availability = Availability::Unconfirmed(
+                    "The workspace has an unfinished or unconfirmed save. Reload saved projects after it is resolved.".into(),
+                );
+                self.projects.publish(cx);
+                return;
+            }
+        };
         let token = Uuid::new_v4();
         self.projects.load_previous = Some(self.projects.presentation.availability.clone());
         self.projects.load = Some(token);
@@ -295,14 +310,13 @@ impl AgentView {
         let binding = self.window_binding;
         let task = cx.background_executor().spawn(async move {
             let loaded = authority.load()?;
-            let trust = loaded
-                .projects()
-                .iter()
-                .find(|saved| saved.path == primary)
+            let saved = resolve_saved_project(&loaded, &primary, bound_id.as_deref())?.cloned();
+            let trust = saved
+                .as_ref()
                 .filter(|saved| saved.trusted)
                 .map(|saved| authority.confirm_project(&loaded, saved))
                 .transpose();
-            Ok::<_, AuthorityError>((loaded, trust))
+            Ok::<_, AuthorityError>((loaded, saved, trust))
         });
         cx.spawn(async move |owner, cx| {
             let result = task.await;
@@ -317,9 +331,9 @@ impl AgentView {
                 view.projects.load = None;
                 view.projects.load_previous = None;
                 match result {
-                    Ok((loaded, trust)) => {
+                    Ok((loaded, saved, trust)) => {
                         let trusted = trust.as_ref().is_ok_and(|saved| saved.is_some());
-                            view.projects.install_loaded(loaded, trusted);
+                            view.projects.install_loaded(loaded, saved.as_ref(), trusted);
                             if view.projects.admission_blocked {
                                 view.projects.presentation.trusted = false;
                             }
@@ -331,6 +345,8 @@ impl AgentView {
                         }
                     }
                     Err(error) => {
+                        view.projects.baseline = None;
+                        view.projects.presentation.trusted = false;
                         view.projects.presentation.availability = match error {
                             AuthorityError::Unavailable => {
                                 Availability::Unavailable(error.to_string())
@@ -544,6 +560,8 @@ impl AgentView {
 
     fn project_idle_error(&self) -> Option<String> {
         if self.shutting_down
+            || !self.chat_mode_operations.is_empty()
+            || !self.chat_mode_blocked.is_empty()
             || !self.organization_operations.is_empty()
             || self.archive_visibility_writes != 0
             || self.known_catalog_uncertainty
@@ -588,6 +606,187 @@ impl AgentView {
         None
     }
 
+    /// Coordinator boundary for a future source-equivalent confirmation UI.
+    /// It intentionally exposes no toggle, imported chat, connection test, or
+    /// active side workflow that this preview does not implement.
+    #[allow(
+        dead_code,
+        reason = "Confirmation UI and saved side workflow are outside this bounded slice"
+    )]
+    pub(crate) fn enable_chat_editing_after_confirmation(
+        &mut self,
+        id: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let record = self.records.iter().find(|record| record.id == id).cloned();
+        let eligible = !self.shutting_down
+            && self.projects.operation.is_none()
+            && !self.projects.admission_blocked
+            && !self.known_catalog_uncertainty
+            && !self.chat_mode_blocked.contains(id)
+            && !self.organization_operations.contains_key(id)
+            && !self.recoveries.values().any(|intent| intent.chat_id == id)
+            && !self.has_pending_cancel(id)
+            && record
+                .as_ref()
+                .is_some_and(|record| record.tool_mode == ChatToolMode::ReadOnly)
+            && self.chat_ref(id).is_none_or(|chat| {
+                !chat.pending
+                    && !chat.busy
+                    && !chat.loading
+                    && !chat.load_failed
+                    && chat.inflight_submission.is_none()
+                    && chat.queue_operation.is_none()
+                    && chat.cancel_operation.is_none()
+                    && chat.begin_operation.is_none()
+                    && chat.editing.is_none()
+                    && chat.retained_edit.is_none()
+                    && !chat.edit_recovery.blocked
+            });
+        if !eligible {
+            self.error = Some(
+                "Wait for this saved read-only chat to be idle before changing its mode.".into(),
+            );
+            cx.notify();
+            return;
+        }
+        let record = record.expect("eligible saved record");
+        let previous = self.chat_ref(id).map(|chat| chat.controller.clone());
+        let operation = Uuid::new_v4();
+        self.chat_mode_operations.insert(id.to_owned(), operation);
+        self.chat_mode_blocked.insert(id.to_owned());
+        if let Some(chat) = self.chat_mut(id) {
+            chat.loading = true;
+        }
+        let change = ChatModeChange {
+            workspace: self.workspace.clone(),
+            primary: self.project.clone(),
+            record,
+            controller: previous.clone(),
+        };
+        let project = self.project.clone();
+        let id = id.to_owned();
+        let workspace = self.workspace.clone();
+        let task = cx.background_executor().spawn(change.apply());
+        cx.spawn(async move |owner, cx| {
+            let result = task.await;
+            let _ = owner.update(cx, |view, cx| {
+                view.finish_chat_mode_change(
+                    operation,
+                    (&project, &workspace),
+                    &id,
+                    previous,
+                    result,
+                    cx,
+                );
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn finish_chat_mode_change(
+        &mut self,
+        operation: Uuid,
+        origin: (&Path, &Arc<Mutex<WorkspaceStore>>),
+        id: &str,
+        previous: Option<Arc<Controller>>,
+        result: Result<ChangedChatMode, ChatModeFailure>,
+        cx: &mut Context<Self>,
+    ) {
+        let (project, workspace) = origin;
+        if self.project != project || !Arc::ptr_eq(&self.workspace, workspace) {
+            return;
+        }
+        // Catalog uncertainty belongs to this exact workspace even when a
+        // later operation or runtime now owns the target's presentation.
+        if result.as_ref().is_err_and(|error| error.uncertain) {
+            self.observe_catalog_uncertainty(true, cx);
+        }
+        if self.chat_mode_operations.get(id) != Some(&operation) {
+            return;
+        }
+        self.chat_mode_operations.remove(id);
+        if self.chat_mode_operations.is_empty() {
+            for chat in std::iter::once(&mut self.chat).chain(self.inactive.values_mut()) {
+                if chat.error.as_deref()
+                    == Some("Wait for the chat tool mode change to finish before closing.")
+                {
+                    chat.error = None;
+                }
+            }
+        }
+        let owns_runtime = match (self.chat_ref(id), previous.as_ref()) {
+            (Some(chat), Some(previous)) => Arc::ptr_eq(&chat.controller, previous),
+            (None, None) => true,
+            _ => false,
+        };
+        if !owns_runtime {
+            self.error = Some("The chat runtime changed before its mode could be published. New actions for this chat remain blocked.".into());
+            cx.notify();
+            return;
+        }
+        if let Some(chat) = self.chat_mut(id) {
+            chat.loading = false;
+        }
+        let handles = if self.record.id == id {
+            self.transcript
+                .as_ref()
+                .map(|view| view.read(cx).owned_focus_handles(cx))
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let (record, replacement, blocked) = match result {
+            Ok(changed) => {
+                if changed.record.id != id
+                    || !self
+                        .records
+                        .iter()
+                        .any(|record| record.id == id && record.snapshot == changed.record.snapshot)
+                {
+                    self.error = Some("The saved chat identity changed; new actions for this chat remain blocked.".into());
+                    cx.notify();
+                    return;
+                }
+                (Some(changed.record), changed.replacement, false)
+            }
+            Err(error) => {
+                self.error = Some(error.message);
+                (None, error.recovery, error.keep_blocked)
+            }
+        };
+        if let Some(replacement) = replacement {
+            if replacement.id != id
+                || previous
+                    .as_ref()
+                    .is_none_or(|previous| !Arc::ptr_eq(previous, &replacement.previous))
+            {
+                self.error = Some("The replacement chat identity changed; new actions for this chat remain blocked.".into());
+                cx.notify();
+                return;
+            }
+            if let Some(chat) = self.chat_mut(id) {
+                chat.replace_controller(replacement.controller, cx);
+            }
+        }
+        if let Some(saved) = record {
+            // Publish only the mode this operation owns; concurrent title,
+            // sidebar and archive metadata must not be reverted by its result.
+            if let Some(record) = self.records.iter_mut().find(|record| record.id == id) {
+                record.tool_mode = saved.tool_mode;
+            }
+            if let Some(chat) = self.chat_mut(id) {
+                chat.record.tool_mode = saved.tool_mode;
+            }
+        }
+        if !blocked {
+            self.chat_mode_blocked.remove(id);
+        }
+        self.repair_retired_transcript_focus(handles, cx);
+        cx.notify();
+    }
+
     fn save_project_folders(&mut self, extras: Vec<PathBuf>, cx: &mut Context<Self>) {
         if let Some(error) = self.project_idle_error() {
             self.projects.notice(error, true);
@@ -623,6 +822,7 @@ impl AgentView {
             .collect();
         let change = ProjectChange {
             authority: self.projects.authority.clone(),
+            workspace: self.workspace.clone(),
             baseline,
             primary: project.clone(),
             extras,
@@ -681,8 +881,11 @@ impl AgentView {
                         chat.replace_controller(replacement.controller, cx);
                     }
                 }
-                self.projects
-                    .install_loaded(changed.loaded, changed.project.trusted);
+                self.projects.install_loaded(
+                    changed.loaded,
+                    Some(&changed.project),
+                    changed.project.trusted,
+                );
                 self.projects.presentation.stage = Stage::Current;
                 self.projects.presentation.availability = Availability::Ready;
                 self.projects.notice(

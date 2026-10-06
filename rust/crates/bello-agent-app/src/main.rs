@@ -2,6 +2,7 @@ mod assets;
 mod chat;
 mod chat_navigation;
 mod chat_organization;
+mod chat_tool_mode;
 mod draft_status;
 mod file_tab;
 mod layout;
@@ -152,6 +153,8 @@ struct AgentView {
     next_file_id: u64,
     quick_open: Entity<QuickOpenView>,
     projects: project_manager_controller::ProjectManagerController,
+    chat_mode_operations: BTreeMap<String, uuid::Uuid>,
+    chat_mode_blocked: std::collections::BTreeSet<String>,
     _quick_events: Option<Subscription>,
     window_binding: Option<workspace_lifetime::WindowBinding>,
     project: PathBuf,
@@ -335,6 +338,8 @@ impl AgentView {
             next_file_id: 1,
             quick_open,
             projects,
+            chat_mode_operations: BTreeMap::new(),
+            chat_mode_blocked: std::collections::BTreeSet::new(),
             _quick_events: None,
             window_binding: None,
             project,
@@ -625,6 +630,12 @@ impl AgentView {
         );
     }
     fn request_close(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if !self.chat_mode_operations.is_empty() {
+            self.error =
+                Some("Wait for the chat tool mode change to finish before closing.".into());
+            cx.notify();
+            return false;
+        }
         if self.projects.operation.is_some() {
             self.error =
                 Some("Wait for the project folder change to finish before closing.".into());

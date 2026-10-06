@@ -7,6 +7,7 @@ use uuid::Uuid;
 fn record(root: &Path, order: u64, title: &str) -> ChatRecord {
     let id = Uuid::new_v4().to_string();
     ChatRecord {
+        tool_mode: Default::default(),
         snapshot: root.join(format!("{id}.json")),
         id,
         title: title.into(),
@@ -175,10 +176,19 @@ fn legacy_catalog_without_organization_fields_opens_without_rewrite() {
         .register(chat.clone(), DraftRecord::default())
         .unwrap();
     drop(store);
-    let before = std::fs::read(&path).unwrap();
+    let mut legacy: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    legacy["version"] = 1.into();
+    legacy["chats"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("tool_mode");
+    let before = serde_json::to_vec(&legacy).unwrap();
+    std::fs::write(&path, &before).unwrap();
     assert!(!String::from_utf8_lossy(&before).contains("pinned_at"));
     assert!(!String::from_utf8_lossy(&before).contains("sidebar_order"));
     let store = WorkspaceStore::open(&path, dir.path()).unwrap();
+    assert_eq!(store.snapshot().version, 1);
     assert_eq!(store.snapshot().chats, vec![chat]);
     assert_eq!(std::fs::read(path).unwrap(), before);
 }
@@ -191,15 +201,15 @@ fn new_organization_format_is_explicit_and_mislabeled_v1_is_preserved() {
     store
         .register(chat.clone(), DraftRecord::default())
         .unwrap();
-    assert_eq!(store.snapshot().version, 1);
+    assert_eq!(store.snapshot().version, 5);
     store
         .set_pinned(chat.clone(), DraftRecord::default(), true, 4)
         .unwrap();
-    assert_eq!(store.snapshot().version, 2);
+    assert_eq!(store.snapshot().version, 5);
     store
         .set_pinned(chat.clone(), DraftRecord::default(), false, 5)
         .unwrap();
-    assert_eq!(store.snapshot().version, 2); // Never downgrade after metadata use.
+    assert_eq!(store.snapshot().version, 5); // Never downgrade after metadata use.
     store
         .set_pinned(chat, DraftRecord::default(), true, 6)
         .unwrap();
@@ -207,6 +217,12 @@ fn new_organization_format_is_explicit_and_mislabeled_v1_is_preserved() {
     let mut value: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     value["version"] = 1.into();
+    // Keep this case focused on mislabeled organization metadata; v5 mode
+    // fields in legacy catalogs have their own rejection fixtures.
+    value["chats"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("tool_mode");
     let malformed = serde_json::to_vec(&value).unwrap();
     std::fs::write(&path, &malformed).unwrap();
     assert!(WorkspaceStore::open(&path, dir.path()).is_err());

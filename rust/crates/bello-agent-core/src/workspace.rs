@@ -12,6 +12,7 @@ use uuid::Uuid;
 const MAX_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CHATS: usize = 512;
 const MAX_DRAFT_BYTES: usize = 262_144;
+const CURRENT_VERSION: u32 = 5;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct QueuedDraft {
@@ -108,11 +109,25 @@ impl DraftRecord {
         Ok(())
     }
 }
+/// Saved chat metadata only. Neither value grants a controller any tools.
+/// Ordinary source chats start with editing tools; source sides explicitly
+/// start read-only. Imported originals are separately blocked in the source,
+/// and are not represented by this Rust catalog slice.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ChatToolMode {
+    #[default]
+    #[serde(rename = "editing")]
+    Editing,
+    #[serde(rename = "read-only")]
+    ReadOnly,
+}
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct ChatRecord {
     pub id: String,
     pub title: String,
     pub snapshot: PathBuf,
+    pub tool_mode: ChatToolMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sidebar_order: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -126,6 +141,7 @@ impl ChatRecord {
             id,
             title,
             snapshot,
+            tool_mode: ChatToolMode::Editing,
             sidebar_order: Some(organization_timestamp()),
             pinned_at: None,
             archived_at: None,
@@ -244,10 +260,14 @@ impl QueuedCancelReceipt {
         Ok(())
     }
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct WorkspaceSnapshot {
     pub version: u32,
     pub project: PathBuf,
+    /// Absent until an explicit, freshly confirmed SavedProject binding. This
+    /// is its existing UUID, never an independently generated catalog identity.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
     pub revision: u64,
     pub chats: Vec<ChatRecord>,
     pub drafts: BTreeMap<String, DraftRecord>,
@@ -263,11 +283,107 @@ pub struct WorkspaceSnapshot {
     #[serde(default)]
     pub queued_cancellations: BTreeMap<String, QueuedCancelReceipt>,
 }
+impl<'de> Deserialize<'de> for WorkspaceSnapshot {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // Decode rows by catalog version: a v5 missing mode must not silently
+        // acquire editing permissions. Only old Rust v1-v4 rows infer Editing.
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Record {
+            version: u32,
+            project: PathBuf,
+            #[serde(default, deserialize_with = "present_project_id")]
+            project_id: Option<String>,
+            revision: u64,
+            chats: Vec<Box<serde_json::value::RawValue>>,
+            drafts: BTreeMap<String, DraftRecord>,
+            intents: BTreeMap<String, SubmissionIntent>,
+            selected: Option<String>,
+            selection_revision: u64,
+            #[serde(default)]
+            show_archived: bool,
+            #[serde(default)]
+            archive_visibility_revision: u64,
+            #[serde(default)]
+            settled_submissions: BTreeMap<String, u64>,
+            #[serde(default)]
+            queued_cancellations: BTreeMap<String, QueuedCancelReceipt>,
+        }
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct LegacyChat {
+            id: String,
+            title: String,
+            snapshot: PathBuf,
+            #[serde(default)]
+            sidebar_order: Option<u64>,
+            #[serde(default)]
+            pinned_at: Option<u64>,
+            #[serde(default)]
+            archived_at: Option<u64>,
+        }
+        let record = Record::deserialize(deserializer)?;
+        if !(1..=CURRENT_VERSION).contains(&record.version)
+            || (record.version < 5 && record.project_id.is_some())
+        {
+            return Err(serde::de::Error::custom(
+                "Unsupported Rust workspace catalog version",
+            ));
+        }
+        let chats = record
+            .chats
+            .into_iter()
+            .map(|raw| {
+                if record.version >= 5 {
+                    serde_json::from_str(raw.get())
+                } else {
+                    serde_json::from_str::<LegacyChat>(raw.get()).map(|chat| ChatRecord {
+                        id: chat.id,
+                        title: chat.title,
+                        snapshot: chat.snapshot,
+                        tool_mode: ChatToolMode::Editing,
+                        sidebar_order: chat.sidebar_order,
+                        pinned_at: chat.pinned_at,
+                        archived_at: chat.archived_at,
+                    })
+                }
+            })
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(serde::de::Error::custom)?;
+        Ok(Self {
+            version: record.version,
+            project: record.project,
+            project_id: record.project_id,
+            revision: record.revision,
+            chats,
+            drafts: record.drafts,
+            intents: record.intents,
+            selected: record.selected,
+            selection_revision: record.selection_revision,
+            show_archived: record.show_archived,
+            archive_visibility_revision: record.archive_visibility_revision,
+            settled_submissions: record.settled_submissions,
+            queued_cancellations: record.queued_cancellations,
+        })
+    }
+}
+fn present_project_id<'de, D>(deserializer: D) -> std::result::Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    // Missing means explicitly unbound; null or a malformed value is not a
+    // supported way to clear a previously persisted binding.
+    String::deserialize(deserializer).map(Some)
+}
 impl WorkspaceSnapshot {
     fn new(project: PathBuf) -> Self {
         Self {
             version: 1,
             project,
+            project_id: None,
             revision: 0,
             chats: Vec::new(),
             drafts: BTreeMap::new(),
@@ -281,12 +397,30 @@ impl WorkspaceSnapshot {
         }
     }
     fn validate(&self) -> Result<()> {
-        if !matches!(self.version, 1..=4)
+        if !(1..=CURRENT_VERSION).contains(&self.version)
             || self.chats.len() > MAX_CHATS
             || self.intents.len() > MAX_CHATS
             || self.queued_cancellations.len() > MAX_CHATS
         {
             return Err(invalid("Unsupported or oversized Rust workspace catalog"));
+        }
+        if self
+            .project_id
+            .as_ref()
+            .is_some_and(|id| Uuid::parse_str(id).is_err())
+        {
+            return Err(invalid("Invalid saved project identity"));
+        }
+        if self.version < 5
+            && (self.project_id.is_some()
+                || self
+                    .chats
+                    .iter()
+                    .any(|chat| chat.tool_mode != ChatToolMode::Editing))
+        {
+            return Err(invalid(
+                "Project identity and tool modes require Rust workspace catalog version 5",
+            ));
         }
         if self.version < 4
             && (self.show_archived
@@ -443,6 +577,59 @@ impl WorkspaceStore {
     /// catalog uncertain; callers must not infer certainty from that error alone.
     pub fn is_uncertain(&self) -> bool {
         self.uncertain
+    }
+    /// Consume fresh metadata confirmation minted outside the catalog mutex.
+    /// This does not write authority, relocate roots, or grant runtime tools.
+    /// Once authority has been saved, a caller must retain its admission fence
+    /// on any binding failure, even a definite pre-rename catalog error.
+    pub fn bind_project_identity(
+        &mut self,
+        binding: crate::project_authority::ConfirmedProjectBinding,
+    ) -> Result<bool> {
+        self.ensure_certain()?;
+        if binding.project_path() != self.state.project {
+            return Err(invalid(
+                "The saved project does not match this catalog's original root",
+            ));
+        }
+        if let Some(id) = &self.state.project_id {
+            return if id == binding.project_id() {
+                Ok(false)
+            } else {
+                Err(invalid(
+                    "This catalog is already bound to another saved project",
+                ))
+            };
+        }
+        self.transact(|state| {
+            state.project_id = Some(binding.project_id().into());
+            Ok(true)
+        })
+    }
+    /// Persist the source's one-way mode change after the host has confirmed
+    /// consent and eligibility, checked idle state, and closed the old session.
+    /// Publish the returned row only after success. This metadata operation
+    /// does not itself check authority, create a controller, or enable tools.
+    pub fn enable_editing_after_confirmation(&mut self, id: &str) -> Result<ChatRecord> {
+        self.ensure_certain()?;
+        let chat = self
+            .state
+            .chats
+            .iter()
+            .find(|chat| chat.id == id)
+            .ok_or_else(|| invalid("Chat is no longer registered"))?;
+        if chat.tool_mode == ChatToolMode::Editing {
+            return Ok(chat.clone());
+        }
+        self.transact(|state| {
+            let chat = state
+                .chats
+                .iter_mut()
+                .find(|chat| chat.id == id)
+                .ok_or_else(|| invalid("Chat is no longer registered"))?;
+            chat.tool_mode = ChatToolMode::Editing;
+            Ok(chat.clone())
+        })
     }
     pub fn chat_path(&self, id: &str) -> Result<PathBuf> {
         Uuid::parse_str(id).map_err(|_| invalid("Invalid chat identity"))?;
@@ -1036,6 +1223,9 @@ impl WorkspaceStore {
         }
         let mut state = self.state.clone();
         let result = change(&mut state)?;
+        // All writers, including draft/queue recovery, preserve the v5 binding
+        // and explicit chat modes. Reading older files never rewrites them.
+        state.version = state.version.max(CURRENT_VERSION);
         if state.show_archived
             || state.archive_visibility_revision != 0
             || state.chats.iter().any(|chat| chat.archived_at.is_some())
@@ -1152,11 +1342,23 @@ fn absolute(path: &Path) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn legacy_catalog_value(state: &WorkspaceSnapshot, version: u32) -> serde_json::Value {
+        let mut value = serde_json::to_value(state).unwrap();
+        value["version"] = version.into();
+        if version < 5 {
+            value.as_object_mut().unwrap().remove("project_id");
+            for chat in value["chats"].as_array_mut().unwrap() {
+                chat.as_object_mut().unwrap().remove("tool_mode");
+            }
+        }
+        value
+    }
     fn fixture() -> (tempfile::TempDir, WorkspaceStore, ChatRecord) {
         let dir = tempfile::tempdir().unwrap();
         let store = WorkspaceStore::open(dir.path().join("workspace.json"), dir.path()).unwrap();
         let id = Uuid::new_v4().to_string();
         let chat = ChatRecord {
+            tool_mode: ChatToolMode::Editing,
             sidebar_order: None,
             pinned_at: None,
             archived_at: None,
@@ -1438,7 +1640,7 @@ mod tests {
         );
         drop(store);
         let restored = WorkspaceStore::open(path, dir.path()).unwrap().snapshot();
-        assert_eq!(restored.version, 2);
+        assert_eq!(restored.version, CURRENT_VERSION);
         assert_eq!(restored.chats[0].pinned_at, Some(9));
         assert_eq!(restored.drafts[&chat.id], draft);
     }
@@ -1470,7 +1672,7 @@ mod tests {
             .unwrap();
         assert!(restored.changed);
         assert_eq!(restored.record, chat);
-        assert_eq!(store.snapshot().version, 4);
+        assert_eq!(store.snapshot().version, CURRENT_VERSION);
         let before = fs::read(&path).unwrap();
         store.fault = Fault::BeforeRename;
         assert!(
@@ -1515,7 +1717,7 @@ mod tests {
             intent.draft_revision = 2;
             store.begin_submission(intent).unwrap();
             let mut expected = store.snapshot();
-            expected.version = 4;
+            expected.version = CURRENT_VERSION;
             expected.revision += 1;
             expected.chats[0].archived_at = Some(11);
             // A stale UI copy cannot undo newer pin/order/title or draft state.
@@ -1598,7 +1800,7 @@ mod tests {
         assert!(!result.changed);
         assert_eq!(result.record, chat);
         assert_eq!(store.snapshot().drafts[&chat.id], draft);
-        assert_eq!(store.snapshot().version, 4);
+        assert_eq!(store.snapshot().version, CURRENT_VERSION);
         assert!(!chat.snapshot.exists());
     }
     #[test]
@@ -1647,7 +1849,7 @@ mod tests {
             ));
             assert_eq!(fs::read(&path).unwrap(), committed_bytes);
             let mut reopened = WorkspaceStore::open(&path, dir.path()).unwrap();
-            assert_eq!(reopened.snapshot().version, 4);
+            assert_eq!(reopened.snapshot().version, CURRENT_VERSION);
             assert_eq!(
                 reopened.snapshot().chats[0].archived_at,
                 if initial_archived { None } else { Some(2) }
@@ -1740,7 +1942,7 @@ mod tests {
         let path = dir.path().join("workspace.json");
         assert!(store.set_archive_visibility(true, 1000).unwrap());
         let state = store.snapshot();
-        assert_eq!(state.version, 4);
+        assert_eq!(state.version, CURRENT_VERSION);
         assert!(state.archive_visibility_revision > state.revision);
         assert_eq!(state.selection_revision, 7);
         assert_eq!(state.chats, vec![chat.clone()]);
@@ -1765,7 +1967,7 @@ mod tests {
         let before = fs::read(&path).unwrap();
         drop(store);
         let mut reopened = WorkspaceStore::open(&path, dir.path()).unwrap();
-        assert_eq!(reopened.snapshot().version, 4);
+        assert_eq!(reopened.snapshot().version, CURRENT_VERSION);
         assert!(!reopened.snapshot().show_archived);
         assert_eq!(reopened.snapshot().archive_visibility_revision, u64::MAX);
         assert_eq!(reopened.snapshot().chats, vec![chat]);
@@ -1817,8 +2019,7 @@ mod tests {
         for version in [1, 2, 3] {
             let (dir, mut store, chat) = fixture();
             store.register(chat.clone(), held_draft(4)).unwrap();
-            let mut value = serde_json::to_value(store.snapshot()).unwrap();
-            value["version"] = version.into();
+            let value = legacy_catalog_value(&store.snapshot(), version);
             assert!(value.get("show_archived").is_none());
             assert!(value.get("archive_visibility_revision").is_none());
             assert!(value["chats"][0].get("archived_at").is_none());
@@ -1842,14 +2043,14 @@ mod tests {
             reopened
                 .set_archived(chat.clone(), DraftRecord::default(), true, 2)
                 .unwrap();
-            assert_eq!(reopened.snapshot().version, 4);
+            assert_eq!(reopened.snapshot().version, CURRENT_VERSION);
             reopened
                 .set_archived(chat, DraftRecord::default(), false, 3)
                 .unwrap();
-            assert_eq!(reopened.snapshot().version, 4);
+            assert_eq!(reopened.snapshot().version, CURRENT_VERSION);
             reopened.set_archive_visibility(true, 10).unwrap();
             reopened.set_archive_visibility(false, 11).unwrap();
-            assert_eq!(reopened.snapshot().version, 4);
+            assert_eq!(reopened.snapshot().version, CURRENT_VERSION);
         }
     }
     #[test]
@@ -1857,7 +2058,8 @@ mod tests {
         use serde_json::{Value, json};
         let (dir, mut store, chat) = fixture();
         store.register(chat, held_draft(4)).unwrap();
-        let base = serde_json::to_value(store.snapshot()).unwrap();
+        let base_state = store.snapshot();
+        let base = serde_json::to_value(&base_state).unwrap();
         let path = dir.path().join("workspace.json");
         drop(store);
         let mut cases: Vec<Value> = Vec::new();
@@ -1867,8 +2069,7 @@ mod tests {
                 "show_archived",
                 "archive_visibility_revision",
             ] {
-                let mut value = base.clone();
-                value["version"] = version.into();
+                let mut value = legacy_catalog_value(&base_state, version);
                 match field {
                     "archived_at" => value["chats"][0][field] = json!(0),
                     "show_archived" => value[field] = json!(true),
@@ -1877,7 +2078,7 @@ mod tests {
                 cases.push(value);
             }
         }
-        for version in [0, 5, u32::MAX] {
+        for version in [0, 6, u32::MAX] {
             let mut value = base.clone();
             value["version"] = version.into();
             cases.push(value);
@@ -1904,8 +2105,7 @@ mod tests {
             ),
         ] {
             for invalid in values {
-                let mut value = base.clone();
-                value["version"] = 4.into();
+                let mut value = legacy_catalog_value(&base_state, 4);
                 if field == "archived_at" {
                     value["chats"][0][field] = invalid;
                 } else {
@@ -1983,7 +2183,7 @@ mod tests {
                 .is_err()
         );
         assert!(store.set_archive_visibility(true, 1).is_err());
-        assert_eq!(store.snapshot().version, 1);
+        assert_eq!(store.snapshot().version, CURRENT_VERSION);
         assert_eq!(fs::read(&path).unwrap(), before);
         assert!(!store.is_uncertain());
     }
@@ -2043,44 +2243,53 @@ mod tests {
         assert_eq!(reopened.snapshot().drafts[&chat.id], draft);
     }
     #[test]
-    fn archive_v4_survives_every_existing_writer_including_cancel_preparation() {
-        let (dir, mut store, chat) = fixture();
+    fn archive_metadata_survives_every_existing_writer_including_cancel_preparation() {
+        let (dir, mut store, mut chat) = fixture();
+        let project_id = Uuid::new_v4().to_string();
+        // A previously bound v5 fixture; ordinary metadata writers must keep
+        // its exact identity and mode without borrowing a stale UI copy.
+        store.state.version = CURRENT_VERSION;
+        store.state.project_id = Some(project_id.clone());
+        chat.tool_mode = ChatToolMode::ReadOnly;
         let draft = held_draft(4);
         store
             .set_archived(chat.clone(), draft.clone(), true, 1)
             .unwrap();
+        // A delayed ordinary UI row cannot broaden a retained read-only chat
+        // while pin/archive/submission/draft operations patch other metadata.
+        chat.tool_mode = ChatToolMode::Editing;
         store
             .set_archived(chat.clone(), draft.clone(), false, 2)
             .unwrap();
         store
             .register(chat.clone(), DraftRecord::default())
             .unwrap();
-        assert_eq!(store.snapshot().version, 4);
+        assert_eq!(store.snapshot().version, CURRENT_VERSION);
         store.name_chat(&chat.id, "renamed").unwrap();
-        assert_eq!(store.snapshot().version, 4);
+        assert_eq!(store.snapshot().version, CURRENT_VERSION);
         store
             .set_pinned(chat.clone(), DraftRecord::default(), true, 3)
             .unwrap();
-        assert_eq!(store.snapshot().version, 4);
+        assert_eq!(store.snapshot().version, CURRENT_VERSION);
         store.select(&chat.id, 2).unwrap();
-        assert_eq!(store.snapshot().version, 4);
+        assert_eq!(store.snapshot().version, CURRENT_VERSION);
         let pending = pending_cancel(0);
         store
             .prepare_queued_cancel(&chat.id, pending.clone(), draft.clone())
             .unwrap();
-        assert_eq!(store.snapshot().version, 4);
+        assert_eq!(store.snapshot().version, CURRENT_VERSION);
         let merged = reconciled(&draft);
         store
             .settle_queued_cancel(&chat.id, &pending, &draft, merged.clone())
             .unwrap();
-        assert_eq!(store.snapshot().version, 4);
+        assert_eq!(store.snapshot().version, CURRENT_VERSION);
         let later = DraftRecord {
             revision: merged.revision + 1,
             text: "later".into(),
             queued_edit: None,
         };
         store.save_draft(&chat.id, later.clone()).unwrap();
-        assert_eq!(store.snapshot().version, 4);
+        assert_eq!(store.snapshot().version, CURRENT_VERSION);
         store
             .flush_draft_exact(
                 &chat.id,
@@ -2090,7 +2299,7 @@ mod tests {
                 },
             )
             .unwrap();
-        assert_eq!(store.snapshot().version, 4);
+        assert_eq!(store.snapshot().version, CURRENT_VERSION);
         let mut intent = SubmissionIntent {
             id: Uuid::new_v4().to_string(),
             chat_id: chat.id.clone(),
@@ -2099,32 +2308,37 @@ mod tests {
             draft_revision: 1,
         };
         store.begin_submission(intent.clone()).unwrap();
-        assert_eq!(store.snapshot().version, 4);
+        assert_eq!(store.snapshot().version, CURRENT_VERSION);
         store.acknowledge_submission(&intent.id).unwrap();
-        assert_eq!(store.snapshot().version, 4);
+        assert_eq!(store.snapshot().version, CURRENT_VERSION);
         intent.id = Uuid::new_v4().to_string();
         intent.draft_revision = 2;
         store
             .save_submitting_draft(chat.clone(), later.clone(), intent.clone())
             .unwrap();
-        assert_eq!(store.snapshot().version, 4);
+        assert_eq!(store.snapshot().version, CURRENT_VERSION);
         store
             .withdraw_submission(&intent.id, later.clone())
             .unwrap();
-        assert_eq!(store.snapshot().version, 4);
+        assert_eq!(store.snapshot().version, CURRENT_VERSION);
         intent.id = Uuid::new_v4().to_string();
         intent.draft_revision = 3;
         store.settle_rejected(chat.clone(), intent, later).unwrap();
-        assert_eq!(store.snapshot().version, 4);
+        assert_eq!(store.snapshot().version, CURRENT_VERSION);
         store.set_archive_visibility(true, 20).unwrap();
         store.set_archive_visibility(false, 21).unwrap();
-        assert_eq!(store.snapshot().version, 4);
+        assert_eq!(store.snapshot().version, CURRENT_VERSION);
         drop(store);
         let reopened = WorkspaceStore::open(dir.path().join("workspace.json"), dir.path()).unwrap();
-        assert_eq!(reopened.snapshot().version, 4);
+        assert_eq!(reopened.snapshot().version, CURRENT_VERSION);
         assert_eq!(reopened.snapshot().chats[0].archived_at, None);
         assert_eq!(reopened.snapshot().chats[0].pinned_at, Some(3));
         assert_eq!(reopened.snapshot().archive_visibility_revision, 21);
+        assert_eq!(reopened.snapshot().project_id, Some(project_id));
+        assert_eq!(
+            reopened.snapshot().chats[0].tool_mode,
+            ChatToolMode::ReadOnly
+        );
     }
     #[test]
     fn lock_and_project_binding_are_checked() {
@@ -2299,7 +2513,7 @@ mod tests {
     }
     #[test]
     fn existing_catalog_confirmation_is_required_without_opening_rewrite_for_all_versions() {
-        for version in [1, 2, 3, 4] {
+        for version in [1, 2, 3, 4, 5] {
             let (dir, mut store, chat) = fixture();
             let draft = held_draft(4);
             store.register(chat.clone(), draft.clone()).unwrap();
@@ -2308,7 +2522,7 @@ mod tests {
                     .prepare_queued_cancel(&chat.id, pending_cancel(0), draft.clone())
                     .unwrap();
             }
-            if version == 4 {
+            if version >= 4 {
                 store
                     .set_archived(chat.clone(), draft.clone(), true, 0)
                     .unwrap();
@@ -2316,7 +2530,7 @@ mod tests {
             }
             let mut state = store.snapshot();
             state.version = version;
-            let mut value = serde_json::to_value(state).unwrap();
+            let mut value = legacy_catalog_value(&state, version);
             if version < 3 {
                 value
                     .as_object_mut()
@@ -2572,7 +2786,7 @@ mod tests {
         let path = dir.path().join("workspace.json");
         let mut state = store.snapshot();
         state.revision = u64::MAX;
-        state.version = 3;
+        state.version = CURRENT_VERSION;
         state.queued_cancellations.insert(
             chat.id.clone(),
             QueuedCancelReceipt {
@@ -2661,12 +2875,12 @@ mod tests {
         assert_eq!(fs::read(dir.path().join("workspace.json")).unwrap(), before);
     }
     #[test]
-    fn v3_promotion_is_monotonic_and_other_transactions_preserve_cancel_receipts() {
+    fn catalog_promotion_is_monotonic_and_other_transactions_preserve_cancel_receipts() {
         let (dir, mut store, mut chat) = fixture();
         chat.sidebar_order = Some(9);
         let draft = held_draft(4);
         store.register(chat.clone(), draft.clone()).unwrap();
-        assert_eq!(store.snapshot().version, 2);
+        assert_eq!(store.snapshot().version, CURRENT_VERSION);
         let pending = pending_cancel(0);
         store
             .prepare_queued_cancel(&chat.id, pending.clone(), draft.clone())
@@ -2685,7 +2899,7 @@ mod tests {
         };
         store.begin_submission(intent.clone()).unwrap();
         store.acknowledge_submission(&intent.id).unwrap();
-        assert_eq!(store.snapshot().version, 3);
+        assert_eq!(store.snapshot().version, CURRENT_VERSION);
         assert_eq!(store.snapshot().queued_cancellations[&chat.id], pending);
         let merged = reconciled(&draft);
         store
@@ -2710,7 +2924,7 @@ mod tests {
         assert_eq!(store.snapshot().queued_cancellations[&chat.id], settled);
         drop(store);
         let reopened = WorkspaceStore::open(dir.path().join("workspace.json"), dir.path()).unwrap();
-        assert_eq!(reopened.snapshot().version, 3);
+        assert_eq!(reopened.snapshot().version, CURRENT_VERSION);
         assert_eq!(reopened.snapshot().queued_cancellations[&chat.id], settled);
     }
 
@@ -2723,13 +2937,13 @@ mod tests {
         store
             .prepare_queued_cancel(&chat.id, pending_cancel(0), draft)
             .unwrap();
-        let base = serde_json::to_value(store.snapshot()).unwrap();
+        let base_state = store.snapshot();
+        let base = serde_json::to_value(&base_state).unwrap();
         let path = dir.path().join("workspace.json");
         drop(store);
         let mut cases: Vec<Value> = Vec::new();
-        for version in [1, 2, 5] {
-            let mut value = base.clone();
-            value["version"] = version.into();
+        for version in [1, 2, 6] {
+            let value = legacy_catalog_value(&base_state, version);
             cases.push(value);
         }
         for receipt in [
@@ -2990,3 +3204,7 @@ mod tests {
         assert_eq!(store.snapshot().queued_cancellations[&chat.id], pending);
     }
 }
+
+#[cfg(test)]
+#[path = "workspace_identity_tests.rs"]
+mod identity_tests;

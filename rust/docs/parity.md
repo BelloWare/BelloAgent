@@ -1866,3 +1866,31 @@ Repository identity configuration is not evidence of an installed signing
 identity, working Keychain interaction policy or completed native acceptance.
 Those operations and production host composition remain separate gates, as
 recorded in `native-authority-contract.md` and `packaging/macos/README.md`.
+
+
+### Persistent project identity and saved-chat mode boundary
+
+Catalog v5 now preserves a confirmed SavedProject UUID and explicit per-chat
+Editing/ReadOnly metadata. Legacy v1–4 reads remain byte-identical; only actual
+writes migrate. Existing project paths stay fixed, binding is immutable, and
+unsupported or malformed metadata fails closed. Projects save now confirms and
+binds identity without holding a catalog mutex across authority I/O. Authority
+is rechecked after controller replacement; cross-store uncertainty keeps chat
+admission fenced.
+
+The one-chat confirmed-mode coordinator follows close/join, persist, then publish
+ordering and preserves composer ownership and unrelated chat work. It has no
+visible mode control and enables no tools. Review corrected an unloaded-target
+placeholder race and ensured stale same-workspace failures still propagate
+catalog uncertainty. Failed joins and uncertain saves cannot revive old actors;
+a definite failed mode write can reopen a fresh unchanged read-only actor.
+
+Local validation passed 48 affected workspace tests, 22 affected core integration
+tests and 25 actual-source pure host/mode tests, plus strict core Clippy. Core and
+app transition reviews are clear after those corrections. The pure app tests
+now use a standard future runner and were executed without GPUI. New GPUI
+coordinator regressions are written but local app compilation/UI execution is
+blocked by the cloud build-prerequisite runtime failure; exact-checkpoint CI
+remains the compile and automated app-test gate. No new desktop acceptance,
+production trust, native Keychain access or tool activation is claimed. See
+`current-project-host.md` for remaining source workflows and failure boundaries.

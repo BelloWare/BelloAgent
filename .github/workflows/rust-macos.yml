@@ -47,8 +47,11 @@ jobs:
         # Fake API and temporary-file fixtures; no native authority or credentials are accessed.
         run: |
           cargo test --locked -p bello-agent-core --lib --features synthetic-authority project_authority::
+          cargo test --locked -p bello-agent-core --lib --features synthetic-authority workspace::identity_tests
           cargo test --locked -p bello-agent-core --lib --features native-authority project_authority::native
           cargo check --locked -p bello-agent-app --all-targets --features synthetic-authority
+          cargo test --locked -p bello-agent-app --features synthetic-authority project_host::
+          cargo test --locked -p bello-agent-app chat_tool_mode::
       - name: Build native applications without launching
         run: cargo build --locked --workspace
       - name: Test native lifecycle harness policy

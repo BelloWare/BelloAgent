@@ -38,6 +38,7 @@ jobs:
       - name: Project authority fixtures and coordinator checks
         run: |
           cargo test --locked -p bello-agent-core --lib --features synthetic-authority project_authority::
+          cargo test --locked -p bello-agent-core --lib --features synthetic-authority workspace::identity_tests
           cargo test --locked -p bello-agent-core --lib --features native-authority project_authority::native
           cargo test --locked -p bello-agent-app --features synthetic-authority project_
       - name: Lints

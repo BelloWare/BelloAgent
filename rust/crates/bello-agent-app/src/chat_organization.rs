@@ -92,6 +92,7 @@ impl AgentView {
     }
     pub(crate) fn actor_mutation_blocked(&self, id: &str) -> bool {
         self.project_actions_blocked()
+            || self.chat_mode_blocked.contains(id)
             || self.known_catalog_uncertainty
             || self.chat_is_archived(id)
             || self.has_pending_archive(id)
@@ -129,7 +130,10 @@ impl AgentView {
         action: OrganizationAction,
         cx: &mut Context<Self>,
     ) {
-        if self.shutting_down || self.project_actions_blocked() {
+        if self.shutting_down
+            || self.project_actions_blocked()
+            || self.chat_mode_blocked.contains(id)
+        {
             return;
         }
         let Some(record) = self.records.iter().find(|record| record.id == id) else {

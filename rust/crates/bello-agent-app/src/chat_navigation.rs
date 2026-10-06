@@ -239,6 +239,9 @@ impl AgentView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.chat_mode_blocked.contains(id) && self.chat_ref(id).is_none() {
+            return;
+        }
         if self.shutting_down || !self.advance_navigation(cx) {
             return;
         }
@@ -296,7 +299,10 @@ impl AgentView {
         self.load_chat(id, cx);
     }
     pub(super) fn load_chat(&mut self, id: &str, cx: &mut Context<Self>) {
-        if self.shutting_down || self.project_actions_blocked() {
+        if self.shutting_down
+            || self.project_actions_blocked()
+            || self.chat_mode_blocked.contains(id)
+        {
             return;
         }
         let Some(chat) = self.chat_mut(id) else {
@@ -664,7 +670,7 @@ impl AgentView {
         }
     }
     pub(crate) fn reconcile_intents(&mut self, id: &str, cx: &mut Context<Self>) {
-        if self.projects.operation.is_some() {
+        if self.projects.operation.is_some() || self.chat_mode_blocked.contains(id) {
             return;
         }
         let Some(chat) = self.chat_ref(id) else {
@@ -825,7 +831,8 @@ impl AgentView {
             cx.notify();
             return;
         }
-        if !self.organization_operations.is_empty()
+        if !self.chat_mode_operations.is_empty()
+            || !self.organization_operations.is_empty()
             || self.archive_visibility_writes != 0
             || self.busy
             || self.loading

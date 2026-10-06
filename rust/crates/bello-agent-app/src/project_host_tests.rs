@@ -1,9 +1,35 @@
 use super::*;
 use bello_agent_core::{
     Lane, RunState, Submission, project_authority::synthetic::SyntheticAuthorityControl,
+    workspace::DraftRecord,
 };
-use gpui::TestAppContext;
-use std::time::Duration;
+use std::{
+    future::Future,
+    pin::pin,
+    task::{Context, Poll, Wake, Waker},
+    time::Duration,
+};
+
+struct TestWake(std::thread::Thread);
+impl Wake for TestWake {
+    fn wake(self: Arc<Self>) {
+        self.0.unpark();
+    }
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.0.unpark();
+    }
+}
+fn run<F: Future>(future: F) -> F::Output {
+    let waker = Waker::from(Arc::new(TestWake(std::thread::current())));
+    let mut context = Context::from_waker(&waker);
+    let mut future = pin!(future);
+    loop {
+        match future.as_mut().poll(&mut context) {
+            Poll::Ready(result) => return result,
+            Poll::Pending => std::thread::park(),
+        }
+    }
+}
 
 fn fixture() -> (tempfile::TempDir, ProjectChange, SyntheticAuthorityControl) {
     let dir = tempfile::tempdir().unwrap();
@@ -21,9 +47,14 @@ fn fixture() -> (tempfile::TempDir, ProjectChange, SyntheticAuthorityControl) {
         })
         .unwrap();
     let record = ChatRecord::new(store.snapshot().id, "saved".into(), path);
+    let mut workspace = WorkspaceStore::open(primary.join("catalog.json"), &primary).unwrap();
+    workspace
+        .register(record.clone(), DraftRecord::default())
+        .unwrap();
     let controller = Controller::new(store, None).unwrap();
     let plan = ProjectChange {
         authority: Arc::new(authority),
+        workspace: Arc::new(Mutex::new(workspace)),
         baseline,
         primary,
         extras: vec![extra],
@@ -32,15 +63,12 @@ fn fixture() -> (tempfile::TempDir, ProjectChange, SyntheticAuthorityControl) {
     };
     (dir, plan, control)
 }
-#[gpui::test]
-fn project_change_saves_then_retires_old_arc_and_reopens_same_writer(cx: &mut TestAppContext) {
+#[test]
+fn project_change_saves_then_retires_old_arc_and_reopens_same_writer() {
     let (_dir, plan, control) = fixture();
     let old = plan.loaded[0].controller.clone();
     let id = plan.loaded[0].record.id.clone();
-    let outcome = cx
-        .background_executor
-        .block_test(plan.apply())
-        .unwrap_or_else(|e| panic!("{}", e.message));
+    let outcome = run(plan.apply()).unwrap_or_else(|e| panic!("{}", e.message));
     assert_eq!(outcome.replacements[0].id, id);
     assert!(old.is_retired());
     assert!(old.reorder(&[]).is_err());
@@ -52,8 +80,8 @@ fn project_change_saves_then_retires_old_arc_and_reopens_same_writer(cx: &mut Te
     assert_eq!(outcome.loaded.revision(), 1);
     assert!(control.snapshot_bytes().unwrap().is_some());
 }
-#[gpui::test]
-fn project_change_prewrite_failure_restores_admission_without_saving(cx: &mut TestAppContext) {
+#[test]
+fn project_change_prewrite_failure_restores_admission_without_saving() {
     let (_dir, plan, control) = fixture();
     let old = plan.loaded[0].controller.clone();
     control.fail_next_write(AuthorityError::Denied).unwrap();
@@ -67,29 +95,21 @@ fn project_change_prewrite_failure_restores_admission_without_saving(cx: &mut Te
         );
         gate.release();
     });
-    let error = cx
-        .background_executor
-        .block_test(plan.apply())
-        .err()
-        .expect("denied");
+    let error = run(plan.apply()).err().expect("denied");
     observer.join().unwrap();
     assert!(!error.keep_blocked);
     assert!(!old.is_retired());
     old.reorder(&[]).unwrap();
     assert!(control.snapshot_bytes().unwrap().is_none());
 }
-#[gpui::test]
-fn project_change_unconfirmed_write_never_reopens_old_admission(cx: &mut TestAppContext) {
+#[test]
+fn project_change_unconfirmed_write_never_reopens_old_admission() {
     let (_dir, plan, control) = fixture();
     let old = plan.loaded[0].controller.clone();
     control
         .fail_next_write(AuthorityError::Unconfirmed)
         .unwrap();
-    let error = cx
-        .background_executor
-        .block_test(plan.apply())
-        .err()
-        .expect("unconfirmed");
+    let error = run(plan.apply()).err().expect("unconfirmed");
     assert!(error.keep_blocked && error.unconfirmed);
     assert!(
         control.snapshot_bytes().unwrap().is_some(),
@@ -99,10 +119,8 @@ fn project_change_unconfirmed_write_never_reopens_old_admission(cx: &mut TestApp
     assert!(!old.is_retired());
     old.stop().unwrap();
 }
-#[gpui::test]
-fn project_change_unloaded_queue_rejects_before_write_and_releases_all_guards(
-    cx: &mut TestAppContext,
-) {
+#[test]
+fn project_change_unloaded_queue_rejects_before_write_and_releases_all_guards() {
     let (_dir, mut plan, control) = fixture();
     let old = plan.loaded[0].controller.clone();
     let path = plan.primary.join("z.json");
@@ -114,19 +132,15 @@ fn project_change_unloaded_queue_rejects_before_write_and_releases_all_guards(
     drop(store);
     let before = std::fs::read(&path).unwrap();
     plan.unloaded.push(record);
-    let error = cx
-        .background_executor
-        .block_test(plan.apply())
-        .err()
-        .expect("queued");
+    let error = run(plan.apply()).err().expect("queued");
     assert!(!error.keep_blocked);
     old.reorder(&[]).unwrap();
     assert_eq!(std::fs::read(&path).unwrap(), before);
     assert!(control.snapshot_bytes().unwrap().is_none());
     assert!(SessionStore::open(&path).is_ok());
 }
-#[gpui::test]
-fn project_change_partial_guard_acquisition_rolls_back(cx: &mut TestAppContext) {
+#[test]
+fn project_change_partial_guard_acquisition_rolls_back() {
     let (_dir, mut plan, control) = fixture();
     let old = plan.loaded[0].controller.clone();
     let path = plan.primary.join("z.json");
@@ -139,12 +153,12 @@ fn project_change_partial_guard_acquisition_rolls_back(cx: &mut TestAppContext) 
         record,
         controller: Controller::new(store, None).unwrap(),
     });
-    assert!(cx.background_executor.block_test(plan.apply()).is_err());
+    assert!(run(plan.apply()).is_err());
     old.reorder(&[]).unwrap();
     assert!(control.snapshot_bytes().unwrap().is_none());
 }
-#[gpui::test]
-fn project_change_idle_failed_unloaded_chat_needs_no_recovery_write(cx: &mut TestAppContext) {
+#[test]
+fn project_change_idle_failed_unloaded_chat_needs_no_recovery_write() {
     let (_dir, mut plan, _) = fixture();
     let path = plan.primary.join("z.json");
     let mut store = SessionStore::open(&path).unwrap();
@@ -163,11 +177,11 @@ fn project_change_idle_failed_unloaded_chat_needs_no_recovery_write(cx: &mut Tes
     ));
     drop(store);
     let before = std::fs::read(&path).unwrap();
-    assert!(cx.background_executor.block_test(plan.apply()).is_ok());
+    assert!(run(plan.apply()).is_ok());
     assert_eq!(std::fs::read(&path).unwrap(), before);
 }
-#[gpui::test]
-fn project_change_lost_postsave_confirmation_keeps_old_actors_fenced(cx: &mut TestAppContext) {
+#[test]
+fn project_change_lost_postsave_confirmation_keeps_old_actors_fenced() {
     let (_dir, plan, control) = fixture();
     let old = plan.loaded[0].controller.clone();
     let gate = control.pause_next_write().unwrap();
@@ -176,21 +190,15 @@ fn project_change_lost_postsave_confirmation_keeps_old_actors_fenced(cx: &mut Te
         control.fail_next_read(AuthorityError::Denied).unwrap();
         gate.release();
     });
-    let error = cx
-        .background_executor
-        .block_test(plan.apply())
-        .err()
-        .expect("confirmation denied");
+    let error = run(plan.apply()).err().expect("confirmation denied");
     observer.join().unwrap();
     assert!(error.keep_blocked);
     assert!(error.message.contains("were saved"));
     assert!(old.reorder(&[]).is_err());
 }
 
-#[gpui::test]
-fn project_change_keeps_unloaded_lease_through_save_and_releases_afterward(
-    cx: &mut TestAppContext,
-) {
+#[test]
+fn project_change_keeps_unloaded_lease_through_save_and_releases_afterward() {
     let (_dir, mut plan, control) = fixture();
     let path = plan.primary.join("z.json");
     let store = SessionStore::open(&path).unwrap();
@@ -211,16 +219,14 @@ fn project_change_keeps_unloaded_lease_through_save_and_releases_afterward(
         );
         gate.release();
     });
-    assert!(cx.background_executor.block_test(plan.apply()).is_ok());
+    assert!(run(plan.apply()).is_ok());
     observer.join().unwrap();
     assert_eq!(std::fs::read(&path).unwrap(), before);
     assert!(SessionStore::open(&path).is_ok());
 }
 
-#[gpui::test]
-fn project_change_rolls_back_earlier_inspection_leases_when_later_chat_is_busy(
-    cx: &mut TestAppContext,
-) {
+#[test]
+fn project_change_rolls_back_earlier_inspection_leases_when_later_chat_is_busy() {
     let (_dir, mut plan, control) = fixture();
     let first_path = plan.primary.join("y.json");
     let first = SessionStore::open(&first_path).unwrap();
@@ -240,13 +246,13 @@ fn project_change_rolls_back_earlier_inspection_leases_when_later_chat_is_busy(
         last_path,
     ));
     drop(last);
-    assert!(cx.background_executor.block_test(plan.apply()).is_err());
+    assert!(run(plan.apply()).is_err());
     assert!(control.snapshot_bytes().unwrap().is_none());
     assert!(SessionStore::open(&first_path).is_ok());
 }
 
-#[gpui::test]
-fn project_change_replaces_loaded_pending_chat_without_materializing_it(cx: &mut TestAppContext) {
+#[test]
+fn project_change_replaces_loaded_pending_chat_without_materializing_it() {
     let (_dir, mut plan, _) = fixture();
     let controller = Controller::new(SessionStore::pending(), None).unwrap();
     let id = controller.snapshot().id;
@@ -255,20 +261,15 @@ fn project_change_replaces_loaded_pending_chat_without_materializing_it(cx: &mut
         record: ChatRecord::new(id.clone(), "pending draft".into(), path.clone()),
         controller: controller.clone(),
     }];
-    let changed = cx
-        .background_executor
-        .block_test(plan.apply())
-        .unwrap_or_else(|e| panic!("{}", e.message));
+    let changed = run(plan.apply()).unwrap_or_else(|e| panic!("{}", e.message));
     assert!(controller.is_retired());
     assert_eq!(changed.replacements[0].controller.snapshot().id, id);
     assert!(!changed.replacements[0].controller.is_persistent());
     assert!(!path.exists());
 }
 
-#[gpui::test]
-fn project_change_final_confirmation_rejects_authority_changed_during_restart(
-    cx: &mut TestAppContext,
-) {
+#[test]
+fn project_change_final_confirmation_rejects_authority_changed_during_restart() {
     let (_dir, plan, control) = fixture();
     let old = plan.loaded[0].controller.clone();
     let path = plan.loaded[0].record.snapshot.clone();
@@ -286,11 +287,7 @@ fn project_change_final_confirmation_rejects_authority_changed_during_restart(
             .unwrap();
         read_gate.release();
     });
-    let error = cx
-        .background_executor
-        .block_test(plan.apply())
-        .err()
-        .expect("changed authority");
+    let error = run(plan.apply()).err().expect("changed authority");
     observer.join().unwrap();
     assert!(error.keep_blocked);
     assert!(error.message.contains("during runtime restart"));
@@ -300,4 +297,166 @@ fn project_change_final_confirmation_rejects_authority_changed_during_restart(
         SessionStore::open(&path).is_ok(),
         "uninstalled replacements must release their locks"
     );
+}
+
+#[test]
+fn project_change_binds_once_and_restart_resolves_exact_id() {
+    let (directory, plan, _) = fixture();
+    let old = plan.loaded[0].controller.clone();
+    let outcome = run(plan.apply()).unwrap_or_else(|error| panic!("{}", error.message));
+    assert!(old.is_retired());
+    let workspace =
+        WorkspaceStore::open(directory.path().join("catalog.json"), directory.path()).unwrap();
+    let snapshot = workspace.snapshot();
+    assert_eq!(
+        snapshot.project_id.as_deref(),
+        Some(outcome.project.id.as_str())
+    );
+    assert_eq!(
+        resolve_saved_project(
+            &outcome.loaded,
+            &snapshot.project,
+            snapshot.project_id.as_deref()
+        )
+        .unwrap(),
+        Some(&outcome.project)
+    );
+}
+
+#[test]
+fn catalog_binding_failure_after_authority_save_keeps_admission_blocked() {
+    let (_directory, plan, control) = fixture();
+    let old = plan.loaded[0].controller.clone();
+    let workspace = plan.workspace.clone();
+    let path = plan.primary.join("catalog.json");
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    let failure = run(plan.apply()).err().unwrap();
+    assert!(failure.keep_blocked);
+    assert!(control.snapshot_bytes().unwrap().is_some());
+    assert!(workspace.lock().unwrap().snapshot().project_id.is_none());
+    assert!(old.reorder(&[]).is_err());
+    assert!(
+        !old.is_retired(),
+        "catalog bind follows authority save and precedes retirement"
+    );
+}
+
+#[test]
+fn authority_write_never_holds_catalog_mutex_and_binding_keeps_concurrent_draft() {
+    let (_directory, plan, control) = fixture();
+    let workspace = plan.workspace.clone();
+    let id = plan.loaded[0].record.id.clone();
+    let gate = control.pause_next_write().unwrap();
+    let observer = std::thread::spawn(move || {
+        assert!(gate.wait_until_started(Duration::from_secs(3)));
+        workspace
+            .try_lock()
+            .expect("no authority I/O while holding catalog mutex")
+            .save_draft(
+                &id,
+                DraftRecord {
+                    text: "concurrent draft".into(),
+                    revision: 4,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        gate.release();
+    });
+    let workspace = plan.workspace.clone();
+    let id = plan.loaded[0].record.id.clone();
+    assert!(run(plan.apply()).is_ok());
+    observer.join().unwrap();
+    assert_eq!(
+        workspace.lock().unwrap().snapshot().drafts[&id].text,
+        "concurrent draft"
+    );
+}
+
+#[test]
+fn bound_identity_mismatch_rejects_before_authority_mutation() {
+    let (_directory, plan, control) = fixture();
+    let (bound_authority, _) = ProjectAuthority::with_synthetic_bytes(None).unwrap();
+    let mut draft = bound_authority.load().unwrap().edit();
+    let saved = draft
+        .trust_project(&uuid::Uuid::new_v4().to_string(), &plan.primary, &[])
+        .unwrap();
+    let loaded = bound_authority.save(&mut draft).unwrap();
+    let binding = bound_authority
+        .confirm_project_binding(&loaded, &saved)
+        .unwrap();
+    plan.workspace
+        .lock()
+        .unwrap()
+        .bind_project_identity(binding)
+        .unwrap();
+    let old = plan.loaded[0].controller.clone();
+    let failure = run(plan.apply()).err().unwrap();
+    assert!(!failure.keep_blocked);
+    assert!(control.snapshot_bytes().unwrap().is_none());
+    old.reorder(&[]).unwrap();
+}
+
+#[test]
+fn saved_project_resolution_rejects_unbound_ambiguity_and_bound_missing_or_moved_id() {
+    let directory = tempfile::tempdir().unwrap();
+    let primary = std::fs::canonicalize(directory.path()).unwrap();
+    let first = uuid::Uuid::new_v4().to_string();
+    let second = uuid::Uuid::new_v4().to_string();
+    let bytes = serde_json::to_vec(&serde_json::json!({
+        "schema": 1, "revision": 1,
+        "workspaces": [
+            { "id": first, "path": primary, "trusted": true },
+            { "id": second, "path": primary, "trusted": true }
+        ]
+    }))
+    .unwrap();
+    let (authority, _) = ProjectAuthority::with_synthetic_bytes(Some(bytes)).unwrap();
+    let loaded = authority.load().unwrap();
+    assert_eq!(
+        resolve_saved_project(&loaded, &primary, None),
+        Err(AuthorityError::Conflict)
+    );
+    assert_eq!(
+        resolve_saved_project(&loaded, &primary, Some(&second))
+            .unwrap()
+            .unwrap()
+            .id,
+        second
+    );
+    assert_eq!(
+        resolve_saved_project(&loaded, &primary, Some(&uuid::Uuid::new_v4().to_string())),
+        Err(AuthorityError::Conflict)
+    );
+    assert_eq!(
+        resolve_saved_project(&loaded, &primary.join("moved"), Some(&second)),
+        Err(AuthorityError::Conflict)
+    );
+}
+
+#[test]
+fn catalog_uncertainty_remains_fenced_before_authority_and_after_refused_binding() {
+    let (_directory, plan, _) = fixture();
+    let snapshot = plan.workspace.lock().unwrap().snapshot();
+    let failure = validate_catalog_identity(&plan.primary, &snapshot, true)
+        .err()
+        .unwrap();
+    assert!(failure.keep_blocked && failure.unconfirmed);
+    let root_failure = validate_catalog_identity(&plan.primary.join("different"), &snapshot, false)
+        .err()
+        .unwrap();
+    assert!(!root_failure.keep_blocked && !root_failure.unconfirmed);
+    // ensure_certain refuses a subsequent bind with Invalid; that variant does
+    // not erase the catalog writer's already-observed uncertainty.
+    let failure = ProjectChangeFailure::catalog_binding(
+        bello_agent_core::Error::Invalid("Workspace persistence is uncertain".into()),
+        true,
+    );
+    assert!(failure.keep_blocked && failure.unconfirmed);
+    let confirmed_failure = ProjectChangeFailure::catalog_binding(
+        std::io::Error::other("known pre-rename failure").into(),
+        false,
+    );
+    assert!(confirmed_failure.keep_blocked && !confirmed_failure.unconfirmed);
 }

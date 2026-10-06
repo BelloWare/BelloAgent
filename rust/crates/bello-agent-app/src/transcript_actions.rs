@@ -283,6 +283,7 @@ mod tests {
                 sidebar_order: None,
                 pinned_at: None,
                 archived_at: None,
+                tool_mode: Default::default(),
                 id: snapshot.id,
                 title: snapshot.title,
                 snapshot: path,

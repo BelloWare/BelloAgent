@@ -122,6 +122,23 @@ impl SavedProject {
     }
 }
 
+/// Freshly confirmed metadata for binding a Rust catalog to a saved project.
+/// This is point-in-time evidence, not an execution grant or a security lease.
+/// Mint it outside the catalog mutex; admission must still revalidate authority
+/// after asynchronous boundaries. It deliberately cannot be constructed or
+/// cloned by callers, and binding it never changes the saved project or roots.
+pub struct ConfirmedProjectBinding {
+    project: SavedProject,
+}
+impl ConfirmedProjectBinding {
+    pub fn project_id(&self) -> &str {
+        &self.project.id
+    }
+    pub fn project_path(&self) -> &Path {
+        &self.project.path
+    }
+}
+
 /// A loaded, immutable point-in-time view. No opaque envelope bytes are exposed
 /// or formatted. A caller must revalidate before authority-dependent admission.
 #[derive(Clone)]
@@ -378,6 +395,23 @@ impl ProjectAuthority {
             return Err(AuthorityError::InvalidProject);
         }
         Ok(project.clone())
+    }
+
+    /// Confirm saved authority before taking a workspace catalog lock. The
+    /// catalog remains bound to its original canonical primary path; an ID
+    /// alone never authorizes relocation or adopting another folder.
+    pub fn confirm_project_binding(
+        &self,
+        expected: &LoadedProjects,
+        project: &SavedProject,
+    ) -> AuthorityResult<ConfirmedProjectBinding> {
+        let project = self.confirm_project(expected, project)?;
+        if fs::canonicalize(&project.path).map_err(|_| AuthorityError::InvalidProject)?
+            != project.path
+        {
+            return Err(AuthorityError::InvalidProject);
+        }
+        Ok(ConfirmedProjectBinding { project })
     }
 }
 

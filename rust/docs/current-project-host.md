@@ -5,10 +5,12 @@ Settings: inspect trust for the current primary folder, review Create/retrust,
 and add or remove additional roots. The primary cannot be removed. Source
 references are WorkspaceManagerView.swift, WorkspaceFolders.swift, and the
 ConfigurationVault contracts. Locate Folder relocation, multi-project catalog
-ownership, project removal, full Settings and per-chat tool modes remain gaps.
+ownership, project removal, full Settings and per-chat mode controls remain gaps.
+The v5 catalog now records a confirmed saved-project identity and per-chat mode;
+the mode transition boundary exists without a visible control or tool activation.
 
-Production project authority is unavailable until an approved native backend and
-signed identity are implemented. The UI reports this and cannot save production
+Production project authority is unavailable until the optional native backend
+is composed with a validated signed installation. The UI reports this and cannot save production
 trust. The nondefault `synthetic-authority` build feature and explicit debug
 `--synthetic-project-authority` launch flag construct memory-only sample storage;
 the Projects surface labels it. No environment fallback, plaintext trust store,
@@ -64,3 +66,31 @@ focus. Runtime replacement preserves composer text, selection and editor identit
 Native Linux acceptance is recorded in the parity ledger after the final frozen
 candidate is exercised; native macOS accessibility, IME, Keychain and same-machine
 performance remain separate acceptance gates.
+
+## Persistent identity and chat mode
+
+Catalog version 5 records an optional SavedProject UUID and each chat's exact
+`editing` or `read-only` mode. Versions 1–4 load without rewriting bytes or
+inventing a project identity; an actual catalog mutation writes complete v5
+metadata. Invalid IDs, unsupported fields, absent/unknown v5 modes and future
+versions fail closed. Ordinary legacy chats retain the source Editing default.
+Imported, side and connection-test creation remains unimplemented.
+
+A successful Projects save obtains fresh authority confirmation outside the
+catalog mutex, then binds the existing SavedProject UUID before restarting
+controllers. An existing binding resolves by exact ID and original root. An
+unbound catalog rejects ambiguous same-path authority entries. Identity never
+permits relocation, changes path-derived storage, or grants tool execution.
+Authority is checked again after replacement construction. Any possible
+cross-store commit keeps admission fenced; reload is not recovery.
+
+The confirmed mode coordinator operates on one idle saved read-only chat. It
+permanently retires and joins the old controller before persisting Editing,
+then publishes a tools-disabled replacement without replacing the composer.
+Unrelated chat navigation and draft writes remain available. An unloaded target
+cannot acquire a competing placeholder during the transaction. A definite
+failed save can reopen the unchanged read-only session; uncertain saves or
+failed joins remain fenced. Completion checks workspace, operation and runtime
+ownership, while same-workspace uncertainty is propagated even from stale
+results. The source confirmation UI and runtime mode/tool policy are still
+separate integration work; no action here enables tools.

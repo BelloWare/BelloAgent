@@ -9,7 +9,7 @@ use crate::{
 use bello_agent_core::{
     Controller, RunState, SessionStore,
     project_authority::{AuthorityError, ProjectAuthority, synthetic::SyntheticAuthorityControl},
-    workspace::{ChatRecord, DraftRecord, WorkspaceStore},
+    workspace::{ChatRecord, ChatToolMode, DraftRecord, WorkspaceStore},
 };
 use gpui::{Context, Entity, Focusable, TestAppContext, Window, WindowHandle};
 use std::{
@@ -70,6 +70,254 @@ fn fixture(
 
 fn intent(view: &mut AgentView, action: Intent, window: &mut Window, cx: &mut Context<AgentView>) {
     view.project_intent(view.projects.presentation.revision, action, window, cx);
+}
+
+fn prepare_read_only_chat(window: WindowHandle<AgentView>, cx: &mut TestAppContext) -> String {
+    window
+        .update(cx, |view, window, cx| {
+            view.projects
+                .view
+                .update(cx, |view, cx| view.close(true, window, cx));
+            view.projects_dismissed(window, cx);
+            view.controller.materialize(&view.record.snapshot).unwrap();
+            view.pending = false;
+            view.record.tool_mode = ChatToolMode::ReadOnly;
+            let record = view.record.clone();
+            view.records
+                .iter_mut()
+                .find(|chat| chat.id == record.id)
+                .unwrap()
+                .tool_mode = ChatToolMode::ReadOnly;
+            view.workspace
+                .lock()
+                .unwrap()
+                .register(record.clone(), view.saved_draft(cx))
+                .unwrap();
+            assert_eq!(
+                view.workspace
+                    .lock()
+                    .unwrap()
+                    .snapshot()
+                    .chats
+                    .iter()
+                    .find(|chat| chat.id == record.id)
+                    .unwrap()
+                    .tool_mode,
+                ChatToolMode::ReadOnly,
+            );
+            record.id
+        })
+        .unwrap()
+}
+
+#[gpui::test]
+async fn confirmed_mode_change_only_fences_target_and_preserves_navigation_drafts_and_projects(
+    cx: &mut TestAppContext,
+) {
+    let (_directory, window, root, _) = fixture(cx);
+    let id = prepare_read_only_chat(window, cx);
+    let old = cx.read(|cx| root.read(cx).controller.clone());
+    let old_source = Arc::downgrade(&old);
+    let mut late_snapshot = old.snapshot();
+    late_snapshot.title = "stale retired publication".into();
+    late_snapshot.revision += 100;
+    let composer = cx.read(|cx| root.read(cx).composer.clone());
+    let selected = window
+        .update(cx, |view, window, cx| {
+            view.projects.presentation.stage = Stage::TrustDraft {
+                kind: crate::project_manager_view::ProjectTrustKind::Create,
+                extras: vec![view.project.join("reviewed draft folder")],
+            };
+            let revision = view.projects.presentation.revision;
+            view.enable_chat_editing_after_confirmation(&id, cx);
+            assert!(view.chat_mode_operations.contains_key(&id));
+            assert!(view.actor_mutation_blocked(&id));
+            assert!(view.loading);
+            assert!(!view.request_close(window, cx));
+            assert!(view.project_idle_error().is_some());
+            view.new_chat(window, cx);
+            assert_ne!(view.record.id, id);
+            assert!(!view.actor_mutation_blocked(&view.record.id));
+            assert_eq!(view.projects.presentation.revision, revision);
+            view.record.id.clone()
+        })
+        .unwrap();
+    cx.condition(&root, |view, _| view.chat_mode_operations.is_empty())
+        .await;
+    window.update(cx, |view, _, cx| {
+        assert_eq!(view.record.id, selected);
+        let chat = view.chat_ref(&id).unwrap();
+        assert_eq!(chat.record.tool_mode, ChatToolMode::Editing);
+        assert_eq!(chat.composer.entity_id(), composer.entity_id());
+        assert_eq!(chat.composer.read(cx).text(), "retained composer 日本語");
+            assert!(!chat.loading);
+            assert_ne!(chat.error.as_deref(), Some("Wait for the chat tool mode change to finish before closing."));
+            assert!(!view.actor_mutation_blocked(&id));
+        assert!(matches!(&view.projects.presentation.stage, Stage::TrustDraft { extras, .. } if extras == &[view.project.join("reviewed draft folder")]));
+        let current = chat.controller.clone();
+        view.receive_snapshot(&id, &old_source, Arc::new(late_snapshot), cx);
+        assert!(Arc::ptr_eq(&view.chat_ref(&id).unwrap().controller, &current));
+        assert_ne!(view.chat_ref(&id).unwrap().session.title, "stale retired publication");
+    }).unwrap();
+    assert!(old.is_retired());
+    assert!(old.reorder(&[]).is_err());
+}
+
+#[gpui::test]
+fn stale_mode_completion_cannot_publish_over_newer_operation_or_runtime(cx: &mut TestAppContext) {
+    let (_directory, window, _, _) = fixture(cx);
+    let id = prepare_read_only_chat(window, cx);
+    window
+        .update(cx, |view, _, cx| {
+            let old = view.controller.clone();
+            let operation = Uuid::new_v4();
+            let newer = Uuid::new_v4();
+            view.chat_mode_operations.insert(id.clone(), newer);
+            view.chat_mode_blocked.insert(id.clone());
+            let mut record = view.record.clone();
+            record.tool_mode = ChatToolMode::Editing;
+            let result = crate::chat_tool_mode::ChangedChatMode {
+                record: record.clone(),
+                replacement: None,
+            };
+            view.finish_chat_mode_change(
+                operation,
+                (&view.project.clone(), &view.workspace.clone()),
+                &id,
+                Some(old.clone()),
+                Ok(result),
+                cx,
+            );
+            assert_eq!(view.chat_mode_operations.get(&id), Some(&newer));
+            assert_eq!(view.record.tool_mode, ChatToolMode::ReadOnly);
+            let other = Controller::new(SessionStore::pending_with_id(&id).unwrap(), None).unwrap();
+            view.finish_chat_mode_change(
+                newer,
+                (&view.project.clone(), &view.workspace.clone()),
+                &id,
+                Some(other),
+                Ok(crate::chat_tool_mode::ChangedChatMode {
+                    record,
+                    replacement: None,
+                }),
+                cx,
+            );
+            assert_eq!(view.record.tool_mode, ChatToolMode::ReadOnly);
+            assert!(Arc::ptr_eq(&view.controller, &old));
+            assert!(view.chat_mode_blocked.contains(&id));
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+async fn unloaded_mode_target_cannot_acquire_a_placeholder_or_archive_during_save(
+    cx: &mut TestAppContext,
+) {
+    let (_directory, window, root, _) = fixture(cx);
+    let id = prepare_read_only_chat(window, cx);
+    window
+        .update(cx, |view, window, cx| {
+            view.new_chat(window, cx);
+            let selected = view.record.id.clone();
+            assert_ne!(selected, id);
+            drop(view.inactive.remove(&id).unwrap());
+            view.enable_chat_editing_after_confirmation(&id, cx);
+            assert!(view.chat_mode_operations.contains_key(&id));
+            view.select_chat(&id, window, cx);
+            assert_eq!(view.record.id, selected);
+            assert!(view.chat_ref(&id).is_none());
+            view.set_chat_pinned(&id, true, cx);
+            view.set_chat_archived(&id, true, cx);
+            assert!(!view.organization_operations.contains_key(&id));
+            assert!(!view.actor_mutation_blocked(&selected));
+        })
+        .unwrap();
+    cx.condition(&root, |view, _| view.chat_mode_operations.is_empty())
+        .await;
+    window
+        .update(cx, |view, window, cx| {
+            assert!(!view.chat_mode_blocked.contains(&id));
+            let record = view.records.iter().find(|record| record.id == id).unwrap();
+            assert_eq!(record.tool_mode, ChatToolMode::Editing);
+            assert!(record.archived_at.is_none() && record.pinned_at.is_none());
+            view.select_chat(&id, window, cx);
+            assert_eq!(view.record.id, id);
+        })
+        .unwrap();
+    cx.condition(&root, |view, _| !view.loading).await;
+    cx.read(|cx| {
+        let view = root.read(cx);
+        assert!(!view.chat_mode_blocked.contains(&id));
+        assert_eq!(view.record.tool_mode, ChatToolMode::Editing);
+        assert!(!view.load_failed);
+    });
+}
+
+#[gpui::test]
+fn stale_mode_uncertainty_blocks_only_the_originating_workspace(cx: &mut TestAppContext) {
+    for stale_token in [true, false] {
+        let (_directory, window, _, _) = fixture(cx);
+        let id = prepare_read_only_chat(window, cx);
+        window
+            .update(cx, |view, _, cx| {
+                let operation = Uuid::new_v4();
+                let newer = if stale_token {
+                    Uuid::new_v4()
+                } else {
+                    operation
+                };
+                view.chat_mode_operations.insert(id.clone(), newer);
+                view.chat_mode_blocked.insert(id.clone());
+                let previous =
+                    Controller::new(SessionStore::pending_with_id(&id).unwrap(), None).unwrap();
+                let failure = || crate::chat_tool_mode::ChatModeFailure {
+                    message: "unconfirmed catalog write".into(),
+                    keep_blocked: true,
+                    uncertain: true,
+                    recovery: None,
+                };
+                let foreign = Arc::new(Mutex::new(
+                    WorkspaceStore::open(view.project.join("other-catalog.json"), &view.project)
+                        .unwrap(),
+                ));
+                view.finish_chat_mode_change(
+                    operation,
+                    (&view.project.clone(), &foreign),
+                    &id,
+                    Some(previous.clone()),
+                    Err(failure()),
+                    cx,
+                );
+                assert!(!view.known_catalog_uncertainty);
+                view.finish_chat_mode_change(
+                    operation,
+                    (
+                        &view.project.join("different-root"),
+                        &view.workspace.clone(),
+                    ),
+                    &id,
+                    Some(previous.clone()),
+                    Err(failure()),
+                    cx,
+                );
+                assert!(!view.known_catalog_uncertainty);
+                view.finish_chat_mode_change(
+                    operation,
+                    (&view.project.clone(), &view.workspace.clone()),
+                    &id,
+                    Some(previous),
+                    Err(failure()),
+                    cx,
+                );
+                assert!(view.known_catalog_uncertainty);
+                assert_eq!(view.record.tool_mode, ChatToolMode::ReadOnly);
+                assert!(view.chat_mode_blocked.contains(&id));
+                if stale_token {
+                    assert_eq!(view.chat_mode_operations.get(&id), Some(&newer));
+                }
+            })
+            .unwrap();
+    }
 }
 
 #[gpui::test]
