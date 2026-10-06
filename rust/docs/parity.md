@@ -1834,3 +1834,35 @@ coverage verifies raw arguments, continuation, failed regex output and durable
 reopen without reexecution. Actual macOS execution remains pending CI. No hard
 native regex timeout, user-home access, real mount fixture or GUI readiness is
 claimed. See `native-grep-contract.md` for the exact boundary.
+
+### Separate Rust native authority implementation
+
+The optional, nondefault `native-authority` feature adds an explicit macOS
+storage adapter and approved separate Rust bundle/vault identity templates.
+`new()` and `Default` remain unavailable, including with all features; the app
+does not compose the adapter or enable tools. No certificate discovery, signing,
+credential access or Keychain operation was performed during implementation.
+
+The adapter checks strict signed identity before reads and replacements, keeps
+CF/Objective-C values in operation-local pools, validates CFData and byte bounds,
+and performs source-style locked whole-byte CAS without retries or fallback.
+Review identified that Security's internal repair can mutate an existing item
+before returning a failure. Every failed update and every nonduplicate add
+failure therefore remains Unconfirmed; only duplicate-add is Conflict. Existing
+pre-entry identity, read and lock errors remain distinct. The host consequently
+keeps its existing admission fence when a mutation might have happened.
+
+Thirty-three focused authority cases pass with native and synthetic features,
+including 14 fake API/temporary-lock cases. A negative control that treated an
+authentication error after mutation as Conflict fails the new regression, then
+passes after restoration. Strict core all-target Clippy, formatting and an
+actual Darwin metadata check of the source authority module and native bindings
+pass; no foreign function was executed by that metadata check. Independent
+review is clear after the repair-path correction. CI now runs fake-only native
+contracts explicitly. One narrow new binding package, LocalAuthentication, is
+optional and macOS-only; no objc2-security dependency was enabled.
+
+Repository identity configuration is not evidence of an installed signing
+identity, working Keychain interaction policy or completed native acceptance.
+Those operations and production host composition remain separate gates, as
+recorded in `native-authority-contract.md` and `packaging/macos/README.md`.

@@ -24,8 +24,12 @@ cargo run -p bello-agent-app -- --project ../
 The app opens an honest disconnected workspace until a connection is supplied.
 It never discovers credentials in the shell, environment, or source app files.
 The temporary Linux credential entry point is explicit stdin; it is kept only in
-memory and is not a native vault integration. The source app's Keychain vault and
-settings flows remain unported. Profile JSON must contain no key. Accepted fields
+memory and is not a native vault integration. An optional, explicitly composed
+macOS authority adapter and separate Rust identity are documented in
+[the native authority contract](docs/native-authority-contract.md); the app still
+uses unavailable production authority, and no source vault is imported. Native
+acceptance, host composition and full settings flows remain separate gates.
+Profile JSON must contain no key. Accepted fields
 are validated and unknown fields rejected rather than silently ignored.
 
 For a real endpoint, pass `--profile path/to/profile.json --credential-stdin`

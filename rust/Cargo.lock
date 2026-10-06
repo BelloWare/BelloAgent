@@ -528,11 +528,15 @@ name = "bello-agent-core"
 version = "0.1.0"
 dependencies = [
  "block2",
+ "core-foundation 0.10.0",
  "futures-util",
  "libc",
  "objc2",
  "objc2-foundation",
+ "objc2-local-authentication",
  "reqwest",
+ "security-framework",
+ "security-framework-sys",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -3620,6 +3624,16 @@ dependencies = [
  "block2",
  "objc2",
  "objc2-core-foundation",
+]
+
+[[package]]
+name = "objc2-local-authentication"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e48e0b8b339e0d9d2ed4416b7f93f9d4daadff7d4dd797f89867cde11aeac607"
+dependencies = [
+ "objc2",
+ "objc2-foundation",
 ]
 
 [[package]]

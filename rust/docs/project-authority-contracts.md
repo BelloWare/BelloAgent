@@ -1,27 +1,28 @@
 # Portable project authority contracts
 
-This checkpoint implements the portable envelope/edit/confirmation contract for
-an isolated Rust trust store. It does not implement native Keychain access,
-signing configuration, a settings window, per-chat tool mode, or tool enablement.
-`ProjectAuthority::new()` is unavailable on every production platform. Unit tests
-and the explicitly enabled, nondefault `synthetic-authority` feature can construct
-an in-memory fixture backend. The feature does not change `new()` or `Default`.
-There is no plaintext, unsigned, environment, or source vault fallback. No user credentials or Keychain items were read or written.
+The portable envelope/edit/confirmation contract uses an isolated Rust trust
+store. `ProjectAuthority::new()` and `Default` remain unavailable on every
+production platform. Unit tests and the explicit, nondefault
+`synthetic-authority` feature can construct an in-memory fixture backend; it
+never changes default composition.
 
-The intended native backend must verify its approved signed application identity
-before both reads and writes, use a separate Rust Keychain namespace, and perform
-locked whole-byte compare-and-swap. The source's default trusted-application
-policy protects Keychain reads; neither it nor a cooperating-writer lock is a
-claim of per-application write isolation against arbitrary same-account writers.
-Native worker scheduling, denied/locked identity behavior and real Keychain CAS
-remain native implementation/acceptance gates.
+The separate, optional `native-authority` feature now provides an explicit macOS
+storage adapter and approved Rust identity templates. Its constructor is inert
+and is not installed in the app. See [the native storage contract](native-authority-contract.md)
+for strict identity checks, locked whole-byte CAS, framework repair uncertainty,
+foreign ownership and the remaining native acceptance gate. No signing,
+certificate discovery, user credential or Keychain access was performed while
+preparing or testing this code. There is no plaintext, unsigned, environment or
+source-vault fallback.
 
-There is currently no production Rust bundle identifier in the packaging tree.
-An unconfigured namespace proposal is `com.belloware.BelloAgentRust`, service
-`com.belloware.BelloAgentRust.configuration`, account `vault-v1`. These names are
-not applied by code. Bundle/signing identity and actual access require explicit
-packaging approval. The Swift vault is neither imported nor rewritten; users
-will explicitly trust projects in the separate Rust store.
+The approved namespace is `com.belloware.BelloAgentRust`, service
+`com.belloware.BelloAgentRust.configuration`, account `vault-v1`, using the
+existing source Developer ID team. Repository configuration does not establish
+that an installed certificate or signed application exists. Actual signing,
+Keychain operations and native interaction validation remain separately
+authorized gates. The Swift vault is neither imported nor rewritten; projects
+require fresh explicit trust in the separate Rust store. Saved trust alone does
+not enable tools.
 
 ## Envelope and editing
 

@@ -1,9 +1,9 @@
 //! Portable contracts for the isolated Rust project-authority vault.
 //!
 //! Source: ConfigurationVault.swift, KeychainVaultStorage.swift, WorkspaceRecord
-//! and WorkspaceFolders.swift. This does NOT access a Keychain, source vault,
-//! credentials, environment, or plaintext fallback. The production constructor
-//! is unavailable until an approved native identity/backend is implemented.
+//! and WorkspaceFolders.swift. The default constructor remains unavailable.
+//! The nondefault `native-authority` feature exposes a separate explicit macOS
+//! composition boundary; it never accesses the source vault or a fallback.
 //! Unit tests and the explicit, nondefault `synthetic-authority` QA feature may
 //! inject in-memory storage. Values describe saved configuration, not an execution
 //! grant; the host still owns lifecycle and admission fencing.
@@ -22,10 +22,17 @@ use std::{
 const MAX_BYTES: usize = 2_097_152;
 const MAX_PROJECTS: usize = 1000;
 
+#[cfg(feature = "native-authority")]
+mod native;
+
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum AuthorityError {
     #[error("Native project authority is unavailable until its signing identity is configured.")]
     Unavailable,
+    #[error("Project authority requires the approved signed Bello Agent Rust application.")]
+    Unsigned,
+    #[error("The project authority configuration lock could not be opened.")]
+    LockUnavailable,
     #[error("The native project authority store is locked or denied.")]
     Denied,
     #[error("Another operation is updating project authority.")]
@@ -270,9 +277,11 @@ impl ProjectDraft {
     }
 }
 
-// The backend must provide source-equivalent locked whole-byte CAS. The future
-// native adapter must verify its approved signed identity before BOTH operations.
+// The backend must provide source-equivalent locked whole-byte CAS. The native
+// adapter verifies its approved signed identity before BOTH operations.
 // Synthetic implementations are never available as a production fallback.
+// Every replace error except Unconfirmed guarantees no write by this operation:
+// the host treats those errors as pre-write failures when restoring its state.
 trait VaultStorage: Send + Sync {
     fn read(&self) -> AuthorityResult<Option<Vec<u8>>>;
     fn replace(&self, expected: Option<&[u8]>, replacement: &[u8]) -> AuthorityResult<()>;
@@ -284,6 +293,14 @@ pub struct ProjectAuthority {
 impl ProjectAuthority {
     pub fn new() -> Self {
         Self::default()
+    }
+    /// Explicit composition boundary for the isolated native Rust vault.
+    /// Construction performs no identity, filesystem, or Keychain operations.
+    /// The caller must run load/save/confirmation on its existing background
+    /// path; enabling this feature never changes `new()` or `Default`.
+    #[cfg(feature = "native-authority")]
+    pub fn with_native_storage() -> AuthorityResult<Self> {
+        native::authority()
     }
     /// Explicit in-memory QA injection. `None` represents an absent item. Raw
     /// malformed fixtures are accepted within the byte limit so `load` exercises

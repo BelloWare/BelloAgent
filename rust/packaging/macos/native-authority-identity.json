@@ -1,0 +1,10 @@
+{
+  "bundle_identifier": "com.belloware.BelloAgentRust",
+  "team_identifier": "43TXHV3TM3",
+  "certificate_kind": "Developer ID Application",
+  "requirement": "anchor apple generic and identifier \"com.belloware.BelloAgentRust\" and certificate leaf[subject.OU] = \"43TXHV3TM3\" and certificate leaf[field.1.2.840.113635.100.6.1.13] exists",
+  "keychain_service": "com.belloware.BelloAgentRust.configuration",
+  "keychain_account": "vault-v1",
+  "support_namespace": "com.belloware.BelloAgentRust",
+  "lock_filename": "configuration.lock"
+}
