@@ -1,30 +1,32 @@
-import SwiftUI
+import AppKit
+import Combine
 
-private struct WorkspaceCommandModelKey: FocusedValueKey { typealias Value = WorkspaceModel }
-extension FocusedValues {
-    var workspaceCommandModel: WorkspaceModel? {
-        get { self[WorkspaceCommandModelKey.self] }
-        set { self[WorkspaceCommandModelKey.self] = newValue }
+/// The app owns one workspace, its windows, menus and update lifetime.
+@main @MainActor final class BelloAgentApplication: ApplicationLifecycle {
+    let workspaceModel: WorkspaceModel
+    let updates: UpdateController
+    let menuBar = MenuBarController()
+    private(set) var workspaceWindow: NSWindowController?
+    private(set) var settingsWindow: NSWindowController?
+    private var menus: ApplicationMenus?
+    private var observer: ShellObserver!
+    private var configurationKey: ConfigurationKey?
+    private struct ConfigurationKey: Equatable {
+        let loaded: Bool
+        let automaticChecks: Bool
+        let transcript: String?
     }
-}
 
-@main struct BelloAgentApplication: App {
-    @StateObject private var updates = UpdateController()
-    /// The test host never reads the reader's chats back.
-    private static let restoresAtLaunch = ProcessInfo.processInfo.environment["PI_APP_TESTING"] != "1"
-    /// Launching from its first frame: `restore()` opens the chat the reader
-    /// had open, and the window shows nothing in its place until it does.
-    @StateObject private var model = WorkspaceModel(launching: Self.restoresAtLaunch)
-    @StateObject private var menuBar = MenuBarController()
-    @FocusedValue(\.workspaceCommandModel) private var focusedModel
-    @Environment(\.openWindow) private var openWindow
-    private var commandModel: WorkspaceModel { focusedModel ?? model }
-    /// The conversation's commands act only while the workspace window is the
-    /// focused scene: with the Session Inspector or Settings in front, ⌘↩ and
-    /// ⌘. used to reach the chat behind them through the fallback model.
-    private var conversationCommands: Bool { focusedModel != nil && commandModel.conversationCommandsEnabled }
-    @NSApplicationDelegateAdaptor(ApplicationLifecycle.self) private var lifecycle
-    init() {
+    static func main() {
+        registerDrawingPolicy()
+        let app = NSApplication.shared
+        let delegate = BelloAgentApplication()
+        app.delegate = delegate
+        app.setActivationPolicy(.regular)
+        withExtendedLifetime(delegate) { app.run() }
+    }
+
+    private static func registerDrawingPolicy() {
         // AppKit draws a large view's content (over 768×768 pixels: the
         // transcript's long Markdown text) asynchronously: Core Animation
         // rasterizes its glyphs on four or five threads of its own. SwiftUI
@@ -43,146 +45,118 @@ extension FocusedValues {
         let asynchronous = (environment["PI_APP_ASYNC_DRAWING"] ?? environment["TEST_RUNNER_PI_APP_ASYNC_DRAWING"]) == "1"
         UserDefaults.standard.register(defaults: ["NSViewCanUseGPUAcceleration": asynchronous])
     }
-    var body: some Scene {
-        // One window: the menu bar item and the Dock reopen this window rather
-        // than adding a second view of the same conversations.
-        Window("Bello Agent", id: "main") {
-            WorkspaceView(model: model)
-                .onAppear {
-                    lifecycle.model = model; updates.hasActiveWork = { model.hasActiveWork }
-                    installMenuBar()
-                    updates.acquireBarrier = { model.acquireUpdateBarrier() }
-                    updates.prepareForInstall = { try await model.prepareForInstall() }
-                    updates.releaseBarrier = { model.releaseUpdateBarrier() }
-                    updates.reportFailure = { model.error = $0 }
-                }
-                .task { if Self.restoresAtLaunch { await model.restore() } }
-                .onChange(of: model.configurationLoaded) { _, available in
-                    updates.configure(automaticChecks: model.configuration.automaticUpdateChecks, configurationAvailable: available)
-                }
-                .onChange(of: model.configuration.automaticUpdateChecks) { _, enabled in
-                    updates.configure(automaticChecks: enabled, configurationAvailable: model.configurationLoaded)
-                }
-                // How a finished turn reads is decided where a page is
-                // planned, so the planner is told directly rather than through
-                // the view tree; until the vault answers, nothing folds.
-                .onChange(of: model.configuration.transcriptView) { _, _ in model.applyTranscriptDisplay() }
-                .onChange(of: model.configurationLoaded) { _, _ in model.applyTranscriptDisplay() }
-        }
-        .defaultSize(width: 1240, height: 800)
-        .windowStyle(.hiddenTitleBar)
-        .commands {
-            CommandGroup(after: .appInfo) { Button("Check for Updates…", action: updates.checkForUpdates).disabled(!updates.canCheckForUpdates) }
-            CommandGroup(replacing: .newItem) {
-                Button("New Chat", action: commandModel.newChat).keyboardShortcut("n")
-                    .disabled(commandModel.selectedWorkspaceID == nil)
-                Button("Open Project…", action: commandModel.pickWorkspace).keyboardShortcut("o")
-                // A file of the project on screen, by part of its name.
-                Button("Open File…") { commandModel.showQuickOpen(in: NSApp.keyWindow) }.keyboardShortcut("p").disabled(!commandModel.canQuickOpen)
-                Button("Import Pi Session…", action: commandModel.importChat)
-                Button("Rename Chat…", action: commandModel.rename).disabled(!commandModel.conversationCommandsEnabled)
-                Button("Delete Chat…", action: commandModel.deleteChat).disabled(!commandModel.conversationCommandsEnabled)
-                Divider()
-                // The row's own actions, on the chat with keyboard focus.
-                // Until now they existed only under a right-click on a row.
-                Button(commandModel.commandChat?.isArchived == true ? "Restore Chat" : "Archive Chat", action: commandModel.archiveCommandChat)
-                    .disabled(commandModel.commandChat == nil)
-                Button(commandModel.commandChat?.isPinned == true ? "Unpin Chat" : "Pin Chat", action: commandModel.pinCommandChat)
-                    .disabled(commandModel.commandChat == nil)
-                Menu("Move to Topic") {
-                    Button("Project root") { commandModel.moveCommandChat(toTopic: nil) }
-                    ForEach(commandModel.commandTopicChoices) { topic in
-                        Button(topic.title) { commandModel.moveCommandChat(toTopic: topic.id) }
-                    }
-                }.disabled(commandModel.commandChat == nil || commandModel.commandChat?.workspaceID == WorkspaceRecord.scratchID)
-                Button("Mark as Read", action: commandModel.markCommandChatRead).disabled(commandModel.commandChat == nil)
-            }
-            CommandGroup(after: .sidebar) {
-                Button(commandModel.page == .report ? "Back to Chats" : "Usage Report") { commandModel.toggleReport() }.keyboardShortcut("r", modifiers: [.command, .shift])
-                Button(commandModel.page == .background ? "Back to Chats" : "Background Requests") { commandModel.toggleBackgroundRequests() }.keyboardShortcut("b", modifiers: [.command, .shift])
-                Button(commandModel.sidebarShowsArchived ? "Hide Archived Chats" : "Show Archived Chats") { commandModel.toggleArchivedChats() }
-                Button("Session Inspector…") { if let id = commandModel.focusedSessionID ?? commandModel.selectedID { commandModel.inspect(id) } }.keyboardShortcut("i", modifiers: [.command, .option])
-                    .disabled(commandModel.presentsSheet)
-                    .disabled((commandModel.focusedSessionID ?? commandModel.selectedID).flatMap(commandModel.record) == nil)
-                // Asked from a window of tabs (or Settings), the pane it opens
-                // in is the workspace window's: that window comes forward.
-                Button("Changes and History…") { if commandModel.showChanges()?.container?.isPane == true { openWindow(id: "main") } }
-                    .keyboardShortcut("g", modifiers: [.command, .shift]).disabled(commandModel.workspaces.isEmpty || commandModel.presentsSheet)
-                Button(commandModel.terminalVisible ? "Hide Terminal" : "Show Terminal") { commandModel.toggleTerminal() }.keyboardShortcut("`", modifiers: .control).disabled(commandModel.selectedID == nil)
-                Divider()
-                Button("Next Chat") { commandModel.selectAdjacentChat(1) }.keyboardShortcut(.downArrow, modifiers: [.command, .option])
-                Button("Previous Chat") { commandModel.selectAdjacentChat(-1) }.keyboardShortcut(.upArrow, modifiers: [.command, .option])
-                Divider()
-                // The sidebar boundary can be dragged; now it can also be typed.
-                Button("Widen Sidebar") { WindowChrome.adjustStoredSidebarWidth(by: WindowChrome.widthStep) }
-                    .keyboardShortcut(.rightArrow, modifiers: [.control, .command])
-                Button("Narrow Sidebar") { WindowChrome.adjustStoredSidebarWidth(by: -WindowChrome.widthStep) }
-                    .keyboardShortcut(.leftArrow, modifiers: [.control, .command])
-            }
-            CommandMenu("Conversation") {
-                // The menu is rebuilt on every publish of the model: each fold
-                // availability is read once per build, from the rows.
-                let foldsTurns = commandModel.canFoldTurns, foldsResponses = commandModel.canFoldResponses
-                // Return in the composer sends or queues; ⌘↩ sends or steers,
-                // here and in the composer alike (`submitComposer`).
-                Button("Send / Queue Follow-up") { commandModel.send() }.disabled(!conversationCommands)
-                Button("Open Side") { commandModel.openSide() }.disabled(!conversationCommands)
-                Button("Send / Steer Current Run") { commandModel.submitFocusedComposer(intent: .steer) }
-                    .keyboardShortcut(.return, modifiers: .command).disabled(!conversationCommands)
-                // ⌘. is also a dialog's cancel key: never a stop from a sheet or another window.
-                // Nor, from text a tab holds, a stop of the chat behind it.
-                Button("Stop") { commandModel.stopFocused() }.keyboardShortcut(".").disabled(!conversationCommands)
-                Button("Resume Follow-ups") { commandModel.action("queue.resume", sessionID: commandModel.focusedSessionID) }.disabled(!conversationCommands)
-                Button("Compact Now") { commandModel.action("context.compact", sessionID: commandModel.focusedSessionID) }.disabled(!conversationCommands)
-                Button("Latest Messages") { commandModel.latest(sessionID: commandModel.focusedSessionID) }.disabled(!conversationCommands)
-                Divider()
-                // Folding a turn was a click on its chevron and nothing else.
-                Button("Fold This Turn") { commandModel.setFocusedTurnFolded(true) }
-                    .keyboardShortcut("[", modifiers: [.command, .option]).disabled(!foldsTurns)
-                Button("Unfold This Turn") { commandModel.setFocusedTurnFolded(false) }
-                    .keyboardShortcut("]", modifiers: [.command, .option]).disabled(!foldsTurns)
-                Button("Fold Every Turn") { commandModel.setEveryTurnFolded(true) }
-                    .keyboardShortcut("[", modifiers: [.command, .option, .shift]).disabled(!foldsTurns)
-                Button("Unfold Every Turn") { commandModel.setEveryTurnFolded(false) }
-                    .keyboardShortcut("]", modifiers: [.command, .option, .shift]).disabled(!foldsTurns)
-                // One more level: the response itself reads as one line.
-                Button("Fold This Response to One Line") { commandModel.setFocusedResponseCollapsed(true) }
-                    .disabled(!foldsResponses)
-                Button("Show This Response") { commandModel.setFocusedResponseCollapsed(false) }
-                    .disabled(!foldsResponses)
-                Divider()
-                Button("Search and Copy Conversation…") { commandModel.searchFocusedConversation() }.keyboardShortcut("f").disabled(!conversationCommands)
-            }
-        }
-        Settings { SettingsWindowContent(model: model) }
+
+    override convenience init() {
+        self.init(model: WorkspaceModel(launching: ProcessInfo.processInfo.environment["PI_APP_TESTING"] != "1"))
     }
-    private func installMenuBar() {
-        // The App owns this controller, so closing the last workspace window
-        // leaves the same status item and shared model available for recovery.
-        // XCTest installs this controller with its isolated fixture model.
+    init(model: WorkspaceModel) {
+        workspaceModel = model
+        updates = UpdateController()
+        super.init()
+        self.model = workspaceModel
+        let model = workspaceModel
+        updates.hasActiveWork = { [weak model] in model?.hasActiveWork ?? false }
+        updates.acquireBarrier = { [weak model] in model?.acquireUpdateBarrier() ?? false }
+        updates.prepareForInstall = { [weak model] in try await model?.prepareForInstall() }
+        updates.releaseBarrier = { [weak model] in model?.releaseUpdateBarrier() }
+        updates.reportFailure = { [weak model] in model?.error = $0 }
+        observer = ShellObserver { [weak self] in self?.configurationChanged() }
+        observer.observe(model)
+    }
+
+    override func applicationDidFinishLaunching(_ notification: Notification) {
+        super.applicationDidFinishLaunching(notification)
+        // The XCTest host gets no reader data, menu bar item or app windows.
         guard ProcessInfo.processInfo.environment["PI_APP_TESTING"] != "1" else { return }
-        menuBar.install {
-                MenuBarMetricsView(load: { period, until, offset in
-                    try await model.ensureConfiguration()
-                    return try await model.traces.menuBarMetrics(period: period, until: until, offset: offset)
-                }, scopedLoad: { period, until, offset, from, workspace in
-                    try await model.ensureConfiguration()
-                    return try await model.traces.menuBarMetrics(period: period, until: until, offset: offset, from: from, workspaceID: workspace)
-                }, projects: { model.workspaces.map { MonitorProject(id: $0.id, title: URL(fileURLWithPath: $0.path).lastPathComponent) } },
-                   activity: { model.menuBarActivity() },
-                   activityChanges: { model.menuBarActivityChanges },
-                   live: model.liveActivity,
-                   openApp: revealWorkspace,
-                   openReport: { revealWorkspace(); model.openReport() },
-                   openSession: { id in
-                       revealWorkspace()
-                       Task { if model.side(id) != nil { await model.selectSide(id) } else { await model.select(id) } }
-                   })
-        }
+        menus = ApplicationMenus(model: workspaceModel, updates: updates,
+                                 workspaceWindow: { [weak self] in self?.workspaceWindow?.window },
+                                 revealWorkspace: { [weak self] in self?.revealWorkspace() },
+                                 showSettings: { [weak self] in self?.showSettings() })
+        menus?.install()
+        installMenuBar()
+        revealWorkspace()
+        configurationChanged()
+        Task { await workspaceModel.restore() }
     }
-    private func revealWorkspace() {
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        revealWorkspace()
+        return false
+    }
+
+    func revealWorkspace() {
         menuBar.close()
-        openWindow(id: "main")
+        if workspaceWindow == nil {
+            let window = NSWindow(contentRect: NSRect(origin: .zero, size: WindowPresentationController.defaultSize),
+                                  styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+                                  backing: .buffered, defer: false)
+            window.title = "Bello Agent"
+            window.identifier = NSUserInterfaceItemIdentifier("main")
+            window.isReleasedWhenClosed = false
+            window.contentMinSize = WorkspaceRootView.minimumWindowSize
+            window.applyPiWindowChrome()
+            window.contentView = WorkspaceRootView(model: workspaceModel)
+            window.center()
+            window.setFrameAutosaveName("main")
+            workspaceWindow = NSWindowController(window: window)
+        }
+        if workspaceWindow?.window?.isMiniaturized == true { workspaceWindow?.window?.deminiaturize(nil) }
+        workspaceWindow?.showWindow(nil)
+        workspaceWindow?.window?.makeKeyAndOrderFront(nil)
         NSApplication.shared.activate(ignoringOtherApps: true)
+    }
+
+    func showSettings() {
+        if settingsWindow == nil {
+            let view = SettingsWindowView(model: workspaceModel)
+            let window = NSWindow(contentRect: NSRect(origin: .zero, size: view.intrinsicContentSize),
+                                  styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView],
+                                  backing: .buffered, defer: false)
+            window.title = "Settings"
+            window.identifier = NSUserInterfaceItemIdentifier("settings")
+            window.isReleasedWhenClosed = false
+            window.contentView = view
+            window.applyPiWindowChrome()
+            window.center()
+            window.setFrameAutosaveName("settings")
+            settingsWindow = NSWindowController(window: window)
+        }
+        if settingsWindow?.window?.isMiniaturized == true { settingsWindow?.window?.deminiaturize(nil) }
+        settingsWindow?.showWindow(nil)
+        settingsWindow?.window?.makeKeyAndOrderFront(nil)
+        NSApplication.shared.activate(ignoringOtherApps: true)
+    }
+
+    private func configurationChanged() {
+        let model = workspaceModel
+        let next = ConfigurationKey(loaded: model.configurationLoaded, automaticChecks: model.configuration.automaticUpdateChecks,
+                                    transcript: model.configuration.transcriptView)
+        guard configurationKey != next else { return }
+        let before = configurationKey
+        configurationKey = next
+        if before?.loaded != next.loaded || before?.automaticChecks != next.automaticChecks {
+            updates.configure(automaticChecks: next.automaticChecks, configurationAvailable: next.loaded)
+        }
+        if next.loaded, before?.loaded != next.loaded || before?.transcript != next.transcript { model.applyTranscriptDisplay() }
+    }
+
+    private func installMenuBar() {
+        let model = workspaceModel
+        menuBar.install { [weak self] in
+            MenuBarMetricsView(load: { period, until, offset in
+                try await model.ensureConfiguration()
+                return try await model.traces.menuBarMetrics(period: period, until: until, offset: offset)
+            }, scopedLoad: { period, until, offset, from, workspace in
+                try await model.ensureConfiguration()
+                return try await model.traces.menuBarMetrics(period: period, until: until, offset: offset, from: from, workspaceID: workspace)
+            }, projects: { model.workspaces.map { MonitorProject(id: $0.id, title: URL(fileURLWithPath: $0.path).lastPathComponent) } },
+               activity: { model.menuBarActivity() }, activityChanges: { model.menuBarActivityChanges }, live: model.liveActivity,
+               openApp: { [weak self] in self?.revealWorkspace() },
+               openReport: { [weak self] in self?.revealWorkspace(); model.openReport() },
+               openSession: { [weak self] id in
+                   self?.revealWorkspace()
+                   Task { if model.side(id) != nil { await model.selectSide(id) } else { await model.select(id) } }
+               })
+        }
     }
 }

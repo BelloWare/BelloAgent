@@ -17,7 +17,7 @@ import AppKit
 @MainActor final class SendBench {
     let model: WorkspaceModel
     let window: NSWindow
-    let hosted: NSHostingView<WorkspaceView>
+    let hosted: WorkspaceRootView
     let workspace: WorkspaceRecord
     let profile: ProfileRecord
     private(set) var chatID: String
@@ -51,7 +51,7 @@ import AppKit
         model.chats = [chat]; try await model.store?.put(chat, kind: "chat", id: chat.id)
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: height), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        hosted = NSHostingView(rootView: WorkspaceView(model: model))
+        hosted = WorkspaceRootView(model: model)
         window.contentView = hosted; window.makeKeyAndOrderFront(nil)
         await model.select(chat.id)
         await settle(20)

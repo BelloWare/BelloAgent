@@ -1,5 +1,4 @@
 import AppKit
-import SwiftUI
 
 /// What the application menu needs so that everything reachable with the
 /// pointer is reachable from the keyboard: the sidebar's width, the chat row's
@@ -187,7 +186,7 @@ extension WorkspaceModel {
         session.publishTranscript()
         return response
     }
-    // SwiftUI evaluates the Conversation menu on every publish of the model,
+    // The Conversation menu asks the model when it opens,
     // and asks each fold item whether it is enabled. Each used to plan the
     // whole page to answer, six plans per evaluation; the rows answer instead.
     // A command plans once, when it runs.

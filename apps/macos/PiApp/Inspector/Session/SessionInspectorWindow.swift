@@ -1,6 +1,5 @@
 import AppKit
 import Combine
-import SwiftUI
 
 /// The Session Inspector's window: the app's own chrome, the frame it was last
 /// left at, and reads that stop whenever it is minimised, covered or closed.
@@ -25,7 +24,10 @@ import SwiftUI
         window.applyPiWindowChrome()
         window.tabbingMode = .disallowed
         window.identifier = NSUserInterfaceItemIdentifier(Self.identifier)
-        window.contentView = NSHostingView(rootView: SessionInspectorView(inspector: inspector))
+        // The former native title-bar safe area sat above the 48-point app
+        // bar. Preserve that space inside the full-size native content view,
+        // leaving the window's saved frame and content dimensions alone.
+        window.contentView = SessionInspectorView(inspector: inspector, topInset: 28)
         super.init(window: window)
         window.delegate = self
         updateTitle(inspector.title)

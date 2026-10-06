@@ -437,7 +437,7 @@ final class SessionTimingTests: XCTestCase {
         session.footer.gateway.turnCount = 1
         session.footer.gateway.tokens = GatewayTokenTotals(input: 12_000, output: 3_800, total: 15_800, inputSamples: 2, outputSamples: 2, samples: 2)
         session.footer.gateway.decodeMilliseconds = 1_000; session.footer.gateway.decodeOutputTokens = 34; session.footer.gateway.decodeSamples = 2
-        let hosted = NSHostingView(rootView: MetricsFooter(model: model, session: session, inspect: {}).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top).background(Color.piSurface))
+        let hosted = NSHostingView(rootView: HostedMetricsFooter(model: model, session: session).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top).background(Color.piSurface))
         let window = NSWindow(contentRect: NSRect(x: 120, y: 120, width: 1_000, height: 100), styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: .aqua)
         window.contentView = hosted; window.makeKeyAndOrderFront(nil)
@@ -481,9 +481,7 @@ final class SessionTimingTests: XCTestCase {
         func height(_ width: CGFloat, phase: String, tools: [String], seconds: Double) -> CGFloat {
             session.activity = ["phase": .string(phase), "toolNames": .array(tools.map { .string($0) })]
             session.footer.turnTiming = ["startedAt": .number(ProcessInfo.processInfo.systemUptime * 1_000 - seconds * 1_000)]
-            hosted.rootView = FooterWidthProbe(model: model, session: session, width: width)
-            hosted.layoutSubtreeIfNeeded()
-            return hosted.fittingSize.height
+            return footerHeight(hosted, model: model, session: session, width: width, compact: false)
         }
         var heights: Set<CGFloat> = []
         for width in stride(from: CGFloat(600), through: 1_600, by: 20) {
@@ -644,6 +642,8 @@ final class SessionTimingTests: XCTestCase {
                                          width: CGFloat, compact: Bool) -> CGFloat {
         hosted.rootView = FooterWidthProbe(model: model, session: session, width: width, compact: compact)
         hosted.layoutSubtreeIfNeeded()
+        ConversationPaneTests.views(MetricsFooter.self, in: hosted).first?.refresh()
+        hosted.layoutSubtreeIfNeeded()
         return hosted.fittingSize.height
     }
 
@@ -726,53 +726,53 @@ final class SessionTimingTests: XCTestCase {
     /// badge keep their places whatever notice comes, changes or goes; the
     /// notice sits in what the pills leave free, right against the clock,
     /// and is not shown where that is too little.
-    @MainActor func testTheFootersRowPlacesANoticeWithoutMovingAnything() {
-        final class Frames: ObservableObject { var parts: [String: CGRect] = [:] }
-        struct Frame: PreferenceKey {
-            static let defaultValue: [String: CGRect] = [:]
-            static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) { value.merge(nextValue()) { $1 } }
-        }
-        struct Row: View {
-            let pills: CGFloat, notice: String?, frames: Frames
-            func part(_ name: String, _ role: FooterRowRole, _ view: some View) -> some View {
-                view.background(GeometryReader { geometry in Color.clear.preference(key: Frame.self, value: [name: geometry.frame(in: .named("row"))]) })
-                    .layoutValue(key: FooterRowRole.self, value: role)
+    @MainActor func testTheFootersRowPlacesANoticeWithoutMovingAnything() throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        defer { model.shutdown() }
+        let session = longChat("footer-row")
+        session.state = "running"
+        session.activity = ["phase": .string("model")]
+        let footer = MetricsFooter(model: model, session: session, inspect: {})
+        func parts() -> [String: CGRect] {
+            func frame(_ id: String) -> CGRect? {
+                func find(_ view: NSView) -> NSView? { view.accessibilityIdentifier() == id ? view : view.subviews.lazy.compactMap(find).first }
+                return find(footer).map { $0.convert($0.bounds, to: footer) }
             }
-            var body: some View {
-                FooterRowLayout(spacing: 12) {
-                    part("pills", .pills, Color.clear.frame(width: pills, height: 20))
-                    part("run", .run, Color.clear.frame(width: 220, height: 20))
-                    // As the footer's notice line: right-aligned in the room it is given.
-                    if let notice { part("notice", .notice, Text(notice).lineLimit(1).truncationMode(.tail).frame(maxWidth: 640, alignment: .trailing).clipped()) }
-                    part("badge", .badge, Color.clear.frame(width: 90, height: 20))
-                }
-                .frame(width: 900).coordinateSpace(name: "row")
-                .onPreferenceChange(Frame.self) { frames.parts = $0 }
-            }
+            var parts: [String: CGRect] = [:]
+            parts["pills"] = frame("sessionStatsPills"); parts["run"] = frame("session-run-line"); parts["badge"] = frame("capture-badge")
+            if let notice = footer.subviews.first(where: { $0 is FooterNotice }), !notice.isHidden { parts["notice"] = notice.frame }
+            return parts
         }
-        let frames = Frames()
-        let hosted = NSHostingView(rootView: Row(pills: 300, notice: nil, frames: frames))
-        func place(pills: CGFloat, notice: String?) -> [String: CGRect] {
-            hosted.rootView = Row(pills: pills, notice: notice, frames: frames)
-            hosted.layoutSubtreeIfNeeded()
-            return frames.parts
+        func place(_ width: CGFloat, notice: String) -> [String: CGRect] {
+            session.notice = notice
+            footer.refresh()
+            footer.frame = CGRect(x: 0, y: 0, width: width, height: footer.height(forWidth: width))
+            footer.layoutSubtreeIfNeeded()
+            return parts()
         }
-        for pills in [CGFloat(300), 480, 540] {
-            let quiet = place(pills: pills, notice: nil)
+        let badge = try XCTUnwrap(footer.subviews.compactMap { $0 as? CaptureBadge }.first)
+        let minimum = footer.pills.oneRowWidth + MetricsFooter.runSlot + badge.slotWidth(full: true)
+            + PiSpacing.md * 2 + MetricsFooter.padding.left + MetricsFooter.padding.right
+        for width in [minimum + 10, minimum + 72, minimum + 300] {
+            let quiet = place(width, notice: "")
+            XCTAssertTrue(footer.fullForm, "The notice check exercises the full footer at \(width) pt")
             for notice in ["Saved history · Host runtime unloaded", "Run cancelled. Pending messages are paused; resume below"] {
-                let placed = place(pills: pills, notice: notice)
-                XCTAssertEqual(placed["run"], quiet["run"], "the clock stays put for “\(notice)” beside \(pills) pt of pills")
+                let placed = place(width, notice: notice)
+                XCTAssertEqual(placed["run"], quiet["run"], "the clock stays put for “\(notice)” at \(width) pt")
                 XCTAssertEqual(placed["badge"], quiet["badge"], "the badge stays put")
                 XCTAssertEqual(placed["pills"], quiet["pills"], "the pills stay put")
-                let room = (quiet["run"]?.minX ?? 0) - 12 - (pills + 12)
-                if let shown = placed["notice"], room >= FooterRowLayout.noticeLeast {
-                    XCTAssertEqual(shown.maxX, (quiet["run"]?.minX ?? 0) - 12, accuracy: 0.5, "the notice sits right against the clock")
-                    XCTAssertGreaterThanOrEqual(shown.minX, pills + 12 - 0.5, "and never over the pills")
+                let run = try XCTUnwrap(quiet["run"]), pills = try XCTUnwrap(quiet["pills"])
+                let room = run.minX - 12 - (pills.maxX + 12)
+                if let shown = placed["notice"], room >= MetricsFooter.noticeLeast, shown.width > 0 {
+                    XCTAssertEqual(shown.maxX, run.minX - 12, accuracy: 0.5, "the notice sits right against the clock")
+                    XCTAssertGreaterThanOrEqual(shown.minX, pills.maxX + 12 - 0.5, "and never over the pills")
                 } else {
                     XCTAssertEqual(placed["notice"]?.width ?? 0, 0, accuracy: 0.5, "too little room: the notice is not shown")
                 }
             }
         }
+        session.state = "idle"
     }
 
     /// A figure is never cut to make room: the pill that shortens its words
@@ -823,8 +823,8 @@ final class SessionTimingTests: XCTestCase {
 
     @MainActor func testRunLineNamesTheActionUnderWayAndTheTurnClock() {
         let session = SessionDisplay(id: "run-line")
-        let footer = SessionMetrics()
-        func line() -> SessionRunLine { SessionRunLine(session: session, footer: footer) }
+        struct Line { let action: String }
+        func line() -> Line { Line(action: SessionRunLine.action(session)) }
         session.state = "running"
         XCTAssertEqual(line().action, "Working…")
         session.activity = ["phase": .string("model")]
@@ -911,8 +911,11 @@ final class SessionTimingTests: XCTestCase {
         XCTAssertEqual(panel.snapshot, usage)
         let window = NSWindow(contentRect: NSRect(x: 120, y: 120, width: MenuBarPanelLayout.width, height: 720), styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: .aqua)
-        window.contentView = NSHostingView(rootView: MenuBarUsageView(controller: panel, chartMetric: .rate).padding(18)
-            .frame(width: MenuBarPanelLayout.width, height: 720, alignment: .topLeading).background(Color.piSurface))
+        let surface = FillView(.piSurface)
+        let usageView = MenuBarUsageView(controller: panel, chartMetric: .rate)
+        surface.addSubview(usageView)
+        usageView.frame = CGRect(x: 18, y: 18, width: MenuBarPanelLayout.width - 36, height: usageView.height(forWidth: MenuBarPanelLayout.width - 36))
+        window.contentView = surface
         window.orderFront(nil)
         defer { window.orderOut(nil); window.contentView = nil; window.close() }
         let rendered = try await Self.recognizedText(in: window, filename: "menu-usage-rate.jpg")
@@ -927,14 +930,16 @@ final class SessionTimingTests: XCTestCase {
                         SessionTimingHistory(samples: [sample("zero", output: 0)]),
                         SessionTimingHistory(samples: [sample("missing", output: nil)])]
         for reduced in [false, true] {
-            let hosted = NSHostingView(rootView: AnyView(SidebarReportedRate(history: variants[0], sessionTitle: "Fixture").piStableLayout(reduceMotion: reduced)))
+            PiKit.Motion.reducedOverride = reduced
+            defer { PiKit.Motion.reducedOverride = nil }
+            let slot = SidebarRateView()
             var sizes: [NSSize] = []
             for history in variants {
-                hosted.rootView = AnyView(SidebarReportedRate(history: history, sessionTitle: "Fixture").piStableLayout(reduceMotion: reduced))
-                hosted.layoutSubtreeIfNeeded()
-                sizes.append(hosted.fittingSize)
+                slot.presentation = SessionRatePresentation(history: history)
+                slot.layoutSubtreeIfNeeded()
+                sizes.append(slot.intrinsicContentSize)
             }
-            XCTAssertGreaterThan(sizes[0].width, 0); XCTAssertGreaterThan(sizes[0].height, 0)
+            XCTAssertEqual(sizes[0].width, 108); XCTAssertGreaterThan(sizes[0].height, 0)
             for size in sizes.dropFirst() {
                 XCTAssertEqual(size.width, sizes[0].width, accuracy: 0.5, "A completed or missing usage sample must not move neighboring metrics")
                 XCTAssertEqual(size.height, sizes[0].height, accuracy: 0.5)
@@ -947,23 +952,26 @@ final class SessionTimingTests: XCTestCase {
         // (14), row padding (20), and icon/spacing (24) leave 226/126pt.
         // A first-level child leaves another 14pt less: 112pt.
         let cases: [(state: String, output: Double?)] = [("idle", 100), ("paused", 100), ("stopping", 100), ("stopping", nil)]
-        let hosted = NSHostingView(rootView: AnyView(EmptyView()))
+        let hosted = NSView()
+        hosted.wantsLayer = true
+        let metrics = ChatRowMetricsView()
+        hosted.addSubview(metrics)
         let window = NSWindow(contentRect: NSRect(x: 120, y: 120, width: 250, height: 80), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false; window.contentView = hosted; window.makeKeyAndOrderFront(nil)
         defer { window.orderOut(nil); window.contentView = nil; window.close() }
         var wideHeights: [String: CGFloat] = [:]
-        // The sidebar tells the line its width, so the shipped path chooses its
-        // form by measuring the figures; a line told nothing still lays the
-        // forms out to find one that fits. Both must keep everything readable.
-        for told in [false, true] {
+        // The sidebar tells the line its width, so it chooses its form by
+        // measuring the figures, and must keep everything readable.
+        for told in [true] {
         for width in [CGFloat(226), CGFloat(126), CGFloat(112)] {
             for item in cases {
                 let id = item.state + (item.output == nil ? "-missing" : "") + (told ? "-told" : "")
                 var stats = ChatRowStats(totals: nil, timing: SessionTimingHistory(samples: [sample(id, output: item.output)]))
                 stats.requests = 1; stats.costUSD = 12.34
                 stats.updateActivity(state: item.state, loading: false, activity: [:])
-                hosted.rootView = AnyView(ChatRowMetrics(stats: stats, title: "Fixture", available: told ? width : .infinity)
-                    .frame(width: width, alignment: .leading).fixedSize(horizontal: false, vertical: true).padding(12))
+                metrics.update(stats: stats, available: width)
+                metrics.frame = CGRect(x: 12, y: 12, width: width, height: metrics.height(forWidth: width))
+                hosted.layer?.backgroundColor = hosted.piCGColor(.piWindow)
                 window.setContentSize(NSSize(width: width + 24, height: 80))
                 let rendered = try await renderedText(window, filename: "sidebar-metrics-\(Int(width))-\(id).jpg")
                 XCTAssertEqual(hosted.bounds.width, width + 24, accuracy: 0.5)
@@ -975,7 +983,7 @@ final class SessionTimingTests: XCTestCase {
                     XCTAssertTrue(rendered.contains("latest 124"), "The complete rate label must remain visible at \(width)pt: \(rendered)")
                 }
                 if item.state != "idle" { XCTAssertTrue(rendered.contains(item.state), rendered) }
-                let height = hosted.fittingSize.height
+                let height = metrics.height(forWidth: width) + 24
                 if width == 226 { wideHeights[id] = height }
                 else {
                     XCTAssertGreaterThan(height, try XCTUnwrap(wideHeights[id]) + 8,
@@ -1019,5 +1027,30 @@ private struct FooterWidthProbe: View {
     let width: CGFloat
     /// A side's footer, which keeps only its own two figures.
     var compact = false
-    var body: some View { MetricsFooter(model: model, session: session, compact: compact, inspect: {}).frame(width: width) }
+    var body: some View { HostedMetricsFooter(model: model, session: session, compact: compact).frame(width: width) }
+}
+
+/// The AppKit footer where a SwiftUI test lays it out: one footer for as
+/// long as its chat and form stay (its rooms with it), made again for another.
+struct HostedMetricsFooter: NSViewRepresentable {
+    let model: WorkspaceModel
+    let session: SessionDisplay
+    var compact = false
+    var inspect: () -> Void = {}
+    final class Holder: NSView {
+        var footer: MetricsFooter?
+        override var isFlipped: Bool { true }
+        override func layout() { super.layout(); footer?.frame = bounds }
+    }
+    func makeNSView(context: Context) -> Holder { let holder = Holder(); updateNSView(holder, context: context); return holder }
+    func updateNSView(_ holder: Holder, context: Context) {
+        guard holder.footer?.session !== session || holder.footer?.compact != compact else { return }
+        holder.footer?.removeFromSuperview()
+        let footer = MetricsFooter(model: model, session: session, compact: compact, inspect: inspect)
+        holder.addSubview(footer); holder.footer = footer
+    }
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: Holder, context: Context) -> CGSize? {
+        let width = proposal.width ?? 900
+        return CGSize(width: width, height: nsView.footer?.height(forWidth: width) ?? 0)
+    }
 }

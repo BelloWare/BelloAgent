@@ -1,5 +1,4 @@
 import AppKit
-import SwiftUI
 import UniformTypeIdentifiers
 
 /// Only Bello Agent's own sidebar drags are accepted. A session reference is
@@ -48,48 +47,36 @@ struct TopicSessionDrag: Codable, Equatable {
         item.setData(data, forType: NSPasteboard.PasteboardType(Self.type.identifier))
         return item
     }
-    func provider() -> NSItemProvider {
-        let provider = NSItemProvider()
-        guard let data = encoded() else { return provider }
-        provider.registerDataRepresentation(forTypeIdentifier: Self.type.identifier, visibility: .ownProcess) { completion in
-            completion(data, nil); return nil
-        }
-        return provider
+    /// Both sidebar groups drop through here, so the whole group — its header
+    /// strip and every chat row under it — accepts what only the header used to.
+    @MainActor static func acceptSidebarDrop(_ pasteboard: NSPasteboard, model: WorkspaceModel,
+                                             projectID: String, topicID: String?) -> Bool {
+        accept(pasteboard, in: projectID) { ids in
+            try await model.moveSessions(ids, in: projectID, toTopic: topicID)
+        } failure: { model.error = $0 }
     }
 
-    /// Load bounded, authenticated metadata, then use the same transactional
-    /// move path as the menu. An invalid item rejects the entire drop.
-    @MainActor static func accept(_ providers: [NSItemProvider], in projectID: String,
+    /// The same, from a drag's own pasteboard (an AppKit drop): every item
+    /// must be one of ours, bounded and stamped by this process, or nothing moves.
+    @MainActor static func accept(_ pasteboard: NSPasteboard, in projectID: String,
                                   move: @escaping @MainActor ([String]) async throws -> Void,
                                   failure: @escaping @MainActor (String) -> Void) -> Bool {
-        guard !providers.isEmpty, providers.count <= maximumItems,
-              providers.allSatisfy({ $0.hasItemConformingToTypeIdentifier(type.identifier) }) else { return false }
-        Task { @MainActor in
-            var ids: [String] = []
-            for provider in providers {
-                let data: Data? = await withCheckedContinuation { continuation in
-                    provider.loadDataRepresentation(forTypeIdentifier: type.identifier) { data, _ in
-                        // Never parse unbounded external provider data.
-                        continuation.resume(returning: data.flatMap { $0.count <= maximumBytes ? $0 : nil })
-                    }
-                }
-                guard let data, let payload = decode(data, in: projectID) else {
-                    failure("Move chats only between topics in the same project."); return
-                }
-                for id in payload.sessionIDs where !ids.contains(id) { ids.append(id) }
+        let kind = NSPasteboard.PasteboardType(type.identifier)
+        guard let items = pasteboard.pasteboardItems, !items.isEmpty, items.count <= maximumItems,
+              items.allSatisfy({ $0.types.contains(kind) }) else { return false }
+        var ids: [String] = []
+        for item in items {
+            // Never parse unbounded data.
+            guard let data = item.data(forType: kind), data.count <= maximumBytes, let payload = decode(data, in: projectID) else {
+                Task { @MainActor in failure("Move chats only between topics in the same project.") }
+                return true
             }
+            for id in payload.sessionIDs where !ids.contains(id) { ids.append(id) }
+        }
+        Task { @MainActor in
             do { try await move(ids) } catch { failure(error.localizedDescription) }
         }
         return true
-    }
-
-    /// Both sidebar groups drop through here, so the whole group — its header
-    /// strip and every chat row under it — accepts what only the header used to.
-    @MainActor static func acceptSidebarDrop(_ providers: [NSItemProvider], model: WorkspaceModel,
-                                             projectID: String, topicID: String?) -> Bool {
-        accept(providers, in: projectID) { ids in
-            try await model.moveSessions(ids, in: projectID, toTopic: topicID)
-        } failure: { model.error = $0 }
     }
 }
 
@@ -116,14 +103,6 @@ enum SidebarRowClick: Equatable {
     }
 }
 
-/// Where a row's own controls sit. AppKit cannot hit-test against buttons
-/// SwiftUI draws into the row, so a row publishes their bounds and the drag
-/// surface declines exactly those presses.
-struct SidebarRowControlBounds: PreferenceKey {
-    static var defaultValue: [Anchor<CGRect>] { [] }
-    static func reduce(value: inout [Anchor<CGRect>], nextValue: () -> [Anchor<CGRect>]) { value += nextValue() }
-}
-
 /// What a press on a row can turn into. The row is rebuilt on every sidebar
 /// change, so the retained surface asks for these instead of holding a snapshot
 /// of what the row carried when it was installed.
@@ -134,72 +113,18 @@ struct TopicSessionRowActions {
     var doubleClick: @MainActor () -> Void = { }
 }
 
-/// Dragging a marked row carries every marked chat of that project; dragging an
-/// unmarked row carries only that chat, and the drag image says how many travel.
-/// AppKit owns the press: a SwiftUI `Button` claims mouse-down on macOS, so
-/// `.onDrag` on a row inside one never started a drag at all.
-struct TopicSessionDragSource: ViewModifier {
-    /// Held, never observed: the ids and the drag image are read when a press
-    /// happens, and observing the workspace here made every chat row's drag
-    /// surface a dependency of every published change in the app.
-    let model: WorkspaceModel
-    let sessionID: String
-    let projectID: String
-    let enabled: Bool
-    let click: @MainActor (NSEvent.ModifierFlags) -> Void
-    let doubleClick: @MainActor () -> Void
-
-    @ViewBuilder func body(content: Content) -> some View {
-        if enabled {
-            content.overlayPreferenceValue(SidebarRowControlBounds.self) { controls in
-                GeometryReader { row in
-                    TopicSessionDragSurface(actions: TopicSessionRowActions(item: dragItem, image: dragImage,
-                                                                            click: click, doubleClick: doubleClick),
-                                            controls: controls.map { row[$0] })
-                }
-            }
-        } else { content }
-    }
-
-    /// What this row would put on the drag pasteboard right now. Read before the
-    /// press is applied, so a marked row still carries the marks it was dragged by.
-    func dragItem() -> NSPasteboardItem? {
-        TopicSessionDrag(sessionIDs: model.dragSessionIDs(for: sessionID, in: projectID), workspaceID: projectID).pasteboardItem()
-    }
-
-    /// Rendered only once a drag really starts; an ordinary click must not pay
-    /// for a bitmap nobody sees.
-    func dragImage() -> NSImage? {
-        let count = model.dragSessionIDs(for: sessionID, in: projectID).count
-        let renderer = ImageRenderer(content: TopicSessionDragPreview(count: count, title: model.record(sessionID)?.title ?? "Chat"))
-        renderer.scale = NSScreen.main?.backingScaleFactor ?? 2
-        return renderer.nsImage
-    }
-}
-
-private struct TopicSessionDragSurface: NSViewRepresentable {
-    let actions: TopicSessionRowActions
-    let controls: [CGRect]
-    func makeNSView(context: Context) -> TopicSessionDragSurfaceView { update(TopicSessionDragSurfaceView()) }
-    func updateNSView(_ view: TopicSessionDragSurfaceView, context: Context) { _ = update(view) }
-    @discardableResult private func update(_ view: TopicSessionDragSurfaceView) -> TopicSessionDragSurfaceView {
-        view.actions = actions; view.controls = controls
-        return view
-    }
-}
-
 /// The transparent surface over a draggable chat row. It takes the plain left
 /// press, begins a real dragging session once the pointer travels, and hands
-/// every other press straight back to the SwiftUI row underneath.
+/// every other press straight back to the row underneath.
 final class TopicSessionDragSurfaceView: NSView, NSDraggingSource {
     /// Far enough that a shaky click still selects, short enough that a
     /// deliberate pull shows the drag image at once.
     static let dragThreshold: CGFloat = 4
     var actions = TopicSessionRowActions()
-    /// The row's own buttons, in this view's coordinates; see `SidebarRowControlBounds`.
+    /// The row's own buttons, in this view's coordinates: presses there are theirs.
     var controls: [CGRect] = []
     private var hoverTracking: NSTrackingArea?
-    /// SwiftUI measures the row from its top-left, and the control cut-outs
+    /// The row is measured from its top-left, and the control cut-outs
     /// arrive in those coordinates.
     override var isFlipped: Bool { true }
 
@@ -214,7 +139,7 @@ final class TopicSessionDragSurfaceView: NSView, NSDraggingSource {
         event.type == .leftMouseDown && !event.modifierFlags.contains(.control)
     }
     /// Archiving a chat or folding its side chats stays a button press: those
-    /// buttons are drawn by SwiftUI underneath and would never see the mouse.
+    /// buttons lie under the surface and would never see the mouse.
     static func claims(_ point: CGPoint, controls: [CGRect]) -> Bool {
         !controls.contains { $0.contains(point) }
     }
@@ -369,18 +294,28 @@ final class TopicSessionDragSurfaceView: NSView, NSDraggingSource {
     }
 }
 
-private struct TopicSessionDragPreview: View {
-    let count: Int
-    let title: String
-    var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: count > 1 ? "square.stack" : "bubble.left.and.text.bubble.right").font(.system(size: 11, weight: .semibold))
-            Text(count > 1 ? "\(count) chats" : title).font(PiFont.caption).lineLimit(1).truncationMode(.middle)
+/// What a dragged chat looks like under the pointer: its glyph and title,
+/// or how many chats travel, on the surface in an accent hairline.
+@MainActor enum TopicSessionDragPreview {
+    static func image(count: Int, title: String, appearance: NSAppearance) -> NSImage {
+        let glyph = PiKit.Symbol(count > 1 ? "square.stack" : "bubble.left.and.text.bubble.right", size: 11, weight: .semibold)
+        let line = PiKit.Line(count > 1 ? "\(count) chats" : title, font: PiKit.Font.caption, color: .piInk)
+        let scale = NSScreen.main?.backingScaleFactor ?? 2
+        let glyphBox = glyph.layoutSize, text = line.size(scale: scale)
+        let width = min(220, 10 + glyphBox.width + 6 + text.width + 10)
+        let height = max(glyphBox.height, text.height) + 12
+        let image = NSImage(size: NSSize(width: width, height: height), flipped: true) { rect in
+            appearance.performAsCurrentDrawingAppearance {
+                let shape = NSBezierPath(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5), xRadius: PiRadius.sm, yRadius: PiRadius.sm)
+                NSColor.piSurface.setFill(); shape.fill()
+                NSColor.piAccent.withAlphaComponent(0.6).setStroke(); shape.lineWidth = 1; shape.stroke()
+                glyph.drawPlaced(centredIn: CGRect(x: 10, y: 0, width: glyphBox.width, height: rect.height), color: .piInk, scale: scale)
+                let x = 10 + glyphBox.width + 6
+                line.draw(in: CGRect(x: x, y: PiKit.round((rect.height - text.height) / 2, scale), width: rect.width - x - 10, height: text.height),
+                          truncation: .middle, scale: scale)
+            }
+            return true
         }
-        .foregroundStyle(Color.piInk)
-        .padding(.horizontal, 10).padding(.vertical, 6)
-        .background(Color.piSurface, in: RoundedRectangle(cornerRadius: PiRadius.sm, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: PiRadius.sm, style: .continuous).stroke(Color.piAccent.opacity(0.6), lineWidth: 1))
-        .frame(maxWidth: 220)
+        return image
     }
 }

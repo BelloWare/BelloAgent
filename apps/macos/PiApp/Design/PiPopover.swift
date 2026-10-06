@@ -1,5 +1,5 @@
 import AppKit
-import SwiftUI
+import Combine
 
 /// A popover the app owns at the AppKit boundary, anchored to the control that
 /// opened it. SwiftUI's own `.popover` sizes itself to its content wherever
@@ -41,39 +41,74 @@ import SwiftUI
     private var pending: Task<Void, Never>?
     var isOpening: Bool { pending != nil }
 
-    /// Opens once the content says it is ready, or after `wait` whatever it
-    /// says — a popover that opens whole reads better than one that grows a
-    /// beat after it appears, and a slow read still opens promptly. A press
-    /// while it waits, or on the open popover, closes it.
-    func toggle(from anchor: NSView, width: CGFloat, maximumHeight: CGFloat, animates: Bool, within wait: Duration,
-                isReady: @escaping @MainActor () -> Bool, content: @escaping @MainActor () -> AnyView) {
+    /// The same for AppKit content: `view` at `width`, as tall as it needs
+    /// up to the room there is, scrolling inside past that.
+    func toggle(from anchor: NSView, width: CGFloat, maximumHeight: CGFloat, animates: Bool, within wait: Duration = .zero,
+                isReady: @escaping @MainActor () -> Bool = { true }, view: @escaping @MainActor () -> NSView) {
         if isShown || pending != nil { close(); return }
-        guard wait > .zero, !isReady() else {
-            show(from: anchor, width: width, maximumHeight: maximumHeight, animates: animates, content: content); return
+        let open = { [weak self, weak anchor] in
+            guard let self, let anchor else { return }
+            self.present(from: anchor, maximumHeight: maximumHeight, animates: animates) { room in
+                let document = NativeDocument(content: view(), width: width, room: room)
+                let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: width, height: document.shownHeight))
+                scroll.drawsBackground = false; scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true
+                scroll.documentView = document
+                let controller = NSViewController()
+                controller.view = scroll
+                controller.preferredContentSize = scroll.frame.size
+                document.controller = controller
+                return controller
+            }
         }
-        pending = Task { [weak self, weak anchor] in
+        // As the SwiftUI form: it waits up to `wait` for its content to be ready.
+        guard wait > .zero, !isReady() else { open(); return }
+        pending = Task { [weak self] in
             let deadline = ContinuousClock.now.advanced(by: wait)
             while !isReady(), ContinuousClock.now < deadline {
                 do { try await Task.sleep(for: .milliseconds(8)) } catch { return }
             }
             guard let self, !Task.isCancelled else { return }
             self.pending = nil
-            guard let anchor else { return }
-            self.show(from: anchor, width: width, maximumHeight: maximumHeight, animates: animates, content: content)
+            open()
         }
     }
 
-    func show(from anchor: NSView, width: CGFloat, maximumHeight: CGFloat, animates: Bool, content: () -> AnyView) {
+    /// A native popover's document: its content at the popover's width, as
+    /// tall as it needs. It measures again on every layout, so content that
+    /// grows after opening grows the panel, up to its room, then scrolls.
+    final class NativeDocument: NSView, PiKit.SizeObserver {
+        func contentSizeChanged() { needsLayout = true }
+        let content: NSView
+        let width: CGFloat, room: CGFloat
+        weak var controller: NSViewController?
+        init(content: NSView, width: CGFloat, room: CGFloat) {
+            self.content = content; self.width = width; self.room = room
+            super.init(frame: NSRect(x: 0, y: 0, width: width, height: PiKit.height(of: content, width: width)))
+            addSubview(content)
+            content.frame = bounds
+        }
+        required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+        override var isFlipped: Bool { true }
+        var shownHeight: CGFloat { min(room, frame.height) }
+        override func layout() {
+            super.layout()
+            let height = PiKit.height(of: content, width: width)
+            if frame.height != height {
+                setFrameSize(NSSize(width: width, height: height))
+                controller?.preferredContentSize = NSSize(width: width, height: shownHeight)
+            }
+            content.frame = NSRect(x: 0, y: 0, width: width, height: height)
+        }
+    }
+
+    func present(from anchor: NSView, maximumHeight: CGFloat, animates: Bool, controller: (CGFloat) -> NSViewController) {
         guard let window = anchor.window else { return }
         if let current = Self.current, current !== self { current.close() }
         close()
         let onScreen = window.convertToScreen(anchor.convert(anchor.bounds, to: nil))
         let visible = (window.screen ?? NSScreen.main)?.visibleFrame ?? onScreen.insetBy(dx: -2_000, dy: -2_000)
         let placement = Self.placement(anchor: onScreen, visible: visible, maximumHeight: maximumHeight)
-        // The panel is as tall as its content up to the room it was given; a
-        // scroll view inside reports that height, so it never grows past it.
-        let host = NSHostingController(rootView: AnyView(content().frame(width: width).frame(maxHeight: placement.height, alignment: .top)))
-        host.sizingOptions = [.preferredContentSize]
+        let host = controller(placement.height)
         let popover = NSPopover()
         popover.behavior = .transient
         popover.animates = animates
@@ -134,7 +169,7 @@ final class PiPopoverSurface: NSView {
     }
     required init?(coder: NSCoder) { super.init(coder: coder); wantsLayer = true }
     override var wantsUpdateLayer: Bool { true }
-    override func updateLayer() { layer?.backgroundColor = NSColor(Color.piSurface).cgColor }
+    override func updateLayer() { layer?.backgroundColor = piCGColor(.piSurface) }
     override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); needsDisplay = true }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
@@ -178,76 +213,6 @@ final class PiPopoverTriggerButton: NSButton {
     }
 }
 
-/// `PiPopoverTriggerButton` in a SwiftUI layout, sized to the face it covers.
-struct PiPopoverTrigger: NSViewRepresentable {
-    let label: String
-    var identifier: String?
-    var help: String
-    let onHover: (Bool) -> Void
-    let onPress: (NSView) -> Void
-
-    func makeNSView(context: Context) -> PiPopoverTriggerButton {
-        let button = PiPopoverTriggerButton(frame: .zero)
-        apply(to: button)
-        return button
-    }
-    func updateNSView(_ button: PiPopoverTriggerButton, context: Context) { apply(to: button) }
-    private func apply(to button: PiPopoverTriggerButton) {
-        button.onHover = onHover; button.onPress = onPress
-        if button.toolTip != help { button.toolTip = help.isEmpty ? nil : help }
-        if button.accessibilityLabel() != label { button.setAccessibilityLabel(label) }
-        if button.accessibilityIdentifier() != (identifier ?? "") { button.setAccessibilityIdentifier(identifier) }
-    }
-    func sizeThatFits(_ proposal: ProposedViewSize, nsView: PiPopoverTriggerButton, context: Context) -> CGSize? {
-        CGSize(width: proposal.width ?? 0, height: proposal.height ?? 0)
-    }
-}
-
-/// A stat pill whose dialog is an app-owned popover: the pill's own face, an
-/// AppKit press target over it, and a panel sized to the screen around it.
-/// The face reads exactly as the composer's pills (`PiStatPillFace`); only the popover is different.
-struct PiStatPopoverPill<Content: View>: View {
-    let symbol: String
-    let label: String
-    /// A last figure in warning ink (see `PiStatPillFace.warningTail`).
-    var warningTail: String? = nil
-    var accessibility: String? = nil
-    var identifier: String? = nil
-    var help: String = ""
-    @ObservedObject var presenter: PiPopoverPresenter
-    var width: CGFloat = PiPopoverPanel.width
-    var maximumHeight: CGFloat = PiPopoverPanel.maximumHeight
-    /// Called on the press that opens the popover, before its content is built.
-    var willOpen: () -> Void = {}
-    /// Whether the content has what it needs to open whole; the popover waits
-    /// up to `readyWithin` for it.
-    var isReady: @MainActor () -> Bool = { true }
-    var readyWithin: Duration = .milliseconds(250)
-    @ViewBuilder var content: () -> Content
-    @State private var hovering = false
-    @Environment(\.piReduceMotion) private var reduceMotion
-
-    var body: some View {
-        PiStatPillFace(symbol: symbol, label: label, highlighted: hovering || presenter.isShown, warningTail: warningTail)
-            .accessibilityElement(children: .ignore).accessibilityHidden(true)
-            .overlay {
-                PiPopoverTrigger(label: accessibility ?? label, identifier: identifier, help: help.isEmpty ? label : help,
-                                 onHover: { hovering = $0 },
-                                 onPress: { anchor in
-                                     let opening = !presenter.isShown && !presenter.isOpening
-                                     if opening { willOpen() }
-                                     let reduce = reduceMotion, content = content
-                                     presenter.toggle(from: anchor, width: width, maximumHeight: maximumHeight, animates: !reduce,
-                                                      within: readyWithin, isReady: isReady) {
-                                         AnyView(content().environment(\.piReduceMotion, reduce).tint(Color.piAccent))
-                                     }
-                                 })
-            }
-            // A pill that leaves the screen (another chat, a narrower pane)
-            // takes its popover with it, one turn after SwiftUI's teardown.
-            .onDisappear { [presenter] in Task { @MainActor in presenter.close() } }
-    }
-}
 
 /// The shape every chart popover shares: its width, its ceiling, and the
 /// scrolling page inside it.

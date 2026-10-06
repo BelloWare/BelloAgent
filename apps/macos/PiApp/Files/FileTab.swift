@@ -1,5 +1,5 @@
 import AppKit
-import SwiftUI
+import Combine
 import FileView
 
 // A file, as a tab beside the chats (`TabHost`): its path and state over its
@@ -19,7 +19,7 @@ enum FileProjectState: Equatable {
     var isTrusted: Bool { if case .trusted = self { return true }; return false }
 }
 
-@MainActor final class FileTab: HostedTab {
+@MainActor final class FileTab: AppKitHostedTab {
     override class var kind: String { "file" }
     let url: URL
     /// The project the file was opened in, if any.
@@ -201,7 +201,7 @@ enum FileProjectState: Equatable {
         madeScroll?.textView.showTop()
     }
 
-    override func makeContent() -> AnyView { AnyView(FileTabContent(tab: self)) }
+    override func makeAppKitContent() -> NSView { FileTabContent(tab: self) }
     override var focusView: NSView? { madeScroll?.textView }
     override func savedState() -> Data? { try? JSONEncoder().encode(Saved(project: projectID)) }
     private struct Saved: Codable { var project: String? }
@@ -380,224 +380,3 @@ enum FileProjectState: Equatable {
     }
 }
 
-/// A file tab's content: its header over its text, or what it shows instead.
-struct FileTabContent: View {
-    @ObservedObject var tab: FileTab
-    var body: some View {
-        VStack(spacing: 0) {
-            FileTabHeader(tab: tab)
-            // Above whatever the file shows, and apart from it: a reload that
-            // finds the file gone, or not text, leaves the bar, its field and
-            // its keys as they were.
-            if tab.readable, tab.previewKind == nil {
-                switch tab.bar {
-                case .find: FileFindBar(tab: tab)
-                case .goToLine: FileGoToLineBar(tab: tab)
-                case .none: EmptyView()
-                }
-                FileBlameBarSlot(blame: tab.blame)
-            }
-            if let reason = tab.missingReason {
-                FileTabNotice(symbol: "questionmark.folder", title: "Missing", detail: reason, url: tab.url)
-            } else if tab.previewKind != nil {
-                FilePreviewContent(preview: tab.preview)
-            } else if tab.status == .binary {
-                FileTabNotice(symbol: "doc", title: "Not text", detail: FileTabNotice.describe(tab.url), url: tab.url)
-            } else if let scroll = tab.scroll {
-                FileTextHost(view: scroll)
-            }
-        }
-        .background(Color.piContent)
-    }
-}
-
-/// A file's find bar, under its header: the query, where the match shown is
-/// among them all, match case, previous and next, and close.
-private struct FileFindBar: View {
-    @ObservedObject var tab: FileTab
-    @FocusState private var focused: Bool
-    var body: some View {
-        HStack(spacing: PiSpacing.sm) {
-            FileBarField(symbol: "magnifyingglass", placeholder: "Find in file", text: $tab.findQuery, focused: $focused, identifier: "file-find-field") {
-                if NSApp.currentEvent?.modifierFlags.contains(.shift) == true { tab.findPrevious() } else { tab.findNext() }
-            }
-            Text(tab.findLabel).font(PiFont.caption).monospacedDigit().foregroundStyle(Color.piInkSecondary).lineLimit(1)
-                .accessibilityIdentifier("file-find-count")
-            Spacer(minLength: 0)
-            PiIconButton(symbol: "textformat", label: tab.matchCase ? "Match Case: On" : "Match Case: Off", tone: tab.matchCase ? .accent : .neutral, size: 24, filled: tab.matchCase) {
-                tab.matchCase.toggle()
-            }
-            .accessibilityIdentifier("file-find-match-case")
-            Button { tab.findPrevious() } label: { Image(systemName: "chevron.up") }
-                .buttonStyle(.piGhost).disabled(!tab.canStep).help("Previous match").accessibilityLabel("Previous match")
-            Button { tab.findNext() } label: { Image(systemName: "chevron.down") }
-                .buttonStyle(.piGhost).disabled(!tab.canStep).help("Next match").accessibilityLabel("Next match")
-            PiIconButton(symbol: "xmark", label: "Close Find", size: 24) { tab.closeBar() }
-        }
-        .padding(.horizontal, PiSpacing.md).frame(height: 36)
-        .overlay(alignment: .bottom) { Rectangle().fill(Color.piHairline).frame(height: 1) }
-        .onExitCommand { tab.closeBar() }
-        .onAppear { focused = true }
-        .onChange(of: tab.barFocus) { _, _ in focused = true }
-        .accessibilityIdentifier("file-find-bar")
-    }
-}
-
-/// A file's go-to-line bar, where the find bar would be.
-private struct FileGoToLineBar: View {
-    @ObservedObject var tab: FileTab
-    @FocusState private var focused: Bool
-    var body: some View {
-        HStack(spacing: PiSpacing.sm) {
-            FileBarField(symbol: "arrow.right.to.line", placeholder: "Go to line", text: $tab.lineQuery, focused: $focused, identifier: "file-go-to-line-field") {
-                tab.goToLine()
-            }
-            Text(tab.lineRange).font(PiFont.caption).monospacedDigit().foregroundStyle(Color.piInkSecondary).lineLimit(1)
-            Spacer(minLength: 0)
-            PiIconButton(symbol: "xmark", label: "Close", size: 24) { tab.closeBar() }
-        }
-        .padding(.horizontal, PiSpacing.md).frame(height: 36)
-        .overlay(alignment: .bottom) { Rectangle().fill(Color.piHairline).frame(height: 1) }
-        .onExitCommand { tab.closeBar() }
-        .onAppear { focused = true }
-        .onChange(of: tab.barFocus) { _, _ in focused = true }
-        .accessibilityIdentifier("file-go-to-line-bar")
-    }
-}
-
-/// A bar's field: as the inspector's search field is drawn.
-private struct FileBarField: View {
-    let symbol: String
-    let placeholder: String
-    @Binding var text: String
-    var focused: FocusState<Bool>.Binding
-    let identifier: String
-    let submit: () -> Void
-    var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: symbol).font(.system(size: 11, weight: .medium)).foregroundStyle(Color.piInkTertiary)
-            TextField(placeholder, text: $text).textFieldStyle(.plain).font(PiFont.caption)
-                .focused(focused).onSubmit(submit).accessibilityIdentifier(identifier)
-        }
-        .padding(.horizontal, 9).padding(.vertical, 6)
-        .background(Color.piSurface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(focused.wrappedValue ? Color.piAccent.opacity(0.5) : Color.piHairline, lineWidth: 1))
-        .frame(maxWidth: 280)
-    }
-}
-
-private struct FileTabHeader: View {
-    @ObservedObject var tab: FileTab
-    var body: some View {
-        HStack(spacing: PiSpacing.sm) {
-            path
-            status
-            Spacer(minLength: PiSpacing.sm)
-            if tab.readable, tab.previewKind == nil {
-                FileBlameToggle(blame: tab.blame)
-            }
-            PiIconButton(symbol: "arrow.up.forward.app", label: "Open in \(Self.appName(for: tab.url))", size: 26) {
-                NSWorkspace.shared.open(tab.url)
-            }
-            .accessibilityIdentifier("file-open-in-app")
-        }
-        .padding(.horizontal, PiSpacing.md).frame(height: 32)
-        .overlay(alignment: .bottom) { Rectangle().fill(Color.piHairline).frame(height: 1) }
-    }
-    private var path: some View {
-        let (project, rest) = shownPath
-        return HStack(spacing: 4) {
-            if let project {
-                Text(project).font(PiFont.caption.weight(.medium)).foregroundStyle(Color.piInkSecondary).lineLimit(1).fixedSize()
-                Image(systemName: "chevron.right").font(.system(size: 8, weight: .semibold)).foregroundStyle(Color.piInkTertiary)
-            }
-            Text(rest).font(PiFont.caption).foregroundStyle(Color.piInkSecondary).lineLimit(1).truncationMode(.head)
-        }
-        .help(tab.help)
-        .accessibilityElement(children: .combine)
-    }
-    /// The project's name and the path within it, or the path from home.
-    private var shownPath: (String?, String) {
-        let path = tab.url.path
-        switch tab.project {
-        case .trusted(let name, let root):
-            let root = root.hasSuffix("/") ? String(root.dropLast()) : root
-            if path.hasPrefix(root + "/") { return (name, String(path.dropFirst(root.count + 1))) }
-            return (name, Self.abbreviated(path))
-        case .untrusted(let name): return (name, Self.abbreviated(path))
-        case .none, .removed: return (nil, Self.abbreviated(path))
-        }
-    }
-    static func abbreviated(_ path: String) -> String {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        return path.hasPrefix(home + "/") ? "~" + path.dropFirst(home.count) : path
-    }
-    @ViewBuilder private var status: some View {
-        if tab.missingReason != nil {
-            PiBadge(text: "Missing", tone: .danger, icon: "exclamationmark.triangle").fixedSize()
-        } else {
-            switch tab.status {
-            case .indexing: PiBadge(text: "Reading…", icon: "hourglass").fixedSize()
-            case .ready: if tab.fellBack { PiBadge(text: "Latin-1", tone: .warning, icon: "textformat").fixedSize().help("Not valid UTF-8: shown a byte a character") }
-            case .binary: PiBadge(text: "Not text", icon: "doc").fixedSize()
-            case .changed: PiBadge(text: "Changed on disk", tone: .warning, icon: "arrow.triangle.2.circlepath").fixedSize().help("Shown as it was when opened")
-            case .truncated(let limit): PiBadge(text: "First \(limit.formatted()) lines", tone: .warning, icon: "scissors").fixedSize()
-            case .failed: EmptyView()
-            }
-        }
-    }
-    /// The app a file opens in, for the button that opens it there.
-    static func appName(for url: URL) -> String {
-        guard let app = NSWorkspace.shared.urlForApplication(toOpen: url) else { return "Default App" }
-        return FileManager.default.displayName(atPath: app.path).replacingOccurrences(of: ".app", with: "")
-    }
-}
-
-/// What a file tab shows in place of text: a file that is missing, or not text.
-private struct FileTabNotice: View {
-    let symbol: String
-    let title: String
-    let detail: String
-    let url: URL
-    var body: some View {
-        VStack(spacing: PiSpacing.md) {
-            Image(systemName: symbol).font(.system(size: 30, weight: .light)).foregroundStyle(Color.piInkTertiary)
-            Text(title).font(PiFont.heading).foregroundStyle(Color.piInk)
-            Text(detail).font(PiFont.body).foregroundStyle(Color.piInkSecondary).multilineTextAlignment(.center).frame(maxWidth: 360)
-            if FileManager.default.fileExists(atPath: url.path) {
-                Button("Open in \(FileTabHeader.appName(for: url))") { NSWorkspace.shared.open(url) }
-            }
-        }
-        .padding(PiSpacing.xl)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .accessibilityElement(children: .combine)
-    }
-    /// A binary file: its size and its type.
-    static func describe(_ url: URL) -> String {
-        let values = try? url.resourceValues(forKeys: [.fileSizeKey, .localizedTypeDescriptionKey])
-        let size = values?.fileSize.map { ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .file) }
-        return [values?.localizedTypeDescription, size].compactMap { $0 }.joined(separator: " · ")
-    }
-}
-
-/// A file's kept scroll view, in a container of this representable's own.
-struct FileTextHost: NSViewRepresentable {
-    let view: FileTextScrollView
-    func makeNSView(context: Context) -> TabContentContainerPlain {
-        let container = TabContentContainerPlain()
-        container.place(view)
-        return container
-    }
-    func updateNSView(_ container: TabContentContainerPlain, context: Context) { if view.superview !== container { container.place(view) } }
-    static func dismantleNSView(_ container: TabContentContainerPlain, coordinator: ()) {
-        for subview in container.subviews { subview.removeFromSuperview() }
-    }
-}
-final class TabContentContainerPlain: NSView {
-    func place(_ content: NSView) {
-        content.removeFromSuperview()
-        content.frame = bounds
-        content.autoresizingMask = [.width, .height]
-        addSubview(content)
-    }
-}

@@ -1,5 +1,4 @@
 import AppKit
-import SwiftUI
 
 /// How much of itself the pill group shows, in the order the trial layouts
 /// used to try: everything, then the connection and effort as icons with the
@@ -153,7 +152,7 @@ struct ComposerBarMetrics: Equatable {
             widths.append(Self.ghostPadding + glyph + word)
         }
         if form.showsHint, let hint, !hint.isEmpty {
-            widths.append(PiTextWidth.text(hint, size: PiFont.captionSize, weight: .regular))
+            widths.append(PiTextWidth.text(hint, size: PiKit.Font.captionSize, weight: .regular))
         }
         guard !widths.isEmpty else { return 0 }
         return widths.reduce(0, +) + CGFloat(widths.count - 1) * Self.spacing

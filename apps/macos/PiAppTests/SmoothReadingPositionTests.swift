@@ -123,11 +123,13 @@ final class SmoothReadingPositionTests: SmoothShellTestCase {
 
         // Nothing the strip draws may reach over the sidebar.
         let sidebarEdge = WindowChrome.storedSidebarWidth
-        let strip = Self.tree(shell.hosted).filter { $0.name.contains("SelectionTextField") && $0.frame.minY >= pushed.maxY - 1 }
+        let banners = Self.views(ErrorBannerView.self, in: shell.hosted).filter { $0.text == shell.model.error }
+        for banner in banners { XCTAssertTrue(banner.window === shell.window, "the error message is mounted in the workspace") }
+        let strip = banners.map { $0.message.convert($0.message.bounds, to: nil) }.filter { $0.minY >= pushed.maxY - 1 }
         XCTAssertFalse(strip.isEmpty, "the strip's message must be on screen above the conversation")
         for entry in strip {
-            XCTAssertGreaterThanOrEqual(entry.frame.minX, sidebarEdge,
-                                        "the error strip reached over the sidebar (at x \(Int(entry.frame.minX)), sidebar ends at \(Int(sidebarEdge)))")
+            XCTAssertGreaterThanOrEqual(entry.minX, sidebarEdge,
+                                        "the error strip reached over the sidebar (at x \(Int(entry.minX)), sidebar ends at \(Int(sidebarEdge)))")
         }
         shell.model.error = nil
         await shell.settle(0.8)

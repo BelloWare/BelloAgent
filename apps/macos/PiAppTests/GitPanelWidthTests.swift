@@ -156,9 +156,7 @@ final class GitPanelWidthTests: GitPanelTestCase {
                      GitStatusEntry(path: long, originalPath: nil, indexState: "M", worktreeState: ".", untracked: false)]
         let detail = GitCommitDetail(commit: commit, message: "Long", files: files, stats: [:])
         let holder = ChipHolder()
-        let window = host(GitCommitFileChips(detail: detail, selected: Binding(get: { holder.selected }, set: { holder.selected = $0 }),
-                                             shown: Binding(get: { holder.shown }, set: { holder.shown = $0 }), showHistory: { _ in })
-                            .frame(width: 320), width: 400, height: 300)
+        let window = host(FixedWidthHost(makeChipsView(detail, holder: holder), width: 320), width: 400, height: 300)
         defer { window.contentView = nil; window.close() }
         window.contentView?.layoutSubtreeIfNeeded(); window.displayIfNeeded()
         let chips = try XCTUnwrap(views(GitFileChipsView.self, in: window.contentView!).first)

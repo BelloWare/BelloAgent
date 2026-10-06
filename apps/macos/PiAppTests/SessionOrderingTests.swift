@@ -48,7 +48,7 @@ final class SessionOrderingTests: XCTestCase {
         for row in model.chats { try await model.store?.put(row,kind:"chat",id:row.id) }
         let running=SessionDisplay(id:"s0"); running.state="running"; running.draft="Keep typing"; model.displays[running.id]=running
         let finished=expectation(description:"drop committed")
-        XCTAssertTrue(TopicSessionDrag.accept([TopicSessionDrag(sessionID:"s0",workspaceID:"project").provider()],in:"project") { ids in
+        XCTAssertTrue(TopicSessionDrag.accept(dragPasteboard([TopicSessionDrag(sessionID:"s0",workspaceID:"project").pasteboardItem()]),in:"project") { ids in
             try await model.reorderSessions(ids,relativeTo:"s2",after:true,in:"project"); finished.fulfill()
         } failure: { message in XCTFail(message); finished.fulfill() })
         await fulfillment(of:[finished],timeout:3)

@@ -1,5 +1,4 @@
-import SwiftUI
-import AppKit
+import Foundation
 
 // A captured body once read: its metadata, its JSON, and the server-sent
 // event frames of a streamed response, parsed off the main actor.

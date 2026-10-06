@@ -64,7 +64,7 @@ final class SidebarMetricsLayoutTests: XCTestCase {
         var body: some View {
             HStack(spacing: 6) {
                 stateAndCost
-                if let history = stats.timing { SidebarReportedRate(history: history, sessionTitle: title) }
+                if let history = stats.timing { OracleRate(history: history) }
                 if tokens, !stats.busy, let value = stats.tokensLabel { Text("· " + value) }
                 if recency, let value = stats.recencyLabel { Text("· " + value) }
             }
@@ -78,6 +78,19 @@ final class SidebarMetricsLayoutTests: XCTestCase {
                 Text(PiSessionState.label(stats.state)).foregroundStyle(stats.state == "paused" ? Color.piInfo : Color.piDanger).fontWeight(.medium)
             }
             if let cost = stats.costLabel { Text(cost) }
+        }
+    }
+
+    /// The rate slot as SwiftUI drew it (the app's `SidebarRateView` now):
+    /// the latest completed rate in one stable 108-point slot.
+    private struct OracleRate: View {
+        let history: SessionTimingHistory
+        var body: some View {
+            let presentation = SessionRatePresentation(history: history)
+            Text(presentation.label ?? "")
+                .font(PiFont.caption.monospacedDigit()).lineLimit(1)
+                .frame(width: 108, alignment: .leading)
+                .foregroundStyle(presentation.latest == nil ? Color.piInkTertiary : Color.piInkSecondary)
         }
     }
 
@@ -119,8 +132,8 @@ final class SidebarMetricsLayoutTests: XCTestCase {
         XCTAssertEqual(later.recencyLabel, "3m ago")
         XCTAssertNotEqual(fresh, later, "A row whose stamp reads differently is drawn again")
         XCTAssertEqual(ChatRowStats(totals: totals, now: start.addingTimeInterval(20)), fresh, "and one whose stamp reads the same is not")
-        let before = ChatRowBody(stats: fresh, title: "A", subtitle: "", symbol: "bubble.left", selected: false)
-        let after = ChatRowBody(stats: later, title: "A", subtitle: "", symbol: "bubble.left", selected: false)
+        let before = ChatRowBodyView.Content(stats: fresh, title: "A", subtitle: "", symbol: "bubble.left", selected: false)
+        let after = ChatRowBodyView.Content(stats: later, title: "A", subtitle: "", symbol: "bubble.left", selected: false)
         XCTAssertFalse(before == after)
     }
 
@@ -257,10 +270,9 @@ final class SidebarMetricsLayoutTests: XCTestCase {
                        "A first-level child row has no room for the rate beside the cost")
 
         func height(_ available: CGFloat, width: CGFloat) -> CGFloat {
-            let hosting = NSHostingView(rootView: ChatRowMetrics(stats: stats, title: "Fixture", available: available)
-                .frame(width: width, alignment: .leading).fixedSize(horizontal: false, vertical: true))
-            hosting.layoutSubtreeIfNeeded()
-            return hosting.fittingSize.height
+            let line = ChatRowMetricsView()
+            line.update(stats: stats, available: available)
+            return line.height(forWidth: width)
         }
         let wide = height(226, width: 226), narrow = height(112, width: 112)
         XCTAssertGreaterThan(narrow, wide + 8, "The narrow row must wrap the rate below state and cost, not truncate it away")

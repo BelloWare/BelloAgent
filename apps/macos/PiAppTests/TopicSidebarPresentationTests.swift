@@ -24,7 +24,7 @@ final class TopicSidebarPresentationTests: XCTestCase {
         XCTAssertEqual(SidebarSessionPresentation.page(otherTopic, roots: 1, selected: ["selected-side"], filtering: false).map(\.id), ["independent-a"])
     }
 
-    /// Real SwiftUI/AppKit layout exercises the native sidebar without a mouse
+    /// Real AppKit layout exercises the native sidebar without a mouse
     /// or foreground desktop. Filtering must reveal a collapsed matching topic
     /// and all its chats; clearing the filter must restore its stored collapse.
     @MainActor func testHostedSidebarRendersEmptyTopicsAndRevealsFilteredCollapsedContents() async throws {
@@ -38,7 +38,7 @@ final class TopicSidebarPresentationTests: XCTestCase {
             var chat = ChatRecord(id: "chat-\(index)", workspaceID: project.id, title: "Investigation item \(index)", path: nil, profileID: "profile")
             chat.topicID = "filled"; return chat
         }
-        let hosted = NSHostingView(rootView: ProjectSidebarGroup(model: model, project: project, available: true, name: "Project").transaction { $0.animation = nil; $0.disablesAnimations = true })
+        let hosted = makeSidebar(model, width: 330, height: 760)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 330, height: 760), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false; window.contentView = hosted
         defer { window.contentView = nil; window.close(); model.shutdown() }
@@ -48,17 +48,30 @@ final class TopicSidebarPresentationTests: XCTestCase {
         }
         func height() async throws -> CGFloat {
             for _ in 0..<4 { hosted.layoutSubtreeIfNeeded(); try await Task.sleep(for: .milliseconds(20)) }
-            return hosted.fittingSize.height
+            return hosted.list.frame.height
         }
         let collapsedHeight = try await height()
         XCTAssertGreaterThan(collapsedHeight, 65, "Both topic headers, including the empty topic, stay visible")
-        hosted.rootView = ProjectSidebarGroup(model: model, project: project, available: true, name: "Project", filter: "Investigation").transaction { $0.animation = nil; $0.disablesAnimations = true }
+        hosted.setFilter("Investigation")
         let filteredHeight = try await height()
         XCTAssertGreaterThan(filteredHeight, collapsedHeight + 240, "A matching collapsed topic exposes all seven chats")
         XCTAssertFalse(model.topics[0].expanded, "Filtering must not overwrite the saved disclosure state")
-        hosted.rootView = ProjectSidebarGroup(model: model, project: project, available: true, name: "Project").transaction { $0.animation = nil; $0.disablesAnimations = true }
+        hosted.setFilter("")
         let restoredHeight = try await height()
         XCTAssertEqual(restoredHeight, collapsedHeight, accuracy: 1)
         XCTAssertTrue(model.hosts.isEmpty, "Rendering and filtering topic metadata cannot start a helper or chat")
+    }
+
+    /// The remove question wraps in a narrow sidebar, as its `Text` did,
+    /// rather than cutting the sentence off.
+    @MainActor func testTheRemoveQuestionWrapsInANarrowSidebar() throws {
+        let view = SidebarTopicRemoveView()
+        let wide = view.entryHeight(width: 600), narrow = view.entryHeight(width: 184)
+        XCTAssertGreaterThan(narrow, wide + 8, "At the narrowest sidebar the question takes a second line")
+        view.frame = NSRect(x: 0, y: 0, width: 184, height: narrow)
+        view.layoutSubtreeIfNeeded()
+        let question = try XCTUnwrap(view.subviews.first { $0 is ShellText })
+        XCTAssertLessThanOrEqual(question.frame.maxX, 184 - 7, "The question wraps inside its padding")
+        XCTAssertTrue(view.subviews.allSatisfy { $0.frame.maxY <= narrow + 0.5 }, "Everything stays inside the entry's height")
     }
 }

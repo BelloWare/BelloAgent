@@ -96,10 +96,17 @@ final class GitRevealTests: XCTestCase {
         let controller = GitController(roots: [root.path]); defer { controller.letGo() }
         try await settled(controller)
         let top = try XCTUnwrap(controller.repositoryRoot)
-        async let first = controller.revealHistory(GitHistoryTarget(commit: hash, path: "a.txt", line: 1), in: top)
-        async let second = controller.revealHistory(GitHistoryTarget(commit: hash, path: "a.txt", line: 3), in: top)
-        let results = await (first, second)
-        XCTAssertTrue(results.1)
+        // Concurrent child tasks can enter in either order. Wait for the
+        // first ask to enter before making the one that must supersede it.
+        var firstEntered = false
+        let first = Task { await controller.revealHistory(GitHistoryTarget(commit: hash, path: "a.txt", line: 1), in: top) {
+            firstEntered = true; return true
+        } }
+        defer { first.cancel() }
+        try await until("the first reveal entered") { firstEntered }
+        let second = await controller.revealHistory(GitHistoryTarget(commit: hash, path: "a.txt", line: 3), in: top)
+        _ = await first.value
+        XCTAssertTrue(second)
         XCTAssertEqual(controller.revealTarget?.target.line, 3)
         let token = try XCTUnwrap(controller.revealTarget?.token)
         _ = await controller.revealHistory(GitHistoryTarget(commit: hash, path: "a.txt", line: 3), in: top)

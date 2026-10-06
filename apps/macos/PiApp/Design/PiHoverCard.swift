@@ -1,5 +1,5 @@
 import AppKit
-import SwiftUI
+
 
 /// A compact preview card that appears after the pointer has rested on a
 /// control for a moment and goes away the moment it leaves: a richer tooltip.
@@ -26,16 +26,15 @@ import SwiftUI
     /// Test seam: how long the pointer must rest.
     var delay = PiHoverCardPresenter.delay
     /// The app's motion policy for the next card: it fades in unless reduced.
-    var reducesMotion = PiMotion.reducesMotion
+    var reducesMotion = PiKit.Motion.reduced
 
     var isShown: Bool { panel?.isVisible == true }
     var isWaiting: Bool { pending != nil }
     /// The control the card is showing for, or waiting to show for.
     var anchorView: NSView? { anchor }
 
-    /// The pointer entered or left `anchor`. Entering starts the wait; leaving
-    /// the control the card belongs to hides it at once.
-    func hover(_ inside: Bool, over anchor: NSView, width: CGFloat, content: @escaping @MainActor () -> AnyView) {
+    /// A native card opens after the pointer rests and closes on leaving.
+    func hover(_ inside: Bool, over anchor: NSView, width: CGFloat, view: @escaping @MainActor () -> NSView) {
         if inside {
             if self.anchor === anchor, isShown || pending != nil { return }
             hide()
@@ -46,7 +45,7 @@ import SwiftUI
                 guard let self, !Task.isCancelled else { return }
                 self.pending = nil
                 guard let anchor, anchor.window != nil, !anchor.isHiddenOrHasHiddenAncestor else { self.anchor = nil; return }
-                self.show(over: anchor, width: width, content: content())
+                self.show(over: anchor, width: width, view: view())
             }
         } else if self.anchor === anchor {
             hide()
@@ -84,20 +83,22 @@ import SwiftUI
         return CGRect(x: x.rounded(), y: min(max(y, visible.minY), visible.maxY - size.height).rounded(), width: size.width, height: size.height)
     }
 
-    private func show(over anchor: NSView, width: CGFloat, content: AnyView) {
+    private func show(over anchor: NSView, width: CGFloat, view: NSView) {
+        let card = PiKit.Box(fill: .piSurface, stroke: .piHairlineStrong, cornerRadius: PiRadius.md, content: view)
+        card.shadowColor = .piShadow; card.shadowRadius = 10; card.shadowOffsetY = 3
+        let height = PiKit.height(of: view, width: width)
+        card.frame = NSRect(x: Self.shadowMargin, y: Self.shadowMargin, width: width, height: height)
+        let host = PiKit.Box.ClipView(frame: NSRect(x: 0, y: 0, width: width + Self.shadowMargin * 2, height: height + Self.shadowMargin * 2))
+        host.addSubview(card)
+        host.setAccessibilityElement(false)
+        present(over: anchor, host: host)
+    }
+
+    private func present(over anchor: NSView, host: NSView) {
         guard let window = anchor.window else { return }
         if let current = Self.current, current !== self { current.hide() }
-        let card = content
-            .frame(width: width, alignment: .leading)
-            .fixedSize(horizontal: false, vertical: true)
-            .background(RoundedRectangle(cornerRadius: PiRadius.md, style: .continuous).fill(Color.piSurface))
-            .overlay(RoundedRectangle(cornerRadius: PiRadius.md, style: .continuous).stroke(Color.piHairlineStrong, lineWidth: 1))
-            .shadow(color: Color.piShadow, radius: 10, y: 3)
-            .padding(Self.shadowMargin)
-            .accessibilityHidden(true)
-        let host = NSHostingView(rootView: AnyView(card))
         host.appearance = anchor.effectiveAppearance
-        let size = host.fittingSize
+        let size = host.frame.size
         let onScreen = window.convertToScreen(anchor.convert(anchor.bounds, to: nil))
         let visible = (window.screen ?? NSScreen.main)?.visibleFrame ?? onScreen.insetBy(dx: -2_000, dy: -2_000)
         let panel = PiHoverCardPanel(contentRect: Self.frame(size: size, anchor: onScreen, window: window.frame, visible: visible),
@@ -115,7 +116,7 @@ import SwiftUI
         panel.orderFront(nil)
         if !reduce {
             NSAnimationContext.runAnimationGroup { context in
-                context.duration = Double(PiMotion.quickMilliseconds) / 1_000
+                context.duration = Double(PiKit.Motion.quickMilliseconds) / 1_000
                 panel.animator().alphaValue = 1
             }
         }

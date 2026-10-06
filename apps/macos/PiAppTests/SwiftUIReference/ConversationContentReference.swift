@@ -1,0 +1,171 @@
+// Frozen from 59ef8e0d for AppKit visual comparison only.
+import AppKit
+import SwiftUI
+import UniformTypeIdentifiers
+@testable import PiApp
+
+// Test-only observations and scroll targets. The reference retains the
+// original lazy stack and row sizing; no native layout is used here.
+@MainActor final class ConversationResultsReferenceGeometry: ObservableObject {
+    @Published var targetID: String?
+    var rows: [String: CGRect] = [:]
+}
+
+@MainActor private struct ConversationResultFrameObserver: View {
+    let id: String
+    let geometry: ConversationResultsReferenceGeometry
+    var body: some View {
+        GeometryReader { proxy in
+            let frame = proxy.frame(in: .named("conversation-results-document"))
+            Color.clear.onAppear { geometry.rows[id] = frame }
+                .onChange(of: frame) { _, value in geometry.rows[id] = value }
+        }
+    }
+}
+
+/// The unchanged retained-hit row, also exercised without a helper so empty
+/// previews and overflowing result lists remain part of strict parity.
+struct ConversationHitRowReference: View {
+    let hit: ContentHit
+    var body: some View {
+        PiSelectableRow(selected: false, action: {}) {
+            HStack(alignment: .top, spacing: PiSpacing.md) {
+                Text("\(hit.position)").font(PiFont.caption.monospacedDigit()).foregroundStyle(Color.piInkTertiary).frame(width: 44, alignment: .trailing)
+                Text(hit.preview).lineLimit(3).font(PiFont.body).foregroundStyle(Color.piInk)
+            }
+        }
+    }
+}
+
+struct ConversationContentReference: View {
+    @ObservedObject var model: WorkspaceModel
+    let sessionID: String
+    var source: ConversationContentSource? = nil
+    @ObservedObject var geometry = ConversationResultsReferenceGeometry()
+    @State private var query = ""
+    /// The query the listed results were found with.
+    @State private var searched = ""
+    @State private var selectedID: String?
+    @State private var result = ContentSearch(hits: [], total: 0, next: nil, revision: "")
+    @State private var first = 1
+    @State private var last = 1
+    @State private var busy = false
+    @State private var notice = ""
+    @PiDismiss private var dismiss
+    private var selected: ContentHit? { result.hits.first { $0.id == selectedID } }
+    var body: some View {
+        PiSheet("Search and copy conversation", subtitle: "Completed retained messages, including exposed reasoning and tool results. Opaque provider state and image bytes are omitted. Search covers the full retained branch; the transcript stays paged.", symbol: "magnifyingglass", width: 900, height: 700) {
+            VStack(alignment: .leading, spacing: PiSpacing.md) {
+                HStack(spacing: PiSpacing.sm) {
+                    PiTextField(placeholder: "Find in retained conversation", text: $query, icon: "magnifyingglass", onSubmit: { search() })
+                    // Return in the field already runs the search; the one
+                    // primary on this sheet is the thing it is named for.
+                    Button("Search") { search() }.buttonStyle(.piSecondaryCompact).disabled(busy || query.count > 256)
+                    if busy { PiSpinner(controlSize: .small) }
+                }
+                ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 2) {
+                        ForEach(result.hits) { hit in
+                            PiSelectableRow(selected: selectedID == hit.id, action: { selectedID = hit.id }) {
+                                HStack(alignment: .top, spacing: PiSpacing.md) {
+                                    Text("\(hit.position)").font(PiFont.caption.monospacedDigit()).foregroundStyle(Color.piInkTertiary).frame(width: 44, alignment: .trailing)
+                                    Text(hit.preview).lineLimit(3).font(PiFont.body).foregroundStyle(Color.piInk)
+                                }
+                            }
+                            .background(ConversationResultFrameObserver(id: hit.id, geometry: geometry)).id(hit.id)
+                        }
+                    }.padding(PiSpacing.sm).coordinateSpace(name: "conversation-results-document")
+                }
+                .overlay { if result.hits.isEmpty { Text(busy ? "Searching…" : "No matches on this page").font(PiFont.caption).foregroundStyle(Color.piInkTertiary) } }
+                .piInset().accessibilityLabel("Retained conversation search results")
+                .onChange(of: geometry.targetID) { _, id in if let id { proxy.scrollTo(id, anchor: .center) } }
+                }
+                HStack(spacing: PiSpacing.sm) {
+                    Text("\(result.hits.count) matches on this page · \(result.total) retained messages").font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
+                    Spacer()
+                    Button {
+                        if let next = ConversationSearchPaging.next(after: result, searched: searched, current: query) { search(next.query, start: next.start) }
+                    } label: { Label("Next Results", systemImage: "chevron.right") }.labelStyle(.trailingIcon).disabled(busy || result.next == nil)
+                    Button { guard let selected else { return }; busy = true; Task { defer { busy = false }; do { try await model.revealConversationHit(sessionID, hit: selected); dismiss() } catch { notice = error.localizedDescription } } } label: { Label("Show in Transcript", systemImage: "text.viewfinder") }
+                        .disabled(busy || selected == nil)
+                }
+                PiCard(padding: PiSpacing.md) {
+                    VStack(alignment: .leading, spacing: PiSpacing.sm) {
+                        Text("Copy range").font(PiFont.heading)
+                        HStack(spacing: PiSpacing.sm) {
+                            PiNumberField(placeholder: "From", value: $first, width: 110)
+                            Text("through").font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
+                            PiNumberField(placeholder: "Through", value: $last, width: 110)
+                            Button("Start at Selection") { if let selected { first = selected.position } }.buttonStyle(.piSecondaryCompact).disabled(selected == nil || busy)
+                            Button("End at Selection") { if let selected { last = selected.position } }.buttonStyle(.piSecondaryCompact).disabled(selected == nil || busy)
+                            Spacer()
+                        }
+                    }
+                }
+                PiStatusLine(text: notice)
+            }.padding(PiSpacing.xl)
+        } actions: {
+            Button("Done") { dismiss() }.disabled(busy)
+        } footer: {
+            HStack {
+                Text("Copy limit: 8 MiB. Larger conversations can be copied in explicit ranges.").font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
+                Spacer()
+                Button { export() } label: { Label("Export…", systemImage: "square.and.arrow.up") }.disabled(busy || result.total == 0)
+                    .help("Save the whole retained conversation as a Markdown text file")
+                Button { copy(first: first, last: last) } label: { Label("Copy Range", systemImage: "doc.on.doc") }.disabled(busy || first < 1 || last < first || last > result.total)
+                Button { copy(first: 1, last: result.total) } label: { Label("Copy Conversation", systemImage: "doc.on.doc.fill") }.buttonStyle(.piPrimary).disabled(busy || result.total == 0)
+            }
+        }
+        .task { search() }
+    }
+    private func search(_ text: String? = nil, start: Int = 0) {
+        guard !busy else { return }; busy = true
+        let text = text ?? query
+        Task { defer { busy = false }; do {
+            let found: ContentSearch
+            if let source { found = try await source.search(text, start) }
+            else { found = try await model.searchConversation(sessionID, query: text, start: start) }
+            if result.revision.isEmpty { last = max(1, found.total) }
+            result = found; searched = text; selectedID = nil; notice = ""
+        } catch { notice = error.localizedDescription } }
+    }
+    private func collect(first: Int, last: Int, limit: Int, failure: String) async throws -> Data {
+        let revision = result.revision
+        var bytes = Data(), cursor: ContentCursor? = .init(index: first, offset: 0)
+        while let next = cursor {
+            let page = try await model.conversationPage(sessionID, first: first, last: last, cursor: next, revision: revision)
+            guard bytes.count + page.text.utf8.count <= limit else { throw HostError.failure(failure) }
+            bytes.append(contentsOf: page.text.utf8); cursor = page.next
+        }
+        return bytes
+    }
+    private func copy(first: Int, last: Int) {
+        guard !busy else { return }; busy = true; notice = "Reading retained text…"
+        Task { defer { busy = false }; do {
+            let bytes = try await collect(first: first, last: last, limit: 8 * 1024 * 1024, failure: "This copy exceeds 8 MiB. Choose a smaller message range. The clipboard was not changed.")
+            guard let text = String(data: bytes, encoding: .utf8) else { throw StoreError.invalidRecord }
+            NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string)
+            notice = "Copied messages \(first)–\(last) (\(bytes.count) UTF-8 bytes)."
+        } catch { notice = error.localizedDescription } }
+    }
+    /// The same retained text as Copy Conversation, written to a file the user
+    /// chooses, so a chat can leave the app without the clipboard size limit.
+    private func export() {
+        guard !busy, result.total > 0 else { return }
+        let panel = NSSavePanel(); panel.canCreateDirectories = true
+        panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText, .plainText]
+        panel.nameFieldStringValue = (model.record(sessionID)?.title ?? "Conversation").replacingOccurrences(of: "/", with: "-") + ".md"
+        panel.message = "Save the retained conversation as Markdown text."
+        Task {
+            guard let url = await PiQuestion.shared.save(panel) else { return }
+            busy = true
+            notice = "Reading retained text…"
+            defer { busy = false }
+            do {
+            let bytes = try await collect(first: 1, last: result.total, limit: 64 * 1024 * 1024, failure: "This conversation exceeds 64 MiB. Copy explicit ranges instead. No file was written.")
+            try bytes.write(to: url, options: .atomic)
+            notice = "Exported \(result.total) messages (\(bytes.count) UTF-8 bytes) to \(url.lastPathComponent)."
+        } catch { notice = error.localizedDescription } }
+    }
+}

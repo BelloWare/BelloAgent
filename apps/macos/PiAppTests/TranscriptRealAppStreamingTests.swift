@@ -60,7 +60,7 @@ final class TranscriptRealAppStreamingTests: XCTestCase {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1240, height: 860),
                               styleMask: [.titled, .closable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        let hosted = NSHostingView(rootView: WorkspaceView(model: model))
+        let hosted = WorkspaceRootView(model: model)
         window.contentView = hosted
         defer { window.contentView = nil; window.close() }
         window.center(); window.makeKeyAndOrderFront(nil)

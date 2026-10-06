@@ -112,7 +112,7 @@ final class ChatFileLinkTests: XCTestCase {
                                     TranscriptMessage(id: "a2", role: "assistant", text: "Lines 5 to 7 say so.")]
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1400, height: 900), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        let hosted = NSHostingView(rootView: WorkspaceView(model: model))
+        let hosted = WorkspaceRootView(model: model)
         window.contentView = hosted
         window.makeKeyAndOrderFront(nil)
         addTeardownBlock { @MainActor in model.report.suspend(); window.contentView = nil; window.close() }
@@ -143,7 +143,7 @@ final class ChatFileLinkTests: XCTestCase {
                                     TranscriptMessage(id: "a2", role: "assistant", text: "Done.")]
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1400, height: 900), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        let hosted = NSHostingView(rootView: WorkspaceView(model: model))
+        let hosted = WorkspaceRootView(model: model)
         window.contentView = hosted
         window.makeKeyAndOrderFront(nil)
         addTeardownBlock { @MainActor in model.report.suspend(); window.contentView = nil; window.close() }
@@ -167,7 +167,7 @@ final class ChatFileLinkTests: XCTestCase {
         try Data(lines.joined(separator: "\n").utf8).write(to: notes)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1400, height: 900), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        let hosted = NSHostingView(rootView: WorkspaceView(model: model))
+        let hosted = WorkspaceRootView(model: model)
         window.contentView = hosted
         window.makeKeyAndOrderFront(nil)
         addTeardownBlock { @MainActor in model.report.suspend(); window.contentView = nil; window.close() }

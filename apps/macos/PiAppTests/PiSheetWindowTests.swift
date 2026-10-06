@@ -83,6 +83,30 @@ final class PiSheetWindowTests: XCTestCase {
         return window
     }
 
+    @MainActor private func parent(_ view: NSView) -> NSWindow {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 700), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = view
+        window.makeKeyAndOrderFront(nil)
+        addTeardownBlock { @MainActor in window.contentView = nil; window.close() }
+        return window
+    }
+
+    @MainActor func testNativeContentHasItsFittedBoundsBeforeItJoinsTheSheetWindow() throws {
+        final class Content: NSView {
+            var firstWindowBounds: NSRect?
+            override var intrinsicContentSize: NSSize { NSSize(width: 420, height: 260) }
+            override func viewDidMoveToWindow() {
+                super.viewDidMoveToWindow()
+                if window != nil, firstWindowBounds == nil { firstWindowBounds = bounds }
+            }
+        }
+        let content = Content(frame: .zero)
+        let sheet = PiSheetWindow(content: content,
+            inherited: PiSheetWindowInherited(reduceMotion: true, enabled: true), close: {})
+        defer { sheet.end(animated: false, requested: true) }
+        XCTAssertEqual(try XCTUnwrap(content.firstWindowBounds).size, NSSize(width: 420, height: 260))
+    }
+
     @MainActor private func eventually(_ what: String, seconds: Double = 10, file: StaticString = #filePath, line: UInt = #line, _ condition: () -> Bool) async throws {
         let deadline = ProcessInfo.processInfo.systemUptime + seconds
         while ProcessInfo.processInfo.systemUptime < deadline {
@@ -300,7 +324,7 @@ final class PiSheetWindowTests: XCTestCase {
         let chat = ChatRecord(id: "sheets-chat", workspaceID: workspace.id, title: "Sheets", path: nil, profileID: profile.id)
         model.chats = [chat]; try await model.store?.put(chat, kind: "chat", id: chat.id)
         await model.select(chat.id)
-        let window = parent(WorkspaceView(model: model))
+        let window = parent(WorkspaceRootView(model: model))
         window.setContentSize(NSSize(width: 1280, height: 860))
         addTeardownBlock { @MainActor in model.report.suspend(); model.shutdown(); try? await model.traces.close(); await model.store?.close() }
         try await Task.sleep(for: .milliseconds(600))

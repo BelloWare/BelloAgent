@@ -242,8 +242,34 @@ final class FileSyntaxTests: XCTestCase {
                 try await Task.sleep(for: .milliseconds(10))
             }
             XCTAssertEqual(colours.count, test.asked.count, "\(test.name): every line asked was coloured")
-            let expected = NSColor(test.comment ? TranscriptPalette.comment : TranscriptPalette.keyword)
-            for line in test.asked { XCTAssertEqual(colours[line]?.first?.color, expected, "\(test.name) line \(line)") }
+            for line in test.asked {
+                let actual = try XCTUnwrap(colours[line]?.first?.color)
+                // SwiftUI's NSColor bridge creates a new dynamic provider.
+                // Compare its resolved colours, rather than provider identity.
+                for name in [NSAppearance.Name.aqua, .darkAqua] {
+                    let appearance = try XCTUnwrap(NSAppearance(named: name))
+                    appearance.performAsCurrentDrawingAppearance {
+                        // Frozen e59e41a7 TranscriptMarkdown.swift palette,
+                        // independent of the production dynamic provider.
+                        let dark = name == .darkAqua
+                        let hex = test.comment ? (dark ? 0x9a968d : 0x7a766d) : (dark ? 0xd7a5ee : 0x8a3fb0)
+                        let expected = NSColor(srgbRed: CGFloat((hex >> 16) & 255) / 255,
+                                               green: CGFloat((hex >> 8) & 255) / 255,
+                                               blue: CGFloat(hex & 255) / 255, alpha: 1)
+                        guard let actual = actual.usingColorSpace(.sRGB),
+                              let expected = expected.usingColorSpace(.sRGB) else {
+                            XCTFail("\(test.name) line \(line): unresolved \(name.rawValue) colour")
+                            return
+                        }
+                        for (value, reference) in zip(
+                            [actual.redComponent, actual.greenComponent, actual.blueComponent, actual.alphaComponent],
+                            [expected.redComponent, expected.greenComponent, expected.blueComponent, expected.alphaComponent]
+                        ) {
+                            XCTAssertEqual(value, reference, accuracy: 0.000001, "\(test.name) line \(line), \(name.rawValue)")
+                        }
+                    }
+                }
+            }
             XCTAssertLessThanOrEqual(document.largestFetchRead, 512 << 10, "\(test.name): no read bigger than a chunk and its page")
             XCTAssertLessThanOrEqual(document.bytesRead - afterIndex, size + (2 << 20), "\(test.name): the text before the lines was read once")
             let lexed = await syntax.reader.largestLexInput

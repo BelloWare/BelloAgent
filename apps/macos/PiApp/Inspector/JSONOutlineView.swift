@@ -1,4 +1,3 @@
-import SwiftUI
 import AppKit
 
 // The captured body's JSON as a native outline: its nodes, the commands a
@@ -88,37 +87,56 @@ struct JSONOutlineCommand: Equatable {
     let action: Action
 }
 
-struct JSONOutlineView: NSViewRepresentable {
-    let json: CapturedJSON
-    @Binding var selection: String
-    let expandRevision: Int
-    let expandAll: Bool
-    var command: JSONOutlineCommand? = nil
-    /// What the outline shows: an attempt's body in one format. A new
-    /// document under the same key is a newer read of what is on screen, and
-    /// the reader's open sections, selection and scroll position carry over.
-    var stateKey = ""
-    func makeCoordinator() -> Coordinator { Coordinator(selection: $selection) }
-    func makeNSView(context: Context) -> NSScrollView {
-        let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.hasHorizontalScroller = true
-        scroll.autohidesScrollers = true; scroll.drawsBackground = false
-        let outline = NSOutlineView(); outline.headerView = nil; outline.backgroundColor = .clear
+@MainActor final class JSONOutlineView: NSScrollView {
+    let coordinator: Coordinator
+    let outline = NSOutlineView()
+    private var preferredColumnWidth: CGFloat = 0
+    var onSelection: ((String) -> Void)? {
+        didSet { coordinator.onSelection = onSelection }
+    }
+    var selection: String { coordinator.selection }
+
+    init(json: CapturedJSON, selection: String = "", expandRevision: Int = 0, expandAll: Bool = false,
+         command: JSONOutlineCommand? = nil, stateKey: String = "", onSelection: ((String) -> Void)? = nil) {
+        coordinator = Coordinator(selection: selection, onSelection: onSelection)
+        self.onSelection = onSelection
+        super.init(frame: .zero)
+        hasVerticalScroller = true; hasHorizontalScroller = true
+        autohidesScrollers = true; drawsBackground = false
+        outline.headerView = nil; outline.backgroundColor = .clear
         outline.rowHeight = 24; outline.intercellSpacing = NSSize(width: 10, height: 2); outline.indentationPerLevel = 14
         let key = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("key")); key.width = 240; key.minWidth = 100
         let value = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("value")); value.width = 420; value.minWidth = 120
         outline.addTableColumn(key); outline.addTableColumn(value); outline.outlineTableColumn = key
-        outline.dataSource = context.coordinator; outline.delegate = context.coordinator
+        preferredColumnWidth = outline.tableColumns.reduce(0) { $0 + $1.width }
+            + outline.intercellSpacing.width * CGFloat(outline.tableColumns.count)
+        outline.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
+        outline.dataSource = coordinator; outline.delegate = coordinator
         outline.setAccessibilityLabel("Expandable captured JSON")
-        scroll.documentView = outline
-        context.coordinator.observeViewport(scroll.contentView, outline: outline)
-        return scroll
+        documentView = outline
+        coordinator.observeViewport(contentView, outline: outline)
+        update(json: json, selection: selection, expandRevision: expandRevision, expandAll: expandAll, command: command, stateKey: stateKey)
     }
-    func updateNSView(_ scroll: NSScrollView, context: Context) {
-        guard let outline = scroll.documentView as? NSOutlineView else { return }
-        let coordinator = context.coordinator
-        coordinator.selection = $selection
-        // One controller document is immutable. Rebuild only after a new body,
-        // not after selecting a row or changing the expanded state.
+    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+
+    override func layout() {
+        super.layout()
+        // A native retained outline is populated before its viewport has a
+        // size. Fit its document once the clip view has room, retaining
+        // horizontal scrolling when the columns cannot fit a narrow reader.
+        let width = max(preferredColumnWidth, contentView.bounds.width)
+        if outline.frame.width != width {
+            outline.setFrameSize(NSSize(width: width, height: outline.frame.height))
+            outline.sizeLastColumnToFit()
+            reflectScrolledClipView(contentView)
+        }
+    }
+
+    /// An immutable document is rebuilt only after a new read. The same
+    /// body's newer document carries disclosure, selection and scroll state.
+    func update(json: CapturedJSON, selection: String? = nil, expandRevision: Int = 0, expandAll: Bool = false,
+                command: JSONOutlineCommand? = nil, stateKey: String = "") {
+        if let selection { coordinator.selection = selection }
         if coordinator.documentID != json.id {
             let carried = !stateKey.isEmpty && coordinator.stateKey == stateKey ? coordinator.capture(outline) : nil
             coordinator.cancelPendingSelection()
@@ -128,6 +146,7 @@ struct JSONOutlineView: NSViewRepresentable {
             coordinator.commandID = command?.id
             outline.reloadData(); outline.expandItem(coordinator.root)
             if let carried { coordinator.restore(carried, in: outline) }
+            else if expandAll { coordinator.expandEverything = true; coordinator.expandAll(in: outline) }
         }
         if coordinator.revision != expandRevision {
             coordinator.revision = expandRevision
@@ -143,9 +162,8 @@ struct JSONOutlineView: NSViewRepresentable {
             }
         }
     }
-    static func dismantleNSView(_ scroll: NSScrollView, coordinator: Coordinator) {
+    func stop() {
         coordinator.stopObserving()
-        guard let outline = scroll.documentView as? NSOutlineView else { return }
         outline.delegate = nil; outline.dataSource = nil
     }
     @MainActor final class Coordinator: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate {
@@ -204,7 +222,8 @@ struct JSONOutlineView: NSViewRepresentable {
         }
         var revision = 0
         var commandID: UUID?
-        var selection: Binding<String>
+        var selection: String
+        var onSelection: ((String) -> Void)?
         private var selectionRevision = 0
         var expandEverything = false
         private var pending: [ObjectIdentifier: Task<Void, Never>] = [:]
@@ -329,7 +348,10 @@ struct JSONOutlineView: NSViewRepresentable {
             stopAutomaticExpansion()
             requestedExpansion.remove(ObjectIdentifier(node))
         }
-        init(selection: Binding<String>) { self.selection = selection }
+        init(selection: String = "", onSelection: ((String) -> Void)? = nil) { self.selection = selection; self.onSelection = onSelection }
+        private func publishSelection(_ value: String) {
+            guard selection != value else { return }; selection = value; onSelection?(value)
+        }
         func cancelPendingSelection() {
             selectionRevision += 1; detailTask?.cancel(); detailTask = nil
             cancelExpansion()
@@ -351,8 +373,8 @@ struct JSONOutlineView: NSViewRepresentable {
         }
         func outlineViewSelectionDidChange(_ notification: Notification) {
             guard let outline = notification.object as? NSOutlineView else { return }
-            // reloadData and collapseItem post this synchronously from updateNSView; the
-            // SwiftUI binding is written on the next turn, never inside that update.
+            // Reload and collapse post this synchronously. Publish the
+            // final selection on the next turn, after the update has settled.
             // Read only the final selection, and discard work from a replaced body
             // or a dismantled outline before it can repopulate the cleared detail.
             selectionRevision += 1
@@ -364,14 +386,14 @@ struct JSONOutlineView: NSViewRepresentable {
                 self.detailTask?.cancel()
                 guard let node = outline.item(atRow: outline.selectedRow) as? JSONOutlineNode,
                       node.count == 0 || node === root || node.value is CapturedEventFrame else {
-                    self.selection.wrappedValue = ""; return
+                    self.publishSelection(""); return
                 }
                 let value = CapturedOutlineDetail(value: node.value, formatted: node.formattedDetail)
                 self.detailTask = Task { [weak self, weak outline] in
                     guard let detail = try? await CapturedBodyWorker.shared.run({ try value.render() }), !Task.isCancelled,
                           let self, let outline, outline.delegate === self, self.selectionRevision == revision,
                           self.documentID == documentID else { return }
-                    if self.selection.wrappedValue != detail { self.selection.wrappedValue = detail }
+                    self.publishSelection(detail)
                 }
             }
         }

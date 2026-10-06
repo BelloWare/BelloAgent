@@ -1,5 +1,5 @@
 import AppKit
-import SwiftUI
+import Combine
 import FileView
 import GitView
 
@@ -200,80 +200,3 @@ import GitView
     }
 }
 
-/// The selected line's attribution, under the file's header while blame is
-/// shown: what the gutter says, readable and reachable by the keys.
-struct FileBlameBar: View {
-    @ObservedObject var blame: FileBlame
-    var body: some View {
-        HStack(spacing: PiSpacing.sm) {
-            Image(systemName: "person.text.rectangle").font(.system(size: 11, weight: .medium)).foregroundStyle(Color.piInkTertiary)
-                .accessibilityHidden(true)
-            content
-            Spacer(minLength: 0)
-            PiIconButton(symbol: "xmark", label: "Hide Blame", size: 24) { blame.hide() }
-                .accessibilityIdentifier("file-blame-hide")
-        }
-        .padding(.horizontal, PiSpacing.md).frame(height: 36)
-        .overlay(alignment: .bottom) { Rectangle().fill(Color.piHairline).frame(height: 1) }
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("file-blame-bar")
-    }
-
-    @ViewBuilder private var content: some View {
-        switch blame.state {
-        case .off: EmptyView()
-        case .reading:
-            PiSpinner(controlSize: .small)
-            Text("Reading who changed each line…").font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
-        case .unavailable(let reason):
-            Text(reason).font(PiFont.caption).foregroundStyle(Color.piInkSecondary).lineLimit(2)
-                .accessibilityIdentifier("file-blame-unavailable")
-        case .shown:
-            if let (entry, commit) = blame.entry(ofLine: blame.line) {
-                if let commit {
-                    let summary = "Line \(blame.line + 1) · \(commit.shortHash) · \(commit.author) · \(commit.date.formatted(date: .abbreviated, time: .omitted)) · \(commit.summary)"
-                    Text(summary).font(PiFont.caption).foregroundStyle(Color.piInkSecondary).lineLimit(1).truncationMode(.tail)
-                        .help(FileBlame.detail(commit))
-                        // Read as words, not "dot": the line, the commit and
-                        // who made it, and the whole message on request.
-                        .accessibilityLabel("Line \(blame.line + 1), commit \(commit.shortHash), by \(commit.author), \(commit.date.formatted(date: .abbreviated, time: .omitted)): \(commit.summary)")
-                        .accessibilityHint(FileBlame.spokenDetail(commit))
-                        .accessibilityIdentifier("file-blame-line")
-                    if commit.historyMissing {
-                        Text("Earlier history isn't in this clone").font(PiFont.micro).foregroundStyle(Color.piInkTertiary)
-                    }
-                    Button("Show Change") { blame.openChange(ofLine: blame.line) }
-                        .buttonStyle(.piSecondaryCompact).fixedSize()
-                        .disabled(!blame.canOpen(commit))
-                        .help(blame.tab?.projectID == nil ? "Open the file from a project to see its history." : "Open this commit's change to \(entry.path), at line \(entry.line), in Changes.")
-                        .accessibilityIdentifier("file-blame-show-change")
-                    PiIconButton(symbol: "doc.on.doc", label: "Copy Commit ID", size: 24, spokenLabel: "Copy commit ID \(commit.shortHash)") {
-                        NSPasteboard.general.clearContents(); NSPasteboard.general.setString(commit.hash, forType: .string)
-                    }
-                } else {
-                    Text("Line \(blame.line + 1) · Not committed yet").font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
-                        .accessibilityIdentifier("file-blame-line")
-                }
-            } else {
-                Text("Line \(blame.line + 1) · No line here in Git's count").font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
-                    .accessibilityIdentifier("file-blame-line")
-            }
-        }
-    }
-}
-
-/// The bar, while blame is on.
-struct FileBlameBarSlot: View {
-    @ObservedObject var blame: FileBlame
-    var body: some View { if blame.isOn { FileBlameBar(blame: blame) } }
-}
-
-/// Show Blame / Hide Blame in the file's header.
-struct FileBlameToggle: View {
-    @ObservedObject var blame: FileBlame
-    var body: some View {
-        PiIconButton(symbol: "person.text.rectangle", label: blame.isOn ? "Hide Blame" : "Show Blame", tone: blame.isOn ? .accent : .neutral,
-                     size: 26, filled: blame.isOn) { blame.toggle() }
-            .accessibilityIdentifier("file-blame-toggle")
-    }
-}

@@ -122,8 +122,9 @@ final class SessionStatsPopoverTests: XCTestCase {
     /// A pill pressed where the reader presses: the window delivers a click at
     /// its centre to its AppKit press target, which then takes it.
     @MainActor static func press(_ identifier: String, in pane: ConversationPaneTests.Pane, file: StaticString = #filePath, line: UInt = #line) throws {
-        let pill = try XCTUnwrap(ConversationPaneTests.views(PiPopoverTriggerButton.self, in: pane.hosted).first { $0.accessibilityIdentifier() == identifier },
+        let pill = try XCTUnwrap(ConversationPaneTests.views(PiKit.StatPill.self, in: pane.hosted).first { $0.accessibilityIdentifier() == identifier },
                                  "The \(identifier) pill is there", file: file, line: line)
+        XCTAssertTrue(pill.window === pane.window, "The \(identifier) pill is mounted in the conversation window", file: file, line: line)
         let center = pill.convert(NSPoint(x: pill.bounds.midX, y: pill.bounds.midY), to: nil)
         XCTAssertTrue(pane.window.contentView?.superview?.hitTest(center) === pill, "A click at the \(identifier) pill's centre lands on its press target", file: file, line: line)
         pill.performClick(nil)
@@ -140,7 +141,10 @@ final class SessionStatsPopoverTests: XCTestCase {
         let pane = try await Self.seededPane(); defer { SessionInspectorWindows.shared.closeAll(); pane.close() }
         try Self.press("session-stats-time", in: pane)
         XCTAssertEqual(pane.model.lastInspectorFocus, .overview)
-        let inspector = try XCTUnwrap(Self.inspector(of: pane), "The chat's Session Inspector opened")
+        let controller = try XCTUnwrap(SessionInspectorWindows.shared.controller(sessionID: pane.chat.id), "The chat's Session Inspector opened")
+        let window = try XCTUnwrap(controller.window, "The Inspector has a native window")
+        let inspector = controller.inspector
+        XCTAssertTrue(window.isVisible, "The time pill shows the Inspector window")
         XCTAssertEqual(inspector.page, .overview)
         try await Self.waitFor("The Overview did not build its charts from the archive", pane: pane) {
             inspector.indexLoaded && inspector.timeCharts.timeline?.rows.count == 12 && inspector.tokenCharts.perRequest != nil
@@ -154,12 +158,16 @@ final class SessionStatsPopoverTests: XCTestCase {
         try Self.press("session-stats-usage", in: pane)
         XCTAssertEqual(SessionInspectorWindows.shared.count, 1, "The usage pill brings the same window forward")
         XCTAssertTrue(Self.inspector(of: pane) === inspector)
+        XCTAssertTrue(SessionInspectorWindows.shared.controller(sessionID: pane.chat.id) === controller)
+        XCTAssertTrue(controller.window === window && window.isVisible, "The usage pill reuses and shows the same window")
         XCTAssertEqual(inspector.page, .overview)
 
         try Self.press("session-stats-context", in: pane)
         XCTAssertEqual(pane.model.lastInspectorFocus, .nextRequest)
         XCTAssertEqual(inspector.page, .nextRequest, "The context ring opens what the next request will send")
         XCTAssertEqual(SessionInspectorWindows.shared.count, 1)
+        XCTAssertTrue(SessionInspectorWindows.shared.controller(sessionID: pane.chat.id) === controller)
+        XCTAssertTrue(controller.window === window && window.isVisible, "The context pill navigates in the same visible window")
     }
 
     /// A turn that ends while the Overview is open moves the footer's

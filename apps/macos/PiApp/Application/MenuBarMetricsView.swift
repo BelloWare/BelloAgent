@@ -1,7 +1,5 @@
-import SwiftUI
 import AppKit
 import Combine
-import Charts
 
 typealias MenuBarMetricsLoader = @MainActor (MenuBarPeriod, Date, Int) async throws -> MenuBarSnapshot
 typealias MenuBarScopedMetricsLoader = @MainActor (MenuBarPeriod, Date, Int, Date?, String?) async throws -> MenuBarSnapshot
@@ -139,99 +137,107 @@ enum MenuBarChartMetric: String, CaseIterable { case requests, tokens, cost, rat
     }
 }
 
-@MainActor struct MenuBarUsageView: View {
-    @ObservedObject var controller: MenuBarMetricsController
-    @State private var chartMetric: MenuBarChartMetric
-    @State private var showingUsageDetails = false
-    @State private var chartSelection: Date?
+/// The menu bar panel's Usage tab: the period, the totals, a chart of
+/// requests, tokens, cost or output rate per slice, the model distribution
+/// and the details behind them. It follows its controller; each part touches
+/// only what changed.
+@MainActor final class MenuBarUsageView: DashView, PiKit.WidthSizing {
+    let controller: MenuBarMetricsController
+    private(set) var chartMetric: MenuBarChartMetric
+    private(set) var selectedStart: Date? { didSet { if selectedStart != oldValue { refreshChart() } } }
+    private var detailsOpen = false
+    private var observer: ShellObserver!
+    private var lastSnapshot: MenuBarSnapshot?
+
+    private lazy var periodTabs = PiKit.Tabs(selection: controller.period, items: [MenuBarPeriod.day, .week, .retained].map { ($0, $0.title) }) { [weak self] in self?.controller.period = $0 }
+    private let notice = ShellText("", font: PiKit.Font.caption, color: .piDanger)
+    private let empty = UsageEmpty()
+    // Totals
+    private let tilesRow = ShellStack(.horizontal, spacing: PiSpacing.sm, alignment: .top)
+    // Chart
+    private lazy var metricTabs = PiKit.Tabs(selection: chartMetric, items: MenuBarChartMetric.allCases.map { ($0, $0.title) }) { [weak self] in self?.chartMetric = $0; self?.refreshChart() }
+    let chart = UsageChart()
+    private let chartEmpty = PiKit.TextLine(PiKit.Line("No dispatched requests in this scope.", font: PiKit.Font.caption, color: .piInkSecondary))
+    private let chartCaption = ShellText("", font: PiKit.Font.micro, color: .piInkTertiary)
+    private let chartSelection = ShellText("", font: PiKit.Font.micro, color: .piInkSecondary)
+    private lazy var chartEmptySlot = FixedHeight(chartEmpty, height: 110)
+    private lazy var chartColumn = ShellStack(.vertical, spacing: PiSpacing.sm, [.view(metricTabs), .view(chart, .fill), .view(chartEmptySlot), .view(chartCaption, .fill), .view(chartSelection, .fill)])
+    private lazy var chartCard = PiKit.card(chartColumn, padding: PiSpacing.md)
+    // Models
+    private let modelsColumn = ShellStack(.vertical, spacing: PiSpacing.sm)
+    // Details
+    private let detailsColumn = ShellStack(.vertical, spacing: PiSpacing.md)
+    private lazy var details = DisclosureGroupView("Usage details", font: PiKit.Font.caption, color: .labelColor, content: detailsColumn)
+    private lazy var column = ShellStack(.vertical, spacing: PiSpacing.lg, [.view(periodTabs), .view(notice, .fill), .view(tilesRow, .fill), .view(chartCard, .fill),
+                                                                             .view(modelsColumn, .fill), .view(details, .fill), .view(empty, .fill)])
+
     init(controller: MenuBarMetricsController, chartMetric: MenuBarChartMetric = .requests) {
-        self.controller = controller; _chartMetric = State(initialValue: chartMetric)
+        self.controller = controller; self.chartMetric = chartMetric
+        super.init(frame: .zero)
+        addSubview(column)
+        notice.setAccessibilityIdentifier("menu-bar-metrics-error")
+        details.setAccessibilityIdentifier("menu-bar-usage-details")
+        details.onToggle = { [weak self] in self?.detailsOpen = $0 }
+        modelsColumn.setAccessibilityIdentifier("menu-bar-models")
+        chart.onSelect = { [weak self] in self?.selectedStart = $0 }
+        observer = ShellObserver { [weak self] in self?.refresh() }
+        observer.observe(controller)
+        refresh()
     }
-    var body: some View {
-        VStack(alignment: .leading, spacing: PiSpacing.lg) {
-            PiTabs(selection: $controller.period, items: [MenuBarPeriod.day, .week, .retained].map { ($0, $0.title) }).id("period")
-            if !controller.notice.isEmpty { Text(controller.notice).font(PiFont.caption).foregroundStyle(Color.piDanger).accessibilityIdentifier("menu-bar-metrics-error") }
-            if let snapshot = controller.snapshot {
-                usage(snapshot).id("totals")
-                charts(snapshot).id("chart")
-                distribution(snapshot).id("models")
-                DisclosureGroup("Usage details", isExpanded: $showingUsageDetails) {
-                    VStack(alignment: .leading, spacing: PiSpacing.md) { usageDetails(snapshot); requestActivity(snapshot); scope(snapshot) }.padding(.top, PiSpacing.sm)
-                }.font(PiFont.caption).id("details").accessibilityIdentifier("menu-bar-usage-details")
-            } else {
-                Text(controller.loading ? "Reading retained metrics…" : "Metrics unavailable").font(PiFont.body).frame(maxWidth: .infinity, minHeight: 180)
-            }
-        }.scrollTargetLayout()
+    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    override var isFlipped: Bool { true }
+
+    func refresh() {
+        periodTabs.selection = controller.period
+        notice.set(controller.notice, color: .piDanger)
+        notice.isHidden = controller.notice.isEmpty
+        let snapshot = controller.snapshot
+        for view in [tilesRow, chartCard, modelsColumn, details] as [NSView] { view.isHidden = snapshot == nil }
+        empty.isHidden = snapshot != nil
+        empty.text = controller.loading ? "Reading retained metrics…" : "Metrics unavailable"
+        if let snapshot, snapshot != lastSnapshot {
+            lastSnapshot = snapshot
+            refreshTiles(snapshot)
+            refreshModels(snapshot)
+            refreshDetails(snapshot)
+        }
+        // The pager follows every update: a page read under way disables it.
+        if let snapshot {
+            pager.canPrevious = controller.offset > 0 && !controller.loading
+            pager.canNext = snapshot.hasNext && !controller.loading
+        }
+        refreshChart()
+        column.relayoutAll()
+        needsLayout = true
+        PiKit.sizeChanged(self)
     }
 
-    /// Requests, cost or output rate per time slice of the selected period.
-    private func charts(_ snapshot: MenuBarSnapshot) -> some View {
+    private func refreshTiles(_ snapshot: MenuBarSnapshot) {
+        let totals = snapshot.gateway, tokens = totals.tokens ?? GatewayTokenTotals()
+        tilesRow.items = [
+            .view(dashStatTile(title: "Tokens consumed", value: menuBarTokens(tokens.total), caption: "\(tokens.samples)/\(totals.requests) requests reported", symbol: "number", tone: .accent), .fill),
+            .view(dashStatTile(title: "Reported cost", value: gatewayUSD(totals.costUSD), caption: "\(totals.costSamples)/\(totals.requests) requests reported", symbol: "dollarsign.circle", tone: .success), .fill),
+        ]
+    }
+
+    private func refreshChart() {
+        guard let snapshot = controller.snapshot else { return }
+        metricTabs.selection = chartMetric
         let buckets = snapshot.buckets
         let domain: ClosedRange<Date> = (buckets.first?.start ?? snapshot.until.addingTimeInterval(-3600))...snapshot.until
-        let axisFormat: Date.FormatStyle = domain.upperBound.timeIntervalSince(domain.lowerBound) <= 36 * 3600 ? .dateTime.hour() : .dateTime.month(.abbreviated).day()
-        return PiCard(padding: PiSpacing.md) {
-            VStack(alignment: .leading, spacing: PiSpacing.sm) {
-                PiTabs(selection: $chartMetric, items: MenuBarChartMetric.allCases.map { ($0, $0.title) })
-                if buckets.isEmpty {
-                    Text("No dispatched requests in this scope.").font(PiFont.caption).foregroundStyle(Color.piInkSecondary).frame(height: 110)
-                } else {
-                    Chart {
-                        ForEach(buckets) { bucket in
-                        switch chartMetric {
-                        case .requests:
-                            RectangleMark(xStart: .value("From", bucket.start), xEnd: .value("Until", bucket.end), yStart: .value("Count", 0), yEnd: .value("Count", bucket.requests))
-                                .foregroundStyle(Color.piBrandOrange).cornerRadius(2)
-                                .accessibilityLabel(bucket.start.formatted()).accessibilityValue("\(bucket.requests) requests")
-                        case .tokens:
-                            if let tokens = bucket.gateway.tokens?.total {
-                                RectangleMark(xStart: .value("From", bucket.start), xEnd: .value("Until", bucket.end), yStart: .value("Tokens", 0), yEnd: .value("Tokens", tokens)).foregroundStyle(Color.piAccent)
-                            }
-                        case .cost:
-                            if let cost = bucket.gateway.costUSD {
-                                RectangleMark(xStart: .value("From", bucket.start), xEnd: .value("Until", bucket.end), yStart: .value("USD", 0), yEnd: .value("USD", cost))
-                                    .foregroundStyle(Color.piBrandOrange).cornerRadius(2)
-                                    .accessibilityLabel(bucket.start.formatted()).accessibilityValue(bucket.gateway.costLabel)
-                            }
-                        case .rate:
-                            if let rate = MenuBarRateText.rate(bucket) {
-                                PointMark(x: .value("Time", bucket.start), y: .value("tok/s", rate)).foregroundStyle(Color.piAccent).symbolSize(22)
-                                    .accessibilityLabel(bucket.start.formatted()).accessibilityValue(MenuBarRateText.point(bucket))
-                            }
-                        }
-                        }
-                        if let selected = selectedBucket(snapshot) { RuleMark(x: .value("Selected", selected.start)).foregroundStyle(Color.piInkTertiary) }
-                    }
-                    .chartXScale(domain: domain)
-                    .chartXSelection(value: $chartSelection)
-                    .focusable().onMoveCommand { direction in
-                        let index = selectedBucket(snapshot).flatMap { b in buckets.firstIndex { $0.id == b.id } } ?? buckets.count - 1
-                        let step = direction == .left ? -1 : direction == .right ? 1 : 0
-                        chartSelection = buckets[max(0, min(buckets.count - 1, index + step))].start
-                    }
-                    .chartYAxis {
-                        AxisMarks(position: .leading) { value in
-                            AxisGridLine().foregroundStyle(Color.piHairline)
-                            // A cost axis reads as every amount does, cents at least.
-                            if chartMetric == .cost, let usd = value.as(Double.self) {
-                                AxisValueLabel { Text(compactGatewayUSD(usd)) }.foregroundStyle(Color.piInkTertiary)
-                            } else {
-                                AxisValueLabel().foregroundStyle(Color.piInkTertiary)
-                            }
-                        }
-                    }
-                    .chartXAxis { AxisMarks { AxisGridLine().foregroundStyle(Color.piHairline); AxisValueLabel(format: axisFormat).foregroundStyle(Color.piInkTertiary) } }
-                    .frame(height: 110)
-                    .accessibilityIdentifier("menu-bar-chart-\(chartMetric.rawValue)")
-                }
-                Text(chartCaption(snapshot)).font(PiFont.micro).foregroundStyle(Color.piInkTertiary).fixedSize(horizontal: false, vertical: true)
-                if let bucket = selectedBucket(snapshot) {
-                    Text("\(bucket.start.formatted(date: .abbreviated, time: .shortened)): \(bucket.requests) requests · \(menuBarTokens(bucket.gateway.tokens?.total)) tokens · \(gatewayUSD(bucket.gateway.costUSD)) · \(MenuBarRateText.slice(bucket))")
-                        .font(PiFont.micro).foregroundStyle(Color.piInkSecondary).fixedSize(horizontal: false, vertical: true)
-                }
-            }
-        }
+        let selected = selectedStart.flatMap { start in buckets.first { $0.start <= start && $0.end > start } }
+        chart.isHidden = buckets.isEmpty
+        chartEmptySlot.isHidden = !buckets.isEmpty
+        chart.update(buckets: buckets, metric: chartMetric, domain: domain, selected: selected)
+        chart.chart.setAccessibilityIdentifier("menu-bar-chart-\(chartMetric.rawValue)")
+        chartCaption.set(caption(snapshot), color: .piInkTertiary)
+        if let bucket = selected {
+            chartSelection.set("\(bucket.start.formatted(date: .abbreviated, time: .shortened)): \(bucket.requests) requests · \(menuBarTokens(bucket.gateway.tokens?.total)) tokens · \(gatewayUSD(bucket.gateway.costUSD)) · \(MenuBarRateText.slice(bucket))", color: .piInkSecondary)
+            chartSelection.isHidden = false
+        } else { chartSelection.isHidden = true }
+        chartColumn.relayoutAll()
     }
-    private func chartCaption(_ snapshot: MenuBarSnapshot) -> String {
+    private func caption(_ snapshot: MenuBarSnapshot) -> String {
         switch chartMetric {
         case .requests: "\(snapshot.counts.dispatched) dispatched requests · tool rounds and compactions included"
         case .tokens: "Input + output; cached input and reasoning are included once. \(snapshot.gateway.tokens?.samples ?? 0)/\(snapshot.gateway.requests) requests reported both."
@@ -239,134 +245,205 @@ enum MenuBarChartMetric: String, CaseIterable { case requests, tokens, cost, rat
         case .rate: MenuBarRateText.caption(snapshot)
         }
     }
-    private func selectedBucket(_ snapshot: MenuBarSnapshot) -> MenuBarBucket? {
-        guard let chartSelection else { return nil }
-        return snapshot.buckets.first { $0.start <= chartSelection && $0.end > chartSelection }
-    }
 
-    private func usage(_ snapshot: MenuBarSnapshot) -> some View {
-        let totals = snapshot.gateway, tokens = totals.tokens ?? GatewayTokenTotals()
-        return VStack(alignment: .leading, spacing: PiSpacing.sm) {
-            HStack(alignment: .top, spacing: PiSpacing.sm) {
-                PiStatTile(title: "Tokens consumed", value: menuBarTokens(tokens.total), caption: "\(tokens.samples)/\(totals.requests) requests reported", symbol: "number", tone: .accent)
-                PiStatTile(title: "Reported cost", value: gatewayUSD(totals.costUSD), caption: "\(totals.costSamples)/\(totals.requests) requests reported", symbol: "dollarsign.circle", tone: .success)
-            }
+    private lazy var modelsHeader = PiKit.SectionHeader("Model distribution", subtitle: "Requested → resolved · share of requests")
+    private let modelsEmpty = PiKit.TextLine(PiKit.Line("No dispatched requests in this scope.", font: PiKit.Font.caption, color: .piInkSecondary))
+    private let pageRange = PiKit.TextLine(PiKit.Line("", font: PiKit.Font.caption, color: .piInkSecondary))
+    private lazy var pager = PiKit.Pager(center: pageRange, canPrevious: false, canNext: false,
+                                         previous: { [weak self] in self?.controller.previousPage() }, next: { [weak self] in self?.controller.nextPage() })
+    private let modelsNote = ShellText("Aliases such as auto-router stay separate from gateway-reported models. Alias echoes and missing evidence do not establish a resolved model.",
+                                       font: PiKit.Font.micro, color: .piInkTertiary)
+    /// Each route's row, kept while its route is listed: an open row stays
+    /// open, and keeps the keyboard, through the panel's polls.
+    private var modelRows: [MenuBarModelDistribution.ID: UsageModelRow] = [:]
+
+    private func refreshModels(_ snapshot: MenuBarSnapshot) {
+        var items: [ShellItem] = [.view(modelsHeader, .fill)]
+        if snapshot.models.isEmpty { items.append(.view(modelsEmpty)) }
+        var kept: [MenuBarModelDistribution.ID: UsageModelRow] = [:]
+        for item in snapshot.models {
+            let row = modelRows[item.id] ?? UsageModelRow(item: item)
+            row.update(item: item)
+            kept[item.id] = row
+            items.append(.view(row, .fill))
         }
+        modelRows = kept
+        pageRange.line.text = "\(snapshot.offset + 1)–\(snapshot.offset + snapshot.models.count) of \(snapshot.modelGroups)"
+        if snapshot.modelGroups > MenuBarSnapshot.pageSize { items.append(.view(pager)) }
+        items.append(.view(modelsNote, .fill))
+        modelsColumn.items = items
     }
 
-    private func usageDetails(_ snapshot: MenuBarSnapshot) -> some View {
+    private func refreshDetails(_ snapshot: MenuBarSnapshot) {
         let totals = snapshot.gateway, tokens = totals.tokens ?? GatewayTokenTotals()
-        return VStack(alignment: .leading, spacing: PiSpacing.sm) {
-            Text("Input \(menuBarTokens(tokens.input)) (\(tokens.inputSamples)/\(totals.requests)) · output \(menuBarTokens(tokens.output)) (\(tokens.outputSamples)/\(totals.requests))")
-                .font(PiFont.caption).foregroundStyle(Color.piInkSecondary).fixedSize(horizontal: false, vertical: true)
-            Text(reasoningUsageSummary(totals))
-                .font(PiFont.caption).foregroundStyle(Color.piInkSecondary).fixedSize(horizontal: false, vertical: true)
-                .accessibilityIdentifier("menu-bar-reasoning")
-            if snapshot.costUnreported + snapshot.costInvalid + snapshot.costConflicts > 0 {
-                Text("Cost: \(snapshot.costUnreported) unreported · \(snapshot.costInvalid) invalid · \(snapshot.costConflicts) conflicting. Missing amounts are excluded.")
-                    .font(PiFont.caption).foregroundStyle(Color.piInkTertiary).fixedSize(horizontal: false, vertical: true)
-            }
-            PiCard(padding: PiSpacing.md) {
-                VStack(alignment: .leading, spacing: 5) {
-                    HStack {
-                        Label("Response cache", systemImage: "memorychip").font(PiFont.heading).foregroundStyle(Color.piInk)
-                        Spacer()
-                        Text("\(totals.cacheHits + totals.cacheMisses)/\(totals.requests) reported").font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
-                    }
-                    Text(totals.cacheLabel).font(PiFont.caption).foregroundStyle(Color.piInkSecondary).fixedSize(horizontal: false, vertical: true)
-                    Text(totals.tokenCacheLabel).font(PiFont.micro).foregroundStyle(Color.piInkTertiary).fixedSize(horizontal: false, vertical: true)
-                }
-            }
+        var usage: [ShellItem] = [
+            .view(ShellText("Input \(menuBarTokens(tokens.input)) (\(tokens.inputSamples)/\(totals.requests)) · output \(menuBarTokens(tokens.output)) (\(tokens.outputSamples)/\(totals.requests))",
+                            font: PiKit.Font.caption, color: .piInkSecondary), .fill),
+        ]
+        let reasoning = ShellText(reasoningUsageSummary(totals), font: PiKit.Font.caption, color: .piInkSecondary)
+        reasoning.setAccessibilityIdentifier("menu-bar-reasoning")
+        usage.append(.view(reasoning, .fill))
+        if snapshot.costUnreported + snapshot.costInvalid + snapshot.costConflicts > 0 {
+            usage.append(.view(ShellText("Cost: \(snapshot.costUnreported) unreported · \(snapshot.costInvalid) invalid · \(snapshot.costConflicts) conflicting. Missing amounts are excluded.",
+                                         font: PiKit.Font.caption, color: .piInkTertiary), .fill))
         }
-    }
-
-    private func requestActivity(_ snapshot: MenuBarSnapshot) -> some View {
+        let cacheHeader = ShellStack(.horizontal, spacing: 8, [
+            .view(LabelView(PiKit.Line("Response cache", font: PiKit.Font.heading, color: .piInk), symbol: "memorychip")), .spacer(8),
+            .view(PiKit.TextLine(PiKit.Line("\(totals.cacheHits + totals.cacheMisses)/\(totals.requests) reported", font: PiKit.Font.caption, color: .piInkSecondary)))])
+        let cache = ShellStack(.vertical, spacing: 5, [.view(cacheHeader, .fill),
+            .view(ShellText(totals.cacheLabel, font: PiKit.Font.caption, color: .piInkSecondary), .fill),
+            .view(ShellText(totals.tokenCacheLabel, font: PiKit.Font.micro, color: .piInkTertiary), .fill)])
+        usage.append(.view(PiKit.card(cache, padding: PiSpacing.md), .fill))
         let c = snapshot.counts
-        return VStack(alignment: .leading, spacing: 6) {
-            PiSectionHeader("\(c.dispatched) requests", subtitle: "\(snapshot.sessions) sessions · \(snapshot.workspaces) projects")
-            PiFlow {
-                PiBadge(text: "\(c.running) running", tone: c.running > 0 ? .warning : .neutral, dot: true)
-                PiBadge(text: "\(c.completed) completed", tone: .success, dot: true)
-                PiBadge(text: "\(c.failed) failed", tone: c.failed > 0 ? .danger : .neutral, dot: true)
-                PiBadge(text: "\(c.cancelled) cancelled", dot: true)
-                if c.truncated > 0 { PiBadge(text: "\(c.truncated) truncated", tone: .warning, dot: true) }
-                if c.interrupted > 0 { PiBadge(text: "\(c.interrupted) interrupted", tone: .warning, dot: true) }
-            }
-            Text("All statuses · tool rounds included · \(snapshot.compactionRequests) compaction requests")
-                .font(PiFont.micro).foregroundStyle(Color.piInkTertiary)
+        let badges = PiKit.FlowView()
+        var badgeViews = [PiKit.Badge(text: "\(c.running) running", tone: c.running > 0 ? .warning : .neutral, dot: true),
+                          PiKit.Badge(text: "\(c.completed) completed", tone: .success, dot: true),
+                          PiKit.Badge(text: "\(c.failed) failed", tone: c.failed > 0 ? .danger : .neutral, dot: true),
+                          PiKit.Badge(text: "\(c.cancelled) cancelled", dot: true)]
+        if c.truncated > 0 { badgeViews.append(PiKit.Badge(text: "\(c.truncated) truncated", tone: .warning, dot: true)) }
+        if c.interrupted > 0 { badgeViews.append(PiKit.Badge(text: "\(c.interrupted) interrupted", tone: .warning, dot: true)) }
+        for badge in badgeViews { badges.addSubview(badge) }
+        let activity = ShellStack(.vertical, spacing: 6, [
+            .view(PiKit.SectionHeader("\(c.dispatched) requests", subtitle: "\(snapshot.sessions) sessions · \(snapshot.workspaces) projects"), .fill),
+            .view(badges, .fill),
+            .view(PiKit.TextLine(PiKit.Line("All statuses · tool rounds included · \(snapshot.compactionRequests) compaction requests", font: PiKit.Font.micro, color: .piInkTertiary)))])
+        var scope: [ShellItem] = [.view(ShellText("As of " + (snapshot.summaryReadAt ?? snapshot.until).formatted(date: .abbreviated, time: .standard), font: PiKit.Font.micro, color: .piInkTertiary), .fill)]
+        if let from = snapshot.from {
+            scope.append(.view(ShellText("\(from.formatted(date: .abbreviated, time: .shortened)) – \(snapshot.until.formatted(date: .abbreviated, time: .shortened))", font: PiKit.Font.micro, color: .piInkTertiary), .fill))
+        }
+        for text in ["Input includes provider cache once. Reasoning tokens and cost are included in output, not added to totals. Total tokens require both input and output. Each observed HTTP attempt counts once; hidden gateway retries are unavailable.",
+                     MenuBarRateText.scope,
+                     "Retained metadata only · \(snapshot.gateway.expiredRecords) expired records and \(snapshot.counts.unobservedDispatch) unobserved dispatches excluded. Refreshes every 10 seconds while open."] {
+            scope.append(.view(ShellText(text, font: PiKit.Font.micro, color: .piInkTertiary), .fill))
+        }
+        let scopeColumn = ShellStack(.vertical, spacing: 4, scope)
+        scopeColumn.toolTip = snapshot.observationHelp
+        detailsColumn.items = [.view(ShellStack(.vertical, spacing: PiSpacing.sm, usage), .fill), .view(activity, .fill), .view(scopeColumn, .fill)]
+        detailsColumn.padding = NSEdgeInsets(top: PiSpacing.sm, left: 0, bottom: 0, right: 0)
+    }
+
+    func height(forWidth width: CGFloat) -> CGFloat { column.height(forWidth: width) }
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: height(forWidth: bounds.width > 0 ? bounds.width : 444)) }
+    override func layout() { super.layout(); column.frame = bounds }
+
+    /// "Reading retained metrics…": body type, centred in 180 points.
+    final class UsageEmpty: DashView {
+        var text = "" { didSet { if oldValue != text { needsDisplay = true } } }
+        override var isFlipped: Bool { true }
+        override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: 180) }
+        override func draw(_ dirtyRect: NSRect) {
+            let line = PiKit.Line(text, font: PiKit.Font.body, color: .labelColor), size = line.size(scale: piScale)
+            line.draw(at: CGPoint(x: PiKit.round((bounds.width - size.width) / 2, piScale), y: PiKit.round((bounds.height - size.height) / 2, piScale)), scale: piScale)
         }
     }
+}
 
-    private func distribution(_ snapshot: MenuBarSnapshot) -> some View {
-        VStack(alignment: .leading, spacing: PiSpacing.sm) {
-            PiSectionHeader("Model distribution", subtitle: "Requested → resolved · share of requests")
-            if snapshot.models.isEmpty {
-                Text("No dispatched requests in this scope.").font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
-            } else {
-            }
-            ForEach(snapshot.models) { item in
-                DisclosureGroup {
-                    VStack(alignment: .leading, spacing: 5) {
-                    HStack(alignment: .firstTextBaseline) {
-                        // Ids are cut in the middle so the numbers keep their column; the full id is in the tooltip.
-                        Text(item.requestedAlias.isEmpty ? "Alias unavailable" : item.requestedAlias)
-                            .font(PiFont.body.weight(.semibold)).foregroundStyle(Color.piInk).lineLimit(1).truncationMode(.middle)
-                            .help(item.requestedAlias)
-                        Spacer(minLength: 8)
-                        Text("\(item.gateway.requests) · \(item.requestShare.formatted(.percent.precision(.fractionLength(1))))")
-                            .font(PiFont.caption.monospacedDigit()).foregroundStyle(Color.piInkSecondary).fixedSize()
-                    }
-                    HStack(alignment: .firstTextBaseline, spacing: 5) {
-                        Image(systemName: "arrow.turn.down.right").font(PiFont.micro)
-                        Text(item.resolutionLabel).font(PiFont.caption).lineLimit(1).truncationMode(.middle).help(item.resolutionLabel)
-                        Spacer(minLength: 0)
-                    }.foregroundStyle(item.resolvedModel == nil ? Color.piWarning : Color.piInkSecondary)
-                    GeometryReader { geometry in
-                        Capsule().fill(Color.piFillStrong).overlay(alignment: .leading) {
-                            Capsule().fill(item.resolvedModel == nil ? Color.piWarning : Color.piAccent)
-                                .frame(width: geometry.size.width * max(0, min(1, item.requestShare)))
-                        }
-                    }.frame(height: 4).accessibilityHidden(true)
-                    Text("\(gatewayUSD(item.gateway.costUSD))\(item.costShare.map { " · \($0.formatted(.percent.precision(.fractionLength(1)))) of reported cost" } ?? "") · \(item.gateway.costSamples)/\(item.gateway.requests) cost reported")
-                        .font(PiFont.micro).foregroundStyle(Color.piInkTertiary).fixedSize(horizontal: false, vertical: true)
-                    Text(MenuBarRateText.model(item))
-                        .font(PiFont.micro).foregroundStyle(Color.piInkSecondary).fixedSize(horizontal: false, vertical: true)
-                    }
-                } label: {
-                    HStack {
-                        Text(modelChartLabel(item)).lineLimit(1).truncationMode(.middle).help(modelChartLabel(item))
-                        Spacer(minLength: 8)
-                        Text(item.requestShare.formatted(.percent.precision(.fractionLength(0)))).monospacedDigit()
-                    }.font(PiFont.caption)
-                }.padding(PiSpacing.md).piInset()
-            }
-            if snapshot.modelGroups > MenuBarSnapshot.pageSize {
-                PiPager(previous: controller.previousPage, next: controller.nextPage, canPrevious: controller.offset > 0 && !controller.loading, canNext: snapshot.hasNext && !controller.loading) {
-                    Text("\(snapshot.offset + 1)–\(snapshot.offset + snapshot.models.count) of \(snapshot.modelGroups)")
-                }
-            }
-            Text("Aliases such as auto-router stay separate from gateway-reported models. Alias echoes and missing evidence do not establish a resolved model.")
-                .font(PiFont.micro).foregroundStyle(Color.piInkTertiary).fixedSize(horizontal: false, vertical: true)
-        }.accessibilityIdentifier("menu-bar-models")
+/// The usage chart: its marks, the selected slice's rule, and the slice
+/// under the pointer while it is pressed (`chartXSelection`); the arrow keys
+/// step the selection when it has the keyboard.
+@MainActor final class UsageChart: DashView {
+    let chart = PiChartView()
+    var onSelect: ((Date?) -> Void)?
+    private var buckets: [MenuBarBucket] = []
+    private var selected: MenuBarBucket?
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        addSubview(chart)
+        setAccessibilityElement(false)
     }
+    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    override var isFlipped: Bool { true }
+    override var acceptsFirstResponder: Bool { true }
+    override var canBecomeKeyView: Bool { !isHiddenOrHasHiddenAncestor }
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: 110) }
+    func update(buckets: [MenuBarBucket], metric: MenuBarChartMetric, domain: ClosedRange<Date>, selected: MenuBarBucket?) {
+        self.buckets = buckets; self.selected = selected
+        chart.spec = MenuBarUsageChartSpec.make(buckets: buckets, metric: metric, domain: domain, selected: selected)
+    }
+    override func layout() { super.layout(); chart.frame = bounds }
+    private func date(at event: NSEvent) -> Date? {
+        let point = convert(event.locationInWindow, from: nil)
+        let geometry = chart.resolved()
+        guard geometry.plot.contains(point) || (point.x >= geometry.plot.minX && point.x <= geometry.plot.maxX) else { return nil }
+        let x = min(max(point.x, geometry.plot.minX), geometry.plot.maxX)
+        return Date(timeIntervalSinceReferenceDate: geometry.x.value(at: x))
+    }
+    override func mouseDown(with event: NSEvent) { window?.makeFirstResponder(self); onSelect?(date(at: event)) }
+    override func mouseDragged(with event: NSEvent) { onSelect?(date(at: event)) }
+    override func mouseUp(with event: NSEvent) { onSelect?(nil) }
+    override func keyDown(with event: NSEvent) {
+        let step = event.keyCode == 123 ? -1 : event.keyCode == 124 ? 1 : 0
+        guard step != 0, !buckets.isEmpty else { return super.keyDown(with: event) }
+        let index = selected.flatMap { s in buckets.firstIndex { $0.id == s.id } } ?? buckets.count - 1
+        onSelect?(buckets[max(0, min(buckets.count - 1, index + step))].start)
+    }
+}
 
-    private func modelChartLabel(_ item: MenuBarModelDistribution) -> String {
+/// A route of the distribution, folded to its alias, resolution and share;
+/// open, its requests, cost and rate.
+@MainActor final class UsageModelRow: DashView, PiKit.WidthSizing {
+    private let group: DisclosureGroupView
+    private let inset: PiKit.Box
+    private(set) var item: MenuBarModelDistribution
+    private let aliasLine = PiKit.TextLine(PiKit.Line("", font: .systemFont(ofSize: 13, weight: .semibold), color: .piInk))
+    private let share = PiKit.TextLine(PiKit.Line("", font: PiKit.Font.monospacedDigits(PiKit.Font.caption), color: .piInkSecondary))
+    private let resolution = PiKit.TextLine(PiKit.Line("", font: PiKit.Font.caption, color: .piInkSecondary))
+    private let arrow = PiKit.SymbolView(PiKit.Symbol("arrow.turn.down.right", size: 10.5, weight: .medium), color: .piInkSecondary)
+    private let bar = PiKit.ShareBar(fraction: 0)
+    private let cost = ShellText("", font: PiKit.Font.micro, color: .piInkTertiary)
+    private let rate = ShellText("", font: PiKit.Font.micro, color: .piInkSecondary)
+    private let content: ShellStack
+    var isExpanded: Bool { get { group.isExpanded } set { group.isExpanded = newValue } }
+    init(item: MenuBarModelDistribution) {
+        self.item = item
+        aliasLine.truncation = .middle
+        resolution.truncation = .middle
+        bar.setAccessibilityElement(false)
+        let first = ShellStack(.horizontal, spacing: 8, alignment: .firstBaseline, [.view(aliasLine, .flexible), .spacer(8), .view(share)])
+        let second = ShellStack(.horizontal, spacing: 5, alignment: .firstBaseline, [.view(arrow), .view(resolution, .flexible), .spacer(0)])
+        content = ShellStack(.vertical, spacing: 5, [.view(first, .fill), .view(second, .fill), .view(FixedHeight(bar, height: 4, fills: true), .fill),
+                                                     .view(cost, .fill), .view(rate, .fill)])
+        group = DisclosureGroupView(Self.label(item), font: PiKit.Font.caption, color: .labelColor, content: content)
+        let padded = ShellStack(.vertical, spacing: 0, padding: NSEdgeInsets(top: PiSpacing.md, left: PiSpacing.md, bottom: PiSpacing.md, right: PiSpacing.md), [.view(group, .fill)])
+        inset = PiKit.inset(padded)
+        super.init(frame: .zero)
+        addSubview(inset)
+        apply()
+    }
+    /// The route's new figures, in the same row: its expansion, focus and
+    /// accessibility element stay through the panel's polls.
+    func update(item: MenuBarModelDistribution) {
+        guard item != self.item else { return }
+        self.item = item
+        apply()
+    }
+    private func apply() {
+        let alias = item.requestedAlias.isEmpty ? "Alias unavailable" : item.requestedAlias
+        aliasLine.line.text = alias; aliasLine.toolTip = item.requestedAlias
+        share.line.text = "\(item.gateway.requests) · \(item.requestShare.formatted(.percent.precision(.fractionLength(1))))"
+        let tone: NSColor = item.resolvedModel == nil ? .piWarning : .piInkSecondary
+        resolution.line = PiKit.Line(item.resolutionLabel, font: PiKit.Font.caption, color: tone); resolution.toolTip = item.resolutionLabel
+        arrow.color = tone
+        bar.fraction = max(0, min(1, item.requestShare)); bar.tone = item.resolvedModel == nil ? .piWarning : .piAccent
+        cost.set("\(gatewayUSD(item.gateway.costUSD))\(item.costShare.map { " · \($0.formatted(.percent.precision(.fractionLength(1)))) of reported cost" } ?? "") · \(item.gateway.costSamples)/\(item.gateway.requests) cost reported", color: .piInkTertiary)
+        rate.set(MenuBarRateText.model(item), color: .piInkSecondary)
+        group.title = Self.label(item)
+        group.trailing = item.requestShare.formatted(.percent.precision(.fractionLength(0)))
+        for view in [aliasLine, share, resolution] as [NSView] { view.invalidateIntrinsicContentSize() }
+        content.relayoutAll()
+        needsLayout = true
+        PiKit.sizeChanged(self)
+    }
+    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    override var isFlipped: Bool { true }
+    static func label(_ item: MenuBarModelDistribution) -> String {
         let alias = item.requestedAlias.isEmpty ? "Alias unavailable" : item.requestedAlias
         guard let resolved = item.resolvedModel, resolved != alias else { return alias }
         return alias + " → " + resolved
     }
-    private func scope(_ snapshot: MenuBarSnapshot) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("As of " + (snapshot.summaryReadAt ?? snapshot.until).formatted(date: .abbreviated, time: .standard))
-            if let from = snapshot.from {
-                Text("\(from.formatted(date: .abbreviated, time: .shortened)) – \(snapshot.until.formatted(date: .abbreviated, time: .shortened))")
-            }
-            Text("Input includes provider cache once. Reasoning tokens and cost are included in output, not added to totals. Total tokens require both input and output. Each observed HTTP attempt counts once; hidden gateway retries are unavailable.")
-            Text(MenuBarRateText.scope)
-            Text("Retained metadata only · \(snapshot.gateway.expiredRecords) expired records and \(snapshot.counts.unobservedDispatch) unobserved dispatches excluded. Refreshes every 10 seconds while open.")
-        }.font(PiFont.micro).foregroundStyle(Color.piInkTertiary).fixedSize(horizontal: false, vertical: true)
-            .help(snapshot.observationHelp)
-    }
+    func height(forWidth width: CGFloat) -> CGFloat { inset.height(forWidth: width) }
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: height(forWidth: bounds.width > 0 ? bounds.width : 444)) }
+    override func layout() { super.layout(); inset.frame = bounds }
 }
 
 /// Every output rate the usage panel quotes — its chart, the caption under

@@ -1,4 +1,3 @@
-import SwiftUI
 import AppKit
 
 extension WorkspaceModel {

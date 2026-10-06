@@ -116,6 +116,49 @@ extension ConversationPaneTests {
 // MARK: - The placeholder
 
 extension ConversationPaneTests {
+    @MainActor func testArmingSendKeepsTheComposerSizeAndStillAllowsWrapping() async throws {
+        let pane = try Pane(width: 900, height: 620); defer { pane.close() }
+        await pane.settle(16)
+        let editor = try XCTUnwrap(pane.editor)
+        let composer = try XCTUnwrap(Self.views(ComposerInputView.self, in: pane.hosted).first)
+        let field = try XCTUnwrap(editor.enclosingScrollView)
+        let fieldFrame = field.frame, sendFrame = composer.send.frame
+        var heightChanges = 0
+        let originalHeightChanged = composer.heightChanged
+        composer.heightChanged = { heightChanges += 1; originalHeightChanged?() }
+        pane.window.makeFirstResponder(editor)
+
+        type("a", into: editor)
+        await pane.settle(8)
+        XCTAssertEqual(editor.string, "a")
+        XCTAssertTrue(composer.send.isEnabled)
+        XCTAssertEqual(composer.send.accessibilityLabel(), "Send")
+        XCTAssertEqual(field.frame, fieldFrame)
+        XCTAssertEqual(composer.send.frame, sendFrame)
+        XCTAssertEqual(heightChanges, 0, "Arming Send and hiding the placeholder do not resize the composer")
+
+        pane.session.draft = ""
+        await pane.settle(8)
+        XCTAssertFalse(composer.send.isEnabled)
+        XCTAssertEqual(field.frame, fieldFrame)
+        XCTAssertEqual(heightChanges, 0, "Clearing a single-line draft restores only the placeholder and Send state")
+
+        pane.session.draft = " "
+        await pane.settle(8)
+        XCTAssertFalse(composer.send.isEnabled)
+        XCTAssertEqual(field.frame, fieldFrame)
+        XCTAssertEqual(heightChanges, 0, "Whitespace changes only the placeholder")
+        pane.session.draft = ""
+        await pane.settle(8)
+        XCTAssertEqual(heightChanges, 0)
+
+        pane.session.draft = String(repeating: "A long wrapped draft. ", count: 100)
+        await pane.settle(12)
+        XCTAssertTrue(composer.send.isEnabled)
+        XCTAssertGreaterThan(field.frame.height, fieldFrame.height)
+        XCTAssertGreaterThan(heightChanges, 0, "The native field still reports real line-wrap height changes")
+    }
+
     /// The keyboard hints are the empty composer's placeholder, so they must
     /// sit exactly where the first character will appear, not a few points off.
     @MainActor func testThePlaceholderSitsWhereTheTypedTextWill() async throws {
@@ -312,19 +355,79 @@ extension ConversationPaneTests {
         let to = try XCTUnwrap(source.range(of: end, range: from.upperBound..<source.endIndex), "\(end) not found after \(start)")
         return source[from.lowerBound..<to.upperBound]
     }
-    func testLiveTurnBarKeepsItsIdentityAcrossPresentations() throws {
-        let body = try Self.excerpt(Self.appSource("Transcript/NativeTranscriptView.swift"), from: "LiveTurnBarSlot(turn:", to: "}")
-        XCTAssertFalse(body.contains(".id("), "A new presentation of the chat replays the live turn bar's entrance")
+    /// A new presentation of the chat (a revisit, a reload, an earlier
+    /// version) keeps the live bar where it stands: the same view, its
+    /// entrance not played again.
+    @MainActor func testLiveTurnBarKeepsItsIdentityAcrossPresentations() async throws {
+        let session = SessionDisplay(id: "presentations")
+        session.messages = TranscriptStreamingStressTests.history(turns: 2)
+        session.state = "running"
+        let pane = NativeTranscriptPane(frame: CGRect(x: 0, y: 0, width: 700, height: 500))
+        let window = NSWindow(contentRect: pane.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = pane
+        defer { window.contentView = nil }
+        pane.update(session: session, state: "running", actions: TranscriptActions(), environment: TranscriptRowEnvironment(), reduceMotion: false)
+        func bar() -> TranscriptNativeTurnReport? { pane.subviews.compactMap { $0 as? TranscriptNativeTurnReport }.first }
+        try await eventually("the live bar", timeout: .seconds(5)) { pane.layoutSubtreeIfNeeded(); return bar() != nil }
+        let shown = try XCTUnwrap(bar())
+        XCTAssertNotNil(shown.layer?.animation(forKey: "arrive"), "the bar arrives once")
+        shown.layer?.removeAllAnimations()
+        session.presentationGeneration = UUID()
+        pane.update(session: session, state: "running", actions: TranscriptActions(), environment: TranscriptRowEnvironment(), reduceMotion: false)
+        for _ in 0..<5 { pane.layoutSubtreeIfNeeded(); try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertTrue(bar() === shown, "the same bar stands across a new presentation")
+        XCTAssertNil(shown.layer?.animation(forKey: "arrive"), "A new presentation of the chat replays the live turn bar's entrance")
     }
-    func testModelChipChangesItsLabelInPlace() throws {
-        let label = try Self.excerpt(Self.appSource("Workspaces/ModelSwitchControls.swift"), from: "Text(text).font(.system(size: 12, weight: .medium))", to: "if loading")
-        XCTAssertTrue(label.contains(".contentTransition(.opacity)"))
-        XCTAssertFalse(label.contains(".id(text)"), "A new model name removes the chip's label and inserts another")
-        XCTAssertFalse(label.contains(".transition("), "The chip's label is replaced, not changed")
+    /// A new model name changes the pill's label in place: the same pill,
+    /// its words cross-fading, not a pill taken away and another put in.
+    @MainActor func testModelChipChangesItsLabelInPlace() async throws {
+        let pane = try Pane(); defer { pane.close() }
+        await pane.settle(8)
+        func pill() -> ComposerPillButton? {
+            Self.views(ComposerPillButton.self, in: pane.hosted).first { $0.accessibilityIdentifier() == "session-model-picker" }
+        }
+        let shown = try XCTUnwrap(pill())
+        XCTAssertEqual(shown.text, "pane-model")
+        var chat = pane.chat; chat.model = "another-model"
+        pane.model.chats = [chat]
+        try await waitFor("The pill never took the new model") { pill()?.text == "another-model" }
+        XCTAssertTrue(pill() === shown, "The pill changed its label in place")
     }
-    func testProjectsSheetCrossesItsPanesInOneStack() throws {
-        let panes = try Self.excerpt(Self.appSource("Workspaces/WorkspaceManagerView.swift"), from: "list.frame(width: 250)", to: "NewWorkspaceDraft.editing")
-        XCTAssertTrue(panes.contains("ZStack {"))
-        XCTAssertFalse(panes.contains("Group {"), "A Group gives each pane its own frame: the leaving and arriving panes stand side by side")
+    // The Projects sheet's panes crossing in one place is now checked on the
+    // AppKit sheet itself: WorkspaceManagerSheetTests.testTheProjectsSheetCrossesItsPanesInOnePlace.
+}
+
+// MARK: - Escape on the edit banners
+
+extension ConversationPaneTests {
+    /// Escape is the banner's Cancel (`.keyboardShortcut(.cancelAction)`):
+    /// from the composer, through the window's own key handling, it puts the
+    /// earlier draft back. An open slash list takes Escape first.
+    @MainActor func testEscapeCancelsAnEditFromTheComposer() async throws {
+        let pane = try Pane(messages: [TranscriptMessage(id: "u1", role: "user", text: "Earlier", at: 1000, turn: "u1")]); defer { pane.close() }
+        await pane.settle(8)
+        pane.session.draftBeforeEdit = DraftRecord(id: pane.session.id, text: "my unsent draft")
+        pane.session.editingMessageID = "u1"
+        pane.session.draft = "Earlier, rewritten"
+        await pane.settle(8)
+        let editor = try XCTUnwrap(pane.editor)
+        pane.window.makeFirstResponder(editor)
+        XCTAssertNotNil(Self.views(ComposerEditBanner.self, in: pane.hosted).first, "The banner is up")
+        func escape() {
+            let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                         windowNumber: pane.window.windowNumber, context: nil, characters: "\u{1b}",
+                                         charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53)!
+            pane.window.sendEvent(event)
+        }
+        // An open slash list closes first; the edit stays.
+        pane.session.completionVisible = true
+        escape()
+        await pane.settle(4)
+        XCTAssertEqual(pane.session.editingMessageID, "u1", "Escape with the slash list open leaves the edit alone")
+        pane.session.completionVisible = false
+        await pane.settle(4)
+        escape()
+        try await waitFor("Escape never cancelled the edit") { pane.session.editingMessageID == nil }
+        XCTAssertEqual(pane.session.draft, "my unsent draft", "The earlier draft is back")
     }
 }

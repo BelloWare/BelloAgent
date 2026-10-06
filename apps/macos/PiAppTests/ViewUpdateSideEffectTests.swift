@@ -105,7 +105,7 @@ final class ViewUpdateSideEffectTests: XCTestCase {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1240, height: 820), styleMask: [.titled, .resizable, .fullSizeContentView],
                               backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        let hosted = NSHostingView(rootView: WorkspaceView(model: model))
+        let hosted = WorkspaceRootView(model: model)
         window.contentView = hosted
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
@@ -153,7 +153,7 @@ final class ViewUpdateSideEffectTests: XCTestCase {
         let start = Date()
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1180, height: 780), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: GitPanelView(controller: GitController(roots: [root.path])))
+        window.contentView = GitPanelView(controller: GitController(roots: [root.path]))
         window.makeKeyAndOrderFront(nil)
         defer { window.contentView = nil; window.close() }
         for _ in 0..<60 { window.contentView?.layoutSubtreeIfNeeded(); window.displayIfNeeded(); try await Task.sleep(for: .milliseconds(25)) }
@@ -173,7 +173,7 @@ final class ViewUpdateSideEffectTests: XCTestCase {
         let whole = InspectorExpandBodies.toolResult(lines: 200)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 640), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: ScrollView { InspectorPromptCard(preview: String(whole.prefix(2_000)), model: model, showAll: {}).padding(24) })
+        window.contentView = nativePromptPage(InspectorPromptCard(preview: String(whole.prefix(2_000)), model: model, showAll: {}))
         window.orderFront(nil)
         defer { model.collapse(); window.contentView = nil; window.close() }
         for _ in 0..<10 { window.contentView?.layoutSubtreeIfNeeded(); window.displayIfNeeded(); try await Task.sleep(for: .milliseconds(20)) }

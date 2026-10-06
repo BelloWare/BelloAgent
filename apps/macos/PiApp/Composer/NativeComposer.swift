@@ -1,8 +1,14 @@
-import SwiftUI
 import AppKit
 
-struct NativeComposer: NSViewRepresentable {
-    @Binding var text: String
+/// The composer's native editor, as a value: what it shows and what it calls.
+/// `makeView()` builds the field once; `apply(to:)` hands it a newer value,
+/// as the chat's state changes. The field keeps its coordinator, which holds
+/// the newest value; the editor's own callbacks reach it weakly.
+@MainActor struct NativeComposer {
+    /// The draft as the model has it.
+    var text: String
+    /// The reader changed the draft: the new text.
+    var textChanged: (String) -> Void = { _ in }
     var send: (ComposerSubmissionIntent) -> Void
     /// The chat this composer belongs to, so typing anywhere in the window can find the right one.
     var sessionID = ""
@@ -33,9 +39,13 @@ struct NativeComposer: NSViewRepresentable {
     var maximumFieldHeight: CGFloat = ComposerScrollView.maximumHeight
     /// False holds the text still: no typing, paste or drop changes it.
     var editable = true
+    /// A coordinator for this value, outside any field (tests drive one directly).
     func makeCoordinator() -> Coordinator { Coordinator(self) }
-    func makeNSView(context: Context) -> ComposerScrollView {
-        let scroll = ComposerScrollView(); scroll.hasVerticalScroller = true; scroll.borderType = .noBorder
+    /// Builds the field, its editor and its coordinator, showing this value.
+    func makeView() -> ComposerScrollView {
+        let coordinator = Coordinator(self)
+        let scroll = ComposerScrollView()
+        scroll.coordinator = coordinator; scroll.hasVerticalScroller = true; scroll.borderType = .noBorder
         scroll.drawsBackground = false; scroll.autohidesScrollers = true
         // An overlay scroller never narrows the text container, so a reply reaching the height
         // clamp cannot rewrap, change height, hide the scroller and rewrap again.
@@ -46,15 +56,14 @@ struct NativeComposer: NSViewRepresentable {
         editor.drawsBackground = false; editor.textContainerInset = ComposerTextView.textInset
         ComposerTextView.applyLineMetrics(to: editor)
         editor.isVerticallyResizable = true; editor.autoresizingMask = [.width]
-        editor.textContainer?.widthTracksTextView = true; editor.delegate = context.coordinator
+        editor.textContainer?.widthTracksTextView = true; editor.delegate = coordinator
         editor.setAccessibilityLabel(accessibilityLabel); editor.setAccessibilityIdentifier("nativeComposer"); editor.sessionID = sessionID
         // Every one of these is held by the editor, and the coordinator holds
         // this view value, whose closures hold the chat's page and the whole
         // workspace. Capturing the coordinator strongly made an editor that
-        // outlived its pane — AppKit keeps a text view alive past the SwiftUI
-        // teardown — keep that chat's transcript page in memory for the rest
-        // of the session, so memory grew with every chat visited.
-        let coordinator = context.coordinator
+        // outlived its pane — AppKit keeps a text view alive past its
+        // pane's teardown — keep that chat's transcript page in memory for
+        // the rest of the session, so memory grew with every chat visited.
         editor.send = { [weak coordinator] in coordinator?.parent.send($0) }
         editor.directSlash = { [weak coordinator] in coordinator?.parent.directSlash() }
         editor.pasted = { [weak coordinator] in coordinator?.parent.pasted() }
@@ -71,7 +80,7 @@ struct NativeComposer: NSViewRepresentable {
             if let editor { coordinator?.focusChanged(editor) }
         }
         // The field's height is the scroll view's own: the text's height is
-        // its intrinsic height, so SwiftUI sizes the field in the pass that
+        // its intrinsic height, so the pane sizes the field in the pass that
         // laid the new line out. Handed on through state a run-loop turn
         // later, the line was drawn in the old frame first and the field
         // grew (or shrank) a frame behind it, moving the transcript twice.
@@ -80,20 +89,20 @@ struct NativeComposer: NSViewRepresentable {
         editor.skillStrip.pressed = { [weak coordinator] in coordinator?.parent.skillPressed($0, $1) }
         editor.skillStrip.hovered = { [weak coordinator] in coordinator?.parent.skillHovered($0, $1, $2) }
         editor.skillStrip.describe = { [weak coordinator] in coordinator?.parent.describeSkill($0) }
-        editor.string = text; context.coordinator.adopt(text); scroll.documentView = editor
+        editor.string = text; coordinator.adopt(text); scroll.documentView = editor
         editor.skillStrip.display = skillDisplay; editor.skillTokens = skills
+        // The ceiling, whether it may be edited and any focus request apply
+        // from the start, as they do on every later value.
+        apply(to: scroll)
         return scroll
     }
-    /// The field is as tall as its text, between its floor and ceiling. An
-    /// intrinsic height alone let it grow but never shrink back: SwiftUI
-    /// took it as a minimum, so a cleared draft kept the tall field.
-    func sizeThatFits(_ proposal: ProposedViewSize, nsView scroll: ComposerScrollView, context: Context) -> CGSize? {
-        CGSize(width: proposal.width ?? scroll.frame.width, height: scroll.fieldHeight)
-    }
-    func updateNSView(_ scroll: ComposerScrollView, context: Context) {
-        context.coordinator.parent = self
-        if context.coordinator.appliedFocusToken != focusToken, let editor = scroll.documentView as? ComposerTextView {
-            context.coordinator.appliedFocusToken = focusToken
+    /// Hands the field a newer value: the model's text, focus requests, the
+    /// ceiling, the skills and whether it may be edited.
+    func apply(to scroll: ComposerScrollView) {
+        guard let coordinator = scroll.coordinator else { return }
+        coordinator.parent = self
+        if coordinator.appliedFocusToken != focusToken, let editor = scroll.documentView as? ComposerTextView {
+            coordinator.appliedFocusToken = focusToken
             DispatchQueue.main.async { [weak editor] in
                 guard let editor, let window = editor.window, window.attachedSheet == nil, !editor.isHiddenOrHasHiddenAncestor else { return }
                 window.makeFirstResponder(editor)
@@ -104,7 +113,7 @@ struct NativeComposer: NSViewRepresentable {
         editor.sessionID = sessionID
         // The model's own text always applies; only the reader's typing is held.
         if !editor.isEditable { editor.isEditable = true }
-        context.coordinator.applyModelText(text,to:editor)
+        coordinator.applyModelText(text, to: editor)
         if editor.isEditable != editable { editor.isEditable = editable }
         editor.skillStrip.display = skillDisplay; editor.skillTokens = skills
     }
@@ -131,7 +140,7 @@ struct NativeComposer: NSViewRepresentable {
         }
         private func scheduleLocation(_ editor: ComposerTextView) {
             locationRevision += 1; let revision = locationRevision
-            // Selection can arrive during updateNSView; publish afterwards.
+            // Selection can arrive while the model's text is applied; publish afterwards.
             Task { @MainActor [weak self, weak editor] in
                 guard let self, let editor, revision == self.locationRevision else { return }
                 let location = ComposerLocation(sessionID: editor.sessionID, editorGeneration: self.editorGeneration,
@@ -163,7 +172,7 @@ struct NativeComposer: NSViewRepresentable {
             rejectedModelText = nil
             // insertText preserves native undo, but synchronously invokes the
             // delegate. A model-to-view refresh must not publish that same text
-            // or completion state back into SwiftUI during updateNSView.
+            // or completion state back to the model while it is being applied.
             applyingModelText = true; defer { applyingModelText = false }
             editor.insertText(text, replacementRange: NSRange(location: 0, length: editor.textStorage?.length ?? 0))
             let applied = Self.contents(of: editor)
@@ -173,7 +182,7 @@ struct NativeComposer: NSViewRepresentable {
         func focusChanged(_ editor: ComposerTextView) {
             focusRevision += 1; let revision = focusRevision
             // Report navigation and native view attachment can restore first
-            // responder inside a SwiftUI update. Publish after that transaction
+            // responder inside a layout or update pass. Publish after it
             // and reject callbacks superseded by another responder or sheet.
             Task { @MainActor [weak self, weak editor] in
                 guard let self, let editor, self.focusRevision == revision,
@@ -214,6 +223,7 @@ struct NativeComposer: NSViewRepresentable {
             let text = Self.contents(of: editor)
             adopt(text)
             parent.text = text
+            parent.textChanged(text)
             if !editor.hasMarkedText() { parent.completion(text) }
             if let editor = editor as? ComposerTextView { scheduleLocation(editor) }
         }
@@ -231,9 +241,13 @@ struct ComposerEditMeasurement {
     }
 }
 /// The composer's scroll view. Its intrinsic height is the text's, between
-/// the field's floor and ceiling, and it asks SwiftUI to size it again the
-/// moment that height changes.
+/// the field's floor and ceiling, and it asks to be sized again the moment
+/// that height changes (`heightChanged`).
 @MainActor final class ComposerScrollView: NSScrollView {
+    /// What the field shows and calls; it holds the newest `NativeComposer`.
+    fileprivate(set) var coordinator: NativeComposer.Coordinator?
+    /// Called once the field's height has changed, for the view laying it out.
+    var heightChanged: (() -> Void)?
     static let minimumHeight: CGFloat = 44
     static let maximumHeight: CGFloat = 240
     /// The ceiling with a terminal open below the chat: the field gives way
@@ -242,23 +256,29 @@ struct ComposerEditMeasurement {
     /// The ceiling now; lowering it shrinks a tall field, raising it lets
     /// the text take its own height again.
     var ceiling: CGFloat = ComposerScrollView.maximumHeight {
-        didSet { if ceiling != oldValue { fieldHeight = textHeight } }
+        didSet { if ceiling != oldValue { setField(textHeight) } }
     }
     /// The height the text asks for, before the ceiling.
     private var textHeight: CGFloat = ComposerScrollView.minimumHeight
     /// The text's own height, kept for when the ceiling moves.
-    func request(_ height: CGFloat) { textHeight = height; fieldHeight = height }
-    var fieldHeight: CGFloat = ComposerScrollView.minimumHeight {
-        didSet {
-            let clamped = min(ceiling, Self.maximumHeight, max(Self.minimumHeight, fieldHeight))
-            if clamped != fieldHeight { fieldHeight = clamped; return }
-            guard fieldHeight != oldValue else { return }
-            invalidateIntrinsicContentSize()
-            // A height that changes inside a layout pass (the window resized
-            // and the text or its tokens rewrapped) is not taken up by the
-            // pass that is running, so it is asked for again after it.
-            DispatchQueue.main.async { [weak self] in self?.invalidateIntrinsicContentSize() }
-        }
+    func request(_ height: CGFloat) { textHeight = height; setField(height) }
+    /// The field's height: the text's, between the floor and the ceiling.
+    private(set) var fieldHeight: CGFloat = ComposerScrollView.minimumHeight
+    /// Clamped before it is stored, so a height clamped to the one already
+    /// shown changes nothing, and one clamped to a new height is announced.
+    /// (Clamping inside the property's own observer stored the clamped value
+    /// without announcing it: a field cleared below the floor kept its old
+    /// height until something else measured it.)
+    private func setField(_ height: CGFloat) {
+        let clamped = min(ceiling, Self.maximumHeight, max(Self.minimumHeight, height))
+        guard clamped != fieldHeight else { return }
+        fieldHeight = clamped
+        invalidateIntrinsicContentSize()
+        heightChanged?()
+        // A height that changes inside a layout pass (the window resized
+        // and the text or its tokens rewrapped) is not taken up by the
+        // pass that is running, so it is asked for again after it.
+        DispatchQueue.main.async { [weak self] in self?.invalidateIntrinsicContentSize(); self?.heightChanged?() }
     }
     override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: fieldHeight) }
 }
@@ -541,7 +561,7 @@ struct ComposerEditMeasurement {
         super.keyDown(with: event)
         // Draw the edited native text before processing the next background
         // stream notification. This flushes only this view's invalidated region;
-        // it does not force a window/SwiftUI layout or run when the editor is hidden.
+        // it does not force a window layout or run when the editor is hidden.
         if window?.isVisible == true { displayIfNeeded() }
     }
 }

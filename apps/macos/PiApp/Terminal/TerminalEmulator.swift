@@ -41,7 +41,8 @@ final class TerminalEmulator {
     /// Rows of the screen that changed since the last `clearDirty`; nil means everything.
     @exclusivity(unchecked) private(set) var dirtyRows: Set<Int>? = nil
     /// The pixel size of a cell, reported to programs that ask (XTWINOPS 14).
-    var cellPixelSize = (width: 8, height: 16)
+    /// One cell's size in points, which may be fractional; replies round the totals.
+    var cellPixelSize: (width: Double, height: Double) = (8, 16)
     /// The colours a program gets when it asks what the default foreground and background are (OSC 10/11).
     var defaultForegroundRGB: (UInt8, UInt8, UInt8) = (0x1d, 0x1b, 0x17)
     var defaultBackgroundRGB: (UInt8, UInt8, UInt8) = (0xf7, 0xf2, 0xec)
@@ -304,7 +305,7 @@ final class TerminalEmulator {
         }
         if privateMarker != 0 { return }
         if intermediates == [0x20] {
-            if final == 0x71 { cursorShape = [3, 4].contains(parameter(0)) ? .underline : [5, 6].contains(parameter(0)) ? .bar : .block }  // DECSCUSR
+            if final == 0x71 { cursorShape = [3, 4].contains(parameter(0)) ? .underline : [5, 6].contains(parameter(0)) ? .bar : .block; markDirty(cursor.y) }  // DECSCUSR
             return
         }
         if intermediates == [0x24] { if final == 0x70 { reportMode(parameters.first?.first ?? 0) }; return }
@@ -340,7 +341,7 @@ final class TerminalEmulator {
         case 0x72: setScrollRegion(top: parameter(0, default: 1) - 1, bottom: parameter(1, default: rows) - 1)  // DECSTBM
         case 0x73: savedCursor = cursor                                              // SCOSC
         case 0x74: windowOperation(parameter(0))                                     // XTWINOPS
-        case 0x75: cursor = savedCursor; clampCursor()                               // SCORC
+        case 0x75: let previous = cursor.y; cursor = savedCursor; wrapNext = false; clampCursor(); markDirty(previous); markDirty(cursor.y)  // SCORC
         default: break
         }
     }
@@ -619,6 +620,7 @@ final class TerminalEmulator {
         var row = screen[cursor.y]
         row.removeLast(count)
         row.insert(contentsOf: Array(repeating: blank(), count: count), at: cursor.x)
+        Self.repairWidePairs(&row)
         screen[cursor.y] = row; markDirty(cursor.y)
     }
     private func deleteCharacters(_ count: Int) {
@@ -627,11 +629,13 @@ final class TerminalEmulator {
         var row = screen[cursor.y]
         row.removeSubrange(cursor.x..<cursor.x + count)
         row.append(contentsOf: Array(repeating: blank(), count: count))
+        Self.repairWidePairs(&row)
         screen[cursor.y] = row; markDirty(cursor.y)
     }
     private func eraseCharacters(_ count: Int) {
         wrapNext = false
         for x in cursor.x..<min(columns, cursor.x + count) { screen[cursor.y][x] = blank() }
+        Self.repairWidePairs(&screen[cursor.y])
         markDirty(cursor.y)
     }
     private func eraseInLine(_ mode: Int) {
@@ -643,7 +647,25 @@ final class TerminalEmulator {
         default: range = cursor.x..<columns
         }
         for x in range { screen[cursor.y][x] = blank() }
+        Self.repairWidePairs(&screen[cursor.y])
         markDirty(cursor.y)
+    }
+    /// Blanks the half of a wide character that an insert, delete or erase
+    /// separated from its other half. A leading half left without its
+    /// trailing half would hide the cell after it: the view advances two
+    /// columns past it and never draws what was written there.
+    static func repairWidePairs(_ row: inout [TerminalCell]) {
+        var x = 0
+        while x < row.count {
+            let cell = row[x]
+            if cell.width == 2 {
+                if x + 1 < row.count, row[x + 1].width == 0 { x += 2; continue }
+                row[x] = TerminalCell(text: " ", width: 1, style: cell.style)
+            } else if cell.width == 0 {
+                row[x] = TerminalCell(text: " ", width: 1, style: cell.style)
+            }
+            x += 1
+        }
     }
     private func eraseInDisplay(_ mode: Int) {
         wrapNext = false
@@ -750,7 +772,7 @@ final class TerminalEmulator {
             while add > 0, !alternateScreen, let line = scrollback.popLast() {
                 scrollbackCells -= line.cellCount
                 scrollbackBytes -= line.retainedBytes
-                screen.insert(Self.fit([line.cells], columns: columns, rows: 1)[0], at: 0); cursor.y += 1; add -= 1
+                screen.insert(line.cells, at: 0); cursor.y += 1; add -= 1   // fitted to the new columns below
             }
             while add > 0 { screen.append(Array(repeating: .blank, count: columns)); add -= 1 }
         }

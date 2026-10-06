@@ -1,223 +1,270 @@
-import SwiftUI
 import AppKit
 
-/// No body pagination: both native entry points share this complete retained
-/// body presentation. Expiry and prefix states remain visible above the bytes.
-struct CapturedBodyView: View {
-    let source: CapturedBodySource
-    let sessionID: String
-    let attemptID: String
-    let kind: String
-    let retained: Bool
-    var revision = 0
-    /// Only the request inspector consumes this (Copy View and redaction).
-    /// A card that ignores it must not be handed a second full copy of the body.
-    var displayedText: Binding<String>? = nil
-    var copySource: Binding<CapturedBodyCopySource?>? = nil
-    var searchQuery = ""
-    var searchHeaders: [String: WireValue] = [:]
-    /// Retained bytes the owner's latest poll reported for a body that is
-    /// still being written. Newer bytes are offered, never read on each poll.
-    var growingBytes: Int? = nil
-    @StateObject private var controller = CapturedBodyController()
-    @StateObject private var search = PayloadSearchController()
-    @State private var previousSelection: Selection?
-    @State private var format = CapturedBodyFormat.json
-    @State private var selection = ""
-    @State private var expandRevision = 0
-    @State private var expandAll = false
-    @State private var outlineCommand: JSONOutlineCommand?
-    @State private var hex = ""
-    @State private var hexDocument: UUID?
-    /// The retained bytes decoded as UTF-8, once per document.
-    @State private var utf8 = ""
-    @State private var utf8Document: UUID?
-    /// The document and format the selection and disclosure state belong to.
-    @State private var shown: FormatSelection?
-    /// "Load latest" presses; each reads the growing body once more.
-    @State private var latestRequests = 0
+/// Complete retained-body presentation shared by both Inspector entry points.
+/// Expiry and prefix states remain visible; only "Load latest" reads growth.
+@MainActor final class CapturedBodyView: DashView, PiKit.WidthSizing {
+    private(set) var source: CapturedBodySource
+    let sessionID: String, attemptID: String, kind: String
+    private(set) var retained: Bool
+    private(set) var revision: Int
+    private(set) var searchQuery: String
+    private(set) var searchHeaders: [String: WireValue]
+    private(set) var growingBytes: Int?
+    var onDisplayedText: ((String) -> Void)?
+    var onCopySource: ((CapturedBodyCopySource?) -> Void)?
+    let controller = CapturedBodyController()
+    let search = PayloadSearchController()
+    private lazy var observer = ShellObserver { [weak self] in self?.refresh() }
+    private var loadTask: Task<Void, Never>?, formatTask: Task<Void, Never>?, searchTask: Task<Void, Never>?
+    private var previousSelection: Selection?
+    private(set) var format: CapturedBodyFormat
+    private var selection = "", expandRevision = 0, expandAll = false
+    private var outlineCommand: JSONOutlineCommand?
+    private var hex = "", utf8 = ""
+    private var hexDocument: UUID?, utf8Document: UUID?
+    private var shown: FormatSelection?, searched: SearchSelection?
+    private var latestRequests = 0
+    private var sourceRevision = 0
+    private let column = PayloadColumn()
+    private var outline: JSONOutlineView?
+    private let text = PagedTextView(text: "", accessibilityLabel: "Complete retained HTTP body")
+    private let selectionText = PagedTextView(text: "", accessibilityLabel: "Selected JSON value")
+    private var searchText: PayloadSearchTextView?
+    private lazy var tabs = PiKit.Tabs(selection: .json, items: [(CapturedBodyFormat.json, "JSON"), (.text, "UTF-8"), (.hex, "Hex")], accessibilityName: "Captured body format") { [weak self] in self?.setFormat($0) }
+    private lazy var tabsRow = ShellStack(.horizontal, spacing: PiSpacing.sm, [.view(tabs), .spacer(8)])
+    private let note = ShellText("", font: PiKit.Font.micro, color: .piInkTertiary)
+    private let summary = ShellSelectableText("", font: PiKit.Font.micro, color: .piInkSecondary)
+    private let warning = ShellText("", font: PiKit.Font.micro, color: .piWarning)
+    private let empty = ShellText("", font: PiKit.Font.caption, color: .piInkSecondary)
+    private let progress = PiKit.ProgressBar(value: 0, total: 1)
+    private let loadingText = PiKit.TextLine(PiKit.Line("", font: PiKit.Font.caption, color: .piInkSecondary))
+    private lazy var loading = PayloadCentered(ShellStack(.vertical, spacing: PiSpacing.sm, alignment: .center, [.view(progress, .fixed(300)), .view(loadingText)]))
+    private lazy var combining = PayloadCentered(ShellStack(.vertical, spacing: PiSpacing.sm, alignment: .center, [.view(PiKit.spinner(controlSize: .regular)), .view(PiKit.TextLine(PiKit.Line("Combining captured response events…", font: PiKit.Font.caption, color: .piInk)))]))
+    let expandButton = PiKit.Button("Expand all", style: .ghost)
+    let sectionButton = PiKit.Button("Collapse section", style: .ghost)
+    let collapseButton = PiKit.Button("Collapse all", style: .ghost)
+    let topButton = PiKit.Button("Top", symbol: "arrow.up.to.line", style: .ghost)
+    private lazy var controls = ShellStack(.horizontal, spacing: PiSpacing.sm, [.view(expandButton), .view(sectionButton), .view(collapseButton), .spacer(0), .view(topButton)])
+    private let growthText = PiKit.TextLine(PiKit.Line("", font: PiKit.Font.monospacedDigits(PiKit.Font.micro), color: .piInkSecondary))
+    let latestButton = PiKit.Button("Load latest", style: .ghost, compact: true)
+    private let updating = PiKit.TextLine(PiKit.Line("Loading…", font: PiKit.Font.micro, color: .piInkTertiary))
+    private lazy var growth = ShellStack(.horizontal, spacing: PiSpacing.sm, [.view(growthText, .flexible), .view(updating), .view(latestButton), .spacer(0)])
+    private let searchCount = PiKit.TextLine(PiKit.Line("", font: PiKit.Font.monospacedDigits(PiKit.Font.caption), color: .piInk))
+    private let searchUpdating = PiKit.TextLine(PiKit.Line("Updating…", font: PiKit.Font.micro, color: .piInkTertiary))
+    let previousMatch = PiKit.Button("", symbol: "chevron.up", style: .ghost)
+    let nextMatch = PiKit.Button("", symbol: "chevron.down", style: .ghost)
+    private let searchLoading = PiKit.ShimmerText("Searching body and headers…", size: 11)
+    private lazy var searchBar = ShellStack(.horizontal, spacing: 8, [.view(searchCount), .view(searchLoading), .spacer(8), .view(searchUpdating), .view(previousMatch), .view(nextMatch)])
+    private let searchResults = PayloadColumn(spacing: 7)
+    private var textBox: PiKit.Box?, outlineBox: PiKit.Box?, searchBox: PiKit.Box?
+    private lazy var selectionBox = PiKit.inset(selectionText, sunken: true)
+
     private struct Selection: Equatable {
         let session: String, attempt: String, kind: String
         let retained: Bool
-        let revision: Int
-        let latest: Int
+        let revision: Int, latest: Int
+        let source: Int
     }
-    private struct FormatSelection: Equatable {
-        let format: CapturedBodyFormat
-        let document: UUID?
-    }
+    private struct FormatSelection: Equatable { let format: CapturedBodyFormat; let document: UUID? }
     private struct SearchSelection: Equatable {
-        let query: String
-        let document: UUID?
-        let format: CapturedBodyFormat
-        let combined: Bool
-        let headers: [String: WireValue]
+        let query: String; let document: UUID?; let format: CapturedBodyFormat
+        let combined: Bool; let headers: [String: WireValue]
     }
-    init(model: WorkspaceModel, sessionID: String, attemptID: String, kind: String, retained: Bool,
-         revision: Int = 0, displayedText: Binding<String>? = nil, copySource: Binding<CapturedBodyCopySource?>? = nil,
-         initialFormat: CapturedBodyFormat = .json) {
-        self.source = retained ? .archive(model.traces, attemptID: attemptID, kind: kind) : .live(model, sessionID: sessionID, attemptID: attemptID, kind: kind)
-        self.sessionID = sessionID; self.attemptID = attemptID; self.kind = kind; self.retained = retained
-        self.revision = revision; self.displayedText = displayedText; self.copySource = copySource
-        _format = State(initialValue: initialFormat)
+    convenience init(model: WorkspaceModel, sessionID: String, attemptID: String, kind: String, retained: Bool,
+                     revision: Int = 0, initialFormat: CapturedBodyFormat = .json,
+                     onDisplayedText: ((String) -> Void)? = nil, onCopySource: ((CapturedBodyCopySource?) -> Void)? = nil) {
+        self.init(source: retained ? .archive(model.traces, attemptID: attemptID, kind: kind) : .live(model, sessionID: sessionID, attemptID: attemptID, kind: kind),
+                  sessionID: sessionID, attemptID: attemptID, kind: kind, retained: retained, revision: revision, initialFormat: initialFormat,
+                  onDisplayedText: onDisplayedText, onCopySource: onCopySource)
     }
     init(source: CapturedBodySource, sessionID: String, attemptID: String, kind: String, retained: Bool,
-         revision: Int = 0, copySource: Binding<CapturedBodyCopySource?>? = nil,
-         initialFormat: CapturedBodyFormat = .json, searchQuery: String = "", searchHeaders: [String: WireValue] = [:], growingBytes: Int? = nil) {
+         revision: Int = 0, initialFormat: CapturedBodyFormat = .json, searchQuery: String = "", searchHeaders: [String: WireValue] = [:],
+         growingBytes: Int? = nil, onDisplayedText: ((String) -> Void)? = nil, onCopySource: ((CapturedBodyCopySource?) -> Void)? = nil) {
         self.source = source; self.sessionID = sessionID; self.attemptID = attemptID; self.kind = kind; self.retained = retained
-        self.revision = revision; self.copySource = copySource; self.searchQuery = searchQuery; self.searchHeaders = searchHeaders
-        self.growingBytes = growingBytes
-        _format = State(initialValue: initialFormat)
+        self.revision = revision; format = initialFormat; self.searchQuery = searchQuery; self.searchHeaders = searchHeaders; self.growingBytes = growingBytes
+        self.onDisplayedText = onDisplayedText; self.onCopySource = onCopySource
+        super.init(frame: .zero); addSubview(column)
+        setAccessibilityIdentifier("captured-body-view")
+        controls.setAccessibilityIdentifier("payload-outline-controls")
+        expandButton.setAccessibilityIdentifier("payload-expand-all")
+        sectionButton.setAccessibilityIdentifier("payload-collapse-section")
+        collapseButton.setAccessibilityIdentifier("payload-collapse-all")
+        topButton.setAccessibilityIdentifier("payload-scroll-top")
+        latestButton.setAccessibilityIdentifier("payload-load-latest")
+        searchCount.setAccessibilityIdentifier("payload-search-count")
+        sectionButton.toolTip = "Collapse the selected section, or the section at your current scroll position"
+        topButton.toolTip = "Back to the start of this request or response"
+        previousMatch.setAccessibilityLabel("Previous match"); previousMatch.toolTip = "Previous match"
+        nextMatch.setAccessibilityLabel("Next match"); nextMatch.toolTip = "Next match"
+        expandButton.onPress = { [weak self] in self?.expandAll = true; self?.expandRevision += 1; self?.refresh() }
+        collapseButton.onPress = { [weak self] in self?.selection = ""; self?.expandAll = false; self?.expandRevision += 1; self?.refresh() }
+        sectionButton.onPress = { [weak self] in self?.outlineCommand = JSONOutlineCommand(action: .collapseSection); self?.refresh() }
+        topButton.onPress = { [weak self] in self?.outlineCommand = JSONOutlineCommand(action: .top); self?.refresh() }
+        latestButton.onPress = { [weak self] in self?.latestRequests += 1; self?.startLoad() }
+        previousMatch.onPress = { [weak self] in self?.search.move(-1) }
+        nextMatch.onPress = { [weak self] in self?.search.move(1) }
+        observer.observe(controller); observer.observe(search)
+        refresh()
     }
-    private var identity: Selection { Selection(session: sessionID, attempt: attemptID, kind: kind, retained: retained, revision: revision, latest: latestRequests) }
+    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    private var identity: Selection { Selection(session: sessionID, attempt: attemptID, kind: kind, retained: retained, revision: revision, latest: latestRequests, source: sourceRevision) }
+    /// A request can move from the helper to its durable archive without
+    /// changing the body identity. Call only when the route changes; a new
+    /// route reloads while the old document, format and search stay visible.
+    func update(source: CapturedBodySource, retained: Bool) {
+        loadTask?.cancel()
+        self.source = source; self.retained = retained; sourceRevision += 1
+        if window != nil { startLoad() }
+        refresh()
+    }
     private var activeFormat: CapturedBodyFormat { controller.document?.resolvedFormat(format, kind: kind) ?? .json }
-    private var selectedFormat: Binding<CapturedBodyFormat> {
-        Binding(get: { activeFormat }, set: { format = $0 })
+    func update(revision: Int? = nil, searchQuery: String = "", searchHeaders: [String: WireValue] = [:], growingBytes: Int? = nil) {
+        let changed = revision.map { $0 != self.revision } ?? false
+        if let revision { self.revision = revision }; self.searchQuery = searchQuery; self.searchHeaders = searchHeaders; self.growingBytes = growingBytes
+        if changed, window != nil { startLoad() }
+        refresh()
     }
-    var body: some View {
-        VStack(alignment: .leading, spacing: PiSpacing.sm) {
-            HStack(spacing: PiSpacing.sm) {
-                PiTabs(selection: selectedFormat, items: controller.document?.availableFormats(kind: kind) ?? [(.json, "JSON"), (.text, "UTF-8"), (.hex, "Hex")])
-                Spacer()
-            }
-            if !searchQuery.isEmpty {
-                searchResults
-            } else if let document = controller.document {
-                if let json = document.structured(format: activeFormat) {
-                    JSONOutlineView(json: json, selection: $selection, expandRevision: expandRevision, expandAll: expandAll,
-                                    command: outlineCommand, stateKey: "\(sessionID):\(attemptID):\(kind):\(activeFormat.rawValue)")
-                        .piInset(sunken: true)
-                    // Outside the scroll view: these controls remain reachable
-                    // even at the end of a very large expanded request.
-                    HStack(spacing: PiSpacing.sm) {
-                        Button("Expand all") { expandAll = true; expandRevision += 1 }
-                            .accessibilityIdentifier("payload-expand-all")
-                        Button("Collapse section") { outlineCommand = JSONOutlineCommand(action: .collapseSection) }
-                            .help("Collapse the selected section, or the section at your current scroll position")
-                            .accessibilityIdentifier("payload-collapse-section")
-                        Button("Collapse all") { selection = ""; expandAll = false; expandRevision += 1 }
-                            .accessibilityIdentifier("payload-collapse-all")
-                        Spacer(minLength: 0)
-                        Button { outlineCommand = JSONOutlineCommand(action: .top) } label: { Label("Top", systemImage: "arrow.up.to.line") }
-                            .help("Back to the start of this request or response")
-                            .accessibilityIdentifier("payload-scroll-top")
-                    }.buttonStyle(.piGhost).accessibilityIdentifier("payload-outline-controls")
-                    if !selection.isEmpty {
-                        PagedTextView(text: selection, accessibilityLabel: "Selected JSON value")
-                            .frame(height: 100).piInset(sunken: true)
-                    }
-                    Text(activeFormat == .combined ? document.combinedResponse?.notice ?? ""
-                         : document.eventStream == nil
-                         ? "Select a value to see its full contents. Formatting is a derived view; retained bytes are unchanged."
-                         : "Events appear in captured order. Expand a frame and its data to inspect JSON. This is a formatted view; UTF-8, Hex and exports preserve the retained bytes.")
-                        .font(PiFont.micro).foregroundStyle(Color.piInkTertiary)
-                } else if activeFormat == .combined {
-                    VStack { PiSpinner(controlSize: .regular); Text("Combining captured response events…").font(PiFont.caption) }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    PagedTextView(text: activeFormat == .hex ? hex : utf8, accessibilityLabel: "Complete retained HTTP body")
-                        .piInset(sunken: true)
-                    if activeFormat == .json { Text("Not a JSON document or UTF-8 event stream · showing retained UTF-8.").font(PiFont.micro).foregroundStyle(Color.piInkTertiary) }
-                }
-                Text(document.metadata.summary).font(PiFont.micro).foregroundStyle(Color.piInkSecondary).textSelection(.enabled)
-                if let growingBytes, growingBytes > document.bytes.count {
-                    HStack(spacing: PiSpacing.sm) {
-                        Text("\(growingBytes.formatted()) bytes so far · showing the first \(document.bytes.count.formatted())")
-                            .font(PiFont.micro).foregroundStyle(Color.piInkSecondary).monospacedDigit()
-                        if controller.loading { Text("Loading…").font(PiFont.micro).foregroundStyle(Color.piInkTertiary) }
-                        else { Button("Load latest") { latestRequests += 1 }.buttonStyle(.piGhost).font(PiFont.micro).accessibilityIdentifier("payload-load-latest") }
-                    }
-                }
-            } else if controller.loading {
-                VStack(spacing: PiSpacing.sm) {
-                    PiProgressBar(value: Double(controller.loaded), total: Double(max(1, controller.total))).frame(maxWidth: 300)
-                    Text("Loading all retained bytes · \(controller.loaded.formatted()) / \(controller.total.formatted())")
-                        .font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
-                }.frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                Text(controller.notice.isEmpty ? "No retained body" : controller.notice)
-                    .font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            }
-            if !searchQuery.isEmpty, let document = controller.document {
-                Text(document.metadata.summary).font(PiFont.micro).foregroundStyle(Color.piInkSecondary)
-            }
-            if controller.document != nil, !controller.notice.isEmpty {
-                Text(controller.notice).font(PiFont.micro).foregroundStyle(Color.piWarning)
-            }
-        }
-        .task(id: identity) {
-            let preserve = previousSelection.map { $0.session == identity.session && $0.attempt == identity.attempt && $0.kind == identity.kind } ?? false
-            previousSelection = identity
-            // A newer read of the body on screen keeps what the reader is
-            // looking at, and what Copy would copy, until its replacement lands.
-            if !preserve {
-                displayedText?.wrappedValue = ""; copySource?.wrappedValue = nil; selection = ""; hex = ""; utf8 = ""
-                hexDocument = nil; utf8Document = nil
-                expandAll = false; expandRevision = 0; outlineCommand = nil
-            }
-            await controller.load(kind: kind, source: source, preservingDocument: preserve, combine: preserve && activeFormat == .combined)
-            guard !Task.isCancelled else { return }
-            await updateDisplayedText()
-        }
-        .task(id: FormatSelection(format: activeFormat, document: controller.document?.id)) {
-            let current = FormatSelection(format: activeFormat, document: controller.document?.id)
-            // The same body, re-read, keeps its selection and open sections; the
-            // outline carries them onto the new document. A new body or another
-            // format starts fresh.
-            let inPlace = controller.document?.replaces != nil && shown == FormatSelection(format: activeFormat, document: controller.document?.replaces)
-            shown = current
-            if !inPlace { selection = ""; expandAll = false; expandRevision = 0; outlineCommand = nil }
-            if activeFormat == .combined { await controller.prepareCombined() }
-            guard !Task.isCancelled else { return }
-            await updateHexIfNeeded()
-            await updateUTF8IfNeeded()
-            await updateDisplayedText()
-        }
-        .task(id: SearchSelection(query: searchQuery, document: controller.document?.id, format: activeFormat,
-                                  combined: controller.document?.combinationFinished ?? false, headers: searchHeaders)) {
-            guard !searchQuery.isEmpty else { search.cancel(); return }
-            if activeFormat == .combined, controller.document?.combinationFinished == false { return }
-            await search.search(document: controller.document, format: activeFormat, headers: searchHeaders, kind: kind, query: searchQuery)
-        }
-        .onDisappear { controller.cancel(); search.cancel(); copySource?.wrappedValue = nil }
-        .accessibilityIdentifier("captured-body-view")
+    func setFormat(_ value: CapturedBodyFormat) { guard format != value else { return }; format = value; refresh() }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil { startLoad(); refresh() }
     }
-    private var searchResults: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 8) {
-                if let result = search.result {
-                    Text(result.matches.isEmpty ? "No matches in body or headers" : "\(search.selected + 1) of \(result.matches.count)\(result.limited ? "+" : "") matches")
-                        .font(PiFont.caption).monospacedDigit().accessibilityIdentifier("payload-search-count")
-                    Spacer()
-                    if search.loading { Text("Updating…").font(PiFont.micro).foregroundStyle(Color.piInkTertiary) }
-                    Button { search.move(-1) } label: { Image(systemName: "chevron.up") }
-                        .buttonStyle(.piGhost).disabled(result.matches.isEmpty).help("Previous match").accessibilityLabel("Previous match")
-                    Button { search.move(1) } label: { Image(systemName: "chevron.down") }
-                        .buttonStyle(.piGhost).disabled(result.matches.isEmpty).help("Next match").accessibilityLabel("Next match")
-                } else if search.loading { PiShimmerText(text: "Searching body and headers…", size: 11) }
-            }
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow == nil, window != nil { stop() }
+        super.viewWillMove(toWindow: newWindow)
+    }
+    func stop() {
+        loadTask?.cancel(); formatTask?.cancel(); searchTask?.cancel()
+        loadTask = nil; formatTask = nil; searchTask = nil
+        outline?.stop(); outline = nil; outlineBox = nil
+        controller.cancel(); search.cancel(); previousSelection = nil; shown = nil; searched = nil
+        onCopySource?(nil)
+    }
+    private func startLoad() {
+        let id = identity
+        guard previousSelection != id else { return }
+        loadTask?.cancel()
+        let preserve = previousSelection.map { $0.session == id.session && $0.attempt == id.attempt && $0.kind == id.kind } ?? false
+        previousSelection = id
+        if !preserve {
+            onDisplayedText?(""); onCopySource?(nil); selection = ""; hex = ""; utf8 = ""
+            hexDocument = nil; utf8Document = nil; expandAll = false; expandRevision = 0; outlineCommand = nil
+        }
+        let controller = controller, source = source, kind = kind, combine = preserve && activeFormat == .combined
+        loadTask = Task { [weak self] in
+            guard !Task.isCancelled else { return }
+            await controller.load(kind: kind, source: source, preservingDocument: preserve, combine: combine)
+            guard !Task.isCancelled, let self, self.identity == id else { return }
+            self.refresh()
+        }
+    }
+    private func startFormatIfNeeded() {
+        let current = FormatSelection(format: activeFormat, document: controller.document?.id)
+        guard shown != current else { return }
+        let inPlace = controller.document?.replaces != nil && shown == FormatSelection(format: activeFormat, document: controller.document?.replaces)
+        if shown?.format != current.format { outline?.stop(); outline = nil; outlineBox = nil }
+        shown = current
+        if !inPlace { selection = ""; expandAll = false; expandRevision = 0; outlineCommand = nil }
+        formatTask?.cancel()
+        formatTask = Task { [weak self] in
+            guard let self else { return }
+            if self.activeFormat == .combined { await self.controller.prepareCombined() }
+            guard !Task.isCancelled, self.shown == current else { return }
+            await self.updateHexIfNeeded(); await self.updateUTF8IfNeeded(); await self.updateDisplayedText()
+            guard !Task.isCancelled else { return }; self.refresh()
+        }
+    }
+    private func startSearchIfNeeded() {
+        let current = SearchSelection(query: searchQuery, document: controller.document?.id, format: activeFormat,
+                                      combined: controller.document?.combinationFinished ?? false, headers: searchHeaders)
+        guard searched != current else { return }; searched = current
+        searchTask?.cancel()
+        guard !searchQuery.isEmpty else { search.cancel(); return }
+        outline?.coordinator.cancelPendingSelection()
+        guard activeFormat != .combined || controller.document?.combinationFinished != false else { return }
+        let search = search, document = controller.document, kind = kind
+        searchTask = Task {
+            guard !Task.isCancelled else { return }
+            await search.search(document: document, format: current.format, headers: current.headers, kind: kind, query: current.query)
+        }
+    }
+    private func refresh() {
+        startFormatIfNeeded(); startSearchIfNeeded()
+        tabs.items = controller.document?.availableFormats(kind: kind) ?? [(.json, "JSON"), (.text, "UTF-8"), (.hex, "Hex")]
+        tabs.selection = activeFormat
+        var items: [PayloadColumn.Item] = [.view(tabsRow)]
+        if !searchQuery.isEmpty {
             if let result = search.result {
-                PayloadSearchTextView(result: result, selected: search.selected).piInset(sunken: true)
+                searchCount.line.text = result.matches.isEmpty ? "No matches in body or headers" : "\(search.selected + 1) of \(result.matches.count)\(result.limited ? "+" : "") matches"
+                searchCount.isHidden = false; searchLoading.isHidden = true
+                searchUpdating.isHidden = !search.loading
+                previousMatch.isHidden = false; nextMatch.isHidden = false
+                previousMatch.isEnabled = !result.matches.isEmpty; nextMatch.isEnabled = !result.matches.isEmpty
+                if let searchText { searchText.update(result: result, selected: search.selected) }
+                else { searchText = PayloadSearchTextView(result: result, selected: search.selected); searchBox = PiKit.inset(searchText!, sunken: true) }
+                searchResults.items = [.view(searchBar), .flexible(searchBox!)]
             } else {
-                Text(search.notice).font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                searchCount.isHidden = true; searchLoading.isHidden = !search.loading
+                searchUpdating.isHidden = true; previousMatch.isHidden = true; nextMatch.isHidden = true
+                empty.set(search.notice, color: .piInkSecondary)
+                searchResults.items = [.view(searchBar), .flexible(PayloadCentered(empty))]
             }
+            items.append(.flexible(searchResults))
+        } else if let document = controller.document {
+            if let json = document.structured(format: activeFormat) {
+                let key = "\(sessionID):\(attemptID):\(kind):\(activeFormat.rawValue)"
+                if let outline {
+                    outline.update(json: json, selection: selection, expandRevision: expandRevision, expandAll: expandAll, command: outlineCommand, stateKey: key)
+                } else {
+                    let view = JSONOutlineView(json: json, selection: selection, expandRevision: expandRevision, expandAll: expandAll, command: outlineCommand, stateKey: key) { [weak self] value in
+                        guard let self, self.selection != value else { return }; self.selection = value; self.refresh()
+                    }
+                    outline = view; outlineBox = PiKit.inset(view, sunken: true)
+                }
+                items += [.flexible(outlineBox!), .view(controls)]
+                if !selection.isEmpty { selectionText.text = selection; items.append(.fixed(selectionBox, 100)) }
+                note.set(activeFormat == .combined ? document.combinedResponse?.notice ?? "" : document.eventStream == nil
+                         ? "Select a value to see its full contents. Formatting is a derived view; retained bytes are unchanged."
+                         : "Events appear in captured order. Expand a frame and its data to inspect JSON. This is a formatted view; UTF-8, Hex and exports preserve the retained bytes.", color: .piInkTertiary)
+                items.append(.view(note))
+            } else if activeFormat == .combined { items.append(.flexible(combining)) }
+            else {
+                text.text = activeFormat == .hex ? hex : utf8
+                if textBox == nil { textBox = PiKit.inset(text, sunken: true) }
+                items.append(.flexible(textBox!))
+                if activeFormat == .json { note.set("Not a JSON document or UTF-8 event stream · showing retained UTF-8.", color: .piInkTertiary); items.append(.view(note)) }
+            }
+        } else if controller.loading {
+            progress.value = Double(controller.loaded); progress.total = Double(max(1, controller.total))
+            loadingText.line.text = "Loading all retained bytes · \(controller.loaded.formatted()) / \(controller.total.formatted())"
+            items.append(.flexible(loading))
+        } else {
+            empty.set(controller.notice.isEmpty ? "No retained body" : controller.notice, color: .piInkSecondary)
+            items.append(.flexible(empty))
         }
+        if let document = controller.document {
+            summary.text = document.metadata.summary; items.append(.view(summary))
+            if searchQuery.isEmpty, let growingBytes, growingBytes > document.bytes.count {
+                growthText.line.text = "\(growingBytes.formatted()) bytes so far · showing the first \(document.bytes.count.formatted())"
+                updating.isHidden = !controller.loading; latestButton.isHidden = controller.loading
+                items.append(.view(growth))
+            }
+            if !controller.notice.isEmpty { warning.set(controller.notice, color: .piWarning); items.append(.view(warning)) }
+        }
+        column.items = items
+        invalidateIntrinsicContentSize(); needsLayout = true; PiKit.sizeChanged(self)
     }
+    func height(forWidth width: CGFloat) -> CGFloat { column.height(forWidth: width) }
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: height(forWidth: bounds.width > 0 ? bounds.width : 700)) }
+    override func layout() { super.layout(); column.frame = bounds }
     private func updateDisplayedText() async {
-        guard let document = controller.document else { displayedText?.wrappedValue = ""; copySource?.wrappedValue = nil; return }
+        guard let document = controller.document else { onDisplayedText?(""); onCopySource?(nil); return }
         let id = identity, requested = activeFormat
         let source = CapturedBodyCopySource(id: document.id, document: document, format: requested, hex: hex, plain: utf8)
-        copySource?.wrappedValue = source
-        // Legacy binding is used by native fixtures. The production inspector
-        // requests full derived text only when Copy/Redacted Export is invoked.
-        if let displayedText, let text = try? await source.render(), !Task.isCancelled,
-           id == identity, controller.document?.id == document.id, requested == activeFormat { displayedText.wrappedValue = text }
+        onCopySource?(source)
+        if let onDisplayedText, let value = try? await source.render(), !Task.isCancelled,
+           id == identity, controller.document?.id == document.id, requested == activeFormat { onDisplayedText(value) }
     }
-    /// The retained bytes as UTF-8, decoded once per document on a detached
-    /// task. This used to run inside `body`, so every progress tick, poll,
-    /// hover or resize re-decoded the whole payload on the main thread.
     private func updateUTF8IfNeeded() async {
         guard activeFormat != .hex, let document = controller.document, utf8Document != document.id,
               document.structured(format: activeFormat) == nil, !document.bytes.isEmpty else { return }
@@ -239,6 +286,16 @@ struct CapturedBodyView: View {
     }
 }
 
+@MainActor private final class PayloadCentered: DashView {
+    let content: NSView
+    init(_ content: NSView) { self.content = content; super.init(frame: .zero); addSubview(content) }
+    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    override func layout() {
+        super.layout()
+        let height = min(bounds.height, PiKit.height(of: content, width: bounds.width))
+        content.frame = CGRect(x: 0, y: max(0, PiKit.round((bounds.height - height) / 2, piScale)), width: bounds.width, height: height)
+    }
+}
 enum CapturedBodyHex {
     /// One byte buffer for the whole dump. `String(format:)` per sixteen bytes
     /// meant four million formatter calls, and as many intermediate strings,

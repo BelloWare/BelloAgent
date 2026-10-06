@@ -85,7 +85,7 @@ final class CompactionResponsivenessTests: XCTestCase {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        let hosted = NSHostingView(rootView: WorkspaceView(model: model))
+        let hosted = WorkspaceRootView(model: model)
         window.contentView = hosted
         defer { window.contentView = nil; window.close() }
         window.center(); window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)

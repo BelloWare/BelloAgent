@@ -1,4 +1,4 @@
-import SwiftUI
+import Combine
 import AppKit
 
 struct PayloadSearchResult: Sendable {
@@ -98,45 +98,83 @@ struct PayloadSearchResult: Sendable {
 
 /// Native selectable, wrapping text with match navigation. No SwiftUI row per
 /// result and no rebuilding attributed strings on every frame or clock tick.
-struct PayloadSearchTextView: NSViewRepresentable {
-    let result: PayloadSearchResult
-    let selected: Int
-    func makeCoordinator() -> Coordinator { Coordinator() }
-    func makeNSView(context: Context) -> NSScrollView {
-        let scroll = NSScrollView()
-        scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true; scroll.drawsBackground = false
-        let editor = NSTextView()
+@MainActor final class PayloadSearchTextView: NSScrollView {
+    let editor = NSTextView()
+    private var id: UUID?, textID: UUID?, selected: Int?
+    private struct Reveal { let range: NSRange; let origin: NSPoint }
+    private var pendingScroll: Reveal?
+    init(result: PayloadSearchResult, selected: Int) {
+        super.init(frame: .zero)
+        hasVerticalScroller = true; autohidesScrollers = true; drawsBackground = false
         editor.isEditable = false; editor.isSelectable = true; editor.isRichText = false; editor.drawsBackground = false
         editor.font = .monospacedSystemFont(ofSize: 11, weight: .regular); editor.textColor = .labelColor
         editor.isVerticallyResizable = true; editor.autoresizingMask = [.width]
         editor.textContainer?.widthTracksTextView = true; editor.textContainerInset = NSSize(width: 10, height: 10)
         editor.layoutManager?.allowsNonContiguousLayout = true
         editor.setAccessibilityLabel("Search results in complete body and headers")
-        scroll.documentView = editor
-        return scroll
+        documentView = editor
+        update(result: result, selected: selected)
     }
-    func updateNSView(_ scroll: NSScrollView, context: Context) {
-        guard let editor = scroll.documentView as? NSTextView else { return }
-        let coordinator = context.coordinator
-        if coordinator.id != result.id {
-            coordinator.id = result.id; coordinator.selected = nil
-            if coordinator.textID != result.textID {
-                coordinator.textID = result.textID
+    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    override func layout() {
+        super.layout()
+        scrollToPendingMatch()
+    }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil, pendingScroll != nil { needsLayout = true }
+    }
+    private func scrollToPendingMatch() {
+        guard let reveal = pendingScroll, window != nil,
+              contentView.bounds.width > 0, contentView.bounds.height > 0 else { return }
+        let range = reveal.range
+        pendingScroll = nil
+        // Realize the selected match, leaving a large body's other text to
+        // noncontiguous layout instead of laying out the whole container.
+        if let manager = editor.layoutManager, let container = editor.textContainer {
+            manager.ensureLayout(forCharacterRange: range)
+            let glyphs = manager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+            let glyph = manager.boundingRect(forGlyphRange: glyphs, in: container)
+            let rect = contentView.convert(glyph.offsetBy(dx: editor.textContainerOrigin.x,
+                                                         dy: editor.textContainerOrigin.y), from: editor)
+            // Initial text sizing can move the clip before this first
+            // layout. Preserve its pre-update viewport when that viewport
+            // already contains the chosen match at the final size.
+            let viewport = NSRect(origin: reveal.origin, size: contentView.bounds.size)
+            if viewport.contains(rect) {
+                if contentView.bounds.origin != reveal.origin {
+                    contentView.scroll(to: reveal.origin)
+                    reflectScrolledClipView(contentView)
+                }
+                return
+            }
+        }
+        editor.scrollRangeToVisible(range)
+    }
+    func update(result: PayloadSearchResult, selected: Int) {
+        let origin = pendingScroll?.origin ?? contentView.bounds.origin
+        if id != result.id {
+            id = result.id; self.selected = nil; pendingScroll = nil
+            if textID != result.textID {
+                textID = result.textID
                 editor.string = result.text
             } else {
-                // Same text, refined query: only the highlights change, and
-                // the reader keeps their place in the text.
+                // A refined query changes only highlights, preserving the
+                // same text storage and the reader's viewport.
                 editor.layoutManager?.removeTemporaryAttribute(.backgroundColor, forCharacterRange: NSRange(location: 0, length: (editor.string as NSString).length))
             }
             for range in result.matches {
                 editor.layoutManager?.addTemporaryAttribute(.backgroundColor, value: NSColor.systemYellow.withAlphaComponent(0.25), forCharacterRange: range)
             }
         }
-        guard coordinator.selected != selected, result.matches.indices.contains(selected) else { return }
-        coordinator.selected = selected
+        guard self.selected != selected, result.matches.indices.contains(selected) else { return }
+        self.selected = selected
         let range = result.matches[selected]
         editor.setSelectedRange(range)
-        editor.scrollRangeToVisible(range)
+        // Selecting while the new reader has a zero-sized viewport can
+        // scroll away its top inset before wrapping reaches its final width.
+        // Keep selection immediate, and reveal it after the scroll view tiles.
+        pendingScroll = Reveal(range: range, origin: origin)
+        needsLayout = true
     }
-    @MainActor final class Coordinator { var id: UUID?; var textID: UUID?; var selected: Int? }
 }

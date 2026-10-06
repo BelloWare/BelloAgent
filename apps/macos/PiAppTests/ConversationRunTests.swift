@@ -52,7 +52,7 @@ extension ConversationPaneTests {
         for chat in bench.chats { try await model.store?.put(chat, kind: "chat", id: chat.id) }
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        let hosted = NSHostingView(rootView: WorkspaceView(model: model))
+        let hosted = WorkspaceRootView(model: model)
         window.contentView = hosted; window.makeKeyAndOrderFront(nil)
         defer { window.contentView = nil; window.close() }
         func draw() { hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded() }
@@ -84,7 +84,7 @@ extension ConversationPaneTests {
         await restarted.select(a.id)
         let reopened = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         reopened.isReleasedWhenClosed = false
-        let second = NSHostingView(rootView: WorkspaceView(model: restarted))
+        let second = WorkspaceRootView(model: restarted)
         reopened.contentView = second; reopened.makeKeyAndOrderFront(nil)
         defer { reopened.contentView = nil; reopened.close() }
         for _ in 0..<30 { second.layoutSubtreeIfNeeded(); reopened.displayIfNeeded(); await Task.yield(); try? await Task.sleep(for: .milliseconds(15)) }
@@ -108,7 +108,7 @@ extension ConversationPaneTests {
         await pane.settle(12)
         XCTAssertEqual(card.convert(card.bounds, to: nil).height, idle.height, accuracy: 0.5, "Nothing about the compaction goes into the input box")
         XCTAssertEqual(try XCTUnwrap(editor.enclosingScrollView).frame.height, 44, accuracy: 0.5, "The field keeps its height")
-        XCTAssertEqual(SessionRunLine(session: pane.session, footer: pane.session.footer).action, "Summarizing earlier work…",
+        XCTAssertEqual(SessionRunLine.action(pane.session), "Summarizing earlier work…",
                        "The run line under the composer says what the chat is doing")
         pane.session.state = "idle"; pane.session.runStatus = "idle"; pane.session.compactionProgress = nil
         await pane.settle(12)

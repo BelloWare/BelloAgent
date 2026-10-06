@@ -1,5 +1,5 @@
 import AppKit
-import SwiftUI
+import Combine
 
 // A window tabs were popped out into: its tab strip across the top, beside
 // the window's buttons, over the tab shown. ⌘W closes the tab shown, and the
@@ -29,7 +29,7 @@ import SwiftUI
             guard let self, let host = self.host else { return false }
             return host.closeShownTab(in: self.container, sideAvailable: false)
         }
-        window.contentView = NSHostingView(rootView: TabWindowRoot(host: host, container: container).piTabRoot())
+        window.contentView = TabWindowRootView(host: host, container: container)
         if let frame { window.setFrame(Self.onScreen(frame), display: false) } else { window.center() }
     }
     required init?(coder: NSCoder) { nil }
@@ -82,43 +82,42 @@ final class TabWindow: NSWindow {
 
 /// A tab window's content: its strip in the title bar's row, beside the
 /// window's buttons, over the tab shown.
-struct TabWindowRoot: View {
-    @ObservedObject var host: TabHost
-    @ObservedObject var container: TabContainer
-    var body: some View {
-        VStack(spacing: 0) {
-            TabStrip(host: host, container: container, side: nil, leadingInset: 78)
-            if let shown = container.activeTab {
-                TabContentHost(tab: shown, owner: container, placement: shown.placement).id(shown.id)
-            } else {
-                Color.piContent
-            }
-        }
-        .ignoresSafeArea(.container, edges: .top)
-        .background(Color.piContent)
+@MainActor final class TabWindowRootView: NSView {
+    let host: TabHost
+    let container: TabContainer
+    let strip: TabStripView
+    private let content = TabContentContainer()
+    private var watch: AnyCancellable?
+    private var scheduled = false
+    init(host: TabHost, container: TabContainer) {
+        self.host = host; self.container = container
+        strip = TabStripView(host: host, container: container, side: nil, leadingInset: 78)
+        super.init(frame: .zero)
+        wantsLayer = true
+        addSubview(content); addSubview(strip)
+        watch = container.objectWillChange.sink { [weak self] _ in MainActor.assumeIsolated { self?.schedule() } }
+        refresh()
     }
-}
-
-/// A tab's kept content, in a container of this representable's own, for
-/// the pane or window that holds the tab (`owner`): moved in when shown there,
-/// and only while the tab is still that pane's or window's, so the pane and a
-/// window showing the same tab during a move never take it from each other.
-struct TabContentHost: NSViewRepresentable {
-    let tab: HostedTab
-    let owner: TabContainer
-    /// The tab's placement: a move away and back is a change, so the view
-    /// SwiftUI kept for it takes the content in again.
-    let placement: Int
-    func makeNSView(context: Context) -> TabContentContainer {
-        let container = TabContentContainer()
-        container.show(tab, for: owner)
-        return container
+    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    override var isFlipped: Bool { true }
+    private func schedule() {
+        guard !scheduled else { return }
+        scheduled = true
+        DispatchQueue.main.async { [weak self] in MainActor.assumeIsolated { self?.flush() } }
     }
-    func updateNSView(_ container: TabContentContainer, context: Context) { container.show(tab, for: owner) }
-    func sizeThatFits(_ proposal: ProposedViewSize, nsView: TabContentContainer, context: Context) -> CGSize? {
-        proposal.replacingUnspecifiedDimensions()
+    private func flush() { guard scheduled else { return }; scheduled = false; refresh() }
+    private func refresh() {
+        if let shown = container.activeTab { content.show(shown, for: container) } else { content.letGo() }
     }
-    static func dismantleNSView(_ container: TabContentContainer, coordinator: ()) { container.letGo() }
+    override func layout() {
+        flush()
+        super.layout()
+        // Under the title bar's row (`.ignoresSafeArea(.container, edges: .top)`).
+        strip.frame = CGRect(x: 0, y: 0, width: bounds.width, height: TabStripView.height)
+        content.frame = CGRect(x: 0, y: TabStripView.height, width: bounds.width, height: max(0, bounds.height - TabStripView.height))
+    }
+    override var wantsUpdateLayer: Bool { true }
+    override func updateLayer() { layer?.backgroundColor = piCGColor(.piContent) }
 }
 
 /// Holds a tab's content where it is shown: the report page hides these
@@ -128,6 +127,8 @@ final class TabContentContainer: NSView {
     /// what covers native views looks again (`ConversationPageVisibility`).
     static let didAttach = Notification.Name("TabContentContainer.didAttach")
     private weak var shown: HostedTab?
+    /// Holding nothing, it takes no clicks: what is under it (the side) does.
+    override func hitTest(_ point: NSPoint) -> NSView? { subviews.isEmpty ? nil : super.hitTest(point) }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if let window, !subviews.isEmpty { NotificationCenter.default.post(name: Self.didAttach, object: window) }
@@ -148,6 +149,8 @@ final class TabContentContainer: NSView {
         content.frame = bounds
         content.autoresizingMask = [.width, .height]
         addSubview(content)
+        // Only the tab shown here: one moved in from elsewhere replaces it.
+        for other in subviews where other !== content { other.removeFromSuperview() }
         if hadFocus {
             DispatchQueue.main.async { [weak self] in
                 MainActor.assumeIsolated {

@@ -1,5 +1,4 @@
 import AppKit
-import SwiftUI
 import QuartzCore
 
 /// The display link retains its target; the target must not retain the document.
@@ -7,41 +6,6 @@ import QuartzCore
     weak var document: TranscriptNativeDocument?
     init(_ document: TranscriptNativeDocument) { self.document = document }
     @objc func tick(_ link: CADisplayLink) { document?.displayMotion(at: link.targetTimestamp) }
-}
-
-/// AppKit owns the scrolling document. SwiftUI receives row content changes,
-/// not a new document coordinate transform for every wheel/trackpad event.
-struct TranscriptScrollSurface: NSViewRepresentable {
-    /// Which page of the conversation this is, as a number the page
-    /// increments. The rows themselves are read from the page: handing
-    /// SwiftUI the whole snapshot would have it hold and compare three
-    /// hundred messages for every token of an arriving reply.
-    let revision: Int
-    let page: TranscriptPage
-    let actions: TranscriptActions
-    private var snapshot: TranscriptPage.Snapshot? { page.snapshot }
-
-    func makeNSView(context: Context) -> TranscriptNativeScrollView {
-        let scroll = TranscriptNativeScrollView()
-        scroll.hasVerticalScroller = true
-        scroll.hasHorizontalScroller = false
-        scroll.autohidesScrollers = true
-        scroll.drawsBackground = false
-        scroll.contentView.drawsBackground = false
-        scroll.borderType = .noBorder
-        scroll.horizontalScrollElasticity = .none
-        let document = TranscriptNativeDocument(page: page)
-        scroll.documentView = document
-        document.update(snapshot: snapshot, actions: actions, environment: TranscriptRowEnvironment(context.environment),
-                        disclosure: page.disclosure, toolInputs: page.toolInputs)
-        return scroll
-    }
-
-    func updateNSView(_ scroll: TranscriptNativeScrollView, context: Context) {
-        (scroll.documentView as? TranscriptNativeDocument)?.update(snapshot: snapshot, actions: actions,
-                                                                   environment: TranscriptRowEnvironment(context.environment),
-                                                                   disclosure: page.disclosure, toolInputs: page.toolInputs)
-    }
 }
 
 /// Where a key press moves a reader through a conversation.
@@ -378,6 +342,11 @@ final class TranscriptNativeScrollView: NSScrollView {
         let clock = TranscriptLayoutClock.recording ? TranscriptLayoutClock.now : 0
         defer { if TranscriptLayoutClock.recording { TranscriptLayoutClock.updateSeconds += TranscriptLayoutClock.now - clock } }
         updateInvocationCount += 1
+        // The change the page announced is here: history may be measured
+        // again (asked for after this update has set its quiet period).
+        let released = changeComing
+        changeComing = false
+        defer { if released, !approximate.isEmpty { scheduleSlice() } }
         // The chat on screen until now, with its own stores, for keeping its
         // rows should this update take the pane to another chat.
         let leaving = self.snapshot, leavingDisclosure = self.disclosure, leavingToolInputs = self.toolInputs
@@ -559,6 +528,11 @@ final class TranscriptNativeScrollView: NSScrollView {
     /// ready runs whatever else is happening — a reply arriving is not a
     /// reason to stop, it is the moment the reader is most likely to scroll —
     /// while measuring history nobody is looking at still waits for quiet.
+    /// The page is about to hand this document a change: no history is
+    /// measured until it has (`update` asks for the work again), so a slice
+    /// never lands between a change and the pass that draws it.
+    private var changeComing = false
+    func contentWillChange() { changeComing = true }
     private func scheduleSlice() {
         guard !liveResizing, motion == nil, window != nil else { return }
         TranscriptIdleScheduler.shared.request(self, work: .preparation, after: 0) { [weak self] in
@@ -568,7 +542,7 @@ final class TranscriptNativeScrollView: NSScrollView {
         guard !approximate.isEmpty else { return }
         let deadline = contentChangedAt + Self.sliceQuietPeriod
         TranscriptIdleScheduler.shared.request(self, after: deadline) { [weak self] in
-            guard let self, !self.liveResizing, self.motion == nil else { return false }
+            guard let self, !self.liveResizing, self.motion == nil, !self.changeComing else { return false }
             guard let clip = self.enclosingScrollView?.contentView else { return false }
             let edge = self.travelingForward ? clip.bounds.maxY : clip.bounds.minY
             // Host construction, measurement, cache and placement are one
@@ -662,7 +636,7 @@ final class TranscriptNativeScrollView: NSScrollView {
     /// Use the same app policy as SwiftUI, independent of macOS Reduce Motion.
     /// Fixtures may explicitly force either path to check geometry restoration.
     static var reducesMotionOverride: Bool?
-    static var reducesMotion: Bool { reducesMotionOverride ?? PiMotion.reducesMotion }
+    static var reducesMotion: Bool { reducesMotionOverride ?? PiKit.Motion.reducesMotion }
 
     private func disclosureChanged(_ row: TranscriptRowContainer) {
         markDirty(from: row.layoutIndex)

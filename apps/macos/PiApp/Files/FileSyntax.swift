@@ -148,10 +148,10 @@ actor FileSyntaxReader {
                 guard high > low else { return nil }
                 let color: NSColor
                 switch token.kind {
-                case .keyword: color = NSColor(TranscriptPalette.keyword)
-                case .string: color = NSColor(TranscriptPalette.string)
-                case .number, .title: color = NSColor(TranscriptPalette.number)
-                case .comment: color = NSColor(TranscriptPalette.comment)
+                case .keyword: color = TranscriptNSPalette.keyword
+                case .string: color = TranscriptNSPalette.string
+                case .number, .title: color = TranscriptNSPalette.number
+                case .comment: color = TranscriptNSPalette.comment
                 }
                 return FileTextColorRun(range: NSRange(location: low - piece.lowerBound, length: high - low), color: color)
             }

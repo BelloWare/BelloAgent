@@ -1,4 +1,5 @@
-import SwiftUI
+import AppKit
+import Combine
 
 struct SessionUsageScope: Hashable, Sendable {
     let sessionID: String
@@ -203,43 +204,41 @@ struct SessionInfoTiming: Equatable {
     var toolCaption: String { turnToolMs.map { "last turn \(workDuration($0))" } ?? "running tools, whole session" }
 }
 
-/// The composer bar's pie button: the chat's Session Inspector, at its Overview.
-struct SessionUsageButton: View {
+/// The composer bar's pie button opens this chat's Session Inspector.
+@MainActor final class SessionUsageButton: PiKit.ButtonBase {
     let model: WorkspaceModel
     let chat: ChatRecord
-    @ObservedObject var footer: SessionMetrics
-    var costLabel: String? = nil
-
-    @State private var hovering = false
-
-    private func showWindow() { model.openInspector(session: chat.id, focus: .overview) }
-
-    /// The face is SwiftUI; an AppKit press target over it takes the press,
-    /// as over the pills under the composer.
-    var body: some View {
-        face
-            .accessibilityElement(children: .ignore).accessibilityHidden(true)
-            .overlay {
-                PiPopoverTrigger(label: "Session Inspector: cost, tokens, time and every request",
-                                 identifier: costLabel == nil ? "sessionUsageButton" : "sessionUsageCostButton",
-                                 help: "Open the Session Inspector: what this chat cost and used, how fast it ran, and every request it made",
-                                 onHover: { inside in if hovering != inside { hovering = inside } }, onPress: { _ in showWindow() })
-            }
+    let footer: SessionMetrics
+    let costLabel: String?
+    init(model: WorkspaceModel, chat: ChatRecord, footer: SessionMetrics, costLabel: String? = nil) {
+        self.model = model; self.chat = chat; self.footer = footer; self.costLabel = costLabel
+        super.init(frame: .zero)
+        pressScales = false
+        circularCorners = costLabel == nil
+        onPress = { [weak self] in guard let self else { return }; self.model.openInspector(session: self.chat.id, focus: .overview) }
+        setAccessibilityLabel("Session Inspector: cost, tokens, time and every request")
+        setAccessibilityIdentifier(costLabel == nil ? "sessionUsageButton" : "sessionUsageCostButton")
+        toolTip = "Open the Session Inspector: what this chat cost and used, how fast it ran, and every request it made"
+        refreshFace(animated: false)
     }
-
-    @ViewBuilder private var face: some View {
-        if let costLabel {
-            HStack(spacing: 4) {
-                Image(systemName: "dollarsign.circle").font(.system(size: 10))
-                Text(costLabel).lineLimit(1).monospacedDigit().fixedSize()
-            }
-            .foregroundStyle(hovering ? Color.piInk : Color.piInkSecondary)
-        } else {
-            Image(systemName: "chart.pie")
-                .font(.system(size: 28 * 0.46, weight: .medium)).foregroundStyle(Color.piInkSecondary)
-                .frame(width: 28, height: 28)
-                .background(hovering ? Color.piFillStrong : Color.clear, in: Circle())
-                .piAnimation(PiMotion.quick, value: hovering)
+    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    override var isFlipped: Bool { true }
+    private var symbol: PiKit.Symbol { PiKit.Symbol(costLabel == nil ? "chart.pie" : "dollarsign.circle", size: costLabel == nil ? 28 * 0.46 : 10, weight: costLabel == nil ? .medium : .regular) }
+    private var reading: PiKit.Line { PiKit.Line(costLabel ?? "", font: PiKit.Font.monospacedDigits(PiKit.Font.body), color: hovering ? .piInk : .piInkSecondary) }
+    override var intrinsicContentSize: NSSize {
+        guard costLabel != nil else { return NSSize(width: 28, height: 28) }
+        return NSSize(width: symbol.layoutSize.width + 4 + reading.size(scale: piScale).width, height: max(symbol.layoutSize.height, reading.lineHeight))
+    }
+    override func styleFace() {
+        fill.backgroundColor = costLabel == nil && hovering ? piCGColor(.piFillStrong) : CGColor.clear
+        stroke.borderColor = CGColor.clear
+    }
+    override func drawContent(in rect: CGRect) {
+        if costLabel == nil { symbol.draw(centredIn: rect, color: .piInkSecondary, scale: piScale) }
+        else {
+            let width = symbol.layoutSize.width
+            symbol.draw(centredIn: CGRect(x: 0, y: 0, width: width, height: rect.height), color: hovering ? .piInk : .piInkSecondary, scale: piScale)
+            reading.draw(at: CGPoint(x: width + 4, y: PiKit.round((rect.height - reading.lineHeight) / 2, piScale)), scale: piScale)
         }
     }
 }

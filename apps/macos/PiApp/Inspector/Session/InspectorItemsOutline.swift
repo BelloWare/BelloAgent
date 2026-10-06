@@ -1,5 +1,4 @@
 import AppKit
-import SwiftUI
 
 /// What the outline shows: a document's sections and items, prepared off the
 /// main actor, and how the delta groups them.
@@ -44,51 +43,57 @@ typealias InspectorWholeText = @Sendable () throws -> String
 /// text in place of the preview, laid out off the main thread
 /// (`InspectorExpansion`) and selectable, and "Show less" folds it back.
 /// Nothing here parses or formats: every string arrives ready in the document.
-struct InspectorItemsOutline: NSViewRepresentable {
-    let content: InspectorOutlineContent
-    /// How to read a target's whole text; nil when it has none to read.
-    let wholeText: (InspectorOutlineTarget) -> InspectorWholeText?
+@MainActor final class InspectorItemsOutline: NSScrollView {
+    let coordinator: Coordinator
+    let outline: InspectorOutlineView
+    private var resetClosedExpansions = false
 
-    func makeCoordinator() -> Coordinator { Coordinator(wholeText: wholeText) }
-
-    func makeNSView(context: Context) -> NSScrollView {
-        let scroll = NSScrollView()
-        scroll.hasVerticalScroller = true; scroll.hasHorizontalScroller = false
-        scroll.autohidesScrollers = true; scroll.drawsBackground = false; scroll.borderType = .noBorder
-        let outline = InspectorOutlineView()
+    init(content: InspectorOutlineContent = .empty,
+         wholeText: @escaping (InspectorOutlineTarget) -> InspectorWholeText? = { _ in nil }) {
+        coordinator = Coordinator(wholeText: wholeText)
+        outline = InspectorOutlineView()
+        super.init(frame: .zero)
+        hasVerticalScroller = true; hasHorizontalScroller = false
+        autohidesScrollers = true; drawsBackground = false; borderType = .noBorder
         outline.headerView = nil; outline.backgroundColor = .clear
         outline.selectionHighlightStyle = .none
         outline.intercellSpacing = NSSize(width: 0, height: 0)
-        outline.indentationPerLevel = 16
-        outline.floatsGroupRows = false
+        outline.indentationPerLevel = 16; outline.floatsGroupRows = false
         outline.usesAutomaticRowHeights = false
         outline.columnAutoresizingStyle = .firstColumnOnlyAutoresizingStyle
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("row"))
         column.resizingMask = .autoresizingMask
         outline.addTableColumn(column); outline.outlineTableColumn = column
-        outline.dataSource = context.coordinator; outline.delegate = context.coordinator
-        outline.target = context.coordinator; outline.action = #selector(Coordinator.clicked(_:))
-        outline.coordinator = context.coordinator
+        outline.dataSource = coordinator; outline.delegate = coordinator
+        outline.target = coordinator; outline.action = #selector(Coordinator.clicked(_:))
+        outline.coordinator = coordinator
         outline.setAccessibilityLabel("Request items")
         outline.setAccessibilityIdentifier("inspector-items-outline")
-        scroll.documentView = outline
-        context.coordinator.outline = outline
-        context.coordinator.show(content)
-        return scroll
+        documentView = outline; coordinator.outline = outline
+        coordinator.show(content)
     }
+    required init?(coder: NSCoder) { nil }
 
-    /// A new document is shown on the turn after SwiftUI's update: the
-    /// outline's reload and its first rows are a step of their own, never
-    /// inside the transaction that laid the page out.
-    func updateNSView(_ scroll: NSScrollView, context: Context) {
-        context.coordinator.wholeText = wholeText
-        context.coordinator.schedule(content)
+    /// Loading keeps this native outline mounted. A document fills it on a
+    /// separate main-queue turn so page layout never includes its row reload.
+    func update(content: InspectorOutlineContent,
+                wholeText: @escaping (InspectorOutlineTarget) -> InspectorWholeText?) {
+        coordinator.wholeText = wholeText
+        coordinator.schedule(content)
     }
-
-    static func dismantleNSView(_ scroll: NSScrollView, coordinator: Coordinator) {
+    func close() {
+        resetClosedExpansions = resetClosedExpansions || !coordinator.expansions.isEmpty
         coordinator.closeAll()
-        guard let outline = scroll.documentView as? NSOutlineView else { return }
-        outline.delegate = nil; outline.dataSource = nil; outline.target = nil
+    }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil { close() }
+        else if resetClosedExpansions {
+            // A reused tab returns to previews after its whole-text workers
+            // stop. Its cached text/link nodes cannot outlive the controllers.
+            resetClosedExpansions = false
+            if let content = coordinator.content { coordinator.show(content) }
+        }
     }
 
     // MARK: - Rows

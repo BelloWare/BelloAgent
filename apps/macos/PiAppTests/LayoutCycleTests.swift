@@ -84,7 +84,7 @@ final class LayoutCycleTests: XCTestCase, SerialTestLane {
         await model.select(chat.id)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 820), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: WorkspaceView(model: model))
+        window.contentView = WorkspaceRootView(model: model)
         window.makeKeyAndOrderFront(nil)
         addTeardownBlock { @MainActor in
             NSApp.appearance = nil
@@ -137,7 +137,7 @@ extension LayoutCycleTests {
         await model.select(chat.id)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 820), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: WorkspaceView(model: model))
+        window.contentView = WorkspaceRootView(model: model)
         window.makeKeyAndOrderFront(nil)
         addTeardownBlock { @MainActor in window.contentView = nil; window.close(); model.report.suspend(); model.shutdown(); try? await model.traces.close(); await model.store?.close() }
         try await Task.sleep(for: .milliseconds(600))
@@ -174,6 +174,26 @@ extension LayoutCycleTests {
     /// closed, and puts it back when it opens again.
     @MainActor func testTheSettingsWindowLetsGoOfItsFormWhileClosed() async throws {
         func views(_ view: NSView?) -> Int { guard let view else { return 0 }; return 1 + view.subviews.reduce(0) { $0 + views($1) } }
+        // The native XCTest host deliberately has no app windows or menus.
+        // Install the production menu against an isolated application model.
+        let root = scratchRoot("settings-menu-lifecycle")
+        let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        let application = BelloAgentApplication(model: model)
+        let previousMenu = NSApp.mainMenu
+        let previousServices = NSApp.servicesMenu, previousWindows = NSApp.windowsMenu
+        let previousDisplay = TranscriptDisplay.mode
+        let menus = ApplicationMenus(model: model, updates: application.updates,
+                                     workspaceWindow: { application.workspaceWindow?.window },
+                                     revealWorkspace: { application.revealWorkspace() },
+                                     showSettings: { application.showSettings() })
+        menus.install()
+        defer {
+            application.settingsWindow?.close(); application.workspaceWindow?.close()
+            NSApp.mainMenu = previousMenu
+            NSApp.servicesMenu = previousServices; NSApp.windowsMenu = previousWindows
+            TranscriptDisplay.use(previousDisplay)
+            withExtendedLifetime(menus) {}
+        }
         let appMenu = try XCTUnwrap(NSApp.mainMenu?.items.first?.submenu, "The app menu is missing")
         let item = try XCTUnwrap(appMenu.items.first { $0.keyEquivalent == "," }, "The app menu has no Settings item")
         func open() async throws -> NSWindow {
@@ -183,7 +203,8 @@ extension LayoutCycleTests {
                 try await Task.sleep(for: .milliseconds(50))
                 if let window = NSApp.windows.first(where: { $0.isVisible && !before.contains(ObjectIdentifier($0)) }) { return window }
             }
-            throw XCTSkip("The Settings window never opened")
+            XCTFail("The installed Settings menu must open its native window")
+            throw CancellationError()
         }
         let settings = try await open()
         try await Task.sleep(for: .milliseconds(800))

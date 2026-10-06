@@ -15,6 +15,12 @@ final class UIScreenshotTests: XCTestCase {
         guard let path = testEnvironment("PI_APP_UI_SCREENSHOT_ROOT") else {
             throw XCTSkip("Set PI_APP_UI_SCREENSHOT_ROOT to render the synthetic screenshot gallery.")
         }
+        // This gallery has always shown the loose transcript. The native
+        // test host keeps observing its own model even with its app window
+        // hidden, so explicitly isolate this fixture's display mode.
+        let previousDisplay = TranscriptDisplay.mode
+        TranscriptDisplay.use(.normal)
+        defer { TranscriptDisplay.use(previousDisplay) }
         let folder = URL(fileURLWithPath: path, isDirectory: true)
         let gallery = folder.appendingPathComponent("screenshots", isDirectory: true)
         try FileManager.default.createDirectory(at: gallery, withIntermediateDirectories: true)
@@ -106,9 +112,20 @@ final class UIScreenshotTests: XCTestCase {
         for window in NSApp.windows { window.orderOut(nil) }
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.title = "Bello Agent"; window.titleVisibility = .hidden; window.titlebarAppearsTransparent = true; window.styleMask.insert(.fullSizeContentView)
-        window.contentView = NSHostingView(rootView: WorkspaceView(model: model))
+        window.contentView = WorkspaceRootView(model: model)
         window.center(); window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
         defer { window.orderOut(nil); NSApp.appearance = nil }
+        let application = try XCTUnwrap(NSApp.delegate as? BelloAgentApplication)
+        let previousMenu = NSApp.mainMenu, previousServices = NSApp.servicesMenu, previousWindows = NSApp.windowsMenu
+        let menus = ApplicationMenus(model: application.workspaceModel, updates: application.updates,
+                                     workspaceWindow: { [weak window] in window },
+                                     revealWorkspace: { [weak window] in window?.makeKeyAndOrderFront(nil) },
+                                     showSettings: { [weak application] in application?.showSettings() })
+        menus.install()
+        defer {
+            NSApp.mainMenu = previousMenu; NSApp.servicesMenu = previousServices; NSApp.windowsMenu = previousWindows
+            withExtendedLifetime(menus) {}
+        }
         try await settle(1.5)
 
         let appearances: [(String, NSAppearance.Name)] = [("light", .aqua), ("dark", .darkAqua)]
@@ -381,7 +398,7 @@ final class UIScreenshotTests: XCTestCase {
             }
             model.settingsSection = .connections
             // 05b · Settings from the app menu: a window of its own.
-            try await settingsWindow(name: "05b-settings-window-\(name)", into: gallery)
+            try await settingsWindow(name: "05b-settings-window-\(name)", into: gallery, fixture: model)
             try await sheet(window, name: "06-resources-\(name)", into: gallery, open: { model.inspectResources(main.id) }, close: { model.showResources = false })
             try await sheet(window, name: "07-search-\(name)", into: gallery, open: { model.inspectConversation(main.id) }, close: { model.showConversationContent = false })
             try await sheet(window, name: "08-workspaces-\(name)", into: gallery, open: { model.showWorkspaceManager = true }, close: { model.showWorkspaceManager = false })
@@ -422,7 +439,7 @@ final class UIScreenshotTests: XCTestCase {
         await fresh.restore()
         let onboarding = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1240, height: 800), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         onboarding.titleVisibility = .hidden; onboarding.titlebarAppearsTransparent = true; onboarding.styleMask.insert(.fullSizeContentView)
-        onboarding.contentView = NSHostingView(rootView: WorkspaceView(model: fresh))
+        onboarding.contentView = WorkspaceRootView(model: fresh)
         onboarding.center(); onboarding.makeKeyAndOrderFront(nil)
         for (name, appearance) in appearances {
             NSApp.appearance = NSAppearance(named: appearance); try await settle(1.2)
@@ -565,7 +582,9 @@ final class UIScreenshotTests: XCTestCase {
         model.error = nil; try await settle(0.5)
 
         // 16 · The window at its smallest, and wide.
-        window.setContentSize(NSSize(width: 920, height: 620)); window.center(); try await settle(1.0)
+        // Programmatic sizing can bypass the minimum imposed during a drag.
+        // Capture the shipped content minimum, including title-bar space.
+        window.setContentSize(WorkspaceRootView.minimumWindowSize); window.center(); try await settle(1.0)
         try await pair("16-window-narrow")
         window.setContentSize(NSSize(width: 1760, height: 1000)); window.center(); try await settle(1.0)
         try await pair("16b-window-wide")
@@ -675,7 +694,7 @@ final class UIScreenshotTests: XCTestCase {
     @MainActor private func captureBlameScenes(model: WorkspaceModel, window: NSWindow, gallery: URL, appearances: [(String, NSAppearance.Name)],
                                                workspaceID: String, folder: URL) async throws {
         let frame = window.frame
-        window.setContentSize(NSSize(width: 920, height: 600)); try await settle(0.8)
+        window.setContentSize(WorkspaceRootView.minimumWindowSize); try await settle(0.8)
         let tab = model.openFile(folder.appendingPathComponent("PaymentClient.swift"), project: workspaceID)
         try await settle(1.5)
         tab.blame.show()
@@ -780,8 +799,19 @@ final class UIScreenshotTests: XCTestCase {
         }
         file.openGoToLine(); file.lineQuery = "18"
         try await settle(0.8)
+        // The released gallery showed this populated bar after the keys
+        // returned to the file. Do not capture the injected value as a new
+        // command's select-all state; command-focus behavior has its own tests.
+        let fileText = try XCTUnwrap(file.focusView)
+        XCTAssertTrue(window.makeFirstResponder(fileText))
+        try await until("the file has the keys with its line bar still open") {
+            window.firstResponder === fileText && file.bar == .goToLine
+        }
         for (name, appearance) in appearances {
             NSApp.appearance = NSAppearance(named: appearance); try await settle(1.0)
+            XCTAssertTrue(window.firstResponder === fileText)
+            XCTAssertEqual(file.bar, .goToLine)
+            XCTAssertEqual(file.lineQuery, "18")
             try capture(window, to: gallery.appendingPathComponent("24d-tabs-go-to-line-\(name).png"))
         }
         file.closeBar(); try await settle(0.6)
@@ -885,8 +915,22 @@ final class UIScreenshotTests: XCTestCase {
         }
         model.quickOpen.query = "retry"
         try await until("files found") { model.quickOpen.answered == "retry" && !model.quickOpen.rows.isEmpty }
+        let content = try XCTUnwrap(window.contentView)
+        try await until("the Quick Open field shows the injected query") {
+            self.descendants(NSTextField.self, in: content).first { $0.accessibilityIdentifier() == "quickOpenField" }?.stringValue == "retry"
+        }
+        let queryField = try XCTUnwrap(descendants(NSTextField.self, in: content).first { $0.accessibilityIdentifier() == "quickOpenField" })
+        XCTAssertTrue(window.makeFirstResponder(queryField))
+        let queryEditor = try XCTUnwrap(queryField.currentEditor() as? NSTextView)
+        // Match the released capture's typed, unselected query. Assigning a
+        // model value to an editing AppKit field otherwise selects it all.
+        let end = NSRange(location: (queryEditor.string as NSString).length, length: 0)
+        queryEditor.setSelectedRange(end)
         for (name, appearance) in appearances {
             NSApp.appearance = NSAppearance(named: appearance); try await settle(1.0)
+            XCTAssertTrue(window.firstResponder === queryEditor)
+            XCTAssertEqual(queryEditor.string, "retry")
+            XCTAssertEqual(queryEditor.selectedRange(), end)
             try capture(window, to: gallery.appendingPathComponent("25-quick-open-\(name).png"))
         }
         model.quickOpen.close(restoringFocus: false)
@@ -1154,6 +1198,10 @@ final class UIScreenshotTests: XCTestCase {
             inspector.summaryLabel(group.requests[0].id) != nil && inspector.request.conversation.value?.summary != nil
         }
         XCTAssertEqual(inspector.summaryLabel(group.requests[0].id), "continuation checkpoint")
+        // The request can appear after the initial index read. Capture the
+        // selected compaction's expansion state independently of that timing.
+        let selectedTurn = try XCTUnwrap(inspector.index.turn(containing: group.requests[0].id))
+        inspector.expanded = Set([selectedTurn.version?.latest ?? selectedTurn.id, selectedTurn.id, group.id])
         for (name, appearance) in appearances {
             NSApp.appearance = NSAppearance(named: appearance); try await settle(1.0)
             try capture(panel, to: gallery.appendingPathComponent("20-compaction-requests-\(name).png"))
@@ -1393,9 +1441,14 @@ final class UIScreenshotTests: XCTestCase {
     }
 
     /// Opens Settings as the app menu does, photographs its window, closes it.
-    /// SwiftUI keeps the closed Settings window and shows the same one again,
+    /// The app keeps the closed Settings window and shows the same one again,
     /// so the window to find is the one that became visible, not a new one.
-    @MainActor private func settingsWindow(name: String, into gallery: URL) async throws {
+    @MainActor private func settingsWindow(name: String, into gallery: URL, fixture: WorkspaceModel) async throws {
+        let display = TranscriptDisplay.mode
+        defer {
+            TranscriptDisplay.use(display)
+            for session in fixture.displays.values { session.publishTranscript() }
+        }
         let before = Set(NSApp.windows.filter(\.isVisible).map { ObjectIdentifier($0) })
         let appMenu = try XCTUnwrap(NSApp.mainMenu?.items.first?.submenu, "The app menu is missing")
         let item = try XCTUnwrap(appMenu.items.first { $0.keyEquivalent == "," }, "The app menu has no Settings item")
@@ -1411,7 +1464,7 @@ final class UIScreenshotTests: XCTestCase {
         settings.close(); try await settle(0.6)
     }
 
-    /// 26 · At the smallest window, 920×600: Settings with unsaved edits and
+    /// 26 · At the shipped minimum window size: Settings with unsaved edits and
     /// the question closing it asks (26a), a project's several terminals
     /// (26b) and the questions before restarting or closing a live shell
     /// (26c, 26d), and the question before removing a project's MCP servers
@@ -1419,7 +1472,7 @@ final class UIScreenshotTests: XCTestCase {
     @MainActor private func captureSettingsTerminalMCPScenes(model: WorkspaceModel, window: NSWindow, gallery: URL,
                                                             appearances: [(String, NSAppearance.Name)], workspace: WorkspaceRecord) async throws {
         let size = window.frame.size
-        window.setContentSize(NSSize(width: 920, height: 600)); window.center(); try await settle(1.0)
+        window.setContentSize(WorkspaceRootView.minimumWindowSize); window.center(); try await settle(1.0)
         defer { window.setContentSize(size); window.center() }
         /// Waits for `host` to wear a question, photographs it, then answers it.
         func question(on host: @escaping () -> NSWindow?, _ name: String, answer: NSApplication.ModalResponse) async throws {
@@ -1516,6 +1569,17 @@ final class UIScreenshotTests: XCTestCase {
             for (name, appearance) in appearances {
                 NSApp.appearance = NSAppearance(named: appearance); try await settle(hold)
                 try capture(panel, to: gallery.appendingPathComponent("\(scene)-\(name).png"))
+                if scene == "11e-inspector-raw-search", let root = panel.contentView {
+                    for reader in descendants(PayloadSearchTextView.self, in: root) {
+                        let editor = reader.editor, selected = editor.selectedRange()
+                        var match = NSRect.zero
+                        if selected.location != NSNotFound, selected.length > 0,
+                           let manager = editor.layoutManager, let container = editor.textContainer {
+                            match = manager.boundingRect(forGlyphRange: manager.glyphRange(forCharacterRange: selected, actualCharacterRange: nil), in: container)
+                        }
+                        print("GALLERY-RAW-SEARCH \(name) clip=\(reader.contentView.bounds) editor=\(editor.frame) inset=\(editor.textContainerInset) origin=\(editor.textContainerOrigin) selected=\(selected) match=\(match)")
+                    }
+                }
             }
         }
         try await until("the Inspector's Overview") {

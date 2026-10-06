@@ -103,6 +103,12 @@ final class InspectorFrameTests: XCTestCase, SerialTestLane {
         let sample = SessionStatsFixture.request(301, turn: "t76", input: 1_250_000, cached: 1_000_000, output: 900)
         var metadata = SessionStatsPopoverTests.metadata(for: sample, session: pane.chat.id)
         metadata["attemptId"] = .string(big); metadata["mode"] = .string("persist")
+        // The fixed statistics dates outlived body retention on the baseline
+        // too. Keep this persisted request fresh and last in the navigator,
+        // without changing the shared statistics or gallery timestamps.
+        let dispatch = max(Date().timeIntervalSince1970, sample.wall.timeIntervalSince1970)
+        metadata["wallTimestamp"] = .number(dispatch - 1)
+        metadata["dispatchWallTimestamp"] = .number(dispatch)
         try await pane.model.traces.begin(metadata, workspace: pane.chat.workspaceID)
         var offset = 0
         while offset < body.count {
@@ -113,6 +119,9 @@ final class InspectorFrameTests: XCTestCase, SerialTestLane {
         metadata["request"] = .object(["observedBytes": .number(Double(body.count))])
         try await pane.model.traces.finish(metadata)
         try await SessionStatsPopoverTests.refreshFooter(pane)
+        let retained = try await pane.model.traces.metadata(attempt: big)
+        XCTAssertEqual(retained["request"]?.object?["state"]?.string, "complete", "The measured request must survive the archive's retention sweep")
+        XCTAssertEqual(retained["request"]?.object?["retainedBytes"]?.number, Double(body.count), "The measured body is retained in full")
         await pane.settle(4)
         let before = footprint()
 

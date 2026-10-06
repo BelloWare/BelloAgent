@@ -17,10 +17,9 @@ final class TranscriptViewEqualityTests: XCTestCase {
 
     @MainActor func testTheTranscriptViewComparesWhatItDraws() {
         let view = NativeTranscriptView(session: SessionDisplay(id: "equality"), actions: TranscriptActions())
-        XCTAssertEqual(properties(view), ["_session", "state", "actions", "onAnchorChanged", "onReadReply", "onLoadEarlier",
-                                          "onLoadNewer", "onLatest", "onViewportReady", "_page", "_reduceMotion",
-                                          "_earlierSlow", "_newerSlow"],
-                       changed("NativeTranscriptView", "NativeTranscriptView.swift"))
+        XCTAssertEqual(properties(view), ["session", "state", "actions", "onAnchorChanged", "onReadReply", "onLoadEarlier",
+                                          "onLoadNewer", "onLatest", "onViewportReady"],
+                       changed("NativeTranscriptView", "Workspaces/NativeTranscriptHost.swift"))
     }
 
     @MainActor func testTheRowViewsCompareWhatTheyDraw() throws {

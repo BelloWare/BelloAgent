@@ -1,6 +1,5 @@
 import XCTest
 import AppKit
-import SwiftUI
 @testable import PiApp
 
 /// Request bodies with a long tool result among short messages.
@@ -63,7 +62,7 @@ enum InspectorExpandBodies {
         }
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: height), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: InspectorRequestPage(inspector: inspector, request: request, compact: false))
+        window.contentView = InspectorRequestPage(inspector: inspector, request: request, compact: false)
         window.orderFront(nil)
         request.setActive(true)
         request.open(InspectorRequestRow(id: "r", wall: 1, turn: "t", purpose: "turn", api: "openai-responses", alias: "ui-fixture",
@@ -413,7 +412,7 @@ final class InspectorExpandInPlaceTests: XCTestCase {
         let model = InspectorPromptExpansion()
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 640), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: ScrollView { InspectorPromptCard(preview: preview, model: model, showAll: {}).padding(24) })
+        window.contentView = nativePromptPage(InspectorPromptCard(preview: preview, model: model, showAll: {}))
         window.orderFront(nil)
         defer { model.collapse(); window.contentView = nil; window.close() }
         func settle() async { for _ in 0..<6 { window.contentView?.layoutSubtreeIfNeeded(); window.displayIfNeeded(); try? await Task.sleep(for: .milliseconds(20)) } }
@@ -520,9 +519,7 @@ final class InspectorExpandPerformanceTests: XCTestCase, SerialTestLane {
         let model = InspectorPromptExpansion()
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 700), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: ScrollView {
-            InspectorPromptCard(preview: RequestDocument.prefix(whole as NSString, limit: RequestDocument.previewLimit), model: model, showAll: {}).padding(24)
-        })
+        window.contentView = nativePromptPage(InspectorPromptCard(preview: RequestDocument.prefix(whole as NSString, limit: RequestDocument.previewLimit), model: model, showAll: {}))
         window.orderFront(nil)
         defer { model.collapse(); window.contentView = nil; window.close() }
         for _ in 0..<10 { window.contentView?.layoutSubtreeIfNeeded(); window.displayIfNeeded(); try await Task.sleep(for: .milliseconds(20)) }

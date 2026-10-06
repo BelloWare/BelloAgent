@@ -8,7 +8,7 @@ import AppKit
 extension ConversationPaneTests {
     /// The hit-testing shapes SwiftUI puts behind its controls.
     @MainActor static func controls(in view: NSView) -> [NSView] {
-        let mine = String(describing: Swift.type(of: view)).contains("ShapeHitTesting") ? [view] : []
+        let mine = (view as? PiKit.ButtonBase).map { $0.isHidden ? [] : [$0] } ?? []
         return mine + view.subviews.flatMap { controls(in: $0) }
     }
 
@@ -26,7 +26,7 @@ extension ConversationPaneTests {
         pane.session.draft = "unsent thought"
         await pane.settle(20)
         func list() throws -> NSScrollView {
-            try XCTUnwrap(Self.views(NSScrollView.self, in: pane.hosted).first { String(describing: Swift.type(of: $0)).contains("ListCore") })
+            try XCTUnwrap(Self.views(NSScrollView.self, in: pane.hosted).first { $0 is QueueListScrollView })
         }
         let idle = try list().frame.height
         XCTAssertEqual(idle, QueuePanel.listHeight(rows: 4), accuracy: 0.5)
@@ -651,7 +651,7 @@ extension ConversationPaneTests {
         }
         pane.session.state = "running"
         await pane.settle(20)
-        let list = try XCTUnwrap(Self.views(NSScrollView.self, in: pane.hosted).first { String(describing: Swift.type(of: $0)).contains("ListCore") })
+        let list = try XCTUnwrap(Self.views(NSScrollView.self, in: pane.hosted).first { $0 is QueueListScrollView })
         XCTAssertEqual(list.frame.height, QueuePanel.listHeight(rows: 5, sections: 2), accuracy: 0.5)
         XCTAssertLessThan(list.frame.height, CGFloat(5) * QueuePanel.rowHeight + 2 * QueuePanel.sectionHeaderHeight, "the list is capped")
         let panel = list.convert(list.bounds, to: nil)
@@ -695,10 +695,10 @@ extension ConversationPaneTests {
                 ["turnId": .string("q\(index)"), "kind": .string(index % 4 == 0 ? "steering" : "follow-up"), "text": .string("Message \(index)")]
             }
             await pane.settle(16)
-            let list = try XCTUnwrap(Self.views(NSScrollView.self, in: pane.hosted).first { String(describing: Swift.type(of: $0)).contains("ListCore") })
+            let list = try XCTUnwrap(Self.views(NSScrollView.self, in: pane.hosted).first { $0 is QueueListScrollView })
             let sections = count > 1 ? 2 : 1
             XCTAssertLessThanOrEqual(list.frame.height, QueuePanel.visibleRows * QueuePanel.rowHeight + CGFloat(sections) * QueuePanel.sectionHeaderHeight + 0.5, "\(count) waiting")
-            let transcript = try XCTUnwrap(Self.views(NSScrollView.self, in: pane.hosted).filter { !String(describing: Swift.type(of: $0)).contains("ListCore") && $0.documentView !== pane.editor }.max { $0.frame.height < $1.frame.height })
+            let transcript = try XCTUnwrap(Self.views(NSScrollView.self, in: pane.hosted).filter { !($0 is QueueListScrollView) && $0.documentView !== pane.editor }.max { $0.frame.height < $1.frame.height })
             XCTAssertGreaterThanOrEqual(transcript.frame.height, 150, "\(count) waiting leave the transcript \(transcript.frame.height) pt")
         }
     }
@@ -713,13 +713,13 @@ extension ConversationPaneTests {
         let before = pane.session.queue
         pane.session.queueCollapsed = true
         await pane.settle(40)
-        XCTAssertNil(Self.views(NSScrollView.self, in: pane.hosted).first { String(describing: Swift.type(of: $0)).contains("ListCore") }, "collapsed: no rows")
+        XCTAssertNil(Self.views(NSScrollView.self, in: pane.hosted).first { $0 is QueueListScrollView }, "collapsed: no rows")
         XCTAssertEqual(QueueTiming(pane.session).header(count: 3), "Paused · 3")
         XCTAssertEqual(pane.session.queue, before)
         XCTAssertTrue(pane.edits.calls.isEmpty)
         pane.session.queueCollapsed = false
         await pane.settle(12)
-        XCTAssertNotNil(Self.views(NSScrollView.self, in: pane.hosted).first { String(describing: Swift.type(of: $0)).contains("ListCore") })
+        XCTAssertNotNil(Self.views(NSScrollView.self, in: pane.hosted).first { $0 is QueueListScrollView })
     }
 
     /// The headings say when messages go, and a hold or a pause comes before
@@ -757,16 +757,21 @@ extension ConversationPaneTests {
             ["turnId": .string("b"), "kind": .string("follow-up"), "text": .string("Legacy row")],
         ]
         await pane.settle(10)
-        func detail(_ id: String) -> NSHostingView<QueuedMessageDetail> {
-            let host = NSHostingView(rootView: QueuedMessageDetail(model: pane.model, session: pane.session, turnID: id))
-            host.frame = NSRect(x: 0, y: 0, width: 340, height: 360); host.layoutSubtreeIfNeeded(); return host
+        func detail(_ id: String) -> QueuedMessageDetailView {
+            let view = QueuedMessageDetailView(model: pane.model, session: pane.session, turnID: id)
+            view.frame = NSRect(x: 0, y: 0, width: 340, height: 360); view.layoutSubtreeIfNeeded(); return view
         }
         func text(_ view: NSView) -> String { (view.accessibilityChildren() ?? []).compactMap { ($0 as? NSAccessibilityElementProtocol).flatMap { ($0 as AnyObject).accessibilityLabel?() ?? nil } }.joined(separator: " | ") }
         let a = QueuedMessage.from(pane.session.queue)[0], b = QueuedMessage.from(pane.session.queue)[1]
         XCTAssertEqual(a.model, "model-a"); XCTAssertEqual(a.thinkingLevel, "high")
         XCTAssertNil(b.model); XCTAssertNil(b.thinkingLevel)
-        _ = detail("a"); _ = detail("b")
+        let shownA = detail("a"); _ = detail("b")
         await pane.settle(6)
+        // Each choice is one element to VoiceOver, name and value together.
+        func descendants(_ view: NSView) -> [NSView] { view.subviews.flatMap { [$0] + descendants($0) } }
+        let spoken = descendants(shownA).filter { $0.isAccessibilityElement() }.compactMap { $0.accessibilityLabel() }
+        XCTAssertTrue(spoken.contains("Model, model-a"), "\(spoken)")
+        XCTAssertTrue(spoken.contains("Reasoning, High"), "\(spoken)")
         XCTAssertTrue(pane.edits.calls.isEmpty, "reading a detail takes no hold")
         XCTAssertEqual(pane.session.draft, "", "and leaves the composer alone")
         pane.session.queue.removeAll { $0["turnId"]?.string == "a" }

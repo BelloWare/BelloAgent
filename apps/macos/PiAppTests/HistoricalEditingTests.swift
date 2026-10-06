@@ -61,7 +61,7 @@ final class HistoricalEditingTests: XCTestCase {
         try "---\nname: edit-check\ndescription: Current native selection\n---\nSKILL_CURRENT_SELECTION\n".write(to: directory.appendingPathComponent("SKILL.md"), atomically: true, encoding: .utf8)
         await model.loadSkillCatalog(refresh: true, sessionID: child.id)
         view.draft = "EDITED_REPLACEMENT /edit-check"
-        let hosted = NSHostingView(rootView: NativeComposer(text: Binding(get: { view.draft }, set: { view.draft = $0 }), send: { _ in XCTFail("Selection must not submit") }, sessionID: view.id, locationChanged: { model.composerMoved($0, editor: $1, view: view) }))
+        let hosted = NativeComposer(text: view.draft, textChanged: { view.draft = $0 }, send: { _ in XCTFail("Selection must not submit") }, sessionID: view.id, locationChanged: { model.composerMoved($0, editor: $1, view: view) }).makeView()
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 180), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false; window.contentView = hosted; window.makeKeyAndOrderFront(nil)
         defer { window.orderOut(nil); window.contentView = nil }

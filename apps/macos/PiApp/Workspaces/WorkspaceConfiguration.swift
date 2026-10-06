@@ -423,6 +423,7 @@ extension WorkspaceModel {
         let question = Self.mcpRemovalQuestion(path: project.path, servers: servers)
         guard await PiQuestion.shared.confirm(question.title, question.detail, action: "Remove All Servers",
                                               destructive: true, cancelIsDefault: true) else { return nil }
+        guard !Task.isCancelled else { return nil }
         do {
             switch try await removeAllMCPServers(workspaceID: id, expectedRevision: revision) {
             case .nothingSaved: return "“\(name)” has no saved MCP servers."

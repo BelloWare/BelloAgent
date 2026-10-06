@@ -208,7 +208,7 @@ extension ConversationPaneTests {
         model.displays[a.id] = viewA; model.displays[b.id] = viewB
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        let hosted = NSHostingView(rootView: WorkspaceView(model: model))
+        let hosted = WorkspaceRootView(model: model)
         window.contentView = hosted; window.makeKeyAndOrderFront(nil)
         defer { window.contentView = nil; window.close() }
         func draw() { hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded() }

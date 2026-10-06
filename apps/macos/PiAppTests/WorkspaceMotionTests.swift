@@ -137,7 +137,7 @@ final class WorkspaceMotionTests: XCTestCase {
         model.profiles = [profile]; model.workspaces = [project]; model.chats = chats
         model.displays = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0) })
         model.selectedID = chats[0].id; model.selected = sessions[0]; model.focusedSessionID = chats[0].id
-        let hosted = NSHostingView(rootView: WorkspaceView(model: model))
+        let hosted = WorkspaceRootView(model: model)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1400, height: 900), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false; window.contentView = hosted
         defer { window.contentView = nil; window.close() }

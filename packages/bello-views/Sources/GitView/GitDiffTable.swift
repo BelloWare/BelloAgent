@@ -1,4 +1,3 @@
-import SwiftUI
 import AppKit
 
 // The diff as a native table: the file cards, their notes, hunk headers and
@@ -10,8 +9,8 @@ import AppKit
 //
 // What SwiftUI drew is drawn to the point: the same fonts, colours, spacing
 // and card chrome (`GitDiffMetrics`). The heading above the cards (and, for a
-// commit, the commit's own header) is still SwiftUI, hosted in the table's
-// first row so that it scrolls away with the diff as it always did.
+// commit, the commit's own header) is the host's own view, placed in the
+// table's first row so that it scrolls away with the diff as it always did.
 
 /// How many diff rows have been configured for the screen. A test seam, not
 /// diagnostics: a long diff must build the rows that come into view and no
@@ -55,6 +54,53 @@ import AppKit
     public static func fill(_ color: NSColor, opacity: CGFloat) -> CGColor {
         let resolved = color.usingColorSpace(.sRGB) ?? color
         return resolved.withAlphaComponent(resolved.alphaComponent * opacity).cgColor
+    }
+
+    /// A rectangle with continuous ("squircle") corners, point for point the
+    /// path SwiftUI's `RoundedRectangle(cornerRadius:style: .continuous)`
+    /// makes: each corner three cubics reaching 1.528665 radii along each
+    /// side. A side too short for that ends its corner at its middle, the
+    /// first cubic's handles drawn in towards the circular ones; a side
+    /// shorter than two radii takes the radius down to half of it.
+    public nonisolated static func continuousRoundedRect(_ rect: CGRect, radius: CGFloat) -> CGPath {
+        let path = CGMutablePath()
+        let r = max(0, min(radius, rect.width / 2, rect.height / 2))
+        guard r > 0 else { path.addRect(rect); return path }
+        let reach: CGFloat = 1.528665, near = (0.074911, 0.631494), mid = (0.169060, 0.372824)
+        /// Along one side of length `side`: where the corner ends and its first cubic's two handles, in radii from the corner.
+        func edge(_ side: CGFloat) -> (end: CGFloat, c1: CGFloat, c2: CGFloat) {
+            let full = reach * r, end = min(full, side / 2)
+            guard end < full else { return (full, 1.088490 * r, 0.868407 * r) }
+            let t = (end - r) / (full - r)
+            return (end, r * (0.96 + t * (1.088490 - 0.96)), r * (0.82 + t * (0.868407 - 0.82)))
+        }
+        let h = edge(rect.width), v = edge(rect.height)
+        // A corner at `(cx, cy)`, its sides heading `sx` and `sy` (±1) into
+        // the rectangle; `from` the vertical side first or the horizontal.
+        func corner(_ cx: CGFloat, _ cy: CGFloat, _ sx: CGFloat, _ sy: CGFloat, verticalFirst: Bool) {
+            func p(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: cx + sx * x, y: cy + sy * y) }
+            if verticalFirst {
+                path.addCurve(to: p(near.0 * r, near.1 * r), control1: p(0, v.c1), control2: p(0, v.c2))
+                path.addCurve(to: p(near.1 * r, near.0 * r), control1: p(mid.0 * r, mid.1 * r), control2: p(mid.1 * r, mid.0 * r))
+                path.addCurve(to: p(h.end, 0), control1: p(h.c2, 0), control2: p(h.c1, 0))
+            } else {
+                path.addCurve(to: p(near.1 * r, near.0 * r), control1: p(h.c1, 0), control2: p(h.c2, 0))
+                path.addCurve(to: p(near.0 * r, near.1 * r), control1: p(mid.1 * r, mid.0 * r), control2: p(mid.0 * r, mid.1 * r))
+                path.addCurve(to: p(0, v.end), control1: p(0, v.c2), control2: p(0, v.c1))
+            }
+        }
+        let (minX, minY, maxX, maxY) = (rect.minX, rect.minY, rect.maxX, rect.maxY)
+        path.move(to: CGPoint(x: maxX, y: rect.midY))
+        path.addLine(to: CGPoint(x: maxX, y: maxY - v.end))
+        corner(maxX, maxY, -1, -1, verticalFirst: true)
+        path.addLine(to: CGPoint(x: minX + h.end, y: maxY))
+        corner(minX, maxY, 1, -1, verticalFirst: false)
+        path.addLine(to: CGPoint(x: minX, y: minY + v.end))
+        corner(minX, minY, 1, 1, verticalFirst: true)
+        path.addLine(to: CGPoint(x: maxX - h.end, y: minY))
+        corner(maxX, minY, -1, 1, verticalFirst: false)
+        path.closeSubpath()
+        return path
     }
 
     public static func textWidth(unified cardWidth: CGFloat) -> CGFloat { max(0, cardWidth - unifiedText - 8) }
@@ -165,46 +211,25 @@ public struct GitDiffReveal: Equatable {
 /// with — at most context around a change).
 public enum GitDiffRevealOutcome: Equatable, Sendable { case shown, pastShownRows, pastReadLines, notInDiff }
 
-public struct GitDiffTable: NSViewRepresentable {
-    let files: [GitDiffFile]
-    let split: Bool
-    let wrap: Bool
-    /// The whole diff, not the first 1,500 rows of each file.
-    let showAll: Bool
-    let identity: String
-    /// What comes before the cards, hosted: the heading, and for a commit its
-    /// own header. `topKey` changes whenever what it shows does, and
-    /// `topHeightKey` whenever its height may: it is measured again only then.
-    let top: AnyView
-    let topKey: AnyHashable
-    var topHeightKey: AnyHashable? = nil
-    /// The diff on screen is still being read: its rows stay as they are.
-    var loading = false
-    /// "Show the whole diff", hosted, after the cards; nil when there is no more.
-    let more: AnyView?
-    /// What the cards are drawn in; a host passes its own.
-    var colors: GitDiffColors = .system
-    /// The context menu; nil for the default one.
-    var menu: GitDiffMenuBuilder? = nil
-    /// A line to bring into view once its diff is shown, and who is told
-    /// what became of it.
-    var reveal: GitDiffReveal? = nil
-    var revealed: ((GitDiffReveal, GitDiffRevealOutcome) -> Void)? = nil
+/// What the table shows above the cards (the heading, and for a commit its
+/// own header) and after them ("Show the whole diff"): a host's own view,
+/// placed in the table's first or last row so it scrolls with the diff.
+@MainActor public protocol GitDiffAccessory: NSView {
+    /// Its height at this width: what the table gives its row.
+    func gitDiffHeight(forWidth width: CGFloat) -> CGFloat
+}
 
-    public init(files: [GitDiffFile], split: Bool, wrap: Bool, showAll: Bool, identity: String, top: AnyView, topKey: AnyHashable,
-                topHeightKey: AnyHashable? = nil, loading: Bool = false, more: AnyView?, colors: GitDiffColors = .system, menu: GitDiffMenuBuilder? = nil,
-                reveal: GitDiffReveal? = nil, revealed: ((GitDiffReveal, GitDiffRevealOutcome) -> Void)? = nil) {
-        self.files = files; self.split = split; self.wrap = wrap; self.showAll = showAll; self.identity = identity
-        self.top = top; self.topKey = topKey; self.topHeightKey = topHeightKey; self.loading = loading; self.more = more
-        self.colors = colors; self.menu = menu; self.reveal = reveal; self.revealed = revealed
-    }
+/// The diff's cards in a scroll view of their own. The host keeps it and
+/// hands it each state (`update`); a state is shown in the table's next
+/// layout pass, in the same frame.
+@MainActor public final class GitDiffTable: NSScrollView {
+    public let coordinator = Coordinator()
+    var table: GitDiffTableView { documentView as! GitDiffTableView }
 
-    public func makeCoordinator() -> Coordinator { Coordinator() }
-
-    public func makeNSView(context: Context) -> NSScrollView {
-        let scroll = NSScrollView()
-        scroll.hasVerticalScroller = true; scroll.hasHorizontalScroller = false
-        scroll.autohidesScrollers = true; scroll.drawsBackground = false; scroll.borderType = .noBorder
+    public init() {
+        super.init(frame: .zero)
+        hasVerticalScroller = true; hasHorizontalScroller = false
+        autohidesScrollers = true; drawsBackground = false; borderType = .noBorder
         let table = GitDiffTableView()
         // Plain: the automatic style insets every row by 16 points and the
         // table by 10, and the cards keep their own insets.
@@ -219,31 +244,33 @@ public struct GitDiffTable: NSViewRepresentable {
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("diff"))
         column.resizingMask = .autoresizingMask
         table.addTableColumn(column)
-        table.dataSource = context.coordinator; table.delegate = context.coordinator
-        table.coordinator = context.coordinator
+        table.dataSource = coordinator; table.delegate = coordinator
+        table.coordinator = coordinator
         table.setAccessibilityLabel("Diff")
         table.setAccessibilityIdentifier("git-diff-table")
-        scroll.documentView = table
-        context.coordinator.table = table
-        context.coordinator.observe(scroll)
-        context.coordinator.schedule(state)
-        return scroll
+        documentView = table
+        coordinator.table = table
+        coordinator.observe(self)
+    }
+    required init?(coder: NSCoder) { nil }
+
+    /// Shows a diff. `top` is what comes before the cards: measured again
+    /// only when `topHeightKey` or the width changes. `more`, after them, is
+    /// nil when there is no more to show.
+    public func update(files: [GitDiffFile], split: Bool, wrap: Bool, showAll: Bool, identity: String, top: any GitDiffAccessory,
+                       topHeightKey: AnyHashable, loading: Bool = false, more: (any GitDiffAccessory)?, colors: GitDiffColors = .system,
+                       menu: GitDiffMenuBuilder? = nil, reveal: GitDiffReveal? = nil,
+                       revealed: ((GitDiffReveal, GitDiffRevealOutcome) -> Void)? = nil) {
+        coordinator.schedule(Coordinator.State(files: files, split: split, wrap: wrap, showAll: showAll, identity: identity, top: top,
+                                               topHeightKey: topHeightKey, loading: loading, more: more, colors: colors, menu: menu,
+                                               reveal: reveal, revealed: revealed))
     }
 
-    /// A change is shown in the table's next layout pass: after SwiftUI's
-    /// update, never inside it, and in the same frame.
-    public func updateNSView(_ scroll: NSScrollView, context: Context) { context.coordinator.schedule(state) }
-
-    public static func dismantleNSView(_ scroll: NSScrollView, coordinator: Coordinator) {
+    /// Lets go of the host's views and stops observing; the table shows
+    /// nothing more.
+    public func close() {
         coordinator.close()
-        guard let table = scroll.documentView as? NSTableView else { return }
         table.delegate = nil; table.dataSource = nil
-    }
-
-    private var state: Coordinator.State {
-        Coordinator.State(files: files, split: split, wrap: wrap, showAll: showAll, identity: identity, top: top, topKey: topKey,
-                          topHeightKey: topHeightKey ?? topKey, loading: loading, more: more, colors: colors, menu: menu,
-                          reveal: reveal, revealed: revealed)
     }
 
     // MARK: - Coordinator
@@ -255,11 +282,10 @@ public struct GitDiffTable: NSViewRepresentable {
             var wrap: Bool
             var showAll: Bool
             var identity: String
-            var top: AnyView
-            var topKey: AnyHashable
+            var top: any GitDiffAccessory
             var topHeightKey: AnyHashable
             var loading: Bool
-            var more: AnyView?
+            var more: (any GitDiffAccessory)?
             var colors: GitDiffColors
             var menu: GitDiffMenuBuilder?
             var reveal: GitDiffReveal?
@@ -290,8 +316,6 @@ public struct GitDiffTable: NSViewRepresentable {
         /// Wrapped rows' heights at `heightWidth`, measured as the table asks.
         private var wrapped: [CGFloat?] = []
         private var heightWidth: CGFloat = -1
-        /// What the hosted heading was last given: set again only when it changes.
-        private var shownTop: AnyHashable?
         private var pending: State?
         private var topHeightKey: AnyHashable?
         /// A new diff was named: it is shown from its top once its rows are built.
@@ -299,9 +323,9 @@ public struct GitDiffTable: NSViewRepresentable {
         private var topHeight: CGFloat = 0
         private var moreHeight: CGFloat = 0
         private var measuredWidth: CGFloat = -1
-        private let topHost = NSHostingController(rootView: AnyView(EmptyView()))
-        private let moreHost = NSHostingController(rootView: AnyView(EmptyView()))
-        private var observers: [NSObjectProtocol] = []
+        /// The host's views before and after the cards.
+        private var topView: (any GitDiffAccessory)?
+        private var moreView: (any GitDiffAccessory)?
         /// The reader's selection: where it began and where it reaches, and
         /// for a side-by-side diff which side it is in.
         private(set) var anchor: GitDiffTextPoint?
@@ -310,29 +334,19 @@ public struct GitDiffTable: NSViewRepresentable {
         /// Wrapped lines of a row's text, by row, at `heightWidth`.
         private var breaks: [Int: [Range<Int>]] = [:]
 
-        override init() {
-            super.init()
-            // The hosted rows are sized by the table, never by themselves: a
-            // hosting view that published its size invalidated the layout of
-            // the whole sheet around the table on every frame of an animation
-            // inside it (the Unified and Split tabs' glide).
-            for host in [topHost, moreHost] {
-                host.sizingOptions = []
-                (host.view as? NSHostingView<AnyView>)?.sizingOptions = []
-                host.view.translatesAutoresizingMaskIntoConstraints = true
-            }
-        }
+        override init() { super.init() }
 
         func observe(_ scroll: NSScrollView) {
             scroll.contentView.postsBoundsChangedNotifications = true
-            observers.append(NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: scroll.contentView, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.table?.window?.invalidateCursorRects(for: self?.table ?? NSView()) }
-            })
+            // A selector observer: let go of with the coordinator, nothing to remove.
+            NotificationCenter.default.addObserver(self, selector: #selector(scrolled), name: NSView.boundsDidChangeNotification, object: scroll.contentView)
         }
         func close() {
-            observers.forEach(NotificationCenter.default.removeObserver); observers = []
-            topHost.rootView = AnyView(EmptyView()); moreHost.rootView = AnyView(EmptyView())
+            NotificationCenter.default.removeObserver(self)
+            topView = nil; moreView = nil
         }
+
+        @objc private func scrolled() { if let table { table.window?.invalidateCursorRects(for: table) } }
 
         func schedule(_ next: State) {
             pending = next
@@ -374,20 +388,24 @@ public struct GitDiffTable: NSViewRepresentable {
             wrap = next.wrap; hasMore = next.more != nil; menu = next.menu
             // Other colours: the same rows, drawn again.
             if next.colors != colors { colors = next.colors; if !rebuild { redrawVisible() } }
-            // The heading is drawn again only when what it shows changed: the
-            // panel's every other update left it as it was.
-            let topShown = AnyHashable([next.topKey, AnyHashable(split), AnyHashable(wrap)])
-            if topShown != shownTop { shownTop = topShown; topHost.rootView = next.top }
-            if moreChanged, let more = next.more { moreHost.rootView = more }
+            // The host's views, placed again only when they are others: the
+            // host draws what changes in them itself.
+            let topReplaced = topView !== next.top, moreReplaced = next.more.map { $0 !== moreView } ?? false
+            topView = next.top
+            if let more = next.more { moreView = more }
+            if topReplaced, !rebuild, !rows.isEmpty { table.reloadData(forRowIndexes: IndexSet(integer: 0), columnIndexes: IndexSet(integer: 0)) }
+            if moreReplaced, !rebuild, let index = rows.firstIndex(where: { $0.kind == .showAll }) {
+                table.reloadData(forRowIndexes: IndexSet(integer: index), columnIndexes: IndexSet(integer: 0))
+            }
             let width = table.bounds.width
             var heading = false
-            if next.topHeightKey != topHeightKey || width != measuredWidth {
+            if next.topHeightKey != topHeightKey || width != measuredWidth || topReplaced {
                 topHeightKey = next.topHeightKey
                 heading = remeasure(width: width)
-            } else if moreChanged, hasMore {
+            } else if moreChanged || moreReplaced, hasMore {
                 // "Show the whole diff" arrives with a diff grown past the
                 // gate under the same heading.
-                moreHeight = ceil(moreHost.sizeThatFits(in: CGSize(width: width, height: .greatestFiniteMagnitude)).height)
+                moreHeight = ceil(moreView?.gitDiffHeight(forWidth: width) ?? 0)
             }
             if rebuild {
                 if let cached = built[split] { rows = cached.rows; splits = cached.splits } else { build(); built[split] = (rows, splits) }
@@ -501,9 +519,8 @@ public struct GitDiffTable: NSViewRepresentable {
         private func remeasure(width: CGFloat) -> Bool {
             measuredWidth = width
             guard width > 0 else { return false }
-            let bound = CGSize(width: width, height: CGFloat.greatestFiniteMagnitude)
-            let top = ceil(topHost.sizeThatFits(in: bound).height)
-            moreHeight = hasMore ? ceil(moreHost.sizeThatFits(in: bound).height) : 0
+            let top = ceil(topView?.gitDiffHeight(forWidth: width) ?? 0)
+            moreHeight = hasMore ? ceil(moreView?.gitDiffHeight(forWidth: width) ?? 0) : 0
             defer { topHeight = top }
             return top != topHeight
         }
@@ -597,8 +614,8 @@ public struct GitDiffTable: NSViewRepresentable {
         public func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
             guard row < rows.count else { return nil }
             switch rows[row].kind {
-            case .top: return topHost.view
-            case .showAll: return moreHost.view
+            case .top: return topView
+            case .showAll: return moreView
             case .gap, .bottom:
                 let cell = tableView.makeView(withIdentifier: GitDiffSpaceCell.identifier, owner: self) as? GitDiffSpaceCell ?? GitDiffSpaceCell()
                 return cell
@@ -1085,8 +1102,7 @@ final class GitDiffRowCell: NSView {
         // The card: its corners on its first and last rows, a hairline inside
         // its edge, everything clipped to it, as SwiftUI's overlay and clip.
         let top: CGFloat = model.first ? 0 : -1_000, bottom: CGFloat = model.last ? bounds.height : bounds.height + 1_000
-        let shape = RoundedRectangle(cornerRadius: GitDiffMetrics.cardRadius, style: .continuous)
-            .path(in: CGRect(x: left, y: top, width: card, height: bottom - top)).cgPath
+        let shape = GitDiffMetrics.continuousRoundedRect(CGRect(x: left, y: top, width: card, height: bottom - top), radius: GitDiffMetrics.cardRadius)
         context.saveGState()
         context.addPath(shape); context.clip()
         switch model.kind {

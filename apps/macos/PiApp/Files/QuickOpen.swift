@@ -1,5 +1,5 @@
 import AppKit
-import SwiftUI
+import Combine
 import FileFinder
 
 // ⌘P: a file of the project on screen found by part of its name and opened

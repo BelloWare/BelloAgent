@@ -12,11 +12,15 @@ final class TranscriptMarkdownTests: XCTestCase {
         guard case .paragraph(let intro) = blocks[0] else { return XCTFail("\(blocks)") }
         XCTAssertEqual(text(intro), "Intro bold and code link gone [Image not loaded: alt]")
         let bold = try XCTUnwrap(intro.runs.first { text(AttributedString(intro[$0.range])) == "bold" })
-        XCTAssertEqual(bold.font, .system(size: 14.5, weight: .semibold))
+        XCTAssertEqual(bold[MarkdownFontAttribute.self], MarkdownFontSpec(size: 14.5, semibold: true))
         let link = try XCTUnwrap(intro.runs.first { text(AttributedString(intro[$0.range])) == "link" })
         XCTAssertEqual(link.link, URL(string: "https://example.com"))
+        XCTAssertEqual(link.appKit.foregroundColor, TranscriptNSPalette.accent, "a link in the accent")
+        XCTAssertEqual(bold.appKit.foregroundColor, TranscriptNSPalette.text)
+        let code = try XCTUnwrap(intro.runs.first { text(AttributedString(intro[$0.range])) == "code" })
+        XCTAssertEqual(code.appKit.backgroundColor, TranscriptNSPalette.panelStrong, "inline code on its panel")
         let struck = try XCTUnwrap(intro.runs.first { text(AttributedString(intro[$0.range])) == "gone" })
-        XCTAssertEqual(struck.strikethroughStyle, .single)
+        XCTAssertEqual(struck.appKit.strikethroughStyle, .single)
         guard case .heading(let level, let title, let plain) = blocks[1] else { return XCTFail("\(blocks[1])") }
         XCTAssertEqual(level, 1); XCTAssertEqual(text(title), "Title"); XCTAssertEqual(plain, "Title")
         guard case .list(let ordered, _, let items) = blocks[2] else { return XCTFail("\(blocks[2])") }
@@ -61,7 +65,7 @@ final class TranscriptMarkdownTests: XCTestCase {
         XCTAssertEqual(TranscriptMarkdown.blocks(""), [])
     }
 
-    func testHighlighterFindsCommentsStringsNumbersKeywordsAndNames() {
+    @MainActor func testHighlighterFindsCommentsStringsNumbersKeywordsAndNames() {
         let ts = "const x = \"<img src=x onerror=alert(1)>\"; // note\nconst earth = '🌍'; /* block */ function greet() { return 1.5e3; }"
         let tokens = SyntaxHighlighter.tokens(ts, language: .typescript)
         let scalars = Array(ts.unicodeScalars)
@@ -76,8 +80,8 @@ final class TranscriptMarkdownTests: XCTestCase {
         XCTAssertEqual(SyntaxHighlighter.tokens("func charge(_ order: Order) async throws -> Receipt { for attempt in 1...3 { } }", language: .swift).filter { $0.kind == .title }.count, 1)
         XCTAssertNil(SyntaxHighlighter.language(named: "unknown")); XCTAssertEqual(SyntaxHighlighter.language(named: "ts"), .typescript); XCTAssertEqual(SyntaxHighlighter.language(named: "SH"), .bash)
         XCTAssertTrue(SyntaxHighlighter.tokens(String(repeating: "x", count: 16_385), language: .typescript).isEmpty)
-        let styled = SyntaxHighlighter.attributed("let a = 1 // c", language: "swift")
-        XCTAssertEqual(styled.runs.count, 5, "keyword, plain, number, plain, comment")
+        let styled = ColouredCode.storage("let a = 1 // c")
+        XCTAssertEqual(ColouredCode.runCount(styled), 5, "keyword, plain, number, plain, comment")
     }
 
     func testSectionCopyFollowsHeadingHierarchyIncludesNestedSectionsAndExcludesPeers() {
@@ -118,5 +122,30 @@ final class TranscriptMarkdownTests: XCTestCase {
     func testNestedFencedAndIndentedCodeCopyDropsOnlyContainerPrefixes() {
         let source = "- Example:\n\n  ```js\n  const a = 1;\n    indented();\n  ```\n\n> ```sh\n> echo hi\n>   echo there\n> ```\n\n    plain\n      deeper"
         XCTAssertEqual(TranscriptCopy.targets(in: source).filter { $0.kind == .code }.map(\.text), ["const a = 1;\n  indented();\n", "echo hi\n  echo there\n", "plain\n  deeper"])
+    }
+}
+
+/// Code coloured as the transcript colours it in TextKit
+/// (`TranscriptPlainTextView.colour`), with its runs by colour.
+@MainActor enum ColouredCode {
+    static let font = NSFont.monospacedSystemFont(ofSize: 12.5, weight: .regular)
+    static func storage(_ code: String, language: String = "swift") -> NSTextStorage {
+        let storage = NSTextStorage(string: code, attributes: [.font: font, .foregroundColor: TranscriptNSPalette.text])
+        TranscriptPlainTextView.colour(storage, code: code, language: language, font: font)
+        return storage
+    }
+    /// The text of each run in `color`.
+    static func runs(_ storage: NSTextStorage, _ color: NSColor) -> [String] {
+        var runs: [String] = []
+        storage.enumerateAttribute(.foregroundColor, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+            if (value as? NSColor) == color { runs.append((storage.string as NSString).substring(with: range)) }
+        }
+        return runs
+    }
+    /// How many runs of one dress (colour and face) the text has.
+    static func runCount(_ storage: NSTextStorage) -> Int {
+        var count = 0
+        storage.enumerateAttributes(in: NSRange(location: 0, length: storage.length)) { _, _, _ in count += 1 }
+        return count
     }
 }

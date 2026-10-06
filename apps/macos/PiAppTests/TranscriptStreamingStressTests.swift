@@ -1809,7 +1809,7 @@ final class TranscriptPageStressTests: TranscriptStressTestCase {
         let stage = Stage(session); defer { stage.close() }
         await stage.settle()
 
-        for scheme in [ColorScheme.light, .dark, .light] {
+        for scheme in [TranscriptColorScheme.light, .dark, .light] {
             stage.environment.colorScheme = scheme
             stage.refresh()
             await stage.settle()
@@ -2062,9 +2062,9 @@ final class TranscriptPageStressTests: TranscriptStressTestCase {
             stage.environment.colorScheme = .dark
             stage.refresh()
         }
-        // The reader's text size changes while the turn is folded.
-        try await fold("a larger text size while folded") {
-            stage.environment.dynamicTypeSize = .xxLarge
+        // The reader's locale changes while the turn is folded.
+        try await fold("another locale while folded") {
+            stage.environment.locale = Locale(identifier: "de_DE")
             stage.refresh()
         }
         // The pane is narrowed while the turn is folded.

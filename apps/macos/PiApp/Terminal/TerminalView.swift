@@ -1,6 +1,5 @@
 import AppKit
 import CoreText
-import SwiftUI
 
 /// Draws a TerminalEmulator with CoreText and turns keys, mouse and paste into
 /// the bytes a program expects. The view owns scrollback viewing, selection
@@ -31,7 +30,9 @@ import SwiftUI
     private var selection: Selection?
     private var selectionAnchor: Position?
     private var markedText = ""
-    private var lineCache: [LineKey: CTLine] = [:]
+    /// A run's line, and whether every glyph in it starts on its own cell.
+    private struct CachedLine { let line: CTLine; let onGrid: Bool }
+    private var lineCache: [LineKey: CachedLine] = [:]
     private(set) var lineCacheBytes = 0
     static let lineCacheByteLimit = 8 * 1024 * 1024
     private func clearLineCache() { lineCache.removeAll(keepingCapacity: true); lineCacheBytes = 0 }
@@ -76,15 +77,20 @@ import SwiftUI
         let line = CTLineCreateWithAttributedString(sample)
         var lineAscent: CGFloat = 0, lineDescent: CGFloat = 0, lineLeading: CGFloat = 0
         let advance = CTLineGetTypographicBounds(line, &lineAscent, &lineDescent, &lineLeading)
-        cellWidth = ceil(CGFloat(advance))
+        // The cell is exactly one advance wide. A run of text is drawn as one
+        // line at the font's own advances, so a cell rounded up to whole
+        // points left the glyphs behind the grid by a fraction of a point per
+        // column: the cursor, drawn on the grid, ended up cells to the right
+        // of the text and of where the next character appeared.
+        cellWidth = CGFloat(advance)
         cellHeight = ceil(lineAscent + lineDescent + max(lineLeading, 2))
         ascent = lineAscent + max(lineLeading, 2) / 2
-        emulator.cellPixelSize = (Int(cellWidth), Int(cellHeight))
+        emulator.cellPixelSize = (Double(cellWidth), Double(cellHeight))
     }
     private var isDark: Bool { effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua }
-    var defaultForeground: NSColor { NSColor(Color.piInk) }
-    var defaultBackground: NSColor { NSColor(Color.piTerminalSurface) }
-    private var accent: NSColor { NSColor(Color.piBrandOrange) }
+    var defaultForeground: NSColor { .piInk }
+    var defaultBackground: NSColor { .piTerminalSurface }
+    private var accent: NSColor { .piBrandOrange }
     private static let lightPalette: [NSColor] = ["1d1b17", "b3312c", "2f7d3b", "9a6a00", "2a5aa6", "8a3fb0", "1f7a8c", "c9c3b8", "6e6a61", "d1453f", "3d8a57", "b97a1e", "3b6fc4", "a35bd1", "2c96a8", "f2ede5"].map(NSColor.init(hex:))
     private static let darkPalette: [NSColor] = ["3a3129", "ea7c7c", "7cc48f", "e3b15c", "a8c9fc", "d7a5ee", "7fd3e0", "d9d4cb", "78746b", "f19a9a", "98d6a8", "f0c67c", "bcd6ff", "e4c0f5", "9fe0eb", "f5f1ea"].map(NSColor.init(hex:))
     func color(_ colour: TerminalColor, foreground: Bool) -> NSColor {
@@ -122,6 +128,10 @@ import SwiftUI
     override func layout() { super.layout(); fitGrid() }
     override func setFrameSize(_ newSize: NSSize) { super.setFrameSize(newSize); fitGrid() }
     private func fitGrid() {
+        // A view laid out at no size (a terminal not shown yet, a collapsing
+        // panel) keeps its grid: fitting the screen to two columns and a row
+        // would cut every line and move the cursor before the view shows again.
+        guard bounds.width >= inset * 2 + cellWidth * 2, bounds.height >= inset * 2 + cellHeight else { return }
         let columns = max(2, Int((bounds.width - inset * 2) / cellWidth))
         let rows = max(1, Int((bounds.height - inset * 2) / cellHeight))
         guard columns != emulator.columns || rows != emulator.rows else { return }
@@ -135,6 +145,10 @@ import SwiftUI
     private func cellRect(column: Int, row: Int, width: Int = 1) -> NSRect {
         NSRect(x: inset + CGFloat(column) * cellWidth, y: inset + CGFloat(row) * cellHeight, width: cellWidth * CGFloat(width), height: cellHeight)
     }
+    /// A painted rectangle with its edges on device pixels, so cells, the
+    /// cursor and backgrounds stay crisp though a cell is a fractional width.
+    /// Glyphs keep their exact origins.
+    private func pixelAligned(_ rect: CGRect) -> CGRect { backingAlignedRect(rect, options: .alignAllEdgesNearest) }
 
     /// Lines the emulator has ever pushed out of the screen, so new output can
     /// be told from lines the scrollback has dropped.
@@ -189,7 +203,7 @@ import SwiftUI
             while end < cells.count, background(of: cells[end].style) == colour { end += 1 }
             if let colour {
                 context.setFillColor(colour.cgColor)
-                context.fill(CGRect(x: inset + CGFloat(column) * cellWidth, y: top, width: CGFloat(end - column) * cellWidth, height: cellHeight))
+                context.fill(pixelAligned(CGRect(x: inset + CGFloat(column) * cellWidth, y: top, width: CGFloat(end - column) * cellWidth, height: cellHeight)))
             }
             column = end
         }
@@ -198,7 +212,7 @@ import SwiftUI
             let to = absoluteLine == selection.end.line ? selection.end.column : max(cells.count, emulator.columns)
             if to > from {
                 context.setFillColor(accent.withAlphaComponent(0.22).cgColor)
-                context.fill(CGRect(x: inset + CGFloat(from) * cellWidth, y: top, width: CGFloat(to - from) * cellWidth, height: cellHeight))
+                context.fill(pixelAligned(CGRect(x: inset + CGFloat(from) * cellWidth, y: top, width: CGFloat(to - from) * cellWidth, height: cellHeight)))
             }
         }
         // Then the glyphs: ASCII runs of one style in a single line, everything else cell by cell.
@@ -213,18 +227,21 @@ import SwiftUI
             let isBlank = text.allSatisfy { $0 == " " }
             let x = inset + CGFloat(column) * cellWidth
             if !isBlank {
-                let line = line(for: text, style: cell.style)
-                context.saveGState()
-                context.textMatrix = CGAffineTransform(scaleX: 1, y: -1)
-                context.textPosition = CGPoint(x: x, y: top + ascent)
-                CTLineDraw(line, context)
-                context.restoreGState()
+                let run = line(for: text, style: cell.style)
+                if plain && !run.onGrid {
+                    // A font whose glyphs do not keep to one advance each: every cell on its own.
+                    for (offset, character) in text.enumerated() where character != " " {
+                        draw(line(for: String(character), style: cell.style).line, at: CGPoint(x: x + CGFloat(offset) * cellWidth, y: top + ascent), in: context)
+                    }
+                } else {
+                    draw(run.line, at: CGPoint(x: x, y: top + ascent), in: context)
+                }
             }
             let width = CGFloat(plain ? end - column : Int(cell.width)) * cellWidth
             if cell.style.underline || cell.style.strikethrough {
                 context.setFillColor(foreground(of: cell.style).cgColor)
-                if cell.style.underline { context.fill(CGRect(x: x, y: top + cellHeight - 1.5, width: width, height: 1)) }
-                if cell.style.strikethrough { context.fill(CGRect(x: x, y: top + cellHeight / 2, width: width, height: 1)) }
+                if cell.style.underline { context.fill(pixelAligned(CGRect(x: x, y: top + cellHeight - 1.5, width: width, height: 1))) }
+                if cell.style.strikethrough { context.fill(pixelAligned(CGRect(x: x, y: top + cellHeight / 2, width: width, height: 1))) }
             }
             column = plain ? end : column + max(1, Int(cell.width))
         }
@@ -239,16 +256,31 @@ import SwiftUI
         if case .standard = style.background.kind { return nil }
         return color(style.background, foreground: false)
     }
-    private func line(for text: String, style: CellStyle) -> CTLine {
+    private func draw(_ line: CTLine, at origin: CGPoint, in context: CGContext) {
+        context.saveGState()
+        context.textMatrix = CGAffineTransform(scaleX: 1, y: -1)
+        context.textPosition = origin
+        CTLineDraw(line, context)
+        context.restoreGState()
+    }
+    private func line(for text: String, style: CellStyle) -> CachedLine {
         let key = LineKey(text: text, foreground: style.inverse ? style.background : style.foreground, bold: style.bold, italic: style.italic, dim: style.dim, dark: isDark)
         if let cached = lineCache[key] { return cached }
         let typeface = style.bold && style.italic ? boldItalicFont : style.bold ? boldFont : style.italic ? italicFont : font
-        let attributed = NSAttributedString(string: text, attributes: [.font: typeface, .foregroundColor: foreground(of: style)])
+        // No kerning and no ligatures: each character keeps its own cell.
+        let attributed = NSAttributedString(string: text, attributes: [.font: typeface, .foregroundColor: foreground(of: style), .kern: 0, .ligature: 0])
         let line = CTLineCreateWithAttributedString(attributed)
+        // Only ASCII runs, one UTF-16 unit per cell, are drawn as one line;
+        // each character there must start where its cell does.
+        var onGrid = true
+        if text.utf8.count == text.utf16.count, text.utf16.count > 1 {
+            for index in 0...text.utf16.count where abs(CTLineGetOffsetForStringIndex(line, index, nil) - CGFloat(index) * cellWidth) > 0.25 { onGrid = false; break }
+        }
+        let cached = CachedLine(line: line, onGrid: onGrid)
         let cost = text.utf8.count + text.utf16.count * 32 + 256
         if lineCache.count >= 4_096 || cost > Self.lineCacheByteLimit - lineCacheBytes { clearLineCache() }
-        if cost <= Self.lineCacheByteLimit { lineCache[key] = line; lineCacheBytes += cost }
-        return line
+        if cost <= Self.lineCacheByteLimit { lineCache[key] = cached; lineCacheBytes += cost }
+        return cached
     }
     private func drawCursor(in context: CGContext, firstVisible: Int) {
         guard scrollOffset == 0, emulator.cursorVisible else { return }
@@ -256,15 +288,14 @@ import SwiftUI
         let row = emulator.scrollback.count + cursor.y - firstVisible
         guard row >= 0, row < emulator.rows else { return }
         let cell = emulator.screen[cursor.y][min(cursor.x, emulator.columns - 1)]
-        let rect = cellRect(column: cursor.x, row: row, width: cell.width == 2 ? 2 : 1)
+        let cellArea = cellRect(column: cursor.x, row: row, width: cell.width == 2 ? 2 : 1)
+        let rect = pixelAligned(cellArea)
         if !markedText.isEmpty {
             // Text being composed sits at the cursor until the input method commits it.
-            let width = markedText.unicodeScalars.reduce(0) { $0 + max(1, TerminalEmulator.width(of: $1)) }
-            let markedRect = NSRect(x: rect.minX, y: rect.minY, width: CGFloat(width) * cellWidth, height: cellHeight)
+            let width = max(1, markedText.unicodeScalars.reduce(0) { $0 + TerminalEmulator.width(of: $1) })
+            let markedRect = pixelAligned(NSRect(x: cellArea.minX, y: cellArea.minY, width: CGFloat(width) * cellWidth, height: cellHeight))
             context.setFillColor(accent.withAlphaComponent(0.15).cgColor); context.fill(markedRect)
-            let line = line(for: markedText, style: .plain)
-            context.saveGState(); context.textMatrix = CGAffineTransform(scaleX: 1, y: -1); context.textPosition = CGPoint(x: rect.minX, y: rect.minY + ascent)
-            CTLineDraw(line, context); context.restoreGState()
+            draw(line(for: markedText, style: .plain).line, at: CGPoint(x: cellArea.minX, y: cellArea.minY + ascent), in: context)
             context.setFillColor(accent.cgColor); context.fill(CGRect(x: markedRect.minX, y: markedRect.maxY - 2, width: markedRect.width, height: 2))
             return
         }
@@ -279,9 +310,8 @@ import SwiftUI
             if !cell.text.isEmpty, cell.text != " " {
                 var style = cell.style; style.foreground = .standard; style.inverse = false
                 let attributed = NSAttributedString(string: cell.text, attributes: [.font: font, .foregroundColor: defaultBackground])
-                let line = CTLineCreateWithAttributedString(attributed)
-                context.saveGState(); context.textMatrix = CGAffineTransform(scaleX: 1, y: -1); context.textPosition = CGPoint(x: rect.minX, y: rect.minY + ascent)
-                CTLineDraw(line, context); context.restoreGState()
+                // At the cell's own origin, where the glyph it covers is drawn.
+                draw(CTLineCreateWithAttributedString(attributed), at: CGPoint(x: cellArea.minX, y: cellArea.minY + ascent), in: context)
             }
         case .underline:
             context.setFillColor(accent.cgColor); context.fill(CGRect(x: rect.minX, y: rect.maxY - 2, width: rect.width, height: 2))
@@ -387,9 +417,9 @@ import SwiftUI
         MainActor.assumeIsolated {
             let row = emulator.scrollback.count + emulator.cursor.y - firstVisibleLine
             let rect = cellRect(column: emulator.cursor.x, row: max(0, row))
-            let flipped = NSRect(x: rect.minX, y: bounds.height - rect.maxY, width: rect.width, height: rect.height)
-            guard let window else { return flipped }
-            return window.convertToScreen(convert(flipped, to: nil))
+            // The view is flipped; converting to the window accounts for that.
+            guard let window else { return rect }
+            return window.convertToScreen(convert(rect, to: nil))
         }
     }
     nonisolated func characterIndex(for point: NSPoint) -> Int { 0 }

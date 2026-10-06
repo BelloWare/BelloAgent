@@ -21,15 +21,13 @@ import SwiftUI
 final class LazyListAppKitControlTests: XCTestCase {
     @MainActor private func descendants(_ view: NSView) -> [NSView] { view.subviews.flatMap { [$0] + descendants($0) } }
 
-    /// The AppKit views under `view` that change their own size when SwiftUI
-    /// updates them. A menu or popover press target never does: its size is
-    /// the face's, and it keeps its title, font and image.
+    /// Stock pop-up buttons and progress indicators were the controls whose
+    /// SwiftUI adapters recursively invalidated layout. Native text and Pi
+    /// buttons retain their frames and are checked by the native view tests.
     @MainActor static func selfSizingControls(in view: NSView) -> [String] {
         func walk(_ view: NSView) -> [NSView] { view.subviews.flatMap { [$0] + walk($0) } }
-        return walk(view).filter { view in
-            if view is PiPopoverTriggerButton { return false }
-            return view is NSControl || view is NSProgressIndicator
-        }.map { String(describing: type(of: $0)) }
+        return walk(view).filter { $0 is NSPopUpButton || $0 is NSProgressIndicator }
+            .map { String(describing: type(of: $0)) }
     }
 
     /// Three projects, topics, a chat compacting in the background and the
@@ -66,7 +64,7 @@ final class LazyListAppKitControlTests: XCTestCase {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1240, height: 820),
                               styleMask: [.titled, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        let hosted = NSHostingView(rootView: WorkspaceView(model: model))
+        let hosted = WorkspaceRootView(model: model)
         window.contentView = hosted
         window.makeKeyAndOrderFront(nil)
         return (model, window, hosted)
@@ -79,8 +77,9 @@ final class LazyListAppKitControlTests: XCTestCase {
         }
     }
 
-    /// The sidebar's lazy list holds no AppKit control that sizes itself: the
-    /// project and topic menus, and a working chat's spinner, are SwiftUI.
+    /// The sidebar's list holds no control that sizes itself under SwiftUI:
+    /// it is AppKit, its menus are built when they open, and a working
+    /// chat's spinner turns on its own layer.
     @MainActor func testTheSidebarListHostsNoControlThatResizesItselfOnUpdate() async throws {
         let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("lazy-list-controls-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -97,8 +96,13 @@ final class LazyListAppKitControlTests: XCTestCase {
         // The list's own content, not the scroll view's scrollers.
         let content = try XCTUnwrap(list.documentView, "The sidebar's list has content")
         XCTAssertGreaterThan(descendants(content).count, 0, "The sidebar's list has content")
-        let controls = Self.selfSizingControls(in: content)
-        XCTAssertEqual(controls, [], "The sidebar's lazy list hosts AppKit controls that resize themselves on every update: \(controls)")
+        // The list is AppKit now: nothing in it is hosted by SwiftUI, so no
+        // control in it can turn its own size change into another SwiftUI
+        // transaction. It still keeps no pop-up button or progress indicator.
+        let hosts = descendants(content).filter { String(describing: type(of: $0)).contains("HostingView") }
+        XCTAssertEqual(hosts.count, 0, "The sidebar's list hosts SwiftUI: \(hosts.map { String(describing: type(of: $0)) })")
+        let controls = descendants(content).filter { $0 is NSPopUpButton || $0 is NSProgressIndicator }.map { String(describing: type(of: $0)) }
+        XCTAssertEqual(controls, [], "The sidebar's list keeps controls that size themselves: \(controls)")
         // The compacting chat still says it is working: its ring turns on
         // its own layer, at no cost to the main thread.
         let spinners = descendants(content).compactMap { $0 as? PiSpinnerView }
@@ -117,7 +121,7 @@ final class LazyListAppKitControlTests: XCTestCase {
         await Self.settle(hosted, window)
         let popUps = descendants(hosted).filter { $0 is NSPopUpButton }.map { String(describing: type(of: $0)) }
         XCTAssertEqual(popUps, [], "Live pop-up menus in the window, each rebuilt on every update of the view that holds it: \(popUps)")
-        let triggers = descendants(hosted).compactMap { $0 as? PiPopoverTriggerButton }.compactMap { $0.accessibilityIdentifier() }
+        let triggers = descendants(hosted).compactMap { $0 as? NSButton }.compactMap { $0.accessibilityIdentifier() }
         for identifier in ["projectActions-pane-project", "projectActions-project-design", "topicActions-topic-a", "conversationActions"] {
             XCTAssertTrue(triggers.contains(identifier), "\(identifier) is a menu control in the window: \(triggers)")
         }
@@ -135,9 +139,9 @@ final class LazyListAppKitControlTests: XCTestCase {
         let monitor = MenuBarMetricsController(load: { _, _, _ in throw CaptureFailure.unavailable }, period: .fifteenMinutes)
         let panel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 576), styleMask: [.borderless], backing: .buffered, defer: false)
         panel.isReleasedWhenClosed = false
-        let popup = NSHostingView(rootView: MenuBarMetricsView(load: { _, _, _ in throw CaptureFailure.unavailable }, live: model.liveActivity,
-                                                               monitorController: monitor, openApp: {}, openReport: {})
-            .environment(\.menuBarHeight, 576))
+        let popup = MenuBarMetricsView(load: { _, _, _ in throw CaptureFailure.unavailable }, live: model.liveActivity,
+                                       monitorController: monitor, openApp: {}, openReport: {})
+        popup.panelHeight = 576
         panel.contentView = popup; panel.orderFront(nil)
         defer { monitor.setVisible(false); panel.contentView = nil; panel.close() }
         let repository = root.appendingPathComponent("repository", isDirectory: true)
@@ -150,7 +154,7 @@ final class LazyListAppKitControlTests: XCTestCase {
         }
         let changes = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1180, height: 780), styleMask: [.titled], backing: .buffered, defer: false)
         changes.isReleasedWhenClosed = false
-        let panelView = NSHostingView(rootView: GitPanelView(controller: GitController(roots: [repository.path])))
+        let panelView = GitPanelView(controller: GitController(roots: [repository.path]))
         changes.contentView = panelView; changes.orderFront(nil)
         defer { changes.contentView = nil; changes.close() }
         for _ in 0..<40 {
@@ -161,7 +165,10 @@ final class LazyListAppKitControlTests: XCTestCase {
             let popUps = descendants(view).filter { $0 is NSPopUpButton }.map { String(describing: type(of: $0)) }
             XCTAssertEqual(popUps, [], "Live pop-up menus in the \(name): \(popUps)")
         }
-        let triggers = (descendants(popup) + descendants(panelView)).compactMap { $0 as? PiPopoverTriggerButton }.compactMap { $0.accessibilityIdentifier() }
+        // A menu control: the AppKit menu control (a menu-button role, its
+        // menu built on the press) in the menu bar panel, the menu button in the Changes panel.
+        let triggers = (descendants(popup).compactMap { $0 as? PiKit.MenuControl }.map { $0 as NSView }
+                        + descendants(panelView).compactMap { $0 as? PiKit.MenuButton }.map { $0 as NSView }).compactMap { $0.accessibilityIdentifier() }
         for identifier in ["monitorOptions", "git-branch-menu", "git-stash-menu"] {
             XCTAssertTrue(triggers.contains(identifier), "\(identifier) is a menu control: \(triggers)")
         }

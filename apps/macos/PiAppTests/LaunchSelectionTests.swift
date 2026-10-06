@@ -131,7 +131,7 @@ final class LaunchSelectionTests: XCTestCase {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1240, height: 800),
                               styleMask: [.titled, .closable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        let hosted = NSHostingView(rootView: WorkspaceView(model: model))
+        let hosted = WorkspaceRootView(model: model)
         window.contentView = hosted
         window.center(); window.makeKeyAndOrderFront(nil)
         addTeardownBlock { @MainActor in window.contentView = nil; window.close() }

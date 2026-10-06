@@ -1,48 +1,4 @@
 import AppKit
-import SwiftUI
-
-/// A rendered reply: one TextKit text holding every block of it, so a
-/// selection runs across paragraphs, list items, headings, code and tables,
-/// and a copy is the text it covers (`MarkdownTextDocument.swift`).
-///
-/// The surface reads the message itself (`StreamingMarkdownState`), so a token
-/// extends the reply without SwiftUI rebuilding anything: the text changes
-/// only from the first character that reads differently, TextKit lays out
-/// again only from there, and a selection above it stays as it was.
-struct NativeMarkdownSurface: NSViewRepresentable {
-    let source: String
-    let style: MarkdownStyle
-    let capsWidth: Bool
-    let streaming: Bool
-    let headings: [MarkdownCopyTarget]
-    /// Which reply this is, so a token can be handed to the surface that is
-    /// carrying it.
-    var identity: String = ""
-    /// The reader is reading this reply as its source (`ReplySource`). The
-    /// surface keeps its text and every height it measured, but draws
-    /// nothing and takes no room, so switching back finds the rendered reply
-    /// exactly as the reader left it.
-    var parked = false
-    var resolveFile: (@MainActor (String) async -> ReplyFileLocation?)? = nil
-    var openFile: ((String, ClosedRange<Int>?) -> Void)? = nil
-
-    func makeNSView(context: Context) -> NativeMarkdownContainer {
-        let view = NativeMarkdownContainer()
-        updateNSView(view, context: context)
-        return view
-    }
-    func updateNSView(_ view: NativeMarkdownContainer, context: Context) {
-        view.read(source: source, style: style, capsWidth: capsWidth, streaming: streaming, headings: headings,
-                  environment: TranscriptRowEnvironment(context.environment), identity: identity)
-        view.park(parked)
-        view.textView.resolveFile = resolveFile
-        view.textView.openFile = openFile
-        view.textView.fileLinkIdentity = identity
-    }
-    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NativeMarkdownContainer, context: Context) -> CGSize? {
-        parked ? CGSize(width: proposal.width ?? 0, height: 0) : nsView.measure(width: proposal.width)
-    }
-}
 
 /// The reply's text. Only what the reader selected is its own: a right-click
 /// elsewhere is the row's, and a copy is the reply's text as it reads —
@@ -138,7 +94,7 @@ struct NativeMarkdownSurface: NSViewRepresentable {
         textContainer?.widthTracksTextView = false
         textContainer?.heightTracksTextView = false
         layoutManager?.allowsNonContiguousLayout = false
-        linkTextAttributes = [.foregroundColor: NSColor(TranscriptPalette.accent), .cursor: NSCursor.pointingHand]
+        linkTextAttributes = [.foregroundColor: TranscriptNSPalette.accent, .cursor: NSCursor.pointingHand]
         setAccessibilityLabel("Reply")
         delegate = self
     }
@@ -287,11 +243,9 @@ struct NativeMarkdownSurface: NSViewRepresentable {
     private(set) var reconciledBlockVisits = 0
     private var invalidationScheduled = false
     private var hoverArea: NSTrackingArea?
-    private var toolbar: NSHostingView<MarkdownCodeToolbar>?
-    private weak var toolbarMark: MarkdownCodeMark?
-    private var headingAction: NSHostingView<MarkdownHeadingAction>?
-    private var headingActionIndex: Int?
-    private var tableActions: [ObjectIdentifier: NSHostingView<MarkdownTableAction>] = [:]
+    private var toolbar: MarkdownCodeToolbarView?
+    private var headingAction: MarkdownHeadingActionView?
+    private var tableActions: [ObjectIdentifier: MarkdownTableActionView] = [:]
     /// How many tables are drawn as a preview: they have a control beside them.
     private var largeTables = 0
     private var hasLargeTables: Bool { largeTables > 0 }
@@ -482,8 +436,10 @@ struct NativeMarkdownSurface: NSViewRepresentable {
         }
         let oldCount = segments.count
         guard compared < units.count || keep < oldCount || !sameText else {
+            let environmentChanged = lastInputs?.environment != inputs.environment
             lastInputs = inputs; priorSourceText = sourceText
             updateCaret()
+            if environmentChanged { applyControlEnvironment() }
             return
         }
         // A token on the fence at the reply's end sets only the code it adds.
@@ -756,7 +712,7 @@ struct NativeMarkdownSurface: NSViewRepresentable {
         // Colours are dynamic and resolve against the appearance the text is
         // drawn in; the row's colour scheme and contrast decide it.
         let dark = environment.colorScheme == .dark
-        let increased = environment.contrast == .increased
+        let increased = environment.increasedContrast
         let name: NSAppearance.Name = increased ? (dark ? .accessibilityHighContrastDarkAqua : .accessibilityHighContrastAqua) : (dark ? .darkAqua : .aqua)
         if appearance?.name != name { appearance = NSAppearance(named: name); textView.needsDisplay = true }
     }
@@ -791,6 +747,13 @@ struct NativeMarkdownSurface: NSViewRepresentable {
     }
     override var intrinsicContentSize: NSSize {
         NSSize(width: NSView.noIntrinsicMetric, height: sizes.last(where: { $0.width == bounds.width })?.height ?? NSView.noIntrinsicMetric)
+    }
+    /// Told when this surface's height may have changed by itself, for a
+    /// native row that holds it directly rather than through SwiftUI.
+    var onSizeInvalidated: (() -> Void)?
+    override func invalidateIntrinsicContentSize() {
+        super.invalidateIntrinsicContentSize()
+        onSizeInvalidated?()
     }
     override func viewDidEndLiveResize() {
         super.viewDidEndLiveResize()
@@ -966,34 +929,37 @@ struct NativeMarkdownSurface: NSViewRepresentable {
         hideHeadingAction()
     }
     private func hideControls() { hideToolbar(); hideHeadingAction() }
+    /// The controls on screen take the reply's values as they are now: a
+    /// pane that stopped taking input stops their Copy at once.
+    private func applyControlEnvironment() {
+        let environment = lastInputs?.environment ?? TranscriptRowEnvironment()
+        if let toolbar, toolbar.superview != nil { toolbar.update(language: toolbar.languageName, code: toolbar.code, environment: environment) }
+        if let headingAction, headingAction.superview != nil, let target = headingAction.target { headingAction.update(target: target, environment: environment) }
+        for view in tableActions.values { if let mark = view.mark { view.update(mark: mark, environment: environment) } }
+    }
     private func showToolbar(_ mark: MarkdownCodeMark, panel: NSRect) {
         // Made again on each move: the copy is of the code as it now reads.
-        let content = MarkdownCodeToolbar(language: mark.language, code: mark.code, environment: lastInputs?.environment ?? TranscriptRowEnvironment())
-        let view: NSHostingView<MarkdownCodeToolbar>
-        if let toolbar { view = toolbar; if toolbarMark !== mark || !toolbarShows(mark.code) { view.rootView = content } }
-        else { view = NSHostingView(rootView: content); view.sizingOptions = [.intrinsicContentSize]; toolbar = view }
-        toolbarMark = mark
+        let view = toolbar ?? MarkdownCodeToolbarView()
+        toolbar = view
+        view.update(language: mark.language, code: mark.code, environment: lastInputs?.environment ?? TranscriptRowEnvironment())
         let size = view.fittingSize
         view.frame = NSRect(x: panel.maxX - 8 - size.width, y: panel.minY + 5, width: size.width, height: 20)
         if view.superview !== self { addSubview(view, positioned: .above, relativeTo: textView) }
     }
-    private func hideToolbar() { toolbar?.removeFromSuperview(); toolbarMark = nil }
+    private func hideToolbar() { toolbar?.removeFromSuperview() }
     private func showHeadingAction(_ target: MarkdownCopyTarget, index: Int, box: NSRect) {
-        let content = MarkdownHeadingAction(target: target, environment: lastInputs?.environment ?? TranscriptRowEnvironment())
-        let view: NSHostingView<MarkdownHeadingAction>
-        if let headingAction { view = headingAction; if headingActionIndex != index { view.rootView = content } }
-        else { view = NSHostingView(rootView: content); view.sizingOptions = [.intrinsicContentSize]; headingAction = view }
-        headingActionIndex = index
+        let view = headingAction ?? MarkdownHeadingActionView()
+        headingAction = view
+        view.update(target: target, environment: lastInputs?.environment ?? TranscriptRowEnvironment())
         let size = view.fittingSize
         let trailing = min(bounds.width, lastInputs?.capsWidth == false ? bounds.width : TranscriptMetrics.proseWidth) + 30
         view.frame = NSRect(x: trailing - size.width, y: box.midY - size.height / 2, width: size.width, height: size.height)
         if view.superview !== self { addSubview(view, positioned: .above, relativeTo: textView) }
     }
-    private func hideHeadingAction() { headingAction?.removeFromSuperview(); headingActionIndex = nil }
+    private func hideHeadingAction() { headingAction?.removeFromSuperview() }
 
     /// "Open full table" beside a large table's preview line: a control, so
     /// it is always there, not only under the pointer.
-    private func toolbarShows(_ code: String) -> Bool { toolbar?.rootView.code.hasSameUTF8(as: code) ?? false }
     private func placeTableActions() {
         guard hasLargeTables || !tableActions.isEmpty else { return }
         guard hasLargeTables, let manager = textView.layoutManager as? MarkdownTextLayoutManager, let storage = textView.textStorage, !isParked else {
@@ -1008,8 +974,8 @@ struct NativeMarkdownSurface: NSViewRepresentable {
         }
         for (key, view) in tableActions where wanted[key] == nil { view.removeFromSuperview(); tableActions[key] = nil }
         for (key, entry) in wanted {
-            let view = tableActions[key] ?? NSHostingView(rootView: MarkdownTableAction(mark: entry.0, environment: lastInputs?.environment ?? TranscriptRowEnvironment()))
-            view.sizingOptions = [.intrinsicContentSize]
+            let view = tableActions[key] ?? MarkdownTableActionView()
+            view.update(mark: entry.0, environment: lastInputs?.environment ?? TranscriptRowEnvironment())
             let size = view.fittingSize
             let right = min(bounds.width, lastInputs?.capsWidth == false ? bounds.width : TranscriptMetrics.proseWidth)
             view.frame = NSRect(x: right - size.width, y: entry.1.midY - size.height / 2, width: size.width, height: size.height)
@@ -1043,14 +1009,14 @@ struct NativeMarkdownSurface: NSViewRepresentable {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
-        layer?.backgroundColor = NSColor(TranscriptPalette.accent).cgColor
+        layer?.backgroundColor = TranscriptNSPalette.accent.cgColor
         setAccessibilityElement(false)
     }
     required init?(coder: NSCoder) { nil }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
-        effectiveAppearance.performAsCurrentDrawingAppearance { layer?.backgroundColor = NSColor(TranscriptPalette.accent).cgColor }
+        effectiveAppearance.performAsCurrentDrawingAppearance { layer?.backgroundColor = TranscriptNSPalette.accent.cgColor }
     }
     func blink(_ on: Bool) {
         guard on != blinking else { return }
@@ -1062,44 +1028,5 @@ struct NativeMarkdownSurface: NSViewRepresentable {
         animation.values = [1, 1, 0, 0]; animation.keyTimes = [0, 0.5, 0.5, 1]
         animation.duration = 1; animation.repeatCount = .infinity
         layer.add(animation, forKey: "blink")
-    }
-}
-
-/// A fence's toolbar: its language and a copy of its whole code.
-struct MarkdownCodeToolbar: View {
-    let language: String?
-    let code: String
-    let environment: TranscriptRowEnvironment
-    var body: some View {
-        HStack(spacing: 6) {
-            if let language {
-                Text(language.lowercased()).font(.system(size: 10.5, weight: .medium, design: .monospaced))
-                    .foregroundStyle(TranscriptPalette.faint).accessibilityLabel("Language \(language)")
-            }
-            CopyButton(target: MarkdownCopyTarget(kind: .code, label: "Copy code", text: code), visible: true)
-        }
-        .frame(height: 20)
-        .environment(\.colorScheme, environment.colorScheme)
-    }
-}
-
-/// A heading's copy button: its section, as markdown.
-struct MarkdownHeadingAction: View {
-    let target: MarkdownCopyTarget
-    let environment: TranscriptRowEnvironment
-    var body: some View {
-        CopyButton(target: target, visible: true).environment(\.colorScheme, environment.colorScheme)
-    }
-}
-
-/// "Open full table" for a table shown as a preview.
-struct MarkdownTableAction: View {
-    let mark: MarkdownTableMark
-    let environment: TranscriptRowEnvironment
-    var body: some View {
-        Button("Open full table") { MarkdownTableWindow.open(header: mark.header, rows: mark.rows) }
-            .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(TranscriptPalette.accent)
-            .piPointer()
-            .environment(\.colorScheme, environment.colorScheme)
     }
 }

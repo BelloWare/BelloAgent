@@ -159,7 +159,7 @@ final class WorkspaceTests: XCTestCase {
 
     @MainActor func testComposerModelRefreshDoesNotPublishTextOrCompletionsBackIntoViewUpdate() throws {
         var draft = "restored draft", writes = 0, completions = 0
-        let composer = NativeComposer(text:.init(get:{ draft },set:{ draft = $0; writes += 1 }),send:{ _ in },completion:{ _ in completions += 1 })
+        let composer = NativeComposer(text: draft, textChanged: { draft = $0; writes += 1 }, send:{ _ in },completion:{ _ in completions += 1 })
         let coordinator = composer.makeCoordinator(), editor = ComposerTextView()
         editor.isRichText = false; editor.allowsUndo = true; editor.string = "previous draft"; editor.delegate = coordinator
         let window = NSWindow(contentRect:NSRect(x:0,y:0,width:400,height:150),styleMask:[.titled],backing:.buffered,defer:false)
@@ -180,7 +180,7 @@ final class WorkspaceTests: XCTestCase {
 
     @MainActor func testComposerFocusPublicationIsDeferredAndRejectsSupersededResponder() async throws {
         var focused = 0
-        let composer = NativeComposer(text:.constant(""),send:{ _ in },focused:{ focused += 1 })
+        let composer = NativeComposer(text: "", send:{ _ in },focused:{ focused += 1 })
         let coordinator = composer.makeCoordinator(), editor = ComposerTextView(), other = ComposerTextView()
         let container = NSView(frame:NSRect(x:0,y:0,width:400,height:150))
         editor.frame = NSRect(x:0,y:0,width:200,height:150); other.frame = NSRect(x:200,y:0,width:200,height:150)
@@ -202,10 +202,9 @@ final class WorkspaceTests: XCTestCase {
     // MARK: - Multi-folder workspaces
 
     @MainActor func testNewProjectPrimarySelectionReadsLiveDraftAndUpdatesAtomically() throws {
-        typealias Draft = WorkspaceManagerView.NewWorkspaceDraft
+        typealias Draft = NewWorkspaceDraft
         var state: Draft? = Draft(), writes = 0
-        let source = Binding<Draft?>(get: { state }, set: { state = $0; writes += 1 })
-        let draft = try XCTUnwrap(Draft.editing(source))
+        let draft = try XCTUnwrap(Draft.editing(get: { state }, set: { state = $0; writes += 1 }))
 
         draft.wrappedValue.selectPrimary("/fixture/primary")
         XCTAssertEqual(state?.primary, "/fixture/primary")
@@ -221,16 +220,16 @@ final class WorkspaceTests: XCTestCase {
     }
 
     @MainActor func testCancelledNewProjectCannotBeReopenedByAnOutgoingPane() throws {
-        typealias Draft = WorkspaceManagerView.NewWorkspaceDraft
+        typealias Draft = NewWorkspaceDraft
         var state: Draft? = Draft()
-        let source = Binding<Draft?>(get: { state }, set: { state = $0 })
-        let outgoing = try XCTUnwrap(Draft.editing(source))
+        let get: () -> Draft? = { state }, set: (Draft?) -> Void = { state = $0 }
+        let outgoing = try XCTUnwrap(Draft.editing(get: get, set: set))
         state = nil
         outgoing.wrappedValue.selectPrimary("/fixture/late-folder")
         XCTAssertNil(state)
-        XCTAssertNil(Draft.editing(source))
+        XCTAssertNil(Draft.editing(get: get, set: set))
         state = Draft()
-        let fresh = try XCTUnwrap(Draft.editing(source))
+        let fresh = try XCTUnwrap(Draft.editing(get: get, set: set))
         fresh.wrappedValue.selectPrimary("/fixture/new-folder")
         XCTAssertEqual(state?.primary, "/fixture/new-folder", "New Project must work again after cancellation")
     }
@@ -246,9 +245,9 @@ final class WorkspaceTests: XCTestCase {
         defer { model.shutdown() }
         try await model.reloadConfiguration()
 
-        typealias Draft = WorkspaceManagerView.NewWorkspaceDraft
+        typealias Draft = NewWorkspaceDraft
         var state: Draft? = Draft()
-        let draft = try XCTUnwrap(Draft.editing(Binding(get: { state }, set: { state = $0 })))
+        let draft = try XCTUnwrap(Draft.editing(get: { state }, set: { state = $0 }))
         draft.wrappedValue.selectPrimary(secondFolder.path)
         let primary = try XCTUnwrap(draft.wrappedValue.primary)
         let second = try await model.createWorkspace(primary: primary, extras: draft.wrappedValue.extras)

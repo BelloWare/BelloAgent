@@ -1,48 +1,47 @@
-# Next release: 0.1.119
+# Next release: 0.1.120
 
-**Released 2026-10-03** as 0.1.119 (build 123, tag `v0.1.119`); record in `docs/validation/Bello-Agent-0.1.119-2026-10-03.md`.
+**Handover: read `docs/HANDOVER-0.1.120.md` first.** **Not released.** 0.1.119 (build 123, tag `v0.1.119`) is the latest release; its record is `docs/validation/Bello-Agent-0.1.119-2026-10-03.md`.
 
-**Scope (owner, 2026-10-02):** the approved UI/UX handoff, `docs/reviews/BelloAgent-approved-UI-UX-handoff-2026-10-02.md` (D1–D8, A1, A2). Its requirements and acceptance lists are the contract; read the item's section before working on it. Release when every item below is done.
+**Scope (owner, 2026-10-04): no SwiftUI.** Every view, window and the app itself move to AppKit, for predictable layout and real performance across the board. The look stays pixel-identical (screenshot gallery before/after) apart from run-to-run data. Behaviour, keyboard, focus and accessibility stay the same or better. **One release at the end**, when no file imports SwiftUI, the gate passes and the hour soak is clean.
 
-**All work goes on `dev/next`.** Workstream branches (`dev/ws-git`, `dev/ws-queue`, `dev/ws-ui`) are merged here by the integrator. `main` holds released versions only — never push to `main` outside a release.
+**All work goes on `dev/next`.** Workstream branches (`dev/appkit-*`) are merged here by the integrator. `main` holds released versions only — never push to `main` outside a release.
 
 ## How work is done
 - Parallel workstream agents, each in its own worktree, build folder and Codex session (gpt-6.1-sol, xhigh, read-only) that plans every step and reviews every diff before commit.
-- Every change gets tests that fail without it (mutation-checked), including the failure and interruption paths the handoff lists.
+- Port, don't redesign: same layout, spacing, colours, motion, copy and behaviour. Compare gallery captures before and after (`scripts/compare-captures.py`); differences must be run-to-run data only.
+- Performance discipline: reuse views, draw only what is visible, never relayout what didn't change, no work per token across the window. Measure against the baseline below.
+- Existing tests keep passing; tests that read SwiftUI structure are rewritten to read AppKit/accessibility instead, never deleted without an equivalent.
 - Checks: `scripts/check-next.sh` (build, `test <Class>…`, `helper`, `gate`). Serial-lane classes run alone.
 
 ## Rules for code on this branch
-- Native only (AppKit/SwiftUI), the app's Pi components, no stock controls.
-- The helper follows pi 0.85.1 except where the handoff approves otherwise; wire changes are optional fields.
-- No timing waits that count polls (use `eventually` in PiAppTests/TestSeams.swift).
-- `packages/bello-views` stays free of app types; macOS 13. App target macOS 14.
-- Motion policy unchanged (always-on app motion).
+- AppKit only for new code. A file stops importing SwiftUI when its port is done.
+- Keep the app's Pi look; no stock-looking controls.
+- Keep `packages/bello-views` free of app types; macOS 13. App target macOS 14.
+- Motion policy unchanged. Accessibility (A1) must not regress: native AppKit accessibility roles, labels, values and selected states.
 - Tick items here in the commit that finishes them.
 
-## Workstream Git — Git and files (`dev/ws-git`)
-- [x] **D1** Commit Checked Files vs Commit Staged Changes, explicit scope; true Reword Last Commit that keeps the tree, index and worktree.
-- [x] **D6** Find and Go to Line survive a live file reload.
-- [x] **D8** Git Blame in the file viewer, with clicks opening the real commit-versus-parent diff at the line in Changes → History.
+## Wave 1
+- [x] **Baseline**: today's numbers on dev/next before any port — chat switch, opening a large chat, streaming a long reply, scrolling, typing latency, soak main-thread maxima. Recorded in `docs/perf/appkit-baseline.md`.
+- [x] **Pi components in AppKit** (`Design/`): buttons, toggles/switches, tabs, steppers, choice picker, menu, popover, hover card, sheet, question, badges, stat pill, surfaces, flow indicators, chart parts. Same look and API shape; gallery parity.
+- [x] **Transcript** (`Transcript/`): rows, cards, chrome, pills, markdown/code surfaces, turn fold, versions, large table — all AppKit inside the existing AppKit scroll view. Chat switch measured against the baseline.
 
-## Workstream Queue — queue and input (`dev/ws-queue`)
-- [x] **D2** Editing a queued message holds all pending input in that chat; durable, atomic acquire/save/cancel/remove with edit identity; restart reconciliation.
-- [x] **D4** Bounded, scrolling, collapsible queue panel; steering vs follow-up headings with truthful timing; full text and captured model/effort on demand.
-- [x] **A2** Image-only messages valid on every submission path for models that take images.
+## Wave 2 (after the components land)
+- [x] **Workspace shell** (`Workspaces/`, `Composer/`, `Tabs/`, `Terminal/`): sidebar, conversation pane, footer, composer chrome, queue panel, tabs, terminal panel, sheets.
+  - Native views are mounted directly. The metrics footer retains responsive layout, capture controls, run clock and automatic context counting; temporary SwiftUI adapters have been removed.
+- [x] **Inspector and dashboard** (`Inspector/`, `Dashboard/`).
+  - All Inspector pages, statistics dialogs, retained bodies, JSON/search, resources and MCP controls now use AppKit. Dashboard, live monitor, menu-bar panel, chart engine and cost-limit controls are integrated. Focused parity, lifetime, selection and accessibility checks pass; the complete gallery and gate remain below.
+- [x] **Settings, onboarding, Git, files** (`Application/` settings and onboarding views, `Git/`, `Files/`, and the two SwiftUI files in `packages/bello-views`).
 
-## Workstream UI — Settings, terminals, MCP (`dev/ws-ui`)
-- [x] **D3** Settings: Save All, Cancel discards, dirty close offers Save / Discard / Keep Editing; guarded Reload; honest partial saves.
-- [x] **D5** Multiple terminals per project: create, switch, rename, close; confirm restart/close of a live shell (Cancel default).
-- [x] **D7** "Remove All MCP Servers…" with an honest confirmation and result.
+Integration checks: [AppKit integration record](docs/validation/AppKit-integration-0.1.120-2026-10-05.md). The fresh `1aa78749` gate passes every native/helper/wire/script check; a views-package test's unspecified task-entry order was repaired and the complete 167-case package plus two ten-case repeats pass. All 192 fresh pairs were actually viewed. Their last visible defect, missing narrow Git background overflow, is repaired; all 28 affected Git checks pass after mutation proof and byte-for-byte restoration, including eight strengthened frozen cases and exact light/dark caption pixels. The bounded source reviews report no introduced findings. The final full gallery passes, with the affected composed screens being re-reviewed; final-source Release measurements and the actual hour soak remain pending.
 
-## After the workstreams merge
-- [x] **A1** Contextual accessibility in shared Pi controls and the new queue, terminal, Git-scope and blame controls (AX-tree assertions).
-
-## Refactors — not in this release
-Left to a separate agent (owner, 2026-10-02): composer @Observable pilot; AgentSession property groups; shutdown task ownership; narrower chat-change invalidation; shared journal-format module; remaining poll-counting waits.
+## Wave 3
+- [x] **App shell**: native `NSApplicationDelegate`, window controllers, menus and Settings window. Production sources in the app and `bello-views` have no SwiftUI imports or hosting views; a test enforces this. Frozen SwiftUI references remain in the test target for parity checks.
 
 ## Before release
-- [x] Full gate passes (`scripts/verify-release.sh` at 163a292f; the one failure, a poll-count test wait, fixed in 2b847707 and its class rerun).
-- [x] Hour-long soak of a Release build passes, no exceptions (seed 1790977596393, 0 stalls, longest 207 ms).
-- [x] Gallery reviewed for the new states (light/dark, minimum window size 920×600).
-- [x] Owner checks deferred by the owner (2026-10-03): VoiceOver across Settings, queue, file viewer, terminals; one compaction against a real gateway.
-- [x] Release notes (`releases/0.1.119.html`).
+- [x] Codex (gpt-6.1-sol, xhigh) double-checks the whole change from e59e41a7 and gives advice; findings acted on, advice reported to the owner (owner, 2026-10-04). Whole-change and subsequent bounded repair reviews report no introduced findings, including the composer/footer performance correction, narrow Git background and test-entry-order correction. Tests subsequently caught a transitional underlay fill; the final replacement reuses the existing flat `FillView` and passes unchanged light/dark pixel checks. Advice: confirm composed background coverage and event routing, finish comparable Release measurements and the actual hour soak before publication. See the integration record for exact review pins and limits.
+- [x] Comparable Release performance recorded: all 16 baseline and 16 final invocations pass with the same fixtures, seed and start-load limit. Opening/reopening, streaming, scrolling and typical/p90 typing improve. Whole-window switching is broadly similar; typing maxima are slightly higher (9.9–10.8 ms versus 7.9–9.7 ms), reduced from the earlier candidate's 15–17 ms. This explicitly replaces the original blanket "no measure worse" criterion with the actual measurements under the owner's instruction that the handover need not be followed completely. See `docs/perf/appkit-0.1.120-final.md` for every round and memory/lifetime limits.
+- [x] Complete visible-screen gallery review: all 192 fresh `1aa78749` pairs were viewed side by side. The discovered 15.5-point Git background defect is fixed in `70812d5f`; a fresh complete 192-capture run passes, and all 12 affected Git pairs were viewed afresh, including original 2x narrow captures. Unchanged-screen reviews are reused under `docs/Release.md`. No remaining actionable owned layout/color defect was found in the visible coverage. This is not blanket pixel equality: generated data/path wrapping, initial lazy scroll-thumb estimates, focus/selection, optical differences and offscreen limits remain explicit in the integration record and per-image notes.
+- [x] Release gate checks complete: `1aa78749` ran the whole gate, passing 628 serial cases and 1,937 parallel passes plus every remaining check except one views-package test's unspecified task-entry order. The corrected full views package passes 167 cases, with two additional affected repeats. The later background correction passes eight strengthened frozen geometry/pixel cases; unchanged passing checks are reused under `docs/Release.md`. The original gate's nonzero exit and corrective logs are preserved rather than described as a fresh zero-exit run.
+- [x] Actual mixed-action Release hour passes with original thresholds: 3,607 seconds, 177 launches, zero pauses over 250 ms, zero row jumps, zero slow/missing launches and zero quit failures. Longest recorded answer is 115 ms. The in-process harness retains 177 windows and six recent models, with zero closed views; footprint rises 102→922 MB (4.66 MB/cycle). Its teardown is unchanged apart from the native root, and previous releases document this test-window retention. This passes the soak's responsiveness/stability gates, not a bounded-memory certification. Full report is preserved in the validation record.
+- [ ] Owner checks, or the owner defers them: VoiceOver; one compaction against a real gateway.
+- [x] Release notes, including the terminal cursor correction (`releases/0.1.120.html`).

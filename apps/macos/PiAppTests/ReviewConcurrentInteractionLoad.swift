@@ -8,7 +8,7 @@ import XCTest
 /// verification remain the integration's real request-aware paths.
 @MainActor final class ReviewConcurrentInteractionLoad {
     let window: NSWindow
-    let hosted: NSHostingView<WorkspaceView>
+    let hosted: WorkspaceRootView
     let inspector: NSWindow
     private let model: WorkspaceModel
     private var seeded: Set<String> = []
@@ -26,13 +26,12 @@ import XCTest
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1460, height: 850), styleMask: [.titled, .resizable],
                           backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        hosted = NSHostingView(rootView: WorkspaceView(model: model))
+        hosted = WorkspaceRootView(model: model)
         window.contentView = hosted; window.makeKeyAndOrderFront(nil)
         inspector = NSWindow(contentRect: NSRect(x: 1400, y: 0, width: 650, height: 600), styleMask: [.titled],
                              backing: .buffered, defer: false)
         inspector.isReleasedWhenClosed = false
-        inspector.contentView = NSHostingView(rootView: JSONOutlineView(json: json, selection: .constant(""),
-                                                                       expandRevision: 0, expandAll: false))
+        inspector.contentView = JSONOutlineView(json: json, selection: "", expandRevision: 0, expandAll: false)
         inspector.orderFront(nil)
     }
     private func descendants<T: NSView>(_ type: T.Type, in view: NSView) -> [T] {

@@ -1,7 +1,7 @@
 import AppKit
 
 @MainActor
-final class ApplicationLifecycle: NSObject, NSApplicationDelegate {
+class ApplicationLifecycle: NSObject, NSApplicationDelegate {
     weak var model: WorkspaceModel?
     private var terminating = false
     /// True while the stop-and-quit question is on screen. AppKit may ask again

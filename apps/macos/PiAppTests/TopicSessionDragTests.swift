@@ -30,14 +30,14 @@ final class TopicSessionDragTests: XCTestCase {
         }
     }
 
-    @MainActor func testActualItemProvidersDispatchOneDeduplicatedMove() async throws {
-        let first = TopicSessionDrag(sessionIDs: ["first"], workspaceID: "project").provider()
-        let duplicate = TopicSessionDrag(sessionIDs: ["first", "second"], workspaceID: "project").provider()
-        let second = TopicSessionDrag(sessionID: "second", workspaceID: "project").provider()
-        XCTAssertEqual(first.registeredTypeIdentifiers, [TopicSessionDrag.type.identifier], "Dragging is not also a text or file drop")
+    @MainActor func testADragsPasteboardItemsDispatchOneDeduplicatedMove() async throws {
+        let first = try XCTUnwrap(TopicSessionDrag(sessionIDs: ["first"], workspaceID: "project").pasteboardItem())
+        let duplicate = TopicSessionDrag(sessionIDs: ["first", "second"], workspaceID: "project").pasteboardItem()
+        let second = TopicSessionDrag(sessionID: "second", workspaceID: "project").pasteboardItem()
+        XCTAssertEqual(first.types, [NSPasteboard.PasteboardType(TopicSessionDrag.type.identifier)], "Dragging is not also a text or file drop")
         let finished = expectation(description: "move called")
         var moves: [[String]] = []
-        XCTAssertTrue(TopicSessionDrag.accept([first, duplicate, second], in: "project") { ids in
+        XCTAssertTrue(TopicSessionDrag.accept(dragPasteboard([first, duplicate, second]), in: "project") { ids in
             moves.append(ids); finished.fulfill()
         } failure: { message in XCTFail(message); finished.fulfill() })
         await fulfillment(of: [finished], timeout: 3)
@@ -47,16 +47,16 @@ final class TopicSessionDragTests: XCTestCase {
     @MainActor func testOneCrossProjectItemRejectsWholeDropAndGenericDropsAreIgnored() async throws {
         let finished = expectation(description: "invalid drop reported")
         var moved = false
-        let providers = [TopicSessionDrag(sessionID: "first", workspaceID: "project").provider(),
-                         TopicSessionDrag(sessionID: "second", workspaceID: "other").provider()]
-        XCTAssertTrue(TopicSessionDrag.accept(providers, in: "project") { _ in moved = true; finished.fulfill() }
+        let items = dragPasteboard([TopicSessionDrag(sessionID: "first", workspaceID: "project").pasteboardItem(),
+                                    TopicSessionDrag(sessionID: "second", workspaceID: "other").pasteboardItem()])
+        XCTAssertTrue(TopicSessionDrag.accept(items, in: "project") { _ in moved = true; finished.fulfill() }
                       failure: { _ in finished.fulfill() })
         await fulfillment(of: [finished], timeout: 3)
         XCTAssertFalse(moved, "A partially valid drop must never partially move chats")
-        let generic = NSItemProvider(object: "session" as NSString)
-        XCTAssertFalse(TopicSessionDrag.accept([generic], in: "project", move: { _ in XCTFail("Text cannot move a chat") }, failure: { _ in XCTFail("Text is not a sidebar drag") }))
-        XCTAssertFalse(TopicSessionDrag.accept([], in: "project", move: { _ in XCTFail() }, failure: { _ in XCTFail() }))
-        let oversized = (0...TopicSessionDrag.maximumItems).map { TopicSessionDrag(sessionID: "s\($0)", workspaceID: "project").provider() }
-        XCTAssertFalse(TopicSessionDrag.accept(oversized, in: "project", move: { _ in XCTFail() }, failure: { _ in XCTFail() }))
+        let generic = NSPasteboardItem(); generic.setString("session", forType: .string)
+        XCTAssertFalse(TopicSessionDrag.accept(dragPasteboard([generic]), in: "project", move: { _ in XCTFail("Text cannot move a chat") }, failure: { _ in XCTFail("Text is not a sidebar drag") }))
+        XCTAssertFalse(TopicSessionDrag.accept(dragPasteboard([]), in: "project", move: { _ in XCTFail() }, failure: { _ in XCTFail() }))
+        let oversized = (0...TopicSessionDrag.maximumItems).map { TopicSessionDrag(sessionID: "s\($0)", workspaceID: "project").pasteboardItem() }
+        XCTAssertFalse(TopicSessionDrag.accept(dragPasteboard(oversized), in: "project", move: { _ in XCTFail() }, failure: { _ in XCTFail() }))
     }
 }

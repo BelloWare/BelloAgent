@@ -1,4 +1,4 @@
-import SwiftUI
+import AppKit
 
 // The bridge between what the window shows and what AppKit does about first
 // responders and visibility. Opacity and SwiftUI hit testing do not resign an
@@ -14,22 +14,6 @@ import SwiftUI
 /// move keyboard focus onto the report's responder chain, or from a covered
 /// side to the tab over it. Only page, window and tab changes walk the
 /// native view tree; streaming does not trigger scans.
-struct ConversationPageVisibility: NSViewRepresentable {
-    let reportVisible: Bool
-    let focusIdentity: String?
-    let closeReport: () -> Void
-    /// The sides a tab shown in the pane covers now.
-    var covered: Set<String> = []
-    /// Where focus goes from a side a tab covers: the tab's own.
-    var contentFocus: () -> NSView? = { nil }
-    func makeNSView(context: Context) -> ConversationPageVisibilityView { ConversationPageVisibilityView() }
-    func updateNSView(_ view: ConversationPageVisibilityView, context: Context) {
-        view.closeReport = closeReport; view.contentFocus = contentFocus
-        view.update(reportVisible: reportVisible, focusIdentity: focusIdentity, covered: covered)
-    }
-    static func dismantleNSView(_ view: ConversationPageVisibilityView, coordinator: ()) { view.restoreNativeViews(restoreFocus: false) }
-}
-
 @MainActor final class ConversationPageVisibilityView: NSView {
     private struct HiddenView { weak var view: NSView?; let wasHidden: Bool }
     private var hiddenViews: [HiddenView] = []

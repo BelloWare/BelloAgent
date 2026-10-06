@@ -1,20 +1,10 @@
-import SwiftUI
+import AppKit
+import Combine
+import QuartzCore
 
 // One chat on one line: its title, its state, its figures and its unread
 // dot, plus the side conversation that hangs under it. Every row here is
-// given values its parent already looked up, so it can be compared rather
-// than rebuilt.
-
-/// A small accent dot marks a chat with replies the user has not viewed. The
-/// sidebar records only whether a chat is unread, never how many replies.
-struct UnreadDot: View {
-    /// A run that failed while you were away: marked, but never counted in the Dock badge.
-    var failure = false
-    var body: some View {
-        Circle().fill(failure ? Color.piDanger : Color.piBrandOrange).frame(width: 7, height: 7)
-            .accessibilityLabel(failure ? "Run failed" : "Unread replies").help(failure ? "The last run failed while you were away" : "New replies you have not viewed")
-    }
-}
+// given values its parent already looked up, so it changes only what changed.
 
 /// Compact live stats for a sidebar row: state, cost and the session's input,
 /// cached-input and output tokens. The composer footer owns the separate
@@ -103,275 +93,365 @@ struct ChatRowStats: Equatable {
     var rateLabel: String? { timing.flatMap { SessionRatePresentation(history: $0).label } }
 }
 
-/// What a chat row shows, given values its parent has already looked up. It
-/// holds the model to act on a press, never to observe it: the row it belongs
-/// to is compared on `SidebarChatRowState`, so nothing drawn here may come
-/// from state that comparison does not cover.
-struct ChatRow: View {
-    let model: WorkspaceModel
-    let chat: ChatRecord
-    let selected: Bool
-    var unreadCount = 0
-    var unreadFailure = false
-    /// Whether this chat has a loaded page. The caller has already looked, and
-    /// the answer is part of what its row is compared on.
-    var live = false
-    /// "Ready", "Archived · Work connection": worked out by the group,
-    /// which knows how many connections there are to name.
-    var subtitle = ""
-    var hasSide = false
-    var expanded = true
-    /// What this row's metrics line has to itself; see `ChatRowMetrics`.
-    var available: CGFloat = .infinity
-    var toggle: () -> Void = {}
-    private var symbol: String { chat.imported ? "doc.text" : chat.parentSessionID != nil ? "arrow.triangle.branch" : chat.connectionTest == true ? "checkmark.seal" : chat.toolMode == ChatRecord.readOnlyTools ? "eye" : "bubble.left" }
-    private var archiveAction: (() -> Void)? { chat.isUtilityChat ? nil : { model.toggleSessionArchive(chat.id) } }
-    @Environment(\.sidebarMinute) private var minute
-    var body: some View {
-        if live, let display = model.displays[chat.id] {
-            LiveChatRow(session: display, footer: display.footer, title: chat.title, subtitle: subtitle, symbol: symbol, selected: selected, unreadCount: unreadCount, unreadFailure: unreadFailure, hasSide: hasSide, expanded: expanded, available: available, toggle: toggle, pinned: chat.isPinned, archived: chat.isArchived, archive: archiveAction)
-        } else {
-            RetainedAccountingRow(accounting: model.chatAccounting.row(for: chat.id)) { totals in
-                // The chevron's action too: without it, a chat not loaded in
-                // this launch could not fold or unfold its sides.
-                ChatRowBody(stats: ChatRowStats(totals: totals, now: minute ?? Date()), title: chat.title, subtitle: subtitle, symbol: symbol, selected: selected, unreadCount: unreadCount, unreadFailure: unreadFailure, hasSide: hasSide, expanded: expanded, toggle: toggle, pinned: chat.isPinned, available: available, archived: chat.isArchived, archive: archiveAction).equatable()
-            }
+/// The minute the sidebar's "3m ago" stamps are worked out against: one
+/// clock for every row, ticking on the minute. A row whose stamp still reads
+/// the same draws nothing new.
+@MainActor final class SidebarMinute {
+    static let shared = SidebarMinute()
+    /// Ticks on each minute, for the rows to redraw their stamps.
+    @Published private(set) var tick = Date()
+    /// The time a stamp is worked out against: read when a row draws, as
+    /// SwiftUI's clock gave the date of the pass.
+    var now: Date { Date() }
+    private var timer: Timer?
+    private init() { schedule() }
+    private func schedule() {
+        let next = (floor(Date().timeIntervalSinceReferenceDate / 60) + 1) * 60
+        let timer = Timer(fire: Date(timeIntervalSinceReferenceDate: next), interval: 60, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.tick = Date() }
         }
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
     }
 }
 
-struct RetainedAccountingRow<Content: View>: View {
-    @ObservedObject var accounting: CachedSessionAccounting
-    @ViewBuilder var content: (GatewayTotals?) -> Content
-    var body: some View { content(accounting.totals) }
-}
-
-/// Observes a loaded session so its row updates while it runs.
-private struct LiveChatRow: View {
-    @ObservedObject var session: SessionDisplay
-    @ObservedObject var footer: SessionMetrics
-    let title: String
-    let subtitle: String
-    let symbol: String
-    let selected: Bool
-    let unreadCount: Int
-    var unreadFailure = false
-    let hasSide: Bool
-    let expanded: Bool
-    var available: CGFloat = .infinity
-    let toggle: () -> Void
-    var pinned = false
-    var archived = false
-    var archive: (() -> Void)? = nil
-    @Environment(\.sidebarMinute) private var minute
-    private var stats: ChatRowStats {
-        let now = minute ?? Date()
-        var value = ChatRowStats(totals: footer.gateway, timing: footer.timing, now: now)
-        value.updateActivity(state: session.state, loading: session.loading, activity: session.activity)
-        value.costLimited = session.failureCode == SessionDisplay.costLimitCode
-        // A message that just landed is more recent than the last retained request.
-        if let at = session.messages.last(where: { $0.at != nil })?.at { value.noteActivity(max(value.lastActivity ?? 0, at / 1_000), now: now) }
-        return value
+/// A small accent dot marks a chat with replies the user has not viewed. The
+/// sidebar records only whether a chat is unread, never how many replies.
+@MainActor final class UnreadDotView: NSView {
+    /// A run that failed while you were away: marked, but never counted in the Dock badge.
+    var failure = false { didSet { if oldValue != failure { apply() } } }
+    static let size: CGFloat = 7
+    init(failure: Bool = false) {
+        self.failure = failure
+        super.init(frame: NSRect(x: 0, y: 0, width: Self.size, height: Self.size))
+        wantsLayer = true
+        layer?.cornerRadius = Self.size / 2
+        setAccessibilityElement(true); setAccessibilityRole(.image)
+        apply()
     }
-    var body: some View { row }
-    private var row: some View {
-        ChatRowBody(stats: stats, title: title, subtitle: subtitle, symbol: symbol, selected: selected, unreadCount: unreadCount, unreadFailure: unreadFailure, hasSide: hasSide, expanded: expanded, toggle: toggle, pinned: pinned, available: available, archived: archived, archive: archive).equatable()
+    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    override var intrinsicContentSize: NSSize { NSSize(width: Self.size, height: Self.size) }
+    private func apply() {
+        setAccessibilityLabel(failure ? "Run failed" : "Unread replies")
+        toolTip = failure ? "The last run failed while you were away" : "New replies you have not viewed"
+        needsDisplay = true; updateLayer()
+    }
+    override var wantsUpdateLayer: Bool { true }
+    override func updateLayer() { layer?.backgroundColor = piCGColor(failure ? .piDanger : .piBrandOrange) }
+    override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); updateLayer() }
+    /// Arrives with a small spring, as `.transition(.scale.combined(with: .opacity))`.
+    func popIn() {
+        guard !PiKit.Motion.reduced, let layer else { return }
+        let pop = PiKit.Motion.pop("transform.scale"); pop.fromValue = 0; pop.toValue = 1
+        let fade = CABasicAnimation(keyPath: "opacity"); fade.fromValue = 0; fade.toValue = 1; fade.duration = pop.duration
+        layer.add(pop, forKey: "pop"); layer.add(fade, forKey: "fade")
     }
 }
 
-/// A row whose inputs have not changed must not re-measure and re-lay out its
-/// metrics line. Every workspace change invalidates the whole sidebar, so
-/// without this an unread dot or a selection redraws every row of every group.
-struct ChatRowBody: View, Equatable {
-    nonisolated static func == (lhs: ChatRowBody, rhs: ChatRowBody) -> Bool {
-        lhs.stats == rhs.stats && lhs.title == rhs.title && lhs.subtitle == rhs.subtitle && lhs.symbol == rhs.symbol
-            && lhs.selected == rhs.selected && lhs.unreadCount == rhs.unreadCount && lhs.unreadFailure == rhs.unreadFailure
-            && lhs.hasSide == rhs.hasSide && lhs.expanded == rhs.expanded && lhs.pinned == rhs.pinned
-            && lhs.indent == rhs.indent && lhs.archived == rhs.archived && lhs.available == rhs.available
-        // `toggle` and `archive` are fixed by the chat this row is identified
-        // by: a background task or a connection test never gains the control.
+/// The sidebar's rate slot: the latest completed request's output rate, as
+/// plain text in one stable 108-point slot.
+@MainActor final class SidebarRateView: NSView {
+    static let width: CGFloat = 108
+    private let line = PiKit.TextLine(PiKit.Line("", font: SidebarRateView.font, color: .piInkTertiary))
+    static var font: NSFont { PiKit.Font.monospacedDigits(PiKit.Font.caption) }
+    var presentation: SessionRatePresentation? { didSet { if oldValue != presentation { apply(fade: oldValue != nil) } } }
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        addSubview(line)
+        line.setAccessibilityElement(false)
+        toolTip = SessionRatePresentation.explanation
+        setAccessibilityElement(true); setAccessibilityRole(.staticText)
+        setAccessibilityLabel("Latest completed output rate"); setAccessibilityIdentifier("sidebar-reported-rate")
     }
-    let stats: ChatRowStats
-    let title: String
-    let subtitle: String
-    let symbol: String
-    let selected: Bool
-    var unreadCount = 0
-    var unreadFailure = false
-    var hasSide = false
-    var expanded = true
-    var toggle: () -> Void = {}
-    var pinned = false
-    var indent = false
-    /// What the metrics line has to itself at the sidebar's current width.
-    var available: CGFloat = .infinity
-    /// Archive control: one click asks, a second confirms; restore is immediate.
-    var archived = false
-    var archive: (() -> Void)? = nil
-    @State private var confirmingArchive = false
-    @State private var hovering = false
-    var body: some View {
-        HStack(alignment: .center, spacing: 8) {
-            ZStack {
-                // Not a ProgressView: that is an AppKit view resizing itself
-                // inside the sidebar's lazy list (PiSpinner).
-                if stats.busy || stats.loading { PiSpinner(size: 11) }
-                else { Image(systemName: symbol).font(.system(size: 12, weight: .medium)).foregroundStyle(selected ? Color.piAccent : Color.piInkSecondary) }
-            }.frame(width: 16, height: 16)
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 4) {
-                    // An archived chat reads quieter than the active ones above it,
-                    // until it is the one open.
-                    Text(title).font(.system(size: 13, weight: selected || unreadCount > 0 ? .semibold : .regular))
-                        .foregroundStyle(archived && !selected ? Color.piInkSecondary : Color.piInk).lineLimit(1).truncationMode(.tail)
-                        .contentTransition(.opacity).piAnimation(PiMotion.base, value: title)
-                    if pinned { Image(systemName: "pin.fill").font(.system(size: 9)).foregroundStyle(Color.piInkTertiary).accessibilityLabel("Pinned chat") }
-                    Spacer(minLength: 4)
-                    // The dot animates itself. Hanging the animation off the
-                    // whole row made every row pay for it on every redraw.
-                    ZStack {
-                        if unreadCount > 0 || unreadFailure { UnreadDot(failure: unreadFailure && unreadCount == 0).transition(.scale.combined(with: .opacity)) }
-                    }
-                    .piAnimation(PiMotion.spring, value: unreadCount > 0 || unreadFailure)
-                    if archive != nil || hasSide {
-                        // Published so a draggable row's AppKit press surface can
-                        // leave these presses to SwiftUI; see SidebarRowControlBounds.
-                        HStack(spacing: 4) {
-                            if let archive {
-                                if confirmingArchive {
-                                    Button("Archive") { confirmingArchive = false; archive() }.buttonStyle(.piPrimaryCompact)
-                                        .accessibilityIdentifier("confirmArchive")
-                                    PiIconButton(symbol: "xmark", label: "Keep chat", size: 18) { confirmingArchive = false }
-                                } else {
-                                    PiIconButton(symbol: archived ? "arrow.uturn.backward" : "archivebox", label: archived ? "Restore chat" : "Archive chat", size: 18) {
-                                        if archived { archive() } else { confirmingArchive = true }
-                                    }
-                                    // Quiet at rest, solid under the pointer: a
-                                    // control the pointer only strengthens, never
-                                    // conjures. Invisible, it could not be found
-                                    // and gave keyboard focus nowhere to show.
-                                    .opacity(hovering || confirmingArchive ? 1 : 0.28)
-                                    .piAnimation(PiMotion.quick, value: hovering)
-                                    .accessibilityIdentifier(archived ? "restoreChat" : "archiveChat")
-                                }
-                            }
-                            if hasSide {
-                                PiIconButton(symbol: "chevron.down", label: expanded ? "Hide child chats" : "Show child chats", size: 18, action: toggle)
-                                    .rotationEffect(.degrees(expanded ? 0 : -90))
-                            }
-                        }
-                        .anchorPreference(key: SidebarRowControlBounds.self, value: .bounds) { [$0] }
-                        // Only the confirm/cancel pair swaps; the row does not.
-                        .piAnimation(PiMotion.quick, value: confirmingArchive)
-                    }
-                }
-                if stats.hasActivity { ChatRowMetrics(stats: stats, title: title, available: available) } else {
-                    Text(subtitle).font(PiFont.caption).foregroundStyle(Color.piInkTertiary).lineLimit(1).truncationMode(.tail)
-                }
-            }
+    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    override var isFlipped: Bool { true }
+    override var intrinsicContentSize: NSSize { NSSize(width: Self.width, height: line.intrinsicContentSize.height) }
+    private func apply(fade: Bool) {
+        let label = presentation?.label
+        line.line = PiKit.Line(label ?? "", font: Self.font, color: presentation?.latest == nil ? .piInkTertiary : .piInkSecondary)
+        setAccessibilityValue(label ?? "Not measured")
+        if fade, window != nil, !PiKit.Motion.reduced {
+            let transition = CATransition(); transition.type = .fade; transition.duration = PiKit.Motion.quick
+            line.wantsLayer = true; line.layer?.add(transition, forKey: "label")
         }
-        .help(subtitle + (stats.requests > 0 ? " · \(stats.requests) requests · cache \(stats.cacheHits) hit / \(stats.cacheMisses) miss" : ""))
-        // Accounting refreshes are data updates, not whole-row transitions, and
-        // neither the dot nor the archive question is a change to the row: both
-        // animate where they happen, above.
-        .onHover { inside in hovering = inside; if !inside { confirmingArchive = false } }
     }
+    override func layout() { super.layout(); line.frame = CGRect(x: 0, y: 0, width: bounds.width, height: bounds.height) }
 }
 
-/// Ordinary rows keep one line. A narrow sidebar puts the stable rate below
-/// state/cost instead of letting a fixed-width metric overflow the chat row.
-struct ChatRowMetrics: View {
-    let stats: ChatRowStats
-    let title: String
-    /// What this line has to itself. `ViewThatFits` used to answer the same
-    /// question by laying out all four forms for every row on every pass; the
-    /// strings are measured once instead and the widest form that fits is the
-    /// only one built. The line still truncates as a last resort, so a
-    /// rounding difference shows an ellipsis rather than running past the edge.
-    var available: CGFloat = .infinity
-    @ViewBuilder var body: some View {
-        if available.isFinite {
-            chosen(SidebarMetricsFigures(stats).form(fitting: available)).piStableLayout()
-        } else {
-            // Nobody told this line how much room it has, so it works it out
-            // the way it always did. The sidebar always tells it.
-            ViewThatFits(in: .horizontal) {
-                statsRow(tokens: true, recency: true, fitted: false)
-                statsRow(tokens: false, recency: true, fitted: false)
-                statsRow(tokens: false, recency: false, fitted: false)
-                stacked
-            }
-            .piStableLayout()
-        }
+/// The metrics line under a chat's title: its state, cost, rate, tokens and
+/// recency, in the widest form that fits (`SidebarMetricsFigures`); below the
+/// narrowest single line the rate goes under the state and cost.
+@MainActor final class ChatRowMetricsView: NSView, PiKit.WidthSizing {
+    private var stats: ChatRowStats?
+    private var form: SidebarMetricsForm = .full
+    private let stateLine = PiKit.TextLine()
+    private let costLine = PiKit.TextLine()
+    private let rate = SidebarRateView()
+    private let tokensLine = PiKit.TextLine()
+    private let recencyLine = PiKit.TextLine()
+    static var font: NSFont { PiKit.Font.monospacedDigits(PiKit.Font.caption) }
+    static var stateFont: NSFont { PiKit.Font.monospacedDigits(.systemFont(ofSize: PiKit.Font.captionSize, weight: .medium)) }
+    static let spacing = SidebarMetricsFigures.spacing
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        for view in [stateLine, costLine, rate, tokensLine, recencyLine] as [NSView] { addSubview(view) }
+        tokensLine.truncation = .end; recencyLine.truncation = .end
     }
-    @ViewBuilder private func chosen(_ form: SidebarMetricsForm) -> some View {
-        if form == .stacked { stacked } else { statsRow(tokens: form.showsTokens, recency: form.showsRecency, fitted: true) }
-    }
-    private var stacked: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 6) { stateAndCost }
-            if let history = stats.timing { SidebarReportedRate(history: history, sessionTitle: title) }
-        }
-        .font(PiFont.caption.monospacedDigit()).foregroundStyle(Color.piInkTertiary).lineLimit(1)
-    }
-    /// `fitted` is a line that was chosen by measurement: it may truncate as a
-    /// last resort if the measurement and the layout ever disagree by a pixel.
-    /// A candidate offered to `ViewThatFits` must instead report the width it
-    /// wants, or every candidate would "fit" by shrinking.
-    @ViewBuilder private func statsRow(tokens showTokens: Bool, recency showRecency: Bool, fitted: Bool) -> some View {
-        let row = HStack(spacing: 6) {
-            stateAndCost
-            if let history = stats.timing { SidebarReportedRate(history: history, sessionTitle: title) }
-            // Cost and one token figure; the input, cached and output split is a hover away.
-            if showTokens, !stats.busy, let tokens = stats.tokensLabel { Text("· " + tokens).help(stats.usageHelp).accessibilityLabel(stats.usageHelp) }
-            if showRecency, let recency = stats.recencyLabel { Text("· " + recency).help("Last activity").accessibilityLabel("Last activity " + recency) }
-        }
-        .font(PiFont.caption.monospacedDigit()).foregroundStyle(Color.piInkTertiary).lineLimit(1)
-        if fitted { row.truncationMode(.tail).fixedSize(horizontal: false, vertical: true) }
-        else { row.fixedSize(horizontal: true, vertical: false) }
-    }
-    @ViewBuilder private var stateAndCost: some View {
+    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    override var isFlipped: Bool { true }
+
+    func update(stats: ChatRowStats, available: CGFloat) {
+        let form = SidebarMetricsFigures(stats).form(fitting: available)
+        guard stats != self.stats || form != self.form else { return }
+        self.stats = stats; self.form = form
+        var state: (String, NSColor)?
         if (stats.busy || stats.loading) && !stats.generating {
-            Text(PiSessionState.label(stats.state, loading: stats.loading)).foregroundStyle(Color.piWarning).fontWeight(.medium)
+            state = (PiSessionState.label(stats.state, loading: stats.loading), .piWarning)
         } else if RunState(rawValue: stats.state).isStopped {
-            Text(PiSessionState.label(stats.state, costLimited: stats.costLimited)).foregroundStyle(RunState(rawValue: stats.state) == .paused ? Color.piInfo : stats.costLimited ? Color.piWarning : Color.piDanger).fontWeight(.medium)
+            state = (PiSessionState.label(stats.state, costLimited: stats.costLimited),
+                     RunState(rawValue: stats.state) == .paused ? .piInfo : stats.costLimited ? .piWarning : .piDanger)
         }
-        if let cost = stats.costLabel { Text(cost) }
+        stateLine.isHidden = state == nil
+        if let state { stateLine.line = PiKit.Line(state.0, font: Self.stateFont, color: state.1) }
+        costLine.isHidden = stats.costLabel == nil
+        costLine.line = PiKit.Line(stats.costLabel ?? "", font: Self.font, color: .piInkTertiary)
+        rate.isHidden = stats.timing == nil
+        rate.presentation = stats.timing.map(SessionRatePresentation.init(history:))
+        let showsTokens = form.showsTokens && !stats.busy && stats.tokensLabel != nil && form != .stacked
+        tokensLine.isHidden = !showsTokens
+        tokensLine.line = PiKit.Line("· " + (stats.tokensLabel ?? ""), font: Self.font, color: .piInkTertiary)
+        tokensLine.setAccessibilityLabel(stats.usageHelp); tokensLine.toolTip = stats.usageHelp
+        let showsRecency = form.showsRecency && stats.recencyLabel != nil && form != .stacked
+        recencyLine.isHidden = !showsRecency
+        recencyLine.line = PiKit.Line("· " + (stats.recencyLabel ?? ""), font: Self.font, color: .piInkTertiary)
+        recencyLine.setAccessibilityLabel("Last activity " + (stats.recencyLabel ?? "")); recencyLine.toolTip = "Last activity"
+        invalidateIntrinsicContentSize(); needsLayout = true
     }
-}
-
-/// The open side conversation under its parent row. Values only, for the same
-/// reason as `ChatRow`.
-struct SideRow: View {
-    let title: String
-    let kept: Bool
-    let selected: Bool
-    var unreadCount = 0
-    /// The side's loaded page, when it has one; the caller has already looked.
-    var display: SessionDisplay?
-    var available: CGFloat = .infinity
-    private var subtitle: String { kept ? "Saved · Read-only" : "In memory · Read-only" }
-    var body: some View {
-        if let display {
-            LiveChatRow(session: display, footer: display.footer, title: title, subtitle: subtitle, symbol: "arrow.triangle.branch", selected: selected, unreadCount: unreadCount, hasSide: false, expanded: true, available: available, toggle: {})
+    private var lineHeight: CGFloat { PiKit.Line("Ag", font: Self.font, color: .black).lineHeight }
+    func height(forWidth width: CGFloat) -> CGFloat {
+        form == .stacked && !rate.isHidden ? lineHeight * 2 + 2 : lineHeight
+    }
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: height(forWidth: 0)) }
+    override func layout() {
+        super.layout()
+        let scale = piScale, height = lineHeight
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        let width = bounds.width
+        func place(_ view: NSView, _ natural: CGFloat) {
+            guard !view.isHidden else { return }
+            if x > 0 { x += Self.spacing }
+            let room = max(0, width - x)
+            view.frame = CGRect(x: x, y: y, width: min(natural, room), height: height)
+            x += min(natural, room)
+        }
+        place(stateLine, stateLine.intrinsicContentSize.width)
+        place(costLine, costLine.intrinsicContentSize.width)
+        if form == .stacked {
+            if !rate.isHidden { x = 0; y = height + 2; place(rate, SidebarRateView.width) }
         } else {
-            ChatRowBody(stats: ChatRowStats(totals: nil), title: title, subtitle: subtitle, symbol: "arrow.triangle.branch", selected: selected, unreadCount: unreadCount, available: available).equatable()
+            place(rate, SidebarRateView.width)
+            place(tokensLine, tokensLine.intrinsicContentSize.width)
+            place(recencyLine, recencyLine.intrinsicContentSize.width)
         }
+        _ = scale
     }
 }
 
-/// The minute the sidebar's "3m ago" stamps are worked out against, from one
-/// clock around the list. Only the rows read it, and a row whose stamp still
-/// reads the same compares equal and is not drawn again.
-private struct SidebarMinuteKey: EnvironmentKey { static let defaultValue: Date? = nil }
-extension EnvironmentValues {
-    var sidebarMinute: Date? {
-        get { self[SidebarMinuteKey.self] }
-        set { self[SidebarMinuteKey.self] = newValue }
+/// What a chat row shows: its status icon or spinner, its title, the pin,
+/// the unread dot, its archive and fold controls, and its figures or state
+/// under the title.
+@MainActor final class ChatRowBodyView: NSView, PiKit.WidthSizing {
+    struct Content: Equatable {
+        var stats: ChatRowStats
+        var title: String
+        var subtitle: String
+        var symbol: String
+        var selected: Bool
+        var unreadCount = 0
+        var unreadFailure = false
+        var hasSide = false
+        var expanded = true
+        var pinned = false
+        var archived = false
+        var archivable = false
+        var available: CGFloat = .infinity
+        var help: String {
+            subtitle + (stats.requests > 0 ? " · \(stats.requests) requests · cache \(stats.cacheHits) hit / \(stats.cacheMisses) miss" : "")
+        }
     }
-}
-struct SidebarMinuteClock: ViewModifier {
-    func body(content: Content) -> some View {
-        TimelineView(.everyMinute) { context in content.environment(\.sidebarMinute, context.date) }
+    private(set) var content: Content?
+    var toggle: () -> Void = {}
+    var archive: () -> Void = {}
+    /// The buttons at the row's end changed (the archive confirmation).
+    var controlsChanged: (() -> Void)?
+
+    private let icon = PiKit.SymbolView(PiKit.Symbol("bubble.left", size: 12, weight: .medium), color: .piInkSecondary)
+    private var spinner: PiSpinnerView?
+    private let title = PiKit.TextLine()
+    private let pin = PiKit.SymbolView(PiKit.Symbol("pin.fill", size: 9), color: .piInkTertiary)
+    private let dot = UnreadDotView()
+    private let archiveButton = PiKit.IconButton(symbol: "archivebox", label: "Archive chat", size: 18)
+    private let confirm = PiKit.Button("Archive", style: .primary, compact: true)
+    private let keep = PiKit.IconButton(symbol: "xmark", label: "Keep chat", size: 18)
+    private let chevron = PiKit.IconButton(symbol: "chevron.down", label: "Hide child chats", size: 18)
+    private let controls: ShellStack
+    private let row1: ShellStack
+    private let metrics = ChatRowMetricsView()
+    private let subtitle = PiKit.TextLine()
+    private var confirming = false
+    private var hovering = false
+    private var tracking: NSTrackingArea?
+
+    override init(frame: NSRect) {
+        controls = ShellStack(.horizontal, spacing: 4, [.view(archiveButton), .view(confirm), .view(keep), .view(chevron)])
+        row1 = ShellStack(.horizontal, spacing: 4, [.view(title, .flexible), .view(pin), .spacer(4), .view(dot), .view(controls)])
+        super.init(frame: frame)
+        title.truncation = .end; subtitle.truncation = .end
+        pin.setAccessibilityElement(true); pin.setAccessibilityRole(.image); pin.setAccessibilityLabel("Pinned chat")
+        for view in [icon, row1, metrics, subtitle] as [NSView] { addSubview(view) }
+        archiveButton.onPress = { [weak self] in
+            guard let self, let content = self.content else { return }
+            if content.archived { self.archive() } else { self.setConfirming(true) }
+        }
+        confirm.onPress = { [weak self] in self?.setConfirming(false); self?.archive() }
+        confirm.setAccessibilityIdentifier("confirmArchive")
+        keep.onPress = { [weak self] in self?.setConfirming(false) }
+        chevron.onPress = { [weak self] in self?.toggle() }
+        archiveButton.wantsLayer = true
+        chevron.wantsLayer = true
+    }
+    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    override var isFlipped: Bool { true }
+
+    /// The row's own buttons, for a drag surface over it to leave alone.
+    var controlFrames: [CGRect] {
+        guard !controls.isHidden else { return [] }
+        return [controls.convert(controls.bounds, to: self)]
+    }
+
+    func update(_ new: Content) {
+        let before = content
+        guard new != before else { return }
+        content = new
+        // The icon, or a spinner while it works.
+        let working = new.stats.busy || new.stats.loading
+        if working, spinner == nil {
+            let view = PiSpinnerView(frame: NSRect(x: 0, y: 0, width: 11, height: 11))
+            view.configure(lineWidth: 1.6, turning: !PiKit.Motion.reduced)
+            addSubview(view); spinner = view
+        } else if !working, let spinner { spinner.removeFromSuperview(); self.spinner = nil }
+        icon.isHidden = working
+        icon.symbol = PiKit.Symbol(new.symbol, size: 12, weight: .medium)
+        icon.color = new.selected ? .piAccent : .piInkSecondary
+        // The title: semibold when open or unread; quieter when archived.
+        let titleLine = PiKit.Line(new.title, font: .systemFont(ofSize: 13, weight: new.selected || new.unreadCount > 0 ? .semibold : .regular),
+                                   color: new.archived && !new.selected ? .piInkSecondary : .piInk)
+        if let before, before.title != new.title, window != nil, !PiKit.Motion.reduced {
+            let fade = CATransition(); fade.type = .fade; fade.duration = PiKit.Motion.base
+            title.wantsLayer = true; title.layer?.add(fade, forKey: "title")
+        }
+        title.line = titleLine
+        pin.isHidden = !new.pinned
+        let showsDot = new.unreadCount > 0 || new.unreadFailure
+        dot.failure = new.unreadFailure && new.unreadCount == 0
+        if dot.isHidden == showsDot {
+            dot.isHidden = !showsDot
+            if showsDot, before != nil { dot.popIn() }
+        }
+        archiveButton.symbol = new.archived ? "arrow.uturn.backward" : "archivebox"
+        archiveButton.label = new.archived ? "Restore chat" : "Archive chat"
+        archiveButton.setAccessibilityIdentifier(new.archived ? "restoreChat" : "archiveChat")
+        chevron.label = new.expanded ? "Hide child chats" : "Show child chats"
+        if before?.expanded != new.expanded { rotateChevron(animated: before != nil) }
+        if !new.archivable { confirming = false }
+        applyControls()
+        // Under the title: the figures, or the state.
+        if new.stats.hasActivity {
+            metrics.isHidden = false; subtitle.isHidden = true
+            metrics.update(stats: new.stats, available: new.available)
+        } else {
+            metrics.isHidden = true; subtitle.isHidden = false
+            subtitle.line = PiKit.Line(new.subtitle, font: PiKit.Font.caption, color: .piInkTertiary)
+        }
+        toolTip = new.help
+        row1.relayoutAll()
+        invalidateIntrinsicContentSize(); needsLayout = true
+    }
+    private func applyControls() {
+        guard let content else { return }
+        archiveButton.isHidden = !content.archivable || confirming
+        confirm.isHidden = !content.archivable || !confirming
+        keep.isHidden = !content.archivable || !confirming
+        chevron.isHidden = !content.hasSide
+        controls.isHidden = !content.archivable && !content.hasSide
+        // Quiet at rest, solid under the pointer: a control the pointer only
+        // strengthens, never conjures.
+        PiKit.Motion.layers(PiKit.Motion.quick, animated: window != nil) {
+            archiveButton.layer?.opacity = hovering || confirming ? 1 : 0.28
+        }
+        controls.relayoutAll(); row1.relayoutAll()
+    }
+    private func setConfirming(_ value: Bool) {
+        guard confirming != value else { return }
+        confirming = value
+        applyControls()
+        needsLayout = true
+        controlsChanged?()
+    }
+    /// The fold chevron turns a quarter to the left when the side chats are
+    /// hidden (`.rotationEffect`), on the button's content layer.
+    private func rotateChevron(animated: Bool) {
+        guard let content else { return }
+        let angle: CGFloat = content.expanded ? 0 : .pi / 2
+        CATransaction.begin()
+        if !animated || PiKit.Motion.reduced || window == nil { CATransaction.setDisableActions(true) } else {
+            CATransaction.setAnimationDuration(0.18); CATransaction.setAnimationTimingFunction(PiKit.Motion.timing(.easeInOut))
+        }
+        // The content layer is flipped with its view: a positive angle turns it the way SwiftUI's −90° does.
+        chevron.content.setAffineTransform(CGAffineTransform(rotationAngle: angle))
+        CATransaction.commit()
+    }
+
+    // MARK: Pointer
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect], owner: self)
+        addTrackingArea(area); tracking = area
+    }
+    override func mouseEntered(with event: NSEvent) { hovering = true; applyControls() }
+    override func mouseExited(with event: NSEvent) {
+        hovering = false
+        // Leaving the row puts the question away.
+        if confirming { setConfirming(false) } else { applyControls() }
+    }
+
+    // MARK: Layout
+
+    private var titleHeight: CGFloat { PiKit.Line("Ag", font: .systemFont(ofSize: 13), color: .black).lineHeight }
+    private func row1Height(width: CGFloat) -> CGFloat { row1.height(forWidth: width) }
+    private var secondHeight: CGFloat { metrics.isHidden ? subtitle.intrinsicContentSize.height : metrics.height(forWidth: 0) }
+    func height(forWidth width: CGFloat) -> CGFloat {
+        let text = row1Height(width: max(0, width - 24)) + 2 + secondHeight
+        return max(16, text)
+    }
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: height(forWidth: bounds.width > 0 ? bounds.width : 200)) }
+    override func setFrameSize(_ newSize: NSSize) { super.setFrameSize(newSize); needsLayout = true }
+    override func layout() {
+        super.layout()
+        let scale = piScale
+        let textWidth = max(0, bounds.width - 24)
+        let r1 = row1Height(width: textWidth), r2 = secondHeight
+        let total = r1 + 2 + r2
+        let top = PiKit.round((bounds.height - total) / 2, scale)
+        let iconY = PiKit.round((bounds.height - 16) / 2, scale)
+        icon.frame = CGRect(x: 0, y: iconY, width: 16, height: 16)
+        spinner?.frame = CGRect(x: 2.5, y: iconY + 2.5, width: 11, height: 11)
+        row1.frame = CGRect(x: 24, y: top, width: textWidth, height: r1)
+        let second: NSView = metrics.isHidden ? subtitle : metrics
+        second.frame = CGRect(x: 24, y: top + r1 + 2, width: textWidth, height: r2)
     }
 }

@@ -1,29 +1,30 @@
-import SwiftUI
 import AppKit
 
-// Configuration is literal source text. macOS smart quotes/dashes would corrupt JSON.
-struct NativeCodeEditor: NSViewRepresentable {
-    @Binding var text: String
-    var accessibilityLabel = "Literal model configuration JSON"
-    func makeCoordinator() -> Coordinator { Coordinator(self) }
-    func makeNSView(context: Context) -> NSScrollView {
-        let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.borderType = .noBorder; scroll.drawsBackground = false; scroll.autohidesScrollers = true
-        let editor = NSTextView(); editor.isRichText = false; editor.allowsUndo = true; editor.drawsBackground = false; editor.textContainerInset = NSSize(width: 8, height: 8)
+/// An editor for literal source text: configuration JSON, a handoff draft.
+/// macOS's smart quotes and dashes would corrupt it, so they are off.
+@MainActor final class NativeCodeEditorView: NSScrollView, NSTextViewDelegate {
+    let editor = NSTextView()
+    /// The reader changed the text: the new text.
+    var onChange: ((String) -> Void)?
+    /// The text as the model has it; setting it never calls `onChange`, and
+    /// leaves text being composed (marked) alone.
+    var text: String {
+        get { editor.string }
+        set { if !editor.hasMarkedText(), editor.string != newValue { editor.string = newValue } }
+    }
+
+    init(text: String = "", accessibilityLabel: String = "Literal model configuration JSON", onChange: ((String) -> Void)? = nil) {
+        self.onChange = onChange
+        super.init(frame: .zero)
+        hasVerticalScroller = true; borderType = .noBorder; drawsBackground = false; autohidesScrollers = true
+        editor.isRichText = false; editor.allowsUndo = true; editor.drawsBackground = false; editor.textContainerInset = NSSize(width: 8, height: 8)
         editor.isAutomaticQuoteSubstitutionEnabled = false; editor.isAutomaticDashSubstitutionEnabled = false
         editor.isAutomaticSpellingCorrectionEnabled = false; editor.isAutomaticTextReplacementEnabled = false
         editor.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
         editor.isVerticallyResizable = true; editor.autoresizingMask = [.width]; editor.textContainer?.widthTracksTextView = true
-        editor.delegate = context.coordinator; editor.string = text; scroll.documentView = editor
+        editor.delegate = self; editor.string = text; documentView = editor
         editor.setAccessibilityLabel(accessibilityLabel)
-        return scroll
     }
-    func updateNSView(_ scroll: NSScrollView, context: Context) {
-        context.coordinator.parent = self
-        if let editor = scroll.documentView as? NSTextView, !editor.hasMarkedText(), editor.string != text { editor.string = text }
-    }
-    @MainActor final class Coordinator: NSObject, NSTextViewDelegate {
-        var parent: NativeCodeEditor
-        init(_ parent: NativeCodeEditor) { self.parent = parent }
-        func textDidChange(_ notification: Notification) { if let editor = notification.object as? NSTextView { parent.text = editor.string } }
-    }
+    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    func textDidChange(_ notification: Notification) { onChange?(editor.string) }
 }

@@ -1,4 +1,4 @@
-import SwiftUI
+import Foundation
 
 /// The readings of the two session pills under the composer.
 ///
@@ -113,118 +113,6 @@ struct SessionStatsPresentation: Equatable {
     var hasUsage: Bool { !usageLabel.isEmpty }
 }
 
-/// Session statistics under the composer: how much work the conversation did
-/// and how fast, what it consumed, and how full the window is. Three pills,
-/// no figure that ticks while a request runs. Each opens the Session
-/// Inspector where its figure is explained: the first two its Overview, the
-/// context ring the next request.
-struct SessionStatsPills: View, Equatable {
-    @ObservedObject var session: SessionDisplay
-    @ObservedObject var footer: SessionMetrics
-    /// The context the ring reads (`WorkspaceModel.displayedContext`), worked
-    /// out by the footer that holds the pills. The pills do not observe the
-    /// whole workspace for this one reading: every change to it laid the
-    /// pills out again, twice, for the two forms the footer tries.
-    let context: [String: WireValue]
-    let selectedContextWindow: Int?
-    /// A side conversation shares the window with its parent; it keeps the two
-    /// readings that are its own and drops the session gauge.
-    var compact = false
-    /// Opens the Session Inspector at a page.
-    let open: (InspectorFocus) -> Void
-
-    init(session: SessionDisplay, footer: SessionMetrics, context: [String: WireValue], selectedContextWindow: Int?, compact: Bool = false,
-         open: @escaping (InspectorFocus) -> Void) {
-        self.session = session; self.footer = footer; self.context = context
-        self.selectedContextWindow = selectedContextWindow; self.compact = compact; self.open = open
-    }
-    /// What the session and its figures change reaches the pills through
-    /// their own observation; a footer drawn again for anything else hands
-    /// them the same reading. `open` goes to the Inspector of the session
-    /// they were made for.
-    nonisolated static func == (lhs: SessionStatsPills, rhs: SessionStatsPills) -> Bool {
-        MainActor.assumeIsolated {
-            lhs.session === rhs.session && lhs.footer === rhs.footer && lhs.context == rhs.context
-                && lhs.selectedContextWindow == rhs.selectedContextWindow && lhs.compact == rhs.compact
-        }
-    }
-
-    private var presentation: SessionStatsPresentation {
-        SessionStatsPresentation(gateway: footer.gateway, work: WorkSplit(timing: footer.turnTiming), cost: footer.cost)
-    }
-    private var meter: ContextMeterPresentation {
-        ContextMeterPresentation(context: context,
-                                 capacity: session.hasWork ? nil : selectedContextWindow.map(Double.init))
-    }
-
-    var body: some View {
-        let _ = RedrawCounter.note("statsPills")
-        let stats = presentation
-        // The pills flow like a sentence: a narrow pane wraps between them
-        // rather than cutting a figure in half.
-        PiFlow(spacing: PiSpacing.xs, rowSpacing: 3, reportsUsedWidth: true) {
-            if !compact, stats.steps > 0 {
-                PiStatButton(symbol: "gauge.with.dots.needle.67percent", label: stats.gaugeLabel, scope: ObjectIdentifier(footer),
-                             accessibility: "Session statistics: " + stats.gaugeLabel, identifier: "session-stats-time",
-                             help: SettledThroughput.explanation + " Opens the Session Inspector.") { open(.overview) }
-            }
-            if stats.hasUsage {
-                // Near the chat's cost limit, the spend is apart, in warning ink.
-                // The token split where the pane has room for it; a narrower
-                // pane keeps the total, the cache hit and the cost whole.
-                ViewThatFits(in: .horizontal) {
-                    usagePill(stats, face: stats.usageFace)
-                    usagePill(stats, face: stats.compactUsageFace)
-                }
-            }
-            contextPill
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("sessionStatsPills")
-    }
-
-    private func usagePill(_ stats: SessionStatsPresentation, face: (label: String, warningTail: String?)) -> some View {
-        PiStatButton(symbol: "cylinder.split.1x2", label: face.label, warningTail: face.warningTail, scope: ObjectIdentifier(footer),
-                     accessibility: "Token usage: " + stats.usageLabel, identifier: "session-stats-usage",
-                     help: "Gateway-reported usage and cost for this session's retained requests, and its cost limit. Uncached and cached input make up the input; reasoning is part of the output. Opens the Session Inspector.") { open(.overview) }
-    }
-
-    /// A 14 pt ring and its reading. A conversation whose context has not been
-    /// counted yet says so instead of drawing an empty ring at zero.
-    ///
-    /// Its words ("Inspect context", "Calculating context…" while a shown
-    /// chat is counted, "Compacting context…") and its figures take different
-    /// room. Where the pill ends a row, a longer label used to start a row of
-    /// its own: the footer grew a row and the conversation above it jumped,
-    /// and jumped back when a shorter one came. The pill now keeps one room
-    /// for each showing of its chat (`ContextPillSlot`): words are cut to it
-    /// where the row has no more, a shorter figure keeps it, and only a wider
-    /// figure widens it. The room lies behind and after the pill, so its fill
-    /// and press target stay the size of what it says. A figure is never cut.
-    private var contextPill: some View {
-        let meter = meter
-        let reading = meter.fraction.flatMap(MetricFormat.occupancyPercent)
-        let figure = reading.map { $0 + "%" }
-        let label = figure ?? (footer.preparingContext ? "Calculating context…" : meter.compactLabel)
-        // What the pill shows now is in the room already: a showing's first
-        // frame, and a wider figure, are laid out right the first time.
-        let slot = ContextPillSlot.of(footer.contextSlot, showing: session.presentationGeneration).adding(label, figure: figure != nil)
-        return ZStack(alignment: .leading) {
-            ForEach(slot.labels, id: \.self) { held in
-                PiStatPillFace(symbol: "square.stack.3d.up", ring: .some(meter.fraction), label: held).hidden()
-            }
-            PiStatButton(symbol: "square.stack.3d.up", ring: .some(meter.fraction), label: label, truncates: figure == nil, scope: ObjectIdentifier(footer),
-                         accessibility: reading.map { "\($0)% of context used" } ?? meter.detailLabel,
-                         identifier: "session-stats-context", help: meter.detailLabel + " Opens the next request in the Session Inspector.") { open(.nextRequest) }
-        }
-        .onChange(of: slot, initial: true) { [footer, session] _, slot in
-            // A room for a showing that has since ended is not kept.
-            if slot.showing == session.presentationGeneration, footer.contextSlot != slot { footer.contextSlot = slot }
-        }
-        .layoutValue(key: PiFlowFillsRow.self, value: true)
-    }
-}
-
 /// The room the context pill keeps for one showing of its chat
 /// (`SessionDisplay.presentationGeneration`): the first thing it showed there,
 /// and the shape of every figure since, digits as zeros ("00%", "00.00%"),
@@ -249,34 +137,4 @@ struct ContextPillSlot: Equatable {
         return slot
     }
     static func shape(of figure: String) -> String { String(figure.map { $0.isNumber ? "0" : $0 }) }
-}
-
-/// A stat pill that opens something: the pill's face, a soft fill under the
-/// pointer, and an AppKit press target over it (`PiPopoverTrigger`) that keeps
-/// its size, so nothing about it asks for another layout, and that a test can
-/// press without an active app.
-struct PiStatButton: View {
-    let symbol: String
-    var ring: Double?? = nil
-    let label: String
-    /// A last figure in warning ink (see `PiStatPillFace.warningTail`).
-    var warningTail: String? = nil
-    /// Words that may end in "…" (`PiStatPillFace.truncates`).
-    var truncates = false
-    /// What the figures are of (`PiStatPillFace.scope`).
-    var scope: AnyHashable? = nil
-    var accessibility: String? = nil
-    var identifier: String? = nil
-    var help: String = ""
-    let action: () -> Void
-    @State private var hovering = false
-    var body: some View {
-        PiStatPillFace(symbol: symbol, ring: ring, label: label, highlighted: hovering, warningTail: warningTail, truncates: truncates, scope: scope)
-            .accessibilityHidden(true)
-            .overlay {
-                PiPopoverTrigger(label: accessibility ?? label, identifier: identifier, help: help.isEmpty ? label : help,
-                                 onHover: { inside in if hovering != inside { hovering = inside } },
-                                 onPress: { _ in action() })
-            }
-    }
 }

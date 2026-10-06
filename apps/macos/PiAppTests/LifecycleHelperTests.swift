@@ -180,7 +180,7 @@ extension LifecycleHelperTests {
         await model.restore()
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1240, height: 800), styleMask: [.titled, .closable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        let view = NSHostingView(rootView: WorkspaceView(model: model))
+        let view = WorkspaceRootView(model: model)
         window.contentView = view; window.center(); window.makeKeyAndOrderFront(nil)
         defer { window.contentView = nil; window.close(); model.report.suspend(); model.shutdown() }
         func page() -> TranscriptPage? {

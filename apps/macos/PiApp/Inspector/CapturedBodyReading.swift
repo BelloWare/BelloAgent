@@ -1,5 +1,5 @@
-import SwiftUI
-import AppKit
+import Foundation
+import Combine
 
 // Reading a captured body for the screen: the one background worker, the
 // document it builds, where the bytes come from, and the controller a view

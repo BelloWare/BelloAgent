@@ -71,7 +71,7 @@ final class ComposerSubmissionTests: XCTestCase {
     /// chat's height until the new editor reported its own.
     @MainActor func testTheFieldTakesItsHeightFromItsText() throws {
         var text = "One line"
-        let hosted = NSHostingView(rootView: ComposerHeightProbe(text: Binding(get: { text }, set: { text = $0 })))
+        let hosted = ComposerHeightProbe(NativeComposer(text: text, textChanged: { text = $0 }, send: { _ in }))
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 400), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false; window.contentView = hosted
         defer { window.contentView = nil; window.close() }
@@ -85,14 +85,15 @@ final class ComposerSubmissionTests: XCTestCase {
         // In the pass that laid the lines out, before any run-loop turn.
         XCTAssertGreaterThan(scroll.intrinsicContentSize.height, ComposerScrollView.minimumHeight + 40, "the text reported its height in the same pass")
         settle()
-        XCTAssertEqual(scroll.frame.height, scroll.intrinsicContentSize.height, accuracy: 0.5, "SwiftUI sized the field to its text")
+        XCTAssertEqual(scroll.frame.height, scroll.intrinsicContentSize.height, accuracy: 0.5, "the container sized the field to its text")
         editor.insertText(String(repeating: "\nMore", count: 40), replacementRange: editor.selectedRange())
         settle()
         XCTAssertEqual(scroll.frame.height, ComposerScrollView.maximumHeight, accuracy: 0.5, "it stops at the ceiling")
         // Cleared through the model, as sending clears it.
         text = ""
-        hosted.rootView = ComposerHeightProbe(text: Binding(get: { text }, set: { text = $0 }))
+        NativeComposer(text: text, textChanged: { text = $0 }, send: { _ in }).apply(to: hosted.scroll)
         settle()
+
         XCTAssertEqual(scroll.frame.height, ComposerScrollView.minimumHeight, accuracy: 0.5, "clearing brings it back to one line")
     }
 
@@ -213,8 +214,17 @@ final class ComposerSubmissionTests: XCTestCase {
     }
 }
 
-/// The native field alone, sized as the composer sizes it.
-private struct ComposerHeightProbe: View {
-    @Binding var text: String
-    var body: some View { NativeComposer(text: $text, send: { _ in }).fixedSize(horizontal: false, vertical: true).frame(width: 480) }
+/// The native field alone, 480 points wide, as tall as it asks to be: as the
+/// composer card sizes it.
+@MainActor private final class ComposerHeightProbe: NSView {
+    let scroll: ComposerScrollView
+    init(_ composer: NativeComposer) {
+        scroll = composer.makeView()
+        super.init(frame: NSRect(x: 0, y: 0, width: 520, height: 400))
+        addSubview(scroll)
+        scroll.heightChanged = { [weak self] in self?.needsLayout = true }
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    override var isFlipped: Bool { true }
+    override func layout() { super.layout(); scroll.frame = CGRect(x: 0, y: 0, width: 480, height: scroll.fieldHeight) }
 }

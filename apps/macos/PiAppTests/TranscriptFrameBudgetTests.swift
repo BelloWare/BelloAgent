@@ -895,7 +895,7 @@ final class ConversationPaneRetentionTests: XCTestCase {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1_200, height: 820),
                               styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        var held: NSView? = NSHostingView(rootView: WorkspaceView(model: model))
+        var held: NSView? = WorkspaceRootView(model: model)
         window.contentView = held
         window.makeKeyAndOrderFront(nil)
         defer { window.contentView = nil; window.close() }
@@ -1014,7 +1014,7 @@ final class ConversationPaneRetentionTests: XCTestCase {
                               styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentView = NSHostingView(rootView: VStack(spacing: 0) {
-            WindowChrome(sidebarWidth: 260, focusedSessionID: nil).frame(height: WindowChrome.height)
+            WindowChromeReference(sidebarWidth: 260, focusedSessionID: nil).frame(height: WindowChrome.height)
             WorkspaceSidebar(model: model, width: 260)
         })
         window.makeKeyAndOrderFront(nil)
@@ -1141,7 +1141,7 @@ private struct SelectedTranscriptOnly: View {
 private struct SelectedComposerOnly: View {
     @ObservedObject var model: WorkspaceModel
     var body: some View {
-        if let session = model.selected { ComposerInput(model: model, session: session, paneWidth: 1_000) }
+        if let session = model.selected { ComposerInputBridge(model: model, session: session, paneWidth: 1_000) }
     }
 }
 private struct SelectedFooterOnly: View {
@@ -1149,7 +1149,7 @@ private struct SelectedFooterOnly: View {
     var realAction = false
     var body: some View {
         if let session = model.selected {
-            MetricsFooter(model: model, session: session, contextWindow: nil, outputReserve: nil, compact: false) { [model, realAction, id = session.id] in
+            HostedMetricsFooter(model: model, session: session, compact: false) { [model, realAction, id = session.id] in
                 if realAction { model.inspect(id) }
             }
         }
@@ -1162,8 +1162,8 @@ private struct SelectedPaneParts: View {
         if let session = model.selected {
             VStack(spacing: 0) {
                 NativeTranscriptView(session: session, state: session.state, actions: TranscriptActions())
-                ComposerInput(model: model, session: session, paneWidth: 1_000)
-                MetricsFooter(model: model, session: session, contextWindow: nil, outputReserve: nil, compact: false) {}
+                ComposerInputBridge(model: model, session: session, paneWidth: 1_000)
+                HostedMetricsFooter(model: model, session: session, compact: false)
             }
         }
     }
@@ -1179,7 +1179,7 @@ private struct SelectedTranscriptWithStarterCard: View {
                 .overlay(alignment: .top) {
                     ZStack {
                         if session.messages.isEmpty {
-                            StarterPanel(model: model, chat: chat, sessionID: session.id).transition(.opacity)
+                            StarterPanelBridge(model: model, chat: chat, sessionID: session.id).transition(.opacity)
                         }
                     }.piAnimation(PiMotion.quick, value: session.messages.isEmpty)
                 }

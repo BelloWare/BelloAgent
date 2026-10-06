@@ -231,7 +231,7 @@ struct BackgroundRequestSummary: Equatable, Sendable {
 }
 
 /// What a request sent and got back, read from its journal.
-struct BackgroundRequestDetail: Equatable, Sendable {
+struct BackgroundRequestDetail: Hashable, Sendable {
     var prompt: String?
     var reply: String?
     /// Why nothing could be read.

@@ -45,7 +45,7 @@ final class RedrawCostProbeTests: XCTestCase, SerialTestLane {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 820), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         let hosted: NSView = testEnvironment("PI_PROBE_REDUCE_MOTION") == "1"
-            ? NSHostingView(rootView: WorkspaceView(model: model).environment(\.piReduceMotion, true)) : NSHostingView(rootView: WorkspaceView(model: model))
+            ? NSHostingView(rootView: WorkspaceView(model: model).environment(\.piReduceMotion, true)) : WorkspaceRootView(model: model)
         window.contentView = hosted
         window.makeKeyAndOrderFront(nil)
         addTeardownBlock { @MainActor in
@@ -354,17 +354,30 @@ final class RedrawCostProbeTests: XCTestCase, SerialTestLane {
         }
         try await Task.sleep(for: .milliseconds(1500))
         let session = try XCTUnwrap(model.displays[open.id]), chat = try XCTUnwrap(model.record(open.id))
-        let parts: [(String, AnyView)] = [
-            ("nothing", AnyView(Color.clear)),
-            ("whole window", AnyView(WorkspaceView(model: model))),
-            ("sidebar", AnyView(WorkspaceSidebar(model: model, width: 300).frame(width: 300, height: 820))),
-            ("chat pane", AnyView(ConversationPane(model: model, session: session, chat: chat, paneWidth: 980).frame(width: 980, height: 820))),
-            ("composer", AnyView(ComposerInput(model: model, session: session, paneWidth: 980).frame(width: 980))),
-            ("footer", AnyView(MetricsFooter(model: model, session: session, contextWindow: nil, outputReserve: nil, compact: false) {}.frame(width: 980))),
+        func hosted<V: View>(_ view: V) -> NSView { NSHostingView(rootView: view) }
+        let parts: [(String, () -> NSView)] = [
+            ("nothing", { hosted(Color.clear) }),
+            ("whole window", { hosted(WorkspaceView(model: model)) }),
+            ("sidebar", { hosted(WorkspaceSidebar(model: model, width: 300).frame(width: 300, height: 820)) }),
+            ("chat pane", { hosted(ConversationPane(model: model, session: session, chat: chat, paneWidth: 980).frame(width: 980, height: 820)) }),
+            ("composer", {
+                let composer = ComposerInputView(model: model)
+                composer.paneWidth = 980; composer.show(session)
+                let holder = NSView(frame: NSRect(x: 0, y: 0, width: 980, height: 820))
+                composer.frame = NSRect(x: 0, y: 0, width: 980, height: composer.height(forWidth: 980))
+                holder.addSubview(composer)
+                return holder
+            }),
+            ("footer", {
+                let footer = MetricsFooter(model: model, session: session, contextWindow: nil, outputReserve: nil, compact: false) {}
+                footer.frame = NSRect(x: 0, y: 0, width: 980, height: footer.height(forWidth: 980))
+                let holder = NSView(frame: NSRect(x: 0, y: 0, width: 980, height: 820)); holder.addSubview(footer)
+                return holder
+            }),
         ]
         var lines: [String] = []
-        for (name, view) in parts {
-            launched.window.contentView = NSHostingView(rootView: view)
+        for (name, make) in parts {
+            launched.window.contentView = make()
             for _ in 0..<5 { launched.window.contentView?.layoutSubtreeIfNeeded(); launched.window.displayIfNeeded(); try await Task.sleep(for: .milliseconds(100)) }
             try await Task.sleep(for: .milliseconds(500))
             let document = launched.views(TranscriptSurfaceMarker.self, in: launched.window.contentView).first.flatMap { $0.enclosingScrollView?.documentView as? TranscriptNativeDocument }

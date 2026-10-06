@@ -104,19 +104,19 @@ final class MarkdownTextSurfaceTests: XCTestCase {
                                                          windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 0, pressure: 0))
             surface.mouseMoved(with: event)
         }
-        func toolbar() -> NSHostingView<MarkdownCodeToolbar>? { surface.subviews.compactMap { $0 as? NSHostingView<MarkdownCodeToolbar> }.first }
-        func headingButton() -> NSHostingView<MarkdownHeadingAction>? { surface.subviews.compactMap { $0 as? NSHostingView<MarkdownHeadingAction> }.first }
+        func toolbar() -> MarkdownCodeToolbarView? { surface.subviews.compactMap { $0 as? MarkdownCodeToolbarView }.first }
+        func headingButton() -> MarkdownHeadingActionView? { surface.subviews.compactMap { $0 as? MarkdownHeadingActionView }.first }
         XCTAssertNil(toolbar()); XCTAssertNil(headingButton())
         try move(to: point(over: "func send"))
         let bar = try XCTUnwrap(toolbar(), "the fence's toolbar")
-        XCTAssertEqual(bar.rootView.language, "swift")
-        XCTAssertTrue(bar.rootView.code.hasPrefix("func send(_ request: Request)") && bar.rootView.code.hasSuffix("}"), "it copies the whole code")
+        XCTAssertEqual(bar.languageName, "swift")
+        XCTAssertTrue(bar.code.hasPrefix("func send(_ request: Request)") && bar.code.hasSuffix("}"), "it copies the whole code")
         XCTAssertLessThan(bar.frame.minY, surface.convert(point(over: "func send"), to: surface).y, "above the code, in the fence's padding")
         XCTAssertNil(headingButton())
         try move(to: point(over: "Retry budget"))
         XCTAssertNil(toolbar())
         let copy = try XCTUnwrap(headingButton(), "the heading's copy button")
-        XCTAssertEqual(copy.rootView.target, headings[0])
+        XCTAssertEqual(copy.target, headings[0])
         try move(to: point(over: "That is the whole policy"))
         XCTAssertNil(toolbar()); XCTAssertNil(headingButton())
         withExtendedLifetime(window) {}

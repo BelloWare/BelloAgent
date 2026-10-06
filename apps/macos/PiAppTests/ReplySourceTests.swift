@@ -12,6 +12,20 @@ import AppKit
 /// Copying a selection to the pasteboard is `PlainTextCopyTests`, in the
 /// serial lane: every test host shares the pasteboard.
 final class ReplySourceTests: XCTestCase {
+    /// The literal texts a row offers for selection: SwiftUI's selectable
+    /// fields where a row is still SwiftUI, and the TextKit plain texts the
+    /// native rows draw.
+    @MainActor static func selectableTexts(in view: NSView) -> [String] {
+        func walk(_ view: NSView) -> [String] {
+            if let field = view as? NSTextField { return field.isSelectable ? [field.stringValue] : [] }
+            if let plain = view as? TranscriptPlainTextView { return plain.isHidden ? [] : [plain.string] }
+            var found: [String] = []
+            for child in view.subviews { found += walk(child) }
+            return found
+        }
+        return walk(view)
+    }
+
     @MainActor private func views<T: NSView>(_ type: T.Type, in view: NSView) -> [T] {
         ((view as? T).map { [$0] } ?? []) + view.subviews.flatMap { views(type, in: $0) }
     }
@@ -90,16 +104,12 @@ final class ReplySourceTests: XCTestCase {
         let stage = await stage([Self.user("u1", Self.typed), Self.reply("a1", "Answer.", turn: "u1")])
         defer { stage.close() }
         let row = try XCTUnwrap(stage.row("u1"))
-        let texts = views(NSTextField.self, in: row).filter(\.isSelectable)
-        XCTAssertEqual(texts.map(\.stringValue), [Self.typed], "one selectable text holds the whole message, character for character")
+        XCTAssertEqual(Self.selectableTexts(in: row), [Self.typed], "one selectable text holds the whole message, character for character")
         XCTAssertTrue(views(NativeMarkdownContainer.self, in: row).isEmpty, "nothing in the bubble is Markdown")
         XCTAssertTrue(views(TranscriptCodeTextView.self, in: row).isEmpty, "no code block in the bubble")
-        XCTAssertTrue(views(TranscriptPlainTextView.self, in: row).isEmpty, "a short message is SwiftUI's own text")
         // A selection runs across its lines: from inside the bold markers to
-        // inside the link, over three line breaks, in one field.
-        let field = try XCTUnwrap(texts.first)
-        field.selectText(nil)
-        let editor = try XCTUnwrap(field.currentEditor() as? NSTextView)
+        // inside the link, over three line breaks, in one text.
+        let editor = try XCTUnwrap(views(TranscriptPlainTextView.self, in: row).first { $0.string == Self.typed })
         let start = (Self.typed as NSString).range(of: "not bold").location
         let end = NSMaxRange((Self.typed as NSString).range(of: "[not a link"))
         editor.setSelectedRange(NSRange(location: start, length: end - start))
@@ -126,7 +136,7 @@ final class ReplySourceTests: XCTestCase {
         XCTAssertEqual(leaves.count, 1, "one text holds the whole paste")
         let leaf = try XCTUnwrap(leaves.first)
         XCTAssertTrue(leaf.string == text, "the paste reads exactly as it was typed")
-        XCTAssertTrue(views(NSTextField.self, in: row).filter { $0.isSelectable }.isEmpty, "and in no other text")
+        XCTAssertEqual(Self.selectableTexts(in: row), [text], "and in no other text")
         XCTAssertLessThanOrEqual(leaf.layoutPasses, 2, "the paste is laid out once per width it was offered, not on every pass")
         let lines = CGFloat(index + 1)
         XCTAssertGreaterThanOrEqual(leaf.frame.height, lines * 17, "every line of the paste has its line box")
@@ -188,7 +198,7 @@ final class ReplySourceTests: XCTestCase {
         XCTAssertTrue(leaf.font?.isFixedPitch == true, "in a monospaced face")
         XCTAssertTrue(surface.isParked && surface.textView.isHidden && surface.frame.height == 0,
                       "and nothing of it is rendered: the rendered surface waits, parked, taking no room")
-        XCTAssertTrue(views(NSTextField.self, in: row).filter(\.isSelectable).isEmpty, "the source is the only text")
+        XCTAssertEqual(Self.selectableTexts(in: row), [Self.longReply], "the source is the only text")
         XCTAssertLessThanOrEqual(row.hostedFittingHeight, row.frame.height + 0.5, "the row was re-measured in the pass that switched it")
         XCTAssertNotEqual(row.frame.height, rendered, "the source is not as tall as the rendered reply")
         XCTAssertEqual(stage.rows.prefix { $0 !== row }.map(\.frame), above, "the rows above do not move")
@@ -226,9 +236,7 @@ final class ReplySourceTests: XCTestCase {
         let row = try XCTUnwrap(textRows(stage, of: "a1").first)
         row.toggleDisclosure(.source("a1"))
         stage.draw(); await stage.settle()
-        let texts = views(NSTextField.self, in: row).filter(\.isSelectable)
-        XCTAssertEqual(texts.map(\.stringValue), [source], "the whole source, in one text")
-        XCTAssertTrue(views(TranscriptPlainTextView.self, in: row).isEmpty)
+        XCTAssertEqual(Self.selectableTexts(in: row), [source], "the whole source, in one text")
         assertStacked(stage, "a short source")
     }
 
@@ -251,9 +259,11 @@ final class ReplySourceTests: XCTestCase {
             XCTAssertEqual(value.raw, parts.contains(row), "row \(row.itemID) reads the reply's view only if it draws the reply's text")
         }
         for part in parts {
-            XCTAssertEqual(views(NSTextField.self, in: part).filter(\.isSelectable).count, 1, "part \(part.itemID) is one selectable text")
-            XCTAssertTrue(views(NSTextField.self, in: part).contains { $0.stringValue.contains("**part**") || $0.stringValue.contains("`code`") },
-                          "part \(part.itemID) reads as its source")
+            // The part is drawn natively: its source is one selectable TextKit text.
+            let sources = views(TranscriptPlainTextView.self, in: part).filter { $0.isSelectable && !$0.isHiddenOrHasHiddenAncestor }
+            XCTAssertEqual(sources.count, 1, "part \(part.itemID) is one selectable text")
+            XCTAssertTrue(sources.contains { $0.string.contains("**part**") || $0.string.contains("`code`") }, "part \(part.itemID) reads as its source")
+            XCTAssertEqual(sources.first?.accessibilityIdentifier(), "reply-source")
         }
         for row in others {
             XCTAssertEqual(row.frame.height, heights[row.itemID] ?? -1, accuracy: 0.5, "row \(row.itemID) is not re-measured for another row's view")
@@ -346,7 +356,7 @@ final class ReplySourceTests: XCTestCase {
         named.first { $0.name == "View raw" }?.perform()
         stage.draw(); await stage.settle()
         XCTAssertTrue(stage.session.disclosure.isOpen(.source("a1")), "performing it switches the reply")
-        XCTAssertEqual(views(NSTextField.self, in: row).filter(\.isSelectable).map(\.stringValue), [message.text])
+        XCTAssertEqual(Self.selectableTexts(in: row), [message.text])
         let raw = try XCTUnwrap(drawn().source)
         XCTAssertTrue(raw.raw)
         XCTAssertEqual(TranscriptRowAction.all(message, TranscriptActions(), source: raw).map(\.name), ["Copy", "View rendered", "Details"],
@@ -354,7 +364,7 @@ final class ReplySourceTests: XCTestCase {
         TranscriptRowAction.all(message, TranscriptActions(), source: raw).first { $0.name == "View rendered" }?.perform()
         stage.draw(); await stage.settle()
         XCTAssertFalse(stage.session.disclosure.isOpen(.source("a1")))
-        XCTAssertTrue(views(NSTextField.self, in: row).filter(\.isSelectable).allSatisfy { $0.stringValue != message.text }, "rendered again")
+        XCTAssertTrue(Self.selectableTexts(in: row).allSatisfy { $0 != message.text }, "rendered again")
 
         // No switch on a message the reader sent, a reply still arriving, or
         // a row that cannot reach the conversation's disclosure.

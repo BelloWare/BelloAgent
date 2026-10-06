@@ -1,4 +1,3 @@
-import SwiftUI
 import AppKit
 
 /// What the cost-limit notice in a transcript asks for.
@@ -154,16 +153,15 @@ extension WorkspaceModel {
     static let width: CGFloat = 380
     func toggle(model: WorkspaceModel, footer: SessionMetrics, sessionID: String, anchor: NSView) {
         if presenter.isShown, self.sessionID == sessionID { close(); return }
+        presenter.close()
         self.sessionID = sessionID
-        let reduce = PiMotion.reducesMotion
-        presenter.show(from: anchor, width: Self.width, maximumHeight: 460, animates: !reduce) {
-            AnyView(CostLimitLiveEditor(footer: footer, title: "Raise this chat's limit", choose: { limit in
-                try await model.setCostLimit(limit, for: sessionID)
+        presenter.toggle(from: anchor, width: Self.width, maximumHeight: 460, animates: !PiKit.Motion.reduced) { [weak model] in
+            let editor = CostLimitLiveEditor(footer: footer, title: "Raise this chat's limit") { limit in
+                try await model?.setCostLimit(limit, for: sessionID)
                 // Chosen: the popover has done its job.
                 CostLimitPopover.shared.close()
-            })
-            .padding(PiSpacing.lg)
-            .environment(\.piReduceMotion, reduce).tint(Color.piAccent))
+            }
+            return PaddedView(editor, padding: NSEdgeInsets(top: PiSpacing.lg, left: PiSpacing.lg, bottom: PiSpacing.lg, right: PiSpacing.lg))
         }
     }
     func close() { presenter.close(); sessionID = nil }

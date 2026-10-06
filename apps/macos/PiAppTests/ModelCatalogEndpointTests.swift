@@ -331,7 +331,7 @@ final class ModelCatalogEndpointTests: ModelCatalogEndpointTestCase {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 80), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         defer { model.shutdown(); window.contentView = nil; window.close(); try? FileManager.default.removeItem(at: root) }
-        let hosted = NSHostingView(rootView: ModelSwitchPills(model: model, session: session))
+        let hosted = ModelSwitchPillsView(model: model, session: session)
         window.contentView = hosted
         // Mount without ordering the window front: no pointer/hover or menu
         // activation can accidentally trigger the old loading path.

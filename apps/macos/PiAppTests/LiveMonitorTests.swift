@@ -47,19 +47,19 @@ final class LiveMonitorTests: XCTestCase {
         let key = LiveRateKey(workspace: "p", model: "a")
         let first = Int(start.timeIntervalSince1970)
         let samples = (0..<900).map { LiveRateSample(id: first + $0, end: first + $0 + 1, rates: [key: 12 + Double($0 % 7)], active: 1, reported: 1, gap: false) }
-        struct Host: View {
-            let samples: [LiveRateSample]
-            let domain: ClosedRange<Date>
-            @State private var zoom = MonitorChartZoom()
-            var body: some View {
-                MonitorRateChart(samples: samples, usage: nil, workspace: "p", following: domain, zoom: $zoom, metric: .live,
-                                 palette: MonitorModelPalette(), selectMetric: { _ in }, chartHeight: 160)
-                    .frame(width: 460).padding(10)
-            }
+        let chart = MonitorRateChart()
+        var zoom = MonitorChartZoom()
+        let domain = start...start.addingTimeInterval(900)
+        func inputs() -> MonitorRateChart.Inputs {
+            MonitorRateChart.Inputs(samples: samples, usage: nil, workspace: "p", following: domain, zoom: zoom, metric: .live, palette: MonitorModelPalette(), chartHeight: 160)
         }
+        chart.onZoom = { zoom = $0; chart.update(inputs()) }
+        chart.update(inputs())
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 320), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        let hosted = NSHostingView(rootView: Host(samples: samples, domain: start...start.addingTimeInterval(900)))
+        let hosted = NSView(frame: NSRect(x: 0, y: 0, width: 480, height: 320))
+        chart.frame = NSRect(x: 10, y: 10, width: 460, height: chart.height(forWidth: 460))
+        hosted.addSubview(chart)
         window.contentView = hosted; window.orderFront(nil)
         defer { window.contentView = nil; window.close() }
         func surface() -> MonitorChartInteraction.Surface? {
@@ -70,6 +70,8 @@ final class LiveMonitorTests: XCTestCase {
         let plot = try XCTUnwrap(surface()).plot
         try await Task.sleep(for: .milliseconds(100)); hosted.layoutSubtreeIfNeeded()
         MonitorChartRenderCount.reset()
+        window.displayIfNeeded()
+        let marksDrawn = chart.chart.markDraws
         for step in 0..<60 {
             let target = try XCTUnwrap(surface())
             let point = target.convert(CGPoint(x: plot.minX + plot.width * (0.2 + Double(step) / 100), y: plot.midY), to: nil)
@@ -79,6 +81,8 @@ final class LiveMonitorTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(50)); hosted.layoutSubtreeIfNeeded()
         print("PERF monitor chart: 60 pointer moves rebuilt its series \(MonitorChartRenderCount.builds) times")
         XCTAssertEqual(MonitorChartRenderCount.builds, 0, "Hover redraws the rule and the caption, never the series or its marks")
+        window.displayIfNeeded()
+        XCTAssertEqual(chart.chart.markDraws, marksDrawn, "A hover draws the pointer's overlay alone; the marks' layer is not drawn again")
     }
     func testBrushFreezesLiveDomainClampsReverseDragAndRejectsClicksAndScrolls() throws {
         var zoom = MonitorChartZoom()

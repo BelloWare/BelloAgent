@@ -118,7 +118,7 @@ class AppShellTestCase: XCTestCase {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1_280, height: 860),
                               styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: WorkspaceView(model: model))
+        window.contentView = WorkspaceRootView(model: model)
         window.makeKeyAndOrderFront(nil)
         return (window, window.contentView!)
     }
@@ -453,7 +453,7 @@ final class AppShellPerformanceTests: AppShellTestCase {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 300),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: ComposerOnly(model: model))
+        window.contentView = ComposerOnly(model: model)
         window.makeKeyAndOrderFront(nil)
         defer { window.contentView = nil; window.close() }
         let hosted = try XCTUnwrap(window.contentView)
@@ -822,11 +822,27 @@ final class AppShellTimingTests: AppShellTestCase, SerialTestLane {
 }
 
 /// The composer alone over whatever chat the model has selected.
-private struct ComposerOnly: View {
-    @ObservedObject var model: WorkspaceModel
-    var body: some View {
-        if let session = model.selected {
-            ComposerInput(model: model, session: session, paneWidth: 900).id(session.id)
-        } else { Color.clear }
+@MainActor private final class ComposerOnly: NSView {
+    private let model: WorkspaceModel
+    private let composer: ComposerInputView
+    private var observer: ShellObserver?
+    init(model: WorkspaceModel) {
+        self.model = model
+        composer = ComposerInputView(model: model)
+        super.init(frame: NSRect(x: 0, y: 0, width: 900, height: 300))
+        composer.paneWidth = 900
+        addSubview(composer)
+        let observer = ShellObserver { [weak self] in self?.follow() }
+        observer.observe(model)
+        self.observer = observer
+        follow()
     }
+    required init?(coder: NSCoder) { fatalError() }
+    override var isFlipped: Bool { true }
+    private func follow() {
+        composer.isHidden = model.selected == nil
+        if let session = model.selected { composer.show(session) }
+        needsLayout = true
+    }
+    override func layout() { super.layout(); composer.frame = CGRect(x: 0, y: 0, width: bounds.width, height: composer.height(forWidth: bounds.width)) }
 }

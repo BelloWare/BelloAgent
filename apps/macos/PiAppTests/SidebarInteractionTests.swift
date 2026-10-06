@@ -50,9 +50,7 @@ final class SidebarInteractionTests: XCTestCase {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: height),
                               styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: ProjectSidebarGroup(model: model, project: project, available: true, name: "Project")
-            .frame(width: width, alignment: .leading)
-            .transaction { $0.animation = nil; $0.disablesAnimations = true })
+        window.contentView = makeSidebar(model, width: width, height: height)
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
         window.makeKey()
@@ -321,8 +319,12 @@ final class SidebarInteractionTests: XCTestCase {
         // deliver to, and it carries the menu.
         let hit = try XCTUnwrap(viewUnder(middle, in: surface, fixture: fixture))
         XCTAssertFalse(hit === surface)
-        XCTAssertNotNil(hit.menu(for: try mouse(.rightMouseDown, at: inWindow, window: fixture.window)),
-                        "A right-click on a chat row offers its context menu")
+        // AppKit offers a right-click to the view under it and then up its
+        // superviews until one has a menu, as `rightMouseDown` does.
+        let event = try mouse(.rightMouseDown, at: inWindow, window: fixture.window)
+        let menu = sequence(first: hit, next: \.superview).lazy.compactMap { $0.menu(for: event) }.first
+        XCTAssertNotNil(menu, "A right-click on a chat row offers its context menu")
+        XCTAssertTrue(menu?.items.contains { $0.title == "Rename…" || $0.title.hasPrefix("Rename") } ?? false, "It is the chat's own menu")
     }
 
     // MARK: Helpers
@@ -404,10 +406,7 @@ final class SidebarListedOrderTests: XCTestCase {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 280, height: 900), styleMask: [.titled],
                               backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: ProjectSidebarGroup(model: model, project: project, available: true,
-                                                                         name: "Project", filter: filter)
-            .frame(width: 280, alignment: .leading)
-            .transaction { $0.animation = nil; $0.disablesAnimations = true })
+        window.contentView = makeSidebar(model, filter: filter)
         window.makeKeyAndOrderFront(nil)
         let hosted = try XCTUnwrap(window.contentView)
         hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
