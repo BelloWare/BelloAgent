@@ -1661,3 +1661,11 @@ drafts, pin, selected chat and paused queue. The gated loopback gateway retained
 only the original request and cancellation, proving Restore did not launch work.
 This was an isolated synthetic fixture on the cloud Linux desktop; native macOS
 AppKit, accessibility, IME and same-hardware performance remain separate gates.
+
+CI exposed a root-focus interaction with the existing queue drag test: GPUI's
+tracked focus handle automatically focuses its element on bubbling mouse-down.
+The noneditable root is now a programmatic fallback only. Its bubbling handler
+prevents that root default after child handlers have already run, preserving
+editor focus and drag/click behavior. The existing drag assertion fails before
+this correction and passes afterward. All24 affected drag/sidebar/Stop/held-key
+checks and strict app all-target Clippy pass; native macOS code is unchanged.

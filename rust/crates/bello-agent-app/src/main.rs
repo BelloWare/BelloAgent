@@ -2720,7 +2720,12 @@ impl Render for AgentView {
         let mut element = div()
             .map(|element| {
                 #[cfg(not(target_os = "macos"))]
-                let element = element.track_focus(&self.root_focus);
+                let element = element
+                    .track_focus(&self.root_focus)
+                    // This is a programmatic fallback, not a mouse focus target.
+                    // Bubbling runs after child handlers; keep their click/focus
+                    // behavior while suppressing this root's automatic transfer.
+                    .on_any_mouse_down(|_, window, _| window.prevent_default());
                 element
             })
             .relative()
