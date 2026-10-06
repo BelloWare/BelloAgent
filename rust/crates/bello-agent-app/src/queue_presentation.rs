@@ -104,6 +104,18 @@ pub(crate) fn room(pane: f32, composer: f32, terminal: f32) -> f32 {
 pub(crate) fn list_height(rows: usize, sections: usize, room: f32) -> f32 {
     let headings = sections as f32 * SECTION_HEIGHT;
     let content = rows as f32 * ROW_HEIGHT + headings;
+    list_height_for_content(content, sections, room)
+}
+
+/// Approved narrow-row adaptation: only measured content changes; the source
+/// three-and-a-half-row cap, available-room budget and52pt floor stay fixed.
+pub(crate) fn list_height_for_content(content: f32, sections: usize, room: f32) -> f32 {
+    let headings = sections as f32 * SECTION_HEIGHT;
+    let content = if content.is_nan() {
+        0.
+    } else {
+        content.max(0.)
+    };
     // The half row signals scroll. Even with no available room, retain one
     // row and heading, but never grow a shorter list beyond its content.
     let cap = VISIBLE_ROWS * ROW_HEIGHT + headings;
@@ -287,5 +299,18 @@ mod tests {
         assert_eq!(header_label_widths(308., 55., Some(80.), None), (55., 80.));
         assert_eq!(header_label_widths(0., 55., Some(80.), Some(82.)), (0., 0.));
         assert_eq!(header_label_widths(f32::NAN, 55., None, None), (0., 0.));
+    }
+    #[test]
+    fn measured_wrapped_content_keeps_source_cap_room_and_floor() {
+        assert_eq!(
+            list_height_for_content(52., 1, f32::INFINITY),
+            list_height(1, 1, f32::INFINITY)
+        );
+        assert_eq!(list_height_for_content(98., 1, f32::INFINITY), 98.);
+        assert_eq!(list_height_for_content(98., 1, 80.), 80.);
+        assert_eq!(list_height_for_content(98., 1, 0.), 52.);
+        assert_eq!(list_height_for_content(900., 1, f32::INFINITY), 127.);
+        assert_eq!(list_height_for_content(900., 2, f32::INFINITY), 149.);
+        assert_eq!(list_height_for_content(0., 0, 0.), 0.);
     }
 }

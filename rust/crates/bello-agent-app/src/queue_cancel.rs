@@ -523,3 +523,75 @@ impl AgentView {
 #[cfg(test)]
 #[path = "queue_cancel_tests.rs"]
 mod tests;
+
+impl AgentView {
+    pub(crate) fn cancel_held_edit(
+        &mut self,
+        chat_id: &str,
+        turn_id: &str,
+        edit_id: &str,
+        cx: &mut Context<Self>,
+    ) {
+        if self.record.id != chat_id
+            || self.shutting_down
+            || self.busy
+            || self.loading
+            || self.load_failed
+            || self.editing.is_some()
+        {
+            return;
+        }
+        let beginning = self
+            .begin_operation
+            .as_ref()
+            .is_some_and(|operation| operation.matches(edit_id, turn_id));
+        let held = self
+            .session
+            .edit
+            .as_ref()
+            .is_some_and(|hold| hold.edit_id == edit_id && hold.turn_id == turn_id);
+        if !beginning && !held {
+            return;
+        }
+        if self.queue_operation.is_some() && !beginning {
+            return;
+        }
+        let receipt = self
+            .cancel_operation
+            .as_ref()
+            .map(|operation| operation.receipt.clone())
+            .or_else(|| {
+                self.queued_cancellations
+                    .get(chat_id)
+                    .filter(|receipt| matches!(receipt.state, QueuedCancelState::Pending { .. }))
+                    .cloned()
+            });
+        let receipt = match receipt {
+            Some(receipt) => receipt,
+            None => match QueuedCancelReceipt::pending(
+                self.queued_cancellations
+                    .get(chat_id)
+                    .map_or(0, |receipt| receipt.revision),
+                edit_id.into(),
+                turn_id.into(),
+            ) {
+                Ok(receipt) => receipt,
+                Err(error) => {
+                    self.error = Some(error.to_string());
+                    cx.notify();
+                    return;
+                }
+            },
+        };
+        if !matches!(&receipt.state, QueuedCancelState::Pending { edit_id: edit, turn_id: turn } if edit == edit_id && turn == turn_id)
+        {
+            self.error = Some("An earlier queued cancellation must finish first.".into());
+            cx.notify();
+            return;
+        }
+        // Abandon adoption immediately, before catalog preparation or an actor
+        // reply can run. The receipt then fences a Begin not yet executed.
+        self.abandon_begin_for_cancel(chat_id, edit_id, turn_id);
+        self.start_cancel(chat_id, receipt, false, cx);
+    }
+}

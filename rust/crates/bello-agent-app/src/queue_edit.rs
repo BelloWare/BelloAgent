@@ -42,6 +42,13 @@ impl AgentView {
         edit_id: Option<String>,
         cx: &mut Context<Self>,
     ) {
+        if self
+            .chat_ref(id)
+            .is_some_and(|chat| chat.begin_operation.is_some())
+        {
+            self.invalidate_begin_check(id, cx);
+            return;
+        }
         if self.has_pending_cancel(id) {
             self.invalidate_cancel_check(id, cx);
             self.resume_durable_cancel(id, cx);

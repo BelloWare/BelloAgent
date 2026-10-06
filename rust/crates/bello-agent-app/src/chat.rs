@@ -25,6 +25,8 @@ pub struct ChatState {
     pub queued_original: Option<String>,
     pub draft_before_edit: String,
     pub retained_edit: Option<QueuedDraft>,
+    pub begin_error: Option<crate::queue_begin::BeginFailure>,
+    pub begin_operation: Option<crate::queue_begin::BeginOperation>,
     pub cancel_operation: Option<crate::queue_cancel::CancelOperation>,
     pub visible_messages: usize,
     pub queue_open: bool,
@@ -105,6 +107,7 @@ impl ChatState {
         let recovery_events = cx.observe(&composer, move |view, _, cx| {
             view.resume_edit_reconciliation(&recovery_id, cx);
             view.resume_deferred_cancel(&recovery_id, cx);
+            view.resume_deferred_begin(&recovery_id, cx);
         });
         let poll = Self::subscribe(&controller, record.id.clone(), cx);
         Self {
@@ -137,6 +140,8 @@ impl ChatState {
                 None
             },
             cancel_operation: None,
+            begin_operation: None,
+            begin_error: None,
             draft_before_edit: if !retain_unowned && draft.queued_edit.is_some() {
                 draft.text
             } else {
@@ -197,6 +202,8 @@ impl ChatState {
             self.queue_drag_task = None;
             self.queue_operation = None;
             self.cancel_operation = None;
+            self.begin_operation = None;
+            self.begin_error = None;
             self.edit_recovery = crate::queue_edit::EditRecovery::new(
                 self.editing.is_some() || self.retained_edit.is_some(),
             );

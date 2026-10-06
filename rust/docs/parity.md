@@ -464,9 +464,10 @@ and live-controller recovery remain unvalidated.
 ## Durable queued Cancel and exact-draft command boundary
 
 Status: **implemented bounded recovery protocol; headless Linux validated**.
-This extends the certain-status checkpoint above. It does not complete held-edit
-UI parity: nonfreezing Begin/adoption, source unowned “Resume Edit” / “Cancel Edit”
-row controls and live controller reload remain separate work.
+This extends the certain-status checkpoint above. At `fc9e530`, nonfreezing
+Begin/adoption and source unowned “Resume Edit” / “Cancel Edit” row controls were
+separate work; the later checkpoint below implements them. Live controller reload
+and full held-edit parity remain incomplete.
 
 Source: `QueuePanel.swift:370–739` distinguishes explicitly owned Cancel (discard
 its rewrite) from recovered/unowned reconciliation (preserve genuinely unsaved
@@ -541,7 +542,8 @@ Typing during the obstruction can produce a newer,
 separately owned draft-save warning. That warning remains stale after a successful
 Cancel until restart; it does not block typing, retry, Close or durable recovery.
 At `fc9e530`, revision-tagged draft-error ownership remained a separate follow-up;
-the next section records its bounded fix. No arbitrary message prefix is cleared. Begin still uses the earlier frozen-composer command path. There is no generalized operation
+the next section records its bounded fix. No arbitrary message prefix is cleared. At `fc9e530`, Begin still used the earlier
+frozen-composer command path. There is no generalized operation
 journal, outcome retention policy or live reload added here; provider/tool behavior
 and native lifecycle policy are unchanged.
 
@@ -583,6 +585,114 @@ was restored and the app closed cleanly. Fresh 1180×812 captures show failure,
 Cancel-cleared, autosave-cleared and reopened states. Newer/unrelated-error callback
 races remain headless-only proof. Native macOS interaction/IME, accessibility and
 new-checkpoint CI remain unverified.
+
+## Nonfreezing queued Begin and source held-row controls
+
+Status: **implemented app-only slice; headless and running Linux validated**. Specification:
+`QueuePanel.swift:185–238,330–465,700–739`, including the source distinction between
+preparing, composer-owned and unowned holds. Begin now claims a per-chat operation
+before dispatch but leaves ordinary typing enabled. The actor takes the hold first;
+a certain typed reply then adopts the whole queued message and captures the latest
+ordinary draft. No displaced draft is frozen at click time. A retained earlier
+rewrite is reconciled before another edit can replace its metadata.
+
+Adoption validates the complete candidate and checked revision, and waits while
+marked composition is active. The existing editor notification resumes on unmark;
+Save, Remove, submit and Close cannot cross the pending operation. A known later
+actor failure invalidates an older deferred success and requests a fresh certain
+status. Project/chat/controller/operation and window-generation fences reject stale
+completion. Text belongs to its retained chat after navigation; focus moves only
+when the same active window, selected chat and first responder still match.
+
+Cancel Edit abandons pending adoption synchronously before v3 receipt preparation.
+It reuses the preceding durable Cancel protocol, so a Begin that executes later is
+fenced by its exact identity. A failed preparation never installs the abandoned
+rewrite; retry keeps the latest ordinary draft. Existing owned Cancel still discards
+its rewrite only after durable settlement, while unowned recovery preserves unsaved
+rewriting. Core actor, schema, provider and native lifecycle policy are unchanged.
+
+Rows now show the original preparing mini spinner, “Editing in the composer”, or
+“Edit open” with Resume Edit/Cancel Edit. Other edits and unowned held-row Remove
+are guarded as in the source. Original fonts, ghost padding, hit areas and ordering
+are retained. Queue-local info/edit/promote/remove glyphs use the source 10.12pt size
+inside 22pt hit areas; other app icons are unchanged. The renderer shapes complete
+labels and allocates the measured available width once, allowing wrapping and row
+growth rather than truncating actions. A 30pt outer minimum includes the source 26pt
+row plus 2pt vertical insets on each side; the source 3.5-row cap remains a scrolling
+viewport. Ordinary 920px half-split and wider geometry/reachability are tested headlessly;
+actual pixel evidence is recorded separately below.
+
+The current Rust sidebar/split constraints can still permit an extreme 149pt chat
+pane. Held controls require 71.5pt of fixed source padding/icons/gaps before text,
+plus row furniture and panel chrome, so universal fit there is not claimed; changing
+pane minima is a separate source audit. Native SF Symbol/Label metrics and pressed
+scale/transition motion remain adapter limitations. There is also a pre-existing
+composer undo gap across programmatic draft swaps: source `NativeComposer.swift:164–168`
+uses native `insertText` to preserve undo, while the shared Rust `set_text` resets
+its engine. Both the earlier Begin path and this slice use that method; ordinary
+typing/Undo proof does not establish undo parity across Begin/Cancel replacements.
+No native macOS fit, VoiceOver, IME or frame-performance claim follows from these tests.
+
+Twenty Begin GPUI tests cover typing/latest capture, named Resume, Cancel before
+reply and during marked adoption, navigation and independent focus changes, stale
+controller/window replies, synthetic later-failure invalidation, revision exhaustion,
+oversized live drafts, actual Begin/Cancel-preparation path failures and retries,
+earlier rewrite preservation, warning ownership, and wrapped-row scrolling.
+Twelve control tests cover source metrics, shaped Unicode/fallback, placement and
+actual wrapped height. **352 default workspace tests / 359 with the optional native
+lifecycle feature**, both strict Clippy configurations, formatting and Linux build
+pass on the responsive candidate. Final independent review verified all nine source
+hashes and independently reran all 173 app tests. Six isolated compiling mutants
+failed intended assertions for displaced-draft preservation, focus equality, window
+binding, synchronous Cancel abandonment, checked revision preflight and deferred
+status invalidation. No compile failure or timeout counted as a kill. The incidental
+IME unwrap from earlier exploration is excluded. Final isolated baseline, restored
+rerun and fresh restored rebuild each passed all 20 Begin tests; rebuilt restored
+binary matched baseline byte-for-byte.
+
+Initial actual Linux candidate
+`890133de4475b7475029687b47e7cfd67286c7c08238e3cafbde6d297eac7b7c`
+passed full-width Resume/Save, held Cancel and rejected-Begin retry data checks,
+but failed ordinary 920×600 half-split readability: bounds fit while labels broke
+into character fragments and the queued preview disappeared. The initial bounds
+assertion did not prove readable text. A stale Begin warning after successful retry
+was also found. Fresh full-width candidate
+`3c2a69c116b77cd635cd07fbce00ce745a9ba894c111593a2e8e87c593e4ff5f`
+confirmed that a rejected Begin preserves the ordinary draft and a successful
+retry clears its turn/controller-owned warning, followed by exact Cancel/Close/reopen
+recovery. On the earlier 890 candidate, a real local gated stream stayed active
+through Edit and Save with one request and no cancellation marker; delivery later
+followed root, edited follow-up A and follow-up B, preserving captured model/effort
+and the ordinary draft. Those checks are distinct from final responsive validation.
+
+The original Swift row is a single HStack, and its split constraints do not establish
+a sufficient minimum chat width. On October 5, 2026 the user approved a narrow
+adaptation: in a split pane, only an unowned Held row moves its existing controls
+onto a second line when measured complete-word controls and a readable queued
+preview cannot coexist. Order, fonts, padding, hit areas and wider-row placement stay
+unchanged. No pane/sidebar minimum was invented. The second line gets the exact
+remaining row width after Remove and its gap; preview stays on the first line.
+Actual shaped wrapped height now contributes to list content height, still bounded
+by the original 3.5-row-plus-headings cap, measured room and 52pt floor. A single
+Held row is fully visible when room permits; constrained content stays scrollable.
+Tests assert complete-word and preview allocations, vertical ordering, exact
+singleton content/heading accounting and action-line reachability at the floor.
+Final candidate
+`731c38f8581873e0fda19686e5dfdef63c36e0c64e64f9dd8e68661f39ed4e4e`
+passed fresh running Linux checks at 1180×812 and ordinary 920×600 half split:
+held preview and complete-word actions remain readable, a grown single row is fully
+visible with available room, row eight is reachable, and the owned label is readable.
+Resume/Save changed only the requested text and retained captured model/effort plus
+the exact ordinary draft. Direct held Cancel and retained-owned Cancel passed. A
+fresh pre-rename snapshot-path collision preserved the ordinary draft and unowned
+state; restored retry adopted text and cleared its matching warning. Cancel followed
+by clean Close/reopen preserved the exact ordinary draft and all eight queued items
+without dispatch. All fixtures closed cleanly. Current screenshots are
+`agent-begin-731c-{normal,held-minimum,single-minimum,owned-minimum,last-row,failure,retry,restart}.png`;
+minimum/owned/last-row images are 920×600 and the others 1180×812. Prior candidate
+890 supplies the separate running-stream test, not these final pixel results.
+Delayed Begin/IME and stale-completion interleavings remain headless evidence.
+Native macOS interaction remains unvalidated.
 
 ## Queue-header Resume / Send queued
 

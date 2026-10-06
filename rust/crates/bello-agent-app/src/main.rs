@@ -9,10 +9,12 @@ mod native_menu;
 #[cfg(feature = "native-lifecycle-smoke")]
 mod native_smoke;
 mod queue_actions;
+mod queue_begin;
 mod queue_cancel;
 mod queue_detail;
 mod queue_drag;
 mod queue_edit;
+mod queue_edit_controls;
 mod queue_geometry;
 mod queue_presentation;
 mod quick_open;
@@ -481,34 +483,6 @@ impl AgentView {
     }
     fn submit(&mut self, lane: Lane, cx: &mut Context<Self>) {
         self.submit_chat(lane, cx);
-    }
-    fn edit(&mut self, turn_id: &str, cx: &mut Context<Self>) {
-        if self.editing.is_some() {
-            return;
-        }
-        let edit_id = self
-            .session
-            .edit
-            .as_ref()
-            .filter(|edit| edit.turn_id == turn_id)
-            .map(|edit| edit.edit_id.clone())
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        let turn_id = turn_id.to_owned();
-        let requested_edit = edit_id.clone();
-        self.command(
-            cx,
-            Some(edit_id.clone()),
-            true,
-            move |controller| controller.begin_edit(&turn_id, &requested_edit),
-            move |view, text, cx| {
-                view.draft_before_edit = view.composer.read(cx).text().to_owned();
-                view.queued_original = Some(text.clone());
-                view.composer
-                    .update(cx, |editor, cx| editor.set_text(text, cx));
-                view.queued_turn_id = view.session.edit.as_ref().map(|edit| edit.turn_id.clone());
-                view.editing = Some(edit_id);
-            },
-        );
     }
     fn resolve_edit(&mut self, outcome: &str, cx: &mut Context<Self>) {
         if outcome == "cancelled" {
@@ -1246,6 +1220,8 @@ impl AgentView {
         );
         let sections = usize::from(ordered.iter().any(|row| row.follow_up_number.is_none()))
             + usize::from(ordered.iter().any(|row| row.follow_up_number.is_some()));
+        let row_count = ordered.len();
+        let mut measured_content_height = sections as f32 * queue_presentation::SECTION_HEIGHT;
         let mut rows = div()
             .id("queue-list")
             .track_scroll(&self.queue_scroll)
@@ -1265,13 +1241,6 @@ impl AgentView {
                 }),
             )
             .flex_shrink_0()
-            .h(px(queue_presentation::list_height(
-                ordered.len(),
-                sections,
-                self.queue_geometry
-                    .map(|geometry| geometry.room())
-                    .unwrap_or(f32::INFINITY),
-            )))
             .overflow_y_scroll()
             .flex()
             .flex_col();
@@ -1296,7 +1265,76 @@ impl AgentView {
                 last_lane = Some(item.lane.clone());
             }
             let id = item.id.clone();
+            let row_selector = format!("queue-row-{id}");
             let remove = id.clone();
+            let remove_chat = self.record.id.clone();
+            let edit_state = self.queue_edit_row_state(&id);
+            let owned_row = matches!(
+                edit_state,
+                queue_edit_controls::QueueEditRowState::Owned { .. }
+            );
+            let content_width = (self.queue_geometry.map_or(self.pane_width, |geometry| {
+                geometry.pane_width.min(self.pane_width)
+            }) - 58.)
+                .max(0.);
+            let preview_text = item
+                .text
+                .lines()
+                .next()
+                .unwrap_or("")
+                .chars()
+                .take(100)
+                .collect::<String>();
+            let first_word = preview_text.split_whitespace().next().unwrap_or("…");
+            let preview_requirement = measure(first_word, 13., FontWeight::NORMAL)
+                + if first_word.len() < preview_text.len() {
+                    measure("…", 13., FontWeight::NORMAL)
+                } else {
+                    0.
+                };
+            let held_plan = (self.show_files
+                && matches!(
+                    edit_state,
+                    queue_edit_controls::QueueEditRowState::Held { .. }
+                ))
+            .then(|| {
+                queue_edit_controls::held_row_plan(
+                    content_width,
+                    preview_requirement,
+                    edit_state.natural_width(window),
+                    edit_state.minimum_word_width(window),
+                )
+            });
+            let second_line = held_plan.is_some_and(|plan| plan.second_line);
+            let single_budget = (content_width - 90.).max(0.);
+            let control_budget = held_plan.map_or_else(
+                || {
+                    if owned_row {
+                        (single_budget - preview_requirement)
+                            .max(edit_state.minimum_word_width(window))
+                            .min(single_budget)
+                    } else {
+                        single_budget
+                    }
+                },
+                |plan| plan.controls_width,
+            );
+            let control_height = edit_state.rendered_height(control_budget, window).max(22.);
+            let row_height = if second_line {
+                22. + 8. + control_height + 4.
+            } else {
+                control_height + 4.
+            };
+            measured_content_height += row_height.max(queue_presentation::ROW_HEIGHT);
+            let remove_enabled = !matches!(
+                edit_state,
+                queue_edit_controls::QueueEditRowState::Held { .. }
+            ) && !self.busy
+                && !self.loading
+                && !self.load_failed
+                && !self.edit_recovery.blocked
+                && self.queue_operation.is_none()
+                && !self.shutting_down;
             let detail = id.clone();
             let promote = id.clone();
             let chat_id = self.record.id.clone();
@@ -1320,9 +1358,100 @@ impl AgentView {
                 && !self.load_failed
                 && !self.edit_recovery.blocked
                 && !self.shutting_down;
+            let primary_selector = format!("queue-primary-{id}");
+            let preview_selector = format!("queue-preview-{id}");
+            let actions_selector = format!("queue-actions-{id}");
+            let primary = div()
+                .debug_selector(move || primary_selector)
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .when(second_line, |row| row.w_full().flex_shrink_0())
+                .when(!second_line, |row| row.flex_1().min_w_0())
+                .child(
+                    div()
+                        .w(px(14.))
+                        .flex_shrink_0()
+                        .text_size(px(11.5))
+                        .text_color(rgb(p.tertiary))
+                        .when_some(row.follow_up_number, |d, number| {
+                            d.child(number.to_string())
+                        })
+                        .when(row.follow_up_number.is_none(), |d| {
+                            d.child(self.icon("steering", 12.).text_color(rgb(p.accent)))
+                        }),
+                )
+                .child(
+                    div()
+                        .debug_selector(move || preview_selector)
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .text_color(rgb(if owned_row { p.tertiary } else { p.ink }))
+                        .text_size(px(13.))
+                        .child(preview_text),
+                )
+                .child(
+                    self.queue_icon_button(
+                        SharedString::from(format!("detail-{detail}")),
+                        "info",
+                        true,
+                    )
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(cx.listener(
+                        move |view, event: &ClickEvent, window, cx| {
+                            view.open_queue_detail(detail.clone(), event.position(), window, cx);
+                            cx.stop_propagation();
+                        },
+                    )),
+                );
+            let actions = div()
+                .debug_selector(move || actions_selector)
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .flex_shrink_0()
+                .when(offers_promotion, |row| {
+                    row.child(
+                        self.queue_icon_button(
+                            queue_actions::promotion_control_id(&promote),
+                            "steering",
+                            promotion_enabled,
+                        )
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .debug_selector(|| "queue-promote".to_string())
+                        .tooltip(move |_, cx| cx.new(|_| queue_actions::PromotionHint(p)).into())
+                        .on_click(cx.listener(move |view, _, _, cx| {
+                            view.promote_queued(&chat_id, &promote, cx);
+                            cx.stop_propagation();
+                        })),
+                    )
+                })
+                .child(self.render_queue_edit_controls(
+                    &self.record.id,
+                    &id,
+                    edit_state,
+                    control_budget,
+                    window,
+                    cx,
+                ))
+                .child(
+                    self.queue_icon_button(
+                        SharedString::from(format!("remove-{remove}")),
+                        "close",
+                        remove_enabled,
+                    )
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(cx.listener(move |v, _, _, cx| {
+                        v.remove_queued_from_chat(&remove_chat, &remove, cx)
+                    })),
+                );
             rows = rows.child(
                 div()
                     .id(SharedString::from(format!("queue-row-{id}")))
+                    .debug_selector(move || row_selector)
                     .relative()
                     .when_some(drag, |row, drag| {
                         row.cursor(CursorStyle::OpenHand).on_drag(
@@ -1357,97 +1486,27 @@ impl AgentView {
                     .flex()
                     .items_center()
                     .gap(px(8.))
-                    .h(px(queue_presentation::ROW_HEIGHT))
+                    .when(second_line, |row| row.flex_col().items_start())
+                    .min_h(px(queue_presentation::ROW_HEIGHT))
+                    .py(px(2.))
                     .flex_shrink_0()
-                    .child(
-                        div()
-                            .w(px(14.))
-                            .text_size(px(11.5))
-                            .text_color(rgb(p.tertiary))
-                            .when_some(row.follow_up_number, |d, number| {
-                                d.child(number.to_string())
-                            })
-                            .when(row.follow_up_number.is_none(), |d| {
-                                d.child(self.icon("steering", 12.).text_color(rgb(p.accent)))
-                            }),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .text_size(px(13.))
-                            .child(
-                                item.text
-                                    .lines()
-                                    .next()
-                                    .unwrap_or("")
-                                    .chars()
-                                    .take(100)
-                                    .collect::<String>(),
-                            ),
-                    )
-                    .child(
-                        self.icon_button(
-                            SharedString::from(format!("detail-{detail}")),
-                            "info",
-                            22.,
-                        )
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .on_click(cx.listener(
-                            move |view, event: &ClickEvent, window, cx| {
-                                view.open_queue_detail(
-                                    detail.clone(),
-                                    event.position(),
-                                    window,
-                                    cx,
-                                );
-                                cx.stop_propagation();
-                            },
-                        )),
-                    )
-                    .when(offers_promotion, |row| {
-                        row.child(
-                            self.icon_button(
-                                queue_actions::promotion_control_id(&promote),
-                                "steering",
-                                22.,
-                            )
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .debug_selector(|| "queue-promote".to_string())
-                            .tooltip(move |_, cx| {
-                                cx.new(|_| queue_actions::PromotionHint(p)).into()
-                            })
-                            .opacity(if promotion_enabled { 1.0 } else { 0.45 })
-                            .on_click(cx.listener(
-                                move |view, _, _, cx| {
-                                    view.promote_queued(&chat_id, &promote, cx);
-                                    cx.stop_propagation();
-                                },
-                            )),
-                        )
-                    })
-                    .child(
-                        self.icon_button(SharedString::from(format!("edit-{id}")), "pencil", 22.)
-                            .opacity(if self.edit_recovery.blocked { 0.45 } else { 1. })
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .on_click(cx.listener(move |v, _, _, cx| v.edit(&id, cx))),
-                    )
-                    .child(
-                        self.icon_button(
-                            SharedString::from(format!("remove-{remove}")),
-                            "close",
-                            22.,
-                        )
-                        .opacity(if self.edit_recovery.blocked { 0.45 } else { 1. })
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .on_click(
-                            cx.listener(move |v, _, _, cx| v.remove_queue(remove.clone(), cx)),
-                        ),
-                    ),
+                    .child(primary)
+                    .child(actions),
             );
         }
-        panel.child(rows)
+        let room = self
+            .queue_geometry
+            .map(|geometry| geometry.room())
+            .unwrap_or(f32::INFINITY);
+        let standard_content = row_count as f32 * queue_presentation::ROW_HEIGHT
+            + sections as f32 * queue_presentation::SECTION_HEIGHT;
+        let height =
+            if measured_content_height.is_finite() && measured_content_height > standard_content {
+                queue_presentation::list_height_for_content(measured_content_height, sections, room)
+            } else {
+                queue_presentation::list_height(row_count, sections, room)
+            };
+        panel.child(rows.h(px(height)))
     }
     fn open_queue_detail(
         &mut self,

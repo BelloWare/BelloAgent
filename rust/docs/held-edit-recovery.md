@@ -49,9 +49,11 @@ IME, accessibility or pixel parity.
 
 Checkpoint boundaries: certain status was wired first. The next complete cut wires
 v3 durable Cancel receipts, startup retry and exact-draft Save/Remove barriers into
-the existing controls. Nonfreezing Begin/adoption and source held-row controls follow
-in a separately validated checkpoint. Pending recovery keeps ordinary typing enabled;
-owned Cancel still uses its existing short exclusive command barrier.
+the existing controls. A separately validated app-only checkpoint then wires
+nonfreezing Begin/adoption and source held-row controls. Pending Begin and recovery
+keep ordinary typing enabled; owned Cancel still uses its existing short exclusive
+command barrier. Cancel abandons a pending Begin synchronously before its durable
+preparation, and stale Begin completion cannot adopt after that abandonment.
 
 Cancel replay uses one certainty-checked actor operation: terminal outcomes return
 unchanged; Unknown tombstones only its own identity without dispatch; matching Active
@@ -61,3 +63,10 @@ Cancel from becoming implicit Resume. Source evidence is
 `SessionQueueEdit.swift:132–146,175–208`.
 Every published checkpoint must build and expose useful behavior, with independent
 review and its actual validation scope recorded separately.
+
+The source single-HStack Held row required a user-approved narrow responsive
+adaptation on October 5, 2026: controls may flow to a second line only when a split
+pane cannot fit measured complete words plus queued preview. Source order, style
+and wider placement stay intact. Actual wrapped row height participates in the
+existing list cap/room/floor policy; this is not a new pane-minimum policy or a
+claim of native Swift compression parity.

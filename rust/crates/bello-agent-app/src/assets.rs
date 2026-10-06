@@ -13,6 +13,13 @@ impl AssetSource for Assets {
         let body = match path {
             "folder" => r#"<path d="M3 6h7l2 2h9v11H3z"/>"#,
             "pencil" => r#"<path d="m5 16-1 4 4-1L20 7l-3-3zM14 7l3 3"/>"#,
+            "pencil.line" => r#"<path d="m5 14-1 4 4-1L19 6l-3-3zM13 6l3 3M4 22h16"/>"#,
+            "pause.circle" => r#"<circle cx="12" cy="12" r="9"/><path d="M9 8v8M15 8v8"/>"#,
+            // PiSpinner mini: 10pt outer diameter, 1.4pt stroke, and the
+            // source ring's 0.1...0.78 stroke segment, scaled to this viewBox.
+            "spinner" => {
+                r#"<path d="M20.349 18.066 A10.32 10.32 0 1 1 13.934 1.862" stroke-width="3.36"/>"#
+            }
             "new-chat" => r#"<path d="M12 4H4v16h16v-8M10 14l1-4 9-9 3 3-9 9z"/>"#,
             "plus" => r#"<path d="M12 5v14M5 12h14"/>"#,
             "search" => r#"<circle cx="10" cy="10" r="6"/><path d="m15 15 6 6"/>"#,
