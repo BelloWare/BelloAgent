@@ -2,6 +2,7 @@
 //! from Swift journals. No credentials are read, discovered, or persisted here.
 pub mod instructions;
 pub mod profile;
+pub mod project_authority;
 pub mod provider;
 pub mod runtime;
 pub mod session;
