@@ -1802,3 +1802,9 @@ continuation/reopen without historical reexecution. These native tests remain
 pending CI. Real mount fixtures, inaccessible-directory behavior, named-user home
 expansion and user-desktop acceptance are not claimed. The precise platform and
 validation boundary is recorded in `native-find-contract.md`.
+
+The first Find macOS run exposed a platform-specific test expectation: Darwin
+rejects an unterminated bracket pattern while glibc matches the literal bracket.
+The production matcher already delegates to native fnmatch as Swift does. The
+fixture now checks each supported platform's behavior explicitly; the focused
+Linux case passes. macOS Swift-oracle/runtime acceptance still awaits fresh CI.

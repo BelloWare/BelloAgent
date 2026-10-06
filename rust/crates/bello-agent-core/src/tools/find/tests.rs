@@ -159,6 +159,11 @@ fn native_fnmatch_flags_zero_matches_relative_or_basename() {
     assert!(glob_matches("[ab]?", "az"));
     assert!(glob_matches(r"literal\*", "literal*"));
     assert!(!glob_matches(r"literal\*", "literalX"));
+    // Malformed brackets differ between Darwin and glibc. Preserve the native
+    // result used by Swift instead of imposing the Linux fixture's behavior.
+    #[cfg(target_os = "macos")]
+    assert!(!glob_matches("[", "["));
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
     assert!(glob_matches("[", "["));
     assert!(!glob_matches("README.md", "readme.md"));
 }
