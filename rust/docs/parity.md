@@ -1534,3 +1534,35 @@ This covers explicit GPUI held events and the popup route. Pinned GPUI 0.2.2 X11
 reports physical repeat events as non-held, so real X11 autorepeat remains a known
 platform limitation. No timing heuristic, GPUI fork, native AppKit repeat claim,
 or broader workspace matrix is introduced.
+
+## Bounded instruction discovery groundwork (2026-10-06)
+
+The disconnected core `instructions` module ports the instruction-file portion of
+`PiAgentCore/Resources.swift`: global override/AGENTS precedence, repository-root
+to working-directory chains across distinct roots, shared ancestor de-duplication,
+project fallback names, and explicitly supplied additional instruction paths.
+It preserves the source's 32 KiB default / 256 KiB maximum aggregate preview
+budget, 1 MiB per-file bound, UTF-8 byte-prefix behavior, full-source SHA256,
+source metadata and truncation diagnostics. Nonblocking descriptor-based regular
+file checks reject FIFOs/devices without reading them on Linux/macOS. Roots are
+resolution context, not a sandbox; source symlink resolution is retained.
+
+This module accepts explicit typed, already-resolved paths/settings. It does not
+read environment variables or credentials, parse Codex configuration, discover
+skills, build the complete resource prompt/revision, grant project trust, freeze
+queued request configuration, or wire instructions into a provider request.
+Those integration steps remain missing. A returned snapshot owns its strings;
+subsequent file changes/discovery do not mutate it. No dependencies were added.
+
+Blank-file precedence uses Foundation's whitespace/newline set, including U+200B
+but excluding U+FEFF. As in Swift, the recorded canonical path is resolved after
+the bounded read; concurrent symlink replacement can therefore change that path
+between reading and metadata recording. This is not a sandbox/authorization
+boundary or a transactional filesystem snapshot.
+
+Ten focused Linux tests pass, covering discovery/metadata, UTF-8 budgeting,
+Foundation blank precedence, nonrepository ancestry, file bounds and FIFO/device
+rejection. Mutations reversing precedence, hashing previews instead of source
+bytes, and restoring Rust-only whitespace each fail their regression. Focused
+core library/test strict Clippy and formatting pass. Native macOS runtime
+filesystem behavior is not claimed from these Linux tests.
