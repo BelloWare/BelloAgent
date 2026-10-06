@@ -692,8 +692,18 @@ No responsiveness threshold was waived or relaxed. Evidence:
 `logs/native-final-hour-soak.log`, `logs/native-final-hour-soak-metadata.json`
 and the complete `logs/native-final-hour-soak.txt` report.
 
-## Still required
+## Release completion and manual coverage
 
-Owner VoiceOver and real-gateway checks have not been run or
-explicitly deferred for this release. Packaging, signing, website publication
-and the release tag remain pending.
+Release commit `f8a3a79ac1077a94c4daaa6bf21505bca63a0557` is tagged and
+pushed as `v0.1.120`. The signed/notarized/stapled app and DMG, packaged-helper
+offline proof, Gatekeeper acceptance, local feed/package checks and downloaded
+public hash/Ed25519 signature pass. Website commit is
+`cdc3698a783c6136d4c9b853e95eae447edb55dc`; public verification passes at
+2026-10-06 01:07:03 UTC. The first check served the previous build; the
+successful second check is recorded separately. The product page links to
+0.1.120, and canonical/legacy public feeds are byte-identical.
+
+VoiceOver and real-gateway checks have not been run or explicitly deferred
+for this release. Physical 1x/2x main-screen switching remains unrun; no
+bounded-memory certification is claimed. See the
+[final release record](Bello-Agent-0.1.120-2026-10-06.md).

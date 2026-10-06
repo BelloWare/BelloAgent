@@ -45,7 +45,26 @@ The canonical Bello Agent feed is `https://belloware.com/assets/bello_agent.appc
 The legacy `pi_app.appcast.xml` feed remains byte-identical so existing Pi App
 installations receive the same update.
 
-**Bello Agent 0.1.119/build 123 is publicly released** at
+**Bello Agent 0.1.120/build 124 is publicly released** at
+[belloware.com](https://belloware.com/bello-agent.html), with source at
+[Git tag v0.1.120](https://github.com/BelloWare/BelloAgent/tree/v0.1.120)
+(release commit `f8a3a79a`) and website commit `cdc3698`. The signed/notarized
+DMG is **12,653,046 bytes (12.07 MiB)**; SHA-256
+`494806a38135c6a77b7ed7829b3ab6d9373191037052054eb890047b8f45f206`.
+The public product page, identical canonical/legacy feeds and downloaded
+hash/Ed25519 signature verification pass at **2026-10-06 01:07:03 UTC**.
+The complete application now uses AppKit, with the terminal cursor fix,
+retained native views, bounded composer/footer work and corrected narrow Git
+background/captions. Gate checks and all affected corrective checks pass;
+all 192 screens were reviewed with 12 changed Git pairs re-reviewed. Both
+16-invocation performance sets and the actual 3,607-second mixed-action hour
+pass, with zero pauses over 250 ms or row jumps. Typical work improves, while
+typing peaks, broadly similar switch medians and test-window retention are
+recorded explicitly. VoiceOver/real-gateway and physical 1x/2x screen-switch
+checks remain unrun. See the
+[0.1.120 validation record](validation/Bello-Agent-0.1.120-2026-10-06.md).
+
+**Bello Agent 0.1.119/build 123 is a historical verified release** at
 [belloware.com](https://belloware.com/bello-agent.html), with source at
 [Git tag v0.1.119](https://github.com/BelloWare/BelloAgent/tree/v0.1.119) and website commit
 `5345b79`. The signed/notarized DMG is **12,710,550 bytes (12.12 MiB)**;

@@ -1,8 +1,10 @@
 # Bello Agent 0.1.120 / build 124
 
-Validated candidate; signing and public verification are pending.
-Production source is `70812d5fee0087ba493a3436033cf37fa32f93dc` on
-`dev/next`. The owner requested completion of the whole AppKit migration
+**Publicly released and verified at 2026-10-06 01:07:03 UTC.**
+Release commit `f8a3a79ac1077a94c4daaa6bf21505bca63a0557` is pushed and
+tagged `v0.1.120`. Its code matches validated production source
+`70812d5fee0087ba493a3436033cf37fa32f93dc`; later changes are records only.
+The owner requested completion of the whole AppKit migration
 and one release, with flexibility about the original handover checklist.
 
 ## Changes
@@ -81,7 +83,29 @@ from the native root; 0.1.119 also retains all 181 windows and records
 prove bounded memory or attribute every byte of growth to those windows.
 No responsiveness threshold was waived.
 
-## Limits and remaining publication work
+## Packaging and public verification
+
+`scripts/release.sh` passes on release commit `f8a3a79a`: normal Release build,
+stripped app/helper binaries with both dSYMs retained, Developer ID signing,
+packaged-helper offline smoke, app and DMG notarization/stapling, Gatekeeper
+acceptance, signed appcast and Ed25519 validation. The generated test bundle
+is preserved outside the shipping app; the final bundle has no `.xctest`,
+XCTest framework or frozen-reference directory and no direct SwiftUI/Charts
+links. Local validation also checks build 124 is newer than build 123.
+
+The installer is **12,653,046 bytes (12.07 MiB)**. SHA-256:
+`494806a38135c6a77b7ed7829b3ab6d9373191037052054eb890047b8f45f206`.
+Website publication commit `cdc3698a783c6136d4c9b853e95eae447edb55dc` is
+pushed. The first public check still serves build 123; the successful second
+check downloads the intended installer and verifies its identical hash and
+Ed25519 signature. Canonical Bello Agent and legacy Pi App public feeds are
+byte-identical; the public product page links to 0.1.120.
+
+[Product page](https://belloware.com/bello-agent.html) ·
+[Verified installer](https://belloware.com/assets/BelloAgent-0.1.120.dmg) ·
+[Release source](https://github.com/BelloWare/BelloAgent/tree/v0.1.120).
+
+## Limits
 
 VoiceOver and a real-gateway compaction have not been run or explicitly
 deferred for this release. A physical main-screen switch between 1x and 2x
@@ -89,17 +113,17 @@ has not been exercised on the 2x VM. Installation and Sparkle update/relaunch
 rehearsals remain omitted under the standing owner policy. These omissions
 are recorded, not converted into passing results.
 
-Commit/push the release source, sign/notarize/staple the app and DMG,
-validate the package/feed and downloaded public hash/signature, then push
-the release tag and final validation record. No public release is claimed
-until verification succeeds.
-
 Evidence is preserved under `/Users/admin/Library/Caches/BelloAgentNext`:
 `logs/native-composer-final-full-gate.log`, `final-1aa-verify-logs`,
 the corrected views-package/repeat logs, the gallery manifests/per-image
 records, final Git mutation/restoration logs,
 `logs/native-final-70812-release-affected-tests.log`, `perf-2be1/baseline`,
 `perf-70812/final`, `logs/native-final-hour-soak.log` and the complete
-`logs/native-final-hour-soak.txt`. See the
+`logs/native-final-hour-soak.txt`. Release artifacts and both dSYMs are in
+`build/releases/0.1.120`; signing/notarization/build logs and helper proof are
+in `build/release.zAhYJo`. Publication and both public-check logs are
+`logs/release-0.1.120-{publication,public-verification-1,public-verification-2}.log`;
+package/public metadata and final shipping linkage are preserved beside them.
+See the
 [integration record](AppKit-integration-0.1.120-2026-10-05.md) for exact paths
 and review pins.
