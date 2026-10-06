@@ -1566,3 +1566,21 @@ rejection. Mutations reversing precedence, hashing previews instead of source
 bytes, and restoring Rust-only whitespace each fail their regression. Focused
 core library/test strict Clippy and formatting pass. Native macOS runtime
 filesystem behavior is not claimed from these Linux tests.
+
+## Opt-in read-only tool Controller (2026-10-06)
+
+The core now supports an explicitly trusted, read-only `ls` request/tool/result
+loop with ordered durable call/result checkpoints, bounded filesystem workers,
+retained large output, full-batch steering, interrupted-result recovery and
+preflight replay validation before invocation. Existing desktop constructors
+remain tools-disabled; saved-project trust, tool-mode controls and truthful tool
+cards are not wired. This is core integration, not completed desktop tool parity.
+The complete contract and remaining source gaps are in
+`read-only-tool-controller.md`.
+
+The combined core checkpoint passed 205 tests before the final cancellation
+classification correction; its final 14 affected tests, strict core all-target
+Clippy and formatting pass. Four safety mutations were caught and restored.
+Actual SSE fallback, queued/running read cancellation, unknown-result recovery
+headroom and old-reader byte-preserving refusal are covered. Independent review
+is clear. All model requests in these tests use synthetic loopback servers.

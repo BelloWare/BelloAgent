@@ -322,7 +322,7 @@ impl Session {
         self.activate(item.clone());
         Ok(Some(item))
     }
-    fn activate(&mut self, item: Submission) {
+    pub(crate) fn activate(&mut self, item: Submission) {
         let id = Uuid::new_v4().to_string();
         self.messages.push(Message::new(
             id.clone(),
@@ -517,8 +517,8 @@ impl Session {
             if !self.messages.iter().any(|message| {
                 message.id == reply_id
                     && message.role == "assistant"
-                    && !message.replay_eligible
-                    && message.state == "streaming"
+                    && ((!message.replay_eligible && message.state == "streaming")
+                        || self.active_tool_calls().is_some())
             }) {
                 return Err(invalid("Running checkpoint has an invalid streaming reply"));
             }
@@ -532,6 +532,9 @@ impl Session {
     fn recover(&mut self) -> bool {
         if self.state != RunState::Running && self.edit.is_none() {
             return false;
+        }
+        if self.recover_tools() {
+            return true;
         }
         if let Some(id) = &self.active_reply
             && let Some(message) = self.messages.iter_mut().find(|v| &v.id == id)
@@ -631,6 +634,12 @@ impl SessionStore {
         store.session.id = id.into();
         store.encoded_bytes = encode_snapshot(&store.session)?.len();
         Ok(store)
+    }
+    pub(crate) fn tool_output_directory(&self) -> PathBuf {
+        self.path
+            .parent()
+            .expect("persistent session parent")
+            .join("tool-output")
     }
     pub fn is_persistent(&self) -> bool {
         self._lock.is_some()
@@ -930,6 +939,18 @@ impl SessionStore {
             return Err(invalid(
                 "Session checkpoint needs reserved room for interruption recovery; previous data is preserved",
             ));
+        }
+        if session.active_tool_calls().is_some() {
+            // One Unknown result per call can exceed the fixed metadata
+            // reserve. Admit the actual recovery shape before any invocation
+            // (and again for every queue/edit checkpoint during the batch).
+            let mut recovered = session.clone();
+            recovered.recover_tools();
+            if encode_snapshot(&recovered)?.len() > limit {
+                return Err(invalid(
+                    "Tool checkpoint needs room for every interrupted result; no new tool was executed",
+                ));
+            }
         }
         let temporary = parent.join(format!(".bello-agent-{}.tmp", Uuid::new_v4()));
         let mut options = OpenOptions::new();
@@ -2416,5 +2437,95 @@ mod tests {
             .transact(|session| session.resolve_edit("held", "cancelled", None))
             .unwrap();
         assert!(restored.snapshot().edit.is_none());
+    }
+}
+
+#[cfg(test)]
+mod tool_recovery_capacity_tests {
+    use super::*;
+    use crate::{
+        provider::ToolCall, runtime::tool_runtime::ToolResultRow, tool_history::ToolOutcome,
+    };
+    use serde_json::json;
+
+    #[test]
+    fn active_tool_admission_reserves_every_unknown_result_before_execution() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
+        let mut store = SessionStore::open(&path).unwrap();
+        store
+            .transact(|s| {
+                s.submit(Submission::new("fixture".into(), Lane::FollowUp))?;
+                s.start_next()?;
+                Ok(())
+            })
+            .unwrap();
+        let id = store.snapshot().active_reply.unwrap();
+        let profile = serde_json::from_value(json!({"id":"fixture","api":"openai-responses","providerId":"litellm","modelId":"fixture-model","baseUrl":"http://127.0.0.1:12345","contextWindow":32000,"maxOutputTokens":4096})).unwrap();
+        let reply = Reply {
+            text: String::new(),
+            reasoning: String::new(),
+            calls: (0..400)
+                .map(|i| ToolCall {
+                    id: format!("{i:04}{}", "x".repeat(252)),
+                    name: "ls".into(),
+                    arguments: json!({}),
+                })
+                .collect(),
+            usage: Value::Null,
+            status: "completed".into(),
+            provider_items: vec![],
+        };
+        let mut batch = store.snapshot();
+        batch.begin_tools(&id, &reply, &profile).unwrap();
+        let mut recovered = batch.clone();
+        assert!(recovered.recover_tools());
+        let admitted_size = encode_snapshot(&batch).unwrap().len();
+        let recovered_size = encode_snapshot(&recovered).unwrap().len();
+        assert!(recovered_size > admitted_size + RECOVERY_RESERVE_BYTES);
+        store.snapshot_limit = admitted_size + RECOVERY_RESERVE_BYTES + 1024;
+        let before = fs::read(&path).unwrap();
+        assert!(
+            store
+                .transact(|s| s.begin_tools(&id, &reply, &profile))
+                .unwrap_err()
+                .to_string()
+                .contains("every interrupted result")
+        );
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert!(store.snapshot().active_tool_calls().is_none());
+        store.snapshot_limit = recovered_size + RECOVERY_RESERVE_BYTES + 1024;
+        store
+            .transact(|s| s.begin_tools(&id, &reply, &profile))
+            .unwrap();
+        let accepted = fs::read(&path).unwrap();
+        // A failed result checkpoint leaves the admitted call phase recoverable.
+        store.fault = WriteFault::BeforeRename;
+        let results = reply
+            .calls
+            .iter()
+            .map(|_| ToolResultRow {
+                text: "result".into(),
+                outcome: ToolOutcome::Completed,
+            })
+            .collect();
+        assert!(
+            store
+                .transact(|s| s.settle_tools(&id, results, false))
+                .is_err()
+        );
+        assert_eq!(fs::read(&path).unwrap(), accepted);
+        drop(store);
+        let restored = SessionStore::open(&path).unwrap().snapshot();
+        assert_eq!(restored.state, RunState::Paused);
+        assert_eq!(
+            restored
+                .messages
+                .iter()
+                .filter(|m| m.role == "toolResult")
+                .count(),
+            400
+        );
+        assert!(encode_snapshot(&restored).unwrap().len() <= recovered_size + 1024);
     }
 }

@@ -1,0 +1,804 @@
+//! Opt-in Controller integration for the source's read-only `ls` capability.
+//! Desktop constructors stay disabled. This is an explicit host trust assertion,
+//! not a filesystem sandbox or a saved authorization inferred from conversation.
+use super::Controller;
+use crate::{
+    Error, Lane, Message, Profile, Reply, Result, RunState, Session, Submission, invalid,
+    provider::{ToolCall, request_body_with_tools},
+    tool_history::{
+        AssistantRecord, Completion, ReplayBinding, ResultRecord, ToolOutcome, ToolRecord,
+    },
+    tools::{BlockingWorkExecutor, Capability, NativeTools, ToolError},
+};
+use futures_util::future::join_all;
+use serde_json::Value;
+use std::{
+    fs,
+    io::Write,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
+
+/// Frozen for this Controller's lifetime. Empty/disabled is the compatibility
+/// default. Instructions are already-resolved text, not a discovery request.
+#[derive(Clone, Default)]
+pub struct RuntimeOptions {
+    pub instructions: String,
+    pub tools: Option<TrustedReadOnlyTools>,
+}
+
+/// Construct only after the host has obtained explicit project trust and chosen
+/// read-only tools. Roots resolve relative paths; absolute/parent/tilde/symlink
+/// paths may leave them, exactly as in the source. No environment is consulted.
+#[derive(Clone)]
+pub struct TrustedReadOnlyTools {
+    native: NativeTools,
+}
+impl TrustedReadOnlyTools {
+    pub fn new(cwd: PathBuf, additional_roots: Vec<PathBuf>, home: PathBuf) -> Result<Self> {
+        Ok(Self {
+            native: NativeTools::new(cwd, additional_roots, home, [Capability::Ls])
+                .map_err(|error| invalid(error.to_string()))?,
+        })
+    }
+    /// Allows deterministic worker admission tests without using real files or
+    /// changing the shared production executor's four-worker/64-waiting limits.
+    pub fn with_executor(mut self, executor: BlockingWorkExecutor) -> Self {
+        self.native = self.native.with_executor(executor);
+        self
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ToolResultRow {
+    pub text: String,
+    pub outcome: ToolOutcome,
+}
+impl ToolResultRow {
+    fn error(text: impl Into<String>, outcome: ToolOutcome) -> Self {
+        Self {
+            text: text.into(),
+            outcome,
+        }
+    }
+}
+
+fn message(role: &str, text: String, model: Option<String>) -> Message {
+    Message {
+        id: Uuid::new_v4().to_string(),
+        role: role.into(),
+        text,
+        reasoning: String::new(),
+        replay_eligible: true,
+        state: "completed".into(),
+        usage: Value::Null,
+        model,
+        tool_record: None,
+    }
+}
+
+impl Session {
+    /// The durable phase discriminator. No new execution is inferred from a
+    /// historical call: it must be the current active completed assistant.
+    pub(crate) fn active_tool_calls(&self) -> Option<&[ToolCall]> {
+        let active = self.active_reply.as_deref()?;
+        let message = self
+            .messages
+            .last()
+            .filter(|message| message.id == active)?;
+        match &message.tool_record {
+            Some(ToolRecord::Assistant(record))
+                if record.completion == Completion::Complete
+                    && message.state == "completed"
+                    && message.replay_eligible =>
+            {
+                Some(&record.calls)
+            }
+            _ => None,
+        }
+    }
+
+    pub(crate) fn begin_tools(
+        &mut self,
+        reply_id: &str,
+        reply: &Reply,
+        profile: &Profile,
+    ) -> Result<()> {
+        if self.active_reply.as_deref() != Some(reply_id) || self.active_tool_calls().is_some() {
+            return Err(invalid("Stale tool response completion"));
+        }
+        if reply.status != "completed" || reply.calls.is_empty() {
+            return Err(invalid(
+                "Incomplete tool response was not executed; retry with complete arguments",
+            ));
+        }
+        let row = self
+            .messages
+            .iter_mut()
+            .find(|row| row.id == reply_id)
+            .ok_or_else(|| invalid("Missing active tool reply"))?;
+        row.text = reply.text.clone();
+        row.reasoning = reply.reasoning.clone();
+        row.usage = reply.usage.clone();
+        row.state = "completed".into();
+        row.replay_eligible = true;
+        row.tool_record = Some(ToolRecord::Assistant(AssistantRecord {
+            completion: Completion::Complete,
+            calls: reply.calls.clone(),
+            binding: ReplayBinding::from_profile(profile)?,
+            provider_items: reply.provider_items.clone(),
+        }));
+        self.version = 3;
+        crate::tool_history::validate(&self.messages)
+    }
+
+    /// Results and the next response placeholder are one checkpoint. Steering
+    /// joins only after the whole batch, and an edit hold leaves both lanes alone.
+    pub(crate) fn settle_tools(
+        &mut self,
+        reply_id: &str,
+        results: Vec<ToolResultRow>,
+        stop: bool,
+    ) -> Result<()> {
+        if self.active_reply.as_deref() != Some(reply_id) {
+            return Err(invalid("Stale tool batch completion"));
+        }
+        let calls = self
+            .active_tool_calls()
+            .ok_or_else(|| invalid("No active tool batch"))?
+            .to_vec();
+        if calls.len() != results.len() {
+            return Err(invalid("Tool batch results do not match its calls"));
+        }
+        let model = self.active.as_ref().and_then(|item| item.model.clone());
+        for (call, result) in calls.iter().zip(results) {
+            let mut row = message("toolResult", result.text, model.clone());
+            row.tool_record = Some(ToolRecord::Result(ResultRecord {
+                assistant_id: reply_id.into(),
+                call_id: call.id.clone(),
+                is_error: result.outcome != ToolOutcome::Completed,
+                outcome: result.outcome,
+            }));
+            self.messages.push(row);
+        }
+        if stop {
+            self.retry = self.active.take();
+            self.active_reply = None;
+            self.state = RunState::Paused;
+            self.queue_paused = true;
+            self.error = Some("Tool work stopped. Retained results are kept; pending messages are paused. No tool is automatically replayed.".into());
+            return Ok(());
+        }
+        let mut item = self
+            .active
+            .clone()
+            .ok_or_else(|| invalid("Missing active tool turn"))?;
+        if self.edit.is_none()
+            && !self.queue_paused
+            && let Some(index) = self
+                .pending
+                .iter()
+                .position(|item| item.lane == Lane::Steering)
+        {
+            item = self.pending.remove(index);
+            let mut user = message("user", item.text.clone(), item.model.clone());
+            user.id = item.id.clone();
+            self.messages.push(user);
+        }
+        self.activate(item);
+        Ok(())
+    }
+
+    pub(crate) fn recover_tools(&mut self) -> bool {
+        let Some(calls) = self.active_tool_calls() else {
+            return false;
+        };
+        let results = calls.iter().map(|_| ToolResultRow::error(
+            "Interrupted before a tool result was durably recorded. Its output is unknown. No automatic replay.",
+            ToolOutcome::Unknown,
+        )).collect();
+        let id = self.active_reply.clone().expect("active tool reply");
+        self.settle_tools(&id, results, true)
+            .expect("validated active tool checkpoint");
+        true
+    }
+}
+
+impl Controller {
+    pub(super) async fn run_turn(
+        self: &Arc<Self>,
+        mut item: Submission,
+        mut snapshot: Session,
+        cancel: CancellationToken,
+    ) {
+        let config = self.config.as_ref().expect("configuration checked");
+        let definitions = self
+            .options
+            .tools
+            .as_ref()
+            .map(|tools| tools.native.definitions())
+            .unwrap_or_default();
+        loop {
+            let reply_id = snapshot
+                .active_reply
+                .clone()
+                .expect("active reply assigned");
+            let mut profile = config.profile.clone();
+            if let Some(model) = &item.model {
+                profile.model_id = model.clone();
+            }
+            if let Some(effort) = &item.effort {
+                profile.thinking_level = effort.clone();
+            }
+            let callback_id = reply_id.clone();
+            let callback_self = Arc::clone(self);
+            let response = self
+                .client
+                .complete_with_tools(
+                    &profile,
+                    &config.credential,
+                    &snapshot.messages,
+                    &self.options.instructions,
+                    &snapshot.id,
+                    &item.id,
+                    &definitions,
+                    cancel.clone(),
+                    move |delta| callback_self.stream_delta(&callback_id, delta),
+                )
+                .await;
+            let prepared = {
+                let mut inner = self.inner.lock().expect("session mutex poisoned");
+                // Stop wins a terminal response already in flight.
+                let response = if cancel.is_cancelled() {
+                    Err(Error::Cancelled)
+                } else {
+                    response
+                };
+                match response {
+                    Ok(reply) if !reply.calls.is_empty() && self.options.tools.is_some() => {
+                        let attempt = inner.store.transact(|session| {
+                            session.begin_tools(&reply_id, &reply, &profile)?;
+                            // Fail closed before any filesystem invocation if existing
+                            // opaque history cannot be replayed or the request is too big.
+                            let body = request_body_with_tools(
+                                &profile,
+                                &session.messages,
+                                &self.options.instructions,
+                                &session.id,
+                                &definitions,
+                            )?;
+                            if serde_json::to_vec(&body)?.len() > 32 * 1024 * 1024 {
+                                return Err(invalid("Serialized request exceeds 32 MiB"));
+                            }
+                            Ok(())
+                        });
+                        match attempt {
+                            Ok(()) => {
+                                let directory = inner.store.tool_output_directory();
+                                self.publish(&inner);
+                                Some((reply.calls, directory))
+                            }
+                            Err(error) => {
+                                // An uncertain write cannot be followed by another
+                                // mutation or an invocation. Reopen is authoritative.
+                                if matches!(error, Error::PersistenceUncertain(_)) {
+                                    inner.fatal = Some(error.to_string());
+                                } else if let Err(error) = inner.store.transact(|session| {
+                                    if let Some(row) =
+                                        session.messages.iter_mut().find(|row| row.id == reply_id)
+                                    {
+                                        row.text = reply.text.clone();
+                                        row.reasoning = reply.reasoning.clone();
+                                        row.usage = reply.usage.clone();
+                                    }
+                                    session.finish(&reply_id, Err(error))
+                                }) {
+                                    inner.fatal = Some(error.to_string());
+                                }
+                                None
+                            }
+                        }
+                    }
+                    response => {
+                        if let Err(error) = inner
+                            .store
+                            .transact(|session| session.finish(&reply_id, response))
+                        {
+                            inner.fatal = Some(error.to_string());
+                        }
+                        None
+                    }
+                }
+            };
+            let Some((calls, output_directory)) = prepared else {
+                return;
+            };
+            let tools = self.options.tools.as_ref().expect("tools checked");
+            // join_all keeps result order; NativeTools bounds actual file workers.
+            // Await every running read even after Stop, rather than freeing slots
+            // or reporting shutdown while an uninterruptible syscall still runs.
+            let results = join_all(
+                calls
+                    .iter()
+                    .map(|call| run_call(&tools.native, call, &output_directory, cancel.clone())),
+            )
+            .await;
+            let mut inner = self.inner.lock().expect("session mutex poisoned");
+            let stopped = cancel.is_cancelled();
+            if let Err(error) = inner
+                .store
+                .transact(|session| session.settle_tools(&reply_id, results, stopped))
+            {
+                inner.fatal = Some(error.to_string());
+                self.publish(&inner);
+                return;
+            }
+            self.publish(&inner);
+            if stopped {
+                return;
+            }
+            snapshot = inner.store.snapshot();
+            item = snapshot.active.clone().expect("continuation assigned");
+        }
+    }
+}
+
+async fn run_call(
+    tools: &NativeTools,
+    call: &ToolCall,
+    directory: &Path,
+    cancel: CancellationToken,
+) -> ToolResultRow {
+    if cancel.is_cancelled() {
+        return ToolResultRow::error(
+            "Not executed: cancelled before invocation",
+            ToolOutcome::NotExecuted,
+        );
+    }
+    // Source SessionTools marks invocation begun before NativeTools worker
+    // admission. Cancellation from this point has an unknown output, even
+    // when a queued filesystem read never reached the operating system.
+    match tools.invoke_prepared(call, cancel.clone()).await {
+        Ok(value) => {
+            let text = value["content"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|part| part["text"].as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            if text.len() <= 65536 {
+                return ToolResultRow {
+                    text,
+                    outcome: ToolOutcome::Completed,
+                };
+            }
+            let directory = directory.to_owned();
+            match BlockingWorkExecutor::shared()
+                .run(cancel, move |_| retain_output(&directory, &text))
+                .await
+            {
+                Ok(text) => ToolResultRow {
+                    text,
+                    outcome: ToolOutcome::Completed,
+                },
+                Err(ToolError::Cancelled) => ToolResultRow::error(
+                    "Tool interrupted before its output was retained. Its output is unknown. No automatic replay.",
+                    ToolOutcome::Unknown,
+                ),
+                Err(error) => ToolResultRow::error(
+                    format!("Tool result could not be retained: {error}"),
+                    ToolOutcome::Failed,
+                ),
+            }
+        }
+        Err(ToolError::Cancelled) => ToolResultRow::error(
+            "Tool interrupted. Its output is unknown. No automatic replay.",
+            ToolOutcome::Unknown,
+        ),
+        Err(error) => ToolResultRow::error(error.to_string(), ToolOutcome::Failed),
+    }
+}
+
+fn retain_output(directory: &Path, text: &str) -> crate::tools::ToolResult<String> {
+    if text.len() > 16 * 1024 * 1024 {
+        return Err(ToolError::Io(std::io::Error::other(
+            "Tool result exceeds 16 MiB",
+        )));
+    }
+    let mut dirs = fs::DirBuilder::new();
+    dirs.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        dirs.mode(0o700);
+    }
+    dirs.create(directory)?;
+    // Reject a substituted output directory rather than following its symlink.
+    if fs::symlink_metadata(directory)?.file_type().is_symlink() {
+        return Err(ToolError::Io(std::io::Error::other(
+            "Tool output directory is a symbolic link",
+        )));
+    }
+    let path = directory.join(format!("{}.txt", Uuid::new_v4()));
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&path)?;
+    file.write_all(text.as_bytes())?;
+    file.sync_all()?;
+    fs::File::open(directory)?.sync_all()?;
+    // Sync the new output directory entry before referencing a retained file.
+    if let Some(parent) = directory.parent() {
+        fs::File::open(parent)?.sync_all()?;
+    }
+    let mut end = 32768.min(text.len());
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    Ok(format!(
+        "{}\n\n[Output truncated. Full output: {}]",
+        &text[..end],
+        path.display()
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{SessionStore, session::WriteFault};
+    use serde_json::json;
+
+    fn profile() -> Profile {
+        serde_json::from_value(json!({"id":"fixture","api":"openai-responses","providerId":"litellm","modelId":"fixture-model","baseUrl":"http://127.0.0.1:12345","contextWindow":32000,"maxOutputTokens":4096})).unwrap()
+    }
+    fn reply() -> Reply {
+        Reply {
+            text: "Listing".into(),
+            reasoning: String::new(),
+            calls: vec![ToolCall {
+                id: "call-one".into(),
+                name: "ls".into(),
+                arguments: json!({}),
+            }],
+            usage: Value::Null,
+            status: "completed".into(),
+            provider_items: vec![],
+        }
+    }
+    fn active_store(path: &Path) -> (SessionStore, String) {
+        let mut store = SessionStore::open(path).unwrap();
+        store
+            .transact(|s| {
+                s.submit(Submission::new("fixture".into(), Lane::FollowUp))?;
+                s.start_next()?;
+                Ok(())
+            })
+            .unwrap();
+        let id = store.snapshot().active_reply.unwrap();
+        (store, id)
+    }
+    fn result() -> Vec<ToolResultRow> {
+        vec![ToolResultRow {
+            text: "kept result".into(),
+            outcome: ToolOutcome::Completed,
+        }]
+    }
+
+    #[test]
+    fn call_checkpoint_restart_preserves_calls_marks_unknown_and_never_reexecutes() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("session.json");
+        let (mut store, id) = active_store(&path);
+        store
+            .transact(|s| s.begin_tools(&id, &reply(), &profile()))
+            .unwrap();
+        let batch = store.snapshot();
+        assert_eq!(batch.version, 3);
+        assert_eq!(batch.state, RunState::Running);
+        // Exact pre-integration v3 reader invariant. It rejects before the
+        // existing open path's confirm/recover/write stages can run.
+        assert!(!batch.messages.iter().any(|m| m.id == id
+            && m.role == "assistant"
+            && !m.replay_eligible
+            && m.state == "streaming"));
+        drop(store);
+        let mut reopened = SessionStore::open(&path).unwrap();
+        let recovered = reopened.snapshot();
+        assert_eq!(recovered.state, RunState::Paused);
+        assert!(recovered.queue_paused);
+        assert!(recovered.messages[1].replay_eligible);
+        assert!(
+            matches!(recovered.messages[2].tool_record, Some(ToolRecord::Result(ref record)) if record.outcome == ToolOutcome::Unknown)
+        );
+        reopened
+            .transact(|s| {
+                s.retry_turn()?;
+                Ok(())
+            })
+            .unwrap();
+        let retried = reopened.snapshot();
+        assert!(retried.active_tool_calls().is_none());
+        let body =
+            request_body_with_tools(&profile(), &retried.messages, "", &retried.id, &[]).unwrap();
+        assert!(
+            body["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["type"] == "function_call_output")
+                .unwrap()["output"]
+                .as_str()
+                .unwrap()
+                .contains("No automatic replay")
+        );
+        assert_eq!(
+            retried
+                .messages
+                .iter()
+                .filter(|m| m.role == "toolResult")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn tool_result_checkpoint_failure_is_atomic_and_uncertain_reopen_never_duplicates_results() {
+        for fault in [WriteFault::BeforeRename, WriteFault::AfterRename] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("session.json");
+            let (mut store, id) = active_store(&path);
+            store
+                .transact(|s| s.begin_tools(&id, &reply(), &profile()))
+                .unwrap();
+            let before = fs::read(&path).unwrap();
+            store.fault = fault;
+            let outcome = store.transact(|s| s.settle_tools(&id, result(), false));
+            assert!(outcome.is_err());
+            assert_eq!(store.snapshot().messages.len(), 2);
+            if matches!(fault, WriteFault::BeforeRename) {
+                assert_eq!(fs::read(&path).unwrap(), before);
+            } else {
+                assert!(matches!(outcome, Err(Error::PersistenceUncertain(_))));
+                assert!(
+                    store
+                        .transact(|s| s.settle_tools(&id, result(), false))
+                        .is_err()
+                );
+            }
+            drop(store);
+            let mut reopened = SessionStore::open(&path).unwrap();
+            let snapshot = reopened.snapshot();
+            assert_eq!(snapshot.state, RunState::Paused);
+            let results: Vec<_> = snapshot
+                .messages
+                .iter()
+                .filter(|m| m.role == "toolResult")
+                .collect();
+            assert_eq!(results.len(), 1);
+            if matches!(fault, WriteFault::AfterRename) {
+                assert_eq!(results[0].text, "kept result");
+            } else {
+                assert!(results[0].text.contains("output is unknown"));
+            }
+            reopened
+                .transact(|s| {
+                    s.retry_turn()?;
+                    Ok(())
+                })
+                .unwrap();
+            assert!(reopened.snapshot().active_tool_calls().is_none());
+        }
+    }
+
+    #[test]
+    fn call_checkpoint_write_failure_keeps_no_accepted_execution_phase() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, id) = active_store(&dir.path().join("session.json"));
+        store.fault = WriteFault::BeforeRename;
+        assert!(
+            store
+                .transact(|s| s.begin_tools(&id, &reply(), &profile()))
+                .is_err()
+        );
+        assert!(store.snapshot().active_tool_calls().is_none());
+    }
+
+    #[test]
+    fn whole_batch_boundary_delivers_steering_only_when_edit_is_not_held() {
+        for held in [false, true] {
+            let mut s = Session::new();
+            s.submit(Submission::new("initial".into(), Lane::FollowUp))
+                .unwrap();
+            s.start_next().unwrap();
+            let id = s.active_reply.clone().unwrap();
+            s.begin_tools(&id, &reply(), &profile()).unwrap();
+            let following = Submission::new("following".into(), Lane::FollowUp);
+            let steering = Submission::new("steering".into(), Lane::Steering);
+            s.submit(following.clone()).unwrap();
+            s.submit(steering.clone()).unwrap();
+            if held {
+                s.begin_edit(&following.id, "held-edit").unwrap();
+            }
+            s.settle_tools(&id, result(), false).unwrap();
+            assert_eq!(s.pending.iter().any(|item| item.id == steering.id), held);
+            assert!(s.pending.iter().any(|item| item.id == following.id));
+            assert_eq!(
+                s.active.as_ref().unwrap().text,
+                if held { "initial" } else { "steering" }
+            );
+            let results = s
+                .messages
+                .iter()
+                .position(|m| m.role == "toolResult")
+                .unwrap();
+            if !held {
+                assert_eq!(s.messages[results + 1].id, steering.id);
+            }
+            assert!(s.active_tool_calls().is_none());
+        }
+    }
+
+    #[test]
+    fn retained_output_is_complete_private_and_utf8_preview_is_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("tool-output");
+        let text = "😀".repeat(20000);
+        let preview = retain_output(&output, &text).unwrap();
+        assert!(preview.starts_with(&"😀".repeat(8192)));
+        assert!(preview.contains("[Output truncated. Full output: "));
+        let files: Vec<_> = fs::read_dir(&output)
+            .unwrap()
+            .map(|x| x.unwrap().path())
+            .collect();
+        assert_eq!(files.len(), 1);
+        assert_eq!(fs::read_to_string(&files[0]).unwrap(), text);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&files[0]).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            assert_eq!(
+                fs::metadata(&output).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
+    }
+
+    #[test]
+    fn output_retention_failure_never_returns_a_false_full_output_reference() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("not-a-directory");
+        fs::write(&file, "original").unwrap();
+        assert!(retain_output(&file, &"x".repeat(70000)).is_err());
+        assert_eq!(fs::read_to_string(file).unwrap(), "original");
+        #[cfg(unix)]
+        {
+            let link = dir.path().join("linked-output");
+            std::os::unix::fs::symlink(dir.path(), &link).unwrap();
+            assert!(retain_output(&link, &"x".repeat(70000)).is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn cancellation_before_invocation_is_not_executed() {
+        let directory = tempfile::tempdir().unwrap();
+        let native = NativeTools::new(
+            directory.path().to_owned(),
+            [],
+            directory.path().to_owned(),
+            [Capability::Ls],
+        )
+        .unwrap()
+        .before_read(Arc::new(|| panic!("pre-cancelled read must not enter")));
+        let token = CancellationToken::new();
+        token.cancel();
+        let outcome = run_call(&native, &reply().calls[0], directory.path(), token).await;
+        assert_eq!(outcome.outcome, ToolOutcome::NotExecuted);
+        assert_eq!(outcome.text, "Not executed: cancelled before invocation");
+    }
+
+    #[tokio::test]
+    async fn shutdown_awaits_an_entered_read_before_reporting_the_batch_settled() {
+        use std::{
+            io::{Read, Write},
+            sync::{Condvar, Mutex},
+            time::Duration,
+        };
+        struct Release(Arc<(Mutex<bool>, Condvar)>);
+        impl Drop for Release {
+            fn drop(&mut self) {
+                *self.0.0.lock().unwrap() = true;
+                self.0.1.notify_all();
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut profile = profile();
+        profile.base_url = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut raw = vec![];
+            loop {
+                let mut chunk = [0; 4096];
+                let count = socket.read(&mut chunk).unwrap();
+                assert_ne!(count, 0);
+                raw.extend_from_slice(&chunk[..count]);
+                if let Some(end) = raw.windows(4).position(|part| part == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&raw[..end]).to_lowercase();
+                    let length: usize = headers
+                        .lines()
+                        .find_map(|line| line.strip_prefix("content-length: "))
+                        .unwrap()
+                        .parse()
+                        .unwrap();
+                    if raw.len() >= end + 4 + length {
+                        break;
+                    }
+                }
+            }
+            let body=json!({"status":"completed","output":[{"type":"function_call","call_id":"call-one","name":"ls","arguments":"{}"}]}).to_string();
+            write!(socket,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+        });
+        let barrier = Arc::new((Mutex::new(false), Condvar::new()));
+        let release = Release(barrier.clone());
+        let (entered, mut arrival) = tokio::sync::mpsc::unbounded_channel();
+        let workers = BlockingWorkExecutor::new(1, 1);
+        let mut trusted =
+            TrustedReadOnlyTools::new(dir.path().to_owned(), vec![], dir.path().to_owned())
+                .unwrap()
+                .with_executor(workers.clone());
+        trusted.native = trusted.native.before_read(Arc::new(move || {
+            entered.send(()).unwrap();
+            let (lock, signal) = &*barrier;
+            let mut released = lock.lock().unwrap();
+            while !*released {
+                released = signal.wait(released).unwrap();
+            }
+        }));
+        let control = Controller::new_with_options(
+            SessionStore::open(dir.path().join("session.json")).unwrap(),
+            Some((
+                profile,
+                crate::Credential::new("fixture-only".into()).unwrap(),
+            )),
+            RuntimeOptions {
+                instructions: String::new(),
+                tools: Some(trusted),
+            },
+        )
+        .unwrap();
+        control.submit("fixture".into(), Lane::FollowUp).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), arrival.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let shutdown = control.shutdown();
+        tokio::pin!(shutdown);
+        // Poll the real shutdown future once: Stop is requested, then the
+        // worker join must still be pending while the entered read is held.
+        assert!(futures_util::poll!(&mut shutdown).is_pending());
+        assert_eq!(workers.occupancy().active, 1);
+        assert_eq!(control.snapshot().state, RunState::Running);
+        drop(release);
+        tokio::time::timeout(Duration::from_secs(5), shutdown)
+            .await
+            .unwrap()
+            .unwrap();
+        let snapshot = control.snapshot();
+        assert_eq!(snapshot.state, RunState::Paused);
+        assert!(snapshot.messages.iter().any(|row|matches!(&row.tool_record,Some(ToolRecord::Result(record)) if record.outcome==ToolOutcome::Unknown)));
+        server.join().unwrap();
+    }
+}

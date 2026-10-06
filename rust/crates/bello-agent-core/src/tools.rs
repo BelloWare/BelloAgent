@@ -1,8 +1,8 @@
-//! Source-backed, deliberately disconnected native-tool groundwork.
+//! Source-backed native-tool implementation. Only `ls` is ported.
 //!
-//! Only `ls` is ported. Nothing in this module offers tools to a provider or
-//! invokes them from the production Controller. A caller must supply an explicit
-//! capability allowlist and path context. As in Swift, offering a capability is
+//! This module never independently offers tools to a provider. The Controller's
+//! explicit TrustedReadOnlyTools option can invoke it; desktop constructors keep
+//! tools disabled. A caller supplies an explicit capability allowlist and path context. As in Swift, offering a capability is
 //! an execution decision: `invoke` does not insert a per-call approval gate.
 //!
 //! Sources: PiAgentCore/{Tools,SessionTools,Support,Resources,
@@ -13,8 +13,9 @@
 //!
 //! `invoke` matches NativeTools' native validation; `invoke_prepared` additionally
 //! applies SessionTools' schema preparation, for the ls schema only. The general
-//! JSON Schema coercer, session result/card retention (>64 KiB saved in a file,
-//! 32 KiB preview, 16 MiB maximum), replay and tool-loop integration are unported.
+//! JSON Schema coercer and source tool cards remain unported. The opt-in core
+//! Controller retains text above 64 KiB in private files (32 KiB preview,
+//! 16 MiB maximum), checkpoints call/result history, and continues the tool loop.
 //! Native ls itself has an entry bound, not a byte bound, and no `stats` field.
 
 use crate::provider::ToolCall;
@@ -105,6 +106,8 @@ pub struct NativeTools {
     paths: FileToolContext,
     capabilities: BTreeSet<Capability>,
     workers: BlockingWorkExecutor,
+    #[cfg(test)]
+    before_read: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl NativeTools {
@@ -132,12 +135,20 @@ impl NativeTools {
             paths: FileToolContext { cwd, roots, home },
             capabilities: capabilities.into_iter().collect(),
             workers: BlockingWorkExecutor::shared(),
+            #[cfg(test)]
+            before_read: None,
         })
     }
 
     /// Isolated executor injection for deterministic synthetic fixtures.
     pub fn with_executor(mut self, workers: BlockingWorkExecutor) -> Self {
         self.workers = workers;
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn before_read(mut self, callback: Arc<dyn Fn() + Send + Sync>) -> Self {
+        self.before_read = Some(callback);
         self
     }
 
@@ -236,8 +247,16 @@ impl NativeTools {
         }
         let paths = self.paths.clone();
         let arguments = call.arguments.clone();
+        #[cfg(test)]
+        let before_read = self.before_read.clone();
         self.workers
-            .run(cancellation, move |cancel| paths.ls(&arguments, &cancel))
+            .run(cancellation, move |cancel| {
+                #[cfg(test)]
+                if let Some(callback) = before_read {
+                    callback();
+                }
+                paths.ls(&arguments, &cancel)
+            })
             .await
     }
 }

@@ -36,13 +36,24 @@ pub struct Reply {
 }
 
 /// The request preserves the source app's Responses correlation and budget rules.
-/// This vertical slice intentionally offers no tools. Typed tool-history replay
-/// is non-executing groundwork; the live Controller still rejects tool calls.
+/// This compatibility entry point intentionally offers no tools. The explicit
+/// trusted Controller uses request_body_with_tools; history never dispatches work.
 pub fn request_body(
     profile: &Profile,
     messages: &[Message],
     instructions: &str,
     session_id: &str,
+) -> Result<Value> {
+    request_body_with_tools(profile, messages, instructions, session_id, &[])
+}
+
+/// Definitions are supplied only by an explicitly trusted host configuration.
+pub fn request_body_with_tools(
+    profile: &Profile,
+    messages: &[Message],
+    instructions: &str,
+    session_id: &str,
+    tools: &[crate::tools::ToolDefinition],
 ) -> Result<Value> {
     profile.validate()?;
     let mut input = Vec::new();
@@ -66,6 +77,19 @@ pub fn request_body(
                 body["include"] = json!(["reasoning.encrypted_content"]);
             }
         }
+    }
+    if !tools.is_empty() {
+        body["tools"] = Value::Array(
+            tools
+                .iter()
+                .map(|tool| {
+                    json!({
+                        "type":"function", "name":tool.name,
+                        "description":tool.description, "parameters":tool.schema
+                    })
+                })
+                .collect(),
+        );
     }
     Ok(body)
 }
@@ -203,7 +227,7 @@ impl Accumulator {
             status,
             provider_items: Vec::new(),
         };
-        for (index, item) in indexed {
+        for (index, mut item) in indexed {
             match item["type"].as_str().unwrap_or("") {
                 "message" => {
                     for part in item["content"].as_array().into_iter().flatten() {
@@ -239,12 +263,24 @@ impl Accumulator {
                         .as_str()
                         .filter(|s| !s.is_empty())
                         .or_else(|| self.arguments.get(&index).map(String::as_str))
-                        .unwrap_or("{}");
+                        .ok_or_else(|| {
+                            invalid("Provider omitted tool arguments; no tool was executed")
+                        })?
+                        .to_owned();
                     reply.calls.push(ToolCall {
                         id,
                         name,
-                        arguments: serde_json::from_str(args).unwrap_or_else(|_| json!({})),
+                        arguments: serde_json::from_str(&args).map_err(|_| {
+                            invalid(
+                                "Provider returned malformed tool arguments; no tool was executed",
+                            )
+                        })?,
                     });
+                    // The terminal may omit its output array and the indexed
+                    // item may still have empty arguments. Preserve the exact
+                    // assembled stream text used above, so retained replay and
+                    // the typed executable call have one validated meaning.
+                    item["arguments"] = json!(args);
                 }
                 _ => {}
             }
@@ -298,9 +334,35 @@ impl ResponsesClient {
         session_id: &str,
         turn_id: &str,
         cancel: CancellationToken,
+        on_delta: impl FnMut(Delta) -> Result<()>,
+    ) -> Result<Reply> {
+        self.complete_with_tools(
+            profile,
+            credential,
+            messages,
+            instructions,
+            session_id,
+            turn_id,
+            &[],
+            cancel,
+            on_delta,
+        )
+        .await
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub async fn complete_with_tools(
+        &self,
+        profile: &Profile,
+        credential: &Credential,
+        messages: &[Message],
+        instructions: &str,
+        session_id: &str,
+        turn_id: &str,
+        tools: &[crate::tools::ToolDefinition],
+        cancel: CancellationToken,
         mut on_delta: impl FnMut(Delta) -> Result<()>,
     ) -> Result<Reply> {
-        let body = request_body(profile, messages, instructions, session_id)?;
+        let body = request_body_with_tools(profile, messages, instructions, session_id, tools)?;
         let bytes = serde_json::to_vec(&body)?;
         if bytes.len() > 32 * 1024 * 1024 {
             return Err(invalid("Serialized request exceeds 32 MiB"));
@@ -419,6 +481,51 @@ mod tests {
         assert_eq!(reply.text, "onetwo");
         assert_eq!(reply.usage["input_tokens"], 2);
     }
+    #[test]
+    fn streamed_tool_arguments_are_retained_in_the_assembled_provider_item() {
+        let mut accumulator = Accumulator::default();
+        accumulator.consume(json!({"type":"response.output_item.done","output_index":0,"item":{
+            "type":"function_call","call_id":"fixture","name":"ls","arguments":"","status":"completed"
+        }})).unwrap();
+        accumulator.consume(json!({"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"limit\":1}"})).unwrap();
+        accumulator
+            .accept_json(json!({"status":"completed","output":[]}))
+            .unwrap();
+        let reply = accumulator.finish().unwrap();
+        assert_eq!(reply.calls[0].arguments, json!({"limit":1}));
+        assert_eq!(reply.provider_items[0]["arguments"], "{\"limit\":1}");
+    }
+
+    #[test]
+    fn absent_empty_and_malformed_arguments_never_become_an_empty_object() {
+        for arguments in [Value::Null, json!(""), json!("{broken")] {
+            let mut accumulator = Accumulator::default();
+            accumulator
+                .accept_json(json!({"status":"completed","output":[{
+                    "type":"function_call","call_id":"fixture","name":"ls","arguments":arguments
+                }]}))
+                .unwrap();
+            assert!(accumulator.finish().is_err());
+        }
+        let mut accumulator = Accumulator::default();
+        accumulator
+            .consume(
+                json!({"type":"response.output_item.added","output_index":0,"item":{
+                    "type":"function_call","call_id":"fixture","name":"ls","arguments":""
+                }}),
+            )
+            .unwrap();
+        accumulator.consume(json!({"type":"response.function_call_arguments.delta","output_index":0,"delta":"{}"})).unwrap();
+        accumulator
+            .accept_json(json!({"status":"completed","output":[{
+                "type":"function_call","call_id":"fixture","name":"ls","arguments":"{broken"
+            }]}))
+            .unwrap();
+        // An explicitly malformed terminal string outranks a valid streamed
+        // fallback. Never execute arguments different from that terminal item.
+        assert!(accumulator.finish().is_err());
+    }
+
     #[test]
     fn arguments_cannot_precede_item() {
         let mut a = Accumulator::default();

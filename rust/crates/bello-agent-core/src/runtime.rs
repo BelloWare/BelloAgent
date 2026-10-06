@@ -1,6 +1,10 @@
+#[path = "tool_runtime.rs"]
+pub(crate) mod tool_runtime;
+pub use tool_runtime::{RuntimeOptions, TrustedReadOnlyTools};
+
 use crate::{
-    Credential, Error, Lane, Profile, QueueEditState, QueueEditStatus, ResponsesClient, Result,
-    RunState, Session, SessionStore, Submission, invalid,
+    Credential, Lane, Profile, QueueEditState, QueueEditStatus, ResponsesClient, Result, RunState,
+    Session, SessionStore, Submission, invalid,
 };
 use std::sync::{
     Arc, Mutex, OnceLock, RwLock,
@@ -28,6 +32,7 @@ pub struct Controller {
     stop_requested: AtomicBool,
     worker_active: AtomicBool,
     config: Option<Arc<Configuration>>,
+    options: RuntimeOptions,
     client: ResponsesClient,
     runtime: tokio::runtime::Handle,
     worker: Mutex<Option<tokio::task::JoinHandle<()>>>,
@@ -37,17 +42,31 @@ impl Controller {
         store: SessionStore,
         configuration: Option<(Profile, Credential)>,
     ) -> Result<Arc<Self>> {
+        Self::new_with_options(store, configuration, RuntimeOptions::default())
+    }
+    pub fn new_with_options(
+        store: SessionStore,
+        configuration: Option<(Profile, Credential)>,
+        options: RuntimeOptions,
+    ) -> Result<Arc<Self>> {
         let configuration = configuration.map(|(profile, credential)| {
             Arc::new(Configuration {
                 profile,
                 credential,
             })
         });
-        Self::with_configuration(store, configuration)
+        Self::with_configuration_and_options(store, configuration, options)
     }
     pub fn with_configuration(
         store: SessionStore,
         configuration: Option<Arc<Configuration>>,
+    ) -> Result<Arc<Self>> {
+        Self::with_configuration_and_options(store, configuration, RuntimeOptions::default())
+    }
+    pub fn with_configuration_and_options(
+        store: SessionStore,
+        configuration: Option<Arc<Configuration>>,
+        options: RuntimeOptions,
     ) -> Result<Arc<Self>> {
         if let Some(configuration) = &configuration {
             configuration.profile.validate()?;
@@ -66,6 +85,7 @@ impl Controller {
                 fatal: None,
             }),
             config: configuration,
+            options,
             client: ResponsesClient::new()?,
             runtime: shared_runtime()?.handle().clone(),
             worker: Mutex::new(None),
@@ -407,45 +427,9 @@ impl Controller {
             let Some((item, snapshot, cancel)) = prepared else {
                 return;
             };
-            let reply_id = snapshot
-                .active_reply
-                .clone()
-                .expect("active reply assigned");
-            let config = self.config.as_ref().expect("configuration checked");
-            let mut profile = config.profile.clone();
-            if let Some(model) = item.model {
-                profile.model_id = model;
-            }
-            if let Some(effort) = item.effort {
-                profile.thinking_level = effort;
-            }
-            let callback_id = reply_id.clone();
-            let callback_self = Arc::clone(&self);
-            let result = self
-                .client
-                .complete(
-                    &profile,
-                    &config.credential,
-                    &snapshot.messages,
-                    "",
-                    &snapshot.id,
-                    &item.id,
-                    cancel.clone(),
-                    move |delta| callback_self.stream_delta(&callback_id, delta),
-                )
-                .await;
-            // Stop wins the race with a provider terminal event already in flight.
+            self.run_turn(item, snapshot, cancel).await;
             let mut inner = self.inner.lock().expect("session mutex poisoned");
-            let result = if cancel.is_cancelled() {
-                Err(Error::Cancelled)
-            } else {
-                result
-            };
-            if let Err(error) = inner
-                .store
-                .transact(|session| session.finish(&reply_id, result))
-            {
-                inner.fatal = Some(error.to_string());
+            if inner.fatal.is_some() {
                 self.worker_finished(&mut inner);
                 self.publish(&inner);
                 return;
@@ -479,7 +463,7 @@ fn shared_runtime() -> Result<&'static tokio::runtime::Runtime> {
 #[cfg(test)]
 mod edit_status_tests {
     use super::*;
-    use crate::{QueueEditState, session::WriteFault};
+    use crate::{Error, QueueEditState, session::WriteFault};
     use std::{collections::BTreeMap, ffi::OsString, path::Path, time::Duration};
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
