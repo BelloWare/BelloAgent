@@ -1686,3 +1686,32 @@ references and same-path replacement. Focused ordinary shutdown, cancellation,
 queue and snapshot-generation checks passed during independent review; strict
 core/app Clippy passes after integration. This supplies lifecycle boundaries for
 future host configuration changes; it does not enable tools or a native vault.
+
+### Retained tool cards and visible preview focus
+
+Typed saved tool calls now render as source-style cards paired by assistant and
+call identity. Results outside the current history page remain standalone until
+their owner is revealed. Status text distinguishes successful, failed, skipped,
+unknown, cancelled and missing outcomes without invented timing or progress.
+IN/OUT previews are selectable read-only editors, capped at 8 KiB and 150 pixels;
+a bounded 64-entry cache retains selection and internal scroll. Tool output does
+not become an executable file action. Host tools remain disabled by default.
+
+Collapsing, virtualizing or replacing a focused preview transfers focus to its
+visible noneditable transcript owner. Queued-message detail dismissal restores
+only the still-current visible section, otherwise a surviving current owner;
+newer focus wins. These checks stay bounded to the editor cache and preserve
+unrelated composer/IME state. Eleven final tool-card tests and strict app Clippy
+pass. Section-presence and current-owner mutations each fail their regression
+and were restored. Independent presentation and focused lifecycle review is clear.
+Native Linux acceptance is recorded below; native macOS remains a separate gate.
+
+The frozen Linux candidate
+`f9ffc64dd802eccd5446ac88f2932430536c280bd4bb2f0f48d3ac01ad71eba5`
+passed actual Unicode OUT Copy/Undo, collapse/virtualization/paging shortcut
+routing, nested preview scrolling, orphan pairing without duplicate output, and
+all six retained outcome labels. Normal Close preserved the exact unsent draft.
+This used synthetic saved records with host tools disabled and no provider calls.
+Queue-detail restoration has automated coverage only; it was not part of this
+native fixture. Native macOS, accessibility and same-hardware performance remain
+unverified by this Linux acceptance.

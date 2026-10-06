@@ -1657,6 +1657,7 @@ impl AgentView {
             turn_id,
             anchor,
             self.palette,
+            self.transcript.as_ref(),
             window,
             cx,
         ));
@@ -1691,8 +1692,16 @@ impl AgentView {
             }
         });
         if let Some(detail) = detail {
-            if restore_focus && !self.chat_is_archived(&key.chat_id) {
-                detail.restore_focus(window, cx);
+            if restore_focus
+                && self.record.id == key.chat_id
+                && !self.chat_is_archived(&key.chat_id)
+                && detail.restore_focus(self.transcript.as_ref(), window, cx)
+                && !self
+                    .transcript
+                    .as_ref()
+                    .is_some_and(|view| view.read(cx).focus_fallback(window))
+            {
+                self.composer.read(cx).focus(window);
             }
             cx.notify();
         }

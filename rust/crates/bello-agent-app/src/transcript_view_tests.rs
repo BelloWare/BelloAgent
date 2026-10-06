@@ -1997,3 +1997,433 @@ fn controller_snapshot_generation_rejects_late_selected_and_inactive_publication
         );
     });
 }
+
+fn retained_tool_rows(count: usize, output: &str) -> Vec<Message> {
+    use bello_agent_core::{
+        provider::ToolCall,
+        tool_history::{
+            AssistantRecord, Completion, ReplayBinding, ResultRecord, ToolOutcome, ToolRecord,
+        },
+    };
+    (0..count)
+        .flat_map(|i| {
+            let mut assistant = message(&format!("tool-assistant-{i}"), "assistant", "");
+            assistant.state = "completed".into();
+            assistant.tool_record = Some(ToolRecord::Assistant(AssistantRecord {
+                completion: Completion::Complete,
+                calls: vec![ToolCall {
+                    id: "reused".into(),
+                    name: "ls".into(),
+                    arguments: serde_json::json!({"path":"."}),
+                }],
+                binding: ReplayBinding {
+                    profile_id: "fixture".into(),
+                    api: "openai-responses".into(),
+                    provider: "litellm".into(),
+                    model: "fixture".into(),
+                    endpoint_sha256: "0".repeat(64),
+                },
+                provider_items: vec![],
+            }));
+            let mut result = message(&format!("tool-result-{i}"), "toolResult", output);
+            result.tool_record = Some(ToolRecord::Result(ResultRecord {
+                assistant_id: assistant.id.clone(),
+                call_id: "reused".into(),
+                is_error: false,
+                outcome: ToolOutcome::Completed,
+            }));
+            [assistant, result]
+        })
+        .collect()
+}
+
+#[gpui::test]
+fn retained_tool_cards_pair_and_cap_selectable_sections_without_eager_editors(
+    cx: &mut TestAppContext,
+) {
+    let (_directory, _window, root) = fixture(cx, messages(1), 0);
+    let mut changed = input(&root, cx);
+    let mut session = (*changed.session).clone();
+    session.messages = retained_tool_rows(180, &"retained output line\n".repeat(1000));
+    session.messages[0].text = "Assistant prose survives".into();
+    session.messages[0].reasoning = "Assistant reasoning survives".into();
+    changed.session = Arc::new(session);
+    changed.visible_messages = usize::MAX;
+    let (mut visual, child) = host(&root, changed.clone(), cx);
+    assert_eq!(row_ids(&child, cx).len(), 181);
+    assert_eq!(row_ids(&child, cx)[0], "tool-assistant-0");
+    assert!(
+        visual
+            .debug_bounds("transcript-text-tool-assistant-0")
+            .is_some()
+    );
+    let selectors = cx.read(|cx| child.read(cx).tool_card_selectors());
+    assert_ne!(
+        selectors[0], selectors[1],
+        "reused call IDs must retain distinct owners"
+    );
+    let output_bounds = visual
+        .debug_bounds(Box::leak(format!("{}-OUT", selectors[0]).into_boxed_str()))
+        .unwrap();
+    assert!(output_bounds.size.height <= px(150.));
+    assert!(
+        cx.read(|cx| child.read(cx).retained_tool_editor_count()) < 20,
+        "offscreen rows must not allocate editors"
+    );
+    let initial = cx.read(|cx| child.read(cx).tool_section_editors());
+    assert!(initial.iter().all(|(_, editor)| {
+        cx.read(|cx| editor.read(cx).engine.read_only && editor.read(cx).text().len() <= 8192)
+    }));
+    let initial_ids: Vec<_> = initial
+        .iter()
+        .map(|(_, editor)| editor.entity_id())
+        .collect();
+    visual.simulate_click(output_bounds.center(), Modifiers::none());
+    visual.simulate_keystrokes("cmd-a cmd-c");
+    assert_eq!(
+        cx.read(|cx| cx.read_from_clipboard().unwrap().text())
+            .as_deref(),
+        Some(&changed.session.messages[1].text[..8192])
+    );
+    cx.update(|cx| cx.write_to_clipboard(ClipboardItem::new_string("sentinel".into())));
+    child.update(cx, |_, cx| cx.notify());
+    cx.run_until_parked();
+    let repeated = cx.read(|cx| child.read(cx).tool_section_editors());
+    visual.simulate_keystrokes("cmd-c");
+    assert_eq!(
+        cx.read(|cx| cx.read_from_clipboard().unwrap().text())
+            .as_deref(),
+        Some(&changed.session.messages[1].text[..8192]),
+        "selection must survive an unchanged transcript frame"
+    );
+    assert!(
+        initial_ids
+            .iter()
+            .all(|id| repeated.iter().any(|(_, editor)| &editor.entity_id() == id)),
+        "unchanged rows retain section selection/scroll entities"
+    );
+    let before = anchor(&child, cx);
+    visual.simulate_event(ScrollWheelEvent {
+        position: output_bounds.center(),
+        delta: ScrollDelta::Pixels(point(px(0.), px(-60.))),
+        ..Default::default()
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        anchor(&child, cx),
+        before,
+        "a section wheel must not move the outer transcript"
+    );
+    for index in (20..180).step_by(20) {
+        jump_to(&child, index, 0., cx);
+    }
+    assert!(cx.read(|cx| child.read(cx).retained_tool_editor_count()) <= 64);
+    assert!(
+        changed.session.messages[1].text.len() > 8192,
+        "retained bytes must remain intact"
+    );
+}
+
+#[gpui::test]
+fn retained_tool_record_edits_and_disclosure_remeasure_without_losing_anchor(
+    cx: &mut TestAppContext,
+) {
+    use bello_agent_core::tool_history::{ToolOutcome, ToolRecord};
+    let (_directory, _window, root) = fixture(cx, messages(1), 0);
+    let mut changed = input(&root, cx);
+    let mut session = (*changed.session).clone();
+    session.messages = retained_tool_rows(30, "one line");
+    changed.session = Arc::new(session);
+    changed.visible_messages = usize::MAX;
+    let (mut visual, child) = host(&root, changed.clone(), cx);
+    jump_to(&child, 10, 8., cx);
+    let before = anchor(&child, cx);
+    let selectors = cx.read(|cx| child.read(cx).tool_card_selectors());
+    let selector: &'static str = Box::leak(selectors[10].clone().into_boxed_str());
+    let short = visual.debug_bounds(selector).unwrap().size.height;
+    let invalidations = cx.read(|cx| child.read(cx).tool_height_invalidation_count());
+    let mut session = (*changed.session).clone();
+    if let Some(ToolRecord::Assistant(record)) = &mut session.messages[20].tool_record {
+        record.calls[0].arguments = serde_json::json!({"path":".","many":"argument\n".repeat(30)});
+    }
+    session.messages[21].text = "result\n".repeat(100);
+    if let Some(ToolRecord::Result(record)) = &mut session.messages[21].tool_record {
+        record.outcome = ToolOutcome::Failed;
+        record.is_error = true;
+    }
+    changed.session = Arc::new(session);
+    child.update(cx, |view, cx| view.update_inputs(changed.clone(), cx));
+    cx.run_until_parked();
+    assert_eq!(anchor(&child, cx), before);
+    assert!(
+        cx.read(|cx| child.read(cx).tool_height_invalidation_count()) > invalidations,
+        "retained tool inputs must evict the old measured height"
+    );
+    let invalidations = cx.read(|cx| child.read(cx).tool_height_invalidation_count());
+    assert!(
+        visual.debug_bounds(selector).unwrap().size.height > short,
+        "tool-record edits must invalidate measured row height"
+    );
+    let target = visual
+        .debug_bounds(Box::leak(format!("{selector}-disclosure").into_boxed_str()))
+        .unwrap()
+        .center();
+    visual.simulate_click(target, Modifiers::none());
+    cx.run_until_parked();
+    assert_eq!(anchor(&child, cx), before);
+    let collapsed = visual.debug_bounds(selector).unwrap().size.height;
+    assert!(
+        cx.read(|cx| child.read(cx).tool_height_invalidation_count()) > invalidations,
+        "disclosure must evict the old measured height"
+    );
+    assert!(
+        collapsed < short,
+        "collapse must invalidate the old expanded height"
+    );
+    let target = visual
+        .debug_bounds(Box::leak(format!("{selector}-disclosure").into_boxed_str()))
+        .unwrap()
+        .center();
+    visual.simulate_click(target, Modifiers::none());
+    cx.run_until_parked();
+    assert_eq!(anchor(&child, cx), before);
+    assert!(visual.debug_bounds(selector).unwrap().size.height > collapsed);
+    assert_eq!(
+        cx.read(|cx| root.read(cx).record.id.clone()),
+        changed.chat_id,
+        "disclosure must not alter selected chat"
+    );
+}
+
+#[gpui::test]
+fn retained_tool_page_reveal_translates_standalone_result_anchor(cx: &mut TestAppContext) {
+    let (_directory, _window, root) = fixture(cx, messages(1), 0);
+    let mut changed = input(&root, cx);
+    let mut session = (*changed.session).clone();
+    session.messages = retained_tool_rows(40, "result\n".repeat(20).as_str());
+    changed.session = Arc::new(session);
+    changed.visible_messages = 61;
+    let (_visual, child) = host(&root, changed.clone(), cx);
+    assert_eq!(row_ids(&child, cx)[1], "tool-result-9");
+    jump_to(&child, 1, 6., cx);
+    changed.visible_messages = usize::MAX;
+    child.update(cx, |view, cx| view.update_inputs(changed, cx));
+    cx.run_until_parked();
+    let after = anchor(&child, cx);
+    assert!(after.0.contains("tool-assistant-9"));
+    assert_eq!(after.1, px(6.));
+}
+
+#[gpui::test]
+fn retained_tool_collapse_keeps_window_shortcuts_routable(cx: &mut TestAppContext) {
+    let (_directory, window, root) = fixture(cx, retained_tool_rows(2, "selectable result"), 0);
+    let child = transcript(&root, cx);
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let selector = cx.read(|cx| child.read(cx).tool_card_selectors()[0].clone());
+    let output = visual
+        .debug_bounds(Box::leak(format!("{selector}-OUT").into_boxed_str()))
+        .unwrap();
+    visual.simulate_click(output.center(), Modifiers::none());
+    let toggle = visual
+        .debug_bounds(Box::leak(format!("{selector}-disclosure").into_boxed_str()))
+        .unwrap();
+    visual.simulate_click(toggle.center(), Modifiers::none());
+    cx.run_until_parked();
+    let shortcut = if cfg!(target_os = "macos") {
+        "cmd-shift-g"
+    } else {
+        "ctrl-shift-g"
+    };
+    cx.simulate_keystrokes(window.into(), shortcut);
+    assert!(
+        cx.read(|cx| root.read(cx).changes_open),
+        "a collapsed preview must not keep hidden keyboard focus"
+    );
+}
+
+#[gpui::test]
+fn retained_tool_scroll_away_keeps_window_shortcuts_routable(cx: &mut TestAppContext) {
+    let (_directory, window, root) = fixture_with_visible(
+        cx,
+        retained_tool_rows(100, "selectable result"),
+        0,
+        Some(usize::MAX),
+    );
+    let child = transcript(&root, cx);
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let selector = cx.read(|cx| child.read(cx).tool_card_selectors()[0].clone());
+    let output = visual
+        .debug_bounds(Box::leak(format!("{selector}-OUT").into_boxed_str()))
+        .unwrap();
+    visual.simulate_click(output.center(), Modifiers::none());
+    jump_to(&child, 70, 0., cx);
+    let shortcut = if cfg!(target_os = "macos") {
+        "cmd-shift-g"
+    } else {
+        "ctrl-shift-g"
+    };
+    cx.simulate_keystrokes(window.into(), shortcut);
+    assert!(
+        cx.read(|cx| root.read(cx).changes_open),
+        "a virtualized preview must not keep hidden keyboard focus"
+    );
+}
+
+#[gpui::test]
+fn retained_tool_page_repair_keeps_window_shortcuts_routable(cx: &mut TestAppContext) {
+    let (_directory, window, root) =
+        fixture_with_visible(cx, retained_tool_rows(40, "selectable result"), 0, Some(61));
+    let child = transcript(&root, cx);
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let selector = cx.read(|cx| child.read(cx).tool_card_selectors()[0].clone());
+    let output = visual
+        .debug_bounds(Box::leak(format!("{selector}-OUT").into_boxed_str()))
+        .unwrap();
+    visual.simulate_click(output.center(), Modifiers::none());
+    root.update(cx, |view, cx| {
+        view.visible_messages = usize::MAX;
+        cx.notify();
+    });
+    cx.run_until_parked();
+    let shortcut = if cfg!(target_os = "macos") {
+        "cmd-shift-g"
+    } else {
+        "ctrl-shift-g"
+    };
+    cx.simulate_keystrokes(window.into(), shortcut);
+    assert!(
+        cx.read(|cx| root.read(cx).changes_open),
+        "a replaced orphan preview must not keep hidden keyboard focus"
+    );
+}
+
+#[gpui::test]
+fn retained_tool_removed_output_keeps_window_shortcuts_routable(cx: &mut TestAppContext) {
+    let (_directory, window, root) = fixture(cx, retained_tool_rows(2, "selectable result"), 0);
+    let child = transcript(&root, cx);
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let selector = cx.read(|cx| child.read(cx).tool_card_selectors()[0].clone());
+    let output = visual
+        .debug_bounds(Box::leak(format!("{selector}-OUT").into_boxed_str()))
+        .unwrap();
+    visual.simulate_click(output.center(), Modifiers::none());
+    root.update(cx, |view, cx| {
+        let mut session = (*view.session).clone();
+        session.messages.remove(1);
+        view.session = std::sync::Arc::new(session);
+        cx.notify();
+    });
+    cx.run_until_parked();
+    let shortcut = if cfg!(target_os = "macos") {
+        "cmd-shift-g"
+    } else {
+        "ctrl-shift-g"
+    };
+    cx.simulate_keystrokes(window.into(), shortcut);
+    assert!(
+        cx.read(|cx| root.read(cx).changes_open),
+        "a removed OUT section must not keep hidden keyboard focus"
+    );
+}
+
+fn retained_tool_detail_restore_case(
+    cx: &mut TestAppContext,
+    evict: bool,
+    newer_focus: bool,
+    replace: bool,
+) {
+    let (_directory, window, root) = fixture_with_visible(
+        cx,
+        retained_tool_rows(100, "selectable result"),
+        1,
+        Some(usize::MAX),
+    );
+    let child = transcript(&root, cx);
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let selector = cx.read(|cx| child.read(cx).tool_card_selectors()[0].clone());
+    let output = visual
+        .debug_bounds(Box::leak(format!("{selector}-OUT").into_boxed_str()))
+        .unwrap();
+    visual.simulate_click(output.center(), Modifiers::none());
+    let previous = window
+        .update(cx, |view, window, cx| {
+            let previous = window.focused(cx).unwrap();
+            let id = view.session.pending[0].id.clone();
+            view.open_queue_detail(id, point(px(400.), px(200.)), window, cx);
+            previous
+        })
+        .unwrap();
+    cx.run_until_parked();
+    if evict {
+        for index in (5..95).step_by(3) {
+            jump_to(&child, index, 0., cx);
+        }
+        assert!(
+            window
+                .update(cx, |_, window, cx| {
+                    crate::transcript_view::ToolFocusRestore::capture(&child, &previous, window, cx)
+                        .is_none()
+                })
+                .unwrap(),
+            "fixture must actually evict the previous editor"
+        );
+    } else {
+        root.update(cx, |view, cx| {
+            let mut session = (*view.session).clone();
+            session.messages.remove(1);
+            view.session = Arc::new(session);
+            cx.notify();
+        });
+        cx.run_until_parked();
+    }
+    if replace {
+        root.update(cx, |view, cx| {
+            view.transcript = None;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert_ne!(transcript(&root, cx).entity_id(), child.entity_id());
+    }
+    window
+        .update(cx, |view, window, cx| {
+            if newer_focus {
+                view.composer.read(cx).focus(window);
+            }
+            view.close_queue_detail(true, window, cx);
+            if newer_focus {
+                assert!(view.composer.read(cx).focus_handle(cx).is_focused(window));
+            } else {
+                assert!(
+                    !previous.is_focused(window),
+                    "a removed or evicted editor must not regain focus"
+                );
+            }
+        })
+        .unwrap();
+    cx.run_until_parked();
+    let shortcut = if cfg!(target_os = "macos") {
+        "cmd-shift-g"
+    } else {
+        "ctrl-shift-g"
+    };
+    cx.simulate_keystrokes(window.into(), shortcut);
+    assert!(cx.read(|cx| root.read(cx).changes_open));
+}
+
+#[gpui::test]
+fn retained_tool_detail_removed_output_restores_visible_owner(cx: &mut TestAppContext) {
+    retained_tool_detail_restore_case(cx, false, false, false);
+}
+#[gpui::test]
+fn retained_tool_detail_evicted_preview_restores_visible_owner(cx: &mut TestAppContext) {
+    retained_tool_detail_restore_case(cx, true, false, false);
+}
+#[gpui::test]
+fn retained_tool_detail_newer_composer_focus_wins(cx: &mut TestAppContext) {
+    retained_tool_detail_restore_case(cx, false, true, false);
+}
+
+#[gpui::test]
+fn retained_tool_detail_replaced_child_cannot_restore_old_editor(cx: &mut TestAppContext) {
+    retained_tool_detail_restore_case(cx, false, false, true);
+}

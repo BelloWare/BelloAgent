@@ -67,6 +67,7 @@ pub(crate) struct QueueDetail {
     pub(crate) anchor: Point<Pixels>,
     reader: Entity<EditorView>,
     previous_focus: Option<FocusHandle>,
+    previous_tool_owner: Option<crate::transcript_view::ToolFocusRestore>,
     shown_text: String,
     palette: Palette,
 }
@@ -77,6 +78,7 @@ impl QueueDetail {
         turn_id: String,
         anchor: Point<Pixels>,
         palette: Palette,
+        transcript: Option<&Entity<crate::transcript_view::TranscriptView>>,
         window: &mut Window,
         cx: &mut Context<AgentView>,
     ) -> Self {
@@ -84,6 +86,11 @@ impl QueueDetail {
             .map(|v| v.text)
             .unwrap_or_default();
         let previous_focus = window.focused(cx);
+        let previous_tool_owner = transcript.and_then(|owner| {
+            previous_focus.as_ref().and_then(|previous| {
+                crate::transcript_view::ToolFocusRestore::capture(owner, previous, window, cx)
+            })
+        });
         let reader = cx.new(|cx| {
             let mut reader = EditorView::new(shown_text.clone(), window, cx);
             reader.set_appearance(Self::appearance(palette), cx);
@@ -96,6 +103,7 @@ impl QueueDetail {
             anchor,
             reader,
             previous_focus,
+            previous_tool_owner,
             shown_text,
             palette,
         }
@@ -118,13 +126,24 @@ impl QueueDetail {
         }
     }
 
-    pub(crate) fn restore_focus(&self, window: &mut Window, cx: &App) {
+    /// Returns true only when the focused reader needs a current-owner fallback.
+    pub(crate) fn restore_focus(
+        &self,
+        current: Option<&Entity<crate::transcript_view::TranscriptView>>,
+        window: &mut Window,
+        cx: &App,
+    ) -> bool {
         // An outside click or a newer focus choice must never be undone.
         if self.reader.read(cx).focus_handle(cx).is_focused(window)
             && let Some(previous) = &self.previous_focus
         {
-            previous.focus(window);
+            if let Some(owner) = &self.previous_tool_owner {
+                return !owner.restore(previous, current, window, cx);
+            } else {
+                previous.focus(window);
+            }
         }
+        false
     }
 
     pub(crate) fn render(

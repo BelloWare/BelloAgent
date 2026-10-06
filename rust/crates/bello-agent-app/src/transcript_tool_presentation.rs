@@ -1,0 +1,459 @@
+//! Read-only projection of retained tool history. Source: SessionTools.swift's
+//! assistant/call index, TranscriptActivity.swift and TranscriptCards.swift.
+//! The model's bytes stay untouched; only visible card previews are copied.
+use bello_agent_core::{
+    Message, RunState, Session,
+    provider::ToolCall,
+    tool_history::{Completion, ToolOutcome, ToolRecord},
+};
+use std::{
+    collections::{HashMap, HashSet},
+    io::{self, Write},
+};
+
+pub(super) const PREVIEW_BYTES: usize = 8 * 1024;
+pub(super) const SECTION_CAP: f32 = 150.;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ProjectedRow {
+    Message(usize),
+    Call {
+        assistant: usize,
+        call: usize,
+        result: Option<usize>,
+    },
+    Result(usize),
+}
+
+impl ProjectedRow {
+    pub(super) fn source(self) -> usize {
+        match self {
+            Self::Message(i) | Self::Result(i) => i,
+            Self::Call { assistant, .. } => assistant,
+        }
+    }
+    pub(super) fn result(self) -> Option<usize> {
+        match self {
+            Self::Result(i) => Some(i),
+            Self::Call { result, .. } => result,
+            _ => None,
+        }
+    }
+}
+
+/// Pair only explicit, unique identities. A result is hidden only when the
+/// owning call is in this displayed page. Ambiguous legacy data stays visible.
+pub(super) fn project(session: &Session, first: usize) -> Vec<ProjectedRow> {
+    let mut owners = HashMap::<(&str, &str), Option<(usize, usize)>>::new();
+    let mut results = HashMap::<(&str, &str), Option<usize>>::new();
+    for (index, message) in session.messages.iter().enumerate() {
+        match &message.tool_record {
+            Some(ToolRecord::Assistant(record)) if message.role == "assistant" => {
+                for (call_index, call) in record.calls.iter().enumerate() {
+                    owners
+                        .entry((&message.id, &call.id))
+                        .and_modify(|entry| *entry = None)
+                        .or_insert(Some((index, call_index)));
+                }
+            }
+            Some(ToolRecord::Result(record)) => {
+                results
+                    .entry((&record.assistant_id, &record.call_id))
+                    .and_modify(|entry| *entry = None)
+                    .or_insert(Some(index));
+            }
+            _ => {}
+        }
+    }
+    let paired: HashMap<(usize, usize), usize> = owners
+        .into_iter()
+        .filter_map(|(key, owner)| {
+            let (assistant, call) = owner?;
+            let result = results.get(&key).copied().flatten()?;
+            (assistant >= first && result > assistant).then_some(((assistant, call), result))
+        })
+        .collect();
+    let suppressed: HashSet<usize> = paired.values().copied().collect();
+    let mut rows = Vec::new();
+    for (index, message) in session.messages.iter().enumerate().skip(first) {
+        match &message.tool_record {
+            Some(ToolRecord::Assistant(record))
+                if message.role == "assistant" && !record.calls.is_empty() =>
+            {
+                if !message.text.is_empty() || !message.reasoning.is_empty() {
+                    rows.push(ProjectedRow::Message(index));
+                }
+                for call in 0..record.calls.len() {
+                    rows.push(ProjectedRow::Call {
+                        assistant: index,
+                        call,
+                        result: paired.get(&(index, call)).copied(),
+                    });
+                }
+            }
+            Some(ToolRecord::Result(_)) if !suppressed.contains(&index) => {
+                rows.push(ProjectedRow::Result(index))
+            }
+            Some(ToolRecord::Result(_)) => {}
+            _ if message.role == "toolResult" => rows.push(ProjectedRow::Result(index)),
+            _ => rows.push(ProjectedRow::Message(index)),
+        }
+    }
+    rows
+}
+
+pub(super) fn call_at(session: &Session, assistant: usize, call: usize) -> &ToolCall {
+    let Some(ToolRecord::Assistant(record)) = &session.messages[assistant].tool_record else {
+        unreachable!("projected assistant")
+    };
+    &record.calls[call]
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Status {
+    Completed,
+    Failed,
+    NotExecuted,
+    Unknown,
+    Cancelled,
+    Missing,
+    Awaiting,
+}
+impl Status {
+    pub(super) fn label(self, name: &str) -> &'static str {
+        match (self, name == "ls") {
+            (Self::Completed, true) => "Listed directory",
+            (Self::Failed, true) => "Failed listing",
+            (Self::NotExecuted, true) => "Skipped listing",
+            (Self::Unknown, true) => "Stopped listing; outcome unknown",
+            (Self::Completed, _) => "Completed",
+            (Self::Failed, _) => "Failed",
+            (Self::NotExecuted, _) => "Not executed",
+            (Self::Unknown, _) => "Outcome unknown",
+            (Self::Cancelled, _) => "Cancelled; no result retained",
+            (Self::Missing, _) => "Outcome not recorded",
+            (Self::Awaiting, _) => "Awaiting result",
+        }
+    }
+    pub(super) fn is_error(self) -> bool {
+        matches!(self, Self::Failed | Self::Unknown)
+    }
+}
+
+pub(super) fn status(session: &Session, row: ProjectedRow) -> Status {
+    if let Some(index) = row.result()
+        && let Some(ToolRecord::Result(record)) = &session.messages[index].tool_record
+    {
+        return match record.outcome {
+            ToolOutcome::Completed => Status::Completed,
+            ToolOutcome::Failed => Status::Failed,
+            ToolOutcome::NotExecuted => Status::NotExecuted,
+            ToolOutcome::Unknown => Status::Unknown,
+            ToolOutcome::Cancelled => Status::Cancelled,
+        };
+    }
+    if let ProjectedRow::Call { assistant, .. } = row {
+        let message = &session.messages[assistant];
+        // The batch is admitted, not necessarily this call. No start time,
+        // per-call progress or completion can be inferred from an active batch.
+        if session.state == RunState::Running
+            && session.active_reply.as_deref() == Some(&message.id)
+            && assistant + 1 == session.messages.len()
+            && message.state == "completed"
+            && message.replay_eligible
+            && matches!(&message.tool_record, Some(ToolRecord::Assistant(record)) if record.completion == Completion::Complete)
+        {
+            return Status::Awaiting;
+        }
+    }
+    Status::Missing
+}
+
+pub(super) fn same_content(
+    a: &Session,
+    a_row: ProjectedRow,
+    b: &Session,
+    b_row: ProjectedRow,
+) -> bool {
+    if std::mem::discriminant(&a_row) != std::mem::discriminant(&b_row)
+        || status(a, a_row) != status(b, b_row)
+    {
+        return false;
+    }
+    if let (
+        ProjectedRow::Call {
+            assistant: ai,
+            call: ac,
+            ..
+        },
+        ProjectedRow::Call {
+            assistant: bi,
+            call: bc,
+            ..
+        },
+    ) = (a_row, b_row)
+    {
+        let (a_call, b_call) = (call_at(a, ai, ac), call_at(b, bi, bc));
+        if a_call.id != b_call.id
+            || a_call.name != b_call.name
+            || a_call.arguments != b_call.arguments
+        {
+            return false;
+        }
+    }
+    let same_message = |a: &Message, b: &Message| {
+        a.id == b.id
+            && a.role == b.role
+            && a.text == b.text
+            && a.reasoning == b.reasoning
+            && a.state == b.state
+            && match (&a.tool_record, &b.tool_record) {
+                (Some(ToolRecord::Result(a)), Some(ToolRecord::Result(b))) => {
+                    a.assistant_id == b.assistant_id
+                        && a.call_id == b.call_id
+                        && a.outcome == b.outcome
+                        && a.is_error == b.is_error
+                }
+                (Some(ToolRecord::Assistant(a)), Some(ToolRecord::Assistant(b))) => {
+                    a.completion == b.completion
+                }
+                (None, None) => true,
+                _ => false,
+            }
+    };
+    same_message(&a.messages[a_row.source()], &b.messages[b_row.source()])
+        && match (a_row.result(), b_row.result()) {
+            (Some(ai), Some(bi)) => same_message(&a.messages[ai], &b.messages[bi]),
+            (None, None) => true,
+            _ => false,
+        }
+}
+
+#[derive(Debug)]
+pub(super) struct Preview {
+    pub text: String,
+    pub truncated: bool,
+}
+pub(super) fn preview(text: &str) -> Preview {
+    let mut end = text.len().min(PREVIEW_BYTES);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    Preview {
+        text: text[..end].into(),
+        truncated: end < text.len(),
+    }
+}
+
+/// Stop serialization at the display limit rather than first allocating a copy
+/// of arbitrarily large retained arguments. The preview may end mid-JSON.
+pub(super) fn arguments_preview(value: &serde_json::Value) -> Preview {
+    struct Limit(Vec<u8>);
+    impl Write for Limit {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            let room = PREVIEW_BYTES.saturating_sub(self.0.len());
+            if room == 0 && !bytes.is_empty() {
+                return Err(io::ErrorKind::WriteZero.into());
+            }
+            let take = room.min(bytes.len());
+            self.0.extend_from_slice(&bytes[..take]);
+            Ok(take)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut writer = Limit(Vec::new());
+    let truncated = serde_json::to_writer_pretty(&mut writer, value).is_err();
+    while std::str::from_utf8(&writer.0).is_err() {
+        writer.0.pop();
+    }
+    Preview {
+        text: String::from_utf8(writer.0).expect("UTF-8 boundary"),
+        truncated,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bello_agent_core::tool_history::{AssistantRecord, ReplayBinding, ResultRecord};
+    use serde_json::json;
+
+    pub(super) fn message(id: &str) -> Message {
+        Message {
+            id: id.into(),
+            role: "assistant".into(),
+            text: String::new(),
+            reasoning: String::new(),
+            replay_eligible: true,
+            state: "completed".into(),
+            usage: serde_json::Value::Null,
+            model: None,
+            tool_record: None,
+        }
+    }
+    fn assistant(id: &str) -> Message {
+        let mut message = message(id);
+        message.tool_record = Some(ToolRecord::Assistant(AssistantRecord {
+            completion: Completion::Complete,
+            calls: vec![ToolCall {
+                id: "same-call".into(),
+                name: "ls".into(),
+                arguments: json!({"path":"."}),
+            }],
+            binding: ReplayBinding {
+                profile_id: "fixture".into(),
+                api: "openai-responses".into(),
+                provider: "litellm".into(),
+                model: "fixture".into(),
+                endpoint_sha256: "0".repeat(64),
+            },
+            provider_items: vec![],
+        }));
+        message
+    }
+    fn result(id: &str, owner: &str, outcome: ToolOutcome) -> Message {
+        let mut message = message(id);
+        message.role = "toolResult".into();
+        message.text = format!("result for {owner}");
+        message.tool_record = Some(ToolRecord::Result(ResultRecord {
+            assistant_id: owner.into(),
+            call_id: "same-call".into(),
+            is_error: outcome != ToolOutcome::Completed,
+            outcome,
+        }));
+        message
+    }
+    #[test]
+    fn pair_by_explicit_owner_preserve_prose_and_standalone_page_results() {
+        let mut session = Session::new();
+        let mut first = assistant("one");
+        first.text = "Before listing".into();
+        first.reasoning = "Retained reasoning".into();
+        session.messages = vec![
+            first,
+            result("one-result", "one", ToolOutcome::Completed),
+            assistant("two"),
+            result("two-result", "two", ToolOutcome::Failed),
+        ];
+        assert_eq!(
+            project(&session, 0),
+            [
+                ProjectedRow::Message(0),
+                ProjectedRow::Call {
+                    assistant: 0,
+                    call: 0,
+                    result: Some(1)
+                },
+                ProjectedRow::Call {
+                    assistant: 2,
+                    call: 0,
+                    result: Some(3)
+                }
+            ]
+        );
+        assert_eq!(
+            project(&session, 1),
+            [
+                ProjectedRow::Result(1),
+                ProjectedRow::Call {
+                    assistant: 2,
+                    call: 0,
+                    result: Some(3)
+                }
+            ]
+        );
+        assert_eq!(status(&session, project(&session, 0)[1]), Status::Completed);
+        assert_eq!(status(&session, project(&session, 0)[2]), Status::Failed);
+    }
+    #[test]
+    fn absent_results_do_not_claim_execution_or_turn_cancellation_into_skipped() {
+        let mut session = Session::new();
+        session.messages = vec![assistant("one")];
+        let row = project(&session, 0)[0];
+        assert_eq!(status(&session, row).label("ls"), "Outcome not recorded");
+        session.state = RunState::Running;
+        session.active_reply = Some("one".into());
+        assert_eq!(status(&session, row).label("ls"), "Awaiting result");
+        for (outcome, label) in [
+            (ToolOutcome::Completed, "Listed directory"),
+            (ToolOutcome::Failed, "Failed listing"),
+            (ToolOutcome::NotExecuted, "Skipped listing"),
+            (ToolOutcome::Unknown, "Stopped listing; outcome unknown"),
+            (ToolOutcome::Cancelled, "Cancelled; no result retained"),
+        ] {
+            session.messages.truncate(1);
+            session.messages.push(result("r", "one", outcome));
+            assert_eq!(status(&session, project(&session, 0)[0]).label("ls"), label);
+        }
+    }
+    #[test]
+    fn previews_are_bounded_utf8_and_leave_retained_bytes_unchanged() {
+        let text = format!("{}界\r\ntrailing", "a".repeat(PREVIEW_BYTES - 1));
+        let output = preview(&text);
+        assert!(output.truncated);
+        assert!(output.text.len() <= PREVIEW_BYTES);
+        assert!(text.ends_with("trailing"));
+        let value = json!({"content": "界".repeat(PREVIEW_BYTES)});
+        let before = value.clone();
+        let input = arguments_preview(&value);
+        assert!(input.truncated);
+        assert!(input.text.len() <= PREVIEW_BYTES);
+        assert_eq!(value, before);
+        let small = json!({"path":"."});
+        assert_eq!(
+            arguments_preview(&small).text,
+            serde_json::to_string_pretty(&small).unwrap()
+        );
+        assert!(!arguments_preview(&small).truncated);
+    }
+    #[test]
+    fn arguments_result_identity_and_outcome_invalidate_equal_text() {
+        let mut session = Session::new();
+        session.messages = vec![assistant("one"), result("r", "one", ToolOutcome::Completed)];
+        let row = project(&session, 0)[0];
+        for change in ["arguments", "result-id", "outcome", "body"] {
+            let mut next = session.clone();
+            match change {
+                "arguments" => {
+                    if let Some(ToolRecord::Assistant(record)) = &mut next.messages[0].tool_record {
+                        record.calls[0].arguments = json!({"path":"other"});
+                    }
+                }
+                "result-id" => next.messages[1].id = "replacement".into(),
+                "outcome" => {
+                    if let Some(ToolRecord::Result(record)) = &mut next.messages[1].tool_record {
+                        record.outcome = ToolOutcome::Failed;
+                    }
+                }
+                _ => next.messages[1].text.push_str(" changed"),
+            }
+            assert!(
+                !same_content(&session, row, &next, project(&next, 0)[0]),
+                "{change}"
+            );
+        }
+    }
+    #[test]
+    fn ambiguous_results_are_not_hidden_or_arbitrarily_paired() {
+        let mut session = Session::new();
+        session.messages = vec![
+            assistant("one"),
+            result("r1", "one", ToolOutcome::Completed),
+            result("r2", "one", ToolOutcome::Failed),
+        ];
+        assert_eq!(
+            project(&session, 0),
+            [
+                ProjectedRow::Call {
+                    assistant: 0,
+                    call: 0,
+                    result: None
+                },
+                ProjectedRow::Result(1),
+                ProjectedRow::Result(2)
+            ]
+        );
+    }
+}

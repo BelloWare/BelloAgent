@@ -3,14 +3,19 @@
 //! and the source's max(240px, half a viewport) buffer, never the whole history.
 use crate::{AgentView, Palette, layout, transcript_actions};
 use bello_agent_core::{Controller, Session};
+use bello_workbench_ui::{EditorAppearance, EditorView};
+#[path = "transcript_tool_presentation.rs"]
+mod tool_presentation;
 use gpui::{prelude::*, *};
 use std::{
     cell::RefCell,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     rc::Rc,
     sync::{Arc, Weak},
 };
+use tool_presentation::ProjectedRow;
 
+#[derive(Clone)]
 pub(crate) struct TranscriptInput {
     pub controller: Weak<Controller>,
     pub chat_id: String,
@@ -28,6 +33,11 @@ enum RowKey {
     Retry,
     Earlier,
     Message(String),
+    Tool {
+        assistant: Box<RowKey>,
+        call_id: String,
+        occurrence: usize,
+    },
     // A duplicate has no stable model identity. Scope its presentation key to
     // the exact immutable snapshot instead of guessing after replacement.
     Duplicate {
@@ -40,6 +50,8 @@ enum RowKey {
 struct LogicalRow {
     key: RowKey,
     message_index: Option<usize>,
+    projected: Option<ProjectedRow>,
+    expanded: bool,
 }
 
 struct Presentation {
@@ -52,6 +64,10 @@ struct Presentation {
 
 impl Presentation {
     fn new(input: TranscriptInput) -> Self {
+        Self::with_disclosure(input, &HashSet::new())
+    }
+
+    fn with_disclosure(input: TranscriptInput, collapsed: &HashSet<RowKey>) -> Self {
         let hidden_messages = input
             .session
             .messages
@@ -62,17 +78,23 @@ impl Presentation {
             rows.push(LogicalRow {
                 key: RowKey::Loading,
                 message_index: None,
+                projected: None,
+                expanded: false,
             });
         } else if input.load_failed {
             rows.push(LogicalRow {
                 key: RowKey::Retry,
                 message_index: None,
+                projected: None,
+                expanded: false,
             });
         }
         if hidden_messages > 0 {
             rows.push(LogicalRow {
                 key: RowKey::Earlier,
                 message_index: None,
+                projected: None,
+                expanded: false,
             });
         }
         let mut counts = HashMap::<&str, usize>::new();
@@ -80,6 +102,9 @@ impl Presentation {
             *counts.entry(message.id.as_str()).or_default() += 1;
         }
         let mut occurrences = HashMap::<&str, usize>::new();
+        // Retain keys only for this page; hidden history contributes counts,
+        // never cloned message bodies, arguments, output, or per-row UI state.
+        let mut message_keys = HashMap::new();
         for (index, message) in input.session.messages.iter().enumerate() {
             let occurrence = occurrences.entry(message.id.as_str()).or_default();
             if index >= hidden_messages {
@@ -92,12 +117,38 @@ impl Presentation {
                         generation: Arc::as_ptr(&input.session) as usize,
                     }
                 };
-                rows.push(LogicalRow {
-                    key,
-                    message_index: Some(index),
-                });
+                message_keys.insert(index, key);
             }
             *occurrence += 1;
+        }
+        for projected in tool_presentation::project(&input.session, hidden_messages) {
+            let source = projected.source();
+            let key = match projected {
+                ProjectedRow::Call {
+                    assistant, call, ..
+                } => {
+                    let tool = tool_presentation::call_at(&input.session, assistant, call);
+                    let occurrence = (0..call)
+                        .filter(|&previous| {
+                            tool_presentation::call_at(&input.session, assistant, previous).id
+                                == tool.id
+                        })
+                        .count();
+                    RowKey::Tool {
+                        assistant: Box::new(message_keys[&source].clone()),
+                        call_id: tool.id.clone(),
+                        occurrence,
+                    }
+                }
+                _ => message_keys[&source].clone(),
+            };
+            let expanded = !collapsed.contains(&key);
+            rows.push(LogicalRow {
+                key,
+                message_index: Some(source),
+                projected: Some(projected),
+                expanded,
+            });
         }
         Self {
             input,
@@ -116,19 +167,114 @@ impl Presentation {
         {
             return false;
         }
-        match (row.message_index, other_row.message_index) {
-            (Some(index), Some(other_index)) => {
-                let message = &self.input.session.messages[index];
-                let other_message = &other.input.session.messages[other_index];
-                message.role == other_message.role
-                    && message.text == other_message.text
-                    && message.reasoning == other_message.reasoning
-                    && message.state == other_message.state
+        match (row.projected, other_row.projected) {
+            (Some(projected), Some(other_projected)) => {
+                row.expanded == other_row.expanded
+                    && tool_presentation::same_content(
+                        &self.input.session,
+                        projected,
+                        &other.input.session,
+                        other_projected,
+                    )
             }
             (None, None) => {
                 row.key != RowKey::Earlier || self.hidden_messages == other.hidden_messages
             }
             _ => false,
+        }
+    }
+}
+
+fn tool_section_visible(
+    presentation: &Presentation,
+    list: &ListState,
+    key: &RowKey,
+    section: &str,
+    index: usize,
+) -> bool {
+    let bounds = list.viewport_bounds();
+    presentation
+        .rows
+        .get(index)
+        .filter(|row| {
+            &row.key == key
+                && row.expanded
+                && row.projected.is_some_and(|projected| match section {
+                    "IN" => matches!(projected, ProjectedRow::Call { .. }),
+                    "OUT" => projected.result().is_some(),
+                    _ => false,
+                })
+        })
+        .and_then(|_| list.bounds_for_item(index))
+        .is_some_and(|row| row.bottom() > bounds.top() && row.top() < bounds.bottom())
+}
+
+pub(crate) struct ToolFocusRestore {
+    window: AnyWindowHandle,
+    owner: WeakEntity<TranscriptView>,
+    chat_id: String,
+    controller: Weak<Controller>,
+}
+impl ToolFocusRestore {
+    pub(crate) fn capture(
+        owner: &Entity<TranscriptView>,
+        previous: &FocusHandle,
+        window: &Window,
+        cx: &App,
+    ) -> Option<Self> {
+        let view = owner.read(cx);
+        view.tool_editors
+            .borrow()
+            .entries
+            .values()
+            .any(|entry| &entry.editor.read(cx).focus_handle(cx) == previous)
+            .then(|| Self {
+                window: window.window_handle(),
+                owner: owner.downgrade(),
+                chat_id: view.presentation.input.chat_id.clone(),
+                controller: view.presentation.input.controller.clone(),
+            })
+    }
+    pub(crate) fn restore(
+        &self,
+        previous: &FocusHandle,
+        current: Option<&Entity<TranscriptView>>,
+        window: &mut Window,
+        cx: &App,
+    ) -> bool {
+        let Some(owner) = self.owner.upgrade() else {
+            return false;
+        };
+        if current.is_none_or(|current| current.entity_id() != owner.entity_id()) {
+            return false;
+        }
+        let view = owner.read(cx);
+        if window.window_handle() != self.window
+            || view.presentation.input.chat_id != self.chat_id
+            || !Weak::ptr_eq(&view.presentation.input.controller, &self.controller)
+        {
+            return false;
+        }
+        let visible = view
+            .tool_editors
+            .borrow()
+            .entries
+            .iter()
+            .any(|((key, section), entry)| {
+                &entry.editor.read(cx).focus_handle(cx) == previous
+                    && tool_section_visible(
+                        &view.presentation,
+                        &view.viewport.borrow().list,
+                        key,
+                        section,
+                        entry.row_index,
+                    )
+            });
+        if visible {
+            previous.focus(window);
+            true
+        } else {
+            view.focus_fallback(window)
         }
     }
 }
@@ -142,6 +288,8 @@ struct ViewportState {
     painted_scroll: ListOffset,
     #[cfg(test)]
     target_preflights: Vec<usize>,
+    #[cfg(test)]
+    tool_height_invalidations: usize,
 }
 
 impl ViewportState {
@@ -155,6 +303,8 @@ impl ViewportState {
             pending_scroll: None,
             #[cfg(test)]
             target_preflights: Vec::new(),
+            #[cfg(test)]
+            tool_height_invalidations: 0,
             painted_scroll: ListOffset {
                 item_ix: 0,
                 offset_in_item: px(0.),
@@ -176,6 +326,12 @@ impl ViewportState {
             self.heights.clear();
             self.pending_scroll = None;
         } else if changed {
+            #[cfg(test)]
+            let previous_tool_heights = self
+                .heights
+                .keys()
+                .filter(|key| matches!(key, RowKey::Tool { .. }))
+                .count();
             let old_indexes: HashMap<_, _> = old
                 .rows
                 .iter()
@@ -194,6 +350,15 @@ impl ViewportState {
                         .map(|height| (row.key.clone(), height))
                 })
                 .collect();
+            #[cfg(test)]
+            {
+                self.tool_height_invalidations += previous_tool_heights
+                    - self
+                        .heights
+                        .keys()
+                        .filter(|key| matches!(key, RowKey::Tool { .. }))
+                        .count();
+            }
         }
         let anchor = if changed {
             self.pending_scroll = None;
@@ -257,9 +422,9 @@ impl ViewportState {
 }
 
 // Like TranscriptRowEstimate.swift, unseen rows have a nonzero navigation
-// estimate, never a view tree. Current Rust rows display literal text; estimates
-// mirror their existing text sizes, wrapping width and chrome, not Swift's
-// richer Markdown/tool presentation. Exact List measurements replace guesses.
+// estimate, never a view tree. Plain-message estimates mirror their text sizes,
+// wrapping width and chrome; tool cards use their bounded section caps without
+// copying retained payloads. Exact List measurements replace these guesses.
 fn estimated_height(presentation: &Presentation, index: usize, width: Pixels) -> Pixels {
     #[cfg(test)]
     if let Some(height) = presentation.estimate_override.get() {
@@ -279,6 +444,17 @@ fn estimated_height(presentation: &Presentation, index: usize, width: Pixels) ->
             });
     };
     let message = &presentation.input.session.messages[source_index];
+    if matches!(
+        row.projected,
+        Some(ProjectedRow::Call { .. } | ProjectedRow::Result(_))
+    ) {
+        return px(gap
+            + if row.expanded {
+                80. + tool_presentation::SECTION_CAP * 2.
+            } else {
+                56.
+            });
+    }
     let user = message.role == "user";
     let width = f32::from(width);
     let body_width = if user {
@@ -381,6 +557,22 @@ fn translated_anchor(old: &Presentation, next: &Presentation, offset: ListOffset
             offset_in_item: offset.offset_in_item,
         };
     }
+    // Revealing an owner replaces a standalone result with its paired card.
+    // Preserve that result's anchor instead of jumping to a neighbour.
+    if let Some(result) = row.projected.and_then(ProjectedRow::result) {
+        let id = &old.input.session.messages[result].id;
+        if let Some(item_ix) = next.rows.iter().position(|candidate| {
+            candidate
+                .projected
+                .and_then(ProjectedRow::result)
+                .is_some_and(|result| &next.input.session.messages[result].id == id)
+        }) {
+            return ListOffset {
+                item_ix,
+                offset_in_item: offset.offset_in_item,
+            };
+        }
+    }
     // Finishing Show earlier removes the header. Preserve that control's
     // top-of-history position, showing the newly revealed first row. A user
     // who has already wheeled into a message takes the identity branch above.
@@ -430,6 +622,10 @@ pub(crate) struct TranscriptView {
     parent: WeakEntity<AgentView>,
     presentation: Rc<Presentation>,
     viewport: Rc<RefCell<ViewportState>>,
+    collapsed: HashSet<RowKey>,
+    tool_editors: Rc<RefCell<ToolEditors>>,
+    focus: Option<FocusHandle>,
+    removed_tool_focus: Rc<RefCell<Vec<FocusHandle>>>,
     #[cfg(test)]
     materialized: Rc<RefCell<Materialized>>,
     #[cfg(test)]
@@ -441,6 +637,10 @@ impl TranscriptView {
         let presentation = Rc::new(Presentation::new(input));
         Self {
             parent,
+            collapsed: HashSet::new(),
+            tool_editors: Rc::new(RefCell::new(ToolEditors::default())),
+            focus: None,
+            removed_tool_focus: Rc::new(RefCell::new(Vec::new())),
             viewport: Rc::new(RefCell::new(ViewportState::new(presentation.clone()))),
             presentation,
             #[cfg(test)]
@@ -463,8 +663,121 @@ impl TranscriptView {
         {
             return;
         }
-        self.presentation = Rc::new(Presentation::new(input));
+        if old.chat_id != input.chat_id || !Weak::ptr_eq(&old.controller, &input.controller) {
+            self.collapsed.clear();
+            self.removed_tool_focus.borrow_mut().extend(
+                self.tool_editors
+                    .borrow()
+                    .entries
+                    .values()
+                    .map(|entry| entry.editor.read(cx).focus_handle(cx)),
+            );
+            self.tool_editors.borrow_mut().entries.clear();
+        }
+        self.presentation = Rc::new(Presentation::with_disclosure(input, &self.collapsed));
+        let keys: HashSet<_> = self.presentation.rows.iter().map(|row| &row.key).collect();
+        self.collapsed.retain(|key| keys.contains(key));
+        self.tool_editors
+            .borrow_mut()
+            .entries
+            .retain(|(key, _), entry| {
+                let keep = keys.contains(key);
+                if !keep {
+                    self.removed_tool_focus
+                        .borrow_mut()
+                        .push(entry.editor.read(cx).focus_handle(cx));
+                }
+                keep
+            });
         cx.notify();
+    }
+
+    fn toggle_tool(
+        &mut self,
+        key: RowKey,
+        chat_id: &str,
+        controller: &Weak<Controller>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.presentation.input.chat_id != chat_id
+            || !Weak::ptr_eq(&self.presentation.input.controller, controller)
+            || !self.presentation.rows.iter().any(|row| {
+                row.key == key
+                    && matches!(
+                        row.projected,
+                        Some(ProjectedRow::Call { .. } | ProjectedRow::Result(_))
+                    )
+            })
+        {
+            return;
+        }
+        if !self.collapsed.contains(&key)
+            && self
+                .tool_editors
+                .borrow()
+                .entries
+                .iter()
+                .any(|((row, _), entry)| {
+                    row == &key && entry.editor.read(cx).focus_handle(cx).is_focused(window)
+                })
+            && let Some(focus) = &self.focus
+        {
+            // Hiding the focused read-only payload must leave a visible owner.
+            // Keep its editor/selection cached without routing keys to it.
+            focus.focus(window);
+        }
+        if !self.collapsed.remove(&key) {
+            self.collapsed.insert(key);
+        }
+        self.presentation = Rc::new(Presentation::with_disclosure(
+            self.presentation.input.clone(),
+            &self.collapsed,
+        ));
+        cx.notify();
+    }
+
+    pub(crate) fn focus_fallback(&self, window: &mut Window) -> bool {
+        if let Some(focus) = &self.focus {
+            focus.focus(window);
+            true
+        } else {
+            false
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tool_height_invalidation_count(&self) -> usize {
+        self.viewport.borrow().tool_height_invalidations
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retained_tool_editor_count(&self) -> usize {
+        self.tool_editors.borrow().entries.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tool_card_selectors(&self) -> Vec<String> {
+        self.presentation
+            .rows
+            .iter()
+            .filter(|row| {
+                matches!(
+                    row.projected,
+                    Some(ProjectedRow::Call { .. } | ProjectedRow::Result(_))
+                )
+            })
+            .map(|row| format!("transcript-tool-{:?}", row.key))
+            .collect()
+    }
+    #[cfg(test)]
+    pub(crate) fn tool_section_editors(&self) -> Vec<(&'static str, Entity<EditorView>)> {
+        self.tool_editors
+            .borrow()
+            .entries
+            .iter()
+            .map(|((_, label), entry)| (*label, entry.editor.clone()))
+            .collect()
     }
 
     #[cfg(test)]
@@ -515,6 +828,11 @@ impl TranscriptView {
                 RowKey::Retry => "@retry".into(),
                 RowKey::Earlier => "@earlier".into(),
                 RowKey::Message(id) => id.clone(),
+                RowKey::Tool {
+                    assistant,
+                    call_id,
+                    occurrence,
+                } => format!("@tool:{assistant:?}:{call_id}:{occurrence}"),
                 RowKey::Duplicate { id, occurrence, .. } => format!("{id}#{occurrence}"),
             })
             .collect()
@@ -525,9 +843,13 @@ impl TranscriptView {
 // adapter can therefore select the correct overdraw from actual prepaint bounds
 // before any row is measured, in the same frame and without entity updates.
 struct ViewportList {
+    focus: FocusHandle,
+    removed_tool_focus: Rc<RefCell<Vec<FocusHandle>>>,
     viewport: Rc<RefCell<ViewportState>>,
     presentation: Rc<Presentation>,
     parent: WeakEntity<AgentView>,
+    child: WeakEntity<TranscriptView>,
+    tool_editors: Rc<RefCell<ToolEditors>>,
     list: List,
     #[cfg(test)]
     materialized: Rc<RefCell<Materialized>>,
@@ -539,13 +861,22 @@ impl ViewportList {
         let presentation = self.presentation.clone();
         let parent = self.parent.clone();
         let viewport = self.viewport.clone();
+        let child = self.child.clone();
+        let tool_editors = self.tool_editors.clone();
         #[cfg(test)]
         let materialized = self.materialized.clone();
         list(state, move |index, window, cx| {
             let mut row = materialize_row(
                 &presentation,
                 index,
-                &parent,
+                RowRenderContext {
+                    parent: &parent,
+                    child: &child,
+                    tool_editors: &tool_editors,
+                },
+                width,
+                window,
+                cx,
                 #[cfg(test)]
                 &materialized,
             );
@@ -570,12 +901,22 @@ impl ViewportList {
     }
 }
 
+#[derive(Clone, Copy)]
+struct RowRenderContext<'a> {
+    parent: &'a WeakEntity<AgentView>,
+    child: &'a WeakEntity<TranscriptView>,
+    tool_editors: &'a Rc<RefCell<ToolEditors>>,
+}
+
 // Both List's normal renderer and the single-row clamp preflight use this
 // constructor, so bounded-work instrumentation includes every row tree.
 fn materialize_row(
     presentation: &Presentation,
     index: usize,
-    parent: &WeakEntity<AgentView>,
+    context: RowRenderContext<'_>,
+    width: Pixels,
+    window: &mut Window,
+    cx: &mut App,
     #[cfg(test)] materialized: &Rc<RefCell<Materialized>>,
 ) -> AnyElement {
     #[cfg(test)]
@@ -591,7 +932,7 @@ fn materialize_row(
             ));
         }
     }
-    let row = render_row(presentation, index, parent);
+    let row = render_row(presentation, index, context, width, window, cx);
     #[cfg(test)]
     let row = {
         let materialized = materialized.clone();
@@ -656,7 +997,14 @@ impl Element for ViewportList {
             let mut row = materialize_row(
                 &self.presentation,
                 anchor.item_ix,
-                &self.parent,
+                RowRenderContext {
+                    parent: &self.parent,
+                    child: &self.child,
+                    tool_editors: &self.tool_editors,
+                },
+                bounds.size.width,
+                window,
+                cx,
                 #[cfg(test)]
                 &self.materialized,
             );
@@ -721,7 +1069,14 @@ impl Element for ViewportList {
             let mut row = materialize_row(
                 &self.presentation,
                 target.item_ix,
-                &self.parent,
+                RowRenderContext {
+                    parent: &self.parent,
+                    child: &self.child,
+                    tool_editors: &self.tool_editors,
+                },
+                bounds.size.width,
+                window,
+                cx,
                 #[cfg(test)]
                 &self.materialized,
             );
@@ -826,19 +1181,50 @@ impl Element for ViewportList {
         });
         self.list
             .paint(id, inspector_id, bounds, state, &mut prepaint.0, window, cx);
+        let removed_focused = self
+            .removed_tool_focus
+            .borrow_mut()
+            .drain(..)
+            .any(|focus| focus.is_focused(window));
+        let focused_row = self
+            .tool_editors
+            .borrow()
+            .entries
+            .iter()
+            .find(|(_, entry)| entry.editor.read(cx).focus_handle(cx).is_focused(window))
+            .map(|((key, section), entry)| (key.clone(), *section, entry.row_index));
+        let hidden_focused = focused_row.is_some_and(|(key, section, index)| {
+            !tool_section_visible(
+                &self.presentation,
+                &self.viewport.borrow().list,
+                &key,
+                section,
+                index,
+            )
+        });
+        if removed_focused || hidden_focused {
+            // This component's cached read-only editor left the rendered page.
+            // A visible noneditable owner keeps parent shortcuts routable.
+            self.focus.focus(window);
+        }
     }
 }
 
 impl Render for TranscriptView {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let focus = self.focus.get_or_insert_with(|| cx.focus_handle()).clone();
         #[cfg(test)]
         {
             self.render_count += 1;
         }
         let element = ViewportList {
+            focus: focus.clone(),
+            removed_tool_focus: self.removed_tool_focus.clone(),
             viewport: self.viewport.clone(),
             presentation: self.presentation.clone(),
             parent: self.parent.clone(),
+            child: cx.entity().downgrade(),
+            tool_editors: self.tool_editors.clone(),
             // request_layout only needs these invariant sizing styles.
             list: list(self.viewport.borrow().list.clone(), |_, _, _| {
                 div().into_any_element()
@@ -852,6 +1238,8 @@ impl Render for TranscriptView {
         };
         div()
             .id("transcript")
+            .track_focus(&focus)
+            .on_any_mouse_down(|_, window, _| window.prevent_default())
             .debug_selector(|| "queue-measured-transcript".into())
             .w_full()
             .h_full()
@@ -879,156 +1267,177 @@ fn button(p: Palette, id: impl Into<ElementId>, label: impl Into<SharedString>) 
         .child(label.into())
 }
 
-fn render_row(presentation: &Presentation, index: usize, parent: &WeakEntity<AgentView>) -> Div {
+fn render_row(
+    presentation: &Presentation,
+    index: usize,
+    context: RowRenderContext<'_>,
+    width: Pixels,
+    window: &mut Window,
+    cx: &mut App,
+) -> Div {
+    let RowRenderContext {
+        parent,
+        child,
+        tool_editors,
+    } = context;
     let input = &presentation.input;
     let row = &presentation.rows[index];
     let p = input.palette;
-    let content = match &row.key {
-        RowKey::Loading => div()
-            .py(px(24.))
-            .text_color(rgb(p.secondary))
-            .child("Preparing…")
-            .into_any_element(),
-        RowKey::Retry => {
-            let parent = parent.clone();
-            let controller = input.controller.clone();
-            let chat_id = input.chat_id.clone();
-            button(p, "retry-chat-load", "Retry opening chat")
+    let content = if matches!(
+        row.projected,
+        Some(ProjectedRow::Call { .. } | ProjectedRow::Result(_))
+    ) {
+        render_tool_card(presentation, index, child, tool_editors, width, window, cx)
+            .into_any_element()
+    } else {
+        match &row.key {
+            RowKey::Loading => div()
+                .py(px(24.))
+                .text_color(rgb(p.secondary))
+                .child("Preparing…")
+                .into_any_element(),
+            RowKey::Retry => {
+                let parent = parent.clone();
+                let controller = input.controller.clone();
+                let chat_id = input.chat_id.clone();
+                button(p, "retry-chat-load", "Retry opening chat")
+                    .on_click(move |_, _, cx| {
+                        let _ = parent.update(cx, |view, cx| {
+                            if view.active_transcript_matches(&chat_id, &controller) {
+                                view.load_chat(&chat_id, cx);
+                            }
+                        });
+                    })
+                    .into_any_element()
+            }
+            RowKey::Earlier => {
+                let parent = parent.clone();
+                let controller = input.controller.clone();
+                let chat_id = input.chat_id.clone();
+                button(
+                    p,
+                    "earlier",
+                    format!("Show earlier messages ({})", presentation.hidden_messages),
+                )
                 .on_click(move |_, _, cx| {
                     let _ = parent.update(cx, |view, cx| {
                         if view.active_transcript_matches(&chat_id, &controller) {
-                            view.load_chat(&chat_id, cx);
+                            view.visible_messages = view.visible_messages.saturating_add(100);
+                            cx.notify();
                         }
                     });
                 })
                 .into_any_element()
-        }
-        RowKey::Earlier => {
-            let parent = parent.clone();
-            let controller = input.controller.clone();
-            let chat_id = input.chat_id.clone();
-            button(
-                p,
-                "earlier",
-                format!("Show earlier messages ({})", presentation.hidden_messages),
-            )
-            .on_click(move |_, _, cx| {
-                let _ = parent.update(cx, |view, cx| {
-                    if view.active_transcript_matches(&chat_id, &controller) {
-                        view.visible_messages = view.visible_messages.saturating_add(100);
-                        cx.notify();
-                    }
-                });
-            })
-            .into_any_element()
-        }
-        RowKey::Message(_) | RowKey::Duplicate { .. } => {
-            let source_index = row.message_index.expect("message row");
-            let message = &input.session.messages[source_index];
-            let ambiguous = matches!(row.key, RowKey::Duplicate { .. });
-            let selector = if ambiguous {
-                format!("transcript-row-{}-duplicate-{source_index}", message.id)
-            } else {
-                format!("transcript-row-{}", message.id)
-            };
-            let user = message.role == "user";
-            let mut body = div()
-                .min_w_0()
-                .when(!user, |d| d.w_full())
-                .max_w(px(640.))
-                .flex()
-                .flex_col()
-                .gap(px(6.))
-                .when(user, |d| {
-                    d.w(px(layout::user_bubble_width(input.pane_width)))
-                        .px(px(14.))
-                        .py(px(9.))
-                        .rounded(px(14.))
-                        .bg(rgb(p.user))
-                });
-            if !message.reasoning.is_empty() {
-                body = body.child(
-                    div()
-                        .text_size(px(12.))
-                        .text_color(rgb(p.secondary))
-                        .child(message.reasoning.clone()),
-                );
             }
-            body = body.child(
-                div()
-                    .debug_selector(|| {
-                        if ambiguous {
-                            format!("transcript-text-{}-duplicate-{source_index}", message.id)
-                        } else {
-                            format!("transcript-text-{}", message.id)
-                        }
-                    })
+            RowKey::Tool { .. } => unreachable!("tool card rendered above"),
+            RowKey::Message(_) | RowKey::Duplicate { .. } => {
+                let source_index = row.message_index.expect("message row");
+                let message = &input.session.messages[source_index];
+                let ambiguous = matches!(row.key, RowKey::Duplicate { .. });
+                let selector = if ambiguous {
+                    format!("transcript-row-{}-duplicate-{source_index}", message.id)
+                } else {
+                    format!("transcript-row-{}", message.id)
+                };
+                let user = message.role == "user";
+                let mut body = div()
                     .min_w_0()
-                    .max_w_full()
-                    .text_size(px(14.5))
-                    .line_height(px(21.))
-                    .child(if message.text.is_empty() && message.state == "streaming" {
-                        "Generating response…".into()
-                    } else {
-                        message.text.clone()
-                    }),
-            );
-            if message.state == "interrupted" {
+                    .when(!user, |d| d.w_full())
+                    .max_w(px(640.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.))
+                    .when(user, |d| {
+                        d.w(px(layout::user_bubble_width(input.pane_width)))
+                            .px(px(14.))
+                            .py(px(9.))
+                            .rounded(px(14.))
+                            .bg(rgb(p.user))
+                    });
+                if !message.reasoning.is_empty() {
+                    body = body.child(
+                        div()
+                            .text_size(px(12.))
+                            .text_color(rgb(p.secondary))
+                            .child(message.reasoning.clone()),
+                    );
+                }
                 body = body.child(
                     div()
-                        .text_size(px(11.5))
-                        .text_color(rgb(p.secondary))
-                        .child("Interrupted"),
+                        .debug_selector(|| {
+                            if ambiguous {
+                                format!("transcript-text-{}-duplicate-{source_index}", message.id)
+                            } else {
+                                format!("transcript-text-{}", message.id)
+                            }
+                        })
+                        .min_w_0()
+                        .max_w_full()
+                        .text_size(px(14.5))
+                        .line_height(px(21.))
+                        .child(if message.text.is_empty() && message.state == "streaming" {
+                            "Generating response…".into()
+                        } else {
+                            message.text.clone()
+                        }),
                 );
-            }
-            let key =
-                transcript_actions::MessageKey::new(input.chat_id.clone(), message.id.clone());
-            let group = if ambiguous {
-                SharedString::from(format!(
-                    "transcript-duplicate-{}-{source_index}",
-                    input.chat_id
-                ))
-            } else {
-                key.hover_group()
-            };
-            let actions = if ambiguous {
-                // Legacy snapshots can contain repeated IDs. Keep all their text
-                // and geometry, but never offer an action with ambiguous identity.
-                div()
-                    .w_full()
-                    .h(px(transcript_actions::ACTION_BAND_HEIGHT))
-                    .flex_shrink_0()
-            } else {
-                transcript_actions::transcript_copy_band(
-                    key,
-                    p,
-                    parent.clone(),
-                    input.controller.clone(),
-                )
-            };
-            div()
-                .group(group)
-                .debug_selector(|| selector)
-                // Keep the message content-sized, ending at its action band.
-                .w_full()
-                .max_w(px(840.))
-                .mx_auto()
-                .min_w_0()
-                .flex_shrink_0()
-                .pt(px(12.))
-                .flex()
-                .flex_col()
-                .gap(px(6.))
-                .child(
+                if message.state == "interrupted" {
+                    body = body.child(
+                        div()
+                            .text_size(px(11.5))
+                            .text_color(rgb(p.secondary))
+                            .child("Interrupted"),
+                    );
+                }
+                let key =
+                    transcript_actions::MessageKey::new(input.chat_id.clone(), message.id.clone());
+                let group = if ambiguous {
+                    SharedString::from(format!(
+                        "transcript-duplicate-{}-{source_index}",
+                        input.chat_id
+                    ))
+                } else {
+                    key.hover_group()
+                };
+                let actions = if ambiguous {
+                    // Legacy snapshots can contain repeated IDs. Keep all their text
+                    // and geometry, but never offer an action with ambiguous identity.
                     div()
                         .w_full()
-                        .min_w_0()
-                        .flex()
-                        .when(user, |d| d.justify_end().pl(px(40.)))
-                        .child(body),
-                )
-                .child(actions)
-                .into_any_element()
+                        .h(px(transcript_actions::ACTION_BAND_HEIGHT))
+                        .flex_shrink_0()
+                } else {
+                    transcript_actions::transcript_copy_band(
+                        key,
+                        p,
+                        parent.clone(),
+                        input.controller.clone(),
+                    )
+                };
+                div()
+                    .group(group)
+                    .debug_selector(|| selector)
+                    // Keep the message content-sized, ending at its action band.
+                    .w_full()
+                    .max_w(px(840.))
+                    .mx_auto()
+                    .min_w_0()
+                    .flex_shrink_0()
+                    .pt(px(12.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.))
+                    .child(
+                        div()
+                            .w_full()
+                            .min_w_0()
+                            .flex()
+                            .when(user, |d| d.justify_end().pl(px(40.)))
+                            .child(body),
+                    )
+                    .child(actions)
+                    .into_any_element()
+            }
         }
     };
     // List's padding does not subtract horizontal space from its child layout;
@@ -1041,4 +1450,283 @@ fn render_row(presentation: &Presentation, index: usize, parent: &WeakEntity<Age
         .flex()
         .flex_col()
         .child(content)
+}
+
+// Only materialized, expanded sections acquire editors. Stable bounded entries
+// retain selection and scroll across unrelated snapshots and streaming frames.
+const TOOL_EDITOR_LIMIT: usize = 64;
+#[derive(Default)]
+struct ToolEditors {
+    entries: HashMap<(RowKey, &'static str), ToolEditor>,
+    tick: u64,
+}
+struct ToolEditor {
+    row_index: usize,
+    editor: Entity<EditorView>,
+    style: ToolEditorStyle,
+    used: u64,
+}
+#[derive(Clone, Copy, PartialEq)]
+struct ToolEditorStyle {
+    palette: Palette,
+    failed: bool,
+}
+impl ToolEditors {
+    fn section(
+        &mut self,
+        key: (usize, RowKey, &'static str),
+        preview: &str,
+        style: ToolEditorStyle,
+        width: f32,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (Entity<EditorView>, f32) {
+        let (row_index, row, section) = key;
+        let key = (row, section);
+        self.tick += 1;
+        let ToolEditorStyle { palette: p, failed } = style;
+        if !self.entries.contains_key(&key) {
+            if self.entries.len() >= TOOL_EDITOR_LIMIT {
+                let oldest = self
+                    .entries
+                    .iter()
+                    .filter(|(_, entry)| !entry.editor.read(cx).focus_handle(cx).is_focused(window))
+                    .min_by_key(|(_, entry)| entry.used)
+                    .map(|(key, _)| key.clone());
+                if let Some(oldest) = oldest {
+                    self.entries.remove(&oldest);
+                }
+            }
+            let editor = cx.new(|cx| {
+                let mut editor = EditorView::new(preview.into(), window, cx);
+                editor.set_read_only(true, cx);
+                editor.set_vim(false, cx);
+                editor.set_appearance(tool_editor_appearance(p, failed), cx);
+                editor
+            });
+            self.entries.insert(
+                key.clone(),
+                ToolEditor {
+                    row_index,
+                    editor,
+                    style,
+                    used: self.tick,
+                },
+            );
+        }
+        let entry = self.entries.get_mut(&key).expect("created section");
+        // Every visible row renders before paint, even with a cached height.
+        // Keep focus visibility checks bounded to the editor cache.
+        entry.row_index = row_index;
+        entry.used = self.tick;
+        let height = entry.editor.update(cx, |editor, cx| {
+            if editor.text() != preview {
+                editor.set_text(preview.into(), cx);
+            }
+            if entry.style != style {
+                editor.set_appearance(tool_editor_appearance(p, failed), cx);
+            }
+            editor
+                .measured_content_height(width.max(1.), window)
+                .clamp(17., tool_presentation::SECTION_CAP)
+        });
+        entry.style = style;
+        (entry.editor.clone(), height)
+    }
+}
+fn tool_editor_appearance(p: Palette, failed: bool) -> EditorAppearance {
+    EditorAppearance {
+        font_family: "monospace".into(),
+        font_size: 12.,
+        line_height: 17.,
+        padding_x: 0.,
+        padding_y: 0.,
+        text: rgb(if failed { p.danger } else { p.secondary }).into(),
+        selection: p.accent_soft(),
+        caret: rgb(p.accent).into(),
+        normal_caret: p.accent_soft(),
+        ..EditorAppearance::plain()
+    }
+}
+
+fn render_tool_card(
+    presentation: &Presentation,
+    index: usize,
+    child: &WeakEntity<TranscriptView>,
+    editors: &Rc<RefCell<ToolEditors>>,
+    width: Pixels,
+    window: &mut Window,
+    cx: &mut App,
+) -> Div {
+    let row = &presentation.rows[index];
+    let projected = row.projected.expect("tool projection");
+    let session = &presentation.input.session;
+    let p = presentation.input.palette;
+    let status = tool_presentation::status(session, projected);
+    let (name, input) = match projected {
+        ProjectedRow::Call {
+            assistant, call, ..
+        } => {
+            let call = tool_presentation::call_at(session, assistant, call);
+            (
+                call.name.clone(),
+                row.expanded
+                    .then(|| tool_presentation::arguments_preview(&call.arguments)),
+            )
+        }
+        ProjectedRow::Result(source) => {
+            let label = match &session.messages[source].tool_record {
+                Some(bello_agent_core::tool_history::ToolRecord::Result(result)) => {
+                    format!("Tool result · {} · {}", result.assistant_id, result.call_id)
+                }
+                _ => "Tool result".into(),
+            };
+            (label, None)
+        }
+        _ => unreachable!("tool card"),
+    };
+    let selector = format!("transcript-tool-{:?}", row.key);
+    let key = row.key.clone();
+    let chat_id = presentation.input.chat_id.clone();
+    let controller = presentation.input.controller.clone();
+    let child = child.clone();
+    let mut card = div()
+        .debug_selector(|| selector.clone())
+        .w_full()
+        .max_w(px(640.))
+        .mx_auto()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .rounded(px(10.))
+        .border_1()
+        .border_color(p.hairline())
+        .bg(rgb(p.surface))
+        .child(
+            div()
+                .px(px(16.))
+                .py(px(10.))
+                .flex()
+                .gap(px(10.))
+                .items_start()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(3.))
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .text_color(rgb(p.ink))
+                                .child(name.clone()),
+                        )
+                        .child(
+                            div()
+                                .debug_selector(|| format!("{selector}-status"))
+                                .text_size(px(11.5))
+                                .text_color(rgb(if status.is_error() {
+                                    p.danger
+                                } else {
+                                    p.secondary
+                                }))
+                                .child(status.label(&name)),
+                        ),
+                )
+                .child(
+                    button(
+                        p,
+                        SharedString::from(format!("{selector}-disclosure")),
+                        if row.expanded {
+                            "Hide details"
+                        } else {
+                            "Show details"
+                        },
+                    )
+                    .debug_selector(|| format!("{selector}-disclosure"))
+                    .on_click(move |_, window, cx| {
+                        let _ = child.update(cx, |view, cx| {
+                            view.toggle_tool(key.clone(), &chat_id, &controller, window, cx)
+                        });
+                    }),
+                ),
+        );
+    if !row.expanded {
+        return card;
+    }
+    let output = projected.result().map(|index| {
+        let text = &session.messages[index].text;
+        tool_presentation::preview(if text.is_empty() {
+            bello_agent_core::tool_history::EMPTY_RESULT
+        } else {
+            text
+        })
+    });
+    let truncated = input.as_ref().is_some_and(|preview| preview.truncated)
+        || output.as_ref().is_some_and(|preview| preview.truncated);
+    let body_width = (f32::from(width) - 48.).min(640.) - 32. - 28. - 14. - 2.;
+    for (label, preview) in [("IN", input), ("OUT", output)] {
+        let Some(preview) = preview else {
+            continue;
+        };
+        let (editor, height) = editors.borrow_mut().section(
+            (index, row.key.clone(), label),
+            &preview.text,
+            ToolEditorStyle {
+                palette: p,
+                failed: label == "OUT" && status.is_error(),
+            },
+            body_width,
+            window,
+            cx,
+        );
+        card = card.child(
+            div()
+                .w_full()
+                .min_w_0()
+                .border_t_1()
+                .border_color(p.hairline())
+                .px(px(16.))
+                .py(px(12.))
+                .flex()
+                .items_start()
+                .gap(px(14.))
+                .child(
+                    div()
+                        .w(px(28.))
+                        .flex_shrink_0()
+                        .text_size(px(11.))
+                        .text_color(rgb(p.tertiary))
+                        .child(label),
+                )
+                .child(
+                    div()
+                        .id(SharedString::from(format!("{selector}-{label}")))
+                        .debug_selector(|| format!("{selector}-{label}"))
+                        .flex_1()
+                        .min_w_0()
+                        .h(px(height))
+                        .max_h(px(tool_presentation::SECTION_CAP))
+                        .overflow_hidden()
+                        // GPUI List registers its wheel listener after children,
+                        // so bubbling alone cannot stop it. Exclude the outer
+                        // list's hitbox while this selectable scroller is hit.
+                        .occlude()
+                        .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                        .child(editor),
+                ),
+        );
+    }
+    if truncated {
+        card = card.child(
+            div()
+                .px(px(16.))
+                .pb(px(10.))
+                .text_size(px(11.5))
+                .text_color(rgb(p.secondary))
+                .child("Preview truncated; retained input and output are unchanged."),
+        );
+    }
+    card
 }
