@@ -21,6 +21,7 @@ pub struct ChatState {
     pub composer: Entity<EditorView>,
     pub transcript: Option<Entity<crate::transcript_view::TranscriptView>>,
     pub error: Option<String>,
+    pub archive_stop_warning: Option<String>,
     pub editing: Option<String>,
     pub queued_turn_id: Option<String>,
     pub queued_original: Option<String>,
@@ -94,6 +95,7 @@ impl ChatState {
         let composer = cx.new(|cx| {
             let mut view = EditorView::new(text, window, cx);
             view.set_composer_mode(cx);
+            view.set_read_only(record.archived_at.is_some(), cx);
             view.set_appearance(AgentView::composer_style(palette), cx);
             view
         });
@@ -150,6 +152,7 @@ impl ChatState {
                 String::new()
             },
             error: None,
+            archive_stop_warning: None,
             visible_messages: 100,
             queue_open: true,
             queue_geometry: None,

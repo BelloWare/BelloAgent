@@ -1,6 +1,7 @@
 mod assets;
 mod chat;
 mod chat_navigation;
+mod chat_organization;
 mod draft_status;
 mod file_tab;
 mod layout;
@@ -113,10 +114,25 @@ struct AgentView {
     shutting_down: bool,
     close_ready: bool,
     shutdown_operation: Option<uuid::Uuid>,
-    pin_operations: BTreeMap<String, uuid::Uuid>,
-    pin_errors: BTreeMap<String, sidebar_actions::PinError>,
+    organization_operations: BTreeMap<String, chat_organization::OrganizationQueue>,
+    organization_errors: BTreeMap<String, chat_organization::OrganizationError>,
+    organization_drain_scheduled: bool,
+    organization_window: Option<AnyWindowHandle>,
+    archive_cancel_deferrals: queue_cancel::ArchiveCancelDeferrals,
+    known_catalog_uncertainty: bool,
+    blocked_organization_count: usize,
+    navigation_generation: u64,
+    show_archived: bool,
+    launch_archive_reveal: bool,
+    archive_visibility_revision: u64,
+    archive_visibility_writes: usize,
+    archive_visibility_errors: BTreeMap<String, String>,
     cancelled_prompt_key: Option<String>,
     sidebar_menu: Option<sidebar_actions::SidebarMenu>,
+    #[cfg(not(target_os = "macos"))]
+    root_focus: FocusHandle,
+    #[cfg(not(target_os = "macos"))]
+    sidebar_popup_focus: FocusHandle,
     chat_directory: PathBuf,
     unloaded_drafts: BTreeMap<String, DraftRecord>,
     recoveries: BTreeMap<String, SubmissionIntent>,
@@ -220,6 +236,7 @@ impl AgentView {
             // Notify the retained transcript before GPUI starts drawing. A
             // notify issued from Render is too late for that frame's cache key.
             cx.observe_self(|view, cx| view.sync_transcript_inputs(cx)),
+            cx.observe_self(|view, cx| view.request_organization_drain(cx)),
         ];
         let workbench = cx.new(|cx| WorkbenchView::new(project.clone(), window, cx));
         workbench.update(cx, |view, cx| {
@@ -250,7 +267,16 @@ impl AgentView {
         });
         // Match WorkspaceSelection's selected-chat composer focus. The source
         // Open File command is window-wide; it must work before any mouse click.
-        chat.composer.read(cx).focus(window);
+        if chat.record.archived_at.is_none() {
+            chat.composer.read(cx).focus(window);
+        }
+        #[cfg(not(target_os = "macos"))]
+        let root_focus = cx.focus_handle();
+        #[cfg(not(target_os = "macos"))]
+        if chat.record.archived_at.is_some() {
+            root_focus.focus(window);
+        }
+        let launch_archive_reveal = chat.record.archived_at.is_some() && !state.show_archived;
         let mut view = Self {
             chat,
             inactive: BTreeMap::new(),
@@ -264,10 +290,25 @@ impl AgentView {
             shutting_down: false,
             close_ready: false,
             shutdown_operation: None,
-            pin_operations: BTreeMap::new(),
-            pin_errors: BTreeMap::new(),
+            organization_operations: BTreeMap::new(),
+            organization_errors: BTreeMap::new(),
+            organization_drain_scheduled: false,
+            organization_window: Some(window.window_handle()),
+            archive_cancel_deferrals: Default::default(),
+            known_catalog_uncertainty: false,
+            blocked_organization_count: 0,
+            navigation_generation: 0,
+            show_archived: state.show_archived,
+            launch_archive_reveal,
+            archive_visibility_revision: state.archive_visibility_revision,
+            archive_visibility_writes: 0,
+            archive_visibility_errors: BTreeMap::new(),
             cancelled_prompt_key: None,
             sidebar_menu: None,
+            #[cfg(not(target_os = "macos"))]
+            root_focus,
+            #[cfg(not(target_os = "macos"))]
+            sidebar_popup_focus: cx.focus_handle(),
             palette,
             layout,
             layout_store,
@@ -299,6 +340,7 @@ impl AgentView {
         self.sidebar_menu = None;
         let binding = workspace_lifetime::WindowBinding::new(window.window_handle().window_id());
         self.window_binding = Some(binding);
+        self.organization_window = Some(window.window_handle());
         let weak = cx.weak_entity();
         window.on_window_should_close(cx, move |window, cx| {
             weak.update(cx, |view, cx| view.request_close_for(binding, window, cx))
@@ -332,7 +374,7 @@ impl AgentView {
         {
             file.view.read(cx).focus(window, cx);
         } else {
-            self.composer.read(cx).focus(window);
+            self.focus_visible_composer(window, cx);
         }
     }
     fn request_close_for(
@@ -398,7 +440,8 @@ impl AgentView {
         command: impl FnOnce(Arc<Controller>) -> bello_agent_core::Result<R> + Send + 'static,
         apply: impl FnOnce(&mut ChatState, R, &mut Context<Self>) + 'static,
     ) {
-        if self.busy
+        if self.actor_mutation_blocked(&self.record.id)
+            || self.busy
             || self.loading
             || self.load_failed
             || self.shutting_down
@@ -443,43 +486,47 @@ impl AgentView {
         let task = cx.background_executor().spawn(async move {
             let flushed = if let Some(draft) = flush {
                 let revision = draft.revision;
-                let saved = workspace
-                    .lock()
-                    .map_err(|_| {
-                        bello_agent_core::Error::Invalid("Workspace is unavailable".into())
-                    })
-                    .and_then(|mut store| store.flush_draft_exact(&flush_id, draft));
-                if let Err(error) = saved {
-                    return (None, Err(error));
+                let saved = chat_organization::catalog_operation(&workspace, |store| {
+                    store.flush_draft_exact(&flush_id, draft)
+                });
+                if let Err(error) = saved.result {
+                    return (None, Err(error), saved.uncertain);
                 }
                 Some(revision)
             } else {
                 None
             };
-            (flushed, command(controller))
+            (flushed, command(controller), false)
         });
         cx.spawn(async move |view, cx| {
-            let (flushed, result) = task.await;
+            let (flushed, result, catalog_uncertain) = task.await;
             let failed = result.is_err();
             let _ = view.update(cx, move |view, cx| {
-                if view.project != identity_project
-                    || view
-                        .chat_ref(&id)
-                        .is_none_or(|chat| !Arc::ptr_eq(&chat.controller, &identity_controller))
+                if view.project != identity_project {
+                    return;
+                }
+                view.observe_catalog_uncertainty(catalog_uncertain, cx);
+                if view
+                    .chat_ref(&id)
+                    .is_none_or(|chat| !Arc::ptr_eq(&chat.controller, &identity_controller))
                 {
                     return;
                 }
+                let archived = view.chat_is_archived(&id);
                 if let Some(chat) = view.chat_mut(&id) {
                     if let Some(revision) = flushed {
                         chat.draft_save_status.confirm(revision, &mut chat.error);
                     }
                     chat.busy = false;
                     chat.composer
-                        .update(cx, |editor, cx| editor.set_read_only(false, cx));
+                        .update(cx, |editor, cx| editor.set_read_only(archived, cx));
                     chat.session = chat.controller.snapshot_shared();
                     match result {
                         Ok(value) => apply(chat, value, cx),
-                        Err(error) => chat.error = Some(error.to_string()),
+                        Err(error) => {
+                            chat.error =
+                                Some(chat_organization::catalog_error(&error, catalog_uncertain))
+                        }
                     }
                     chat.session = chat.controller.snapshot_shared();
                 }
@@ -587,6 +634,9 @@ impl AgentView {
         false
     }
     fn open_changes(&mut self, cx: &mut Context<Self>) {
+        if !self.advance_navigation(cx) {
+            return;
+        }
         self.changes_open = true;
         self.selected_file = None;
         self.show_files = true;
@@ -599,6 +649,9 @@ impl AgentView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.advance_navigation(cx) {
+            return;
+        }
         self.show_files = true;
         if let Some(entry) = self.files.iter().find(|entry| entry.path == path) {
             self.selected_file = Some(entry.id);
@@ -636,6 +689,9 @@ impl AgentView {
         cx.notify();
     }
     fn file_closed(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.advance_navigation(cx) {
+            return;
+        }
         self.files.retain(|entry| entry.id != id);
         if self.selected_file == Some(id) {
             self.selected_file = self.files.last().map(|entry| entry.id);
@@ -646,11 +702,14 @@ impl AgentView {
         {
             entry.view.read(cx).focus(window, cx);
         } else if !self.show_files {
-            self.composer.read(cx).focus(window);
+            self.focus_visible_composer(window, cx);
         }
         cx.notify();
     }
     fn close_selected_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.advance_navigation(cx) {
+            return;
+        }
         if let Some(id) = self.selected_file {
             if let Some(entry) = self.files.iter().find(|entry| entry.id == id) {
                 entry.view.update(cx, |view, cx| view.request_close(cx));
@@ -660,7 +719,7 @@ impl AgentView {
             self.selected_file = self.files.last().map(|entry| entry.id);
             self.show_files = !self.files.is_empty();
             if !self.show_files {
-                self.composer.read(cx).focus(window);
+                self.focus_visible_composer(window, cx);
             }
             cx.notify();
         }
@@ -780,6 +839,9 @@ impl AgentView {
             self.new_chat(window, cx);
             cx.stop_propagation();
         } else if command && event.keystroke.key == "p" {
+            if !self.advance_navigation(cx) {
+                return;
+            }
             self.close_queue_detail(true, window, cx);
             self.quick_open.update(cx, |view, cx| view.show(window, cx));
             cx.stop_propagation();
@@ -819,6 +881,9 @@ impl AgentView {
                     .when(self.selected_file.is_none(), |d| d.bg(p.fill()))
                     .cursor_pointer()
                     .on_click(cx.listener(|view, _, _, cx| {
+                        if !view.advance_navigation(cx) {
+                            return;
+                        }
                         view.selected_file = None;
                         cx.notify();
                     }))
@@ -834,6 +899,9 @@ impl AgentView {
                         self.icon_button("close-changes-tab", "close", 18.)
                             .on_click(cx.listener(|view, _, window, cx| {
                                 cx.stop_propagation();
+                                if !view.advance_navigation(cx) {
+                                    return;
+                                }
                                 view.selected_file = None;
                                 view.close_selected_tab(window, cx);
                             })),
@@ -860,6 +928,9 @@ impl AgentView {
                     .when(selected, |d| d.bg(p.fill()))
                     .cursor_pointer()
                     .on_click(cx.listener(move |view, _, window, cx| {
+                        if !view.advance_navigation(cx) {
+                            return;
+                        }
                         view.selected_file = Some(id);
                         if let Some(entry) = view.files.iter().find(|entry| entry.id == id) {
                             entry.view.read(cx).focus(window, cx);
@@ -914,6 +985,9 @@ impl AgentView {
                             self.button("git-changes", "Changes")
                                 .when(!self.pane_history, |d| d.bg(p.accent_soft()))
                                 .on_click(cx.listener(|view, _, _, cx| {
+                                    if !view.advance_navigation(cx) {
+                                        return;
+                                    }
                                     view.pane_history = false;
                                     view.workbench.update(cx, |w, cx| {
                                         w.set_panel(WorkbenchPanel::Changes, cx)
@@ -925,6 +999,9 @@ impl AgentView {
                             self.button("git-history", "History")
                                 .when(self.pane_history, |d| d.bg(p.accent_soft()))
                                 .on_click(cx.listener(|view, _, _, cx| {
+                                    if !view.advance_navigation(cx) {
+                                        return;
+                                    }
                                     view.pane_history = true;
                                     view.workbench.update(cx, |w, cx| {
                                         w.set_panel(WorkbenchPanel::History, cx)
@@ -1090,7 +1167,8 @@ impl AgentView {
             .iter()
             .filter(|item| item.lane == Lane::FollowUp)
             .count();
-        let reorder_enabled = follow_up_count > 1
+        let reorder_enabled = !self.actor_mutation_blocked(&self.record.id)
+            && follow_up_count > 1
             && self.session.edit.is_none()
             && self.queue_operation.is_none()
             && !self.busy
@@ -1113,7 +1191,8 @@ impl AgentView {
         if self.session.pending.is_empty() {
             return div();
         }
-        let resume_enabled = self.session.edit.is_none()
+        let resume_enabled = !self.actor_mutation_blocked(&self.record.id)
+            && self.session.edit.is_none()
             && self.queue_operation.is_none()
             && !self.busy
             && !self.loading
@@ -1124,7 +1203,10 @@ impl AgentView {
         // The same source micro weight is used for shaping and both labels.
         let micro_weight = FontWeight::MEDIUM;
         let status_text = timing.header(self.session.pending.len());
-        let has_hint = self.queue_open && follow_up_count > 1 && self.session.edit.is_none();
+        let has_hint = reorder_enabled
+            && self.queue_open
+            && follow_up_count > 1
+            && self.session.edit.is_none();
         let has_resume = queue_actions::offers_resume(&self.chat);
         let measure = |text: &str, size: f32, weight: FontWeight| {
             let mut font = gpui::font(if cfg!(target_os = "macos") {
@@ -1369,10 +1451,12 @@ impl AgentView {
                 control_height + 4.
             };
             measured_content_height += row_height.max(queue_presentation::ROW_HEIGHT);
-            let remove_enabled = !matches!(
-                edit_state,
-                queue_edit_controls::QueueEditRowState::Held { .. }
-            ) && !self.busy
+            let remove_enabled = !self.actor_mutation_blocked(&self.record.id)
+                && !matches!(
+                    edit_state,
+                    queue_edit_controls::QueueEditRowState::Held { .. }
+                )
+                && !self.busy
                 && !self.loading
                 && !self.load_failed
                 && !self.edit_recovery.blocked
@@ -1395,7 +1479,8 @@ impl AgentView {
                 .filter(|(target, _)| target == &id)
                 .map(|(_, after)| *after);
             let drag_owner = cx.weak_entity();
-            let promotion_enabled = self.queue_operation.is_none()
+            let promotion_enabled = !self.actor_mutation_blocked(&self.record.id)
+                && self.queue_operation.is_none()
                 && !self.busy
                 && !self.loading
                 && !self.load_failed
@@ -1598,7 +1683,7 @@ impl AgentView {
             }
         });
         if let Some(detail) = detail {
-            if restore_focus {
+            if restore_focus && !self.chat_is_archived(&key.chat_id) {
                 detail.restore_focus(window, cx);
             }
             cx.notify();
@@ -1828,7 +1913,7 @@ impl AgentView {
             .child(self.composer.clone())
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|view, _, window, cx| view.composer.read(cx).focus(window)),
+                cx.listener(|view, _, window, cx| view.focus_visible_composer(window, cx)),
             )
             .capture_key_down(cx.listener(|v, event: &KeyDownEvent, _, cx| {
                 if event.keystroke.key == "enter"
@@ -1905,13 +1990,26 @@ impl AgentView {
                         "Steer run"
                     },
                 )
+                .opacity(if self.actor_mutation_blocked(&self.record.id) {
+                    0.45
+                } else {
+                    1.
+                })
                 .on_click(cx.listener(|v, _, _, cx| v.submit(Lane::Steering, cx))),
             );
         }
         if self.session.retry.is_some() && self.session.state != RunState::Running {
             bar = bar.child(
                 self.button("retry", "Retry")
-                    .opacity(if self.edit_recovery.blocked { 0.45 } else { 1. })
+                    .opacity(
+                        if self.edit_recovery.blocked
+                            || self.actor_mutation_blocked(&self.record.id)
+                        {
+                            0.45
+                        } else {
+                            1.
+                        },
+                    )
                     .on_click(cx.listener(|v, _, _, cx| {
                         v.command(
                             cx,
@@ -1982,7 +2080,8 @@ impl AgentView {
         bar = bar
             .child(model_pill)
             .child(effort_pill.child(self.icon("down", 9.)));
-        let can_send = !self.busy
+        let can_send = !self.actor_mutation_blocked(&self.record.id)
+            && !self.busy
             && !self.edit_recovery.blocked
             && !self.loading
             && !self.shutting_down
@@ -2132,6 +2231,49 @@ impl AgentView {
                     .sum::<u64>()
             )
         };
+        let composer = if self.chat_is_archived(&self.record.id) {
+            let id = self.record.id.clone();
+            div()
+                .debug_selector(|| "archived-read-only-footer".into())
+                .mx(px(16.))
+                .mt(px(queue_geometry::COMPOSER_TOP))
+                .mb(px(queue_geometry::COMPOSER_BOTTOM))
+                .px(px(14.))
+                .py(px(12.))
+                .rounded(px(12.))
+                .border_1()
+                .border_color(p.hairline())
+                .bg(rgb(p.surface))
+                .flex()
+                .flex_col()
+                .gap(px(6.))
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child("Archived · Read-only"),
+                )
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(rgb(p.secondary))
+                        .child("Restore the chat to send messages, steer or resume its queue."),
+                )
+                .child(
+                    self.button("restore-archived-chat", "Restore Chat")
+                        .on_click(cx.listener(move |view, _, _, cx| {
+                            view.set_chat_archived(&id, false, cx)
+                        })),
+                )
+                .when(self.session.state == RunState::Running, |footer| {
+                    footer.child(
+                        self.button("stop-archived-chat", "Stop")
+                            .on_click(cx.listener(|view, _, _, cx| view.stop_current_run(cx))),
+                    )
+                })
+        } else {
+            composer
+        };
         view.child(composer)
             .child(
                 div()
@@ -2203,7 +2345,30 @@ impl AgentView {
                             .opacity(0.45),
                     ),
             );
-        for record in self.visible_sidebar_records(cx) {
+        let visible = self.visible_sidebar_records(cx);
+        let archived_count = visible
+            .iter()
+            .filter(|record| record.archived_at.is_some())
+            .count();
+        let mut archive_heading = false;
+        for record in visible {
+            if record.archived_at.is_some() && !archive_heading {
+                archive_heading = true;
+                list = list.child(
+                    div()
+                        .px(px(10.))
+                        .pt(px(6.))
+                        .pb(px(2.))
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .text_size(px(11.))
+                        .text_color(rgb(p.tertiary))
+                        .child(self.icon("archive", 11.))
+                        .child(format!("Archived · {archived_count}"))
+                        .child(div().flex_1().h(px(1.)).bg(p.hairline())),
+                );
+            }
             let chat = self.chat_ref(&record.id);
             let title = self.sidebar_title(record);
             let id = record.id.clone();
@@ -2245,7 +2410,14 @@ impl AgentView {
                             cx.stop_propagation();
                         }),
                     )
-                    .child(self.icon("chat", 16.))
+                    .child(self.icon(
+                        if record.archived_at.is_some() {
+                            "archive"
+                        } else {
+                            "chat"
+                        },
+                        16.,
+                    ))
                     .child(
                         div()
                             .flex_1()
@@ -2295,10 +2467,27 @@ impl AgentView {
             ("inspector", "bug"),
             ("resources", "book"),
             ("background", "sparkles"),
-            ("archived", "archive"),
         ] {
             footer = footer.child(self.icon_button(id, icon, 28.).opacity(0.45));
         }
+        let archive_label = if self.effective_archive_visibility() {
+            "Hide archived chats"
+        } else {
+            "Show archived chats"
+        };
+        footer = footer.child(
+            self.icon_button("archived", "archive", 28.)
+                .when(self.effective_archive_visibility(), |button| {
+                    button.bg(p.accent_soft())
+                })
+                .tooltip(move |_, cx| {
+                    cx.new(|_| sidebar_actions::ArchiveVisibilityHint(archive_label))
+                        .into()
+                })
+                .on_click(cx.listener(|view, _, _, cx| {
+                    view.set_archive_visibility(!view.effective_archive_visibility(), cx)
+                })),
+        );
         footer = footer.child(div().flex_1()).child(
             self.icon_button("settings", "gear", 28.)
                 .on_click(cx.listener(|v, _, _, cx| v.unavailable("Connection settings", cx))),
@@ -2506,7 +2695,34 @@ impl Render for AgentView {
                 .child(strip)
                 .child(content);
         }
+        if self.known_catalog_uncertainty {
+            content = div().flex_1().min_w_0().min_h_0().flex().flex_col()
+                .child(div().px(px(16.)).py(px(8.)).text_size(px(12.)).text_color(rgb(p.danger)).child(format!("Workspace save is unconfirmed. New chat actions are blocked; live drafts are preserved. {} queued organization change(s) were not confirmed.", self.blocked_organization_count)))
+                .child(content);
+        }
+        if let Some(warning) = &self.archive_stop_warning {
+            content = div()
+                .flex_1()
+                .min_w_0()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .px(px(16.))
+                        .py(px(8.))
+                        .text_size(px(12.))
+                        .text_color(rgb(p.danger))
+                        .child(warning.clone()),
+                )
+                .child(content);
+        }
         let mut element = div()
+            .map(|element| {
+                #[cfg(not(target_os = "macos"))]
+                let element = element.track_focus(&self.root_focus);
+                element
+            })
             .relative()
             .size_full()
             .flex()
@@ -2637,6 +2853,57 @@ fn default_session() -> PathBuf {
         });
     base.join("BelloAgent-rust/sessions/default.json")
 }
+fn open_startup_chat(
+    workspace: &mut WorkspaceStore,
+    session: &std::path::Path,
+) -> Result<(SessionStore, ChatRecord, bool), Box<dyn std::error::Error>> {
+    let state = workspace.snapshot();
+    let selected = state
+        .selected
+        .as_ref()
+        .and_then(|id| state.chats.iter().find(|chat| &chat.id == id))
+        .or_else(|| {
+            state
+                .chats
+                .iter()
+                .filter(|chat| chat.archived_at.is_none())
+                .min_by(|a, b| a.sidebar_cmp(b))
+        })
+        .cloned();
+    if let Some(record) = selected {
+        let store = if record.snapshot.exists() {
+            SessionStore::open(&record.snapshot)?
+        } else {
+            SessionStore::pending_with_id(&record.id)?
+        };
+        if store.snapshot().id != record.id {
+            return Err("Catalog and session identity disagree".into());
+        }
+        Ok((store, record, false))
+    } else if !state.chats.is_empty() {
+        // All saved chats are archived: never reopen the original anchor as a
+        // supposedly new active chat. Allocate a genuinely new pending identity.
+        let store = SessionStore::pending();
+        let snapshot = store.snapshot();
+        let path = workspace.chat_path(&snapshot.id)?;
+        let record = ChatRecord::new(snapshot.id, snapshot.title, path);
+        Ok((store, record, true))
+    } else {
+        let existing = session.exists();
+        let store = if existing {
+            SessionStore::open(session)?
+        } else {
+            SessionStore::pending()
+        };
+        let snapshot = store.snapshot();
+        let record = ChatRecord::new(snapshot.id, snapshot.title, session.to_owned());
+        if existing {
+            workspace.register(record.clone(), DraftRecord::default())?;
+        }
+        Ok((store, record, !existing))
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     START.set(Instant::now()).ok();
     #[cfg(feature = "native-lifecycle-smoke")]
@@ -2686,37 +2953,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         session = std::env::current_dir()?.join(session);
     }
     let mut workspace = WorkspaceStore::open(session.with_extension("workspace.json"), &project)?;
-    let state = workspace.snapshot();
-    let selected = state
-        .selected
-        .as_ref()
-        .and_then(|id| state.chats.iter().find(|chat| &chat.id == id))
-        .or(state.chats.first())
-        .cloned();
-    let (store, record, pending) = if let Some(record) = selected {
-        let store = if record.snapshot.exists() {
-            SessionStore::open(&record.snapshot)?
-        } else {
-            SessionStore::pending_with_id(&record.id)?
-        };
-        if store.snapshot().id != record.id {
-            return Err("Catalog and session identity disagree".into());
-        }
-        (store, record, false)
-    } else {
-        let existing = session.exists();
-        let store = if existing {
-            SessionStore::open(&session)?
-        } else {
-            SessionStore::pending()
-        };
-        let snapshot = store.snapshot();
-        let record = ChatRecord::new(snapshot.id, snapshot.title, session);
-        if existing {
-            workspace.register(record.clone(), DraftRecord::default())?;
-        }
-        (store, record, !existing)
-    };
+    let (store, record, pending) = open_startup_chat(&mut workspace, &session)?;
     let draft = workspace
         .snapshot()
         .drafts

@@ -55,6 +55,7 @@ pub(crate) fn edge_step(pointer: Point<Pixels>, bounds: Bounds<Pixels>) -> Pixel
 impl AgentView {
     pub(crate) fn accepts_queue_drag(&self, drag: &QueueDrag) -> bool {
         self.record.id == drag.chat_id
+            && !self.actor_mutation_blocked(&drag.chat_id)
             && self.project == drag.project
             && self.window_binding == drag.binding
             && Arc::ptr_eq(&self.controller, &drag.controller)

@@ -12,6 +12,7 @@ fn record(root: &Path, order: u64, title: &str) -> ChatRecord {
         title: title.into(),
         sidebar_order: Some(order),
         pinned_at: None,
+        archived_at: None,
     }
 }
 fn fixture() -> (tempfile::TempDir, PathBuf, WorkspaceStore) {

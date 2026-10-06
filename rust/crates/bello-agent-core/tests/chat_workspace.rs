@@ -228,6 +228,7 @@ fn register(
     let chat = ChatRecord {
         sidebar_order: None,
         pinned_at: None,
+        archived_at: None,
         snapshot: workspace.chat_path(&session.id).unwrap(),
         id: session.id,
         title: session.title,
@@ -268,6 +269,7 @@ fn concurrent_chat_debounces_keep_independent_revisions_after_interleaved_saves(
         .map(|title| ChatRecord {
             sidebar_order: None,
             pinned_at: None,
+            archived_at: None,
             id: Uuid::new_v4().to_string(),
             title: title.into(),
             snapshot: dir.path().join(format!("{title}.json")),
@@ -601,6 +603,7 @@ fn submission_receipt_and_draft_clear_persist_together_without_overwriting_newer
     let chat = ChatRecord {
         sidebar_order: None,
         pinned_at: None,
+        archived_at: None,
         id: Uuid::new_v4().to_string(),
         title: "Chat".into(),
         snapshot: dir.path().join("chat.json"),
@@ -696,6 +699,7 @@ fn submitted_receipt_cannot_clear_a_held_edit_or_a_different_same_revision_draft
     let chat = ChatRecord {
         sidebar_order: None,
         pinned_at: None,
+        archived_at: None,
         id: Uuid::new_v4().to_string(),
         title: "Held chat".into(),
         snapshot: dir.path().join("chat.json"),
@@ -818,6 +822,7 @@ fn resolved_queue_edit_recovery_preserves_only_unsaved_rewriting_and_is_idempote
         let chat = ChatRecord {
             sidebar_order: None,
             pinned_at: None,
+            archived_at: None,
             id: session.snapshot().id,
             title: "Recovery fixture".into(),
             snapshot: session_path.clone(),

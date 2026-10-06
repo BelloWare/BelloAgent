@@ -45,6 +45,7 @@ impl AssetSource for Assets {
             "bug" => {
                 r#"<rect x="7" y="7" width="10" height="13" rx="5"/><path d="M9 7V4h6v3M3 8l4 2M3 14h4M3 20l4-3M17 10l4-2M17 14h4M17 17l4 3M12 8v12"/>"#
             }
+            "restore" => r#"<path d="M9 4 3 10l6 6M3 10h11a6 6 0 0 1 0 12"/>"#,
             "archive" => r#"<path d="M4 7h16v13H4zM3 3h18v4H3zM9 11h6"/>"#,
             "sparkles" => {
                 r#"<path d="m9 3 2 6 6 2-6 2-2 6-2-6-6-2 6-2zM19 2v6M16 5h6M19 16v6M16 19h6"/>"#

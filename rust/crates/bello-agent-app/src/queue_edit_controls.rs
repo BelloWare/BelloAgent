@@ -435,6 +435,7 @@ impl AgentView {
         cx: &mut Context<Self>,
     ) -> Div {
         let p = self.palette;
+        let mutations_enabled = !self.actor_mutation_blocked(chat_id);
         let layout = state.layout(available_width, window);
         // The preview yields room first. Complete labels then wrap within
         // measured proposals; no fixed row height or clipped status container.
@@ -492,12 +493,12 @@ impl AgentView {
                         ghost_button(
                             format!("queue-resume-edit-{turn_id}").into(),
                             "Resume Edit",
-                            !cancelling,
+                            !cancelling && mutations_enabled,
                             p,
                             layout.widths[1],
                             window,
                         )
-                        .when(!cancelling, |button| {
+                        .when(!cancelling && mutations_enabled, |button| {
                             button.on_click(cx.listener(move |view, _, window, cx| {
                                 view.begin_queued_edit(
                                     &resume_chat,
@@ -516,15 +517,17 @@ impl AgentView {
                         ghost_button(
                             format!("queue-cancel-edit-{turn_id}").into(),
                             "Cancel Edit",
-                            true,
+                            mutations_enabled,
                             p,
                             layout.widths[2],
                             window,
                         )
-                        .on_click(cx.listener(move |view, _, _, cx| {
-                            view.cancel_held_edit(&cancel_chat, &cancel_turn, &edit_id, cx);
-                            cx.stop_propagation();
-                        })),
+                        .when(mutations_enabled, |button| {
+                            button.on_click(cx.listener(move |view, _, _, cx| {
+                                view.cancel_held_edit(&cancel_chat, &cancel_turn, &edit_id, cx);
+                                cx.stop_propagation();
+                            }))
+                        }),
                     )
             }
             QueueEditRowState::Preparing => controls.child(
@@ -554,6 +557,7 @@ impl AgentView {
                     )),
             ),
             QueueEditRowState::Available { enabled } => {
+                let enabled = enabled && mutations_enabled;
                 let chat_id = chat_id.to_owned();
                 let turn = turn_id.to_owned();
                 controls.child(

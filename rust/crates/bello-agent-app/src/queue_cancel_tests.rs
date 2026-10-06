@@ -841,3 +841,510 @@ fn draft_save_warning_exact_flush_confirms_before_later_actor_failure(cx: &mut T
         assert_eq!(chat.error.as_deref(), Some("later actor failure"));
     });
 }
+
+#[test]
+fn archive_cancel_deferral_is_exactly_scoped_and_only_terminal_or_explicitly_released() {
+    let project = Path::new("/project");
+    let receipt = QueuedCancelReceipt::pending(0, "edit-a".into(), "turn-a".into()).unwrap();
+    let other = QueuedCancelReceipt::pending(0, "edit-b".into(), "turn-a".into()).unwrap();
+    let mut deferrals = ArchiveCancelDeferrals::default();
+    deferrals.remember(project, "chat-a", &receipt);
+    assert!(deferrals.blocks(project, "chat-a", &receipt));
+    assert!(!deferrals.blocks(Path::new("/other"), "chat-a", &receipt));
+    assert!(!deferrals.blocks(project, "chat-b", &receipt));
+    assert!(!deferrals.blocks(project, "chat-a", &other));
+    deferrals.allow_explicit(project, "chat-a", &other);
+    deferrals.observe(project, "chat-a", &receipt);
+    deferrals.observe(
+        project,
+        "chat-a",
+        &QueuedCancelReceipt {
+            revision: receipt.revision,
+            state: QueuedCancelState::Settled,
+        },
+    );
+    assert!(deferrals.blocks(project, "chat-a", &receipt));
+    deferrals.allow_explicit(project, "chat-a", &receipt);
+    assert!(!deferrals.blocks(project, "chat-a", &receipt));
+    deferrals.remember(project, "chat-a", &receipt);
+    deferrals.observe(
+        project,
+        "chat-a",
+        &QueuedCancelReceipt {
+            revision: receipt.revision + 1,
+            state: QueuedCancelState::Settled,
+        },
+    );
+    assert!(!deferrals.blocks(project, "chat-a", &receipt));
+}
+
+#[gpui::test]
+fn cancel_archive_readiness_distinguishes_parked_and_live_ownership(cx: &mut TestAppContext) {
+    let (_dir, _window, root, id) =
+        fixture(cx, false, false, "ordinary".into(), "rewrite".into(), 5);
+    cx.run_until_parked();
+    root.update(cx, |view, cx| {
+        let edit = view.saved_draft(cx).queued_edit.unwrap();
+        let receipt = QueuedCancelReceipt::pending(0, edit.edit_id, edit.turn_id).unwrap();
+        let key = Key {
+            token: Uuid::new_v4(),
+            chat: id.clone(),
+            project: view.project.clone(),
+            controller: view.controller.clone(),
+        };
+        for (phase, live) in [
+            (Phase::Running, true),
+            (Phase::Settling, true),
+            (Phase::Deferred, false),
+            (Phase::Retry, false),
+        ] {
+            view.queue_operation = if phase == Phase::Retry {
+                None
+            } else {
+                Some(key.token)
+            };
+            view.cancel_operation = Some(CancelOperation {
+                key: key.clone(),
+                receipt: receipt.clone(),
+                owned: false,
+                phase,
+                deferred: None,
+                recheck: false,
+            });
+            assert_eq!(view.archive_chat_work_live(&id), live);
+        }
+        view.cancel_operation = None;
+        view.queue_operation = Some(Uuid::new_v4());
+        assert!(view.archive_chat_work_live(&id));
+        view.queue_operation = None;
+        view.queued_cancellations.insert(id.clone(), receipt);
+        view.edit_recovery.blocked = true;
+        view.load_failed = true;
+        assert!(!view.archive_chat_work_live(&id));
+    });
+}
+
+#[gpui::test]
+fn archived_direct_cancel_keeps_owned_rewrite_and_receipt_unstarted(cx: &mut TestAppContext) {
+    let (_dir, _window, root, id) =
+        fixture(cx, false, false, "ordinary".into(), "rewrite".into(), 5);
+    cx.run_until_parked();
+    root.update(cx, |view, cx| {
+        let before = view.saved_draft(cx);
+        let edit = before.queued_edit.as_ref().unwrap();
+        let receipt =
+            QueuedCancelReceipt::pending(0, edit.edit_id.clone(), edit.turn_id.clone()).unwrap();
+        view.records
+            .iter_mut()
+            .find(|record| record.id == id)
+            .unwrap()
+            .archived_at = Some(1);
+        assert!(!view.can_cancel_owned_edit());
+        view.cancel_owned_edit(&id, cx);
+        view.start_cancel(&id, receipt.clone(), true, RetryCause::Automatic, cx);
+        view.start_cancel(&id, receipt.clone(), true, RetryCause::Explicit, cx);
+        assert!(view.queue_operation.is_none());
+        assert!(view.cancel_operation.is_none());
+        assert_eq!(view.saved_draft(cx), before);
+        assert!(
+            view.archive_cancel_deferrals
+                .blocks(&view.project, &id, &receipt)
+        );
+        assert!(
+            !view
+                .workspace
+                .lock()
+                .unwrap()
+                .snapshot()
+                .queued_cancellations
+                .contains_key(&id)
+        );
+        assert!(matches!(
+            view.controller.edit_status(&edit.edit_id).unwrap().state,
+            QueueEditState::Active { .. }
+        ));
+    });
+}
+
+#[gpui::test]
+fn archive_deferred_cancel_first_recheck_after_restore_stays_parked_until_explicit_recovery(
+    cx: &mut TestAppContext,
+) {
+    use gpui::EntityInputHandler;
+    let (_dir, window, root, id) = fixture(cx, true, false, "ordinary".into(), "rewrite".into(), 5);
+    window
+        .update(cx, |view, window, cx| {
+            view.composer.update(cx, |editor, cx| {
+                editor.replace_and_mark_text_in_range(None, "漢字", Some(2..2), window, cx)
+            });
+        })
+        .unwrap();
+    cx.run_until_parked();
+    let mut original = String::new();
+    window
+        .update(cx, |view, window, cx| {
+            assert!(view.cancel_operation.as_ref().unwrap().is_deferred());
+            assert!(!view.archive_chat_work_live(&id));
+            view.defer_cancel_for_archive(&id);
+            let receipt = view.pending_cancel_receipt(&id).unwrap();
+            view.records
+                .iter_mut()
+                .find(|record| record.id == id)
+                .unwrap()
+                .archived_at = Some(1);
+            view.resume_durable_cancel_explicit(&id, cx);
+            assert!(
+                view.archive_cancel_deferrals
+                    .blocks(&view.project, &id, &receipt)
+            );
+            original = view.composer.read(cx).text().to_owned();
+            // The old status becomes invalid, but the first attempted actor retry
+            // comes from the restored composer's own deferred notification.
+            view.cancel_operation.as_mut().unwrap().recheck = true;
+            view.records
+                .iter_mut()
+                .find(|record| record.id == id)
+                .unwrap()
+                .archived_at = None;
+            view.composer.update(cx, |editor, cx| {
+                editor.set_read_only(false, cx);
+                editor.unmark_text(window, cx);
+            });
+        })
+        .unwrap();
+    cx.run_until_parked();
+    root.update(cx, |view, cx| {
+        assert!(
+            view.cancel_operation
+                .as_ref()
+                .is_some_and(|operation| operation.phase == Phase::Retry)
+        );
+        assert!(view.queue_operation.is_none());
+        assert!(!view.archive_chat_work_live(&id));
+        assert_eq!(view.composer.read(cx).text(), original);
+        assert!(view.has_pending_cancel(&id));
+        view.reconcile_edit(&id, cx);
+        view.resume_durable_cancel(&id, cx);
+        assert!(view.queue_operation.is_none());
+        view.resume_durable_cancel_explicit(&id, cx);
+        assert!(view.queue_operation.is_some());
+    });
+    cx.run_until_parked();
+    root.update(cx, |view, cx| {
+        assert!(!view.has_pending_cancel(&id));
+        assert_eq!(
+            view.composer.read(cx).text(),
+            format!("rewrite\n\n{original}")
+        );
+    });
+}
+
+#[gpui::test]
+fn archive_cancel_deferral_survives_controller_replacement_and_explicit_cancel_releases_it(
+    cx: &mut TestAppContext,
+) {
+    let (_dir, _window, root, id) =
+        fixture(cx, false, false, "ordinary".into(), "rewrite".into(), 5);
+    cx.run_until_parked();
+    root.update(cx, |view, cx| {
+        let draft = view.saved_draft(cx);
+        let edit = draft.queued_edit.as_ref().unwrap();
+        let receipt =
+            QueuedCancelReceipt::pending(0, edit.edit_id.clone(), edit.turn_id.clone()).unwrap();
+        view.workspace
+            .lock()
+            .unwrap()
+            .prepare_queued_cancel(&id, receipt.clone(), draft)
+            .unwrap();
+        view.queued_cancellations
+            .insert(id.clone(), receipt.clone());
+        view.defer_cancel_for_archive(&id);
+        let controller = view.controller.clone();
+        let placeholder = Controller::new(SessionStore::pending(), None).unwrap();
+        view.chat.replace_controller(placeholder, cx);
+        view.chat.replace_controller(controller, cx);
+        assert!(view.cancel_operation.is_none());
+        view.reconcile_edit(&id, cx);
+        assert!(view.queue_operation.is_none());
+        assert!(
+            view.archive_cancel_deferrals
+                .blocks(&view.project, &id, &receipt)
+        );
+        view.cancel_owned_edit(&id, cx);
+        assert!(view.queue_operation.is_some());
+        assert!(
+            !view
+                .archive_cancel_deferrals
+                .blocks(&view.project, &id, &receipt)
+        );
+    });
+    cx.run_until_parked();
+    root.update(cx, |view, cx| {
+        assert!(!view.has_pending_cancel(&id));
+        assert_eq!(view.composer.read(cx).text(), "ordinary");
+    });
+}
+
+#[gpui::test]
+fn explicit_held_row_cancel_releases_only_its_archive_deferred_receipt(cx: &mut TestAppContext) {
+    let (_dir, _window, root, id) =
+        fixture(cx, false, false, "ordinary".into(), "rewrite".into(), 5);
+    cx.run_until_parked();
+    root.update(cx, |view, cx| {
+        let draft = view.saved_draft(cx);
+        let edit = draft.queued_edit.clone().unwrap();
+        let receipt =
+            QueuedCancelReceipt::pending(0, edit.edit_id.clone(), edit.turn_id.clone()).unwrap();
+        view.workspace
+            .lock()
+            .unwrap()
+            .prepare_queued_cancel(&id, receipt.clone(), draft)
+            .unwrap();
+        view.queued_cancellations
+            .insert(id.clone(), receipt.clone());
+        view.editing = None;
+        view.retained_edit = Some(edit.clone());
+        view.composer
+            .update(cx, |editor, cx| editor.set_text("ordinary".into(), cx));
+        view.defer_cancel_for_archive(&id);
+        view.resume_durable_cancel(&id, cx);
+        assert!(view.queue_operation.is_none());
+        view.cancel_held_edit(&id, &edit.turn_id, &edit.edit_id, cx);
+        assert!(view.queue_operation.is_some());
+        assert!(
+            !view
+                .archive_cancel_deferrals
+                .blocks(&view.project, &id, &receipt)
+        );
+    });
+    cx.run_until_parked();
+    root.update(cx, |view, cx| {
+        assert!(!view.has_pending_cancel(&id));
+        assert_eq!(view.composer.read(cx).text(), "rewrite\n\nordinary");
+    });
+}
+
+fn archive_deferred_cancel_close_round_trip(cx: &mut TestAppContext, inactive: bool) {
+    use gpui::EntityInputHandler;
+    let (_dir, window, root, id) = fixture(cx, true, false, "ordinary".into(), "rewrite".into(), 5);
+    let mut marked = String::new();
+    window
+        .update(cx, |view, window, cx| {
+            view.composer.update(cx, |editor, cx| {
+                editor.replace_and_mark_text_in_range(None, "漢字", Some(2..2), window, cx)
+            });
+            marked = view.composer.read(cx).text().to_owned();
+        })
+        .unwrap();
+    cx.run_until_parked();
+    let mut selected = id.clone();
+    let mut token = None;
+    window
+        .update(cx, |view, window, cx| {
+            assert!(view.cancel_operation.as_ref().unwrap().is_deferred());
+            token = view.queue_operation;
+            assert!(token.is_some());
+            if inactive {
+                view.new_chat(window, cx);
+                view.composer.update(cx, |editor, cx| {
+                    editor.set_text("other chat draft".into(), cx)
+                });
+                selected = view.record.id.clone();
+                assert_ne!(selected, id);
+            }
+            view.set_chat_archived(&id, true, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    window
+        .update(cx, |view, window, cx| {
+            assert!(view.chat_is_archived(&id));
+            assert!(view.organization_operations.is_empty());
+            assert_eq!(view.record.id, selected);
+            let chat = view.chat_ref(&id).unwrap();
+            assert_eq!(chat.queue_operation, token);
+            assert!(chat.composer.read(cx).has_marked_text());
+            assert_eq!(chat.composer.read(cx).text(), marked);
+            assert!(
+                view.workspace
+                    .lock()
+                    .unwrap()
+                    .snapshot()
+                    .chats
+                    .iter()
+                    .any(|record| record.id == id && record.archived_at.is_some())
+            );
+            view.begin_shutdown(window, cx);
+            assert!(!view.shutting_down);
+            assert!(!view.close_ready);
+            let message = view.error.as_deref().unwrap();
+            assert!(message.contains("Restore") && message.contains("before closing"));
+            assert_eq!(view.chat_ref(&id).unwrap().queue_operation, token);
+            view.set_chat_archived(&id, false, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    window
+        .update(cx, |view, window, cx| {
+            assert!(!view.chat_is_archived(&id));
+            assert_eq!(view.record.id, selected);
+            let chat = view.chat_mut(&id).unwrap();
+            assert!(chat.cancel_operation.as_ref().unwrap().is_deferred());
+            assert_eq!(chat.queue_operation, token);
+            assert!(chat.composer.read(cx).has_marked_text());
+            assert_eq!(chat.composer.read(cx).text(), marked);
+            assert_ne!(chat.session.state, bello_agent_core::RunState::Running);
+            chat.composer
+                .update(cx, |editor, cx| editor.unmark_text(window, cx));
+        })
+        .unwrap();
+    cx.run_until_parked();
+    window
+        .update(cx, |view, window, cx| {
+            assert_eq!(view.record.id, selected);
+            let chat = view.chat_ref(&id).unwrap();
+            assert!(chat.queue_operation.is_none());
+            assert!(chat.cancel_operation.is_none());
+            assert!(!chat.composer.read(cx).has_marked_text());
+            assert_eq!(
+                chat.composer.read(cx).text(),
+                format!("rewrite\n\n{marked}")
+            );
+            assert_ne!(chat.session.state, bello_agent_core::RunState::Running);
+            assert!(!view.has_pending_cancel(&id));
+            if inactive {
+                assert_eq!(view.composer.read(cx).text(), "other chat draft");
+            }
+            view.begin_shutdown(window, cx);
+            assert!(view.shutting_down);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    root.update(cx, |view, _| {
+        assert!(view.close_ready);
+        let snapshot = view.workspace.lock().unwrap().snapshot();
+        assert!(
+            snapshot
+                .chats
+                .iter()
+                .any(|record| record.id == id && record.archived_at.is_none())
+        );
+        assert_eq!(snapshot.drafts[&id].text, format!("rewrite\n\n{marked}"));
+        assert!(snapshot.drafts[&id].queued_edit.is_none());
+        assert!(matches!(
+            snapshot.queued_cancellations[&id].state,
+            QueuedCancelState::Settled
+        ));
+    });
+}
+
+#[gpui::test]
+fn archived_selected_deferred_cancel_blocks_close_until_restore_and_composition_finish(
+    cx: &mut TestAppContext,
+) {
+    archive_deferred_cancel_close_round_trip(cx, false);
+}
+
+#[gpui::test]
+fn archived_inactive_deferred_cancel_blocks_close_without_stealing_selection_on_restore(
+    cx: &mut TestAppContext,
+) {
+    archive_deferred_cancel_close_round_trip(cx, true);
+}
+
+#[gpui::test]
+fn archive_waits_for_controlled_cancel_callback_and_drains_on_success_or_failure(
+    cx: &mut TestAppContext,
+) {
+    for fails in [false, true] {
+        let (_dir, _window, root, id) =
+            fixture(cx, false, false, "ordinary".into(), "rewrite".into(), 5);
+        cx.run_until_parked();
+        let mut key = None;
+        let mut status = None;
+        root.update(cx, |view, cx| {
+            // Materialize the same durable preparation as start_cancel, but
+            // retain foreground ownership until the controlled callback below.
+            let draft = view.saved_draft(cx);
+            let edit = draft.queued_edit.clone().unwrap();
+            let receipt =
+                QueuedCancelReceipt::pending(0, edit.edit_id.clone(), edit.turn_id.clone())
+                    .unwrap();
+            view.workspace
+                .lock()
+                .unwrap()
+                .prepare_queued_cancel(&id, receipt.clone(), draft)
+                .unwrap();
+            view.queued_cancellations
+                .insert(id.clone(), receipt.clone());
+            if !fails {
+                status = Some(
+                    view.controller
+                        .cancel_edit_certain(&edit.edit_id, &edit.turn_id)
+                        .unwrap(),
+                );
+            }
+            let operation_key = Key {
+                token: Uuid::new_v4(),
+                chat: id.clone(),
+                project: view.project.clone(),
+                controller: view.controller.clone(),
+            };
+            view.queue_operation = Some(operation_key.token);
+            view.busy = true;
+            view.edit_recovery = EditRecovery::new(true);
+            view.cancel_operation = Some(CancelOperation {
+                key: operation_key.clone(),
+                receipt,
+                owned: true,
+                phase: Phase::Running,
+                deferred: None,
+                recheck: false,
+            });
+            key = Some(operation_key);
+            view.set_chat_archived(&id, true, cx);
+            assert!(view.archive_chat_work_live(&id));
+        });
+        cx.run_until_parked();
+        root.update(cx, |view, cx| {
+            assert!(!view.chat_is_archived(&id));
+            assert!(view.has_pending_archive(&id));
+            assert!(!view.organization_drain_scheduled);
+            assert!(
+                view.workspace
+                    .lock()
+                    .unwrap()
+                    .snapshot()
+                    .chats
+                    .iter()
+                    .all(|record| record.archived_at.is_none())
+            );
+            let result = if fails {
+                Err("controlled cancellation callback failure".into())
+            } else {
+                Ok(status.take().unwrap())
+            };
+            view.finish_cancel_read(key.take().unwrap(), None, result, cx);
+            assert_eq!(view.archive_chat_work_live(&id), !fails);
+        });
+        cx.run_until_parked();
+        root.update(cx, |view, cx| {
+            assert!(view.chat_is_archived(&id));
+            assert!(view.organization_operations.is_empty());
+            assert!(!view.archive_chat_work_live(&id));
+            if fails {
+                assert!(
+                    view.cancel_operation
+                        .as_ref()
+                        .is_some_and(|operation| operation.phase == Phase::Retry)
+                );
+                assert!(view.has_pending_cancel(&id));
+                assert_eq!(view.composer.read(cx).text(), "rewrite");
+            } else {
+                assert!(view.cancel_operation.is_none());
+                assert!(!view.has_pending_cancel(&id));
+                assert_eq!(view.composer.read(cx).text(), "ordinary");
+            }
+        });
+    }
+}

@@ -117,6 +117,8 @@ pub struct ChatRecord {
     pub sidebar_order: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pinned_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<u64>,
 }
 impl ChatRecord {
     pub fn new(id: String, title: String, snapshot: PathBuf) -> Self {
@@ -126,6 +128,7 @@ impl ChatRecord {
             snapshot,
             sidebar_order: Some(organization_timestamp()),
             pinned_at: None,
+            archived_at: None,
         }
     }
     /// Source ChatRecord.sidebarPrecedes, without the unported manual drag order.
@@ -146,6 +149,13 @@ impl ChatRecord {
             })
             .then_with(|| self.id.cmp(&other.id))
     }
+}
+/// The confirmed metadata patch and whether this operation changed archive state.
+/// An idempotent Archive must not trigger another navigation fallback.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArchiveChange {
+    pub record: ChatRecord,
+    pub changed: bool,
 }
 pub fn organization_timestamp() -> u64 {
     std::time::SystemTime::now()
@@ -244,6 +254,10 @@ pub struct WorkspaceSnapshot {
     pub intents: BTreeMap<String, SubmissionIntent>,
     pub selected: Option<String>,
     pub selection_revision: u64,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub show_archived: bool,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub archive_visibility_revision: u64,
     #[serde(default)]
     pub settled_submissions: BTreeMap<String, u64>,
     #[serde(default)]
@@ -260,17 +274,28 @@ impl WorkspaceSnapshot {
             intents: BTreeMap::new(),
             selected: None,
             selection_revision: 0,
+            show_archived: false,
+            archive_visibility_revision: 0,
             settled_submissions: BTreeMap::new(),
             queued_cancellations: BTreeMap::new(),
         }
     }
     fn validate(&self) -> Result<()> {
-        if !matches!(self.version, 1..=3)
+        if !matches!(self.version, 1..=4)
             || self.chats.len() > MAX_CHATS
             || self.intents.len() > MAX_CHATS
             || self.queued_cancellations.len() > MAX_CHATS
         {
             return Err(invalid("Unsupported or oversized Rust workspace catalog"));
+        }
+        if self.version < 4
+            && (self.show_archived
+                || self.archive_visibility_revision != 0
+                || self.chats.iter().any(|chat| chat.archived_at.is_some()))
+        {
+            return Err(invalid(
+                "Archive metadata requires Rust workspace catalog version 4",
+            ));
         }
         if self.version < 3 && !self.queued_cancellations.is_empty() {
             return Err(invalid(
@@ -413,6 +438,12 @@ impl WorkspaceStore {
     pub fn snapshot(&self) -> WorkspaceSnapshot {
         self.state.clone()
     }
+    /// Query while holding the writer mutex alongside an operation's result.
+    /// A later refused mutation returns Invalid even when a prior write made the
+    /// catalog uncertain; callers must not infer certainty from that error alone.
+    pub fn is_uncertain(&self) -> bool {
+        self.uncertain
+    }
     pub fn chat_path(&self, id: &str) -> Result<PathBuf> {
         Uuid::parse_str(id).map_err(|_| invalid("Invalid chat identity"))?;
         Ok(self
@@ -506,6 +537,85 @@ impl WorkspaceStore {
                 None
             };
             Ok(chat.clone())
+        })
+    }
+    /// Patch only archive metadata, atomically registering a pending chat and its
+    /// captured draft if needed. Existing title, pin, draft and receipts remain
+    /// authoritative. This never opens or writes the transcript.
+    pub fn set_archived(
+        &mut self,
+        record: ChatRecord,
+        draft: DraftRecord,
+        archived: bool,
+        at: u64,
+    ) -> Result<ArchiveChange> {
+        self.ensure_certain()?;
+        if let Some(existing) = self.state.chats.iter().find(|chat| chat.id == record.id) {
+            if existing.snapshot != record.snapshot {
+                return Err(invalid("Chat identity is already registered differently"));
+            }
+            if existing.archived_at.is_some() == archived {
+                return Ok(ArchiveChange {
+                    record: existing.clone(),
+                    changed: false,
+                });
+            }
+        } else {
+            draft.validate()?;
+        }
+        self.transact(|state| {
+            let index =
+                if let Some(index) = state.chats.iter().position(|chat| chat.id == record.id) {
+                    index
+                } else {
+                    if state.chats.len() >= MAX_CHATS {
+                        return Err(invalid(
+                            "This development workspace supports up to 512 chats",
+                        ));
+                    }
+                    state.drafts.insert(record.id.clone(), draft);
+                    state.chats.push(record.clone());
+                    state.chats.len() - 1
+                };
+            let chat = &mut state.chats[index];
+            let changed = chat.archived_at.is_some() != archived;
+            // Match Pin's reconstructed legacy order without replacing a saved
+            // order or importing stale title, pin, or draft values from the UI.
+            if chat.sidebar_order.is_none() {
+                chat.sidebar_order = record.sidebar_order;
+            }
+            chat.archived_at = if archived {
+                Some(chat.archived_at.unwrap_or(at))
+            } else {
+                None
+            };
+            let record = chat.clone();
+            state.version = state.version.max(4);
+            Ok(ArchiveChange { record, changed })
+        })
+    }
+    /// Confirm the exact visibility intent, or return false when superseded.
+    /// Its revision is independent of catalog/selection revisions; callers must
+    /// allocate a newer revision with checked arithmetic before accepting intent.
+    pub fn set_archive_visibility(&mut self, shown: bool, revision: u64) -> Result<bool> {
+        self.ensure_certain()?;
+        if revision < self.state.archive_visibility_revision {
+            return Ok(false);
+        }
+        if revision == self.state.archive_visibility_revision {
+            return if shown == self.state.show_archived {
+                Ok(true)
+            } else {
+                Err(invalid(
+                    "Archive visibility revision conflicts with saved contents",
+                ))
+            };
+        }
+        self.transact(|state| {
+            state.show_archived = shown;
+            state.archive_visibility_revision = revision;
+            state.version = state.version.max(4);
+            Ok(true)
         })
     }
     /// Returns false for obsolete writes without changing the current draft.
@@ -626,7 +736,7 @@ impl WorkspaceStore {
         self.transact(|state| {
             state.drafts.insert(id.into(), draft);
             state.queued_cancellations.insert(id.into(), pending);
-            state.version = 3;
+            state.version = state.version.max(3);
             Ok(())
         })
     }
@@ -926,6 +1036,12 @@ impl WorkspaceStore {
         }
         let mut state = self.state.clone();
         let result = change(&mut state)?;
+        if state.show_archived
+            || state.archive_visibility_revision != 0
+            || state.chats.iter().any(|chat| chat.archived_at.is_some())
+        {
+            state.version = state.version.max(4);
+        }
         if state
             .chats
             .iter()
@@ -985,6 +1101,12 @@ impl WorkspaceStore {
         Ok(result)
     }
 }
+fn is_false(value: &bool) -> bool {
+    !value
+}
+fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
 fn require_chat(state: &WorkspaceSnapshot, id: &str) -> Result<()> {
     if !state.chats.iter().any(|chat| chat.id == id) {
         return Err(invalid("Draft has no saved chat"));
@@ -1037,6 +1159,7 @@ mod tests {
         let chat = ChatRecord {
             sidebar_order: None,
             pinned_at: None,
+            archived_at: None,
             snapshot: store.chat_path(&id).unwrap(),
             id,
             title: "New chat".into(),
@@ -1320,6 +1443,690 @@ mod tests {
         assert_eq!(restored.drafts[&chat.id], draft);
     }
     #[test]
+    fn archive_repeated_state_preserves_timestamp_pin_order_and_bytes() {
+        let (dir, mut store, mut chat) = fixture();
+        chat.sidebar_order = Some(42);
+        chat.pinned_at = Some(7);
+        store.register(chat.clone(), held_draft(4)).unwrap();
+        let saved = store
+            .set_archived(chat.clone(), DraftRecord::default(), true, 0)
+            .unwrap();
+        assert!(saved.changed);
+        assert_eq!(saved.record.archived_at, Some(0));
+        assert_eq!(saved.record.pinned_at, Some(7));
+        assert_eq!(saved.record.sidebar_order, Some(42));
+        let path = dir.path().join("workspace.json");
+        let before = fs::read(&path).unwrap();
+        store.fault = Fault::BeforeRename;
+        let repeated = store
+            .set_archived(chat.clone(), DraftRecord::default(), true, 99)
+            .unwrap();
+        assert!(!repeated.changed);
+        assert_eq!(repeated.record, saved.record);
+        assert_eq!(fs::read(&path).unwrap(), before);
+        store.fault = Fault::None;
+        let restored = store
+            .set_archived(chat.clone(), DraftRecord::default(), false, 100)
+            .unwrap();
+        assert!(restored.changed);
+        assert_eq!(restored.record, chat);
+        assert_eq!(store.snapshot().version, 4);
+        let before = fs::read(&path).unwrap();
+        store.fault = Fault::BeforeRename;
+        assert!(
+            !store
+                .set_archived(chat, DraftRecord::default(), false, 101)
+                .unwrap()
+                .changed
+        );
+        assert_eq!(fs::read(&path).unwrap(), before);
+    }
+    #[test]
+    fn archive_patches_only_metadata_and_preserves_pending_and_settled_receipts() {
+        for settle in [false, true] {
+            let (_dir, mut store, mut chat) = fixture();
+            chat.sidebar_order = Some(4);
+            let draft = held_draft(5);
+            store.register(chat.clone(), draft.clone()).unwrap();
+            store.name_chat(&chat.id, "new streamed title").unwrap();
+            store
+                .set_pinned(chat.clone(), DraftRecord::default(), true, 9)
+                .unwrap();
+            store.select(&chat.id, 30).unwrap();
+            let pending = pending_cancel(0);
+            store
+                .prepare_queued_cancel(&chat.id, pending.clone(), draft.clone())
+                .unwrap();
+            if settle {
+                store
+                    .settle_queued_cancel(&chat.id, &pending, &draft, reconciled(&draft))
+                    .unwrap();
+            }
+            let mut intent = SubmissionIntent {
+                id: Uuid::new_v4().to_string(),
+                chat_id: chat.id.clone(),
+                text: "retained receipt".into(),
+                lane: Lane::FollowUp,
+                draft_revision: 1,
+            };
+            store.begin_submission(intent.clone()).unwrap();
+            store.acknowledge_submission(&intent.id).unwrap();
+            intent.id = Uuid::new_v4().to_string();
+            intent.draft_revision = 2;
+            store.begin_submission(intent).unwrap();
+            let mut expected = store.snapshot();
+            expected.version = 4;
+            expected.revision += 1;
+            expected.chats[0].archived_at = Some(11);
+            // A stale UI copy cannot undo newer pin/order/title or draft state.
+            chat.sidebar_order = Some(100);
+            let saved = store
+                .set_archived(chat.clone(), DraftRecord::default(), true, 11)
+                .unwrap();
+            assert!(saved.changed);
+            assert_eq!(saved.record, expected.chats[0]);
+            assert_eq!(
+                serde_json::to_value(store.snapshot()).unwrap(),
+                serde_json::to_value(&expected).unwrap()
+            );
+            expected.revision += 1;
+            expected.chats[0].archived_at = None;
+            store
+                .set_archived(chat, DraftRecord::default(), false, 12)
+                .unwrap();
+            assert_eq!(
+                serde_json::to_value(store.snapshot()).unwrap(),
+                serde_json::to_value(expected).unwrap()
+            );
+        }
+    }
+    #[test]
+    fn archive_pending_materialization_is_atomic_without_transcript_and_can_retry() {
+        let (dir, mut store, mut chat) = fixture();
+        chat.sidebar_order = Some(42);
+        chat.pinned_at = Some(9);
+        let draft = held_draft(4);
+        let before = serde_json::to_value(store.snapshot()).unwrap();
+        let path = dir.path().join("workspace.json");
+        store.fault = Fault::BeforeRename;
+        assert!(
+            store
+                .set_archived(chat.clone(), draft.clone(), true, 7)
+                .is_err()
+        );
+        assert!(!path.exists());
+        assert!(!store.is_uncertain());
+        assert_eq!(serde_json::to_value(store.snapshot()).unwrap(), before);
+        assert!(!chat.snapshot.exists());
+        assert!(!fs::read_dir(dir.path()).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".tmp")
+        }));
+        store.fault = Fault::AfterRename;
+        assert!(matches!(
+            store.set_archived(chat.clone(), draft.clone(), true, 7),
+            Err(Error::PersistenceUncertain(_))
+        ));
+        assert!(store.is_uncertain());
+        assert_eq!(serde_json::to_value(store.snapshot()).unwrap(), before);
+        assert!(!chat.snapshot.exists());
+        let bytes = fs::read(&path).unwrap();
+        drop(store);
+        let mut reopened = WorkspaceStore::open(&path, dir.path()).unwrap();
+        assert!(!reopened.is_uncertain());
+        assert_eq!(reopened.snapshot().drafts[&chat.id], draft);
+        assert_eq!(reopened.snapshot().chats[0].archived_at, Some(7));
+        assert!(
+            !reopened
+                .set_archived(chat.clone(), DraftRecord::default(), true, 99)
+                .unwrap()
+                .changed
+        );
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert!(!chat.snapshot.exists());
+    }
+    #[test]
+    fn archive_restore_of_pending_active_chat_materializes_without_state_transition() {
+        let (_dir, mut store, chat) = fixture();
+        let draft = held_draft(4);
+        let result = store
+            .set_archived(chat.clone(), draft.clone(), false, 7)
+            .unwrap();
+        assert!(!result.changed);
+        assert_eq!(result.record, chat);
+        assert_eq!(store.snapshot().drafts[&chat.id], draft);
+        assert_eq!(store.snapshot().version, 4);
+        assert!(!chat.snapshot.exists());
+    }
+    #[test]
+    fn archive_and_restore_fault_boundaries_preserve_memory_until_confirmed_reopen() {
+        for initial_archived in [false, true] {
+            let (dir, mut store, chat) = fixture();
+            let draft = held_draft(4);
+            store.register(chat.clone(), draft.clone()).unwrap();
+            if initial_archived {
+                store
+                    .set_archived(chat.clone(), draft.clone(), true, 1)
+                    .unwrap();
+            }
+            let path = dir.path().join("workspace.json");
+            let old_bytes = fs::read(&path).unwrap();
+            let old_state = serde_json::to_value(store.snapshot()).unwrap();
+            store.fault = Fault::BeforeRename;
+            assert!(
+                store
+                    .set_archived(chat.clone(), draft.clone(), !initial_archived, 2)
+                    .is_err()
+            );
+            assert!(!store.is_uncertain());
+            assert_eq!(fs::read(&path).unwrap(), old_bytes);
+            assert_eq!(serde_json::to_value(store.snapshot()).unwrap(), old_state);
+            store.fault = Fault::AfterRename;
+            assert!(matches!(
+                store.set_archived(chat.clone(), draft.clone(), !initial_archived, 2),
+                Err(Error::PersistenceUncertain(_))
+            ));
+            assert!(store.is_uncertain());
+            assert_eq!(serde_json::to_value(store.snapshot()).unwrap(), old_state);
+            let committed_bytes = fs::read(&path).unwrap();
+            assert_ne!(committed_bytes, old_bytes);
+            // Even an apparent no-op against the stale in-memory state is refused.
+            assert!(matches!(
+                store.set_archived(chat.clone(), draft.clone(), initial_archived, 3),
+                Err(Error::Invalid(_))
+            ));
+            drop(store);
+            assert!(matches!(
+                WorkspaceStore::open_with_confirmation(&path, dir.path(), |_| Err(
+                    Error::PersistenceUncertain("confirmation failed".into())
+                )),
+                Err(Error::PersistenceUncertain(_))
+            ));
+            assert_eq!(fs::read(&path).unwrap(), committed_bytes);
+            let mut reopened = WorkspaceStore::open(&path, dir.path()).unwrap();
+            assert_eq!(reopened.snapshot().version, 4);
+            assert_eq!(
+                reopened.snapshot().chats[0].archived_at,
+                if initial_archived { None } else { Some(2) }
+            );
+            assert_eq!(reopened.snapshot().drafts[&chat.id], draft);
+            assert!(
+                !reopened
+                    .set_archived(chat, draft, !initial_archived, 3)
+                    .unwrap()
+                    .changed
+            );
+            assert_eq!(fs::read(&path).unwrap(), committed_bytes);
+        }
+    }
+    #[test]
+    fn archive_uncertainty_refuses_every_mutation_including_noop_and_stale_paths() {
+        let (dir, mut store, chat) = fixture();
+        let draft = held_draft(4);
+        store.register(chat.clone(), draft.clone()).unwrap();
+        let pending = pending_cancel(0);
+        store
+            .prepare_queued_cancel(&chat.id, pending.clone(), draft.clone())
+            .unwrap();
+        let intent = SubmissionIntent {
+            id: Uuid::new_v4().to_string(),
+            chat_id: chat.id.clone(),
+            text: "receipt".into(),
+            lane: Lane::FollowUp,
+            draft_revision: 1,
+        };
+        store.begin_submission(intent.clone()).unwrap();
+        store.select(&chat.id, 1).unwrap();
+        store.fault = Fault::AfterRename;
+        assert!(matches!(
+            store.set_archived(chat.clone(), draft.clone(), true, 7),
+            Err(Error::PersistenceUncertain(_))
+        ));
+        let path = dir.path().join("workspace.json");
+        let bytes = fs::read(&path).unwrap();
+        let state = serde_json::to_value(store.snapshot()).unwrap();
+        store.fault = Fault::None;
+        assert!(matches!(
+            store.set_archived(chat.clone(), draft.clone(), false, 0),
+            Err(Error::Invalid(_))
+        ));
+        assert!(store.set_archive_visibility(false, 0).is_err());
+        assert!(store.set_archive_visibility(true, 1).is_err());
+        assert!(store.register(chat.clone(), draft.clone()).is_err());
+        assert!(store.name_chat(&chat.id, "no mutation").is_err());
+        assert!(
+            store
+                .set_pinned(chat.clone(), draft.clone(), false, 0)
+                .is_err()
+        );
+        assert!(store.save_draft(&chat.id, draft.clone()).is_err());
+        assert!(store.flush_draft_exact(&chat.id, draft.clone()).is_err());
+        assert!(
+            store
+                .prepare_queued_cancel(&chat.id, pending.clone(), draft.clone())
+                .is_err()
+        );
+        assert!(
+            store
+                .settle_queued_cancel(&chat.id, &pending, &draft, reconciled(&draft))
+                .is_err()
+        );
+        assert!(store.select(&chat.id, 0).is_err());
+        assert!(store.begin_submission(intent.clone()).is_err());
+        assert!(
+            store
+                .save_submitting_draft(chat.clone(), draft.clone(), intent.clone())
+                .is_err()
+        );
+        assert!(store.acknowledge_submission(&intent.id).is_err());
+        assert!(
+            store
+                .withdraw_submission(&intent.id, draft.clone())
+                .is_err()
+        );
+        assert!(store.settle_rejected(chat, intent, draft).is_err());
+        assert!(store.is_uncertain());
+        assert_eq!(serde_json::to_value(store.snapshot()).unwrap(), state);
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+    }
+    #[test]
+    fn archive_visibility_exact_revision_fence_is_independent_and_monotonic() {
+        let (dir, mut store, chat) = fixture();
+        store.register(chat.clone(), held_draft(4)).unwrap();
+        store.select(&chat.id, 7).unwrap();
+        let path = dir.path().join("workspace.json");
+        assert!(store.set_archive_visibility(true, 1000).unwrap());
+        let state = store.snapshot();
+        assert_eq!(state.version, 4);
+        assert!(state.archive_visibility_revision > state.revision);
+        assert_eq!(state.selection_revision, 7);
+        assert_eq!(state.chats, vec![chat.clone()]);
+        let bytes = fs::read(&path).unwrap();
+        store.fault = Fault::BeforeRename;
+        assert!(!store.set_archive_visibility(false, 999).unwrap());
+        assert!(store.set_archive_visibility(true, 1000).unwrap());
+        assert!(store.set_archive_visibility(false, 1000).is_err());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        store.fault = Fault::None;
+        assert!(store.set_archive_visibility(false, 1002).unwrap());
+        assert!(!store.set_archive_visibility(true, 1001).unwrap());
+        assert!(store.set_archive_visibility(false, u64::MAX).unwrap());
+        assert!(
+            store
+                .snapshot()
+                .archive_visibility_revision
+                .checked_add(1)
+                .is_none()
+        );
+        assert!(store.set_archive_visibility(true, u64::MAX).is_err());
+        let before = fs::read(&path).unwrap();
+        drop(store);
+        let mut reopened = WorkspaceStore::open(&path, dir.path()).unwrap();
+        assert_eq!(reopened.snapshot().version, 4);
+        assert!(!reopened.snapshot().show_archived);
+        assert_eq!(reopened.snapshot().archive_visibility_revision, u64::MAX);
+        assert_eq!(reopened.snapshot().chats, vec![chat]);
+        assert!(reopened.set_archive_visibility(false, u64::MAX).unwrap());
+        assert_eq!(fs::read(&path).unwrap(), before);
+    }
+    #[test]
+    fn archive_visibility_fault_boundaries_require_confirmed_reopen() {
+        for initial_shown in [false, true] {
+            let (dir, mut store, chat) = fixture();
+            store.register(chat.clone(), held_draft(4)).unwrap();
+            store.set_archive_visibility(initial_shown, 1).unwrap();
+            let path = dir.path().join("workspace.json");
+            let old_bytes = fs::read(&path).unwrap();
+            let old_state = serde_json::to_value(store.snapshot()).unwrap();
+            store.fault = Fault::BeforeRename;
+            assert!(store.set_archive_visibility(!initial_shown, 2).is_err());
+            assert!(!store.is_uncertain());
+            assert_eq!(serde_json::to_value(store.snapshot()).unwrap(), old_state);
+            assert_eq!(fs::read(&path).unwrap(), old_bytes);
+            store.fault = Fault::AfterRename;
+            assert!(matches!(
+                store.set_archive_visibility(!initial_shown, 2),
+                Err(Error::PersistenceUncertain(_))
+            ));
+            assert!(store.is_uncertain());
+            assert_eq!(serde_json::to_value(store.snapshot()).unwrap(), old_state);
+            assert!(store.set_archive_visibility(initial_shown, 1).is_err());
+            assert!(store.set_archive_visibility(false, 0).is_err());
+            let bytes = fs::read(&path).unwrap();
+            drop(store);
+            assert!(
+                WorkspaceStore::open_with_confirmation(&path, dir.path(), |_| Err(
+                    Error::PersistenceUncertain("unconfirmed".into())
+                ))
+                .is_err()
+            );
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+            let mut reopened = WorkspaceStore::open(&path, dir.path()).unwrap();
+            assert_eq!(reopened.snapshot().show_archived, !initial_shown);
+            assert_eq!(reopened.snapshot().archive_visibility_revision, 2);
+            assert_eq!(reopened.snapshot().chats, vec![chat]);
+            assert!(reopened.set_archive_visibility(!initial_shown, 2).unwrap());
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+        }
+    }
+    #[test]
+    fn archive_old_versions_open_without_rewrite_then_promote_only_on_mutation() {
+        for version in [1, 2, 3] {
+            let (dir, mut store, chat) = fixture();
+            store.register(chat.clone(), held_draft(4)).unwrap();
+            let mut value = serde_json::to_value(store.snapshot()).unwrap();
+            value["version"] = version.into();
+            assert!(value.get("show_archived").is_none());
+            assert!(value.get("archive_visibility_revision").is_none());
+            assert!(value["chats"][0].get("archived_at").is_none());
+            let path = dir.path().join("workspace.json");
+            drop(store);
+            let bytes =
+                format!(" \n{}\n  ", serde_json::to_string_pretty(&value).unwrap()).into_bytes();
+            fs::write(&path, &bytes).unwrap();
+            let mut reopened = WorkspaceStore::open(&path, dir.path()).unwrap();
+            assert_eq!(reopened.snapshot().version, version);
+            assert!(!reopened.snapshot().show_archived);
+            assert_eq!(reopened.snapshot().archive_visibility_revision, 0);
+            assert!(
+                !reopened
+                    .set_archived(chat.clone(), DraftRecord::default(), false, 1)
+                    .unwrap()
+                    .changed
+            );
+            assert!(reopened.set_archive_visibility(false, 0).unwrap());
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+            reopened
+                .set_archived(chat.clone(), DraftRecord::default(), true, 2)
+                .unwrap();
+            assert_eq!(reopened.snapshot().version, 4);
+            reopened
+                .set_archived(chat, DraftRecord::default(), false, 3)
+                .unwrap();
+            assert_eq!(reopened.snapshot().version, 4);
+            reopened.set_archive_visibility(true, 10).unwrap();
+            reopened.set_archive_visibility(false, 11).unwrap();
+            assert_eq!(reopened.snapshot().version, 4);
+        }
+    }
+    #[test]
+    fn archive_malformed_metadata_and_future_versions_fail_before_confirmation() {
+        use serde_json::{Value, json};
+        let (dir, mut store, chat) = fixture();
+        store.register(chat, held_draft(4)).unwrap();
+        let base = serde_json::to_value(store.snapshot()).unwrap();
+        let path = dir.path().join("workspace.json");
+        drop(store);
+        let mut cases: Vec<Value> = Vec::new();
+        for version in [1, 2, 3] {
+            for field in [
+                "archived_at",
+                "show_archived",
+                "archive_visibility_revision",
+            ] {
+                let mut value = base.clone();
+                value["version"] = version.into();
+                match field {
+                    "archived_at" => value["chats"][0][field] = json!(0),
+                    "show_archived" => value[field] = json!(true),
+                    _ => value[field] = json!(1),
+                }
+                cases.push(value);
+            }
+        }
+        for version in [0, 5, u32::MAX] {
+            let mut value = base.clone();
+            value["version"] = version.into();
+            cases.push(value);
+        }
+        for (field, values) in [
+            (
+                "archived_at",
+                vec![
+                    json!(-1),
+                    json!("1"),
+                    json!(true),
+                    json!([]),
+                    json!({}),
+                    json!(1.5),
+                ],
+            ),
+            (
+                "show_archived",
+                vec![json!(null), json!(1), json!("true"), json!([])],
+            ),
+            (
+                "archive_visibility_revision",
+                vec![json!(null), json!(-1), json!("1"), json!(1.5)],
+            ),
+        ] {
+            for invalid in values {
+                let mut value = base.clone();
+                value["version"] = 4.into();
+                if field == "archived_at" {
+                    value["chats"][0][field] = invalid;
+                } else {
+                    value[field] = invalid;
+                }
+                cases.push(value);
+            }
+        }
+        for (index, value) in cases.into_iter().enumerate() {
+            let bytes =
+                format!(" \n{}\n  ", serde_json::to_string_pretty(&value).unwrap()).into_bytes();
+            fs::write(&path, &bytes).unwrap();
+            assert!(
+                WorkspaceStore::open_with_confirmation(&path, dir.path(), |_| panic!(
+                    "invalid archive catalog {index} reached confirmation"
+                ))
+                .is_err()
+            );
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+        }
+    }
+    #[test]
+    fn archive_identity_validation_and_catalog_overflow_preserve_exact_bytes() {
+        let (dir, mut store, chat) = fixture();
+        store.register(chat.clone(), held_draft(4)).unwrap();
+        let path = dir.path().join("workspace.json");
+        let before = fs::read(&path).unwrap();
+        let mut wrong = chat.clone();
+        wrong.snapshot = dir.path().join("other.json");
+        for archived in [false, true] {
+            assert!(
+                store
+                    .set_archived(wrong.clone(), DraftRecord::default(), archived, 1)
+                    .is_err()
+            );
+        }
+        for case in 0..3 {
+            let mut pending = chat.clone();
+            pending.id = Uuid::new_v4().to_string();
+            match case {
+                0 => pending.snapshot = PathBuf::from("relative.json"),
+                1 => pending.id = "invalid-identity".into(),
+                _ => pending.title = "x".repeat(513),
+            }
+            assert!(store.set_archived(pending, held_draft(4), true, 1).is_err());
+        }
+        let mut pending = chat.clone();
+        pending.id = Uuid::new_v4().to_string();
+        let oversized = DraftRecord {
+            text: "x".repeat(MAX_DRAFT_BYTES + 1),
+            ..DraftRecord::default()
+        };
+        assert!(
+            store
+                .set_archived(pending, oversized.clone(), true, 1)
+                .is_err()
+        );
+        assert_eq!(fs::read(&path).unwrap(), before);
+        // Existing draft data, rather than a stale caller's draft, is authoritative.
+        assert!(
+            !store
+                .set_archived(chat.clone(), oversized, false, 1)
+                .unwrap()
+                .changed
+        );
+        let mut state = store.snapshot();
+        state.revision = u64::MAX;
+        drop(store);
+        let before = serde_json::to_vec(&state).unwrap();
+        fs::write(&path, &before).unwrap();
+        let mut store = WorkspaceStore::open(&path, dir.path()).unwrap();
+        assert!(
+            store
+                .set_archived(chat, DraftRecord::default(), true, 1)
+                .is_err()
+        );
+        assert!(store.set_archive_visibility(true, 1).is_err());
+        assert_eq!(store.snapshot().version, 1);
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert!(!store.is_uncertain());
+    }
+    #[test]
+    fn archive_pending_success_retains_draft_pin_and_capacity_rejects_new_record() {
+        let (dir, mut store, mut chat) = fixture();
+        chat.pinned_at = Some(3);
+        chat.sidebar_order = Some(7);
+        let draft = held_draft(4);
+        store.fault = Fault::BeforeRename;
+        assert!(
+            store
+                .set_archived(chat.clone(), draft.clone(), true, 9)
+                .is_err()
+        );
+        store.fault = Fault::None;
+        let saved = store
+            .set_archived(chat.clone(), draft.clone(), true, 9)
+            .unwrap();
+        assert!(saved.changed);
+        assert_eq!(saved.record.pinned_at, Some(3));
+        assert_eq!(saved.record.sidebar_order, Some(7));
+        assert_eq!(store.snapshot().drafts[&chat.id], draft);
+        assert!(!chat.snapshot.exists());
+        let mut state = store.snapshot();
+        for _ in 1..MAX_CHATS {
+            let id = Uuid::new_v4().to_string();
+            state.chats.push(ChatRecord::new(
+                id.clone(),
+                "saved".into(),
+                store.chat_path(&id).unwrap(),
+            ));
+        }
+        let path = dir.path().join("workspace.json");
+        drop(store);
+        let bytes = serde_json::to_vec(&state).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        let mut reopened = WorkspaceStore::open(&path, dir.path()).unwrap();
+        let id = Uuid::new_v4().to_string();
+        let pending = ChatRecord::new(
+            id.clone(),
+            "pending".into(),
+            reopened.chat_path(&id).unwrap(),
+        );
+        assert!(
+            reopened
+                .set_archived(pending, draft.clone(), true, 10)
+                .is_err()
+        );
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert!(
+            reopened
+                .set_archived(chat.clone(), DraftRecord::default(), false, 10)
+                .unwrap()
+                .changed
+        );
+        assert_eq!(reopened.snapshot().drafts[&chat.id], draft);
+    }
+    #[test]
+    fn archive_v4_survives_every_existing_writer_including_cancel_preparation() {
+        let (dir, mut store, chat) = fixture();
+        let draft = held_draft(4);
+        store
+            .set_archived(chat.clone(), draft.clone(), true, 1)
+            .unwrap();
+        store
+            .set_archived(chat.clone(), draft.clone(), false, 2)
+            .unwrap();
+        store
+            .register(chat.clone(), DraftRecord::default())
+            .unwrap();
+        assert_eq!(store.snapshot().version, 4);
+        store.name_chat(&chat.id, "renamed").unwrap();
+        assert_eq!(store.snapshot().version, 4);
+        store
+            .set_pinned(chat.clone(), DraftRecord::default(), true, 3)
+            .unwrap();
+        assert_eq!(store.snapshot().version, 4);
+        store.select(&chat.id, 2).unwrap();
+        assert_eq!(store.snapshot().version, 4);
+        let pending = pending_cancel(0);
+        store
+            .prepare_queued_cancel(&chat.id, pending.clone(), draft.clone())
+            .unwrap();
+        assert_eq!(store.snapshot().version, 4);
+        let merged = reconciled(&draft);
+        store
+            .settle_queued_cancel(&chat.id, &pending, &draft, merged.clone())
+            .unwrap();
+        assert_eq!(store.snapshot().version, 4);
+        let later = DraftRecord {
+            revision: merged.revision + 1,
+            text: "later".into(),
+            queued_edit: None,
+        };
+        store.save_draft(&chat.id, later.clone()).unwrap();
+        assert_eq!(store.snapshot().version, 4);
+        store
+            .flush_draft_exact(
+                &chat.id,
+                DraftRecord {
+                    revision: later.revision + 1,
+                    ..later.clone()
+                },
+            )
+            .unwrap();
+        assert_eq!(store.snapshot().version, 4);
+        let mut intent = SubmissionIntent {
+            id: Uuid::new_v4().to_string(),
+            chat_id: chat.id.clone(),
+            text: "send".into(),
+            lane: Lane::FollowUp,
+            draft_revision: 1,
+        };
+        store.begin_submission(intent.clone()).unwrap();
+        assert_eq!(store.snapshot().version, 4);
+        store.acknowledge_submission(&intent.id).unwrap();
+        assert_eq!(store.snapshot().version, 4);
+        intent.id = Uuid::new_v4().to_string();
+        intent.draft_revision = 2;
+        store
+            .save_submitting_draft(chat.clone(), later.clone(), intent.clone())
+            .unwrap();
+        assert_eq!(store.snapshot().version, 4);
+        store
+            .withdraw_submission(&intent.id, later.clone())
+            .unwrap();
+        assert_eq!(store.snapshot().version, 4);
+        intent.id = Uuid::new_v4().to_string();
+        intent.draft_revision = 3;
+        store.settle_rejected(chat.clone(), intent, later).unwrap();
+        assert_eq!(store.snapshot().version, 4);
+        store.set_archive_visibility(true, 20).unwrap();
+        store.set_archive_visibility(false, 21).unwrap();
+        assert_eq!(store.snapshot().version, 4);
+        drop(store);
+        let reopened = WorkspaceStore::open(dir.path().join("workspace.json"), dir.path()).unwrap();
+        assert_eq!(reopened.snapshot().version, 4);
+        assert_eq!(reopened.snapshot().chats[0].archived_at, None);
+        assert_eq!(reopened.snapshot().chats[0].pinned_at, Some(3));
+        assert_eq!(reopened.snapshot().archive_visibility_revision, 21);
+    }
+    #[test]
     fn lock_and_project_binding_are_checked() {
         let (dir, _store, _) = fixture();
         assert!(WorkspaceStore::open(dir.path().join("workspace.json"), dir.path()).is_err());
@@ -1492,14 +2299,20 @@ mod tests {
     }
     #[test]
     fn existing_catalog_confirmation_is_required_without_opening_rewrite_for_all_versions() {
-        for version in [1, 2, 3] {
+        for version in [1, 2, 3, 4] {
             let (dir, mut store, chat) = fixture();
             let draft = held_draft(4);
             store.register(chat.clone(), draft.clone()).unwrap();
-            if version == 3 {
+            if version >= 3 {
                 store
                     .prepare_queued_cancel(&chat.id, pending_cancel(0), draft.clone())
                     .unwrap();
+            }
+            if version == 4 {
+                store
+                    .set_archived(chat.clone(), draft.clone(), true, 0)
+                    .unwrap();
+                store.set_archive_visibility(true, 100).unwrap();
             }
             let mut state = store.snapshot();
             state.version = version;
@@ -1914,7 +2727,7 @@ mod tests {
         let path = dir.path().join("workspace.json");
         drop(store);
         let mut cases: Vec<Value> = Vec::new();
-        for version in [1, 2, 4] {
+        for version in [1, 2, 5] {
             let mut value = base.clone();
             value["version"] = version.into();
             cases.push(value);

@@ -1,5 +1,6 @@
 //! Existing sidebar navigation, deferred creation, and source-style draft writes.
 use super::*;
+use crate::chat_organization::catalog_operation;
 use bello_agent_core::Submission;
 use std::time::Duration;
 impl AgentView {
@@ -44,25 +45,25 @@ impl AgentView {
         let timer = cx.background_executor().timer(Duration::from_millis(150));
         let task = cx.background_executor().spawn(async move {
             timer.await;
-            let mut store = workspace
-                .lock()
-                .map_err(|_| "Workspace is unavailable".to_owned())?;
-            if let Some(intent) = submitting {
-                store
-                    .save_submitting_draft(record, draft, intent)
-                    .map(|_| true)
-                    .map_err(|e| e.to_string())
-            } else {
-                store.save_draft(&id, draft).map_err(|e| e.to_string())
-            }
+            catalog_operation(&workspace, |store| {
+                if let Some(intent) = submitting {
+                    store
+                        .save_submitting_draft(record, draft, intent)
+                        .map(|_| true)
+                } else {
+                    store.save_draft(&id, draft)
+                }
+            })
         });
         let id = chat.record.id.clone();
         chat.draft_task = Some(cx.spawn(async move |view, cx| {
-            let result = task.await;
+            let outcome = task.await;
             let _ = view.update(cx, |view, cx| {
                 if view.project != project {
                     return;
                 }
+                view.observe_catalog_uncertainty(outcome.uncertain, cx);
+                let result = outcome.display_result();
                 if let Some(chat) = view.chat_mut(&id) {
                     if chat.record.snapshot != snapshot_path {
                         return;
@@ -97,19 +98,17 @@ impl AgentView {
         let timer = cx.background_executor().timer(Duration::from_millis(250));
         let task = cx.background_executor().spawn(async move {
             timer.await;
-            workspace
-                .lock()
-                .map_err(|_| "Workspace is unavailable".to_owned())?
-                .select(&id, revision)
-                .map_err(|e| e.to_string())
+            catalog_operation(&workspace, |store| store.select(&id, revision))
         });
         cx.spawn(async move |view, cx| {
-            if let Err(error) = task.await {
-                let _ = view.update(cx, |view, cx| {
+            let outcome = task.await;
+            let _ = view.update(cx, |view, cx| {
+                view.observe_catalog_uncertainty(outcome.uncertain, cx);
+                if let Err(error) = outcome.display_result() {
                     view.error = Some(format!("Selection could not be saved: {error}"));
                     cx.notify();
-                });
-            }
+                }
+            });
         })
         .detach();
     }
@@ -124,7 +123,7 @@ impl AgentView {
         let id = outgoing.record.id.clone();
         if outgoing.pending
             && !outgoing.busy
-            && !self.pin_operations.contains_key(&id)
+            && !self.organization_operations.contains_key(&id)
             && outgoing.inflight_submission.is_none()
             && outgoing.saved_draft(cx).is_empty()
             && !self.recoveries.values().any(|intent| intent.chat_id == id)
@@ -133,20 +132,20 @@ impl AgentView {
         } else {
             self.inactive.insert(id, outgoing);
         }
-        self.composer.read(cx).focus(window);
+        self.focus_visible_composer(window, cx);
         self.remember_selection(cx);
         cx.notify();
     }
     pub(super) fn new_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.shutting_down {
+        if self.shutting_down || !self.advance_navigation(cx) {
             return;
         }
         if self.pending
             && !self.busy
-            && !self.pin_operations.contains_key(&self.record.id)
+            && !self.organization_operations.contains_key(&self.record.id)
             && self.saved_draft(cx).is_empty()
         {
-            self.composer.read(cx).focus(window);
+            self.focus_visible_composer(window, cx);
             return;
         }
         if self.records.len() >= 512 {
@@ -231,11 +230,26 @@ impl AgentView {
     }
 
     pub(super) fn select_chat(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
-        if self.shutting_down {
+        self.select_chat_internal(id, true, window, cx);
+    }
+    pub(crate) fn select_chat_internal(
+        &mut self,
+        id: &str,
+        explicit: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.shutting_down || !self.advance_navigation(cx) {
             return;
         }
+        if explicit && self.chat_is_archived(id) && !self.show_archived {
+            self.set_archive_visibility(true, cx);
+        }
+        if explicit && self.record.id == id {
+            self.resume_durable_cancel_explicit(id, cx);
+        }
         if self.record.id == id {
-            self.composer.read(cx).focus(window);
+            self.focus_visible_composer(window, cx);
             if self.load_failed {
                 self.load_chat(id, cx);
             }
@@ -254,7 +268,7 @@ impl AgentView {
         let Some(record) = self.records.iter().find(|record| record.id == id).cloned() else {
             return;
         };
-        let draft = self.unloaded_drafts.remove(id).unwrap_or_default();
+        let draft = self.unloaded_drafts.get(id).cloned().unwrap_or_default();
         let config = self.controller.configuration();
         let placeholder = match SessionStore::pending_with_id(id)
             .and_then(|store| Controller::with_configuration(store, config.clone()))
@@ -265,6 +279,7 @@ impl AgentView {
                 return;
             }
         };
+        self.unloaded_drafts.remove(id);
         let chat = ChatState::new(
             placeholder,
             record.clone(),
@@ -349,7 +364,8 @@ impl AgentView {
         cx.notify();
     }
     pub(super) fn submit_chat(&mut self, lane: Lane, cx: &mut Context<Self>) {
-        if self.busy
+        if self.actor_mutation_blocked(&self.record.id)
+            || self.busy
             || self.loading
             || self.load_failed
             || self.shutting_down
@@ -400,16 +416,14 @@ impl AgentView {
         let workspace = self.workspace.clone();
         let receipt = intent.clone();
         let task = cx.background_executor().spawn(async move {
-            let prepare = (|| -> bello_agent_core::Result<()> {
-                let mut store = workspace.lock().map_err(|_| {
-                    bello_agent_core::Error::Invalid("Workspace is unavailable".into())
-                })?;
+            let prepare = catalog_operation(&workspace, |store| {
                 store.register(record.clone(), captured.clone())?;
                 store.save_draft(&record.id, captured)?;
                 store.begin_submission(intent.clone())?;
                 Ok(())
-            })();
-            let outcome = prepare.and_then(|()| {
+            });
+            let catalog_uncertain = prepare.uncertain;
+            let outcome = prepare.result.and_then(|()| {
                 controller.materialize(&record.snapshot)?;
                 controller.submit_identified(item)
             });
@@ -418,28 +432,40 @@ impl AgentView {
                 .is_ok_and(|store| store.snapshot().chats.iter().any(|chat| chat.id == id));
             match outcome {
                 Ok(()) => {
-                    let warning = workspace
-                        .lock()
-                        .map_err(|_| "Workspace is unavailable".to_owned())
-                        .and_then(|mut store| {
-                            store
-                                .acknowledge_submission(&intent.id)
-                                .map_err(|e| e.to_string())
-                        })
-                        .err();
-                    (true, registered, warning.is_some(), warning)
+                    let ack = catalog_operation(&workspace, |store| {
+                        store.acknowledge_submission(&intent.id)
+                    });
+                    let ack_uncertain = ack.uncertain;
+                    let warning = ack.display_result().err();
+                    (
+                        true,
+                        registered,
+                        warning.is_some(),
+                        warning,
+                        catalog_uncertain || ack_uncertain,
+                    )
                 }
                 Err(error) => {
                     let uncertain =
                         matches!(error, bello_agent_core::Error::PersistenceUncertain(_));
-                    (false, registered, uncertain, Some(error.to_string()))
+                    (
+                        false,
+                        registered,
+                        uncertain,
+                        Some(crate::chat_organization::catalog_error(
+                            &error,
+                            catalog_uncertain,
+                        )),
+                        catalog_uncertain,
+                    )
                 }
             }
         });
         let id = receipt.chat_id.clone();
         cx.spawn(async move |view, cx| {
-            let (accepted, registered, uncertain, error) = task.await;
+            let (accepted, registered, uncertain, error, catalog_uncertain) = task.await;
             let _ = view.update(cx, move |view, cx| {
+                view.observe_catalog_uncertainty(catalog_uncertain, cx);
                 let mut restore = None;
                 let mut revision_exhausted = false;
                 if let Some(chat) = view.chat_mut(&id) {
@@ -476,24 +502,17 @@ impl AgentView {
                     let workspace = view.workspace.clone();
                     let intent = receipt.clone();
                     let task = cx.background_executor().spawn(async move {
-                        let mut store = workspace
-                            .lock()
-                            .map_err(|_| "Workspace is unavailable".to_owned())?;
-                        if uncertain {
-                            store
-                                .save_draft(&intent.chat_id, draft)
-                                .map(|_| ())
-                                .map_err(|e| e.to_string())
-                        } else {
-                            store
-                                .settle_rejected(record, intent, draft)
-                                .map_err(|e| e.to_string())
-                        }
+                        catalog_operation(&workspace, |store| {
+                            if uncertain { store.save_draft(&intent.chat_id, draft).map(|_| ()) }
+                            else { store.settle_rejected(record, intent, draft) }
+                        })
                     });
                     let settled_chat = id.clone();
                     cx.spawn(async move |view, cx| {
-                        let result = task.await;
+                        let outcome = task.await;
                         let _ = view.update(cx, |view, cx| {
+                            view.observe_catalog_uncertainty(outcome.uncertain, cx);
+                            let result = outcome.display_result();
                             if let Some(chat) = view.chat_mut(&settled_chat) {
                                 chat.busy = false;
                                 match &result {
@@ -559,19 +578,17 @@ impl AgentView {
             let id = id.to_owned();
             let workspace = self.workspace.clone();
             let task = cx.background_executor().spawn(async move {
-                workspace
-                    .lock()
-                    .map_err(|_| "Workspace is unavailable".to_owned())?
-                    .name_chat(&id, &title)
-                    .map_err(|e| e.to_string())
+                catalog_operation(&workspace, |store| store.name_chat(&id, &title))
             });
             cx.spawn(async move |view, cx| {
-                if let Err(error) = task.await {
-                    let _ = view.update(cx, |view, cx| {
+                let outcome = task.await;
+                let _ = view.update(cx, |view, cx| {
+                    view.observe_catalog_uncertainty(outcome.uncertain, cx);
+                    if let Err(error) = outcome.display_result() {
                         view.error = Some(format!("Chat title could not be saved: {error}"));
                         cx.notify();
-                    });
-                }
+                    }
+                });
             })
             .detach();
         }
@@ -625,26 +642,24 @@ impl AgentView {
         let workspace = self.workspace.clone();
         let done = accepted.clone();
         let task = cx.background_executor().spawn(async move {
-            let mut store = workspace
-                .lock()
-                .map_err(|_| "Workspace is unavailable".to_owned())?;
-            for id in accepted {
-                store
-                    .acknowledge_submission(&id)
-                    .map_err(|e| e.to_string())?;
-            }
-            Ok::<_, String>(())
+            catalog_operation(&workspace, |store| {
+                for id in accepted {
+                    store.acknowledge_submission(&id)?;
+                }
+                Ok(())
+            })
         });
         cx.spawn(async move |view, cx| {
-            let result = task.await;
+            let outcome = task.await;
             let _ = view.update(cx, |view, cx| {
-                match result {
+                view.observe_catalog_uncertainty(outcome.uncertain, cx);
+                match outcome.display_result() {
                     Ok(()) => {
                         for id in done {
                             view.recoveries.remove(&id);
                         }
                     }
-                    Err(error) => view.error = Some(error),
+                    Err(error) => view.error = Some(error.to_string()),
                 }
                 cx.notify();
             });
@@ -652,7 +667,8 @@ impl AgentView {
         .detach();
     }
     pub(super) fn resolve_intent(&mut self, intent_id: &str, insert: bool, cx: &mut Context<Self>) {
-        if self.busy
+        if self.actor_mutation_blocked(&self.record.id)
+            || self.busy
             || self.loading
             || self.load_failed
             || self.shutting_down
@@ -696,19 +712,20 @@ impl AgentView {
         let saved = draft.clone();
         let receipt = intent.clone();
         let task = cx.background_executor().spawn(async move {
-            workspace
-                .lock()
-                .map_err(|_| "Workspace is unavailable".to_owned())?
-                .withdraw_submission(&receipt.id, saved)
-                .map_err(|e| e.to_string())
+            catalog_operation(&workspace, |store| {
+                store.withdraw_submission(&receipt.id, saved)
+            })
         });
         cx.spawn(async move |view, cx| {
-            let result = task.await;
+            let outcome = task.await;
             let _ = view.update(cx, |view, cx| {
+                view.observe_catalog_uncertainty(outcome.uncertain, cx);
+                let result = outcome.display_result();
+                let archived = view.chat_is_archived(&intent.chat_id);
                 if let Some(chat) = view.chat_mut(&intent.chat_id) {
                     chat.busy = false;
                     chat.composer
-                        .update(cx, |editor, cx| editor.set_read_only(false, cx));
+                        .update(cx, |editor, cx| editor.set_read_only(archived, cx));
                     match &result {
                         Ok(()) => chat
                             .composer
@@ -729,7 +746,23 @@ impl AgentView {
         if self.shutting_down {
             return;
         }
-        if !self.pin_operations.is_empty()
+        if let Some(chat) = std::iter::once(&self.chat)
+            .chain(self.inactive.values())
+            .find(|chat| {
+                self.chat_is_archived(&chat.record.id)
+                    && chat.queue_operation.is_some()
+                    && !self.archive_chat_work_live(&chat.record.id)
+            })
+        {
+            self.error = Some(format!(
+                "Restore “{}” and finish its deferred composition or queued edit before closing. Your text is preserved.",
+                chat.record.title
+            ));
+            cx.notify();
+            return;
+        }
+        if !self.organization_operations.is_empty()
+            || self.archive_visibility_writes != 0
             || self.busy
             || self.loading
             || self.queue_operation.is_some()
@@ -815,6 +848,7 @@ impl AgentView {
             return false;
         }
         self.shutdown_operation = None;
+        self.observe_catalog_uncertainty(outcome.catalog_uncertain, cx);
         for id in outcome.registered {
             if let Some(chat) = self.chat_mut(&id) {
                 chat.pending = false;
@@ -830,8 +864,9 @@ impl AgentView {
                 self.shutting_down = false;
                 self.error = Some(format!("Could not save drafts before closing: {error}"));
                 for chat in std::iter::once(&mut self.chat).chain(self.inactive.values_mut()) {
-                    chat.composer
-                        .update(cx, |editor, cx| editor.set_read_only(false, cx));
+                    chat.composer.update(cx, |editor, cx| {
+                        editor.set_read_only(chat.record.archived_at.is_some(), cx)
+                    });
                 }
                 cx.notify();
                 false

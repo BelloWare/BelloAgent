@@ -282,6 +282,7 @@ mod tests {
             record: ChatRecord {
                 sidebar_order: None,
                 pinned_at: None,
+                archived_at: None,
                 id: snapshot.id,
                 title: snapshot.title,
                 snapshot: path,

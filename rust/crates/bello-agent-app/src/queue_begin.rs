@@ -50,6 +50,12 @@ pub(crate) struct BeginOperation {
     recheck: bool,
 }
 impl BeginOperation {
+    pub(crate) fn is_deferred(&self) -> bool {
+        self.deferred.is_some()
+    }
+    pub(crate) fn owns_queue_token(&self, token: Uuid) -> bool {
+        self.key.token == token
+    }
     pub(crate) fn matches(&self, edit: &str, turn: &str) -> bool {
         self.key.edit == edit && self.key.turn == turn
     }
@@ -68,6 +74,7 @@ impl AgentView {
         cx: &mut Context<Self>,
     ) {
         if self.record.id != chat_id
+            || self.actor_mutation_blocked(chat_id)
             || self.shutting_down
             || self.busy
             || self.loading
@@ -236,6 +243,7 @@ impl AgentView {
             chat.queue_operation = None;
             chat.begin_operation = None;
             self.recheck_edit_after_failure(&key.chat, Some(key.edit), cx);
+            cx.notify();
             return;
         }
         let status = match result {
@@ -277,6 +285,7 @@ impl AgentView {
             chat.queue_operation = None;
             chat.begin_operation = None;
             self.recheck_edit_after_failure(&key.chat, Some(key.edit), cx);
+            cx.notify();
             return;
         }
         if chat.composer.read(cx).has_marked_text() {
@@ -341,6 +350,7 @@ impl AgentView {
             let _ = key.window.update(cx, |view, window, cx| {
                 if view.project == key.project
                     && view.record.id == key.chat
+                    && !view.chat_is_archived(&key.chat)
                     && view.window_binding == key.binding
                     && Arc::ptr_eq(&view.controller, &key.controller)
                     && view.editing.as_deref() == Some(key.edit.as_str())
@@ -400,6 +410,7 @@ impl AgentView {
         } else {
             Row::Available {
                 enabled: self.session.edit.is_none()
+                    && !self.actor_mutation_blocked(&self.record.id)
                     && self.begin_operation.is_none()
                     && !self.busy
                     && !self.loading
@@ -418,6 +429,7 @@ impl AgentView {
         cx: &mut Context<Self>,
     ) {
         if self.record.id != chat
+            || self.actor_mutation_blocked(chat)
             || matches!(
                 self.queue_edit_row_state(turn),
                 crate::queue_edit_controls::QueueEditRowState::Held { .. }

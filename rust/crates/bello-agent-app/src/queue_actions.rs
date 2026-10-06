@@ -31,8 +31,38 @@ pub(crate) fn resume_label(chat: &ChatState) -> &'static str {
 }
 
 impl AgentView {
+    /// Only work still in flight delays Archive. IME-deferred adoption and
+    /// retained recovery errors keep their identity without holding admission.
+    pub(crate) fn archive_chat_work_live(&self, chat_id: &str) -> bool {
+        self.chat_ref(chat_id).is_some_and(|chat| {
+            chat.busy
+                || chat.loading
+                || chat.inflight_submission.is_some()
+                || chat
+                    .cancel_operation
+                    .as_ref()
+                    .is_some_and(|operation| operation.is_live())
+                || chat
+                    .begin_operation
+                    .as_ref()
+                    .is_some_and(|operation| !operation.is_deferred())
+                || chat.edit_recovery.has_live_check()
+                || chat.queue_operation.is_some_and(|token| {
+                    // A token not positively owned by a completed/deferred
+                    // operation is conservatively still live (Resume, etc.).
+                    !chat.cancel_operation.as_ref().is_some_and(|operation| {
+                        operation.is_deferred() && operation.owns_queue_token(token)
+                    }) && !chat.begin_operation.as_ref().is_some_and(|operation| {
+                        operation.is_deferred() && operation.owns_queue_token(token)
+                    }) && !(chat.edit_recovery.is_deferred()
+                        && chat.edit_recovery.owns_queue_token(token))
+                })
+        })
+    }
+
     pub(crate) fn resume_queued(&mut self, chat_id: &str, cx: &mut Context<Self>) {
         if self.record.id != chat_id
+            || self.actor_mutation_blocked(chat_id)
             || self.shutting_down
             || self.busy
             || self.loading
@@ -69,6 +99,7 @@ impl AgentView {
         // A rendered row belongs to one chat, even if its callback outlives a
         // selection change. Completion below still addresses its original chat.
         if self.record.id != chat_id
+            || self.actor_mutation_blocked(chat_id)
             || self.shutting_down
             || self.busy
             || self.loading
@@ -108,6 +139,7 @@ impl AgentView {
         cx: &mut Context<Self>,
     ) {
         if !self.accepts_queue_drag(drag)
+            || self.actor_mutation_blocked(&drag.chat_id)
             || self.queue_operation.is_some()
             || self.busy
             || self.loading

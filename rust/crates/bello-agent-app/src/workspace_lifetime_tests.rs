@@ -34,6 +34,7 @@ fn fixture(
         record: ChatRecord {
             sidebar_order: None,
             pinned_at: None,
+            archived_at: None,
             id: snapshot.id,
             title: snapshot.title,
             snapshot: project.join("session.json"),
@@ -287,6 +288,7 @@ fn stale_barrier_outcome_cannot_thaw_or_mark_new_operation_complete(cx: &mut Tes
         assert!(!view.finish_shutdown(
             uuid::Uuid::new_v4(),
             crate::shutdown_barrier::ShutdownOutcome {
+                catalog_uncertain: false,
                 registered: vec![id],
                 result: Err("stale failure".into()),
             },
@@ -342,7 +344,7 @@ fn pin_context_menu_keeps_other_chat_selection_focus_and_draft(cx: &mut TestAppC
     assert!(cx.read(|cx| root.read(cx).composer.read(cx).text().is_empty()));
     cx.simulate_keystrokes(window.into(), "escape");
     assert!(cx.read(|cx| root.read(cx).sidebar_menu.is_none()));
-    assert!(cx.read(|cx| root.read(cx).pin_operations.is_empty()));
+    assert!(cx.read(|cx| root.read(cx).organization_operations.is_empty()));
     window
         .update(cx, |view, window, cx| {
             assert!(view.composer.read(cx).focus_handle(cx).is_focused(window));
@@ -383,9 +385,21 @@ fn pending_pin_survives_navigation_and_does_not_steal_new_chat(cx: &mut TestAppC
     window
         .update(cx, |view, window, cx| {
             view.set_chat_pinned(&original, true, cx);
-            let token = view.pin_operations[&original];
+            let token = view.organization_operations[&original]
+                .intents
+                .front()
+                .unwrap()
+                .token;
             view.set_chat_pinned(&original, false, cx);
-            assert_eq!(view.pin_operations[&original], token);
+            assert_eq!(
+                view.organization_operations[&original]
+                    .intents
+                    .front()
+                    .unwrap()
+                    .token,
+                token
+            );
+            assert_eq!(view.organization_operations[&original].intents.len(), 2);
             view.new_chat(window, cx);
             assert_ne!(view.record.id, original);
         })
@@ -402,7 +416,7 @@ fn pending_pin_survives_navigation_and_does_not_steal_new_chat(cx: &mut TestAppC
             state
                 .chats
                 .iter()
-                .any(|record| record.id == original && record.pinned_at.is_some())
+                .any(|record| record.id == original && record.pinned_at.is_none())
         );
         assert!(!state.chats.iter().any(|record| record.id == next));
     });
@@ -424,7 +438,7 @@ fn failed_pin_keeps_pending_draft_editable_and_retry_succeeds(cx: &mut TestAppCo
         let view = root.read(cx);
         assert!(view.pending);
         assert!(view.record.pinned_at.is_none());
-        assert!(view.pin_operations.is_empty());
+        assert!(view.organization_operations.is_empty());
         assert!(
             view.error
                 .as_ref()
@@ -464,15 +478,23 @@ fn stale_pin_completion_cannot_replace_title_or_project_and_close_waits(cx: &mut
             let id = view.record.id.clone();
             let project = view.project.clone();
             let operation = uuid::Uuid::new_v4();
-            view.pin_operations.insert(id.clone(), operation);
+            seed_pin(view, &id.clone(), operation, cx);
             let mut saved = view.record.clone();
             saved.pinned_at = Some(10);
             saved.title = "stale title".into();
             view.record.title = "latest title".into();
             view.records[0].title = "latest title".into();
-            view.finish_pin(&id, &project, uuid::Uuid::new_v4(), Ok(saved.clone()), cx);
+            finish_pin(
+                view,
+                &id,
+                &project,
+                uuid::Uuid::new_v4(),
+                Ok(saved.clone()),
+                cx,
+            );
             assert!(view.record.pinned_at.is_none());
-            view.finish_pin(
+            finish_pin(
+                view,
                 &id,
                 &project.join("other-project"),
                 operation,
@@ -488,8 +510,8 @@ fn stale_pin_completion_cannot_replace_title_or_project_and_close_waits(cx: &mut
                     .unwrap()
                     .contains("Wait for chat operations")
             );
-            view.finish_pin(&id, &project, operation, Ok(saved), cx);
-            assert!(view.pin_operations.is_empty());
+            finish_pin(view, &id, &project, operation, Ok(saved), cx);
+            assert!(view.organization_operations.is_empty());
             assert_eq!(view.record.pinned_at, Some(10));
             assert_eq!(view.record.title, "latest title");
             assert_eq!(view.records[0].title, "latest title");
@@ -538,15 +560,22 @@ fn successful_pin_does_not_clear_a_newer_unrelated_error(cx: &mut TestAppContext
             let id = view.record.id.clone();
             let project = view.project.clone();
             let first = uuid::Uuid::new_v4();
-            view.pin_operations.insert(id.clone(), first);
-            view.finish_pin(&id, &project, first, Err("old pin failure".into()), cx);
+            seed_pin(view, &id.clone(), first, cx);
+            finish_pin(
+                view,
+                &id,
+                &project,
+                first,
+                Err("old pin failure".into()),
+                cx,
+            );
             assert!(view.error.as_ref().unwrap().contains("old pin failure"));
             view.error = Some("newer unrelated failure".into());
             let retry = uuid::Uuid::new_v4();
-            view.pin_operations.insert(id.clone(), retry);
+            seed_pin(view, &id.clone(), retry, cx);
             let mut saved = view.record.clone();
             saved.pinned_at = Some(4);
-            view.finish_pin(&id, &project, retry, Ok(saved), cx);
+            finish_pin(view, &id, &project, retry, Ok(saved), cx);
             assert_eq!(view.error.as_deref(), Some("newer unrelated failure"));
         })
         .unwrap();
@@ -562,8 +591,9 @@ fn successful_pin_does_not_clear_another_targets_identical_error(cx: &mut TestAp
             let other = uuid::Uuid::new_v4().to_string();
             for target in [&id, &other] {
                 let operation = uuid::Uuid::new_v4();
-                view.pin_operations.insert(target.clone(), operation);
-                view.finish_pin(
+                seed_pin(view, &target.clone(), operation, cx);
+                finish_pin(
+                    view,
                     target,
                     &project,
                     operation,
@@ -572,10 +602,10 @@ fn successful_pin_does_not_clear_another_targets_identical_error(cx: &mut TestAp
                 );
             }
             let retry = uuid::Uuid::new_v4();
-            view.pin_operations.insert(id.clone(), retry);
+            seed_pin(view, &id.clone(), retry, cx);
             let mut saved = view.record.clone();
             saved.pinned_at = Some(4);
-            view.finish_pin(&id, &project, retry, Ok(saved), cx);
+            finish_pin(view, &id, &project, retry, Ok(saved), cx);
             assert_eq!(
                 view.error.as_deref(),
                 Some("Chat pin could not be saved: same storage failure")
@@ -609,6 +639,7 @@ fn add_navigation_records(window: WindowHandle<AgentView>, cx: &mut TestAppConte
                     snapshot: view.project.join(format!("{id}.json")),
                     sidebar_order: Some(order),
                     pinned_at: pin,
+                    archived_at: None,
                 };
                 let draft = DraftRecord {
                     text: format!("{title} draft"),
@@ -1077,6 +1108,13 @@ impl Drop for ShortcutRun {
     }
 }
 fn shortcut_run(window: WindowHandle<AgentView>, cx: &mut TestAppContext) -> ShortcutRun {
+    shortcut_run_with_partial(window, cx, false)
+}
+fn shortcut_run_with_partial(
+    window: WindowHandle<AgentView>,
+    cx: &mut TestAppContext,
+    partial: bool,
+) -> ShortcutRun {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let (ready_tx, ready_rx) = std::sync::mpsc::channel();
@@ -1111,6 +1149,9 @@ fn shortcut_run(window: WindowHandle<AgentView>, cx: &mut TestAppContext) -> Sho
                 b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n",
             )
             .unwrap();
+        if partial {
+            socket.write_all(b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"archive partial\"}\n\n").unwrap();
+        }
         socket.flush().unwrap();
         ready_tx.send(()).unwrap();
         let _ = released.recv_timeout(std::time::Duration::from_secs(15));
@@ -1642,7 +1683,7 @@ fn sidebar_menu_repeat_fixture(copy: bool, cx: &mut TestAppContext) {
         })
         .unwrap();
     if copy {
-        cx.simulate_keystrokes(window.into(), "down");
+        cx.simulate_keystrokes(window.into(), "down down");
     }
     let enter = Keystroke::parse("enter").unwrap();
     let mut visual = VisualTestContext::from_window(window.into(), cx);
@@ -1730,4 +1771,95 @@ fn sidebar_menu_consumed_enter_copy_cannot_repeat_into_send(cx: &mut TestAppCont
 #[gpui::test]
 fn sidebar_menu_consumed_enter_pin_cannot_repeat_into_send(cx: &mut TestAppContext) {
     sidebar_menu_repeat_fixture(false, cx);
+}
+
+// Controlled metadata completions exercise the shared organization coordinator.
+fn seed_pin(view: &mut AgentView, id: &str, token: uuid::Uuid, cx: &mut gpui::Context<AgentView>) {
+    view.test_seed_pin(id, token, cx);
+}
+fn finish_pin(
+    view: &mut AgentView,
+    id: &str,
+    project: &std::path::Path,
+    token: uuid::Uuid,
+    result: Result<ChatRecord, String>,
+    cx: &mut gpui::Context<AgentView>,
+) {
+    view.test_finish_pin(id, project, token, result, cx);
+}
+
+#[gpui::test]
+fn archive_loopback_stop_preserves_partial_output_queue_and_restore_never_resumes(
+    cx: &mut TestAppContext,
+) {
+    let (_dir, window, root) = fixture(cx);
+    let run = shortcut_run_with_partial(window, cx, true);
+    let mut updates = run.controller.subscribe();
+    assert!(
+        cx.executor()
+            .block_with_timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    if updates
+                        .borrow_and_update()
+                        .messages
+                        .last()
+                        .is_some_and(|message| message.text == "archive partial")
+                    {
+                        break;
+                    }
+                    updates.changed().await.unwrap();
+                }
+            })
+            .is_ok(),
+        "loopback partial output was not published"
+    );
+    run.controller
+        .submit("kept in queue".into(), bello_agent_core::Lane::FollowUp)
+        .unwrap();
+    let id = run.controller.snapshot().id;
+    window
+        .update(cx, |view, _, cx| view.set_chat_archived(&id, true, cx))
+        .unwrap();
+    cx.run_until_parked();
+    let mut updates = run.controller.subscribe();
+    assert!(
+        cx.executor()
+            .block_with_timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    if updates.borrow_and_update().state == bello_agent_core::RunState::Paused {
+                        break;
+                    }
+                    updates.changed().await.unwrap();
+                }
+            })
+            .is_ok(),
+        "archive Stop was not published by controller watch"
+    );
+    cx.run_until_parked();
+    let revision = run.controller.revision();
+    let snapshot = run.controller.snapshot();
+    assert_eq!(snapshot.pending.len(), 1);
+    assert_eq!(snapshot.pending[0].text, "kept in queue");
+    assert!(
+        snapshot
+            .messages
+            .iter()
+            .any(|message| message.text == "archive partial" && !message.replay_eligible)
+    );
+    root.update(cx, |view, cx| {
+        assert!(view.chat_is_archived(&id));
+        assert_eq!(view.composer.read(cx).text(), "Keep 日本語 e\u{301}");
+        view.resume_queued(&id, cx);
+        view.submit_chat(bello_agent_core::Lane::FollowUp, cx);
+        assert_eq!(run.controller.revision(), revision);
+        view.set_chat_archived(&id, false, cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(run.controller.revision(), revision);
+    assert_eq!(
+        run.controller.snapshot().state,
+        bello_agent_core::RunState::Paused
+    );
+    assert_eq!(run.controller.snapshot().pending.len(), 1);
+    assert!(!cx.read(|cx| root.read(cx).chat_is_archived(&id)));
 }

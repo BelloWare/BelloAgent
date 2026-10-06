@@ -852,3 +852,142 @@ fn queue_begin_single_flowed_hold_uses_measured_content_and_keeps_constrained_fl
         "the whole actionable line remains reachable by scrolling at the unchanged floor"
     );
 }
+
+#[gpui::test]
+fn archived_begin_and_remove_callbacks_preserve_queue_and_composer(cx: &mut TestAppContext) {
+    let (_dir, window, _root, id, turn) = fixture(cx, false, "queued full text".into(), 5);
+    window
+        .update(cx, |view, window, cx| {
+            let draft = view.saved_draft(cx);
+            let revision = view.controller.snapshot().revision;
+            view.records
+                .iter_mut()
+                .find(|record| record.id == id)
+                .unwrap()
+                .archived_at = Some(1);
+            assert!(matches!(
+                view.queue_edit_row_state(&turn),
+                QueueEditRowState::Available { enabled: false }
+            ));
+            view.begin_queued_edit(&id, &turn, None, window, cx);
+            view.remove_queued_from_chat(&id, &turn, cx);
+            assert!(view.begin_operation.is_none());
+            assert!(view.queue_operation.is_none());
+            assert_eq!(view.controller.snapshot().revision, revision);
+            assert_eq!(view.saved_draft(cx), draft);
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+fn begin_deferred_token_allows_archive_without_consuming_marked_text(cx: &mut TestAppContext) {
+    let (_dir, window, root, id, turn) = fixture(cx, false, "queued full text".into(), 5);
+    window
+        .update(cx, |view, window, cx| {
+            view.composer.update(cx, |editor, cx| {
+                editor.replace_and_mark_text_in_range(None, "漢字", Some(2..2), window, cx)
+            });
+            view.begin_queued_edit(&id, &turn, None, window, cx);
+            assert!(view.archive_chat_work_live(&id));
+        })
+        .unwrap();
+    cx.run_until_parked();
+    root.update(cx, |view, cx| {
+        let operation = view.begin_operation.as_ref().unwrap();
+        assert!(operation.is_deferred());
+        assert!(operation.owns_queue_token(view.queue_operation.unwrap()));
+        assert!(!view.archive_chat_work_live(&id));
+        assert!(view.composer.read(cx).has_marked_text());
+        assert!(view.editing.is_none());
+        let before = view.saved_draft(cx);
+        let token = view.queue_operation;
+        view.records
+            .iter_mut()
+            .find(|record| record.id == id)
+            .unwrap()
+            .archived_at = Some(1);
+        view.resume_deferred_begin(&id, cx);
+        assert_eq!(view.queue_operation, token);
+        assert_eq!(view.saved_draft(cx), before);
+    });
+}
+
+#[gpui::test]
+fn archive_waits_for_controlled_begin_callback_and_drains_on_success_or_failure(
+    cx: &mut TestAppContext,
+) {
+    for fails in [false, true] {
+        let (_dir, window, root, id, turn) = fixture(cx, false, "queued full text".into(), 5);
+        let mut key = None;
+        let mut status = None;
+        window
+            .update(cx, |view, window, cx| {
+                // The actor result is ready, but its exact foreground operation
+                // remains admitted until the controlled completion is delivered.
+                let edit = Uuid::new_v4().to_string();
+                if !fails {
+                    view.controller.begin_edit(&turn, &edit).unwrap();
+                    status = Some(view.controller.edit_status(&edit).unwrap());
+                }
+                let operation_key = Key {
+                    token: Uuid::new_v4(),
+                    chat: id.clone(),
+                    turn: turn.clone(),
+                    edit,
+                    project: view.project.clone(),
+                    controller: view.controller.clone(),
+                    binding: view.window_binding,
+                    window: window.window_handle().downcast::<AgentView>().unwrap(),
+                    focus: window.focused(cx),
+                };
+                view.queue_operation = Some(operation_key.token);
+                view.edit_recovery = EditRecovery::new(true);
+                view.begin_operation = Some(BeginOperation {
+                    key: operation_key.clone(),
+                    deferred: None,
+                    recheck: false,
+                });
+                key = Some(operation_key);
+                view.set_chat_archived(&id, true, cx);
+                assert!(view.archive_chat_work_live(&id));
+            })
+            .unwrap();
+        cx.run_until_parked();
+        root.update(cx, |view, cx| {
+            assert!(!view.chat_is_archived(&id));
+            assert!(view.has_pending_archive(&id));
+            assert!(!view.organization_drain_scheduled);
+            assert!(
+                view.workspace
+                    .lock()
+                    .unwrap()
+                    .snapshot()
+                    .chats
+                    .iter()
+                    .all(|record| record.archived_at.is_none())
+            );
+            let result = if fails {
+                Err("controlled Begin callback failure".into())
+            } else {
+                Ok(status.take().unwrap())
+            };
+            view.finish_begin_read(key.take().unwrap(), result, cx);
+        });
+        cx.run_until_parked();
+        root.update(cx, |view, cx| {
+            assert!(view.chat_is_archived(&id));
+            assert!(view.organization_operations.is_empty());
+            assert!(!view.archive_chat_work_live(&id));
+            assert!(view.begin_operation.is_none());
+            assert_eq!(
+                view.composer.read(cx).text(),
+                if fails {
+                    "ordinary é 日本語"
+                } else {
+                    "queued full text"
+                }
+            );
+            assert_eq!(view.editing.is_some(), !fails);
+        });
+    }
+}

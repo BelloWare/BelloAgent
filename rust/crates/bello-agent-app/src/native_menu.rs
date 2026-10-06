@@ -18,14 +18,30 @@ fn pin_command(pinned: bool) -> MenuCommand {
         MenuCommand {
             title: "Unpin Chat",
             symbol: "pin.slash",
-            action: SidebarAction::SetPinned(false),
+            action: SidebarAction::TogglePinned,
         }
     } else {
         MenuCommand {
             title: "Pin Chat",
             symbol: "pin",
-            action: SidebarAction::SetPinned(true),
+            action: SidebarAction::TogglePinned,
         }
+    }
+}
+
+fn archive_command(archived: bool) -> MenuCommand {
+    MenuCommand {
+        title: if archived {
+            "Restore Chat"
+        } else {
+            "Archive Chat"
+        },
+        symbol: if archived {
+            "arrow.uturn.backward"
+        } else {
+            "archivebox"
+        },
+        action: SidebarAction::ToggleArchived,
     }
 }
 
@@ -40,7 +56,8 @@ fn copy_id_command() -> MenuCommand {
 fn selected_action(selected: u8, pinned: bool) -> Option<SidebarAction> {
     match selected {
         1 => Some(pin_command(pinned).action),
-        2 => Some(copy_id_command().action),
+        2 => Some(SidebarAction::ToggleArchived),
+        3 => Some(copy_id_command().action),
         _ => None,
     }
 }
@@ -138,8 +155,8 @@ pub(crate) use native::show_sidebar_menu;
 #[cfg(target_os = "macos")]
 mod native {
     use super::{
-        SidebarAction, Tracking, ViewCategory, anchor_in_view, copy_id_command, finish_if_open,
-        gpui_child_index, pin_command, selected_action,
+        SidebarAction, Tracking, ViewCategory, anchor_in_view, archive_command, copy_id_command,
+        finish_if_open, gpui_child_index, pin_command, selected_action,
     };
     use cocoa::{
         base::{BOOL, NO, YES, id, nil},
@@ -162,6 +179,7 @@ mod native {
         expected: WindowId,
         position: Point<Pixels>,
         pinned: bool,
+        archived: bool,
         completion: Completion,
     }
 
@@ -185,6 +203,7 @@ mod native {
         window: AnyWindowHandle,
         position: Point<Pixels>,
         pinned: bool,
+        archived: bool,
         completion: impl FnOnce(Option<SidebarAction>, &mut App) + 'static,
     ) {
         let request = Box::new(Request {
@@ -192,6 +211,7 @@ mod native {
             expected: window.window_id(),
             position,
             pinned,
+            archived,
             completion: Box::new(completion),
         });
         // Do not use cx.defer: deferred GPUI work still owns the App borrow.
@@ -294,6 +314,10 @@ mod native {
                     select_pin as extern "C" fn(&mut Object, Sel, id),
                 );
                 class.add_method(
+                    sel!(selectArchive:),
+                    select_archive as extern "C" fn(&mut Object, Sel, id),
+                );
+                class.add_method(
                     sel!(selectCopySessionId:),
                     select_copy_id as extern "C" fn(&mut Object, Sel, id),
                 );
@@ -308,9 +332,13 @@ mod native {
         unsafe { target.set_ivar(SELECTED_IVAR, 1u8) };
     }
 
+    extern "C" fn select_archive(target: &mut Object, _: Sel, _: id) {
+        unsafe { target.set_ivar(SELECTED_IVAR, 2u8) };
+    }
+
     extern "C" fn select_copy_id(target: &mut Object, _: Sel, _: id) {
         // Like Pin, defer all GPUI/clipboard work until native tracking ends.
-        unsafe { target.set_ivar(SELECTED_IVAR, 2u8) };
+        unsafe { target.set_ivar(SELECTED_IVAR, 3u8) };
     }
 
     unsafe fn track_menu(request: &Request, window: &OwnedObject) -> Option<SidebarAction> {
@@ -377,11 +405,15 @@ mod native {
             let _: () = msg_send![menu.0, setAutoenablesItems: NO];
             let target = OwnedObject::from_owned(msg_send![target_class()?, new])?;
             (*target.0).set_ivar(SELECTED_IVAR, 0u8);
-            for (index, command) in [pin_command(request.pinned), copy_id_command()]
-                .into_iter()
-                .enumerate()
+            for (index, command) in [
+                pin_command(request.pinned),
+                archive_command(request.archived),
+                copy_id_command(),
+            ]
+            .into_iter()
+            .enumerate()
             {
-                if index == 1 {
+                if index == 2 {
                     let separator: id = msg_send![class!(NSMenuItem), separatorItem];
                     let _: () = msg_send![menu.0, addItem: separator];
                 }
@@ -389,7 +421,8 @@ mod native {
                 let symbol =
                     OwnedObject::from_owned(NSString::alloc(nil).init_str(command.symbol))?;
                 let action = match command.action {
-                    SidebarAction::SetPinned(_) => sel!(selectPin:),
+                    SidebarAction::TogglePinned => sel!(selectPin:),
+                    SidebarAction::ToggleArchived => sel!(selectArchive:),
                     SidebarAction::CopySessionId => sel!(selectCopySessionId:),
                 };
                 let item: id = msg_send![class!(NSMenuItem), alloc];
@@ -429,7 +462,7 @@ mod tests {
             MenuCommand {
                 title: "Pin Chat",
                 symbol: "pin",
-                action: SidebarAction::SetPinned(true)
+                action: SidebarAction::TogglePinned
             }
         );
         assert_eq!(
@@ -437,7 +470,27 @@ mod tests {
             MenuCommand {
                 title: "Unpin Chat",
                 symbol: "pin.slash",
-                action: SidebarAction::SetPinned(false)
+                action: SidebarAction::TogglePinned
+            }
+        );
+    }
+
+    #[test]
+    fn archive_commands_match_source_labels_symbols_and_activation_intent() {
+        assert_eq!(
+            archive_command(false),
+            MenuCommand {
+                title: "Archive Chat",
+                symbol: "archivebox",
+                action: SidebarAction::ToggleArchived
+            }
+        );
+        assert_eq!(
+            archive_command(true),
+            MenuCommand {
+                title: "Restore Chat",
+                symbol: "arrow.uturn.backward",
+                action: SidebarAction::ToggleArchived
             }
         );
     }
@@ -456,13 +509,17 @@ mod tests {
             assert_eq!(selected_action(0, pinned), None);
             assert_eq!(
                 selected_action(1, pinned),
-                Some(SidebarAction::SetPinned(!pinned))
+                Some(SidebarAction::TogglePinned)
+            );
+            assert_eq!(
+                selected_action(3, pinned),
+                Some(SidebarAction::CopySessionId)
             );
             assert_eq!(
                 selected_action(2, pinned),
-                Some(SidebarAction::CopySessionId)
+                Some(SidebarAction::ToggleArchived)
             );
-            assert_eq!(selected_action(3, pinned), None);
+            assert_eq!(selected_action(4, pinned), None);
             assert_eq!(selected_action(u8::MAX, pinned), None);
         }
     }
@@ -518,8 +575,8 @@ mod tests {
     fn selection_and_cancel_deliver_once_and_release_the_callback() {
         for choice in [
             None,
-            Some(SidebarAction::SetPinned(true)),
-            Some(SidebarAction::SetPinned(false)),
+            Some(SidebarAction::TogglePinned),
+            Some(SidebarAction::TogglePinned),
             Some(SidebarAction::CopySessionId),
         ] {
             let calls = Cell::new(0);

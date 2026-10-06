@@ -5,7 +5,11 @@ use bello_agent_core::{
     workspace::{DraftRecord, QueuedCancelReceipt, QueuedCancelState},
 };
 use gpui::Context;
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -36,8 +40,81 @@ pub(crate) struct CancelOperation {
     deferred: Option<QueueEditStatus>,
     recheck: bool,
 }
+impl CancelOperation {
+    pub(crate) fn is_live(&self) -> bool {
+        matches!(self.phase, Phase::Running | Phase::Settling)
+    }
+    pub(crate) fn is_deferred(&self) -> bool {
+        self.phase == Phase::Deferred
+    }
+    pub(crate) fn owns_queue_token(&self, token: Uuid) -> bool {
+        self.key.token == token
+    }
+}
+
+/// Admission cause outlives transient operation objects and placeholder
+/// controllers. A Restore/composer/load notification cannot authorize a new
+/// actor cancellation for the exact receipt parked by Archive.
+#[derive(Default)]
+pub(crate) struct ArchiveCancelDeferrals {
+    receipts: HashMap<(PathBuf, String), QueuedCancelReceipt>,
+}
+impl ArchiveCancelDeferrals {
+    fn remember(&mut self, project: &Path, id: &str, receipt: &QueuedCancelReceipt) {
+        if matches!(receipt.state, QueuedCancelState::Pending { .. }) {
+            self.receipts
+                .insert((project.to_owned(), id.to_owned()), receipt.clone());
+        }
+    }
+    fn blocks(&self, project: &Path, id: &str, receipt: &QueuedCancelReceipt) -> bool {
+        self.receipts.get(&(project.to_owned(), id.to_owned())) == Some(receipt)
+    }
+    fn allow_explicit(&mut self, project: &Path, id: &str, receipt: &QueuedCancelReceipt) {
+        if self.blocks(project, id, receipt) {
+            self.receipts.remove(&(project.to_owned(), id.to_owned()));
+        }
+    }
+    fn observe(&mut self, project: &Path, id: &str, receipt: &QueuedCancelReceipt) {
+        let key = (project.to_owned(), id.to_owned());
+        if matches!(receipt.state, QueuedCancelState::Settled)
+            && self
+                .receipts
+                .get(&key)
+                .is_some_and(|pending| pending.revision < receipt.revision)
+        {
+            self.receipts.remove(&key);
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RetryCause {
+    Automatic,
+    Explicit,
+}
 
 impl AgentView {
+    fn pending_cancel_receipt(&self, id: &str) -> Option<QueuedCancelReceipt> {
+        self.queued_cancellations
+            .get(id)
+            .filter(|receipt| matches!(receipt.state, QueuedCancelState::Pending { .. }))
+            .cloned()
+            .or_else(|| {
+                self.chat_ref(id).and_then(|chat| {
+                    chat.cancel_operation
+                        .as_ref()
+                        .map(|operation| operation.receipt.clone())
+                })
+            })
+    }
+    /// Called synchronously when Archive is accepted, including when a Cancel
+    /// is still Deferred and its first recheck will only arrive after Restore.
+    pub(crate) fn defer_cancel_for_archive(&mut self, id: &str) {
+        if let Some(receipt) = self.pending_cancel_receipt(id) {
+            self.archive_cancel_deferrals
+                .remember(&self.project, id, &receipt);
+        }
+    }
     pub(crate) fn has_pending_cancel(&self, id: &str) -> bool {
         self.queued_cancellations
             .get(id)
@@ -62,18 +139,22 @@ impl AgentView {
             chat.queue_operation = None;
             self.resume_durable_cancel(id, cx);
         }
+        cx.notify();
     }
     fn restart_cancel_check(&mut self, key: &Key, cx: &mut Context<Self>) {
+        let read_only = self.chat_is_archived(&key.chat);
         let chat = self.chat_mut(&key.chat).unwrap();
         chat.queue_operation = None;
         chat.busy = false;
         chat.composer
-            .update(cx, |editor, cx| editor.set_read_only(false, cx));
+            .update(cx, |editor, cx| editor.set_read_only(read_only, cx));
         chat.cancel_operation.as_mut().unwrap().phase = Phase::Retry;
         self.resume_durable_cancel(&key.chat, cx);
+        cx.notify();
     }
     pub(crate) fn can_cancel_owned_edit(&self) -> bool {
         self.editing.is_some()
+            && !self.actor_mutation_blocked(&self.record.id)
             && !self.busy
             && !self.loading
             && !self.load_failed
@@ -124,38 +205,54 @@ impl AgentView {
             cx.notify();
             return;
         }
-        self.start_cancel(chat_id, receipt, true, cx);
+        self.start_cancel(chat_id, receipt, true, RetryCause::Explicit, cx);
+    }
+    /// Only explicit current-chat reselection uses this route. In particular,
+    /// archive fallback and load/composer callbacks keep their automatic cause.
+    pub(crate) fn resume_durable_cancel_explicit(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.record.id != id || self.actor_mutation_blocked(id) || self.shutting_down {
+            return;
+        }
+        let Some(receipt) = self.pending_cancel_receipt(id) else {
+            return;
+        };
+        self.archive_cancel_deferrals
+            .allow_explicit(&self.project, id, &receipt);
+        self.resume_durable_cancel(id, cx);
     }
     pub(crate) fn resume_durable_cancel(&mut self, id: &str, cx: &mut Context<Self>) {
-        let receipt = self
-            .queued_cancellations
-            .get(id)
-            .filter(|receipt| matches!(receipt.state, QueuedCancelState::Pending { .. }))
-            .cloned()
-            .or_else(|| {
-                self.chat_ref(id).and_then(|chat| {
-                    chat.cancel_operation
-                        .as_ref()
-                        .map(|operation| operation.receipt.clone())
-                })
-            });
-        let Some(receipt) = receipt else { return };
+        let Some(receipt) = self.pending_cancel_receipt(id) else {
+            return;
+        };
         let QueuedCancelState::Pending { ref edit_id, .. } = receipt.state else {
             return;
         };
         let owned = self
             .chat_ref(id)
             .is_some_and(|chat| chat.editing.as_ref() == Some(edit_id));
-        self.start_cancel(id, receipt, owned, cx);
+        self.start_cancel(id, receipt, owned, RetryCause::Automatic, cx);
     }
     fn start_cancel(
         &mut self,
         id: &str,
         receipt: QueuedCancelReceipt,
         owned: bool,
+        cause: RetryCause,
         cx: &mut Context<Self>,
     ) {
         if self.shutting_down {
+            return;
+        }
+        if self.actor_mutation_blocked(id) {
+            self.archive_cancel_deferrals
+                .remember(&self.project, id, &receipt);
+            return;
+        }
+        if cause == RetryCause::Automatic
+            && self
+                .archive_cancel_deferrals
+                .blocks(&self.project, id, &receipt)
+        {
             return;
         }
         let project = self.project.clone();
@@ -205,47 +302,53 @@ impl AgentView {
             deferred: None,
             recheck: false,
         });
+        if cause == RetryCause::Explicit {
+            self.archive_cancel_deferrals
+                .allow_explicit(&self.project, id, &receipt);
+        }
         let worker = key.controller.clone();
         let worker_id = id.to_owned();
         let pending = receipt.clone();
         let task = cx.background_executor().spawn(async move {
-            let (prepared, observed) = match workspace.lock() {
-                Ok(mut store) => {
-                    let result = store
-                        .prepare_queued_cancel(&worker_id, pending.clone(), draft)
-                        .map_err(|e| e.to_string());
-                    (
-                        result,
-                        store
-                            .snapshot()
-                            .queued_cancellations
-                            .get(&worker_id)
-                            .cloned(),
-                    )
-                }
-                Err(_) => (Err("Workspace is unavailable".into()), None),
-            };
-            let confirmed_revision = prepared.as_ref().ok().map(|()| captured_revision);
-            let result = prepared.and_then(|()| {
+            let mut observed = None;
+            let prepared = crate::chat_organization::catalog_operation(&workspace, |store| {
+                let result = store.prepare_queued_cancel(&worker_id, pending.clone(), draft);
+                observed = store
+                    .snapshot()
+                    .queued_cancellations
+                    .get(&worker_id)
+                    .cloned();
+                result
+            });
+            let confirmed_revision = prepared.result.as_ref().ok().map(|()| captured_revision);
+            let result = prepared.result.and_then(|()| {
                 let QueuedCancelState::Pending { edit_id, turn_id } = &pending.state else {
                     unreachable!()
                 };
-                worker
-                    .cancel_edit_certain(edit_id, turn_id)
-                    .map_err(|e| e.to_string())
+                worker.cancel_edit_certain(edit_id, turn_id)
             });
-            (observed, confirmed_revision, result)
+            (observed, confirmed_revision, result, prepared.uncertain)
         });
         cx.spawn(async move |view, cx| {
-            let (observed, confirmed_revision, result) = task.await;
+            let (observed, confirmed_revision, result, uncertain) = task.await;
             let _ = view.update(cx, |view, cx| {
+                if view.project == key.project {
+                    view.observe_catalog_uncertainty(uncertain, cx);
+                }
                 if let Some(revision) = confirmed_revision
                     && view.accept_cancel_key(&key)
                 {
                     let chat = view.chat_mut(&key.chat).unwrap();
                     chat.draft_save_status.confirm(revision, &mut chat.error);
                 }
-                view.finish_cancel_read(key, observed, result, cx)
+                view.finish_cancel_read(
+                    key,
+                    observed,
+                    result.map_err(|error| {
+                        crate::chat_organization::catalog_error(&error, uncertain)
+                    }),
+                    cx,
+                )
             });
         })
         .detach();
@@ -272,6 +375,8 @@ impl AgentView {
                 .get(&key.chat)
                 .is_none_or(|old| old.revision < receipt.revision || old == &receipt);
             if replace {
+                self.archive_cancel_deferrals
+                    .observe(&self.project, &key.chat, &receipt);
                 self.queued_cancellations.insert(key.chat.clone(), receipt);
             }
         }
@@ -280,12 +385,13 @@ impl AgentView {
         if !self.accept_cancel_key(key) {
             return;
         }
+        let read_only = self.chat_is_archived(&key.chat);
         let chat = self.chat_mut(&key.chat).unwrap();
         chat.queue_operation = None;
         chat.busy = false;
         chat.edit_recovery.blocked = true;
         chat.composer
-            .update(cx, |editor, cx| editor.set_read_only(false, cx));
+            .update(cx, |editor, cx| editor.set_read_only(read_only, cx));
         if let Some(operation) = &mut chat.cancel_operation {
             operation.phase = Phase::Retry;
             operation.deferred = None;
@@ -397,26 +503,24 @@ impl AgentView {
         let saved_source = source.clone();
         let saved = reconciled.clone();
         let task = cx.background_executor().spawn(async move {
-            match workspace.lock() {
-                Ok(mut store) => {
-                    let result = store
-                        .settle_queued_cancel(&id, &expected, &saved_source, saved)
-                        .map_err(|e| e.to_string());
-                    (
-                        store.snapshot().queued_cancellations.get(&id).cloned(),
-                        result,
-                    )
-                }
-                Err(_) => (None, Err("Workspace is unavailable".into())),
-            }
+            let mut observed = None;
+            let outcome = crate::chat_organization::catalog_operation(&workspace, |store| {
+                let result = store.settle_queued_cancel(&id, &expected, &saved_source, saved);
+                observed = store.snapshot().queued_cancellations.get(&id).cloned();
+                result
+            });
+            (observed, outcome)
         });
         cx.spawn(async move |view, cx| {
-            let (observed, result) = task.await;
+            let (observed, outcome) = task.await;
             let _ = view.update(cx, |view, cx| {
+                if view.project == key.project {
+                    view.observe_catalog_uncertainty(outcome.uncertain, cx);
+                }
                 view.finish_cancel_settlement(
                     key,
                     observed,
-                    result,
+                    outcome.display_result(),
                     Settlement {
                         source,
                         reconciled,
@@ -455,6 +559,7 @@ impl AgentView {
                 return;
             }
         };
+        let read_only = self.chat_is_archived(&key.chat);
         let chat = self.chat_mut(&key.chat).unwrap();
         if applied {
             chat.draft_save_status
@@ -468,7 +573,7 @@ impl AgentView {
         chat.busy = false;
         chat.edit_recovery = EditRecovery::new(false);
         chat.composer
-            .update(cx, |editor, cx| editor.set_read_only(false, cx));
+            .update(cx, |editor, cx| editor.set_read_only(read_only, cx));
         chat.session = chat.controller.snapshot_shared();
         if applied && owned && changed && unchanged {
             chat.editing = None;
@@ -533,6 +638,7 @@ impl AgentView {
         cx: &mut Context<Self>,
     ) {
         if self.record.id != chat_id
+            || self.actor_mutation_blocked(chat_id)
             || self.shutting_down
             || self.busy
             || self.loading
@@ -592,6 +698,6 @@ impl AgentView {
         // Abandon adoption immediately, before catalog preparation or an actor
         // reply can run. The receipt then fences a Begin not yet executed.
         self.abandon_begin_for_cancel(chat_id, edit_id, turn_id);
-        self.start_cancel(chat_id, receipt, false, cx);
+        self.start_cancel(chat_id, receipt, false, RetryCause::Explicit, cx);
     }
 }

@@ -17,6 +17,7 @@ pub(super) struct ShutdownPlan {
 pub(super) struct ShutdownOutcome {
     /// Registration can succeed before a later write/stop fails.
     pub registered: Vec<String>,
+    pub catalog_uncertain: bool,
     pub result: Result<(), String>,
 }
 
@@ -37,19 +38,11 @@ impl ShutdownPlan {
         Fut: std::future::Future<Output = Result<(), String>>,
     {
         let mut registered = Vec::new();
-        let saved = (|| -> Result<(), String> {
-            let mut store = self
-                .workspace
-                .lock()
-                .map_err(|_| "Workspace is unavailable".to_owned())?;
+        let saved = crate::chat_organization::catalog_operation(&self.workspace, |store| {
             for (record, draft) in self.drafts {
-                store
-                    .register(record.clone(), draft.clone())
-                    .map_err(|error| error.to_string())?;
+                store.register(record.clone(), draft.clone())?;
                 registered.push(record.id.clone());
-                store
-                    .save_draft(&record.id, draft)
-                    .map_err(|error| error.to_string())?;
+                store.save_draft(&record.id, draft)?;
             }
             if store
                 .snapshot()
@@ -59,12 +52,12 @@ impl ShutdownPlan {
             {
                 // Keep current Rust policy: a selection-save failure is fatal.
                 // The Swift Quit path's best-effort selection is a separate gap.
-                store
-                    .select(&self.selected, self.selection_revision)
-                    .map_err(|error| error.to_string())?;
+                store.select(&self.selected, self.selection_revision)?;
             }
             Ok(())
-        })();
+        });
+        let catalog_uncertain = saved.uncertain;
+        let saved = saved.display_result();
         let result = if saved.is_ok() {
             let mut result = Ok(());
             for controller in self.controllers {
@@ -77,7 +70,11 @@ impl ShutdownPlan {
         } else {
             saved
         };
-        ShutdownOutcome { registered, result }
+        ShutdownOutcome {
+            registered,
+            result,
+            catalog_uncertain,
+        }
     }
 }
 

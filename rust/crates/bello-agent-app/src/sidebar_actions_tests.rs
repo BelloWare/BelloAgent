@@ -53,9 +53,23 @@ fn install_menu(view: &mut AgentView, id: &str) -> uuid::Uuid {
         project: view.project.clone(),
         binding: view.window_binding,
         pinned: false,
-        selected: SidebarAction::SetPinned(true),
+        archived: false,
+        selected: SidebarAction::TogglePinned,
         #[cfg(not(target_os = "macos"))]
         position: point(px(80.), px(100.)),
+        #[cfg(not(target_os = "macos"))]
+        previous_focus: None,
+        #[cfg(not(target_os = "macos"))]
+        focus_record_id: view.record.id.clone(),
+        #[cfg(not(target_os = "macos"))]
+        popup_window: None,
+        #[cfg(not(target_os = "macos"))]
+        focus_route: (
+            view.navigation_generation,
+            view.show_files,
+            view.selected_file,
+            view.changes_open,
+        ),
     });
     token
 }
@@ -85,7 +99,7 @@ fn sidebar_copy_id_targets_nonselected_pending_record_without_saving_or_focusing
             assert_eq!(view.draft_revision, revision);
             assert!(view.composer.read(cx).has_marked_text());
             assert!(view.composer.read(cx).focus_handle(cx).is_focused(window));
-            assert!(view.pin_operations.is_empty());
+            assert!(view.organization_operations.is_empty());
             assert!(view.records.iter().all(|record| record.pinned_at.is_none()));
             assert!(!view.inactive[&first].controller.is_persistent());
         })
@@ -168,15 +182,15 @@ fn sidebar_copy_id_keyboard_selection_and_escape_preserve_pin_behavior(cx: &mut 
             view.open_sidebar_menu(&id, point(px(80.), px(100.)), window, cx)
         })
         .unwrap();
-    cx.simulate_keystrokes(window.into(), "down enter");
+    cx.simulate_keystrokes(window.into(), "down down enter");
     assert_eq!(clipboard(cx), id);
-    assert!(cx.read(|cx| root.read(cx).pin_operations.is_empty()));
+    assert!(cx.read(|cx| root.read(cx).organization_operations.is_empty()));
     window
         .update(cx, |view, window, cx| {
             view.open_sidebar_menu(&id, point(px(80.), px(100.)), window, cx)
         })
         .unwrap();
-    cx.simulate_keystrokes(window.into(), "down up up enter");
+    cx.simulate_keystrokes(window.into(), "down down up up enter");
     cx.run_until_parked();
     assert!(cx.read(|cx| {
         root.read(cx)
@@ -210,5 +224,212 @@ fn sidebar_copy_id_mouse_uses_real_menu_row_and_keeps_other_chat_selected(cx: &m
     assert_eq!(clipboard(cx), first);
     assert_eq!(cx.read(|cx| root.read(cx).record.id.clone()), second);
     assert!(cx.read(|cx| root.read(cx).sidebar_menu.is_none()));
-    assert!(cx.read(|cx| root.read(cx).pin_operations.is_empty()));
+    assert!(cx.read(|cx| root.read(cx).organization_operations.is_empty()));
+}
+
+#[gpui::test]
+fn sidebar_second_menu_stays_usable_while_archive_waits_and_toggles_at_activation(
+    cx: &mut TestAppContext,
+) {
+    let (_dir, window, root) = fixture(cx);
+    let id = cx.read(|cx| root.read(cx).record.id.clone());
+    window
+        .update(cx, |view, window, cx| {
+            view.busy = true;
+            view.set_chat_archived(&id, true, cx);
+            view.open_sidebar_menu(&id, gpui::point(gpui::px(80.), gpui::px(100.)), window, cx);
+            let token = view.sidebar_menu.as_ref().unwrap().token;
+            assert!(!view.sidebar_menu.as_ref().unwrap().archived);
+            // Native tracking can outlive an earlier completion. The action uses
+            // current authoritative metadata, never the menu's captured label.
+            view.records
+                .iter_mut()
+                .find(|record| record.id == id)
+                .unwrap()
+                .archived_at = Some(9);
+            view.finish_sidebar_menu(token, Some(SidebarAction::ToggleArchived), cx);
+            let queue = &view.organization_operations[&id].intents;
+            assert_eq!(queue.len(), 2);
+            assert_eq!(
+                queue[1].action,
+                crate::chat_organization::OrganizationAction::SetArchived(false)
+            );
+            view.open_sidebar_menu(&id, gpui::point(gpui::px(80.), gpui::px(100.)), window, cx);
+            let token = view.sidebar_menu.as_ref().unwrap().token;
+            view.finish_sidebar_menu(token, Some(SidebarAction::CopySessionId), cx);
+            assert_eq!(view.organization_operations[&id].intents.len(), 2);
+            view.busy = false;
+            cx.notify();
+        })
+        .unwrap();
+    assert_eq!(clipboard(cx), id);
+    cx.run_until_parked();
+    assert!(!cx.read(|cx| root.read(cx).chat_is_archived(&id)));
+}
+
+#[cfg(not(target_os = "macos"))]
+#[gpui::test]
+fn sidebar_popup_keys_work_from_blur_and_archived_footer_restore(cx: &mut TestAppContext) {
+    let (_dir, window, root) = fixture(cx);
+    let id = cx.read(|cx| root.read(cx).record.id.clone());
+    window
+        .update(cx, |view, window, cx| {
+            window.blur();
+            view.open_sidebar_menu(&id, point(px(80.), px(100.)), window, cx);
+        })
+        .unwrap();
+    cx.simulate_keystrokes(window.into(), "down");
+    assert_eq!(
+        cx.read(|cx| root.read(cx).sidebar_menu.as_ref().unwrap().selected),
+        SidebarAction::ToggleArchived
+    );
+    cx.simulate_keystrokes(window.into(), "escape");
+    cx.run_until_parked();
+    window
+        .update(cx, |view, window, cx| {
+            assert!(view.sidebar_menu.is_none());
+            assert!(view.root_focus.is_focused(window));
+            view.composer.read(cx).focus(window);
+            view.set_chat_archived(&id, true, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    window
+        .update(cx, |view, window, cx| {
+            assert!(view.chat_is_archived(&id));
+            assert!(view.root_focus.is_focused(window));
+            assert!(!view.composer.read(cx).focus_handle(cx).is_focused(window));
+            view.set_chat_archived(&id, false, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    window
+        .update(cx, |view, window, cx| {
+            assert!(!view.chat_is_archived(&id));
+            assert!(view.root_focus.is_focused(window));
+            view.open_sidebar_menu(&id, point(px(80.), px(100.)), window, cx);
+        })
+        .unwrap();
+    cx.simulate_keystrokes(window.into(), "down escape");
+    cx.run_until_parked();
+    window
+        .update(cx, |view, window, cx| {
+            assert!(view.sidebar_menu.is_none());
+            assert!(view.root_focus.is_focused(window));
+            assert_eq!(view.composer.read(cx).text(), "first draft 日本語");
+            // Window-wide source shortcut remains routed through the noneditable root.
+        })
+        .unwrap();
+    cx.simulate_keystrokes(window.into(), "ctrl-shift-g");
+    assert!(cx.read(|cx| root.read(cx).changes_open));
+}
+
+#[cfg(not(target_os = "macos"))]
+#[gpui::test]
+fn sidebar_popup_restores_visible_focus_without_touching_marked_text(cx: &mut TestAppContext) {
+    let (_dir, window, root) = fixture(cx);
+    let id = cx.read(|cx| root.read(cx).record.id.clone());
+    for filter in [false, true] {
+        window
+            .update(cx, |view, window, cx| {
+                let editor = if filter { &view.filter } else { &view.composer };
+                editor.update(cx, |editor, cx| {
+                    editor.focus(window);
+                    let length = editor.text().encode_utf16().count();
+                    editor.replace_and_mark_text_in_range(
+                        Some(0..length),
+                        "marked 漢字",
+                        Some(1..1),
+                        window,
+                        cx,
+                    );
+                });
+                view.open_sidebar_menu(&id, point(px(80.), px(100.)), window, cx);
+            })
+            .unwrap();
+        cx.simulate_keystrokes(window.into(), "escape");
+        cx.run_until_parked();
+        window
+            .update(cx, |view, window, cx| {
+                let editor = if filter { &view.filter } else { &view.composer };
+                assert!(editor.read(cx).focus_handle(cx).is_focused(window));
+                assert!(editor.read(cx).has_marked_text());
+                assert_eq!(editor.read(cx).text(), "marked 漢字");
+                editor.update(cx, |editor, cx| editor.unmark_text(window, cx));
+            })
+            .unwrap();
+    }
+    window
+        .update(cx, |view, window, cx| {
+            view.open_sidebar_menu(&id, point(px(80.), px(100.)), window, cx);
+            let token = view.sidebar_menu.as_ref().unwrap().token;
+            view.finish_sidebar_menu(token, None, cx);
+            // A newer focus destination wins over the deferred dismissal restore.
+            view.composer.read(cx).focus(window);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    window
+        .update(cx, |view, window, cx| {
+            assert!(view.composer.read(cx).focus_handle(cx).is_focused(window))
+        })
+        .unwrap();
+}
+
+#[cfg(not(target_os = "macos"))]
+#[gpui::test]
+fn sidebar_popup_newer_menu_and_hidden_file_win_over_old_focus_restore(cx: &mut TestAppContext) {
+    let (dir, window, root) = fixture(cx);
+    let id = cx.read(|cx| root.read(cx).record.id.clone());
+    let path = dir.path().join("focus.txt");
+    std::fs::write(&path, "file stays unchanged").unwrap();
+    window
+        .update(cx, |view, window, cx| {
+            view.open_file(path.clone(), None, window, cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+    window
+        .update(cx, |view, window, cx| {
+            view.files[0].view.read(cx).focus(window, cx);
+            view.open_sidebar_menu(&id, point(px(80.), px(100.)), window, cx);
+            let old = view.sidebar_menu.as_ref().unwrap().token;
+            view.finish_sidebar_menu(old, None, cx);
+            view.open_sidebar_menu(&id, point(px(80.), px(100.)), window, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    window
+        .update(cx, |view, window, _| {
+            assert!(view.sidebar_menu.is_some());
+            assert!(view.sidebar_popup_focus.is_focused(window));
+        })
+        .unwrap();
+    cx.simulate_keystrokes(window.into(), "down escape");
+    cx.run_until_parked();
+    window
+        .update(cx, |view, window, cx| {
+            view.files[0].view.read(cx).focus(window, cx);
+            view.open_sidebar_menu(&id, point(px(80.), px(100.)), window, cx);
+            let token = view.sidebar_menu.as_ref().unwrap().token;
+            view.finish_sidebar_menu(token, None, cx);
+            view.show_files = false;
+            view.selected_file = None;
+            cx.notify();
+        })
+        .unwrap();
+    cx.run_until_parked();
+    window
+        .update(cx, |view, window, _| {
+            assert!(view.sidebar_menu.is_none());
+            assert!(
+                view.root_focus.is_focused(window),
+                "hidden file cannot reclaim focus"
+            );
+        })
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(path).unwrap(),
+        "file stays unchanged"
+    );
 }

@@ -25,6 +25,17 @@ pub(crate) struct EditRecovery {
     requested: Option<String>,
 }
 impl EditRecovery {
+    pub(crate) fn is_deferred(&self) -> bool {
+        self.pending.is_some() && self.deferred.is_some()
+    }
+    pub(crate) fn has_live_check(&self) -> bool {
+        self.pending.is_some() && self.deferred.is_none()
+    }
+    pub(crate) fn owns_queue_token(&self, token: Uuid) -> bool {
+        self.pending
+            .as_ref()
+            .is_some_and(|check| check.operation == token)
+    }
     pub(crate) fn new(blocked: bool) -> Self {
         Self {
             blocked,
@@ -179,6 +190,7 @@ impl AgentView {
             chat.edit_recovery.pending = None;
             chat.edit_recovery.deferred = None;
             self.reconcile_edit_identity(&check.chat_id, check.edit_id, cx);
+            cx.notify();
             return;
         }
         if chat.editing != check.owned_edit {
@@ -214,6 +226,7 @@ impl AgentView {
             chat.queue_operation = None;
             chat.edit_recovery.pending = None;
             self.reconcile_edit_identity(&check.chat_id, check.edit_id, cx);
+            cx.notify();
             return;
         }
         let mut draft = chat.saved_draft(cx);

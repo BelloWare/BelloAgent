@@ -565,3 +565,40 @@ fn edit_recovery_rejected_submission_settlement_drains_unowned_hold_status(
         assert!(view.inflight_submission.is_none());
     });
 }
+
+#[gpui::test]
+fn reconciliation_deferred_token_is_ready_for_archive_but_still_preserves_composition(
+    cx: &mut TestAppContext,
+) {
+    let (_dir, window, root, id) = fixture(cx, true, "ordinary".into(), "rewrite".into(), 5);
+    window
+        .update(cx, |view, window, cx| {
+            view.composer.update(cx, |editor, cx| {
+                editor.replace_and_mark_text_in_range(None, "漢字", Some(2..2), window, cx)
+            });
+            view.reconcile_edit(&id, cx);
+            assert!(view.archive_chat_work_live(&id));
+        })
+        .unwrap();
+    cx.run_until_parked();
+    root.update(cx, |view, cx| {
+        assert!(view.edit_recovery.is_deferred());
+        assert!(!view.edit_recovery.has_live_check());
+        assert!(
+            view.edit_recovery
+                .owns_queue_token(view.queue_operation.unwrap())
+        );
+        assert!(!view.archive_chat_work_live(&id));
+        assert!(view.composer.read(cx).has_marked_text());
+        let draft = view.saved_draft(cx);
+        let token = view.queue_operation;
+        view.records
+            .iter_mut()
+            .find(|record| record.id == id)
+            .unwrap()
+            .archived_at = Some(1);
+        view.resume_edit_reconciliation(&id, cx);
+        assert_eq!(view.queue_operation, token);
+        assert_eq!(view.saved_draft(cx), draft);
+    });
+}

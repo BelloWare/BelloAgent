@@ -1584,3 +1584,80 @@ Clippy and formatting pass. Four safety mutations were caught and restored.
 Actual SSE fallback, queued/running read cancellation, unknown-result recovery
 headroom and old-reader byte-preserving refusal are covered. Independent review
 is clear. All model requests in these tests use synthetic loopback servers.
+
+## Archive / Restore workflow (2026-10-06)
+
+The single-project Rust sidebar gains source Archive/Restore menu actions,
+active-before-archived grouping, and a footer switch for archived chats. Archived
+chat content stays readable; its composer is replaced by “Archived · Read-only”
+and Restore Chat. The retained editor/draft, queued input, history, pin and
+organization order are preserved. Stop remains available. Restore only changes
+metadata and never resumes a run or queued message automatically.
+
+Pin/Archive/Restore share a per-chat FIFO. Menu activation resolves its explicit
+desired state against the current record; a queued intent does not optimistically
+change metadata. Existing admitted actor work reaches its owned completion before
+Archive requests Stop and writes metadata. Stop is a request, not an awaited
+provider acknowledgment, and a failed metadata write may already have stopped
+work. Different chats remain independent. Notification-driven draining has no
+retry polling timer.
+
+A confirmed Archive of the still-selected chat falls back to the first active
+chat in current sidebar order, ignoring the text filter; if none exists, the
+archived chat remains open. Newer navigation wins. The Rust navigation fence also
+preserves explicit file/pane navigation, a stronger safety policy than Swift’s
+selected/focused-session/page revision. Explicit archived selection reveals and
+saves the archive switch; launch-only reveal is transient. Startup honors a saved
+archived selection, while an all-archived catalog without one creates a genuinely
+new pending chat rather than reusing the launch session anchor.
+
+Catalog version4 adds archived timestamps and independently revisioned archive
+visibility. Versions1–3 open without rewrite, then promote monotonically on an
+archive/visibility mutation; every existing writer preserves version4, including
+queued-cancellation preparation. Previous readers reject version4 rather than
+silently dropping archive state. Metadata-only writes retain newer stored titles,
+drafts, pins, selection and submission/cancellation receipts. Idempotent operations
+do not change timestamps or trigger another selection fallback.
+
+The app blocks new run/queue mutations both at controls and method admission while
+Archive is pending or confirmed. Swift has broad archived run/edit guards but
+not every specialized queue helper repeats one; consistently blocking new queue
+mutation here is an explicit safety interpretation of its read-only contract.
+IME-deferred adoption keeps its token and text. Restore/load/composer notifications
+do not retry an Archive-deferred cancellation actor operation; later explicit
+user intent is required. Close names a reachable Restore-and-finish-composition
+path instead of discarding a hidden deferred edit.
+
+Post-rename catalog uncertainty leaves visible live drafts intact, does not guess
+whether metadata committed, and blocks later actor admissions/queued organization
+writes once observed. There is still no safe in-app uncertain-store recovery.
+Core reopen validation establishes committed bytes, but forced restart cannot be
+promised to preserve unsaved live drafts; no automatic retry/restart is suggested.
+
+Focused core archive/version/rename-boundary tests and six storage mutations pass.
+Final app Archive40, error-ownership3 and shutdown4 tests pass; source FIFO, late
+callback, actual loopback Stop, Restore-no-resume and selected/inactive IME-deferred
+Close paths are covered. Four app mutations fail their regressions and were
+restored. Strict app all-target Clippy, formatting and Linux build pass. Independent
+core/app review is clear. Native Linux desktop QA is recorded below; native macOS
+menus, accessibility and IME acceptance are not established by these Linux tests.
+
+Initial native Linux Archive QA confirmed active Stop/fallback, preserved Unicode
+drafts/pin/queued input, read-only footer, Restore without another request, and
+reopen/temporary visibility behavior. It caught a popup keyboard-focus defect
+after footer Restore. The non-macOS popup now owns explicit focus; safe dismissal
+restores only a still-visible, current-route descendant, otherwise a noneditable
+root. Archived startup/selection and disappearance of the focused composer use
+that root without stealing file/filter/modal focus. Native macOS handling is
+unchanged. Eight sidebar tests and three held-Enter regressions pass; removing
+popup focus or the fresh pane-state fence fails the new real-dispatch tests.
+Strict app Clippy/build pass. The exact corrected native Linux focus retest passed.
+
+The frozen focus-fixed Linux binary `f67092cc5411f0e36013e596925487b9740c7e3910f42354ce2b14b2e9d742c1`
+passed footer Restore → context menu Down/Escape without a composer click.
+Returning from a menu also restored explicit composer keyboard focus, verified
+by selecting its unchanged draft. Normal Close preserved all three exact fixture
+drafts, pin, selected chat and paused queue. The gated loopback gateway retained
+only the original request and cancellation, proving Restore did not launch work.
+This was an isolated synthetic fixture on the cloud Linux desktop; native macOS
+AppKit, accessibility, IME and same-hardware performance remain separate gates.

@@ -18,6 +18,7 @@ fn fixture() -> (tempfile::TempDir, ShutdownPlan) {
     let record = ChatRecord {
         sidebar_order: None,
         pinned_at: None,
+        archived_at: None,
         id: snapshot.id,
         title: snapshot.title,
         snapshot: project.join("session.json"),

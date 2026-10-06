@@ -299,3 +299,31 @@ fn queue_drag_preserves_composition_and_window_rebind_cancels_old_payload(cx: &m
         .unwrap();
     assert_eq!(order(&root, cx), ids);
 }
+
+#[gpui::test]
+fn archive_rejects_a_previously_captured_drag_without_reordering(cx: &mut TestAppContext) {
+    let (_dir, window, root, ids) = fixture(cx, 3);
+    let before = order(&root, cx);
+    window
+        .update(cx, |view, window, cx| {
+            let drag = view.queue_drag_payload(&ids[0], 1, "follow 0");
+            assert!(view.accepts_queue_drag(&drag));
+            let id = view.record.id.clone();
+            view.records
+                .iter_mut()
+                .find(|record| record.id == id)
+                .unwrap()
+                .archived_at = Some(1);
+            assert!(!view.accepts_queue_drag(&drag));
+            view.start_queue_drag(&drag, window, cx);
+            assert!(view.queue_drag.is_none());
+            view.reorder_queued(&drag, ids.iter().rev().cloned().collect(), cx);
+            assert!(view.queue_operation.is_none());
+            view.drop_queued(&drag, window, cx);
+            assert!(view.queue_operation.is_none());
+            assert_eq!(view.composer.read(cx).text(), "untouched draft");
+        })
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(order(&root, cx), before);
+}

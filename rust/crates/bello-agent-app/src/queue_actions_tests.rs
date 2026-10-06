@@ -563,3 +563,68 @@ fn queue_resume_paused_labels_keep_readable_width_across_resize_and_snapshot_ref
         assert!(action.right() <= header.right());
     }
 }
+
+#[gpui::test]
+fn archive_guard_blocks_direct_resume_promotion_and_reorder_from_current_records(
+    cx: &mut TestAppContext,
+) {
+    let (_dir, _window, root, turn) = fixture(cx);
+    root.update(cx, |view, cx| {
+        let id = view.record.id.clone();
+        let draft = view.saved_draft(cx);
+        let before = view.controller.snapshot();
+        let drag = view.queue_drag_payload(&turn, 1, "queued text");
+        view.records
+            .iter_mut()
+            .find(|record| record.id == id)
+            .unwrap()
+            .archived_at = Some(1);
+        // A cached ChatState record must never reopen actor admission.
+        assert!(view.record.archived_at.is_none());
+        view.promote_queued(&id, &turn, cx);
+        assert!(view.queue_operation.is_none());
+        Arc::make_mut(&mut view.session).state = RunState::Paused;
+        view.resume_queued(&id, cx);
+        assert!(view.queue_operation.is_none());
+        view.reorder_queued(&drag, vec![turn.clone()], cx);
+        assert!(view.queue_operation.is_none());
+        assert_eq!(view.saved_draft(cx), draft);
+        assert_eq!(view.controller.snapshot().revision, before.revision);
+        assert!(!view.archive_chat_work_live(&id));
+        let token = uuid::Uuid::new_v4();
+        view.queue_operation = Some(token);
+        assert!(view.archive_chat_work_live(&id));
+        view.queue_operation = None;
+        view.load_failed = true;
+        view.edit_recovery.blocked = true;
+        assert!(!view.archive_chat_work_live(&id));
+    });
+}
+
+#[gpui::test]
+fn pending_archive_and_known_uncertainty_fence_direct_queue_commands(cx: &mut TestAppContext) {
+    let (_dir, _window, root, turn) = fixture(cx);
+    root.update(cx, |view, cx| {
+        let id = view.record.id.clone();
+        let before = view.saved_draft(cx);
+        for uncertain in [false, true] {
+            view.known_catalog_uncertainty = uncertain;
+            if !uncertain {
+                view.set_chat_archived(&id, true, cx);
+                assert!(view.has_pending_archive(&id));
+            }
+            let drag = view.queue_drag_payload(&turn, 1, "queued text");
+            Arc::make_mut(&mut view.session).state = RunState::Running;
+            view.promote_queued(&id, &turn, cx);
+            assert!(view.queue_operation.is_none());
+            Arc::make_mut(&mut view.session).state = RunState::Paused;
+            view.resume_queued(&id, cx);
+            view.reorder_queued(&drag, vec![turn.clone()], cx);
+            assert!(view.queue_operation.is_none());
+            assert_eq!(view.saved_draft(cx), before);
+            assert!(!view.busy);
+            view.organization_operations.clear();
+        }
+        view.known_catalog_uncertainty = false;
+    });
+}

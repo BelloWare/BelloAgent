@@ -35,6 +35,7 @@ fn fixture(retain_rewrite: bool) -> Fixture {
         snapshot: session_path,
         sidebar_order: Some(1),
         pinned_at: None,
+        archived_at: None,
     };
     let draft = DraftRecord {
         revision: 8,
