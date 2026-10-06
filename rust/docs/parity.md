@@ -1763,3 +1763,17 @@ cancellation and failure paths have automated coverage, and concrete platform
 errors are preserved. No portal was installed, native vault was accessed, or
 provider was configured. macOS native picker/Keychain, accessibility, IME and
 same-machine performance remain separate gates.
+
+### Explicit session lock release
+
+The Projects Linux CI run exposed a close/reopen exclusion failure while the new
+inspection subprocess check ran in parallel; its macOS run passed. Session locks
+now explicitly unlock before closing, including inspection-to-idle ownership
+transfer, retirement, and validation-error cleanup. Closing alone can leave a
+lock held by a descriptor inherited during another thread's fork/exec.
+Deterministic duplicate-descriptor regressions cover writer and inspection/idle
+release and ensure an old descriptor cannot release a new owner's lock. Both
+fail when explicit unlock is removed. The 17 inspection checks, the exact failed
+tool-result persistence check, 10 retirement-filtered checks, formatting and
+strict core all-target Clippy pass. Independent review is clear; fresh CI remains
+the integration gate.

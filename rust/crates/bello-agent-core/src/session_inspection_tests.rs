@@ -466,3 +466,46 @@ fn idle_lock_only_conversion_keeps_ownership_without_snapshot_or_journal_writes(
     );
     assert!(SessionStore::open(&path).is_ok());
 }
+
+#[test]
+fn writer_release_unlocks_even_while_an_inherited_descriptor_remains_open() {
+    for retire in [false, true] {
+        let (_directory, path, _session) = fixture();
+        let mut writer = SessionStore::open(&path).unwrap();
+        // A duplicate shares the open-file description, as an inherited child
+        // descriptor does between fork and exec. Keep it alive deterministically.
+        let inherited = writer._lock.as_ref().unwrap().0.try_clone().unwrap();
+        assert!(SessionStore::open(&path).is_err());
+        if retire {
+            writer.retire_writer();
+        } else {
+            drop(writer);
+        }
+        let reopened = SessionStore::open(&path).unwrap();
+        assert!(SessionStore::open(&path).is_err());
+        drop(inherited);
+        assert!(SessionStore::open(&path).is_err());
+        drop(reopened);
+    }
+}
+
+#[test]
+fn inspection_release_unlocks_inherited_descriptor_and_idle_transfer_keeps_ownership() {
+    for idle in [false, true] {
+        let (_directory, path, session) = fixture();
+        let lease = SessionInspectionLease::acquire(&path, &session.id).unwrap();
+        let inherited = lease._lock.0.try_clone().unwrap();
+        assert!(SessionStore::open(&path).is_err());
+        if idle {
+            let idle_lease = lease.into_idle_lease().unwrap();
+            assert!(SessionStore::open(&path).is_err());
+            drop(idle_lease);
+        } else {
+            drop(lease);
+        }
+        let reopened = SessionStore::open(&path).unwrap();
+        drop(inherited);
+        assert!(SessionStore::open(&path).is_err());
+        drop(reopened);
+    }
+}

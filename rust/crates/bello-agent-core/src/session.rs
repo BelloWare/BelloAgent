@@ -612,6 +612,23 @@ const MAX_SNAPSHOT_BYTES: usize = 256 * 1024 * 1024;
 // write its small notice and state changes without making history unreadable.
 const RECOVERY_RESERVE_BYTES: usize = 128 * 1024;
 
+// Closing a descriptor alone can leave an advisory lock held by a descriptor
+// inherited during another thread's fork/exec. Release ownership explicitly;
+// the file close remains the fallback if unlock fails.
+struct SessionLock(File);
+impl SessionLock {
+    fn acquire(file: File) -> Result<Self> {
+        file.try_lock()
+            .map_err(|_| invalid("This Rust session is already open elsewhere"))?;
+        Ok(Self(file))
+    }
+}
+impl Drop for SessionLock {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
+}
+
 /// A read-only observation of an existing, unloaded saved session while holding
 /// its writer lock. Keep this lease alive through the host operation it admits.
 /// Acquiring it never creates files, recovers interrupted work, confirms
@@ -622,14 +639,14 @@ const RECOVERY_RESERVE_BYTES: usize = 128 * 1024;
 /// Hosts must reuse loaded controllers instead of replacing them with a lease.
 #[must_use = "Keep the inspection lease alive through the admitted host operation"]
 pub struct SessionInspectionLease {
-    _lock: File,
+    _lock: SessionLock,
     session: Session,
 }
 /// An idle inspection reduced to writer ownership only. Converting drops the
 /// parsed history so inspecting many unloaded chats does not retain them all.
 #[must_use = "Keep this idle lease alive through the admitted host operation"]
 pub struct IdleSessionLease {
-    _lock: File,
+    _lock: SessionLock,
 }
 impl SessionInspectionLease {
     pub fn acquire(path: impl AsRef<Path>, expected_session_id: &str) -> Result<Self> {
@@ -643,10 +660,8 @@ impl SessionInspectionLease {
         // Unlike opening a writer, inspection requires the existing lock and
         // checkpoint. A missing file is unknown state, never an empty chat.
         let lock_path = path.with_extension("lock");
-        let lock = open_inspection_file(&lock_path, true)?;
-        lock.try_lock()
-            .map_err(|_| invalid("This Rust session is already open elsewhere"))?;
-        verify_inspection_file(&lock_path, &lock, &lock.metadata()?)?;
+        let lock = SessionLock::acquire(open_inspection_file(&lock_path, true)?)?;
+        verify_inspection_file(&lock_path, &lock.0, &lock.0.metadata()?)?;
 
         let file = open_inspection_file(&path, false)?;
         let before = file.metadata()?;
@@ -751,7 +766,7 @@ pub struct SessionStore {
     #[cfg(test)]
     pub(crate) fault: WriteFault,
     path: PathBuf,
-    _lock: Option<File>,
+    _lock: Option<SessionLock>,
     session: Session,
     uncertain: bool,
     retired: bool,
@@ -860,9 +875,7 @@ impl SessionStore {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
         }
-        let lock = options.open(path.with_extension("lock"))?;
-        lock.try_lock()
-            .map_err(|_| invalid("This Rust session is already open elsewhere"))?;
+        let lock = SessionLock::acquire(options.open(path.with_extension("lock"))?)?;
         let exists = path.exists();
         let mut session: Session = if exists {
             let metadata = fs::metadata(&path)?;
