@@ -266,6 +266,100 @@ for isolation, durability, format, permission, recovery, and backup limits.
   race fixes and unverified native interactions are recorded in
   [the validation record](validation/multichat-2026-10-04.md).
 
+## Populated transcript invalidation (2026-10-06)
+
+Status: **implemented app-only optimization; headless and running Linux validated;
+matched synthetic measurement completed**. The original Swift
+`TranscriptKeptRows.swift` retains settled row trees, and `TranscriptStreamingTail.swift`
+limits its append fast path to an exact compatible projection. This bounded Rust
+slice isolates the existing populated transcript in a retained per-chat GPUI entity;
+it does not implement the source's full paging, native text or streaming-tail model.
+Rows, Copy band, Show earlier count/order, loading/failure prefixes, and empty starter
+keep their existing presentation. No core/provider/schema/dependency changes.
+
+The child's immutable inputs are session Arc, chat/controller identity, reveal count,
+palette, pane width and loading/failure flags. Equal inputs do not notify it. Parent
+notifications synchronize changed inputs before drawing through `observe_self`:
+updating them only from Render was shown to leave a same-bounds cached frame stale
+and was corrected before validation. The cached outer style explicitly preserves
+flex growth, zero minimum height and full width; the inner scroll view fills that
+viewport. Bounds, inherited text-style and content-mask changes invalidate GPUI's
+cache; explicit Window refresh bypasses it. Queue/composer height changes therefore
+relayout the viewport. Streaming snapshots still rebuild the transcript.
+
+The child never reads the parent during render/layout/prepaint. Weak parent and
+controller references are upgraded only for actions and revalidate current chat,
+session and controller identity. Copy reads the current controller snapshot, not a
+cached text payload. A retained scroll handle preserves the chat's offset through
+unrelated notifications/navigation. Controller replacement or empty history drops
+the old projection, and weak callbacks do not retain its session-file lock.
+
+Ten new GPUI tests cover unchanged-input cache hits; fresh Arc and same-ID text,
+reasoning/state/reorder changes; every explicit input; Show earlier clicks; changed
+queue/composer/pane geometry; navigation/scroll identity; controller replacement;
+empty/loading/failure transitions; stale/dropped ownership; and synthetic marked
+composition/selection. Actual simulated hover/Copy after cache hits, wheel scrolling
+and explicit refresh are exercised. **362 default workspace tests  / 369 with the
+optional native lifecycle feature**, both strict Clippy modes, formatting and build
+pass. Independent review verified all five code hashes and reran all **183 app tests**.
+TestPlatform cannot simulate native appearance-change callbacks: explicit palette
+input tests pass, and inherited text-style changes invalidate when the root redraws,
+but automatic native appearance redraw is not claimed.
+
+Baseline evidence at committed `0beb423` uses a copied app, fixed synthetic histories
+of 100/1,000/10,000 messages, and both default 100/all-revealed modes. It measures
+actual conversation construction/destruction and complete root-notify/forced-refresh
+draw paths with an unoptimized test-support build. GPUI uses NoopTextSystem and empty
+assets: these are synchronous CPU-work wall times, excluding native shaping,
+rasterization, compositor and display presentation. Sparse 10,000-row samples do not
+establish tail latency. Source-accounted text-clone bytes are not heap telemetry.
+The post-extraction conversation-only path measures parent composition; direct child
+construction and full draw remain separate measurements. The final matched sweep
+used the same dependency artifacts, compiler/profile, payloads and sample policies.
+All 12 cases preserved exact revealed rows, session/workspace data, composer text and
+persisted bytes. Across 252 measured ordinary root notifications the child rendered
+zero times; forced refresh rendered it once per sample. With all rows revealed,
+ordinary-notify median CPU-work wall times (short/multiline) were 5.32/6.12ms at 100,
+11.87/12.60ms at 1,000, and 98.02/102.86ms at 10,000, versus baseline 52.26/89.68ms,
+506.61/838.49ms and 5,313.64/8,551.46ms respectively. Final ordinary routes have 21
+samples each; the two baseline 10,000 routes have only 6/2 samples. These medians
+characterize this workload and profile, not a native frame budget or general speedup.
+At 10,000 rows, forced refresh still took 3.806/7.525 seconds median and direct child
+construction 218.52/232.02ms. Thus expensive cache misses remain, and even warm replay
+still scales with row count. The initial warm pilot preceded the pre-draw ordering
+fix; the quoted final sweep includes that correction and the frozen regression code.
+Raw samples, copied-source harnesses and hash manifests are retained in the local
+workspace audit evidence, outside this checkpoint; they are not backed up by this
+commit. A separately reviewed portable harness is planned rather than committing
+raw environment diagnostics or large artifacts.
+Original Swift resident limits (500 rows/4MB) are not silently imposed here;
+Rust Show earlier remains unbounded, and large cold/miss redraws plus background
+whole-session snapshot cloning remain performance gaps. No native frame, scrolling
+smoothness, IME or whole-product performance claim follows from these checks.
+
+Fresh running Linux candidate
+`094d9c0186cfa2a068db6f9c4d6c2bbd67c5dbab97b3ccf49dacf4f877c0902a`
+passed warm typing/Undo, settled scroll retention through edits and chat switching,
+per-chat drafts, and Show earlier from 100 to 200 to all 220 messages in order.
+User and assistant Copy after cache hits each preserved the exact 65-byte synthetic
+Markdown/Unicode/whitespace payload. Normal 1180×812, minimum 920×600 half split,
+tall composer and last-row/Copy reachability passed; the prior 731c candidate matched
+same-fixture minimum geometry. A separate dark launch painted readable expected
+colors. The local gated stream painted arriving text while Working; typing remained
+editable, Copy matched the active 70-byte response, completion changed status to
+Ready, and all four history/new messages remained. Exactly one request completed
+without cancellation. All apps and the loopback gateway closed cleanly.
+One streaming-fixture launch initially painted black/transparent until pointer entry;
+other launches painted normally. This intermittent observation resembles earlier
+recorded startup behavior, but its cause and relation to this slice are unproven.
+It is retained separately rather than omitted or counted as native parity evidence.
+Current screenshots are
+`agent-cache-094d-{scroll-restored,history220,copy,minimum,split,tall-last,dark,streaming,complete}.png`;
+minimum/split/tall-last images are 920×600 and the others 1180×812. The separately
+labeled `baseline731-split.png` is prior-binary comparison evidence only.
+These interaction checks establish neither hardware frame timing nor native macOS
+IME, dynamic appearance, accessibility or scrolling performance.
+
 ## Transcript Copy validation (2026-10-05)
 
 The Copy pill follows `TranscriptRows.swift`'s reserved 22pt action band, 6pt gap,

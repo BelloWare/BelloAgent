@@ -22,6 +22,9 @@ mod shutdown_barrier;
 mod sidebar_actions;
 mod theme;
 mod transcript_actions;
+mod transcript_view;
+#[cfg(test)]
+mod transcript_view_tests;
 mod workspace_lifetime;
 use bello_agent_core::workspace::{ChatRecord, DraftRecord, SubmissionIntent, WorkspaceStore};
 use bello_agent_core::{Controller, Credential, Lane, Profile, RunState, SessionStore};
@@ -208,7 +211,12 @@ impl AgentView {
             view.set_appearance(style, cx);
             view
         });
-        let editor_events = vec![cx.subscribe(&filter, |_, _, _, cx| cx.notify())];
+        let editor_events = vec![
+            cx.subscribe(&filter, |_, _, _, cx| cx.notify()),
+            // Notify the retained transcript before GPUI starts drawing. A
+            // notify issued from Render is too late for that frame's cache key.
+            cx.observe_self(|view, cx| view.sync_transcript_inputs(cx)),
+        ];
         let workbench = cx.new(|cx| WorkbenchView::new(project.clone(), window, cx));
         workbench.update(cx, |view, cx| {
             view.set_appearance(Self::workbench_style(palette), cx);
@@ -1699,127 +1707,78 @@ impl AgentView {
                 ),
         )
     }
+    fn transcript_input(&self) -> transcript_view::TranscriptInput {
+        transcript_view::TranscriptInput {
+            controller: Arc::downgrade(&self.controller),
+            chat_id: self.record.id.clone(),
+            session: self.session.clone(),
+            visible_messages: self.visible_messages,
+            palette: self.palette,
+            pane_width: self.pane_width,
+            loading: self.loading,
+            load_failed: self.load_failed,
+        }
+    }
+    fn sync_transcript_inputs(&mut self, cx: &mut Context<Self>) {
+        if self.session.messages.is_empty() {
+            self.transcript = None;
+        } else if let Some(view) = self.transcript.clone() {
+            let input = self.transcript_input();
+            view.update(cx, |view, cx| view.update_inputs(input, cx));
+        }
+    }
     fn conversation(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let p = self.palette;
-        let mut transcript = div()
-            .id("transcript")
-            .debug_selector(|| "queue-measured-transcript".into())
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .px(px(24.))
-            .pb(px(13.))
-            .flex()
-            .flex_col()
-            .gap(px(16.));
-        if self.loading {
-            transcript = transcript.child(
-                div()
-                    .py(px(24.))
-                    .text_color(rgb(p.secondary))
-                    .child("Preparing…"),
-            );
-        } else if self.load_failed {
-            transcript = transcript.child(
-                self.button("retry-chat-load", "Retry opening chat")
-                    .on_click(cx.listener(|view, _, _, cx| {
-                        let id = view.record.id.clone();
-                        view.load_chat(&id, cx);
-                    })),
-            );
-        } else if self.session.messages.is_empty() {
-            transcript = transcript.child(self.starter(cx));
-        }
-        let start = self
-            .session
-            .messages
-            .len()
-            .saturating_sub(self.visible_messages);
-        if start > 0 {
-            transcript = transcript.child(
-                self.button("earlier", format!("Show earlier messages ({start})"))
-                    .on_click(cx.listener(|v, _, _, cx| {
-                        v.visible_messages += 100;
-                        cx.notify();
-                    })),
-            );
-        }
-        for message in self.session.messages.iter().skip(start) {
-            let user = message.role == "user";
-            let mut body = div()
-                .min_w_0()
-                .when(!user, |d| d.w_full())
-                .max_w(px(640.))
+        let transcript = if self.session.messages.is_empty() {
+            // Do not retain a removed/cleared history behind the starter.
+            self.transcript = None;
+            let mut transcript = div()
+                .id("transcript")
+                .debug_selector(|| "queue-measured-transcript".into())
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .px(px(24.))
+                .pb(px(13.))
                 .flex()
                 .flex_col()
-                .gap(px(6.))
-                .when(user, |d| {
-                    d.w(px(layout::user_bubble_width(self.pane_width)))
-                        .px(px(14.))
-                        .py(px(9.))
-                        .rounded(px(14.))
-                        .bg(rgb(p.user))
-                });
-            if !message.reasoning.is_empty() {
-                body = body.child(
+                .gap(px(16.));
+            if self.loading {
+                transcript = transcript.child(
                     div()
-                        .text_size(px(12.))
+                        .py(px(24.))
                         .text_color(rgb(p.secondary))
-                        .child(message.reasoning.clone()),
+                        .child("Preparing…"),
                 );
-            }
-            body = body.child(
-                div()
-                    .debug_selector(|| format!("transcript-text-{}", message.id))
-                    .min_w_0()
-                    .max_w_full()
-                    .text_size(px(14.5))
-                    .line_height(px(21.))
-                    .child(if message.text.is_empty() && message.state == "streaming" {
-                        "Generating response…".into()
-                    } else {
-                        message.text.clone()
-                    }),
-            );
-            if message.state == "interrupted" {
-                body = body.child(
-                    div()
-                        .text_size(px(11.5))
-                        .text_color(rgb(p.secondary))
-                        .child("Interrupted"),
+            } else if self.load_failed {
+                transcript = transcript.child(
+                    self.button("retry-chat-load", "Retry opening chat")
+                        .on_click(cx.listener(|view, _, _, cx| {
+                            let id = view.record.id.clone();
+                            view.load_chat(&id, cx);
+                        })),
                 );
+            } else if self.session.messages.is_empty() {
+                transcript = transcript.child(self.starter(cx));
             }
-            let key =
-                transcript_actions::MessageKey::new(self.record.id.clone(), message.id.clone());
-            let group = key.hover_group();
-            let actions = self.transcript_copy_band(key, cx);
-            transcript = transcript.child(
-                div()
-                    .group(group)
-                    .debug_selector(|| format!("transcript-row-{}", message.id))
-                    // Keep a single content-sized scroll row. A nested
-                    // auto-height flex wrapper can retain an oversized intrinsic
-                    // height after resize and push subsequent messages away.
-                    .w_full()
-                    .max_w(px(840.))
-                    .mx_auto()
-                    .min_w_0()
-                    .flex_shrink_0()
-                    .pt(px(12.))
-                    .flex()
-                    .flex_col()
-                    .gap(px(6.))
-                    .child(
-                        div()
-                            .w_full()
-                            .min_w_0()
-                            .flex()
-                            .when(user, |d| d.justify_end().pl(px(40.)))
-                            .child(body),
-                    )
-                    .child(actions),
-            );
-        }
+            transcript.into_any_element()
+        } else {
+            let input = self.transcript_input();
+            let view = if let Some(view) = self.transcript.clone() {
+                view.update(cx, |view, cx| view.update_inputs(input, cx));
+                view
+            } else {
+                let parent = cx.entity().downgrade();
+                let view = cx.new(|_| transcript_view::TranscriptView::new(parent, input));
+                self.transcript = Some(view.clone());
+                view
+            };
+            // Cached views request their outer layout without rendering their
+            // child. Preserve the original flexible scroll viewport explicitly.
+            AnyView::from(view)
+                .cached(StyleRefinement::default().flex_1().min_h_0().w_full())
+                .into_any_element()
+        };
         let queue = self.queue(window, cx);
         let field_height = self
             .composer

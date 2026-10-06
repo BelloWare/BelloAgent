@@ -19,6 +19,7 @@ pub struct ChatState {
     pub controller: Arc<Controller>,
     pub session: Arc<Session>,
     pub composer: Entity<EditorView>,
+    pub transcript: Option<Entity<crate::transcript_view::TranscriptView>>,
     pub error: Option<String>,
     pub editing: Option<String>,
     pub queued_turn_id: Option<String>,
@@ -116,6 +117,7 @@ impl ChatState {
             record,
             session,
             composer,
+            transcript: None,
             editing: if retain_unowned {
                 None
             } else {
@@ -198,6 +200,7 @@ impl ChatState {
     }
     pub fn replace_controller(&mut self, controller: Arc<Controller>, cx: &mut Context<AgentView>) {
         if !Arc::ptr_eq(&self.controller, &controller) {
+            self.transcript = None;
             self.queue_drag = None;
             self.queue_drag_task = None;
             self.queue_operation = None;

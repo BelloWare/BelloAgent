@@ -1,8 +1,9 @@
 //! Source RowActionsView / ConversationPane.copyMessage: copy current plain text
 //! by stable chat/message identity, never a render-time streaming snapshot.
-use crate::AgentView;
-use bello_agent_core::Session;
+use crate::{AgentView, Palette};
+use bello_agent_core::{Controller, Session};
 use gpui::{prelude::*, *};
+use std::sync::{Arc, Weak};
 
 pub(crate) const ACTION_BAND_HEIGHT: f32 = 22.;
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -37,65 +38,94 @@ fn write_current_copy(session: &Session, key: &MessageKey, cx: &mut App) {
     }
 }
 impl AgentView {
-    fn copy_transcript_message(&self, key: &MessageKey, cx: &mut Context<Self>) {
-        if self.record.id != key.chat_id {
+    pub(crate) fn active_transcript_matches(
+        &self,
+        chat_id: &str,
+        controller: &Weak<Controller>,
+    ) -> bool {
+        self.record.id == chat_id
+            && self.session.id == chat_id
+            && controller
+                .upgrade()
+                .is_some_and(|controller| Arc::ptr_eq(&controller, &self.controller))
+    }
+
+    pub(crate) fn copy_transcript_message(
+        &self,
+        key: &MessageKey,
+        controller: &Weak<Controller>,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.active_transcript_matches(&key.chat_id, controller) {
             return;
         }
         write_current_copy(&self.controller.snapshot_shared(), key, cx);
     }
-    pub(crate) fn transcript_copy_band(&self, key: MessageKey, cx: &mut Context<Self>) -> Div {
-        let group = key.hover_group();
-        let dark = self.palette.dark;
-        // Source TranscriptPalette tokens and TranscriptPillStyle spacing.
-        let muted = rgb(if dark { 0xa9a59b } else { 0x6e6a61 });
-        let text = rgb(if dark { 0xeceae4 } else { 0x1d1b17 });
-        let border = rgba(if dark { 0xffffff29 } else { 0x00000024 });
-        let hover_fill = rgba(if dark { 0xffffff14 } else { 0x0000000f });
-        let selector = format!("copy-pill-{}", key.message_id);
-        let band_selector = format!("copy-band-{}", key.message_id);
-        let copy = div()
-            .debug_selector(|| selector)
-            .id(SharedString::from(format!(
-                "copy-{}-{}",
-                key.chat_id, key.message_id
-            )))
-            .relative()
-            .text_size(px(11.))
-            .line_height(px(14.))
-            .font_weight(FontWeight::MEDIUM)
-            .text_color(muted)
-            .px(px(10.))
-            .py(px(4.))
-            .rounded_full()
-            .cursor_pointer()
-            .invisible()
-            .group_hover(group, |style| style.visible())
-            .hover(move |style| style.text_color(text).bg(hover_fill))
-            .active(|style| style.opacity(0.7))
-            .on_click(cx.listener(move |view, _, _, cx| view.copy_transcript_message(&key, cx)))
-            .child("Copy")
-            // Swift strokes an overlay: the border must not add two pixels
-            // to the 14px line + 8px padding inside the reserved 22px band.
-            .child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .rounded_full()
-                    .border_1()
-                    .border_color(border),
-            );
-        // Source puts a spacer before non-user actions; both role bands trail.
-        div()
-            .debug_selector(|| band_selector)
-            .w_full()
-            .h(px(ACTION_BAND_HEIGHT))
-            .flex_shrink_0()
-            .flex()
-            .items_center()
-            .justify_end()
-            .gap(px(4.))
-            .child(copy)
-    }
+}
+
+// Rendering this band must not read the parent entity: doing so would make a
+// retained transcript depend on unrelated composer/queue notifications.
+pub(crate) fn transcript_copy_band(
+    key: MessageKey,
+    palette: Palette,
+    parent: WeakEntity<AgentView>,
+    controller: Weak<Controller>,
+) -> Div {
+    let group = key.hover_group();
+    let dark = palette.dark;
+    // Source TranscriptPalette tokens and TranscriptPillStyle spacing.
+    let muted = rgb(if dark { 0xa9a59b } else { 0x6e6a61 });
+    let text = rgb(if dark { 0xeceae4 } else { 0x1d1b17 });
+    let border = rgba(if dark { 0xffffff29 } else { 0x00000024 });
+    let hover_fill = rgba(if dark { 0xffffff14 } else { 0x0000000f });
+    let selector = format!("copy-pill-{}", key.message_id);
+    let band_selector = format!("copy-band-{}", key.message_id);
+    let copy = div()
+        .debug_selector(|| selector)
+        .id(SharedString::from(format!(
+            "copy-{}-{}",
+            key.chat_id, key.message_id
+        )))
+        .relative()
+        .text_size(px(11.))
+        .line_height(px(14.))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(muted)
+        .px(px(10.))
+        .py(px(4.))
+        .rounded_full()
+        .cursor_pointer()
+        .invisible()
+        .group_hover(group, |style| style.visible())
+        .hover(move |style| style.text_color(text).bg(hover_fill))
+        .active(|style| style.opacity(0.7))
+        .on_click(move |_, _, cx| {
+            let _ = parent.update(cx, |view, cx| {
+                view.copy_transcript_message(&key, &controller, cx);
+            });
+        })
+        .child("Copy")
+        // Swift strokes an overlay: the border must not add two pixels
+        // to the 14px line + 8px padding inside the reserved 22px band.
+        .child(
+            div()
+                .absolute()
+                .inset_0()
+                .rounded_full()
+                .border_1()
+                .border_color(border),
+        );
+    // Source puts a spacer before non-user actions; both role bands trail.
+    div()
+        .debug_selector(|| band_selector)
+        .w_full()
+        .h(px(ACTION_BAND_HEIGHT))
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .justify_end()
+        .gap(px(4.))
+        .child(copy)
 }
 
 #[cfg(test)]

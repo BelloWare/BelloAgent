@@ -1,0 +1,768 @@
+//! Fake-platform regression tests for the retained populated transcript.
+//! Cache-hit assertions use production notifications, never Window::refresh:
+//! GPUI deliberately bypasses AnyView caching during a forced refresh.
+use crate::{
+    AgentView, LaunchState, Palette,
+    transcript_actions::MessageKey,
+    transcript_view::{TranscriptInput, TranscriptView},
+};
+use bello_agent_core::{
+    Controller, Lane, Message, RunState, Session, SessionStore, Submission,
+    workspace::{ChatRecord, DraftRecord, WorkspaceStore},
+};
+use gpui::{
+    AnyView, ClipboardItem, Entity, EntityInputHandler, Focusable, Modifiers, MouseButton, Pixels,
+    Point, ScrollDelta, ScrollHandle, ScrollWheelEvent, StyleRefinement, TestAppContext,
+    VisualTestContext, Window, WindowAppearance, WindowHandle, div, point, prelude::*, px, size,
+};
+use std::sync::{Arc, Mutex};
+
+fn message(id: &str, role: &str, text: &str) -> Message {
+    Message {
+        id: id.into(),
+        role: role.into(),
+        text: text.into(),
+        reasoning: String::new(),
+        replay_eligible: true,
+        state: "complete".into(),
+        usage: serde_json::Value::Null,
+        model: None,
+        tool_record: None,
+    }
+}
+
+fn messages(count: usize) -> Vec<Message> {
+    (0..count)
+        .map(|index| {
+            message(
+                &format!("message-{index}"),
+                if index % 2 == 0 { "user" } else { "assistant" },
+                &format!("Transcript row {index}: 日本語 e\u{301}"),
+            )
+        })
+        .collect()
+}
+
+fn fixture(
+    cx: &mut TestAppContext,
+    rows: Vec<Message>,
+    queued: usize,
+) -> (
+    tempfile::TempDir,
+    WindowHandle<AgentView>,
+    Entity<AgentView>,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let project = std::fs::canonicalize(directory.path()).unwrap();
+    let path = project.join("session.json");
+    let mut store = SessionStore::open(&path).unwrap();
+    store
+        .transact(|session| {
+            session.messages = rows;
+            session.state = RunState::Paused;
+            session.queue_paused = true;
+            session.pending = (0..queued)
+                .map(|index| Submission::new(format!("queued {index}"), Lane::FollowUp))
+                .collect();
+            Ok(())
+        })
+        .unwrap();
+    let snapshot = store.snapshot();
+    let record = ChatRecord::new(snapshot.id, "Transcript fixture".into(), path);
+    let draft = DraftRecord {
+        text: "draft".into(),
+        ..Default::default()
+    };
+    let mut workspace = WorkspaceStore::open(project.join("workspace.json"), &project).unwrap();
+    workspace.register(record.clone(), draft.clone()).unwrap();
+    let launch = LaunchState {
+        controller: Controller::new(store, None).unwrap(),
+        project,
+        workspace: Arc::new(Mutex::new(workspace)),
+        record,
+        draft,
+        pending: false,
+    };
+    let window = cx.add_window(|window, cx| AgentView::new(launch, window, cx));
+    let root = window.root(cx).unwrap();
+    let visual = VisualTestContext::from_window(window.into(), cx);
+    visual.simulate_resize(size(px(1180.), px(812.)));
+    cx.run_until_parked();
+    (directory, window, root)
+}
+
+fn transcript(root: &Entity<AgentView>, cx: &TestAppContext) -> Entity<TranscriptView> {
+    cx.read(|cx| {
+        root.read(cx)
+            .transcript
+            .clone()
+            .expect("populated transcript")
+    })
+}
+
+fn renders(child: &Entity<TranscriptView>, cx: &TestAppContext) -> usize {
+    cx.read(|cx| child.read(cx).render_count())
+}
+
+fn scroll(child: &Entity<TranscriptView>, cx: &TestAppContext) -> ScrollHandle {
+    cx.read(|cx| child.read(cx).scroll_handle())
+}
+
+fn snapshot_change(
+    root: &Entity<AgentView>,
+    cx: &mut TestAppContext,
+    change: impl FnOnce(&mut Session),
+) {
+    root.update(cx, |view, cx| {
+        let mut session = (*view.session).clone();
+        change(&mut session);
+        let id = view.record.id.clone();
+        view.receive_snapshot(&id, Arc::new(session), cx);
+    });
+    cx.run_until_parked();
+}
+
+fn input(root: &Entity<AgentView>, cx: &TestAppContext) -> TranscriptInput {
+    cx.read(|cx| {
+        let view = root.read(cx);
+        TranscriptInput {
+            controller: Arc::downgrade(&view.controller),
+            chat_id: view.record.id.clone(),
+            session: view.session.clone(),
+            visible_messages: view.visible_messages,
+            palette: view.palette,
+            pane_width: view.pane_width,
+            loading: view.loading,
+            load_failed: view.load_failed,
+        }
+    })
+}
+
+// A fixed-size cached host isolates the explicit input contract from the
+// production root's appearance normalization and pane-width calculation.
+struct TranscriptHost(Entity<TranscriptView>);
+impl Render for TranscriptHost {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().size_full().flex().child(
+            AnyView::from(self.0.clone())
+                .cached(StyleRefinement::default().flex_1().min_h_0().w_full()),
+        )
+    }
+}
+
+fn host(
+    root: &Entity<AgentView>,
+    input: TranscriptInput,
+    cx: &mut TestAppContext,
+) -> (VisualTestContext, Entity<TranscriptView>) {
+    let parent = root.downgrade();
+    let window =
+        cx.add_window(|_, cx| TranscriptHost(cx.new(|_| TranscriptView::new(parent, input))));
+    let host = window.root(cx).unwrap();
+    let child = cx.read(|cx| host.read(cx).0.clone());
+    let visual = VisualTestContext::from_window(window.into(), cx);
+    visual.simulate_resize(size(px(700.), px(620.)));
+    cx.run_until_parked();
+    (visual, child)
+}
+
+fn first_child_target(child: &Entity<TranscriptView>, cx: &TestAppContext) -> Point<Pixels> {
+    let handle = scroll(child, cx);
+    let mut bounds = handle.bounds_for_item(0).expect("available first child");
+    bounds.origin += handle.offset();
+    let target = bounds.center();
+    assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
+    assert!(
+        handle.bounds().contains(&target),
+        "target must be in viewport"
+    );
+    target
+}
+
+fn click_first_copy(
+    visual: &mut VisualTestContext,
+    child: &Entity<TranscriptView>,
+    cx: &TestAppContext,
+) {
+    // GPUI retains debug selectors across cached frames. Pick the hover point
+    // from the current scroll children, then inspect fresh hover-render bounds.
+    let handle = scroll(child, cx);
+    let mut current_row = handle.bounds_for_item(0).expect("current first row");
+    current_row.origin += handle.offset();
+    let hover = current_row.origin + point(px(10.), px(10.));
+    assert!(current_row.contains(&hover) && handle.bounds().contains(&hover));
+    let before = renders(child, cx);
+    visual.simulate_mouse_move(hover, None::<MouseButton>, Modifiers::none());
+    assert!(
+        renders(child, cx) > before,
+        "row hover must reveal its Copy action"
+    );
+    let row = visual
+        .debug_bounds("transcript-row-message-0")
+        .expect("hover-rendered first row");
+    let viewport = handle.bounds();
+    let pill = visual
+        .debug_bounds("copy-pill-message-0")
+        .expect("rendered Copy target");
+    assert!(pill.size.width > px(0.) && pill.size.height > px(0.));
+    assert!(
+        row.contains(&pill.center()) && viewport.contains(&pill.center()),
+        "Copy target outside available row/viewport: pill {pill:?}, row {row:?}, viewport {viewport:?}"
+    );
+    visual.simulate_mouse_move(pill.center(), None::<MouseButton>, Modifiers::none());
+    visual.simulate_click(pill.center(), Modifiers::none());
+}
+
+#[gpui::test]
+fn same_size_composer_and_root_notifications_reuse_populated_transcript(cx: &mut TestAppContext) {
+    let source = "  **copy source**\n你好 👩🏽‍💻 e\u{301}\r\n\t";
+    let mut rows = messages(30);
+    rows[0].text = source.into();
+    let (_directory, window, root) = fixture(cx, rows, 0);
+    let child = transcript(&root, cx);
+    let before = renders(&child, cx);
+    assert!(before > 0);
+    let viewport = scroll(&child, cx).bounds();
+    for _ in 0..3 {
+        root.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+        assert_eq!(renders(&child, cx), before, "root notify missed cache");
+    }
+    for text in ["other", "again", "日本語"] {
+        root.update(cx, |view, cx| {
+            view.composer
+                .update(cx, |editor, cx| editor.set_text(text.into(), cx));
+        });
+        cx.run_until_parked();
+        assert_eq!(scroll(&child, cx).bounds(), viewport);
+        assert_eq!(
+            renders(&child, cx),
+            before,
+            "same-height composer missed cache"
+        );
+        assert_eq!(transcript(&root, cx).entity_id(), child.entity_id());
+    }
+    assert!(
+        window
+            .update(cx, |view, window, cx| view
+                .composer
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window))
+            .unwrap()
+    );
+    // The reused cached paint must retain working hover and Copy listeners.
+    cx.update(|cx| cx.write_to_clipboard(ClipboardItem::new_string("sentinel".into())));
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    click_first_copy(&mut visual, &child, cx);
+    assert_eq!(
+        cx.read(|cx| cx.read_from_clipboard().unwrap().text())
+            .as_deref(),
+        Some(source)
+    );
+    let handle = scroll(&child, cx);
+    let wheel_target = handle.bounds().center();
+    assert!(handle.max_offset().height > px(100.));
+    visual.simulate_mouse_move(wheel_target, None::<MouseButton>, Modifiers::none());
+    let count = renders(&child, cx);
+    root.update(cx, |_, cx| cx.notify());
+    cx.run_until_parked();
+    assert_eq!(renders(&child, cx), count);
+    let offset = handle.offset();
+    visual.simulate_event(ScrollWheelEvent {
+        position: wheel_target,
+        delta: ScrollDelta::Pixels(point(px(0.), px(-100.))),
+        ..Default::default()
+    });
+    let scrolled = handle.offset();
+    assert!(scrolled.y < offset.y, "cached wheel listener must scroll");
+    let count = renders(&child, cx);
+    root.update(cx, |_, cx| cx.notify());
+    cx.run_until_parked();
+    assert_eq!(renders(&child, cx), count);
+    assert_eq!(handle.offset(), scrolled);
+    // Explicit negative control: GPUI refresh deliberately bypasses its cache.
+    // It must not be confused with a production parent-notification cache hit.
+    visual.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    assert!(renders(&child, cx) > count);
+    assert_eq!(handle.offset(), scrolled);
+}
+
+#[gpui::test]
+fn fresh_session_arc_same_ids_reasoning_state_and_order_invalidate(cx: &mut TestAppContext) {
+    let (_directory, window, root) = fixture(
+        cx,
+        vec![
+            message("first", "user", "First"),
+            message("second", "assistant", "Second"),
+        ],
+        0,
+    );
+    let child = transcript(&root, cx);
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let before = renders(&child, cx);
+    snapshot_change(&root, cx, |_| {});
+    assert!(
+        renders(&child, cx) > before,
+        "new Arc with equal values must invalidate"
+    );
+    let count = renders(&child, cx);
+    root.update(cx, |view, cx| {
+        let id = view.record.id.clone();
+        view.receive_snapshot(&id, view.session.clone(), cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        renders(&child, cx),
+        count,
+        "same session Arc must remain cached"
+    );
+    let short = visual
+        .debug_bounds("transcript-text-second")
+        .unwrap()
+        .size
+        .height;
+    snapshot_change(&root, cx, |session| {
+        session.messages[1].text = "Second\nnew line\nthird line".into()
+    });
+    assert!(renders(&child, cx) > count);
+    assert!(
+        visual
+            .debug_bounds("transcript-text-second")
+            .unwrap()
+            .size
+            .height
+            > short
+    );
+    let count = renders(&child, cx);
+    let plain = visual
+        .debug_bounds("transcript-row-second")
+        .unwrap()
+        .size
+        .height;
+    snapshot_change(&root, cx, |session| {
+        session.messages[1].reasoning = "Reasoning is also visible".into()
+    });
+    assert!(renders(&child, cx) > count);
+    let reasoned = visual
+        .debug_bounds("transcript-row-second")
+        .unwrap()
+        .size
+        .height;
+    assert!(reasoned > plain);
+    let count = renders(&child, cx);
+    snapshot_change(&root, cx, |session| {
+        session.messages[1].state = "interrupted".into()
+    });
+    assert!(renders(&child, cx) > count);
+    assert!(
+        visual
+            .debug_bounds("transcript-row-second")
+            .unwrap()
+            .size
+            .height
+            > reasoned
+    );
+    let count = renders(&child, cx);
+    snapshot_change(&root, cx, |session| session.messages.swap(0, 1));
+    assert!(renders(&child, cx) > count);
+    assert!(
+        visual.debug_bounds("transcript-row-second").unwrap().top()
+            < visual.debug_bounds("transcript-row-first").unwrap().top()
+    );
+    snapshot_change(&root, cx, |session| {
+        session.messages.remove(1);
+    });
+    // GPUI retains old debug selectors; current scroll children are authoritative.
+    assert!(scroll(&child, cx).bounds_for_item(0).is_some());
+    assert!(scroll(&child, cx).bounds_for_item(1).is_none());
+    assert_eq!(transcript(&root, cx).entity_id(), child.entity_id());
+}
+
+#[gpui::test]
+fn every_explicit_input_invalidates_but_equal_input_does_not(cx: &mut TestAppContext) {
+    let (_directory, _window, root) = fixture(cx, messages(2), 0);
+    let (_visual, child) = host(&root, input(&root, cx), cx);
+    let before = renders(&child, cx);
+    let equal = input(&root, cx);
+    child.update(cx, |view, cx| view.update_inputs(equal, cx));
+    cx.run_until_parked();
+    assert_eq!(renders(&child, cx), before);
+    for field in [
+        "palette",
+        "width",
+        "visible",
+        "loading",
+        "failure",
+        "chat",
+        "controller",
+    ] {
+        let mut changed = input(&root, cx);
+        let replacement = Controller::new(SessionStore::pending(), None).unwrap();
+        match field {
+            "palette" => {
+                changed.palette = Palette::for_appearance(if changed.palette.dark {
+                    WindowAppearance::Light
+                } else {
+                    WindowAppearance::Dark
+                })
+            }
+            "width" => changed.pane_width += 40.,
+            "visible" => changed.visible_messages = 1,
+            "loading" => changed.loading = true,
+            "failure" => changed.load_failed = true,
+            "chat" => changed.chat_id.push_str("-different"),
+            "controller" => changed.controller = Arc::downgrade(&replacement),
+            _ => unreachable!(),
+        }
+        let before = renders(&child, cx);
+        child.update(cx, |view, cx| view.update_inputs(changed, cx));
+        cx.run_until_parked();
+        assert!(renders(&child, cx) > before, "{field} did not invalidate");
+        let original = input(&root, cx);
+        child.update(cx, |view, cx| view.update_inputs(original, cx));
+        cx.run_until_parked();
+    }
+}
+
+#[gpui::test]
+fn earlier_button_expands_current_prefix_and_retains_child(cx: &mut TestAppContext) {
+    let (_directory, window, root) = fixture(cx, messages(5), 0);
+    root.update(cx, |view, cx| {
+        view.visible_messages = 2;
+        cx.notify();
+    });
+    cx.run_until_parked();
+    let child = transcript(&root, cx);
+    let handle = scroll(&child, cx);
+    assert!(handle.bounds_for_item(2).is_some());
+    assert!(handle.bounds_for_item(3).is_none());
+    let before = renders(&child, cx);
+    let target = first_child_target(&child, cx);
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    visual.simulate_click(target, Modifiers::none());
+    cx.run_until_parked();
+    assert_eq!(cx.read(|cx| root.read(cx).visible_messages), 102);
+    assert!(renders(&child, cx) > before);
+    assert_eq!(transcript(&root, cx).entity_id(), child.entity_id());
+    assert!(handle.bounds_for_item(4).is_some());
+    assert!(handle.bounds_for_item(5).is_none());
+    assert!(
+        visual
+            .debug_bounds("transcript-row-message-0")
+            .unwrap()
+            .top()
+            < visual
+                .debug_bounds("transcript-row-message-4")
+                .unwrap()
+                .top()
+    );
+}
+
+#[gpui::test]
+fn queue_composer_and_window_geometry_relayout_cached_viewport(cx: &mut TestAppContext) {
+    let (_directory, window, root) = fixture(cx, messages(12), 6);
+    let child = transcript(&root, cx);
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let queued = scroll(&child, cx).bounds();
+    let before = renders(&child, cx);
+    root.update(cx, |view, cx| {
+        view.queue_open = false;
+        cx.notify();
+    });
+    cx.run_until_parked();
+    let collapsed = scroll(&child, cx).bounds();
+    assert!(collapsed.size.height > queued.size.height);
+    assert!(
+        renders(&child, cx) > before,
+        "viewport-height change must miss cache"
+    );
+    let before = renders(&child, cx);
+    root.update(cx, |view, cx| {
+        view.composer.update(cx, |editor, cx| {
+            editor.set_text("long composer line\n".repeat(20), cx)
+        });
+    });
+    cx.run_until_parked();
+    let tall = scroll(&child, cx).bounds();
+    assert!(tall.size.height < collapsed.size.height);
+    assert!(renders(&child, cx) > before);
+    for (width, height, split) in [(920., 600., false), (1180., 812., true), (920., 600., true)] {
+        root.update(cx, |view, cx| {
+            view.show_files = split;
+            view.layout.fraction = 0.5;
+            cx.notify();
+        });
+        visual.simulate_resize(size(px(width), px(height)));
+        cx.run_until_parked();
+        let viewport = scroll(&child, cx).bounds();
+        let composer = visual.debug_bounds("queue-measured-composer").unwrap();
+        let footer = visual.debug_bounds("queue-measured-footer").unwrap();
+        assert!(viewport.size.height >= px(0.));
+        assert!(viewport.bottom() <= composer.top() + px(1.));
+        assert!(composer.bottom() <= footer.top() + px(1.));
+        assert_eq!(
+            viewport,
+            visual.debug_bounds("queue-measured-transcript").unwrap()
+        );
+        assert_eq!(transcript(&root, cx).entity_id(), child.entity_id());
+        let count = renders(&child, cx);
+        root.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+        assert_eq!(
+            renders(&child, cx),
+            count,
+            "settled geometry must cache again"
+        );
+    }
+}
+
+#[gpui::test]
+fn navigation_preserves_chat_child_identity_and_scroll_offset(cx: &mut TestAppContext) {
+    let (_directory, window, root) = fixture(cx, messages(30), 0);
+    let child = transcript(&root, cx);
+    let first_id = cx.read(|cx| root.read(cx).record.id.clone());
+    let composer = cx.read(|cx| root.read(cx).composer.clone());
+    let handle = scroll(&child, cx);
+    assert!(handle.max_offset().height > px(120.));
+    handle.set_offset(point(px(0.), px(-120.)));
+    child.update(cx, |_, cx| cx.notify());
+    cx.run_until_parked();
+    let offset = handle.offset();
+    assert!(offset.y < px(0.));
+    window
+        .update(cx, |view, window, cx| view.new_chat(window, cx))
+        .unwrap();
+    cx.run_until_parked();
+    assert_ne!(cx.read(|cx| root.read(cx).record.id.clone()), first_id);
+    assert!(cx.read(|cx| root.read(cx).transcript.is_none()));
+    assert_eq!(
+        cx.read(|cx| root.read(cx).inactive[&first_id]
+            .transcript
+            .as_ref()
+            .unwrap()
+            .entity_id()),
+        child.entity_id()
+    );
+    window
+        .update(cx, |view, window, cx| {
+            view.select_chat(&first_id, window, cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(transcript(&root, cx).entity_id(), child.entity_id());
+    assert_eq!(
+        cx.read(|cx| root.read(cx).composer.entity_id()),
+        composer.entity_id()
+    );
+    assert_eq!(scroll(&child, cx).offset(), offset);
+    assert_eq!(cx.read(|cx| composer.read(cx).text().to_owned()), "draft");
+}
+
+#[gpui::test]
+fn controller_replacement_discards_child_and_rejects_old_copy_identity(cx: &mut TestAppContext) {
+    let (_directory, window, root) = fixture(cx, messages(2), 0);
+    let old_child = transcript(&root, cx);
+    let old_controller = cx.read(|cx| root.read(cx).controller.clone());
+    let id = cx.read(|cx| root.read(cx).record.id.clone());
+    let key = MessageKey::new(id.clone(), "message-0".into());
+    let path = cx.read(|cx| root.read(cx).record.snapshot.clone());
+    // Retain the old controller to exercise the stale identity guard without
+    // attempting to acquire its still-owned session-file lock a second time.
+    let mut replacement_store = SessionStore::pending_with_id(&id).unwrap();
+    replacement_store
+        .persist_to(path.with_file_name("replacement.json"))
+        .unwrap();
+    replacement_store
+        .transact(|session| {
+            *session = old_controller.snapshot();
+            session.messages[0].text =
+                "  **replacement controller**\n你好 👩🏽‍💻 e\u{301}\r\n\t".into();
+            Ok(())
+        })
+        .unwrap();
+    let replacement = Controller::new(replacement_store, None).unwrap();
+    root.update(cx, |view, cx| {
+        view.chat.replace_controller(replacement, cx);
+        cx.notify();
+    });
+    cx.run_until_parked();
+    assert_ne!(transcript(&root, cx).entity_id(), old_child.entity_id());
+    cx.update(|cx| cx.write_to_clipboard(ClipboardItem::new_string("sentinel".into())));
+    root.update(cx, |view, cx| {
+        assert!(!view.active_transcript_matches(&id, &Arc::downgrade(&old_controller)));
+        view.copy_transcript_message(&key, &Arc::downgrade(&old_controller), cx);
+    });
+    assert_eq!(
+        cx.read(|cx| cx.read_from_clipboard().unwrap().text()),
+        Some("sentinel".into())
+    );
+    let child = transcript(&root, cx);
+    let count = renders(&child, cx);
+    for _ in 0..3 {
+        root.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+        assert_eq!(renders(&child, cx), count);
+    }
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    click_first_copy(&mut visual, &child, cx);
+    assert_eq!(
+        cx.read(|cx| cx.read_from_clipboard().unwrap().text()),
+        Some("  **replacement controller**\n你好 👩🏽‍💻 e\u{301}\r\n\t".into())
+    );
+}
+
+#[gpui::test]
+fn empty_populated_loading_and_failure_prefixes_preserve_rows(cx: &mut TestAppContext) {
+    let (_directory, _window, root) = fixture(cx, Vec::new(), 0);
+    assert!(cx.read(|cx| root.read(cx).transcript.is_none()));
+    for (loading, failed) in [(true, false), (false, true), (false, false)] {
+        root.update(cx, |view, cx| {
+            view.loading = loading;
+            view.load_failed = failed;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert!(cx.read(|cx| root.read(cx).transcript.is_none()));
+    }
+    snapshot_change(&root, cx, |session| session.messages = messages(2));
+    let child = transcript(&root, cx);
+    assert!(scroll(&child, cx).bounds_for_item(1).is_some());
+    assert!(scroll(&child, cx).bounds_for_item(2).is_none());
+    for (loading, failed) in [(true, false), (false, true), (true, true)] {
+        let count = renders(&child, cx);
+        root.update(cx, |view, cx| {
+            view.loading = loading;
+            view.load_failed = failed;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert!(renders(&child, cx) > count);
+        let handle = scroll(&child, cx);
+        assert!(
+            handle.bounds_for_item(2).is_some(),
+            "prefix must coexist with both rows"
+        );
+        assert!(
+            handle.bounds_for_item(3).is_none(),
+            "loading wins over failure; only one prefix"
+        );
+        assert_eq!(transcript(&root, cx).entity_id(), child.entity_id());
+    }
+    let weak = child.downgrade();
+    drop(child);
+    snapshot_change(&root, cx, |session| session.messages.clear());
+    assert!(cx.read(|cx| root.read(cx).transcript.is_none()));
+    assert!(
+        weak.upgrade().is_none(),
+        "cleared history must release its child"
+    );
+    snapshot_change(&root, cx, |session| session.messages = messages(1));
+    assert!(renders(&transcript(&root, cx), cx) > 0);
+}
+
+#[gpui::test]
+fn stale_and_dropped_parent_callbacks_do_not_expand_other_chat(cx: &mut TestAppContext) {
+    let (_directory, window, root) = fixture(cx, messages(4), 0);
+    let mut old_input = input(&root, cx);
+    let controller = old_input.controller.clone();
+    let owners = controller.strong_count();
+    let path = cx.read(|cx| root.read(cx).record.snapshot.clone());
+    old_input.visible_messages = 1;
+    let (mut visual, child) = host(&root, old_input, cx);
+    assert_eq!(controller.strong_count(), owners);
+    let target = first_child_target(&child, cx);
+    window
+        .update(cx, |view, window, cx| view.new_chat(window, cx))
+        .unwrap();
+    cx.run_until_parked();
+    let active = cx.read(|cx| {
+        (
+            root.read(cx).record.id.clone(),
+            root.read(cx).visible_messages,
+        )
+    });
+    visual.simulate_click(target, Modifiers::none());
+    assert_eq!(
+        cx.read(|cx| (
+            root.read(cx).record.id.clone(),
+            root.read(cx).visible_messages
+        )),
+        active
+    );
+    let weak = root.downgrade();
+    window
+        .update(cx, |_, window, _| window.remove_window())
+        .unwrap();
+    drop(root);
+    // Dropping the last Entity handle invalidates WeakEntity immediately, but
+    // GPUI drops its stored value during the next App::flush_effects cycle.
+    cx.update(|_| {});
+    cx.run_until_parked();
+    assert!(
+        weak.upgrade().is_none(),
+        "retained transcript callback must not retain parent"
+    );
+    assert!(
+        controller.upgrade().is_none(),
+        "retained transcript must not retain controller"
+    );
+    let reopened = SessionStore::open(&path).expect("retained child must not retain the file lock");
+    assert_eq!(reopened.snapshot().messages.len(), 4);
+    visual.simulate_click(first_child_target(&child, cx), Modifiers::none());
+    assert!(weak.upgrade().is_none());
+}
+
+#[gpui::test]
+fn cached_redraw_and_stream_update_preserve_synthetic_ime_and_selection(cx: &mut TestAppContext) {
+    let (_directory, window, root) = fixture(cx, messages(2), 0);
+    window
+        .update(cx, |view, window, cx| {
+            view.composer.update(cx, |editor, cx| {
+                editor.focus(window);
+                editor.replace_and_mark_text_in_range(None, "未確定", Some(1..2), window, cx);
+            });
+        })
+        .unwrap();
+    cx.run_until_parked();
+    let child = transcript(&root, cx);
+    let composer = cx.read(|cx| root.read(cx).composer.clone());
+    let draft = cx.read(|cx| composer.read(cx).text().to_owned());
+    let revision = cx.read(|cx| root.read(cx).draft_revision);
+    let before = window
+        .update(cx, |view, window, cx| {
+            view.composer.update(cx, |editor, cx| {
+                (
+                    editor.selected_text_range(false, window, cx).unwrap().range,
+                    editor.marked_text_range(window, cx).unwrap(),
+                )
+            })
+        })
+        .unwrap();
+    let count = renders(&child, cx);
+    root.update(cx, |_, cx| cx.notify());
+    cx.run_until_parked();
+    assert_eq!(renders(&child, cx), count);
+    snapshot_change(&root, cx, |session| {
+        session.messages[1].text = "Streaming update 你好".into();
+        session.messages[1].state = "streaming".into();
+    });
+    assert!(renders(&child, cx) > count);
+    window
+        .update(cx, |view, window, cx| {
+            assert_eq!(view.composer.entity_id(), composer.entity_id());
+            assert!(view.composer.read(cx).focus_handle(cx).is_focused(window));
+            view.composer.update(cx, |editor, cx| {
+                assert_eq!(editor.text(), draft);
+                assert!(editor.has_marked_text());
+                assert_eq!(
+                    editor.selected_text_range(false, window, cx).unwrap().range,
+                    before.0
+                );
+                assert_eq!(editor.marked_text_range(window, cx).unwrap(), before.1);
+            });
+            assert_eq!(view.draft_revision, revision);
+        })
+        .unwrap();
+}
