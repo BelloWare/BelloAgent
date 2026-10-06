@@ -1,33 +1,55 @@
-//! Source-faithful AppKit presentation for the implemented chat pin action.
+//! Source-faithful AppKit presentation for implemented chat sidebar actions.
 //!
 //! SidebarChatRow.contextMenu / SessionOrganizationActions supplies the labels
 //! and symbols; PiMenu.swift supplies NSMenuItem's target/representedObject
 //! ownership pattern. No GPUI App or Window borrow spans native menu tracking.
 
+use crate::sidebar_actions::SidebarAction;
+
 #[derive(Debug, PartialEq, Eq)]
-struct PinCommand {
+struct MenuCommand {
     title: &'static str,
     symbol: &'static str,
-    desired_pin: bool,
+    action: SidebarAction,
 }
 
-fn pin_command(pinned: bool) -> PinCommand {
+fn pin_command(pinned: bool) -> MenuCommand {
     if pinned {
-        PinCommand {
+        MenuCommand {
             title: "Unpin Chat",
             symbol: "pin.slash",
-            desired_pin: false,
+            action: SidebarAction::SetPinned(false),
         }
     } else {
-        PinCommand {
+        MenuCommand {
             title: "Pin Chat",
             symbol: "pin",
-            desired_pin: true,
+            action: SidebarAction::SetPinned(true),
         }
     }
 }
 
-fn finish_if_open(open: bool, choice: Option<bool>, completion: impl FnOnce(Option<bool>)) {
+fn copy_id_command() -> MenuCommand {
+    MenuCommand {
+        title: "Copy Session ID",
+        symbol: "number",
+        action: SidebarAction::CopySessionId,
+    }
+}
+
+fn selected_action(selected: u8, pinned: bool) -> Option<SidebarAction> {
+    match selected {
+        1 => Some(pin_command(pinned).action),
+        2 => Some(copy_id_command().action),
+        _ => None,
+    }
+}
+
+fn finish_if_open(
+    open: bool,
+    choice: Option<SidebarAction>,
+    completion: impl FnOnce(Option<SidebarAction>),
+) {
     if open {
         completion(choice);
     }
@@ -111,12 +133,13 @@ fn gpui_child_index(content_attached: bool, children: &[ViewCategory]) -> Option
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) use native::show_pin_menu;
+pub(crate) use native::show_sidebar_menu;
 
 #[cfg(target_os = "macos")]
 mod native {
     use super::{
-        Tracking, ViewCategory, anchor_in_view, finish_if_open, gpui_child_index, pin_command,
+        SidebarAction, Tracking, ViewCategory, anchor_in_view, copy_id_command, finish_if_open,
+        gpui_child_index, pin_command, selected_action,
     };
     use cocoa::{
         base::{BOOL, NO, YES, id, nil},
@@ -132,7 +155,7 @@ mod native {
     };
     use std::{ffi::c_void, sync::OnceLock};
 
-    type Completion = Box<dyn FnOnce(Option<bool>, &mut App)>;
+    type Completion = Box<dyn FnOnce(Option<SidebarAction>, &mut App)>;
 
     struct Request {
         app: AsyncApp,
@@ -153,16 +176,16 @@ mod native {
         );
     }
 
-    /// Asynchronously opens one native Pin/Unpin item at a content-area position.
+    /// Asynchronously opens source sidebar actions at a content-area position.
     /// Cancellation or an unavailable native anchor returns None. A closed GPUI
     /// window discards the completion. Callers additionally validate their own
     /// chat, project and request generation before applying a selected action.
-    pub(crate) fn show_pin_menu(
+    pub(crate) fn show_sidebar_menu(
         cx: &mut App,
         window: AnyWindowHandle,
         position: Point<Pixels>,
         pinned: bool,
-        completion: impl FnOnce(Option<bool>, &mut App) + 'static,
+        completion: impl FnOnce(Option<SidebarAction>, &mut App) + 'static,
     ) {
         let request = Box::new(Request {
             app: cx.to_async(),
@@ -259,16 +282,20 @@ mod native {
         }
     }
 
-    const SELECTED_IVAR: &str = "belloPinSelected";
+    const SELECTED_IVAR: &str = "belloSidebarSelected";
     fn target_class() -> Option<&'static Class> {
         static CLASS: OnceLock<Option<&'static Class>> = OnceLock::new();
         *CLASS.get_or_init(|| {
-            let mut class = ClassDecl::new("BelloAgentPinMenuTarget", class!(NSObject))?;
+            let mut class = ClassDecl::new("BelloAgentSidebarMenuTarget", class!(NSObject))?;
             class.add_ivar::<u8>(SELECTED_IVAR);
             unsafe {
                 class.add_method(
                     sel!(selectPin:),
                     select_pin as extern "C" fn(&mut Object, Sel, id),
+                );
+                class.add_method(
+                    sel!(selectCopySessionId:),
+                    select_copy_id as extern "C" fn(&mut Object, Sel, id),
                 );
             }
             Some(class.register())
@@ -281,7 +308,12 @@ mod native {
         unsafe { target.set_ivar(SELECTED_IVAR, 1u8) };
     }
 
-    unsafe fn track_menu(request: &Request, window: &OwnedObject) -> Option<bool> {
+    extern "C" fn select_copy_id(target: &mut Object, _: Sel, _: id) {
+        // Like Pin, defer all GPUI/clipboard work until native tracking ends.
+        unsafe { target.set_ivar(SELECTED_IVAR, 2u8) };
+    }
+
+    unsafe fn track_menu(request: &Request, window: &OwnedObject) -> Option<SidebarAction> {
         unsafe {
             let _pool = OwnedObject::from_owned(msg_send![class!(NSAutoreleasePool), new])?;
             let app: id = msg_send![class!(NSApplication), sharedApplication];
@@ -340,35 +372,47 @@ mod native {
                 return None;
             }
 
-            let command = pin_command(request.pinned);
-            let title = OwnedObject::from_owned(NSString::alloc(nil).init_str(command.title))?;
-            let symbol = OwnedObject::from_owned(NSString::alloc(nil).init_str(command.symbol))?;
             let empty = OwnedObject::from_owned(NSString::alloc(nil).init_str(""))?;
             let menu = OwnedObject::from_owned(msg_send![class!(NSMenu), new])?;
             let _: () = msg_send![menu.0, setAutoenablesItems: NO];
             let target = OwnedObject::from_owned(msg_send![target_class()?, new])?;
             (*target.0).set_ivar(SELECTED_IVAR, 0u8);
-            let item: id = msg_send![class!(NSMenuItem), alloc];
-            let item = OwnedObject::from_owned(msg_send![item,
-                initWithTitle: title.0 action: sel!(selectPin:) keyEquivalent: empty.0
-            ])?;
-            // NSMenuItem's target is weak. representedObject retains it, exactly
-            // as PiMenu.swift does. The target stores one byte of selection state
-            // and owns neither the item nor the callback, so there is no cycle.
-            let _: () = msg_send![item.0, setTarget: target.0];
-            let _: () = msg_send![item.0, setRepresentedObject: target.0];
-            let _: () = msg_send![item.0, setEnabled: YES];
-            let image: id = msg_send![class!(NSImage),
-                imageWithSystemSymbolName: symbol.0 accessibilityDescription: nil
-            ];
-            let _: () = msg_send![item.0, setImage: image];
-            let _: () = msg_send![menu.0, addItem: item.0];
+            for (index, command) in [pin_command(request.pinned), copy_id_command()]
+                .into_iter()
+                .enumerate()
+            {
+                if index == 1 {
+                    let separator: id = msg_send![class!(NSMenuItem), separatorItem];
+                    let _: () = msg_send![menu.0, addItem: separator];
+                }
+                let title = OwnedObject::from_owned(NSString::alloc(nil).init_str(command.title))?;
+                let symbol =
+                    OwnedObject::from_owned(NSString::alloc(nil).init_str(command.symbol))?;
+                let action = match command.action {
+                    SidebarAction::SetPinned(_) => sel!(selectPin:),
+                    SidebarAction::CopySessionId => sel!(selectCopySessionId:),
+                };
+                let item: id = msg_send![class!(NSMenuItem), alloc];
+                let item = OwnedObject::from_owned(msg_send![item,
+                    initWithTitle: title.0 action: action keyEquivalent: empty.0
+                ])?;
+                // NSMenuItem's target is weak. representedObject retains it,
+                // as in PiMenu.swift; no item or callback is owned by the target.
+                let _: () = msg_send![item.0, setTarget: target.0];
+                let _: () = msg_send![item.0, setRepresentedObject: target.0];
+                let _: () = msg_send![item.0, setEnabled: YES];
+                let image: id = msg_send![class!(NSImage),
+                    imageWithSystemSymbolName: symbol.0 accessibilityDescription: nil
+                ];
+                let _: () = msg_send![item.0, setImage: image];
+                let _: () = msg_send![menu.0, addItem: item.0];
+            }
 
             let _: BOOL = msg_send![menu.0,
                 popUpMenuPositioningItem: nil atLocation: anchor inView: view.0
             ];
-            let selected = *(*target.0).get_ivar::<u8>(SELECTED_IVAR) != 0;
-            selected.then_some(command.desired_pin)
+            let selected = *(*target.0).get_ivar::<u8>(SELECTED_IVAR);
+            selected_action(selected, request.pinned)
         }
     }
 }
@@ -382,20 +426,45 @@ mod tests {
     fn pin_commands_match_source_labels_symbols_and_desired_state() {
         assert_eq!(
             pin_command(false),
-            PinCommand {
+            MenuCommand {
                 title: "Pin Chat",
                 symbol: "pin",
-                desired_pin: true
+                action: SidebarAction::SetPinned(true)
             }
         );
         assert_eq!(
             pin_command(true),
-            PinCommand {
+            MenuCommand {
                 title: "Unpin Chat",
                 symbol: "pin.slash",
-                desired_pin: false
+                action: SidebarAction::SetPinned(false)
             }
         );
+    }
+
+    #[test]
+    fn sidebar_copy_id_label_symbol_and_selection_are_source_exact() {
+        assert_eq!(
+            copy_id_command(),
+            MenuCommand {
+                title: "Copy Session ID",
+                symbol: "number",
+                action: SidebarAction::CopySessionId
+            }
+        );
+        for pinned in [false, true] {
+            assert_eq!(selected_action(0, pinned), None);
+            assert_eq!(
+                selected_action(1, pinned),
+                Some(SidebarAction::SetPinned(!pinned))
+            );
+            assert_eq!(
+                selected_action(2, pinned),
+                Some(SidebarAction::CopySessionId)
+            );
+            assert_eq!(selected_action(3, pinned), None);
+            assert_eq!(selected_action(u8::MAX, pinned), None);
+        }
     }
 
     #[test]
@@ -447,7 +516,12 @@ mod tests {
 
     #[test]
     fn selection_and_cancel_deliver_once_and_release_the_callback() {
-        for choice in [None, Some(true), Some(false)] {
+        for choice in [
+            None,
+            Some(SidebarAction::SetPinned(true)),
+            Some(SidebarAction::SetPinned(false)),
+            Some(SidebarAction::CopySessionId),
+        ] {
             let calls = Cell::new(0);
             let drops = Rc::new(Cell::new(0));
             let owned = DropCount(drops.clone());
@@ -465,7 +539,7 @@ mod tests {
     fn closed_window_discards_and_releases_the_callback() {
         let drops = Rc::new(Cell::new(0));
         let owned = DropCount(drops.clone());
-        finish_if_open(false, Some(true), |_| {
+        finish_if_open(false, Some(SidebarAction::CopySessionId), |_| {
             drop(owned);
             panic!("a closed window must never receive the selection");
         });

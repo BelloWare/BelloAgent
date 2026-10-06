@@ -1466,3 +1466,48 @@ returning. Quick Open and a dirty-file close prompt intercepted the command unti
 dismissal. The fixture used an isolated local repository without a connection,
 credential or provider request. Screenshots and the QA observation record support
 these Linux results; native macOS shortcut/OS IME behavior remains unvalidated.
+
+## Sidebar Copy Session ID (2026-10-06)
+
+`SidebarChatRow.menu`, `SessionReferenceActions` and
+`WorkspaceContent.copySessionID` supply the added source action: a separator
+following the implemented organization action, then **Copy Session ID** with the
+number symbol. It copies the requested existing record's exact ID, including a
+nonselected pending chat, without selecting/materializing it, saving a draft or
+altering Pin state. A removed record leaves the clipboard unchanged and uses the
+source's unavailable-chat error. Copy Session Reference remains absent because its
+source trace/accounting lookup is not implemented.
+
+Menu completion now carries a typed Pin/Copy action rather than a Boolean. Existing
+request-token, project, window-generation and shutdown guards still control
+application. The native AppKit selectors only record intent; the shared target is
+retained by each menu item's represented object and clipboard work occurs after
+native tracking ends. Anchor/window validation and nested-tracking protection are
+unchanged. Linux uses the same separator/action through its existing GPUI popup,
+with pointer selection and Up/Down/Enter/Escape routing.
+
+Four new GPUI tests exercise nonselected marked-draft/focus preservation, no pending
+materialization/catalog writes, stale/removed identities and modal cancellation,
+keyboard selection, the actual rendered Copy row and the existing Pin path. A new
+pure native-policy test verifies labels/symbols and invalid/Pin/Copy intent values;
+existing callback-drop/window/anchor tests are retained. Mutating the copied target
+to the selected chat or the Copy intent to Pin makes the focused regression fail.
+Fourteen distinct focused copy/menu/Pin tests, strict app all-target Clippy,
+formatting and the native Linux build pass; no broad workspace matrix was rerun.
+Independent source review found no remaining blocker.
+
+These Linux tests do not execute AppKit selector dispatch or native menu tracking;
+exact-commit macOS compilation and native interaction remain separate gates.
+GPUI's clipboard API returns no write status, so Swift's pasteboard-write-failure
+error cannot be reproduced here. No new dependency, provider call or core storage
+change is included.
+
+Fresh Linux desktop binary
+`601694148cf55ad62d751ddb2f244b4ba566ff054b69f5d58eff36d168a3cc5a`
+passed actual clipboard checks through both mouse and keyboard menu activation.
+Each copied the older nonselected chat's exact UUID, independently matched against
+its saved catalog record; the selected newer chat had a different ID and remained
+selected. Pinning the older target still worked without selecting it. Normal close
+persisted both exact drafts, `old draft` and `new draft`. No file editing or
+provider request was involved. The isolated QA observation record and screenshots support these Linux
+results; native macOS menu dispatch remains an explicit unvalidated interaction.

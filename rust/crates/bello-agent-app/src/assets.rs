@@ -26,6 +26,7 @@ impl AssetSource for Assets {
             "branch" => {
                 r#"<circle cx="6" cy="5" r="2"/><circle cx="18" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><path d="M6 7v10M18 7c0 7-12 3-12 9"/>"#
             }
+            "number" => r#"<path d="M10 3 8 21M17 3 15 21M4 9h17M3 15h17"/>"#,
             "pin" => r#"<path d="M8 3h8l-1 7 4 4H5l4-4zM12 14v7"/>"#,
             "unpin" => r#"<path d="M8 3h8l-1 7 4 4H5l4-4M12 14v7M3 3l18 18"/>"#,
             "chat" => r#"<path d="M3 4h18v13H9l-5 4v-4H3z"/>"#,

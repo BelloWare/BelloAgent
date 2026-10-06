@@ -1,8 +1,14 @@
-//! Source sidebar context Pin/Unpin; organization writes do not own navigation.
+//! Source sidebar organization and reference actions; neither owns navigation.
 use crate::{AgentView, workspace_lifetime::WindowBinding};
 use bello_agent_core::workspace::{ChatRecord, organization_timestamp};
 use gpui::{prelude::*, *};
 use std::path::PathBuf;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SidebarAction {
+    SetPinned(bool),
+    CopySessionId,
+}
 
 #[derive(Clone)]
 pub(crate) struct PinError {
@@ -17,6 +23,7 @@ pub(crate) struct SidebarMenu {
     project: PathBuf,
     binding: Option<WindowBinding>,
     pinned: bool,
+    selected: SidebarAction,
     #[cfg(not(target_os = "macos"))]
     position: Point<Pixels>,
 }
@@ -66,6 +73,7 @@ impl AgentView {
             project: self.project.clone(),
             binding: self.window_binding,
             pinned: record.pinned_at.is_some(),
+            selected: SidebarAction::SetPinned(record.pinned_at.is_none()),
             #[cfg(not(target_os = "macos"))]
             position,
         };
@@ -73,7 +81,7 @@ impl AgentView {
         #[cfg(target_os = "macos")]
         {
             let owner = cx.weak_entity();
-            crate::native_menu::show_pin_menu(
+            crate::native_menu::show_sidebar_menu(
                 cx,
                 window.window_handle(),
                 position,
@@ -92,7 +100,7 @@ impl AgentView {
     fn finish_sidebar_menu(
         &mut self,
         token: uuid::Uuid,
-        choice: Option<bool>,
+        choice: Option<SidebarAction>,
         cx: &mut Context<Self>,
     ) {
         let Some(menu) = self
@@ -107,9 +115,12 @@ impl AgentView {
         if menu.project == self.project
             && menu.binding == self.window_binding
             && !self.shutting_down
-            && let Some(pinned) = choice
+            && let Some(action) = choice
         {
-            self.set_chat_pinned(&menu.chat_id, pinned, cx);
+            match action {
+                SidebarAction::SetPinned(pinned) => self.set_chat_pinned(&menu.chat_id, pinned, cx),
+                SidebarAction::CopySessionId => self.copy_sidebar_session_id(&menu.chat_id, cx),
+            }
         }
         cx.notify();
     }
@@ -123,12 +134,31 @@ impl AgentView {
         };
         match event.keystroke.key.as_str() {
             "escape" => self.finish_sidebar_menu(menu.token, None, cx),
-            "enter" => self.finish_sidebar_menu(menu.token, Some(!menu.pinned), cx),
+            "enter" => self.finish_sidebar_menu(menu.token, Some(menu.selected), cx),
+            "up" | "down" => {
+                if let Some(menu) = self.sidebar_menu.as_mut() {
+                    menu.selected = if event.keystroke.key == "down" {
+                        SidebarAction::CopySessionId
+                    } else {
+                        SidebarAction::SetPinned(!menu.pinned)
+                    };
+                }
+                cx.notify();
+            }
             // A context menu owns keyboard input until dismissal; do not type
             // into the still-focused composer or trigger a hidden chat action.
             _ => {}
         }
         true
+    }
+    fn copy_sidebar_session_id(&mut self, id: &str, cx: &mut Context<Self>) {
+        // WorkspaceContent.copySessionID resolves the requested record again at
+        // action time. Copying a nonselected/pending chat never selects or saves it.
+        if self.records.iter().any(|record| record.id == id) {
+            cx.write_to_clipboard(ClipboardItem::new_string(id.to_owned()));
+        } else {
+            self.error = Some("That chat is no longer available to copy.".into());
+        }
     }
     pub(super) fn set_chat_pinned(&mut self, id: &str, pinned: bool, cx: &mut Context<Self>) {
         if self.shutting_down || self.pin_operations.contains_key(id) {
@@ -249,6 +279,7 @@ impl AgentView {
             let menu = self.sidebar_menu.clone()?;
             let token = menu.token;
             let pinned = !menu.pinned;
+            let pin_selected = matches!(menu.selected, SidebarAction::SetPinned(_));
             let p = self.palette;
             let body = div()
                 .id("sidebar-pin-menu")
@@ -275,12 +306,56 @@ impl AgentView {
                         .text_size(px(13.))
                         .text_color(rgb(p.ink))
                         .cursor_pointer()
-                        .hover(move |style| style.bg(p.accent_soft()))
+                        .when(pin_selected, |style| style.bg(p.accent_soft()))
+                        .on_hover(cx.listener(move |view, hover, _, cx| {
+                            if *hover
+                                && let Some(menu) =
+                                    view.sidebar_menu.as_mut().filter(|m| m.token == token)
+                            {
+                                menu.selected = SidebarAction::SetPinned(pinned);
+                                cx.notify();
+                            }
+                        }))
                         .on_click(cx.listener(move |view, _, _, cx| {
-                            view.finish_sidebar_menu(token, Some(pinned), cx)
+                            view.finish_sidebar_menu(
+                                token,
+                                Some(SidebarAction::SetPinned(pinned)),
+                                cx,
+                            )
                         }))
                         .child(self.icon(if pinned { "pin" } else { "unpin" }, 13.))
                         .child(if pinned { "Pin Chat" } else { "Unpin Chat" }),
+                )
+                // SidebarChatRow separates organization from reference actions.
+                .child(div().h(px(1.)).my(px(4.)).bg(p.hairline()))
+                .child(
+                    div()
+                        .id("sidebar-copy-id-choice")
+                        .debug_selector(|| "sidebar-copy-id-choice".into())
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .px(px(8.))
+                        .py(px(5.))
+                        .rounded(px(4.))
+                        .text_size(px(13.))
+                        .text_color(rgb(p.ink))
+                        .cursor_pointer()
+                        .when(!pin_selected, |style| style.bg(p.accent_soft()))
+                        .on_hover(cx.listener(move |view, hover, _, cx| {
+                            if *hover
+                                && let Some(menu) =
+                                    view.sidebar_menu.as_mut().filter(|m| m.token == token)
+                            {
+                                menu.selected = SidebarAction::CopySessionId;
+                                cx.notify();
+                            }
+                        }))
+                        .on_click(cx.listener(move |view, _, _, cx| {
+                            view.finish_sidebar_menu(token, Some(SidebarAction::CopySessionId), cx)
+                        }))
+                        .child(self.icon("number", 13.))
+                        .child("Copy Session ID"),
                 );
             Some(
                 deferred(
@@ -296,3 +371,7 @@ impl AgentView {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "sidebar_actions_tests.rs"]
+mod tests;
