@@ -666,15 +666,17 @@ impl AgentView {
         }
     }
     fn global_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        // Preserve cancellation for the whole consumed press, even if the file
-        // pane closes or focus changes before a repeat. A fresh press owns its
+        // Preserve a consumed menu/dialog press, even if the menu or file pane
+        // closes or focus changes before a repeat. A fresh press owns its
         // normal behavior. Native macOS/Wayland report repeats via is_held;
         // pinned GPUI X11 does not, so physical X11 repeat protection is limited.
-        if !event.is_held {
+        if self.cancelled_prompt_key.as_deref() == Some(event.keystroke.key.as_str()) {
+            if event.is_held {
+                cx.stop_propagation();
+                return;
+            }
+            // A different fresh key must not rearm a still-held confirmation.
             self.cancelled_prompt_key = None;
-        } else if self.cancelled_prompt_key.as_deref() == Some(event.keystroke.key.as_str()) {
-            cx.stop_propagation();
-            return;
         }
         if event.keystroke.key == "escape" && self.cancel_queue_drag(window, cx) {
             cx.stop_propagation();
@@ -685,6 +687,9 @@ impl AgentView {
             return;
         }
         if self.sidebar_menu_key(event, cx) {
+            if event.keystroke.key == "enter" {
+                self.cancelled_prompt_key = Some(event.keystroke.key.clone());
+            }
             cx.stop_propagation();
             return;
         }

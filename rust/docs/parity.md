@@ -1511,3 +1511,26 @@ selected. Pinning the older target still worked without selecting it. Normal clo
 persisted both exact drafts, `old draft` and `new draft`. No file editing or
 provider request was involved. The isolated QA observation record and screenshots support these Linux
 results; native macOS menu dispatch remains an explicit unvalidated interaction.
+
+## Sidebar-menu held Enter safety (2026-10-06)
+
+Root-dispatch regressions reproduced a GPUI popup defect in both Pin and Copy
+Session ID: Enter correctly chose the menu action, but subsequent held Enter
+repeats reached the newly exposed composer and queued its draft. The root now
+uses the existing consumed-key latch for menu confirmation too. An unrelated
+fresh key does not reset that latch; a fresh press of the matching key clears it
+before normal dispatch. KeyUp handling is unchanged.
+
+Two configured loopback regressions cover Copy/Pin, interleaved Left, a
+filter/composer focus roundtrip, repeated held Enter and KeyUp events, unchanged
+draft/revision and no queued submission. A fresh Enter then intentionally queues
+exactly one follow-up and clears the latch. Both regressions fail on the original
+code, and reinstating the old any-key reset also makes them fail. The final eight
+focused menu/clipboard/consumed-Enter tests pass, including the existing dirty-file
+prompt case; strict app all-target Clippy, formatting and Linux build pass.
+Independent review found no remaining scoped blocker.
+
+This covers explicit GPUI held events and the popup route. Pinned GPUI 0.2.2 X11
+reports physical repeat events as non-held, so real X11 autorepeat remains a known
+platform limitation. No timing heuristic, GPUI fork, native AppKit repeat claim,
+or broader workspace matrix is introduced.

@@ -1627,3 +1627,107 @@ fn changes_shortcut_exact_modifiers_and_modal_guards(cx: &mut TestAppContext) {
     cx.simulate_keystrokes(window.into(), changes_key());
     assert!(cx.read(|cx| root.read(cx).changes_open));
 }
+
+#[cfg(not(target_os = "macos"))]
+fn sidebar_menu_repeat_fixture(copy: bool, cx: &mut TestAppContext) {
+    use gpui::{KeyDownEvent, KeyUpEvent, Keystroke};
+    let (_dir, window, root) = fixture(cx);
+    let run = shortcut_run(window, cx);
+    let id = cx.read(|cx| root.read(cx).record.id.clone());
+    let draft = cx.read(|cx| root.read(cx).composer.read(cx).text().to_owned());
+    let revision = cx.read(|cx| root.read(cx).draft_revision);
+    window
+        .update(cx, |view, window, cx| {
+            view.open_sidebar_menu(&id, gpui::point(gpui::px(80.), gpui::px(120.)), window, cx)
+        })
+        .unwrap();
+    if copy {
+        cx.simulate_keystrokes(window.into(), "down");
+    }
+    let enter = Keystroke::parse("enter").unwrap();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    visual.simulate_event(KeyDownEvent {
+        keystroke: enter.clone(),
+        is_held: false,
+    });
+    cx.run_until_parked();
+    assert!(cx.read(|cx| root.read(cx).sidebar_menu.is_none()));
+    if copy {
+        assert_eq!(
+            cx.read(|cx| cx.read_from_clipboard().unwrap().text()),
+            Some(id.clone())
+        );
+    } else {
+        assert!(cx.read(|cx| {
+            root.read(cx)
+                .records
+                .iter()
+                .find(|record| record.id == id)
+                .unwrap()
+                .pinned_at
+                .is_some()
+        }));
+    }
+    assert_eq!(
+        cx.read(|cx| root.read(cx).composer.read(cx).text().to_owned()),
+        draft
+    );
+    assert!(run.controller.snapshot().pending.is_empty());
+    // Unrelated cursor movement must not turn the consumed Return into Send.
+    visual.simulate_event(KeyDownEvent {
+        keystroke: Keystroke::parse("left").unwrap(),
+        is_held: false,
+    });
+    window
+        .update(cx, |view, window, cx| {
+            view.filter.read(cx).focus(window);
+            view.composer.read(cx).focus(window);
+        })
+        .unwrap();
+    for _ in 0..3 {
+        visual.simulate_event(KeyDownEvent {
+            keystroke: enter.clone(),
+            is_held: true,
+        });
+        // Releases do not submit, including synthesized releases between repeats.
+        visual.simulate_event(KeyUpEvent {
+            keystroke: enter.clone(),
+        });
+        cx.run_until_parked();
+    }
+    assert!(
+        run.controller.snapshot().pending.is_empty(),
+        "menu repeat queued the composer draft"
+    );
+    assert_eq!(
+        cx.read(|cx| root.read(cx).composer.read(cx).text().to_owned()),
+        draft
+    );
+    assert_eq!(cx.read(|cx| root.read(cx).draft_revision), revision);
+
+    assert!(cx.read(|cx| root.read(cx).inflight_submission.is_none()));
+    // A fresh press still intentionally queues exactly one follow-up.
+    visual.simulate_event(KeyDownEvent {
+        keystroke: enter,
+        is_held: false,
+    });
+    cx.run_until_parked();
+    assert!(cx.read(|cx| root.read(cx).cancelled_prompt_key.is_none()));
+    let state = run.controller.snapshot();
+    assert_eq!(state.pending.len(), 1);
+    assert_eq!(state.pending[0].text, draft);
+    run.controller.stop().unwrap();
+    await_shortcut_stop(&run);
+}
+
+#[cfg(not(target_os = "macos"))]
+#[gpui::test]
+fn sidebar_menu_consumed_enter_copy_cannot_repeat_into_send(cx: &mut TestAppContext) {
+    sidebar_menu_repeat_fixture(true, cx);
+}
+
+#[cfg(not(target_os = "macos"))]
+#[gpui::test]
+fn sidebar_menu_consumed_enter_pin_cannot_repeat_into_send(cx: &mut TestAppContext) {
+    sidebar_menu_repeat_fixture(false, cx);
+}
