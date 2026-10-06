@@ -9,6 +9,9 @@ mod layout;
 mod native_menu;
 #[cfg(feature = "native-lifecycle-smoke")]
 mod native_smoke;
+mod project_host;
+mod project_manager_controller;
+mod project_manager_view;
 mod queue_actions;
 mod queue_begin;
 mod queue_cancel;
@@ -148,6 +151,7 @@ struct AgentView {
     selected_file: Option<u64>,
     next_file_id: u64,
     quick_open: Entity<QuickOpenView>,
+    projects: project_manager_controller::ProjectManagerController,
     _quick_events: Option<Subscription>,
     window_binding: Option<workspace_lifetime::WindowBinding>,
     project: PathBuf,
@@ -244,6 +248,8 @@ impl AgentView {
             view.set_panel(WorkbenchPanel::Changes, cx);
         });
         let quick_open = cx.new(|cx| QuickOpenView::new(project.clone(), palette, window, cx));
+        let projects =
+            project_manager_controller::ProjectManagerController::new(project.clone(), palette, cx);
         let icon = Arc::new(Image::from_bytes(
             ImageFormat::Png,
             include_bytes!("../../../../assets/branding/bello-agent-icon-128.png").to_vec(),
@@ -328,6 +334,7 @@ impl AgentView {
             selected_file: None,
             next_file_id: 1,
             quick_open,
+            projects,
             _quick_events: None,
             window_binding: None,
             project,
@@ -349,6 +356,7 @@ impl AgentView {
         let binding = workspace_lifetime::WindowBinding::new(window.window_handle().window_id());
         self.window_binding = Some(binding);
         self.organization_window = Some(window.window_handle());
+        self.bind_projects(window, cx);
         let weak = cx.weak_entity();
         window.on_window_should_close(cx, move |window, cx| {
             weak.update(cx, |view, cx| view.request_close_for(binding, window, cx))
@@ -617,6 +625,16 @@ impl AgentView {
         );
     }
     fn request_close(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.projects.operation.is_some() {
+            self.error =
+                Some("Wait for the project folder change to finish before closing.".into());
+            self.projects.presentation.notice = Some(project_manager_view::ProjectManagerNotice {
+                text: "Wait for the project folder change to finish before closing.".into(),
+                is_error: true,
+            });
+            self.projects.publish(cx);
+            return false;
+        }
         if self.close_ready {
             return true;
         }
@@ -744,6 +762,22 @@ impl AgentView {
             }
             // A different fresh key must not rearm a still-held confirmation.
             self.cancelled_prompt_key = None;
+        }
+        if self.projects.view.read(cx).is_open() {
+            // Modal ownership is decided before routing the key. Dismissal or
+            // an unfocused Enter must never fall through to composer Send.
+            self.projects
+                .view
+                .update(cx, |view, cx| view.key(event, window, cx));
+            let command = event.keystroke.modifiers.platform
+                || (cfg!(target_os = "linux") && event.keystroke.modifiers.control);
+            if matches!(event.keystroke.key.as_str(), "enter" | "escape" | "space")
+                || (command && event.keystroke.key == "w")
+            {
+                self.cancelled_prompt_key = Some(event.keystroke.key.clone());
+            }
+            cx.stop_propagation();
+            return;
         }
         if event.keystroke.key == "escape" && self.cancel_queue_drag(window, cx) {
             cx.stop_propagation();
@@ -2357,10 +2391,9 @@ impl AgentView {
                         self.icon_button("new-project-chat", "plus", 22.)
                             .on_click(cx.listener(|view, _, window, cx| view.new_chat(window, cx))),
                     )
-                    .child(
-                        self.icon_button("project-actions", "dots", 22.)
-                            .opacity(0.45),
-                    ),
+                    .child(self.icon_button("project-actions", "dots", 22.).on_click(
+                        cx.listener(|view, _, window, cx| view.open_projects(window, cx)),
+                    )),
             );
         let visible = self.visible_sidebar_records(cx);
         let archived_count = visible
@@ -2540,10 +2573,9 @@ impl AgentView {
                             .bg(p.accent_soft())
                             .on_click(cx.listener(|view, _, window, cx| view.new_chat(window, cx))),
                     )
-                    .child(
-                        self.icon_button("manage-projects", "folder", 24.)
-                            .opacity(0.45),
-                    ),
+                    .child(self.icon_button("manage-projects", "folder", 24.).on_click(
+                        cx.listener(|view, _, window, cx| view.open_projects(window, cx)),
+                    )),
             )
             .child(
                 div()
@@ -2620,6 +2652,9 @@ impl Render for AgentView {
                 view.set_appearance(Self::workbench_style(palette), cx)
             });
             self.quick_open
+                .update(cx, |view, cx| view.set_palette(palette, cx));
+            self.projects
+                .view
                 .update(cx, |view, cx| view.set_palette(palette, cx));
             for entry in &self.files {
                 entry
@@ -2839,6 +2874,27 @@ impl Render for AgentView {
         if self.close_dialog {
             element=element.child(div().absolute().inset_0().occlude().flex().items_center().justify_center().bg(rgba(0x00000055)).child(div().w(px(440.)).p(px(24.)).rounded(px(16.)).bg(rgb(p.surface)).border_1().border_color(p.hairline()).flex().flex_col().gap(px(16.)).child(div().text_size(px(17.)).font_weight(FontWeight::SEMIBOLD).child("Close this workspace?")).child(div().text_size(px(13.)).text_color(rgb(p.secondary)).child("Active responses will stop. Unsaved file drafts will be discarded. Chat drafts, accepted messages, and queued input will be saved before closing.")).child(div().flex().gap(px(12.)).child(self.button("keep-working","Keep working").on_click(cx.listener(|v,_,_,cx|{v.close_dialog=false;cx.notify();}))).child(self.button("close-discard","Close workspace").on_click(cx.listener(|v,_,window,cx|v.begin_shutdown(window,cx)))))));
         }
+        if self.projects.view.read(cx).is_open() {
+            element = element.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .occlude()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(rgba(0x00000044))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(
+                        div()
+                            .w(px((width - 48.).clamp(320., 760.)))
+                            .h(px(
+                                (f32::from(window.viewport_size().height) - 48.).clamp(300., 720.)
+                            ))
+                            .child(self.projects.view.clone()),
+                    ),
+            );
+        }
         if self.shutting_down {
             element = element.child(
                 div()
@@ -2935,6 +2991,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut session = default_session();
     let mut profile_path = None;
     let mut credential_stdin = false;
+    #[cfg(all(feature = "synthetic-authority", debug_assertions))]
+    let mut synthetic_authority = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--project" => {
@@ -2945,9 +3003,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 profile_path = Some(PathBuf::from(args.next().ok_or("--profile needs a file")?))
             }
             "--credential-stdin" => credential_stdin = true,
+            #[cfg(all(feature = "synthetic-authority", debug_assertions))]
+            "--synthetic-project-authority" => synthetic_authority = true,
             "--help" | "-h" => {
                 println!(
                     "BelloAgent Rust GPUI preview\n  --project DIR\n  --session FILE    isolated Rust snapshot (never a Swift journal)\n  --profile FILE    explicit non-secret LiteLLM Responses JSON\n  --credential-stdin  read an in-memory key until EOF; never stored\n  BELLO_PERF_LOG=FILE  optional real CPU callback JSONL telemetry"
+                );
+                #[cfg(all(feature = "synthetic-authority", debug_assertions))]
+                println!(
+                    "  --synthetic-project-authority  debug QA only; in-memory trust, never native storage or tools"
                 );
                 return Ok(());
             }
@@ -2992,6 +3056,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_assets(assets::Assets)
         .run(move |cx: &mut App| {
             bello_workbench_ui::init(cx);
+            #[cfg(all(feature = "synthetic-authority", debug_assertions))]
+            if synthetic_authority {
+                let (authority, _) =
+                    bello_agent_core::project_authority::ProjectAuthority::with_synthetic_bytes(
+                        None,
+                    )
+                    .expect("empty in-memory project fixture");
+                cx.set_global(project_manager_controller::LaunchProjectAuthority {
+                    authority: Arc::new(authority),
+                    synthetic: true,
+                });
+            }
             workspace_lifetime::WorkspaceLifetime::launch(
                 LaunchState {
                     controller,

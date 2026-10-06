@@ -71,6 +71,21 @@ pub(crate) fn append(file: &mut File, bytes: &[u8]) -> std::io::Result<()> {
 /// old generation for inspection and checkpoint only its complete valid prefix.
 /// Malformed complete records, gaps and foreign identities are refused.
 pub(crate) fn replay(snapshot: &Path, session: &mut Session) -> Result<Replay> {
+    replay_with_confirmation(snapshot, session, true)
+}
+
+/// Inspection uses the same format/identity validation without opening the
+/// journal for writing or synchronizing it. Readable bytes do not prove a prior
+/// uncertain append durable, and this path cannot authorize recovery writes.
+pub(crate) fn replay_read_only(snapshot: &Path, session: &mut Session) -> Result<Replay> {
+    replay_with_confirmation(snapshot, session, false)
+}
+
+fn replay_with_confirmation(
+    snapshot: &Path,
+    session: &mut Session,
+    confirm_durability: bool,
+) -> Result<Replay> {
     let path = path(snapshot, &session.stream_generation)?;
     let metadata = match fs::symlink_metadata(&path) {
         Ok(metadata) => metadata,
@@ -83,12 +98,19 @@ pub(crate) fn replay(snapshot: &Path, session: &mut Session) -> Result<Replay> {
     if metadata.len() > MAX_JOURNAL_BYTES {
         return Err(invalid("Stream journal exceeds its 512 MiB recovery limit"));
     }
-    let file = OpenOptions::new().read(true).write(true).open(path)?;
+    let file = OpenOptions::new()
+        .read(true)
+        .write(confirm_durability)
+        .open(&path)?;
+    if !confirm_durability {
+        crate::session::verify_inspection_file(&path, &file, &metadata)?;
+    }
     let mut reader = BufReader::with_capacity(64 * 1024, file);
     let mut outcome = Replay {
         exists: true,
         ..Default::default()
     };
+    let mut consumed = 0u64;
     loop {
         let mut line = Vec::new();
         loop {
@@ -102,6 +124,10 @@ pub(crate) fn replay(snapshot: &Path, session: &mut Session) -> Result<Replay> {
                 .map_or(buffer.len(), |i| i + 1);
             if line.len() + count > MAX_RECORD_BYTES {
                 return Err(invalid("Stream journal record exceeds its recovery limit"));
+            }
+            consumed += count as u64;
+            if consumed > MAX_JOURNAL_BYTES {
+                return Err(invalid("Stream journal exceeds its 512 MiB recovery limit"));
             }
             line.extend_from_slice(&buffer[..count]);
             reader.consume(count);
@@ -128,14 +154,22 @@ pub(crate) fn replay(snapshot: &Path, session: &mut Session) -> Result<Replay> {
                 "Stream journal identity or sequence does not match its checkpoint",
             ));
         }
+        let revision = session
+            .revision
+            .checked_add(1)
+            .ok_or_else(|| invalid("Stream journal session revision overflow"))?;
         session.delta(&record.reply, record.delta)?;
         session.stream_sequence = record.sequence;
-        session.revision += 1;
+        session.revision = revision;
         outcome.records += 1;
     }
     // Confirm bytes readable after an earlier uncertain synchronization before
     // allowing a new durable checkpoint to depend on them.
-    reader.get_ref().sync_all()?;
+    if confirm_durability {
+        reader.get_ref().sync_all()?;
+    } else {
+        crate::session::verify_inspection_file(&path, reader.get_ref(), &metadata)?;
+    }
     Ok(outcome)
 }
 #[cfg(test)]

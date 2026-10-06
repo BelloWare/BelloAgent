@@ -1,3 +1,7 @@
+#[path = "runtime_admission.rs"]
+mod admission;
+pub use admission::IdleAdmissionGuard;
+
 #[path = "tool_runtime.rs"]
 pub(crate) mod tool_runtime;
 pub use tool_runtime::{RuntimeOptions, TrustedReadOnlyTools};
@@ -37,6 +41,10 @@ pub struct Controller {
     active_cancel: RwLock<Option<CancellationToken>>,
     stop_requested: AtomicBool,
     retired: AtomicBool,
+    admission_suspension: AtomicU64,
+    suspension_generation: AtomicU64,
+    suspension_owner: AtomicU64,
+    suspension_released: tokio::sync::Notify,
     worker_active: AtomicBool,
     config: Option<Arc<Configuration>>,
     options: RuntimeOptions,
@@ -86,6 +94,10 @@ impl Controller {
             active_cancel: RwLock::new(None),
             stop_requested: AtomicBool::new(false),
             retired: AtomicBool::new(false),
+            admission_suspension: AtomicU64::new(0),
+            suspension_generation: AtomicU64::new(0),
+            suspension_owner: AtomicU64::new(0),
+            suspension_released: tokio::sync::Notify::new(),
             worker_active: AtomicBool::new(false),
             inner: Mutex::new(Inner {
                 store,
@@ -201,12 +213,16 @@ impl Controller {
     pub fn is_retired(&self) -> bool {
         self.retired.load(Ordering::Acquire)
     }
+    /// Joins workers, then waits for temporary idle-admission owners before
+    /// releasing the writer. Drop or seal your own IdleAdmissionGuard before
+    /// awaiting this method; retaining it intentionally keeps the writer leased.
     pub async fn retire_and_wait(&self) -> Result<()> {
         let retired = self.retire();
         // Even a cancellation failure must not skip joining an owned worker.
         let joined = self.join_workers().await;
         joined?;
         retired?;
+        self.wait_for_idle_guard_release().await;
         self.inner
             .lock()
             .map_err(|_| invalid("Session is unavailable"))?
@@ -404,6 +420,11 @@ impl Controller {
     fn require_admission(&self) -> Result<()> {
         if self.is_retired() {
             return Err(invalid("This session controller is permanently retired"));
+        }
+        if self.admission_suspension.load(Ordering::Acquire) != 0 {
+            return Err(invalid(
+                "Chat admission is suspended while project configuration changes.",
+            ));
         }
         Ok(())
     }

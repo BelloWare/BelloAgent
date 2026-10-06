@@ -8,6 +8,7 @@ rust-version.workspace = true
 [features]
 default = []
 native-lifecycle-smoke = []
+synthetic-authority = ["bello-agent-core/synthetic-authority"]
 
 [target.'cfg(target_os = "macos")'.dependencies]
 cocoa = "=0.26.0"

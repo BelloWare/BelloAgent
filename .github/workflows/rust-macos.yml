@@ -43,6 +43,11 @@ jobs:
       - name: Run pure domain and filesystem tests
         # No GPUI application launch, permissions, keychain, capture or updater actions.
         run: cargo test --locked -p bello-agent-core
+      - name: Synthetic Projects contracts and native type checks
+        # Memory-only fixtures; no native authority or credentials are accessed.
+        run: |
+          cargo test --locked -p bello-agent-core --lib --features synthetic-authority project_authority::
+          cargo check --locked -p bello-agent-app --all-targets --features synthetic-authority
       - name: Build native applications without launching
         run: cargo build --locked --workspace
       - name: Test native lifecycle harness policy

@@ -91,9 +91,15 @@ impl AgentView {
         })
     }
     pub(crate) fn actor_mutation_blocked(&self, id: &str) -> bool {
-        self.known_catalog_uncertainty || self.chat_is_archived(id) || self.has_pending_archive(id)
+        self.project_actions_blocked()
+            || self.known_catalog_uncertainty
+            || self.chat_is_archived(id)
+            || self.has_pending_archive(id)
     }
     pub(crate) fn advance_navigation(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.project_actions_blocked() {
+            return false;
+        }
         let Some(next) = self.navigation_generation.checked_add(1) else {
             self.error =
                 Some("Navigation revision limit reached; the current chat is preserved.".into());
@@ -123,7 +129,7 @@ impl AgentView {
         action: OrganizationAction,
         cx: &mut Context<Self>,
     ) {
-        if self.shutting_down {
+        if self.shutting_down || self.project_actions_blocked() {
             return;
         }
         let Some(record) = self.records.iter().find(|record| record.id == id) else {
@@ -485,7 +491,7 @@ impl AgentView {
         self.show_archived || self.launch_archive_reveal
     }
     pub(crate) fn set_archive_visibility(&mut self, shown: bool, cx: &mut Context<Self>) {
-        if self.shutting_down {
+        if self.shutting_down || self.project_actions_blocked() {
             return;
         }
         let Some(revision) = self.archive_visibility_revision.checked_add(1) else {

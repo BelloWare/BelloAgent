@@ -35,6 +35,10 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Core and integration tests
         run: cargo test --locked --workspace
+      - name: Synthetic Projects authority and coordinator checks
+        run: |
+          cargo test --locked -p bello-agent-core --lib --features synthetic-authority project_authority::
+          cargo test --locked -p bello-agent-app --features synthetic-authority project_
       - name: Lints
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Build native applications

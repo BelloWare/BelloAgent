@@ -296,7 +296,7 @@ impl AgentView {
         self.load_chat(id, cx);
     }
     pub(super) fn load_chat(&mut self, id: &str, cx: &mut Context<Self>) {
-        if self.shutting_down {
+        if self.shutting_down || self.project_actions_blocked() {
             return;
         }
         let Some(chat) = self.chat_mut(id) else {
@@ -314,6 +314,7 @@ impl AgentView {
         let config = chat.controller.configuration();
         let source = Arc::downgrade(&chat.controller);
         let id = id.to_owned();
+        let project = self.project.clone();
         let task = cx.background_executor().spawn(async move {
             let store = if record.snapshot.exists() {
                 SessionStore::open(&record.snapshot)?
@@ -331,7 +332,7 @@ impl AgentView {
             let loaded = task.await;
             let success = loaded.is_ok();
             let _ = view.update(cx, |view, cx| {
-                if view
+                if view.project != project || view
                     .chat_ref(&id)
                     .is_none_or(|chat| chat.load_generation != generation || !source.ptr_eq(&Arc::downgrade(&chat.controller)))
                 {
@@ -663,6 +664,9 @@ impl AgentView {
         }
     }
     pub(crate) fn reconcile_intents(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.projects.operation.is_some() {
+            return;
+        }
         let Some(chat) = self.chat_ref(id) else {
             return;
         };
@@ -798,6 +802,12 @@ impl AgentView {
     }
     pub(super) fn begin_shutdown(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.shutting_down {
+            return;
+        }
+        if self.projects.operation.is_some() {
+            self.error =
+                Some("Wait for the project folder change to finish before closing.".into());
+            cx.notify();
             return;
         }
         if let Some(chat) = std::iter::once(&self.chat)

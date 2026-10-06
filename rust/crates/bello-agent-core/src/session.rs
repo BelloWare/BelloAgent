@@ -4,7 +4,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File, OpenOptions},
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
 };
 use uuid::Uuid;
@@ -529,6 +529,19 @@ impl Session {
         }
         Ok(())
     }
+    fn require_idle_for_host_change(&self) -> Result<()> {
+        if self.state == RunState::Running
+            || !self.pending.is_empty()
+            || self.edit.is_some()
+            || self.active.is_some()
+            || self.active_reply.is_some()
+        {
+            return Err(invalid(
+                "Finish active work, queued messages and held edits before changing project roots",
+            ));
+        }
+        Ok(())
+    }
     fn recover(&mut self) -> bool {
         if self.state != RunState::Running && self.edit.is_none() {
             return false;
@@ -598,6 +611,142 @@ const MAX_SNAPSHOT_BYTES: usize = 256 * 1024 * 1024;
 // Kept outside streamed text admission so cancellation/recovery can always
 // write its small notice and state changes without making history unreadable.
 const RECOVERY_RESERVE_BYTES: usize = 128 * 1024;
+
+/// A read-only observation of an existing, unloaded saved session while holding
+/// its writer lock. Keep this lease alive through the host operation it admits.
+/// Acquiring it never creates files, recovers interrupted work, confirms
+/// durability, or writes a checkpoint or journal.
+///
+/// Known persistence uncertainty belongs to the live store/controller and must
+/// stay fenced there: inspecting readable bytes cannot clear that uncertainty.
+/// Hosts must reuse loaded controllers instead of replacing them with a lease.
+#[must_use = "Keep the inspection lease alive through the admitted host operation"]
+pub struct SessionInspectionLease {
+    _lock: File,
+    session: Session,
+}
+/// An idle inspection reduced to writer ownership only. Converting drops the
+/// parsed history so inspecting many unloaded chats does not retain them all.
+#[must_use = "Keep this idle lease alive through the admitted host operation"]
+pub struct IdleSessionLease {
+    _lock: File,
+}
+impl SessionInspectionLease {
+    pub fn acquire(path: impl AsRef<Path>, expected_session_id: &str) -> Result<Self> {
+        Uuid::parse_str(expected_session_id)
+            .map_err(|_| invalid("Invalid inspected session identity"))?;
+        let path = if path.as_ref().is_absolute() {
+            path.as_ref().to_owned()
+        } else {
+            std::env::current_dir()?.join(path)
+        };
+        // Unlike opening a writer, inspection requires the existing lock and
+        // checkpoint. A missing file is unknown state, never an empty chat.
+        let lock_path = path.with_extension("lock");
+        let lock = open_inspection_file(&lock_path, true)?;
+        lock.try_lock()
+            .map_err(|_| invalid("This Rust session is already open elsewhere"))?;
+        verify_inspection_file(&lock_path, &lock, &lock.metadata()?)?;
+
+        let file = open_inspection_file(&path, false)?;
+        let before = file.metadata()?;
+        if before.len() > MAX_SNAPSHOT_BYTES as u64 {
+            return Err(invalid("Session exceeds 256 MiB safety limit"));
+        }
+        let mut bytes = Vec::new();
+        (&file)
+            .take(MAX_SNAPSHOT_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() > MAX_SNAPSHOT_BYTES {
+            return Err(invalid("Session exceeds 256 MiB safety limit"));
+        }
+        verify_inspection_file(&path, &file, &before)?;
+        let mut session: Session = serde_json::from_slice(&bytes)?;
+        if session.id != expected_session_id {
+            return Err(invalid("The session file belongs to another chat"));
+        }
+        if ![1, 2, 3].contains(&session.version) {
+            return Err(invalid(
+                "Unsupported Rust session format. Swift journals are not imported automatically.",
+            ));
+        }
+        session.validate_checkpoint()?;
+        if session.version == 1 {
+            // Legacy snapshots predate the append journal. Observe the legacy
+            // shape without the migration performed by SessionStore::open.
+            if !session.stream_generation.is_empty() || session.stream_sequence != 0 {
+                return Err(invalid("Legacy session has unknown stream journal state"));
+            }
+        } else {
+            let replay = crate::stream_journal::replay_read_only(&path, &mut session)?;
+            if replay.incomplete_tail {
+                return Err(invalid(
+                    "Session has an incomplete stream journal; reopen it before changing project roots",
+                ));
+            }
+        }
+        session.validate_checkpoint()?;
+        Ok(Self {
+            _lock: lock,
+            session,
+        })
+    }
+
+    /// Presentation and idle admission only; this is not a durability receipt.
+    pub fn snapshot(&self) -> &Session {
+        &self.session
+    }
+
+    /// Mirrors the source's busy-or-queued work check, including held edits.
+    /// A stopped or failed chat with no active, queued or held work is idle.
+    pub fn require_idle(&self) -> Result<()> {
+        self.session.require_idle_for_host_change()
+    }
+
+    pub fn into_idle_lease(self) -> Result<IdleSessionLease> {
+        self.require_idle()?;
+        Ok(IdleSessionLease { _lock: self._lock })
+    }
+}
+
+fn open_inspection_file(path: &Path, writable: bool) -> Result<File> {
+    let before = fs::symlink_metadata(path)?;
+    if !before.is_file() || before.file_type().is_symlink() {
+        return Err(invalid(
+            "Session inspection requires existing regular files",
+        ));
+    }
+    let file = OpenOptions::new().read(true).write(writable).open(path)?;
+    verify_inspection_file(path, &file, &before)?;
+    Ok(file)
+}
+
+pub(crate) fn verify_inspection_file(
+    path: &Path,
+    file: &File,
+    before: &fs::Metadata,
+) -> Result<()> {
+    let opened = file.metadata()?;
+    let current = fs::symlink_metadata(path)?;
+    for after in [&opened, &current] {
+        if !after.is_file()
+            || after.file_type().is_symlink()
+            || after.len() != before.len()
+            || after.modified()? != before.modified()?
+        {
+            return Err(invalid("Session file changed during inspection"));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if after.dev() != before.dev() || after.ino() != before.ino() {
+                return Err(invalid("Session file identity changed during inspection"));
+            }
+        }
+    }
+    Ok(())
+}
+
 pub struct SessionStore {
     #[cfg(test)]
     pub(crate) fault: WriteFault,
@@ -796,6 +945,10 @@ impl SessionStore {
             ));
         }
         Ok(())
+    }
+    pub(crate) fn require_idle_for_host_change(&self) -> Result<()> {
+        self.require_certain()?;
+        self.session.require_idle_for_host_change()
     }
     /// Controller-only ownership transfer: admission must already be fenced and
     /// every worker successfully joined. Cached snapshots remain readable, but
@@ -1062,6 +1215,10 @@ fn encode_snapshot(session: &Session) -> Result<Vec<u8>> {
     }
     Ok(bytes)
 }
+
+#[cfg(test)]
+#[path = "session_inspection_tests.rs"]
+mod inspection_tests;
 
 #[cfg(test)]
 mod tests {

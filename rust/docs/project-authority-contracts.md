@@ -3,9 +3,10 @@
 This checkpoint implements the portable envelope/edit/confirmation contract for
 an isolated Rust trust store. It does not implement native Keychain access,
 signing configuration, a settings window, per-chat tool mode, or tool enablement.
-`ProjectAuthority::new()` is unavailable on every production platform; only unit
-tests can inject storage. There is no plaintext, unsigned, environment, or source
-vault fallback. No user credentials or Keychain items were read or written.
+`ProjectAuthority::new()` is unavailable on every production platform. Unit tests
+and the explicitly enabled, nondefault `synthetic-authority` feature can construct
+an in-memory fixture backend. The feature does not change `new()` or `Default`.
+There is no plaintext, unsigned, environment, or source vault fallback. No user credentials or Keychain items were read or written.
 
 The intended native backend must verify its approved signed application identity
 before both reads and writes, use a separate Rust Keychain namespace, and perform
@@ -24,13 +25,13 @@ will explicitly trust projects in the separate Rust store.
 
 ## Envelope and editing
 
-The Rust envelope requires schema1, a nonnegative signed64-bit revision and a
+The Rust envelope requires schema 1, a nonnegative signed 64-bit revision and a
 workspaces array. Only an absent backend item receives an empty fresh envelope;
 missing fields in existing bytes, duplicate object keys, duplicate project IDs,
 future schemas, oversized content and revision overflow fail closed. The envelope
-is bounded to2MiB and1000 projects. Fresh Rust project IDs are UUIDs. Project roots
-are absolute UTF-8 paths of at most4096 bytes, primary first, canonicalized and
-deduplicated at explicit trust editing, with at most16 distinct roots. Legacy
+is bounded to 2 MiB and 1000 projects. Fresh Rust project IDs are UUIDs. Project roots
+are absolute UTF-8 paths of at most 4096 bytes, primary first, canonicalized and
+deduplicated at explicit trust editing, with at most 16 distinct roots. Legacy
 missing/null additional paths decode as empty without rewriting on read.
 
 A draft has no write side effects until Save. Save checks both the loaded revision

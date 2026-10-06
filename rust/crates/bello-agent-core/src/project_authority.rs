@@ -4,8 +4,9 @@
 //! and WorkspaceFolders.swift. This does NOT access a Keychain, source vault,
 //! credentials, environment, or plaintext fallback. The production constructor
 //! is unavailable until an approved native identity/backend is implemented.
-//! Only unit tests may inject storage. Values describe saved configuration, not
-//! an execution grant; the host still owns lifecycle and admission fencing.
+//! Unit tests and the explicit, nondefault `synthetic-authority` QA feature may
+//! inject in-memory storage. Values describe saved configuration, not an execution
+//! grant; the host still owns lifecycle and admission fencing.
 use serde::{
     Deserialize, Serialize,
     de::{self, MapAccess, Visitor},
@@ -188,6 +189,18 @@ pub struct ProjectDraft {
     entries: Vec<Fields>,
 }
 impl ProjectDraft {
+    /// The last confirmed baseline, unchanged by failed or unconfirmed saves.
+    pub fn baseline_revision(&self) -> i64 {
+        self.baseline.revision()
+    }
+    /// Known fields of the current draft, including unsaved create/retrust/root
+    /// edits. This exposes neither opaque envelope values nor an execution grant.
+    pub fn projects(&self) -> AuthorityResult<Vec<SavedProject>> {
+        self.entries
+            .iter()
+            .map(|entry| parse(&raw(entry)?))
+            .collect()
+    }
     pub fn trust_project(
         &mut self,
         id: &str,
@@ -259,7 +272,7 @@ impl ProjectDraft {
 
 // The backend must provide source-equivalent locked whole-byte CAS. The future
 // native adapter must verify its approved signed identity before BOTH operations.
-// Test implementations are never available as a production fallback.
+// Synthetic implementations are never available as a production fallback.
 trait VaultStorage: Send + Sync {
     fn read(&self) -> AuthorityResult<Option<Vec<u8>>>;
     fn replace(&self, expected: Option<&[u8]>, replacement: &[u8]) -> AuthorityResult<()>;
@@ -271,6 +284,20 @@ pub struct ProjectAuthority {
 impl ProjectAuthority {
     pub fn new() -> Self {
         Self::default()
+    }
+    /// Explicit in-memory QA injection. `None` represents an absent item. Raw
+    /// malformed fixtures are accepted within the byte limit so `load` exercises
+    /// the production decoder. This neither enables tools nor accesses a native
+    /// store, disk, environment variables, or credentials.
+    #[cfg(feature = "synthetic-authority")]
+    pub fn with_synthetic_bytes(
+        bytes: Option<Vec<u8>>,
+    ) -> AuthorityResult<(Self, synthetic::SyntheticAuthorityControl)> {
+        let control = synthetic::SyntheticAuthorityControl::new(bytes)?;
+        let authority = Self {
+            storage: Some(control.storage.clone()),
+        };
+        Ok((authority, control))
     }
     #[cfg(test)]
     fn with_test_storage(storage: Arc<dyn VaultStorage>) -> Self {
@@ -337,6 +364,245 @@ impl ProjectAuthority {
     }
 }
 
+/// Explicit QA controls, absent from default builds. All state lives in memory;
+/// construction cannot change the host's tool mode or production authority.
+#[cfg(feature = "synthetic-authority")]
+pub mod synthetic {
+    use super::*;
+    use std::{
+        sync::{Condvar, Mutex},
+        time::Duration,
+    };
+
+    /// A forgotten gate fails the pending operation closed after this bound.
+    pub const MAX_PAUSE: Duration = Duration::from_secs(5);
+
+    #[derive(Default)]
+    struct PauseState {
+        started: bool,
+        released: bool,
+    }
+    #[derive(Default)]
+    struct Pause {
+        state: Mutex<PauseState>,
+        changed: Condvar,
+    }
+    impl Pause {
+        fn begin(&self) -> AuthorityResult<()> {
+            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            state.started = true;
+            self.changed.notify_all();
+            let (state, _) = self
+                .changed
+                .wait_timeout_while(state, MAX_PAUSE, |state| !state.released)
+                .unwrap_or_else(|error| error.into_inner());
+            if state.released {
+                Ok(())
+            } else {
+                Err(AuthorityError::Busy)
+            }
+        }
+        fn release(&self) {
+            self.state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .released = true;
+            self.changed.notify_all();
+        }
+    }
+
+    /// A one-shot completion gate. Dropping it releases pending work, including
+    /// when a test exits early. The backend never waits longer than `MAX_PAUSE`.
+    /// Release permits the normal operation/error/CAS path; it does not grant
+    /// authority or guarantee that an injected write will succeed.
+    pub struct SyntheticOperationGate {
+        pause: Arc<Pause>,
+    }
+    impl SyntheticOperationGate {
+        /// Wait for the operation to reach this gate, capped at `MAX_PAUSE`.
+        pub fn wait_until_started(&self, timeout: Duration) -> bool {
+            let state = self
+                .pause
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let (state, _) = self
+                .pause
+                .changed
+                .wait_timeout_while(state, timeout.min(MAX_PAUSE), |state| !state.started)
+                .unwrap_or_else(|error| error.into_inner());
+            state.started
+        }
+        pub fn release(&self) {
+            self.pause.release();
+        }
+    }
+    impl Drop for SyntheticOperationGate {
+        fn drop(&mut self) {
+            self.pause.release();
+        }
+    }
+
+    #[derive(Default)]
+    struct NextOperation {
+        pause: Option<Arc<Pause>>,
+        error: Option<AuthorityError>,
+    }
+    impl NextOperation {
+        fn pause(&mut self) -> AuthorityResult<SyntheticOperationGate> {
+            if self.pause.is_some() {
+                return Err(AuthorityError::Busy);
+            }
+            let pause = Arc::new(Pause::default());
+            self.pause = Some(pause.clone());
+            Ok(SyntheticOperationGate { pause })
+        }
+        fn fail(&mut self, error: AuthorityError) -> AuthorityResult<()> {
+            if self.error.is_some() {
+                return Err(AuthorityError::Busy);
+            }
+            self.error = Some(error);
+            Ok(())
+        }
+        fn begin(&self) -> AuthorityResult<()> {
+            if let Some(pause) = &self.pause {
+                pause.begin()?;
+            }
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct State {
+        bytes: Option<Vec<u8>>,
+        read: NextOperation,
+        write: NextOperation,
+    }
+    #[derive(Default)]
+    pub(super) struct MemoryStorage {
+        state: Mutex<State>,
+    }
+    impl VaultStorage for MemoryStorage {
+        fn read(&self) -> AuthorityResult<Option<Vec<u8>>> {
+            // Capture before pausing completion so QA can deterministically
+            // deliver an older snapshot after a newer host generation exists.
+            let (bytes, operation) = {
+                let mut state = self.state.lock().map_err(|_| AuthorityError::Busy)?;
+                (state.bytes.clone(), std::mem::take(&mut state.read))
+            };
+            operation.begin()?;
+            match operation.error {
+                Some(error) => Err(error),
+                None => Ok(bytes),
+            }
+        }
+        fn replace(&self, expected: Option<&[u8]>, replacement: &[u8]) -> AuthorityResult<()> {
+            check_size(Some(replacement))?;
+            let operation = {
+                let mut state = self.state.lock().map_err(|_| AuthorityError::Busy)?;
+                std::mem::take(&mut state.write)
+            };
+            operation.begin()?;
+            // The pause never holds the storage lock. Competing fixture writes
+            // remain possible, and the exact-byte CAS still runs atomically.
+            let mut state = self.state.lock().map_err(|_| AuthorityError::Busy)?;
+            if state.bytes.as_deref() != expected {
+                return Err(AuthorityError::Conflict);
+            }
+            if let Some(error) = operation.error {
+                if error == AuthorityError::Unconfirmed {
+                    state.bytes = Some(replacement.to_vec());
+                }
+                return Err(error);
+            }
+            state.bytes = Some(replacement.to_vec());
+            Ok(())
+        }
+    }
+    fn check_size(bytes: Option<&[u8]>) -> AuthorityResult<()> {
+        if bytes.is_some_and(|bytes| bytes.len() > MAX_BYTES) {
+            return Err(AuthorityError::Corrupt);
+        }
+        Ok(())
+    }
+
+    /// A handle to synthetic fixture bytes and one-shot operation controls.
+    /// No Debug implementation: raw fixture values need not be loggable.
+    #[derive(Clone)]
+    pub struct SyntheticAuthorityControl {
+        pub(super) storage: Arc<MemoryStorage>,
+    }
+    impl SyntheticAuthorityControl {
+        pub(super) fn new(bytes: Option<Vec<u8>>) -> AuthorityResult<Self> {
+            check_size(bytes.as_deref())?;
+            Ok(Self {
+                storage: Arc::new(MemoryStorage {
+                    state: Mutex::new(State {
+                        bytes,
+                        ..State::default()
+                    }),
+                }),
+            })
+        }
+        /// Replace exact fixture bytes, simulating another writer or a malformed
+        /// item. No decoding or normalization occurs here; `load` validates them.
+        pub fn replace_bytes(&self, bytes: Option<Vec<u8>>) -> AuthorityResult<()> {
+            check_size(bytes.as_deref())?;
+            self.storage
+                .state
+                .lock()
+                .map_err(|_| AuthorityError::Busy)?
+                .bytes = bytes;
+            Ok(())
+        }
+        pub fn snapshot_bytes(&self) -> AuthorityResult<Option<Vec<u8>>> {
+            Ok(self
+                .storage
+                .state
+                .lock()
+                .map_err(|_| AuthorityError::Busy)?
+                .bytes
+                .clone())
+        }
+        /// Pause the next backend read completion (load, confirm, or save's read).
+        pub fn pause_next_read(&self) -> AuthorityResult<SyntheticOperationGate> {
+            self.storage
+                .state
+                .lock()
+                .map_err(|_| AuthorityError::Busy)?
+                .read
+                .pause()
+        }
+        /// Pause the next replace before its atomic exact-byte comparison.
+        pub fn pause_next_write(&self) -> AuthorityResult<SyntheticOperationGate> {
+            self.storage
+                .state
+                .lock()
+                .map_err(|_| AuthorityError::Busy)?
+                .write
+                .pause()
+        }
+        pub fn fail_next_read(&self, error: AuthorityError) -> AuthorityResult<()> {
+            self.storage
+                .state
+                .lock()
+                .map_err(|_| AuthorityError::Busy)?
+                .read
+                .fail(error)
+        }
+        /// `Unconfirmed` commits bytes and reports uncertainty. Every other
+        /// injected failure leaves bytes untouched. Each hook is consumed once.
+        pub fn fail_next_write(&self, error: AuthorityError) -> AuthorityResult<()> {
+            self.storage
+                .state
+                .lock()
+                .map_err(|_| AuthorityError::Busy)?
+                .write
+                .fail(error)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -397,6 +663,8 @@ mod tests {
         assert_eq!(initial.revision(), 0);
         let mut draft = initial.edit();
         let project = draft.trust_project(ID, directory.path(), &[]).unwrap();
+        assert_eq!(draft.baseline_revision(), 0);
+        assert_eq!(draft.projects().unwrap(), vec![project.clone()]);
         assert!(matches!(
             authority.confirm_project(&initial, &project),
             Err(AuthorityError::Untrusted)
@@ -409,6 +677,7 @@ mod tests {
         let project = draft.trust_project(ID, directory.path(), &[]).unwrap();
         let saved = authority.save(&mut draft).unwrap();
         assert_eq!(saved.revision(), 1);
+        assert_eq!(draft.baseline_revision(), 1);
         assert!(!draft.has_changes());
         let reopened = ProjectAuthority::with_test_storage(storage.clone());
         let loaded = reopened.load().unwrap();
@@ -702,5 +971,174 @@ mod tests {
         assert!(draft.has_changes());
         assert_eq!(*storage.bytes.lock().unwrap(), Some(competing));
         assert_eq!(*storage.writes.lock().unwrap(), 1);
+    }
+
+    #[cfg(feature = "synthetic-authority")]
+    mod synthetic_tests {
+        use super::*;
+        use std::{thread, time::Duration};
+
+        const EMPTY: &[u8] = br#"{"schema":1,"revision":0,"workspaces":[]}"#;
+
+        #[test]
+        fn fixture_is_explicit_bounded_and_uses_the_unchanged_decoder() {
+            let (authority, control) = ProjectAuthority::with_synthetic_bytes(None).unwrap();
+            assert_eq!(authority.load().unwrap().revision(), 0);
+            assert!(control.snapshot_bytes().unwrap().is_none());
+            assert!(matches!(
+                ProjectAuthority::new().load(),
+                Err(AuthorityError::Unavailable)
+            ));
+            for bytes in [
+                b"not json".to_vec(),
+                br#"{"schema":2,"revision":0,"workspaces":[]}"#.to_vec(),
+                br#"{"schema":1,"revision":0}"#.to_vec(),
+            ] {
+                control.replace_bytes(Some(bytes.clone())).unwrap();
+                assert!(matches!(authority.load(), Err(AuthorityError::Corrupt)));
+                assert_eq!(control.snapshot_bytes().unwrap(), Some(bytes));
+            }
+            let before = control.snapshot_bytes().unwrap();
+            assert!(matches!(
+                control.replace_bytes(Some(vec![b' '; MAX_BYTES + 1])),
+                Err(AuthorityError::Corrupt)
+            ));
+            assert_eq!(control.snapshot_bytes().unwrap(), before);
+            assert!(matches!(
+                ProjectAuthority::with_synthetic_bytes(Some(vec![b' '; MAX_BYTES + 1])),
+                Err(AuthorityError::Corrupt)
+            ));
+        }
+
+        #[test]
+        fn read_gate_returns_older_snapshot_and_drop_releases_pending_work() {
+            let (authority, control) = ProjectAuthority::with_synthetic_bytes(None).unwrap();
+            thread::scope(|scope| {
+                let gate = control.pause_next_read().unwrap();
+                assert!(matches!(
+                    control.pause_next_read(),
+                    Err(AuthorityError::Busy)
+                ));
+                let load = scope.spawn(|| authority.load());
+                assert!(gate.wait_until_started(Duration::from_secs(2)));
+                control
+                    .replace_bytes(Some(
+                        br#"{"schema":1,"revision":1,"workspaces":[]}"#.to_vec(),
+                    ))
+                    .unwrap();
+                drop(gate);
+                assert_eq!(load.join().unwrap().unwrap().revision(), 0);
+            });
+            assert_eq!(authority.load().unwrap().revision(), 1);
+            control.fail_next_read(AuthorityError::Denied).unwrap();
+            assert!(matches!(
+                control.fail_next_read(AuthorityError::Busy),
+                Err(AuthorityError::Busy)
+            ));
+            assert!(matches!(authority.load(), Err(AuthorityError::Denied)));
+            assert_eq!(authority.load().unwrap().revision(), 1);
+        }
+
+        #[test]
+        fn paused_write_detects_same_revision_byte_race_and_retains_draft() {
+            let directory = tempfile::tempdir().unwrap();
+            let (authority, control) =
+                ProjectAuthority::with_synthetic_bytes(Some(EMPTY.to_vec())).unwrap();
+            let mut draft = authority.load().unwrap().edit();
+            let project = draft.trust_project(ID, directory.path(), &[]).unwrap();
+            thread::scope(|scope| {
+                let gate = control.pause_next_write().unwrap();
+                let save = scope.spawn(|| authority.save(&mut draft));
+                assert!(gate.wait_until_started(Duration::from_secs(2)));
+                let mut raced = EMPTY.to_vec();
+                raced.push(b' ');
+                control.replace_bytes(Some(raced.clone())).unwrap();
+                gate.release();
+                assert!(matches!(
+                    save.join().unwrap(),
+                    Err(AuthorityError::Conflict)
+                ));
+                assert_eq!(control.snapshot_bytes().unwrap(), Some(raced));
+            });
+            assert_eq!(draft.baseline_revision(), 0);
+            assert_eq!(draft.projects().unwrap(), vec![project]);
+            assert!(draft.has_changes());
+        }
+
+        #[test]
+        fn failures_are_one_shot_and_unconfirmed_write_retains_old_baseline() {
+            let directory = tempfile::tempdir().unwrap();
+            let (authority, control) = ProjectAuthority::with_synthetic_bytes(None).unwrap();
+            let mut draft = authority.load().unwrap().edit();
+            let project = draft.trust_project(ID, directory.path(), &[]).unwrap();
+            for error in [AuthorityError::Denied, AuthorityError::Busy] {
+                control.fail_next_write(error.clone()).unwrap();
+                assert!(matches!(authority.save(&mut draft), Err(actual) if actual == error));
+                assert!(control.snapshot_bytes().unwrap().is_none());
+                assert_eq!(draft.baseline_revision(), 0);
+                assert_eq!(draft.projects().unwrap(), vec![project.clone()]);
+            }
+            control
+                .fail_next_write(AuthorityError::Unconfirmed)
+                .unwrap();
+            assert!(matches!(
+                authority.save(&mut draft),
+                Err(AuthorityError::Unconfirmed)
+            ));
+            assert_eq!(draft.baseline_revision(), 0);
+            assert!(draft.has_changes());
+            let committed = control.snapshot_bytes().unwrap();
+            assert_eq!(authority.load().unwrap().revision(), 1);
+            assert!(matches!(
+                authority.save(&mut draft),
+                Err(AuthorityError::Conflict)
+            ));
+            assert_eq!(control.snapshot_bytes().unwrap(), committed);
+        }
+
+        #[test]
+        fn opaque_values_survive_synthetic_save_and_fixture_grants_no_membership() {
+            let directory = tempfile::tempdir().unwrap();
+            let opaque = r#"{ "large": 184467440737095516160000000000000001, "escaped":"\u0061" }"#;
+            let bytes = format!(r#"{{"schema":1,"revision":0,"workspaces":[],"future":{opaque}}}"#)
+                .into_bytes();
+            let (authority, control) = ProjectAuthority::with_synthetic_bytes(Some(bytes)).unwrap();
+            let loaded = authority.load().unwrap();
+            let mut draft = loaded.edit();
+            let project = draft.trust_project(ID, directory.path(), &[]).unwrap();
+            assert!(matches!(
+                authority.confirm_project(&loaded, &project),
+                Err(AuthorityError::Untrusted)
+            ));
+            let saved = authority.save(&mut draft).unwrap();
+            assert_eq!(
+                authority.confirm_project(&saved, &project).unwrap(),
+                project
+            );
+            let fields: Fields =
+                serde_json::from_slice(&control.snapshot_bytes().unwrap().unwrap()).unwrap();
+            assert_eq!(fields.0["future"].get(), opaque);
+            assert!(!draft.has_changes());
+        }
+
+        #[test]
+        fn unreleased_write_times_out_without_mutation_or_baseline_advance() {
+            let directory = tempfile::tempdir().unwrap();
+            let (authority, control) = ProjectAuthority::with_synthetic_bytes(None).unwrap();
+            let mut draft = authority.load().unwrap().edit();
+            draft.trust_project(ID, directory.path(), &[]).unwrap();
+            thread::scope(|scope| {
+                let gate = control.pause_next_write().unwrap();
+                let save = scope.spawn(|| authority.save(&mut draft));
+                assert!(gate.wait_until_started(Duration::from_secs(2)));
+                assert!(matches!(save.join().unwrap(), Err(AuthorityError::Busy)));
+                gate.release();
+            });
+            assert!(control.snapshot_bytes().unwrap().is_none());
+            assert_eq!(draft.baseline_revision(), 0);
+            assert!(draft.has_changes());
+            // The timed-out one-shot hook cannot hold a later reviewed save.
+            assert_eq!(authority.save(&mut draft).unwrap().revision(), 1);
+        }
     }
 }

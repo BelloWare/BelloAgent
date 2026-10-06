@@ -5,6 +5,11 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+default = []
+# In-memory QA fixtures only. This never enables native storage or model tools.
+synthetic-authority = []
+
 [dependencies]
 serde.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }

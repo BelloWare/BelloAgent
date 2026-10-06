@@ -1715,3 +1715,51 @@ This used synthetic saved records with host tools disabled and no provider calls
 Queue-detail restoration has automated coverage only; it was not part of this
 native fixture. Native macOS, accessibility and same-hardware performance remain
 unverified by this Linux acceptance.
+
+### Current-primary Projects and fenced runtime changes
+
+A separate Projects surface now shows current-primary trust/additional roots,
+explicit Create/retrust review, keyboard-operable controls, and accurate
+unavailable/unconfirmed states. Production authority remains unavailable; an
+explicit nondefault debug fixture uses labelled memory-only data. Saving trust
+never enables tools. Full Settings, Locate Folder/catalog identity migration,
+per-chat modes and native authority are still separate gaps. The exact boundary
+and failure ordering are documented in `current-project-host.md`.
+
+Root mutations fence app and direct actor admission before saving, validate idle
+loaded and unloaded chats, save authority before retirement, and join every old
+runtime before same-path replacement. Inspection is read-only and retains only
+locks after validating idle history. Failed pre-write saves restore admission;
+possible commits and retirement/reopen failures preserve drafts and stay fenced.
+Temporary guards retain writer ownership even across concurrent retirement until
+they drop or seal, without holding a mutex across an await.
+
+Final focused checks pass: 43 Projects app cases, nine controller admission cases,
+15 inspection cases, the existing journal parser checks, and 19 synthetic
+project-authority cases. Affected sidebar/held-key/shutdown regressions and strict
+app/core all-target Clippy pass with default and synthetic features. Independent
+reviews are clear. Negative controls catch missing admission, generation, stale
+read, interrupted focus, reload-state restoration and consumed close-key fences;
+all were restored. CI now checks the nondefault synthetic path explicitly.
+Native Linux acceptance of the final frozen candidate follows below; native
+macOS Keychain, accessibility, IME and same-machine performance are not claimed.
+
+Native Linux QA of the labelled memory-only fixture passed explicit trust
+creation and preserved both saved histories/drafts. Production mode correctly
+reported unavailable authority and disabled mutations. QA caught a dismissal
+focus defect after a successful save: the composer entity survived retirement,
+but its old Controller identity incorrectly forced transcript focus. The fix
+classifies transcript-owned handles separately from retained composer/file
+editors. Durable-history regressions reproduced the defect; all 21 coordinator
+checks and strict app Clippy pass afterward, with independent review clear.
+
+The final frozen Linux candidate
+`15de0a3e3c24012c0b22703c75fc751222d82cfacd99cf66292779063ba9bdf7`
+passed successful Create → Escape → Select All/Undo without refocusing by mouse.
+Normal Close preserved both exact Unicode drafts and selected chat. The cloud
+image lacks the XDG file-picker portal; opening the actual chooser failed, so
+native add/remove-folder picker acceptance is not claimed. Picker model, success,
+cancellation and failure paths have automated coverage, and concrete platform
+errors are preserved. No portal was installed, native vault was accessed, or
+provider was configured. macOS native picker/Keychain, accessibility, IME and
+same-machine performance remain separate gates.

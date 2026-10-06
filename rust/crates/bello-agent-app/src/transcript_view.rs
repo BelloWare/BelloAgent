@@ -737,6 +737,22 @@ impl TranscriptView {
         cx.notify();
     }
 
+    /// Capture exact owners before controller replacement drops this subtree.
+    /// The bounded handles remain testable after its dispatch nodes disappear.
+    pub(crate) fn owned_focus_handles(&self, cx: &App) -> Vec<FocusHandle> {
+        self.focus
+            .iter()
+            .cloned()
+            .chain(
+                self.tool_editors
+                    .borrow()
+                    .entries
+                    .values()
+                    .map(|entry| entry.editor.read(cx).focus_handle(cx)),
+            )
+            .collect()
+    }
+
     pub(crate) fn focus_fallback(&self, window: &mut Window) -> bool {
         if let Some(focus) = &self.focus {
             focus.focus(window);
