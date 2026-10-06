@@ -14,6 +14,18 @@ bench = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bench)
 
 PROFILE = {"opt_level": "0", "debuginfo": 0, "debug_assertions": True, "overflow_checks": True, "test": True}
+CORE_PROFILE = dict(PROFILE, test=False)
+
+
+def core_artifact(root):
+    return {"reason": "compiler-artifact", "target": {"name": "bello_agent_core", "kind": ["lib"],
+        "src_path": str(root / "crates/bello-agent-core/src/lib.rs")}, "profile": dict(CORE_PROFILE), "fresh": False}
+
+
+def top_geometry(first_index):
+    first_y = 100 if first_index == 0 else 146
+    return {"viewport": [290, 100, 979, 600], "first_row_index": first_index,
+            "first_row": [320, first_y, 840, 80]}
 
 
 def records(mode="cached", totals=None):
@@ -24,12 +36,15 @@ def records(mode="cached", totals=None):
             for reveal in bench.REVEAL_MODES:
                 visible = min(100, total) if reveal == "default_100" else total
                 case = {
-                    "record_type": "case", "schema_version": 1, "kind": kind, "total": total,
+                    "record_type": "case", "schema_version": bench.SCHEMA, "kind": kind, "total": total,
                     "mode": reveal, "revealed": visible, "hidden": total - visible,
                     "measurement_mode": mode, "build_profile": dict(PROFILE), "window": [1280, 840],
-                    "pane_width": 979.0, "exact_rows_before": visible, "exact_rows_after": visible,
+                    "pane_width": 979.0, "logical_input_rows_before": visible, "logical_input_rows_after": visible,
                     "unchanged_history_and_draft": True, "persistent_snapshot_bytes_unchanged": True,
-                    "visible_payload_utf8_bytes": bench.payload_bytes(kind, visible), "draw_routes": [],
+                    "logical_input_payload_utf8_bytes": bench.payload_bytes(kind, visible), "draw_routes": [],
+                    "wheel_downward_displacement_px": 24, "wheel_restored_top_geometry": True,
+                    "top_geometry_before": top_geometry(total - visible),
+                    "top_geometry_after": top_geometry(total - visible),
                 }
                 for index, route in enumerate(bench.ROUTES):
                     entry = {"route": route, "warmup": 3, "budget_seconds": 45, "budget_exhausted": False,
@@ -40,16 +55,13 @@ def records(mode="cached", totals=None):
                     case["draw_routes"].append(entry)
                 if mode == "cached":
                     case.update(construction_warmup=7, construction_scope=bench.CONSTRUCTION_SCOPE,
-                                parent_composition_child_renders=0, direct_child_render_scope=bench.CHILD_SCOPE,
-                                source_accounting={"message_payload_string_clone_bytes_per_parent_composition": 0,
-                                 "message_payload_string_clone_bytes_per_child_render": bench.payload_bytes(kind, visible),
-                                 "is_heap_allocation_measurement": False, "excludes": bench.CLONE_EXCLUDES})
+                                parent_composition_child_renders=0, direct_child_element_scope=bench.CHILD_SCOPE)
                     for build, destroy, combined in (bench.METRICS[:3], bench.METRICS[3:]):
                         case[build] = bench.timing_summary([1000] * 31)
                         case[destroy] = bench.timing_summary([500] * 31)
                         case[combined] = bench.timing_summary([1500] * 31)
                 result.append(case)
-    result.append({"record_type": "complete", "schema_version": 1, "cases": len(totals) * 4})
+    result.append({"record_type": "complete", "schema_version": bench.SCHEMA, "cases": len(totals) * 4})
     return result
 
 
@@ -57,7 +69,9 @@ def provenance():
     compiler = {"release": "1.90.0", "commit-hash": "a" * 40, "commit-date": "2025-09-14",
                 "host": "x86_64-unknown-linux-gnu", "LLVM version": "20.1.8", "cargo": "cargo 1.90.0 (abc123 2025-09-14)"}
     hashes = {"rust/Cargo.lock": "b" * 64, "rust/benches/transcript.rs": "c" * 64,
-              "rust/scripts/transcript_benchmark.py": "d" * 64}
+              "rust/scripts/transcript_benchmark.py": "d" * 64,
+              "rust/crates/bello-agent-app/src/main.rs": "f" * 64,
+              "rust/crates/bello-agent-core/src/lib.rs": "a" * 64}
     profiles = "d" * 64
     host = {"system": "Linux", "machine": "x86_64"}
     fingerprint = {"profile": 123, "rustc": 456, "target": 789, "compile_kind": 0,
@@ -66,8 +80,9 @@ def provenance():
                        "source_tree_sha256": bench.digest(hashes), "manifest_profiles_sha256": profiles},
             "compiler": compiler, "compiler_overrides_checked": True, "build_profile": dict(PROFILE),
             "test_binary_sha256": "e" * 64, "platform": host, "cargo_fingerprint": fingerprint,
-            "profile_identity_sha256": bench.digest({"profile": PROFILE, "compiler": compiler,
+            "profile_identity_sha256": bench.digest({"profile": PROFILE, "core_profile": CORE_PROFILE, "compiler": compiler,
                 "cargo_fingerprint": fingerprint, "manifest_profiles_sha256": profiles, "platform": host}),
+            "fresh_first_party_build": bench.fresh_build_proof(CORE_PROFILE),
             "build_command": bench.build_command(), "test_command": ["<cargo-built-app-test>", *bench.test_arguments()]}
 
 
@@ -81,7 +96,8 @@ def output(values):
 
 
 def update_identity(value):
-    value["profile_identity_sha256"] = bench.digest({"profile": value["build_profile"], "compiler": value["compiler"],
+    value["profile_identity_sha256"] = bench.digest({"profile": value["build_profile"],
+        "core_profile": value["fresh_first_party_build"]["core_build_profile"], "compiler": value["compiler"],
         "cargo_fingerprint": value["cargo_fingerprint"], "manifest_profiles_sha256": value["source"]["manifest_profiles_sha256"],
         "platform": value["platform"]})
 
@@ -92,6 +108,40 @@ class ParserTests(unittest.TestCase):
         parsed = bench.parse_output(output(values), 0, values[0])
         self.assertEqual(len(parsed), 14)
         self.assertEqual(len(list(bench.summary_rows(parsed))), 96)
+
+    def test_schema_and_method_rejections_have_exact_errors(self):
+        for index, message in ((0, "unsupported benchmark metadata schema; rerun with current adapter"),
+                               (1, "unsupported benchmark case schema"),
+                               (-1, "unsupported benchmark completion schema")):
+            for schema in (1, 2, 4, True, "3"):
+                with self.subTest(index=index, schema=schema):
+                    values = records()
+                    values[index]["schema_version"] = schema
+                    with self.assertRaises(bench.ValidationError) as error:
+                        bench.validate_records(values)
+                    self.assertEqual(str(error.exception), message)
+        values = records()
+        values[0]["method_version"] = "legacy"
+        with self.assertRaises(bench.ValidationError) as error:
+            bench.validate_records(values)
+        self.assertEqual(str(error.exception), "unsupported benchmark method version")
+
+    def test_top_geometry_and_actual_wheel_proof_required(self):
+        mutations = [lambda case: case.update(wheel_downward_displacement_px=True),
+                     lambda case: case.update(wheel_downward_displacement_px=0),
+                     lambda case: case.update(wheel_restored_top_geometry=False),
+                     lambda case: case["top_geometry_before"].update(first_row_index=1),
+                     lambda case: case["top_geometry_before"]["viewport"].__setitem__(3, 0),
+                     lambda case: case["top_geometry_before"]["first_row"].__setitem__(1, 90),
+                     lambda case: case["top_geometry_before"]["first_row"].__setitem__(1, 200),
+                     lambda case: case["top_geometry_before"]["first_row"].__setitem__(2, 1000),
+                     lambda case: case["top_geometry_after"]["first_row"].__setitem__(3, 90)]
+        for mutate in mutations:
+            with self.subTest(mutate=mutate):
+                values = records("generic")
+                mutate(values[1])
+                with self.assertRaises(bench.ValidationError):
+                    bench.validate_records(values)
 
     def test_even_median_and_nearest_rank_p95(self):
         value = bench.timing_summary([40, 10, 30, 20])
@@ -158,9 +208,9 @@ class ParserTests(unittest.TestCase):
                      lambda rows: rows[1].update(revealed=True),
                      lambda rows: rows[1].update(window=[1280, 600]),
                      lambda rows: rows[1].update(pane_width=True),
-                     lambda rows: rows[1].update(exact_rows_after=99),
+                     lambda rows: rows[1].update(logical_input_rows_after=99),
                      lambda rows: rows[1].update(persistent_snapshot_bytes_unchanged=1),
-                     lambda rows: rows[1].update(visible_payload_utf8_bytes=1),
+                     lambda rows: rows[1].update(logical_input_payload_utf8_bytes=1),
                      lambda rows: rows[1]["build_profile"].update(opt_level="3")]
         for mutate in mutations:
             with self.subTest(mutate=mutate):
@@ -206,10 +256,10 @@ class ParserTests(unittest.TestCase):
         with self.assertRaisesRegex(bench.ValidationError, "cache hit"):
             bench.validate_records(values)
 
-    def test_unknown_fields_private_text_and_false_clone_claims_rejected(self):
+    def test_unknown_fields_private_text_and_unmeasured_clone_claims_rejected(self):
         for mutate in (lambda rows: rows[1].update(fixture="/private/secret"),
-                       lambda rows: rows[1]["source_accounting"].update(is_heap_allocation_measurement=True),
-                       lambda rows: rows[1]["source_accounting"].update(message_payload_string_clone_bytes_per_child_render=0),
+                       lambda rows: rows[1].update(source_accounting={"is_heap_allocation_measurement": False}),
+                       lambda rows: rows[1].update(message_payload_string_clone_bytes_per_child_render=0),
                        lambda rows: rows[1].update(parent_composition_child_renders=1),
                        lambda rows: rows[1]["construction_plus_destruction"].update(**bench.timing_summary([1] * 31))):
             values = records()
@@ -229,8 +279,9 @@ class ParserTests(unittest.TestCase):
         values = records()
         expected = copy.deepcopy(values[0])
         expected["build_profile"]["debuginfo"] = 2
-        with self.assertRaisesRegex(bench.ValidationError, "configuration/profile"):
+        with self.assertRaises(bench.ValidationError) as error:
             bench.parse_output(output(values), 0, expected)
+        self.assertEqual(str(error.exception), "run configuration/profile mismatch")
 
 
 class ComparisonTests(unittest.TestCase):
@@ -239,6 +290,14 @@ class ComparisonTests(unittest.TestCase):
         self.assertEqual(len(compared["cases"]), 8)
         self.assertEqual({row["route"] for row in compared["cases"]}, set(bench.ROUTES))
         self.assertTrue(all(row["median_ratio_baseline_over_candidate"] == 1 for row in compared["cases"]))
+
+    def test_comparison_requires_matching_actual_top_geometry(self):
+        candidate = report("generic")
+        for key in ("top_geometry_before", "top_geometry_after"):
+            candidate["records"][1][key]["first_row"][3] += 1
+        with self.assertRaises(bench.ValidationError) as error:
+            bench.compare_reports(report("generic"), candidate)
+        self.assertEqual(str(error.exception), "comparison top geometry mismatch")
 
     def test_modes_cannot_be_compared_with_different_preparation(self):
         with self.assertRaisesRegex(bench.ValidationError, "modes differ"):
@@ -274,6 +333,59 @@ class ComparisonTests(unittest.TestCase):
         for old in ([], {"status": "failed"}, {"kind": "short", "base_commit": "0beb423"}):
             with self.assertRaises(bench.ValidationError):
                 bench.compare_reports(old, report())
+
+    def test_legacy_schema_and_method_reports_fail_explicitly(self):
+        candidate = report()
+        candidate["schema_version"] = 1
+        with self.assertRaises(bench.ValidationError) as error:
+            bench.compare_reports(report(), candidate)
+        self.assertEqual(str(error.exception), "unsupported benchmark report schema; rerun with current adapter")
+        candidate = report()
+        candidate["records"][0]["method_version"] = "other-method"
+        with self.assertRaises(bench.ValidationError) as error:
+            bench.compare_reports(report(), candidate)
+        self.assertEqual(str(error.exception), "unsupported benchmark method version")
+
+    def test_changed_app_sources_require_distinct_executables(self):
+        before, after = report(), report()
+        source = after["provenance"]["source"]
+        source["source_sha256"]["rust/crates/bello-agent-app/src/main.rs"] = "a" * 64
+        source["source_tree_sha256"] = bench.digest(source["source_sha256"])
+        with self.assertRaises(bench.ValidationError) as error:
+            bench.compare_reports(before, after)
+        self.assertEqual(str(error.exception), "comparison changed first-party source reused the same test executable")
+        after["provenance"]["test_binary_sha256"] = "b" * 64
+        self.assertEqual(len(bench.compare_reports(before, after)["cases"]), 8)
+        self.assertEqual(len(bench.compare_reports(before, before)["cases"]), 8)
+
+    def test_core_source_changes_require_distinct_executables(self):
+        before,after=report(),report();source=after["provenance"]["source"]
+        source["source_sha256"]["rust/crates/bello-agent-core/src/lib.rs"]="b"*64
+        source["source_tree_sha256"]=bench.digest(source["source_sha256"])
+        with self.assertRaisesRegex(bench.ValidationError,"changed first-party source reused"):
+            bench.compare_reports(before,after)
+        after["provenance"]["test_binary_sha256"]="c"*64
+        self.assertEqual(len(bench.compare_reports(before,after)["cases"]),8)
+        after=report();after["provenance"]["fresh_first_party_build"]["core_build_profile"]["debuginfo"]=2
+        update_identity(after["provenance"])
+        with self.assertRaisesRegex(bench.ValidationError,"compiler/profile mismatch"):
+            bench.compare_reports(before,after)
+
+    def test_fresh_build_provenance_is_required_exactly(self):
+        for mutate in (lambda proof: proof.update(clean_succeeded=False),
+                       lambda proof: proof.update(app_artifact_fresh=True),
+                       lambda proof: proof.update(core_artifact_fresh=True),
+                       lambda proof: proof.update(core_target_src_path_matches_checkout=False),
+                       lambda proof: proof.update(app_artifact_fresh=0),
+                       lambda proof: proof.update(app_target_src_path_matches_checkout=False),
+                       lambda proof: proof.update(clean_command=["cargo", "clean"]),
+                       lambda proof: proof.update(extra="private")):
+            value=report();mutate(value["provenance"]["fresh_first_party_build"])
+            with self.subTest(mutate=mutate), self.assertRaisesRegex(bench.ValidationError, "fresh first-party build proof"):
+                bench.validate_report(value)
+        value=report();value["provenance"].pop("fresh_first_party_build")
+        with self.assertRaisesRegex(bench.ValidationError,"invalid provenance fields"):
+            bench.validate_report(value)
 
     def test_source_changes_allowed_but_fake_fingerprints_rejected(self):
         candidate = report()
@@ -334,16 +446,63 @@ class RunnerTests(unittest.TestCase):
             binary.touch()
             artifact = {"reason": "compiler-artifact", "target": {"name": "bello-agent", "kind": ["bin"],
                 "src_path": str(root / "crates/bello-agent-app/src/main.rs")}, "profile": PROFILE,
-                "features": ["default"], "executable": str(binary)}
+                "features": ["default"], "fresh": False, "executable": str(binary)}
             success = {"reason": "build-finished", "success": True}
-            stream = json.dumps(artifact) + "\n" + json.dumps(success)
-            self.assertEqual(bench.cargo_artifact(stream, root), (binary, PROFILE))
+            stream = json.dumps(core_artifact(root)) + "\n" + json.dumps(artifact) + "\n" + json.dumps(success)
+            self.assertEqual(bench.cargo_artifact(stream, root), (binary, PROFILE, CORE_PROFILE))
             for lines in ([artifact], [artifact, artifact, success], [artifact, {"reason": "build-finished", "success": False}]):
                 with self.assertRaises(bench.ValidationError):
                     bench.cargo_artifact("\n".join(map(json.dumps, lines)), root)
             artifact["target"]["src_path"] = "/private/other/main.rs"
             with self.assertRaises(bench.ValidationError):
                 bench.cargo_artifact(json.dumps(artifact) + "\n" + json.dumps(success), root)
+
+    def test_fresh_build_helper_cleans_only_first_party_before_build(self):
+        with patch.object(bench,"capture",side_effect=[(0,""),(0,"artifact")]) as capture, \
+                patch.object(bench,"cargo_artifact",return_value=(Path("/synthetic/app"),PROFILE,CORE_PROFILE)) as artifact:
+            result=bench.build_test_artifact(Path("/synthetic/rust"),{},20)
+        self.assertEqual([call.args[0] for call in capture.call_args_list],
+                         [["cargo","clean","--package","bello-agent-app","--package","bello-agent-core"],bench.build_command()])
+        artifact.assert_called_once_with("artifact",Path("/synthetic/rust"))
+        self.assertEqual(result[2],bench.fresh_build_proof(CORE_PROFILE))
+        with patch.object(bench,"capture",return_value=(1,"private failure")) as capture, \
+                self.assertRaisesRegex(bench.ValidationError,"Cargo first-party artifact cleanup failed"):
+            bench.build_test_artifact(Path("/synthetic/rust"),{},20)
+        self.assertEqual(capture.call_count,1)
+
+    def test_cargo_rejects_cached_or_missing_fresh_app_artifact(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);binary=root/"app";binary.touch()
+            artifact={"reason":"compiler-artifact", "target":{"name":"bello-agent","kind":["bin"],
+                "src_path":str(root/"crates/bello-agent-app/src/main.rs")},"profile":PROFILE,
+                "features":["default"],"executable":str(binary)}
+            for fresh in (None,True,0,"false"):
+                artifact["fresh"]=fresh
+                stream=json.dumps(artifact)+"\n"+json.dumps({"reason":"build-finished","success":True})
+                with self.subTest(fresh=fresh), self.assertRaisesRegex(bench.ValidationError,"not freshly compiled"):
+                    bench.cargo_artifact(stream,root)
+            artifact["fresh"]=False
+            artifact["target"]["src_path"]="/different-checkout/crates/bello-agent-app/src/main.rs"
+            with self.assertRaisesRegex(bench.ValidationError,"wrong Cargo app artifact"):
+                bench.cargo_artifact(json.dumps(artifact),root)
+
+    def test_core_artifact_requires_unique_fresh_exact_dependency(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); binary=root/"app"; binary.touch()
+            app={"reason":"compiler-artifact","target":{"name":"bello-agent","kind":["bin"],
+                "src_path":str(root/"crates/bello-agent-app/src/main.rs")},"profile":PROFILE,
+                "features":["default"],"fresh":False,"executable":str(binary)}
+            terminal={"reason":"build-finished","success":True}
+            for cores in ([],[core_artifact(root),core_artifact(root)]):
+                with self.subTest(count=len(cores)),self.assertRaisesRegex(bench.ValidationError,"exactly one fresh core"):
+                    bench.cargo_artifact("\n".join(map(json.dumps,[*cores,app,terminal])),root)
+            for mutate in (lambda core: core.update(fresh=True), lambda core: core.pop("fresh"),
+                           lambda core: core.update(fresh=0),
+                           lambda core: core["target"].update(src_path="/wrong/lib.rs"),
+                           lambda core: core["profile"].update(test=True)):
+                core=core_artifact(root);mutate(core)
+                with self.subTest(mutate=mutate),self.assertRaises(bench.ValidationError):
+                    bench.cargo_artifact("\n".join(map(json.dumps,[core,app,terminal])),root)
 
     def test_matching_fingerprint_required_and_flags_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -397,12 +556,14 @@ class RunnerTests(unittest.TestCase):
             rust_root = Path(bench.__file__).resolve().parents[1]
             artifact = {"reason": "compiler-artifact", "target": {"name": "bello-agent", "kind": ["bin"],
                 "src_path": str(rust_root / "crates/bello-agent-app/src/main.rs")}, "profile": PROFILE,
-                "features": ["default"], "executable": str(executable)}
-            cargo_output = json.dumps(artifact) + "\n" + json.dumps({"reason": "build-finished", "success": True})
+                "features": ["default"], "fresh": False, "executable": str(executable)}
+            cargo_output = json.dumps(core_artifact(rust_root)) + "\n" + json.dumps(artifact) + "\n" + json.dumps({"reason": "build-finished", "success": True})
             def fake_capture(command, cwd, env, timeout):
                 self.assertNotIn("BELLO_PERF_LOG", env)
                 self.assertNotIn("BELLO_TEST_APPEARANCE", env)
                 self.assertNotIn("BELLO_TEST_WINDOW_SIZE", env)
+                if command == bench.clean_command():
+                    return 0, ""
                 if command[0] == "cargo":
                     self.assertEqual(command, bench.build_command())
                     self.assertIn("--locked", command)
@@ -410,6 +571,8 @@ class RunnerTests(unittest.TestCase):
                     return 0, cargo_output
                 self.assertEqual(command, [str(executable), *bench.test_arguments()])
                 config = json.loads(Path(env["BELLO_TRANSCRIPT_BENCHMARK_CONFIG"]).read_text())
+                self.assertEqual(config["schema_version"], bench.SCHEMA)
+                self.assertEqual(config["method_version"], bench.METHOD_VERSION)
                 self.assertEqual(config["fixture_dir"], str(out / "fixtures"))
                 self.assertEqual(config["build_profile"], PROFILE)
                 return 0, output(records())
@@ -419,10 +582,12 @@ class RunnerTests(unittest.TestCase):
                     patch.object(bench, "compiler_identity", return_value=info["compiler"]), \
                     patch.object(bench, "cargo_fingerprint", return_value=info["cargo_fingerprint"]), \
                     patch.object(bench, "validate_build_environment", return_value=True), \
-                    patch.object(bench, "capture", side_effect=fake_capture), \
+                    patch.object(bench, "capture", side_effect=fake_capture) as capture, \
                     patch.dict(bench.os.environ, {"BELLO_PERF_LOG": "private", "BELLO_TEST_APPEARANCE": "dark",
                                                  "BELLO_TEST_WINDOW_SIZE": "tiny"}):
                 self.assertEqual(bench.run_benchmark(args, out)["status"], "complete")
+                self.assertEqual([call.args[0] for call in capture.call_args_list],
+                                 [bench.clean_command(), bench.build_command(), [str(executable), *bench.test_arguments()]])
             saved = (out / "results.json").read_text()
             self.assertNotIn(directory, saved)
             self.assertNotIn("private", saved)

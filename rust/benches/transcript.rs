@@ -14,7 +14,8 @@ use bello_agent_core::{
 // Keep these imports explicit: importing gpui's `test` macro through a glob can
 // cause ordinary #[test] attributes in this module to expand recursively.
 use gpui::{
-    ArenaClearNeeded, Entity, Render, TestAppContext, VisualTestContext, WindowHandle, px, size,
+    ArenaClearNeeded, Bounds, Entity, Modifiers, MouseButton, Pixels, Render, ScrollDelta,
+    ScrollWheelEvent, TestAppContext, VisualTestContext, WindowHandle, point, px, size,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -27,7 +28,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 3;
+const METHOD_VERSION: &str = "logical-top-full-draw-v3-fresh-first-party-build";
+const SCROLL_PREPARATION: &str = "untimed wheel to top, down 24px, back to top";
 const MAX_CONFIG_BYTES: usize = 16 * 1024;
 const CONFIG_ENV: &str = "BELLO_TRANSCRIPT_BENCHMARK_CONFIG";
 const TOTALS: [usize; 3] = [100, 1_000, 10_000];
@@ -71,6 +74,7 @@ struct BuildProfile {
 #[serde(deny_unknown_fields)]
 struct Config {
     schema_version: u32,
+    method_version: String,
     totals: Vec<usize>,
     mode: MeasurementMode,
     fixture_dir: PathBuf,
@@ -86,6 +90,9 @@ impl Config {
             serde_json::from_slice(bytes).map_err(|_| "invalid benchmark config schema")?;
         if config.schema_version != SCHEMA_VERSION {
             return Err("unsupported benchmark config version");
+        }
+        if config.method_version != METHOD_VERSION {
+            return Err("unsupported benchmark method version");
         }
         if config.totals.is_empty()
             || config.totals.len() > TOTALS.len()
@@ -190,6 +197,8 @@ fn metadata(config: &Config) -> Value {
     let mut record = json!({
         "record_type": "metadata",
         "schema_version": SCHEMA_VERSION,
+        "method_version": METHOD_VERSION,
+        "scroll_preparation": SCROLL_PREPARATION,
         "totals": config.totals,
         "measurement_mode": config.mode,
         "expected_cases": config.totals.len() * KINDS.len() * REVEAL_MODES.len(),
@@ -373,27 +382,115 @@ fn disk_snapshot(project: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     snapshot
 }
 
-fn assert_rows(
-    visual: &mut VisualTestContext,
-    selectors: &[&'static str],
-    visible: usize,
-) -> usize {
-    let start = selectors.len().saturating_sub(visible);
-    let mut observed = 0;
-    for (index, selector) in selectors.iter().enumerate() {
-        let bounds = visual.debug_bounds(selector);
+// This checks the parent's complete ordered logical input, not the renderer's
+// materialized trees. Renderer projection/cardinality is proved by app tests.
+fn assert_logical_input(cx: &TestAppContext, root: &Entity<AgentView>, visible: usize) -> usize {
+    cx.read(|cx| {
+        let input = root.read(cx).transcript_input();
+        assert_eq!(input.visible_messages, visible);
+        let start = input.session.messages.len().saturating_sub(visible);
+        let actual: Vec<_> = input.session.messages[start..]
+            .iter()
+            .map(|message| message.id.as_str())
+            .collect();
+        let expected: Vec<_> = (start..input.session.messages.len())
+            .map(|index| format!("message-{index:05}"))
+            .collect();
         assert_eq!(
-            bounds.is_some(),
-            index >= start,
-            "wrong row {index}; expected start {start}"
+            actual, expected,
+            "parent logical input membership/order changed"
         );
-        if let Some(bounds) = bounds {
-            assert!(bounds.size.height > px(0.));
-            observed += 1;
-        }
+        actual.len()
+    })
+}
+
+fn force_draw(visual: &mut VisualTestContext) {
+    visual.update(|window, cx| {
+        window.refresh();
+        window.draw(cx).clear();
+    });
+}
+
+fn geometry_record(bounds: Bounds<Pixels>) -> Value {
+    json!([
+        f32::from(bounds.left()),
+        f32::from(bounds.top()),
+        f32::from(bounds.size.width),
+        f32::from(bounds.size.height),
+    ])
+}
+
+fn top_geometry(visual: &mut VisualTestContext, selector: &'static str, start: usize) -> Value {
+    let viewport = visual
+        .debug_bounds("queue-measured-transcript")
+        .expect("transcript viewport");
+    let first = visual
+        .debug_bounds(selector)
+        .expect("first logical message is reachable");
+    assert!(viewport.size.width > px(0.) && viewport.size.height > px(0.));
+    assert!(first.size.width > px(0.) && first.size.height > px(0.));
+    assert!(first.left() >= viewport.left() && first.right() <= viewport.right());
+    let top = first.top() - viewport.top();
+    // The only possible preceding row is the Show earlier control. Its ordinary
+    // button height plus 16px gap fits below 64px in this fixed test profile.
+    assert!(
+        top >= px(0.) && top <= px(64.),
+        "first logical row is not at viewport top"
+    );
+    if start == 0 {
+        assert!(
+            top.abs() <= px(0.01),
+            "unexpected leading content or scroll offset"
+        );
     }
-    assert_eq!(observed, selectors.len().min(visible));
-    observed
+    assert!(first.top() < viewport.bottom() && first.bottom() > viewport.top());
+    json!({
+        "viewport": geometry_record(viewport),
+        "first_row_index": start,
+        "first_row": geometry_record(first),
+    })
+}
+
+fn wheel(visual: &mut VisualTestContext, delta: f32) {
+    let viewport = visual
+        .debug_bounds("queue-measured-transcript")
+        .expect("transcript viewport");
+    let position = viewport.center();
+    visual.simulate_mouse_move(position, None::<MouseButton>, Modifiers::none());
+    visual.simulate_event(ScrollWheelEvent {
+        position,
+        delta: ScrollDelta::Pixels(point(px(0.), px(delta))),
+        ..Default::default()
+    });
+    force_draw(visual);
+}
+
+fn prepare_logical_top(
+    visual: &mut VisualTestContext,
+    selector: &'static str,
+    start: usize,
+) -> Value {
+    // Dispatch actual input through both renderers' existing wheel listeners.
+    // No direct handle, ListState reset, product mutation, or guessed frame count.
+    force_draw(visual);
+    wheel(visual, 1_000_000_000.);
+    let before = top_geometry(visual, selector, start);
+    let first_top = visual.debug_bounds(selector).unwrap().top();
+    wheel(visual, -24.);
+    let displaced = visual
+        .debug_bounds(selector)
+        .expect("wheel keeps first row reachable");
+    assert!(
+        (first_top - displaced.top() - px(24.)).abs() <= px(0.01),
+        "wheel did not move actual first-row geometry by 24px"
+    );
+    wheel(visual, 1_000_000_000.);
+    let restored = top_geometry(visual, selector, start);
+    assert_eq!(
+        before, restored,
+        "wheel did not restore logical top geometry"
+    );
+    restored
 }
 
 fn child_count(cx: &TestAppContext, root: &Entity<AgentView>) -> usize {
@@ -411,7 +508,6 @@ fn cached_probes(
     cx: &mut TestAppContext,
     window: WindowHandle<AgentView>,
     root: &Entity<AgentView>,
-    payload_bytes: usize,
 ) -> Value {
     let before = child_count(cx, root);
     let mut build = Vec::new();
@@ -483,16 +579,10 @@ fn cached_probes(
         "construction": summary(&build),
         "destruction_and_arena_clear": summary(&destroy),
         "construction_plus_destruction": summary(&combined),
-        "direct_child_render_construction": summary(&child_build),
-        "direct_child_render_destruction": summary(&child_destroy),
-        "direct_child_render_combined": summary(&child_combined),
-        "direct_child_render_scope": "explicit cache bypass; no layout/prepaint/paint; 7 warmups + 31 measured",
-        "source_accounting": {
-            "message_payload_string_clone_bytes_per_parent_composition": 0,
-            "message_payload_string_clone_bytes_per_child_render": payload_bytes,
-            "is_heap_allocation_measurement": false,
-            "excludes": "formatted IDs/selectors/labels, GPUI internal cloning/allocation, queue/composer/footer allocations, deferred geometry callback clone",
-        },
+        "direct_child_element_construction": summary(&child_build),
+        "direct_child_element_destruction": summary(&child_destroy),
+        "direct_child_element_combined": summary(&child_combined),
+        "direct_child_element_scope": "returned element only (eager rows or deferred list shell); explicit cache bypass; no layout/prepaint/paint; 7 warmups + 31 measured",
     })
 }
 
@@ -580,15 +670,12 @@ fn manual_transcript_benchmark(cx: &mut TestAppContext) {
             let mut visual = VisualTestContext::from_window(window.into(), cx);
             visual.simulate_resize(size(px(1280.), px(840.)));
             cx.run_until_parked();
-            // GPUI requires static selectors. This bounded fixture-only leak is
-            // outside timing and is reclaimed at process exit (<=22,200 IDs).
-            let selectors: Vec<&'static str> = (0..total)
-                .map(|index| {
-                    &*Box::leak(format!("transcript-row-message-{index:05}").into_boxed_str())
-                })
-                .collect();
             for mode in REVEAL_MODES {
                 let visible = if mode == "default_100" { 100 } else { total };
+                let start = total.saturating_sub(visible);
+                // One static selector per case, never a materialized-tree count.
+                let selector: &'static str =
+                    Box::leak(format!("transcript-row-message-{start:05}").into_boxed_str());
                 root.update(cx, |view, cx| {
                     view.visible_messages = visible;
                     cx.notify();
@@ -610,17 +697,10 @@ fn manual_transcript_benchmark(cx: &mut TestAppContext) {
                 });
                 assert_eq!(pane_width, PANE_WIDTH, "synthetic pane geometry changed");
                 let disk_before = disk_snapshot(&project);
-                // Explicit untimed refresh collects exact row selectors. Do not
-                // assume cached paint replay repopulates debug-selector records.
-                visual.update(|window, cx| {
-                    window.refresh();
-                    window.draw(cx).clear();
-                });
-                let exact_rows = assert_rows(&mut visual, &selectors, visible);
+                let logical_rows = assert_logical_input(cx, &root, visible);
+                let geometry_before = prepare_logical_top(&mut visual, selector, start);
                 unchanged(cx, &root, &before, &workspace_before, total, visible);
-                let probes = config
-                    .cached()
-                    .then(|| cached_probes(cx, window, &root, payload_bytes));
+                let probes = config.cached().then(|| cached_probes(cx, window, &root));
                 let routes = draw_routes(cx, &mut visual, &root, config.cached());
                 unchanged(cx, &root, &before, &workspace_before, total, visible);
                 assert_eq!(
@@ -628,9 +708,14 @@ fn manual_transcript_benchmark(cx: &mut TestAppContext) {
                     disk_before,
                     "synthetic persistent files changed"
                 );
-                // The last route is forced refresh, so all row selectors are
-                // from a complete draw rather than only cached replay.
-                let rows_after = assert_rows(&mut visual, &selectors, visible);
+                // The last route is a full draw. Only known top geometry is
+                // checked; GPUI can retain stale debug selectors for other rows.
+                let logical_rows_after = assert_logical_input(cx, &root, visible);
+                let geometry_after = top_geometry(&mut visual, selector, start);
+                assert_eq!(
+                    geometry_after, geometry_before,
+                    "timed draws changed top geometry"
+                );
                 let mut record = json!({
                     "record_type": "case",
                     "schema_version": SCHEMA_VERSION,
@@ -643,11 +728,15 @@ fn manual_transcript_benchmark(cx: &mut TestAppContext) {
                     "build_profile": config.build_profile,
                     "window": [1280, 840],
                     "pane_width": pane_width,
-                    "exact_rows_before": exact_rows,
-                    "exact_rows_after": rows_after,
+                    "logical_input_rows_before": logical_rows,
+                    "logical_input_rows_after": logical_rows_after,
+                    "top_geometry_before": geometry_before,
+                    "top_geometry_after": geometry_after,
+                    "wheel_downward_displacement_px": 24,
+                    "wheel_restored_top_geometry": true,
                     "unchanged_history_and_draft": true,
                     "persistent_snapshot_bytes_unchanged": true,
-                    "visible_payload_utf8_bytes": payload_bytes,
+                    "logical_input_payload_utf8_bytes": payload_bytes,
                     "draw_routes": routes,
                 });
                 if let Some(Value::Object(probes)) = probes {
@@ -673,7 +762,8 @@ fn manual_transcript_benchmark(cx: &mut TestAppContext) {
 #[test]
 fn config_rejects_unbounded_or_ambiguous_inputs() {
     let valid = json!({
-        "schema_version": 1,
+        "schema_version": SCHEMA_VERSION,
+        "method_version": METHOD_VERSION,
         "totals": [100, 1000, 10000],
         "mode": "cached",
         "fixture_dir": "/synthetic/fixtures",
@@ -697,7 +787,9 @@ fn config_rejects_unbounded_or_ambiguous_inputs() {
         assert!(Config::parse(&serde_json::to_vec(&invalid).unwrap()).is_err());
     }
     for (key, value) in [
+        ("schema_version", json!(1)),
         ("schema_version", json!(2)),
+        ("method_version", json!("legacy")),
         ("mode", json!("provider")),
         ("fixture_dir", json!("relative/fixtures")),
         ("fixture_dir", json!("/")),

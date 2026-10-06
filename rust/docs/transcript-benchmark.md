@@ -11,7 +11,11 @@ same native build prerequisites as the app. Run from the repository root. The to
 supports only the unoptimized default Cargo test profile with debug assertions and
 overflow checks enabled. Custom compiler flags/wrappers, cross targets and unsupported
 Cargo profile overrides fail rather than being mislabeled as a matching build.
-Cargo compilation uses at most four jobs.
+Cargo compilation uses at most four jobs. Every run first executes
+`cargo clean --package bello-agent-app --package bello-agent-core` in its requested checkout, removing only
+those two packages' generated artifacts. Third-party caches, source files, retained
+measurement evidence and copied QA executables outside Cargo's target remain intact.
+Do not run other app builds concurrently in that shared target.
 
 Start with a small CLI-validation run:
 
@@ -21,13 +25,16 @@ python3 rust/scripts/transcript_benchmark.py run \
   --totals 100 --mode generic
 ```
 
-Run the complete synthetic matrix with cache probes:
+Run the primary old/new renderer comparison matrix with identical full-draw scopes:
 
 ```sh
 python3 rust/scripts/transcript_benchmark.py run \
-  --output ../audit-evidence/transcript-cached-a \
-  --totals 100,1000,10000 --mode cached
+  --output ../audit-evidence/transcript-generic-a-full \
+  --totals 100,1000,10000 --mode generic
 ```
+
+Optional `--mode cached` adds implementation-dependent construction probes and remains
+the CLI default. Pass the mode explicitly for audited comparisons.
 
 Outputs must be new directories. Existing files/directories are never overwritten.
 Use a workspace sibling or a directory under `rust/target`; output under source,
@@ -41,8 +48,8 @@ payloads and matrix**, compare the full draw routes:
 
 ```sh
 python3 rust/scripts/transcript_benchmark.py compare \
-  --baseline ../audit-evidence/transcript-cached-a/results.json \
-  --candidate ../audit-evidence/transcript-cached-b/results.json \
+  --baseline ../audit-evidence/transcript-generic-a-full/results.json \
+  --candidate ../audit-evidence/transcript-generic-b-full/results.json \
   --output ../audit-evidence/transcript-comparison
 ```
 
@@ -59,8 +66,14 @@ cd rust
 cargo test --locked -p bello-agent-app transcript_benchmark
 ```
 
-The latter skips `manual_transcript_benchmark`. The runner discovers the actual test
-executable from successful Cargo JSON output and invokes that exact executable with
+The latter skips `manual_transcript_benchmark`. The runner requires successful
+package-scoped cleaning, then discovers the actual test
+executable from successful Cargo JSON output, requires the app artifact's `fresh`
+field to be strictly `false`, and checks that its resolved `target.src_path` is the
+requested checkout's app `main.rs`. It also requires exactly one freshly compiled
+core library artifact at that checkout's `src/lib.rs`. The core dependency profile
+has `test=false`; it is validated and included in the compiler/profile identity
+separately from the app test's `test=true` profile. It invokes the exact executable with
 `--exact --ignored --nocapture --test-threads=1`; it verifies binary and source hashes
 again afterward. Invoking the ignored test directly without its strict runner-created
 configuration is unsupported.
@@ -81,9 +94,12 @@ Fixture creation, validation, serialization and disk checks are outside timing.
   only. Compare the same route across runs; the two routes have different boundaries.
   Generic mode **does not disable caching** or recreate older code and has no child probes.
 - `cached` adds observed child render counts, parent conversation composition and
-  direct child construction/destruction. Parent composition does not include child
-  rows. Direct child construction bypasses the cache but does not perform layout or
-  painting. Neither replaces the full-draw measurement.
+  returned-child-element construction/destruction. Parent composition does not include
+  child rows. `direct_child_element_*` bypasses the cache but constructs only the
+  returned element: eager rows in the old renderer, a deferred list shell in the
+  visible-row renderer. Row work deferred until list layout is outside that probe.
+  No clone-byte totals or heap-allocation estimates are inferred. These probes cannot
+  establish equivalent row-construction cost and never replace the full-draw routes.
 - Stable notification counts are observations, not a hardcoded success claim. A cache
   hit is reported only when the observed child count is zero. Forced-refresh probes
   must demonstrate at least one child render. App regression tests separately enforce
@@ -103,11 +119,49 @@ input latency. Debug/test instrumentation and shared-host scheduling affect numb
 Repeated payloads favor warm caches. This is not a native macOS frame-budget or
 scrolling-smoothness test, even when the runner itself is launched on macOS.
 
-Exact revealed row membership, complete session/workspace state, composer text and
-revision, and fixture file bytes are checked before/after. These invariants do not
-replace real Copy, scrolling, IME or desktop interaction tests.
+Every reveal case explicitly reaches logical top outside timing by dispatching a
+positive 1,000,000,000-pixel wheel delta through the actual viewport input handler.
+A 24-pixel downward wheel must move the first expected message's actual bounds by
+24 pixels; a final upward wheel must restore identical top geometry. This proves
+reachability without replacing a scroll handle, resetting list state, or relying on
+an initial offset. The first expected message must be horizontally inside the
+viewport and intersect its top. A tall first row can legitimately hide the next row,
+so no second-row debug selector is required. With no earlier-message
+control the first begins at the viewport top (0.01-pixel tolerance); with that control
+it must begin within 64 pixels. Preparation fails rather than retrying or silently
+accepting a different scroll position. Timed draws must preserve the same geometry.
+
+The complete ordered suffix of IDs in the parent's logical transcript input,
+complete session/workspace state, composer text and revision, and fixture file bytes
+are checked before/after. `logical_input_rows_*` and
+`logical_input_payload_utf8_bytes` describe that input, not materialized trees or
+allocation bytes. GPUI retains debug selectors from earlier draws, so their total
+count is deliberately never interpreted as current row cardinality. App regression
+tests independently prove actual renderer projection completeness and materialized
+row bounds. These checks do not replace native Copy, scrolling, IME or desktop tests.
 
 ## Evidence and compatibility
+
+Schema 3 and method `logical-top-full-draw-v3-fresh-first-party-build` require fresh app/core
+compilation as well as the logical-input/viewport checks replacing the original
+all-row-selector and clone-byte assumptions. Schema-1 and schema-2 reports are
+rejected and must be remeasured;
+changing their labels is not an adapter. Metadata, case, completion and report
+schema errors, unsupported method versions, and profile/method-source mismatches
+fail closed. The fixed synthetic payload version remains `transcript-v1`.
+
+The same harness and runner can be copied unchanged onto baseline `467c410` and the
+visible-row candidate, which share the transcript child and common GPUI input APIs.
+Use the same compiler/profile, explicit mode and full matrix in both, keep targets
+and dependency caches out of source copies, and retain source manifests for the
+actual adapted bytes. The baseline is an adapted checkout, not an unmodified
+committed-source measurement. Copy only the benchmark/runner/tests/documentation;
+never backport product APIs to make the harness compile. Main comparisons use the
+existing full-draw routes in explicit `--mode generic`; the timer boundaries,
+warmups, budgets and payloads are unchanged. No render-specific conditional API is
+compiled into this common harness. Comparisons also require matching actual viewport
+and first-message geometry within 0.01 pixels, rather than accepting different
+visible positions under equal workload labels.
 
 `raw.json` retains only recognized synthetic records. `results.json` adds validated
 summaries and allowlisted provenance; `summary.csv` is a compact view. A failed run
@@ -117,7 +171,18 @@ The parser rejects duplicate/missing cases, incomplete terminal records, invalid
 nonfinite timings, malformed counts, unsupported profiles and mismatched comparisons.
 
 Provenance includes source-file hashes, sanitized compiler/target identity, the actual
-Cargo artifact profile and test fingerprint, and the test executable hash. Cargo
+Cargo artifact profile and test fingerprint, and the test executable hash. It also
+records the exact package-clean command, successful cleanup, strictly non-fresh
+Cargo app/core artifacts, their validated app-test/core-dependency profiles, and
+verified checkout source paths (without storing that private
+absolute path). Reports missing this proof are rejected. If relevant first-party source manifests (`rust/crates/`) differ, paired comparison requires different executable hashes; identical
+source self-comparisons remain valid.
+
+A shared Cargo target can reuse a different checkout's executable when copied source
+mtimes predate its fingerprint. A source manifest and Cargo's reported source path
+alone do not prove which source was compiled. Earlier affected measurements are
+invalidated and retained for diagnosis; they must not be used for performance claims.
+This runner forces fresh app/core compilation while reusing third-party dependencies. Cargo
 configuration contents, credential-derived configuration hashes, raw environment and
 absolute workspace paths are not stored. Known unsupported overrides are rejected;
 this is a reproducibility check, not an attestation against a malicious toolchain.

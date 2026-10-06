@@ -26,11 +26,17 @@ fn copy_text(session: &Session, key: &MessageKey) -> Option<String> {
     if session.id != key.chat_id {
         return None;
     }
-    session
+    let mut matches = session
         .messages
         .iter()
-        .find(|message| message.id == key.message_id)
-        .map(|message| message.text.clone())
+        .filter(|message| message.id == key.message_id);
+    let message = matches.next()?;
+    // Legacy text snapshots can contain duplicate IDs. Never resolve an
+    // ambiguous live identity to the first row's text after a reorder.
+    if matches.next().is_some() {
+        return None;
+    }
+    Some(message.text.clone())
 }
 fn write_current_copy(session: &Session, key: &MessageKey, cx: &mut App) {
     if let Some(text) = copy_text(session, key) {
@@ -189,6 +195,24 @@ mod tests {
             .push(message("replacement", "user", "replacement text"));
         assert_eq!(copy_text(&session, &key), None);
     }
+    #[test]
+    fn duplicate_live_identity_never_copies_another_rows_text() {
+        let mut session = Session::new();
+        session.messages = vec![
+            message("duplicate", "user", "first"),
+            message("unique", "assistant", "exact unique"),
+            message("duplicate", "assistant", "second 日本語"),
+        ];
+        let ambiguous = MessageKey::new(session.id.clone(), "duplicate".into());
+        assert_eq!(copy_text(&session, &ambiguous), None);
+        session.messages.reverse();
+        assert_eq!(copy_text(&session, &ambiguous), None);
+        let unique = MessageKey::new(session.id.clone(), "unique".into());
+        assert_eq!(
+            copy_text(&session, &unique).as_deref(),
+            Some("exact unique")
+        );
+    }
     #[gpui::test]
     fn clipboard_uses_latest_text_and_missing_identity_leaves_existing_clipboard(
         cx: &mut gpui::TestAppContext,
@@ -207,6 +231,12 @@ mod tests {
         cx.update(|cx| super::write_current_copy(&session, &key, cx));
         let latest = cx.read(|cx| cx.read_from_clipboard().unwrap().text());
         assert_eq!(latest.as_deref(), Some("latest 你好\n👩🏽‍💻"));
+        session.messages.push(message("reply", "user", "ambiguous"));
+        cx.update(|cx| super::write_current_copy(&session, &key, cx));
+        assert_eq!(
+            cx.read(|cx| cx.read_from_clipboard().unwrap().text()),
+            latest
+        );
         session.messages.clear();
         cx.update(|cx| super::write_current_copy(&session, &key, cx));
         assert_eq!(

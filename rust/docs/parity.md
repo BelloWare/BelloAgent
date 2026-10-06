@@ -266,6 +266,95 @@ for isolation, durability, format, permission, recovery, and backup limits.
   race fixes and unverified native interactions are recorded in
   [the validation record](validation/multichat-2026-10-04.md).
 
+## Viewport-limited transcript rows (2026-10-06)
+
+Status: **implemented app-only rendering optimization; scoped local and Linux desktop gates passed; CI pending**.
+The pinned GPUI variable-height List now constructs and measures visible rows and
+an overdraw margin of `max(240pt, viewportHeight / 2)`, matching the measurement
+margin in Swift `NativeTranscriptScrollView.swift:246–247`. This does not reproduce
+Swift's retained selected/nearby hosts, native text selection or motion scheduling.
+Existing top alignment, full logical history, Show earlier, message content, Copy,
+24pt gutters, 13pt bottom inset, 16pt row gaps and 840pt row cap remain explicit.
+No core/session schema, model context, provider or dependency changes are included.
+
+Stable row kinds include loading, retry, earlier-history and message rows. The old
+displayed projection is retained until synchronous prepaint reconciliation samples
+the latest user position. Targeted splices restore unique message identity and
+within-row pixel offset; deleted anchors fall to a surviving successor, then a
+predecessor. Removing the earlier-history header while it is still the anchor
+reveals the new top. A newer wheel gesture already anchored in a message wins.
+A vanished pixel after a row shrinks is clamped to the newly measured row's end,
+using one additional targeted measurement included in construction instrumentation.
+This is a narrow GPUI safety policy, not a claim of exact Swift textual anchoring;
+reflow preserves a valid pixel position, not necessarily the same textual line.
+
+Wheel navigation uses measured row heights and nonzero, source-style estimates for
+unseen rows. This avoids GPUI 0.2.2 List's zero-height unknown-row extent clamp;
+a deterministic native 5000px event previously moved only 394px. Exact heights are
+captured for both leading and trailing overdraw without a second layout. An
+estimated target that exceeds its actual height retains residual pixels, with at
+most two target preflights per frame. Further normalization keeps the last canonical
+viewport interactive and requests another animation frame. New gestures and
+width/presentation/style changes supersede pending work; height-only changes can
+retain it because the row geometry remains valid.
+
+Native Linux testing also exposed a separate input-unit mismatch: the original Div
+used the inherited 26px line height, while List used 20px. The matched CUA gesture
+emitted 50 events of three lines each, so those implementations moved 3900px versus
+3000px despite the same 5000px CUA request. The adapter preserves the original Div's
+inherited line-height conversion, per-event addition (including mixed units and
+reversals), and horizontal-only input mapping on its vertical scroll axis. It leaves
+row/ancestor event propagation intact.
+
+On 2026-10-06, independently reviewed source 3ed7927a (SHA256 prefix, not a Git commit)
+passed 36 focused transcript regressions, strict app all-target Clippy, rustfmt and
+diff hygiene. Both app and core were freshly compiled before saving Linux binary
+`75576b7ed2dce3dab9ecf2cdfbec83916a11ff4d36902842d9a8bfa417bd591b`.
+The matched fresh 220-message fixture starts at 120–125 and, after the same gesture,
+settles at partial 154/full 155–159/partial 160, matching the baseline's visible rows.
+There is an approximately 3px placement difference; this is not pixel-identical
+or native frame-time evidence. The fake-platform tests explicitly drive deferred
+frames because that platform does not deliver native animation callbacks.
+Native adversarial-estimate animation scheduling has not been separately exercised;
+the per-frame work bound is established by focused tests and API review, while
+ordinary native wheel navigation is the matched desktop result.
+The same binary passed reverse scrolling, an immediate down/up gesture without later
+position restoration, expansion through Show earlier to all 220 messages, and readable
+reflow at 920px width. A native Copy smoke check pasted the expected visible Unicode,
+Markdown and two lines into a disposable composer; exact clipboard bytes were not
+separately inspected in that desktop pass. No wider platform QA is implied.
+
+Ambiguous legacy message IDs are displayed without rewriting stored data. Each has
+an ephemeral presentation identity and the existing empty 22pt action band; Copy
+is omitted for those rows. Live Copy also requires exactly one current ID match,
+so a formerly unique row becoming ambiguous cannot copy another row silently.
+Controller/chat callbacks remain weak and identity-checked. Rendering and list
+closures never read the parent; pre-draw input synchronization remains required.
+
+This bounds constructed row trees, not complete Session memory or every frame's
+CPU work. Projection reconciliation and resize can traverse logical metadata, and
+one huge visible row still shapes its full text. Source resident 500-row/4MB paging,
+latest-follow placement, bidirectional edge UI and durable reading state remain
+separate gaps. Native macOS wheel/selection/IME/frame performance is unvalidated.
+
+The common benchmark adapter uses schema 3 and identical payloads/profile/full-draw
+timers on baseline and candidate, with logical-input and actual top-row/wheel
+geometry checks. Eager/deferred returned-element construction is labeled separately;
+no payload-clone estimate substitutes for measured full draws. Supplementary local
+cold-window, wheel, visible-tail snapshot-update and resize evidence has separate
+timer boundaries. All measurements remain synthetic CPU-work wall time with GPUI's
+fake text system; they do not establish native font or compositor frame latency.
+The first paired measurement attempt was invalidated: a shared Cargo target reused
+one executable across distinct copied source trees. Raw attempts are retained as
+invalid evidence, with no accepted speedup claim. The runner now cleans only the
+app/core packages' generated artifacts before compilation, requires Cargo's `fresh=false`
+and exact requested source path, records that proof, and rejects changed app-source
+manifests paired with the same executable hash. Dependency caches, source and saved
+QA binaries remain untouched. Source hashes alone are not compilation evidence.
+The correction-specific local/static and matched desktop gates are recorded above.
+No fresh timing claim is made for the final corrected source; exact-commit CI remains
+a separate publication gate.
+
 ## Portable manual transcript measurement (2026-10-06)
 
 An ignored, test-only GPUI benchmark and standard-library Python runner/parser make

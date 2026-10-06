@@ -26,7 +26,9 @@ import threading
 import time
 import tomllib
 
-SCHEMA = 1
+SCHEMA = 3
+METHOD_VERSION = "logical-top-full-draw-v3-fresh-first-party-build"
+SCROLL_PREPARATION = "untimed wheel to top, down 24px, back to top"
 MARKER = "BENCHMARK_JSON "
 TEST_NAME = "transcript_benchmark::manual_transcript_benchmark"
 KINDS = ("short", "multiline_unicode_reasoning")
@@ -37,18 +39,19 @@ LABEL = "synthetic GPUI CPU-work wall time"
 TEXT_SYSTEM = "NoopTextSystem"
 PAYLOAD_VERSION = "transcript-v1"
 CONSTRUCTION_SCOPE = "parent conversation composition only; child not rendered"
-CHILD_SCOPE = "explicit cache bypass; no layout/prepaint/paint; 7 warmups + 31 measured"
-CLONE_EXCLUDES = ("formatted IDs/selectors/labels, GPUI internal cloning/allocation, "
-                  "queue/composer/footer allocations, deferred geometry callback clone")
+CHILD_SCOPE = ("returned element only (eager rows or deferred list shell); explicit cache bypass; "
+               "no layout/prepaint/paint; 7 warmups + 31 measured")
 METRICS = ("construction", "destruction_and_arena_clear", "construction_plus_destruction",
-           "direct_child_render_construction", "direct_child_render_destruction",
-           "direct_child_render_combined")
+           "direct_child_element_construction", "direct_child_element_destruction",
+           "direct_child_element_combined")
 METHOD_FILES = ("rust/benches/transcript.rs", "rust/scripts/transcript_benchmark.py")
 PROFILE_KEYS = {"opt_level", "debuginfo", "debug_assertions", "overflow_checks", "test"}
 CAVEATS = [
     "Synthetic GPUI CPU-work elapsed wall time with NoopTextSystem; not native frame latency.",
     "Repeated payloads favor warm caches; shared-host scheduling and run order can affect results.",
-    "Parent composition and direct-child construction are separate scopes, not whole-transcript construction.",
+    "Parent composition and returned-child-element construction exclude deferred row work during layout.",
+    "Logical parent input and top-row geometry are checked; renderer cardinality is proved by separate app tests.",
+    "No message-clone byte totals or heap-allocation measurements are inferred from child construction.",
     "Generic mode omits child probes; it does not disable caching or recreate historical code.",
     "Historical 0beb423 direct-rustc evidence needs a reviewed adapter and verified matching profiles.",
 ]
@@ -118,11 +121,12 @@ def file_digest(path):
     return hasher.hexdigest()
 
 
-def validate_profile(profile):
+def validate_profile(profile, *, test=True):
     keys(profile, PROFILE_KEYS, "build profile")
     require(profile["opt_level"] == "0", "unsupported optimized profile")
-    for name in ("debug_assertions", "overflow_checks", "test"):
+    for name in ("debug_assertions", "overflow_checks"):
         require(profile[name] is True, f"unsupported profile {name}")
+    require(profile["test"] is test, "unsupported profile test")
     debug = profile["debuginfo"]
     require(debug is None or (type(debug) is int and debug in (0, 1, 2))
             or (type(debug) is str and debug in
@@ -141,7 +145,8 @@ def make_metadata(totals, mode, profile):
     validate_totals(totals)
     require(mode in ("cached", "generic"), "unsupported measurement mode")
     result = {
-        "record_type": "metadata", "schema_version": SCHEMA, "totals": totals,
+        "record_type": "metadata", "schema_version": SCHEMA, "method_version": METHOD_VERSION,
+        "scroll_preparation": SCROLL_PREPARATION, "totals": totals,
         "measurement_mode": mode, "expected_cases": len(totals) * 4,
         "build_profile": validate_profile(profile), "cfg_debug_assertions": True,
         "measurement_label": LABEL, "text_system": TEXT_SYSTEM,
@@ -155,6 +160,9 @@ def make_metadata(totals, mode, profile):
 
 def validate_metadata(metadata):
     require(isinstance(metadata, dict), "invalid metadata")
+    require(type(metadata.get("schema_version")) is int and metadata["schema_version"] == SCHEMA,
+            "unsupported benchmark metadata schema; rerun with current adapter")
+    require(metadata.get("method_version") == METHOD_VERSION, "unsupported benchmark method version")
     try:
         expected = make_metadata(metadata["totals"], metadata["measurement_mode"],
                                  metadata["build_profile"])
@@ -194,26 +202,47 @@ def payload_bytes(kind, revealed):
     return revealed * (59 if kind == "short" else 810)
 
 
+def validate_top_geometry(value, first_index):
+    keys(value, ("viewport", "first_row_index", "first_row"), "top geometry")
+    require(integer(value["first_row_index"]) and value["first_row_index"] == first_index,
+            "invalid top row identity")
+    for name in ("viewport", "first_row"):
+        bounds = value[name]
+        require(isinstance(bounds, list) and len(bounds) == 4 and all(number(n) for n in bounds)
+                and bounds[2] > 0 and bounds[3] > 0, "invalid top geometry bounds")
+    x, y, width, height = value["viewport"]
+    require(x + width <= 1280 and y + height <= 840, "top viewport outside window")
+    row_x, _, row_width, _ = value["first_row"]
+    require(x <= row_x and row_x + row_width <= x + width, "top row outside pane")
+    _, first_y, _, first_height = value["first_row"]
+    require(0 <= first_y - y <= 64 and first_y < y + height and first_y + first_height > y,
+            "first logical row not at viewport top")
+    require(first_index != 0 or abs(first_y - y) <= .01, "unexpected leading top content")
+    return value
+
+
 def validate_case(case, metadata):
     common = {"record_type", "schema_version", "kind", "total", "mode", "revealed", "hidden",
-              "measurement_mode", "build_profile", "window", "pane_width", "exact_rows_before",
-              "exact_rows_after", "unchanged_history_and_draft", "persistent_snapshot_bytes_unchanged",
-              "visible_payload_utf8_bytes", "draw_routes"}
+              "measurement_mode", "build_profile", "window", "pane_width", "logical_input_rows_before",
+              "logical_input_rows_after", "unchanged_history_and_draft", "persistent_snapshot_bytes_unchanged",
+              "logical_input_payload_utf8_bytes", "draw_routes", "top_geometry_before", "top_geometry_after",
+              "wheel_downward_displacement_px", "wheel_restored_top_geometry"}
     cached = metadata["measurement_mode"] == "cached"
     if cached:
         common.update(METRICS)
         common.update(("construction_warmup", "construction_scope", "parent_composition_child_renders",
-                       "direct_child_render_scope", "source_accounting"))
+                       "direct_child_element_scope"))
     keys(case, common, "case")
-    require(case["record_type"] == "case" and type(case["schema_version"]) is int
-            and case["schema_version"] == SCHEMA, "invalid case record")
+    require(type(case["schema_version"]) is int and case["schema_version"] == SCHEMA,
+            "unsupported benchmark case schema")
+    require(case["record_type"] == "case", "invalid case record")
     require(case["kind"] in KINDS and case["mode"] in REVEAL_MODES, "invalid workload label")
     total = case["total"]
     require(integer(total) and total in metadata["totals"], "undeclared total")
     revealed = min(total, 100) if case["mode"] == "default_100" else total
     for name, expected in (("revealed", revealed), ("hidden", total - revealed),
-                           ("exact_rows_before", revealed), ("exact_rows_after", revealed),
-                           ("visible_payload_utf8_bytes", payload_bytes(case["kind"], revealed))):
+                           ("logical_input_rows_before", revealed), ("logical_input_rows_after", revealed),
+                           ("logical_input_payload_utf8_bytes", payload_bytes(case["kind"], revealed))):
         require(integer(case[name]) and case[name] == expected, f"invalid {name}")
     for name in ("measurement_mode", "build_profile", "window", "pane_width"):
         # Rust serializes the actual f32 pane width as 979.0.
@@ -223,20 +252,20 @@ def validate_case(case, metadata):
             require(canonical(case[name]) == canonical(metadata[name]), f"case {name} mismatch")
     for name in ("unchanged_history_and_draft", "persistent_snapshot_bytes_unchanged"):
         require(case[name] is True, "fixture verification failed")
+    validate_top_geometry(case["top_geometry_before"], total - revealed)
+    validate_top_geometry(case["top_geometry_after"], total - revealed)
+    require(canonical(case["top_geometry_before"]) == canonical(case["top_geometry_after"]),
+            "top geometry changed during measured draws")
+    require(type(case["wheel_downward_displacement_px"]) is int
+            and case["wheel_downward_displacement_px"] == 24
+            and case["wheel_restored_top_geometry"] is True, "wheel reachability verification failed")
     result = copy.deepcopy(case)
     if cached:
         require(type(case["construction_warmup"]) is int and case["construction_warmup"] == 7
                 and case["construction_scope"] == CONSTRUCTION_SCOPE
-                and case["direct_child_render_scope"] == CHILD_SCOPE, "construction label mismatch")
+                and case["direct_child_element_scope"] == CHILD_SCOPE, "construction label mismatch")
         require(type(case["parent_composition_child_renders"]) is int
                 and case["parent_composition_child_renders"] == 0, "parent composition rendered child")
-        expected_accounting = {
-            "message_payload_string_clone_bytes_per_parent_composition": 0,
-            "message_payload_string_clone_bytes_per_child_render": payload_bytes(case["kind"], revealed),
-            "is_heap_allocation_measurement": False, "excludes": CLONE_EXCLUDES,
-        }
-        require(canonical(case["source_accounting"]) == canonical(expected_accounting),
-                "invalid source accounting")
         for name in METRICS:
             result[name] = validate_timings(case[name], 31, full=True)
         for build, destroy, combined in (METRICS[:3], METRICS[3:]):
@@ -284,8 +313,9 @@ def validate_records(records, expected_metadata=None):
         require(canonical(metadata) == canonical(expected_metadata), "run configuration/profile mismatch")
     complete = records[-1]
     keys(complete, ("record_type", "schema_version", "cases"), "completion")
-    require(complete["record_type"] == "complete" and type(complete["schema_version"]) is int
-            and complete["schema_version"] == SCHEMA and type(complete["cases"]) is int
+    require(type(complete["schema_version"]) is int and complete["schema_version"] == SCHEMA,
+            "unsupported benchmark completion schema")
+    require(complete["record_type"] == "complete" and type(complete["cases"]) is int
             and complete["cases"] == metadata["expected_cases"], "missing or invalid completion")
     expected = {(kind, total, mode) for kind in KINDS for total in metadata["totals"] for mode in REVEAL_MODES}
     cases, seen = [], set()
@@ -309,7 +339,7 @@ def parse_output(stdout, returncode, expected_metadata):
 
 
 def cargo_artifact(stdout, rust_root):
-    artifacts, finished = [], []
+    artifacts, core_artifacts, finished = [], [], []
     for line in stdout.splitlines():
         if not line.startswith("{"):
             continue
@@ -319,16 +349,24 @@ def cargo_artifact(stdout, rust_root):
         if item.get("reason") != "compiler-artifact":
             continue
         target = item.get("target", {})
+        if target.get("name") == "bello_agent_core" and target.get("kind") == ["lib"]:
+            require(Path(target.get("src_path", "")).resolve()
+                    == (rust_root / "crates/bello-agent-core/src/lib.rs").resolve(), "wrong Cargo core artifact")
+            require(item.get("fresh") is False, "Cargo core artifact was not freshly compiled")
+            # Core is an ordinary dependency library, not an app test binary.
+            core_artifacts.append(validate_profile(item.get("profile"), test=False))
         if target.get("name") == "bello-agent" and target.get("kind") == ["bin"] and item.get("executable"):
             require(Path(target.get("src_path", "")).resolve()
                     == (rust_root / "crates/bello-agent-app/src/main.rs").resolve(), "wrong Cargo app artifact")
             require(item.get("features") == ["default"], "unsupported app test features")
+            require(item.get("fresh") is False, "Cargo app artifact was not freshly compiled")
             profile = validate_profile(item.get("profile"))
             artifacts.append((Path(item["executable"]).resolve(), profile))
     require(finished == [True] and len(artifacts) == 1, "Cargo did not produce exactly one app test artifact")
+    require(len(core_artifacts) == 1, "Cargo did not produce exactly one fresh core library artifact")
     executable, profile = artifacts[0]
     require(executable.is_file(), "compiled app test is missing")
-    return executable, profile
+    return executable, profile, core_artifacts[0]
 
 
 def cargo_fingerprint(executable):
@@ -482,7 +520,8 @@ def write_json(path, value):
 
 def validate_provenance(value, metadata):
     expected = {"source", "compiler", "compiler_overrides_checked", "build_profile", "test_binary_sha256",
-                "profile_identity_sha256", "cargo_fingerprint", "platform", "build_command", "test_command"}
+                "profile_identity_sha256", "cargo_fingerprint", "platform", "build_command", "test_command",
+                "fresh_first_party_build"}
     keys(value, expected, "provenance")
     require(canonical(value["build_profile"]) == canonical(metadata["build_profile"]), "provenance profile mismatch")
     source = value["source"]
@@ -494,6 +533,9 @@ def validate_provenance(value, metadata):
                 and ".." not in Path(name).parts and isinstance(sha, str)
                 and re.fullmatch(r"[a-f0-9]{64}", sha), "invalid source hash")
     require(all(name in source["source_sha256"] for name in METHOD_FILES), "missing workload/method source hashes")
+    require(all(name in source["source_sha256"] for name in (
+        "rust/crates/bello-agent-app/src/main.rs", "rust/crates/bello-agent-core/src/lib.rs")),
+        "missing compiled first-party source identity")
     require(source["source_tree_sha256"] == digest(source["source_sha256"]), "source manifest hash mismatch")
     for sha in (source["manifest_profiles_sha256"], value["test_binary_sha256"], value["profile_identity_sha256"]):
         require(isinstance(sha, str) and re.fullmatch(r"[a-f0-9]{64}", sha), "invalid fingerprint")
@@ -508,17 +550,57 @@ def validate_provenance(value, metadata):
             and re.fullmatch(r"[A-Za-z0-9_-]{1,32}", value["platform"]["machine"]), "invalid platform")
     require(value["build_command"] == build_command()
             and value["test_command"] == ["<cargo-built-app-test>", *test_arguments()], "command metadata mismatch")
+    proof = value["fresh_first_party_build"]
+    require(isinstance(proof, dict) and "core_build_profile" in proof,
+            "missing or invalid fresh first-party build proof")
+    require(canonical(proof) == canonical(fresh_build_proof(proof["core_build_profile"])),
+            "missing or invalid fresh first-party build proof")
     fingerprint = value["cargo_fingerprint"]
     keys(fingerprint, ("profile", "rustc", "target", "compile_kind", "rustflags", "features"), "Cargo fingerprint")
     require(all(integer(fingerprint[key]) for key in ("profile", "rustc", "target", "compile_kind"))
             and fingerprint["compile_kind"] == 0 and fingerprint["rustflags"] == []
             and fingerprint["features"] == ["default"], "unsupported Cargo fingerprint")
-    expected_identity = digest({"profile": value["build_profile"], "compiler": value["compiler"],
+    expected_identity = digest({"profile": value["build_profile"],
+                                "core_profile": proof["core_build_profile"], "compiler": value["compiler"],
                                 "cargo_fingerprint": fingerprint,
                                 "manifest_profiles_sha256": source["manifest_profiles_sha256"],
                                 "platform": value["platform"]})
     require(value["profile_identity_sha256"] == expected_identity, "profile fingerprint mismatch")
     return value
+
+
+def clean_command():
+    # Only generated artifacts of the two first-party packages are removed.
+    # Keep third-party caches, source/evidence and copied QA executables intact.
+    return ["cargo", "clean", "--package", "bello-agent-app", "--package", "bello-agent-core"]
+
+
+def fresh_build_proof(core_profile):
+    return {"clean_command": clean_command(), "clean_succeeded": True,
+            "app_artifact_fresh": False, "app_target_src_path_matches_checkout": True,
+            "core_artifact_fresh": False, "core_target_src_path_matches_checkout": True,
+            "core_build_profile": validate_profile(core_profile, test=False)}
+
+
+def build_test_artifact(rust_root, env, timeout):
+    # Shared target directories may otherwise reuse another checkout's app
+    # binary when copied source mtimes predate Cargo's fingerprint. Never infer
+    # compiled identity from a source manifest or reported src_path alone.
+    status, _ = capture(clean_command(), rust_root, env=env, timeout=timeout)
+    require(status == 0, "Cargo first-party artifact cleanup failed")
+    status, stdout = capture(build_command(), rust_root, env=env, timeout=timeout)
+    require(status == 0, "Cargo build failed")
+    executable, profile, core_profile = cargo_artifact(stdout, rust_root)
+    return executable, profile, fresh_build_proof(core_profile)
+
+
+def require_distinct_first_party_executables(baseline, candidate):
+    def first_party_sources(provenance):
+        return {name: sha for name, sha in provenance["source"]["source_sha256"].items()
+                if name.startswith("rust/crates/")}
+    if first_party_sources(baseline) != first_party_sources(candidate):
+        require(baseline["test_binary_sha256"] != candidate["test_binary_sha256"],
+                "comparison changed first-party source reused the same test executable")
 
 
 def build_command():
@@ -542,8 +624,9 @@ def make_report(records, provenance):
 
 def validate_report(report):
     keys(report, ("schema_version", "status", "records", "provenance", "caveats"), "report")
-    require(type(report["schema_version"]) is int and report["schema_version"] == SCHEMA
-            and report["status"] == "complete", "partial/legacy benchmark report needs an adapter")
+    require(type(report["schema_version"]) is int and report["schema_version"] == SCHEMA,
+            "unsupported benchmark report schema; rerun with current adapter")
+    require(report["status"] == "complete", "partial benchmark report")
     expected = make_report(report["records"], report["provenance"])
     require(report["caveats"] == expected["caveats"], "missing or invalid measurement caveats")
     return expected
@@ -587,14 +670,19 @@ def compare_reports(baseline, candidate):
         require(baseline["provenance"]["source"]["source_sha256"][name]
                 == candidate["provenance"]["source"]["source_sha256"][name],
                 "comparison workload/method source mismatch; use an identical harness and runner")
+    require_distinct_first_party_executables(baseline["provenance"], candidate["provenance"])
     before = {(case["kind"], case["total"], case["mode"]): case for case in baseline["records"][1:-1]}
     after = {(case["kind"], case["total"], case["mode"]): case for case in candidate["records"][1:-1]}
     require(before.keys() == after.keys(), "comparison case set mismatch")
     rows = []
     for key, case in before.items():
         other = after[key]
-        for name in ("revealed", "hidden", "visible_payload_utf8_bytes", "window", "pane_width"):
+        for name in ("revealed", "hidden", "logical_input_payload_utf8_bytes", "window", "pane_width"):
             require(case[name] == other[name], "comparison payload/window mismatch")
+        for name in ("viewport", "first_row"):
+            require(all(math.isclose(a, b, rel_tol=0, abs_tol=.01)
+                        for a, b in zip(case["top_geometry_before"][name], other["top_geometry_before"][name])),
+                    "comparison top geometry mismatch")
         for old, new in zip(case["draw_routes"], other["draw_routes"]):
             require(old["route"] == new["route"], "comparison route mismatch")
             a, b = old["timings"], new["timings"]
@@ -621,9 +709,7 @@ def run_benchmark(args, output):
     configurations = validate_build_environment(rust_root, env)
     source = source_state(repo, rust_root, env)
     compiler = compiler_identity(rust_root, env)
-    status, stdout = capture(build_command(), rust_root, env=env, timeout=args.build_timeout)
-    require(status == 0, "Cargo build failed")
-    executable, profile = cargo_artifact(stdout, rust_root)
+    executable, profile, fresh_build = build_test_artifact(rust_root, env, args.build_timeout)
     require(source_state(repo, rust_root, env) == source, "source changed during build")
     require(compiler_identity(rust_root, env) == compiler, "compiler changed during build")
     binary_hash = file_digest(executable)
@@ -632,9 +718,10 @@ def run_benchmark(args, output):
     provenance = {
         "source": source, "compiler": compiler, "compiler_overrides_checked": configurations,
         "build_profile": profile, "test_binary_sha256": binary_hash, "platform": host,
-        "cargo_fingerprint": fingerprint,
+        "cargo_fingerprint": fingerprint, "fresh_first_party_build": fresh_build,
         "build_command": build_command(), "test_command": ["<cargo-built-app-test>", *test_arguments()],
-        "profile_identity_sha256": digest({"profile": profile, "compiler": compiler,
+        "profile_identity_sha256": digest({"profile": profile, "core_profile": fresh_build["core_build_profile"],
+            "compiler": compiler,
             "cargo_fingerprint": fingerprint,
             "manifest_profiles_sha256": source["manifest_profiles_sha256"], "platform": host}),
     }
@@ -644,7 +731,8 @@ def run_benchmark(args, output):
     fixtures.mkdir()
     with tempfile.TemporaryDirectory(prefix="bello-transcript-config-") as scratch:
         config_path = Path(scratch) / "config.json"
-        write_json(config_path, {"schema_version": SCHEMA, "totals": args.totals, "mode": args.mode,
+        write_json(config_path, {"schema_version": SCHEMA, "method_version": METHOD_VERSION,
+                                "totals": args.totals, "mode": args.mode,
                                 "fixture_dir": str(fixtures.resolve()), "build_profile": profile})
         env["BELLO_TRANSCRIPT_BENCHMARK_CONFIG"] = str(config_path)
         status, stdout = capture([str(executable), *test_arguments()], rust_root, env=env,

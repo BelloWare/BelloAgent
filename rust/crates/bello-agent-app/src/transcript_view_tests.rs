@@ -1,4 +1,4 @@
-//! Fake-platform regression tests for the retained populated transcript.
+//! Fake-platform regression tests for the retained, visible-row transcript.
 //! Cache-hit assertions use production notifications, never Window::refresh:
 //! GPUI deliberately bypasses AnyView caching during a forced refresh.
 use crate::{
@@ -11,9 +11,10 @@ use bello_agent_core::{
     workspace::{ChatRecord, DraftRecord, WorkspaceStore},
 };
 use gpui::{
-    AnyView, ClipboardItem, Entity, EntityInputHandler, Focusable, Modifiers, MouseButton, Pixels,
-    Point, ScrollDelta, ScrollHandle, ScrollWheelEvent, StyleRefinement, TestAppContext,
-    VisualTestContext, Window, WindowAppearance, WindowHandle, div, point, prelude::*, px, size,
+    AnyView, Bounds, ClipboardItem, Entity, EntityInputHandler, Focusable, ListOffset, ListState,
+    Modifiers, MouseButton, Pixels, Point, ScrollDelta, ScrollWheelEvent, StyleRefinement,
+    TestAppContext, VisualTestContext, Window, WindowAppearance, WindowHandle, div, point,
+    prelude::*, px, size,
 };
 use std::sync::{Arc, Mutex};
 
@@ -43,10 +44,11 @@ fn messages(count: usize) -> Vec<Message> {
         .collect()
 }
 
-fn fixture(
+fn fixture_with_visible(
     cx: &mut TestAppContext,
     rows: Vec<Message>,
     queued: usize,
+    visible_messages: Option<usize>,
 ) -> (
     tempfile::TempDir,
     WindowHandle<AgentView>,
@@ -83,12 +85,30 @@ fn fixture(
         draft,
         pending: false,
     };
-    let window = cx.add_window(|window, cx| AgentView::new(launch, window, cx));
+    let window = cx.add_window(|window, cx| {
+        let mut view = AgentView::new(launch, window, cx);
+        if let Some(visible_messages) = visible_messages {
+            view.visible_messages = visible_messages;
+        }
+        view
+    });
     let root = window.root(cx).unwrap();
     let visual = VisualTestContext::from_window(window.into(), cx);
     visual.simulate_resize(size(px(1180.), px(812.)));
     cx.run_until_parked();
     (directory, window, root)
+}
+
+fn fixture(
+    cx: &mut TestAppContext,
+    rows: Vec<Message>,
+    queued: usize,
+) -> (
+    tempfile::TempDir,
+    WindowHandle<AgentView>,
+    Entity<AgentView>,
+) {
+    fixture_with_visible(cx, rows, queued, None)
 }
 
 fn transcript(root: &Entity<AgentView>, cx: &TestAppContext) -> Entity<TranscriptView> {
@@ -104,8 +124,71 @@ fn renders(child: &Entity<TranscriptView>, cx: &TestAppContext) -> usize {
     cx.read(|cx| child.read(cx).render_count())
 }
 
-fn scroll(child: &Entity<TranscriptView>, cx: &TestAppContext) -> ScrollHandle {
-    cx.read(|cx| child.read(cx).scroll_handle())
+fn scroll(child: &Entity<TranscriptView>, cx: &TestAppContext) -> ListState {
+    // Resizing replaces GPUI's ListState because its overdraw is immutable.
+    // Never retain this handle across geometry changes.
+    cx.read(|cx| child.read(cx).list_state())
+}
+
+fn row_ids(child: &Entity<TranscriptView>, cx: &TestAppContext) -> Vec<String> {
+    cx.read(|cx| child.read(cx).logical_row_ids())
+}
+
+fn materialized(child: &Entity<TranscriptView>, cx: &TestAppContext) -> Vec<usize> {
+    cx.read(|cx| child.read(cx).materialized_indexes())
+}
+
+fn anchor(child: &Entity<TranscriptView>, cx: &TestAppContext) -> (String, Pixels) {
+    let offset = scroll(child, cx).logical_scroll_top();
+    (
+        row_ids(child, cx)[offset.item_ix].clone(),
+        offset.offset_in_item,
+    )
+}
+
+fn jump_to(child: &Entity<TranscriptView>, index: usize, offset: f32, cx: &mut TestAppContext) {
+    scroll(child, cx).scroll_to(ListOffset {
+        item_ix: index,
+        offset_in_item: px(offset),
+    });
+    child.update(cx, |_, cx| cx.notify());
+    cx.run_until_parked();
+}
+
+fn reveal_all(root: &Entity<AgentView>, cx: &mut TestAppContext) {
+    root.update(cx, |view, cx| {
+        view.visible_messages = usize::MAX;
+        cx.notify();
+    });
+    cx.run_until_parked();
+}
+
+fn current_row_bounds(
+    visual: &mut VisualTestContext,
+    child: &Entity<TranscriptView>,
+    id: &str,
+    cx: &TestAppContext,
+) -> Bounds<Pixels> {
+    let index = row_ids(child, cx).iter().position(|row| row == id).unwrap();
+    assert!(
+        materialized(child, cx).contains(&index),
+        "{id} was not materialized this frame"
+    );
+    assert!(
+        cx.read(|cx| child.read(cx).painted_indexes())
+            .contains(&index),
+        "{id} was measured for overdraw but was not painted in this frame"
+    );
+    // VisualTestContext's selector API requires a static string. This leaks only
+    // the handful of selector names used by these finite regression cases.
+    let selector = Box::leak(format!("transcript-row-{id}").into_boxed_str());
+    let bounds = visual.debug_bounds(selector).unwrap();
+    let viewport = scroll(child, cx).viewport_bounds();
+    assert!(
+        bounds.bottom() > viewport.top() && bounds.top() < viewport.bottom(),
+        "{id} debug selector is not in the current viewport: {bounds:?}, {viewport:?}"
+    );
+    bounds
 }
 
 fn snapshot_change(
@@ -150,6 +233,46 @@ impl Render for TranscriptHost {
     }
 }
 
+// A one-shot capture hook installs new presentation input during a real wheel
+// dispatch, before the previous frame's List bubble listener handles that wheel.
+struct WheelInputHost {
+    child: Entity<TranscriptView>,
+    pending: std::rc::Rc<std::cell::RefCell<Option<TranscriptInput>>>,
+}
+
+impl Render for WheelInputHost {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let child = self.child.downgrade();
+        let pending = self.pending.clone();
+        div()
+            .relative()
+            .size_full()
+            .flex()
+            .child(
+                AnyView::from(self.child.clone())
+                    .cached(StyleRefinement::default().flex_1().min_h_0().w_full()),
+            )
+            .child(
+                gpui::canvas(
+                    |_, _, _| (),
+                    move |_, _, window, _| {
+                        window.on_mouse_event(move |_: &ScrollWheelEvent, phase, _, cx| {
+                            if phase == gpui::DispatchPhase::Capture
+                                && let Some(input) = pending.borrow_mut().take()
+                            {
+                                child
+                                    .update(cx, |view, cx| view.update_inputs(input, cx))
+                                    .unwrap();
+                            }
+                        });
+                    },
+                )
+                .absolute()
+                .inset_0(),
+            )
+    }
+}
+
 fn host(
     root: &Entity<AgentView>,
     input: TranscriptInput,
@@ -168,12 +291,11 @@ fn host(
 
 fn first_child_target(child: &Entity<TranscriptView>, cx: &TestAppContext) -> Point<Pixels> {
     let handle = scroll(child, cx);
-    let mut bounds = handle.bounds_for_item(0).expect("available first child");
-    bounds.origin += handle.offset();
+    let bounds = handle.bounds_for_item(0).expect("available first child");
     let target = bounds.center();
     assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
     assert!(
-        handle.bounds().contains(&target),
+        handle.viewport_bounds().contains(&target),
         "target must be in viewport"
     );
     target
@@ -187,10 +309,9 @@ fn click_first_copy(
     // GPUI retains debug selectors across cached frames. Pick the hover point
     // from the current scroll children, then inspect fresh hover-render bounds.
     let handle = scroll(child, cx);
-    let mut current_row = handle.bounds_for_item(0).expect("current first row");
-    current_row.origin += handle.offset();
+    let current_row = current_row_bounds(visual, child, "message-0", cx);
     let hover = current_row.origin + point(px(10.), px(10.));
-    assert!(current_row.contains(&hover) && handle.bounds().contains(&hover));
+    assert!(current_row.contains(&hover) && handle.viewport_bounds().contains(&hover));
     let before = renders(child, cx);
     visual.simulate_mouse_move(hover, None::<MouseButton>, Modifiers::none());
     assert!(
@@ -200,7 +321,7 @@ fn click_first_copy(
     let row = visual
         .debug_bounds("transcript-row-message-0")
         .expect("hover-rendered first row");
-    let viewport = handle.bounds();
+    let viewport = handle.viewport_bounds();
     let pill = visual
         .debug_bounds("copy-pill-message-0")
         .expect("rendered Copy target");
@@ -214,6 +335,633 @@ fn click_first_copy(
 }
 
 #[gpui::test]
+fn visible_rows_keep_exact_source_gutters_gap_bottom_and_max_width(cx: &mut TestAppContext) {
+    let (_directory, _window, root) = fixture(cx, messages(30), 0);
+    let (mut visual, child) = host(&root, input(&root, cx), cx);
+    for width in [700., 1100., 700.] {
+        visual.simulate_resize(size(px(width), px(620.)));
+        cx.run_until_parked();
+        jump_to(&child, 0, 0., cx);
+        let viewport = scroll(&child, cx).viewport_bounds();
+        let first = current_row_bounds(&mut visual, &child, "message-0", cx);
+        let second = current_row_bounds(&mut visual, &child, "message-1", cx);
+        assert_eq!(first.top(), viewport.top(), "no new top padding");
+        assert_eq!(first.size.width, px((width - 48.).min(840.)));
+        assert_eq!(
+            first.left() - viewport.left(),
+            (viewport.size.width - first.size.width) / 2.
+        );
+        if width == 700. {
+            assert_eq!(first.left() - viewport.left(), px(24.));
+            assert_eq!(viewport.right() - first.right(), px(24.));
+        }
+        assert_eq!(second.top() - first.bottom(), px(16.));
+        jump_to(&child, 29, 0., cx);
+        let last = current_row_bounds(&mut visual, &child, "message-29", cx);
+        assert_eq!(
+            viewport.bottom() - last.bottom(),
+            px(13.),
+            "no trailing row gap"
+        );
+    }
+}
+
+#[gpui::test]
+fn initial_list_stays_top_aligned_and_parent_notifications_preserve_it(cx: &mut TestAppContext) {
+    let (_directory, window, root) = fixture(cx, messages(100), 0);
+    let child = transcript(&root, cx);
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    assert_eq!(anchor(&child, cx), ("message-0".into(), px(0.)));
+    assert_eq!(
+        current_row_bounds(&mut visual, &child, "message-0", cx).top(),
+        scroll(&child, cx).viewport_bounds().top()
+    );
+    assert!(!materialized(&child, cx).contains(&99));
+    let before = renders(&child, cx);
+    for _ in 0..3 {
+        root.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+        assert_eq!(renders(&child, cx), before);
+        assert_eq!(anchor(&child, cx), ("message-0".into(), px(0.)));
+    }
+}
+
+#[gpui::test]
+fn splice_and_same_identity_height_changes_preserve_row_and_pixel_anchor(cx: &mut TestAppContext) {
+    let (_directory, _window, root) = fixture(cx, messages(80), 0);
+    reveal_all(&root, cx);
+    let child = transcript(&root, cx);
+    jump_to(&child, 40, 11., cx);
+    let expected = ("message-40".into(), px(11.));
+    assert_eq!(anchor(&child, cx), expected);
+    snapshot_change(&root, cx, |session| {
+        session.messages.splice(
+            0..0,
+            [
+                message("inserted-a", "system", "A"),
+                message("inserted-b", "user", "B"),
+            ],
+        );
+    });
+    assert_eq!(anchor(&child, cx), expected);
+    assert_eq!(scroll(&child, cx).logical_scroll_top().item_ix, 42);
+    snapshot_change(&root, cx, |session| {
+        session.messages[42].text = "same ID, taller line 日本語\n".repeat(12);
+    });
+    assert_eq!(
+        anchor(&child, cx),
+        expected,
+        "GPUI splice resets offsets unless restored explicitly"
+    );
+    snapshot_change(&root, cx, |session| {
+        session.messages.drain(0..2);
+        session.messages[40].text = "short again".into();
+    });
+    assert_eq!(anchor(&child, cx), expected);
+    assert_eq!(scroll(&child, cx).logical_scroll_top().item_ix, 40);
+}
+
+#[gpui::test]
+fn resize_updates_half_viewport_buffer_without_losing_anchor(cx: &mut TestAppContext) {
+    let (_directory, _window, root) = fixture(cx, messages(100), 0);
+    let (visual, child) = host(&root, input(&root, cx), cx);
+    jump_to(&child, 40, 9., cx);
+    let expected = anchor(&child, cx);
+    for (width, height) in [
+        (700., 360.),
+        (700., 1000.),
+        (460., 620.),
+        (1100., 480.),
+        (700., 620.),
+    ] {
+        visual.simulate_resize(size(px(width), px(height)));
+        cx.run_until_parked();
+        let viewport = scroll(&child, cx).viewport_bounds();
+        assert_eq!(
+            cx.read(|cx| child.read(cx).buffer_margin()),
+            (viewport.size.height / 2.).max(px(240.))
+        );
+        assert_eq!(
+            anchor(&child, cx),
+            expected,
+            "resize {width}x{height} changed row/pixel anchor"
+        );
+        assert!(
+            materialized(&child, cx).len() < 40,
+            "resizing materialized the full history"
+        );
+        let before = renders(&child, cx);
+        // A later explicit invalidation must not restore an older offset.
+        child.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+        assert!(renders(&child, cx) > before);
+        assert_eq!(anchor(&child, cx), expected);
+    }
+}
+
+#[gpui::test]
+fn width_only_resize_remeasures_wrapped_rows_and_preserves_anchor(cx: &mut TestAppContext) {
+    let mut rows = messages(160);
+    for row in &mut rows {
+        row.role = "assistant".into();
+        row.text = "Wrapping width proof 日本語 e\u{301} and ordinary words. ".repeat(40);
+    }
+    let (_directory, _window, root) = fixture_with_visible(cx, rows, 0, Some(160));
+    let (mut visual, child) = host(&root, input(&root, cx), cx);
+    jump_to(&child, 2, 0., cx);
+    current_row_bounds(&mut visual, &child, "message-2", cx);
+    let wide_height = visual
+        .debug_bounds("transcript-text-message-2")
+        .unwrap()
+        .size
+        .height;
+    jump_to(&child, 80, 13., cx);
+    let expected = anchor(&child, cx);
+    let buffer = cx.read(|cx| child.read(cx).buffer_margin());
+    // Height remains fixed: the overdraw-replacement path cannot accidentally
+    // make this test pass by discarding all of GPUI's cached measurements.
+    visual.simulate_resize(size(px(460.), px(620.)));
+    cx.run_until_parked();
+    assert_eq!(cx.read(|cx| child.read(cx).buffer_margin()), buffer);
+    assert_eq!(anchor(&child, cx), expected);
+    assert!(materialized(&child, cx).len() < 20);
+    jump_to(&child, 2, 0., cx);
+    current_row_bounds(&mut visual, &child, "message-2", cx);
+    assert!(
+        visual
+            .debug_bounds("transcript-text-message-2")
+            .unwrap()
+            .size
+            .height
+            > wide_height,
+        "offscreen row retained its pre-resize wrapping measurement"
+    );
+    jump_to(&child, 80, 13., cx);
+    for width in [1000., 700.] {
+        visual.simulate_resize(size(px(width), px(620.)));
+        cx.run_until_parked();
+        assert_eq!(cx.read(|cx| child.read(cx).buffer_margin()), buffer);
+        assert_eq!(anchor(&child, cx), expected);
+    }
+    jump_to(&child, 2, 0., cx);
+    current_row_bounds(&mut visual, &child, "message-2", cx);
+    assert_eq!(
+        visual
+            .debug_bounds("transcript-text-message-2")
+            .unwrap()
+            .size
+            .height,
+        wide_height
+    );
+}
+
+#[gpui::test]
+fn cold_first_middle_last_rows_are_reachable_with_bounded_materialization(cx: &mut TestAppContext) {
+    for count in [100, 1_000, 10_000] {
+        let (_directory, window, root) = fixture_with_visible(cx, messages(count), 0, Some(count));
+        let child = transcript(&root, cx);
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        assert_eq!(scroll(&child, cx).item_count(), count);
+        assert_eq!(row_ids(&child, cx).len(), count);
+        assert_eq!(anchor(&child, cx), ("message-0".into(), px(0.)));
+        assert!(!materialized(&child, cx).contains(&(count - 1)));
+        for index in [0, count / 2, count - 1, 0] {
+            jump_to(&child, index, 0., cx);
+            let id = format!("message-{index}");
+            current_row_bounds(&mut visual, &child, &id, cx);
+            let built = materialized(&child, cx);
+            assert!(
+                built.contains(&index),
+                "{count}-row list did not build {id}"
+            );
+            assert!(
+                built.len() < 40,
+                "{count}-row list built {} rows for one viewport",
+                built.len()
+            );
+            let texts = cx.read(|cx| child.read(cx).materialized_texts());
+            assert!(texts.iter().any(|(row, text)| *row == index
+                && text == &format!("Transcript row {index}: 日本語 e\u{301}")));
+        }
+    }
+}
+
+#[gpui::test]
+fn same_identity_edits_above_inside_and_below_viewport_remeasure_on_reach(cx: &mut TestAppContext) {
+    let (_directory, window, root) = fixture(cx, messages(200), 0);
+    reveal_all(&root, cx);
+    let child = transcript(&root, cx);
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    jump_to(&child, 80, 7., cx);
+    let expected = anchor(&child, cx);
+    for index in [2, 80, 150] {
+        snapshot_change(&root, cx, |session| {
+            session.messages[index].text =
+                format!("Edited row {index}: 你好 👩🏽‍💻 e\u{301}\n").repeat(7);
+            session.messages[index].reasoning = "Visible reasoning\nsecond reasoning line".into();
+            session.messages[index].state = "interrupted".into();
+        });
+        assert_eq!(
+            anchor(&child, cx),
+            expected,
+            "edit at {index} moved reading position"
+        );
+        assert!(materialized(&child, cx).len() < 40);
+    }
+    for index in [2, 80, 150] {
+        jump_to(&child, index, 0., cx);
+        let row = current_row_bounds(&mut visual, &child, &format!("message-{index}"), cx);
+        assert!(
+            row.size.height > px(200.),
+            "edited offscreen height was stale: {row:?}"
+        );
+        let expected_text = cx.read(|cx| root.read(cx).session.messages[index].text.clone());
+        let texts = cx.read(|cx| child.read(cx).materialized_texts());
+        assert!(
+            texts
+                .iter()
+                .any(|(row, text)| *row == index && text == &expected_text)
+        );
+    }
+}
+
+#[gpui::test]
+fn reorder_and_anchor_deletion_use_stable_identity_then_surviving_neighbor(
+    cx: &mut TestAppContext,
+) {
+    let (_directory, _window, root) = fixture(cx, messages(100), 0);
+    reveal_all(&root, cx);
+    let child = transcript(&root, cx);
+    jump_to(&child, 40, 9., cx);
+    let expected = anchor(&child, cx);
+    snapshot_change(&root, cx, |session| session.messages.swap(40, 60));
+    assert_eq!(anchor(&child, cx), expected);
+    assert_eq!(scroll(&child, cx).logical_scroll_top().item_ix, 60);
+    snapshot_change(&root, cx, |session| session.messages.swap(40, 60));
+    assert_eq!(anchor(&child, cx), expected);
+    snapshot_change(&root, cx, |session| {
+        session.messages.remove(40);
+    });
+    assert_eq!(anchor(&child, cx), ("message-41".into(), px(0.)));
+    snapshot_change(&root, cx, |session| {
+        session
+            .messages
+            .retain(|message| !["message-41", "message-42"].contains(&message.id.as_str()));
+    });
+    assert_eq!(anchor(&child, cx), ("message-43".into(), px(0.)));
+}
+
+#[gpui::test]
+fn deleting_last_anchor_falls_back_to_previous_surviving_row(cx: &mut TestAppContext) {
+    let mut rows = messages(100);
+    rows[98].text = "previous tall row\n".repeat(100);
+    rows[99].text = "last tall row\n".repeat(100);
+    let (_directory, _window, root) = fixture(cx, rows, 0);
+    let child = transcript(&root, cx);
+    jump_to(&child, 99, 9., cx);
+    assert_eq!(anchor(&child, cx), ("message-99".into(), px(9.)));
+    snapshot_change(&root, cx, |session| {
+        session.messages.pop();
+    });
+    assert_eq!(anchor(&child, cx), ("message-98".into(), px(0.)));
+}
+
+#[gpui::test]
+fn loading_retry_earlier_and_streaming_rows_have_distinct_logical_slots(cx: &mut TestAppContext) {
+    let mut rows = messages(6);
+    rows[5].text.clear();
+    rows[5].state = "streaming".into();
+    let (_directory, _window, root) = fixture(cx, rows, 0);
+    let mut changed = input(&root, cx);
+    changed.visible_messages = 2;
+    changed.loading = true;
+    changed.load_failed = true;
+    let (mut visual, child) = host(&root, changed, cx);
+    assert_eq!(
+        row_ids(&child, cx),
+        ["@loading", "@earlier", "message-4", "message-5"]
+    );
+    assert_eq!(scroll(&child, cx).item_count(), 4);
+    current_row_bounds(&mut visual, &child, "message-5", cx);
+    assert!(
+        visual
+            .debug_bounds("transcript-text-message-5")
+            .unwrap()
+            .size
+            .height
+            >= px(21.)
+    );
+    assert!(
+        cx.read(|cx| child.read(cx).materialized_texts())
+            .iter()
+            .any(|(index, text)| *index == 3 && text.is_empty()),
+        "placeholder must not change source text"
+    );
+    let mut changed = input(&root, cx);
+    changed.visible_messages = 2;
+    changed.load_failed = true;
+    child.update(cx, |view, cx| view.update_inputs(changed, cx));
+    cx.run_until_parked();
+    assert_eq!(
+        row_ids(&child, cx),
+        ["@retry", "@earlier", "message-4", "message-5"]
+    );
+    assert_eq!(scroll(&child, cx).item_count(), 4);
+}
+
+#[gpui::test]
+fn duplicate_legacy_ids_keep_separate_rows_and_exact_source(cx: &mut TestAppContext) {
+    let rows = vec![
+        message("duplicate", "user", "first duplicate"),
+        message("unique", "assistant", "unique row"),
+        message("duplicate", "assistant", "second duplicate 你好"),
+    ];
+    let (_directory, _window, root) = fixture(cx, rows, 0);
+    let child = transcript(&root, cx);
+    assert_eq!(
+        row_ids(&child, cx),
+        ["duplicate#0", "unique", "duplicate#1"]
+    );
+    assert_eq!(scroll(&child, cx).item_count(), 3);
+    let texts = cx.read(|cx| child.read(cx).materialized_texts());
+    assert!(
+        texts
+            .iter()
+            .any(|(index, text)| *index == 0 && text == "first duplicate")
+    );
+    assert!(
+        texts
+            .iter()
+            .any(|(index, text)| *index == 2 && text == "second duplicate 你好")
+    );
+    snapshot_change(&root, cx, |session| session.messages.reverse());
+    jump_to(&child, 0, 0., cx);
+    let texts = cx.read(|cx| child.read(cx).materialized_texts());
+    assert!(
+        texts
+            .iter()
+            .any(|(index, text)| *index == 0 && text == "second duplicate 你好")
+    );
+    assert!(
+        texts
+            .iter()
+            .any(|(index, text)| *index == 2 && text == "first duplicate")
+    );
+}
+
+#[gpui::test]
+fn wheel_after_snapshot_and_resize_wins_over_restored_anchor(cx: &mut TestAppContext) {
+    let (_directory, _window, root) = fixture(cx, messages(100), 0);
+    let (mut visual, child) = host(&root, input(&root, cx), cx);
+    jump_to(&child, 40, 9., cx);
+    let mut changed = input(&root, cx);
+    let mut session = (*changed.session).clone();
+    session.messages[40].text.push_str("\nstreamed line");
+    changed.session = Arc::new(session);
+    child.update(cx, |view, cx| view.update_inputs(changed, cx));
+    visual.simulate_resize(size(px(700.), px(480.)));
+    let before = anchor(&child, cx);
+    let target = scroll(&child, cx).viewport_bounds().center();
+    visual.simulate_event(ScrollWheelEvent {
+        position: target,
+        delta: ScrollDelta::Pixels(point(px(0.), px(-100.))),
+        ..Default::default()
+    });
+    cx.run_until_parked();
+    let after = anchor(&child, cx);
+    assert_ne!(after, before, "user wheel must take effect");
+    child.update(cx, |_, cx| cx.notify());
+    cx.run_until_parked();
+    assert_eq!(
+        anchor(&child, cx),
+        after,
+        "a later frame must not restore the old anchor"
+    );
+}
+
+#[gpui::test]
+fn wheel_between_new_input_and_prepaint_uses_live_old_mapping_then_reconciles(
+    cx: &mut TestAppContext,
+) {
+    // Cover both an insertion around a message anchor and removal of a
+    // Show earlier header after the user has already wheeled into a message.
+    for (count, visible, start_index, start_pixels, insert_prefix) in
+        [(100, 100, 40, 9., true), (220, 200, 0, 0., false)]
+    {
+        let (_directory, _window, root) = fixture(cx, messages(count), 0);
+        let pending = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let parent = root.downgrade();
+        let mut initial = input(&root, cx);
+        initial.visible_messages = visible;
+        let window = cx.add_window(|_, cx| WheelInputHost {
+            child: cx.new(|_| TranscriptView::new(parent, initial)),
+            pending: pending.clone(),
+        });
+        let host = window.root(cx).unwrap();
+        let child = cx.read(|cx| host.read(cx).child.clone());
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        visual.simulate_resize(size(px(700.), px(620.)));
+        cx.run_until_parked();
+        jump_to(&child, start_index, start_pixels, cx);
+        let old_list = scroll(&child, cx);
+        let old_ids = row_ids(&child, cx);
+        let old_count = old_ids.len();
+        let old_offset = old_list.logical_scroll_top();
+        let before_renders = renders(&child, cx);
+        let target = old_list.viewport_bounds().center();
+        let mut changed = input(&root, cx);
+        changed.visible_messages = usize::MAX;
+        let mut session = (*changed.session).clone();
+        if insert_prefix {
+            session.messages.splice(
+                0..0,
+                [
+                    message("before-a", "user", "A"),
+                    message("before-b", "assistant", "B"),
+                ],
+            );
+        }
+        let next_count = session.messages.len();
+        changed.session = Arc::new(session);
+        // Calculate the exact wheel result against the old frame's measurements.
+        let mut expected_index = old_offset.item_ix;
+        let mut expected_pixels = old_offset.offset_in_item + px(100.);
+        loop {
+            let height = old_list
+                .bounds_for_item(expected_index)
+                .unwrap()
+                .size
+                .height;
+            if expected_pixels < height {
+                break;
+            }
+            expected_pixels -= height;
+            expected_index += 1;
+        }
+        let expected = (old_ids[expected_index].clone(), expected_pixels);
+        if !insert_prefix {
+            assert!(expected.0.starts_with("message-"));
+            assert_ne!(expected.0, "message-0");
+        }
+        let old_frame_received_wheel = std::rc::Rc::new(std::cell::Cell::new(false));
+        let witness = old_frame_received_wheel.clone();
+        let observed_child = child.downgrade();
+        old_list.set_scroll_handler(move |event, _, cx| {
+            assert_eq!(
+                event.count, old_count,
+                "wheel reached reconciled rows instead of the old mapping"
+            );
+            assert_eq!(
+                observed_child.upgrade().unwrap().read(cx).render_count(),
+                before_renders,
+                "a render occurred between the new input and the real wheel listener"
+            );
+            witness.set(true);
+        });
+        *pending.borrow_mut() = Some(changed);
+        assert_eq!(renders(&child, cx), before_renders);
+        assert_eq!(old_list.item_count(), old_count);
+        // The capture hook installs input while this event is already being
+        // dispatched. The List bubble witness proves the old frame handles it
+        // before the pending presentation can be rendered and reconciled.
+        visual.simulate_event(ScrollWheelEvent {
+            position: target,
+            delta: ScrollDelta::Pixels(point(px(0.), px(-100.))),
+            ..Default::default()
+        });
+        assert!(
+            pending.borrow().is_none(),
+            "capture hook did not install pending input"
+        );
+        assert!(
+            old_frame_received_wheel.get(),
+            "old painted wheel listener did not receive the gesture"
+        );
+        cx.run_until_parked();
+        assert_eq!(scroll(&child, cx).item_count(), next_count);
+        assert_eq!(
+            anchor(&child, cx),
+            expected,
+            "reconciliation restored an anchor captured before the user's gesture"
+        );
+        child.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+        assert_eq!(
+            anchor(&child, cx),
+            expected,
+            "deferred restoration overwrote the user's gesture"
+        );
+    }
+}
+
+#[gpui::test]
+fn huge_unicode_row_is_materialized_without_truncating_source(cx: &mut TestAppContext) {
+    let source = "  **source** 你好 👩🏽‍💻 e\u{301}\r\n\t".repeat(4_096);
+    let mut rows = messages(100);
+    rows[50].text = source.clone();
+    rows[50].role = "system".into();
+    let (_directory, window, root) = fixture(cx, rows, 0);
+    let child = transcript(&root, cx);
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    assert!(!materialized(&child, cx).contains(&50));
+    jump_to(&child, 50, 0., cx);
+    let texts = cx.read(|cx| child.read(cx).materialized_texts());
+    assert!(
+        texts
+            .iter()
+            .any(|(index, text)| *index == 50 && text.as_bytes() == source.as_bytes())
+    );
+    // Source instrumentation alone cannot prove the display did not truncate.
+    // Every original newline must also contribute its full 21px shaped line.
+    current_row_bounds(&mut visual, &child, "message-50", cx);
+    assert!(
+        visual
+            .debug_bounds("transcript-text-message-50")
+            .unwrap()
+            .size
+            .height
+            >= px(4_096. * 21.)
+    );
+    assert!(materialized(&child, cx).len() < 40);
+    let id = cx.read(|cx| root.read(cx).record.id.clone());
+    let controller = cx.read(|cx| Arc::downgrade(&root.read(cx).controller));
+    root.update(cx, |view, cx| {
+        view.copy_transcript_message(&MessageKey::new(id, "message-50".into()), &controller, cx)
+    });
+    assert_eq!(
+        cx.read(|cx| cx.read_from_clipboard().unwrap().text())
+            .as_deref(),
+        Some(source.as_str())
+    );
+}
+
+#[gpui::test]
+fn shrinking_huge_anchor_clamps_within_row_without_materializing_phantom_offset(
+    cx: &mut TestAppContext,
+) {
+    let mut rows = messages(10_000);
+    rows[5_000].text = "Huge anchor 日本語 👩🏽‍💻 e\u{301}\n".repeat(2_048);
+    let (_directory, _window, root) = fixture_with_visible(cx, rows, 0, Some(10_000));
+    let child = transcript(&root, cx);
+    jump_to(&child, 5_000, 30_000., cx);
+    assert_eq!(anchor(&child, cx), ("message-5000".into(), px(30_000.)));
+    assert!(materialized(&child, cx).len() < 40);
+    snapshot_change(&root, cx, |session| {
+        session.messages[5_000].text = "short replacement".into()
+    });
+    assert_eq!(scroll(&child, cx).item_count(), 10_000);
+    let (id, pixels) = anchor(&child, cx);
+    assert_eq!(
+        id, "message-5000",
+        "same-ID replacement must retain the reading row"
+    );
+    let current = scroll(&child, cx).bounds_for_item(5_000).unwrap();
+    assert!(
+        pixels >= px(0.) && pixels < current.size.height,
+        "within-row offset must be clamped when its old pixel no longer exists: {pixels:?}, height {:?}",
+        current.size.height
+    );
+    assert!(
+        materialized(&child, cx).len() < 40,
+        "stale offset caused {} row trees to be built",
+        materialized(&child, cx).len()
+    );
+    let settled = anchor(&child, cx);
+    child.update(cx, |_, cx| cx.notify());
+    cx.run_until_parked();
+    assert_eq!(anchor(&child, cx), settled);
+    assert!(materialized(&child, cx).len() < 40);
+}
+
+#[gpui::test]
+fn cached_hover_copy_resolves_current_controller_text_after_same_id_redraw(
+    cx: &mut TestAppContext,
+) {
+    let source = "  **current source**\n你好 👩🏽‍💻 e\u{301}\r\n\t";
+    let mut rows = messages(30);
+    rows[0].text = source.into();
+    let (_directory, window, root) = fixture(cx, rows, 0);
+    let child = transcript(&root, cx);
+    // Model a published controller snapshot arriving after the displayed input.
+    // The click must look up the controller's current text, not close over this
+    // deliberately stale presentation string.
+    snapshot_change(&root, cx, |session| {
+        session.messages[0].text = "stale presentation".into()
+    });
+    let before = renders(&child, cx);
+    root.update(cx, |_, cx| cx.notify());
+    cx.run_until_parked();
+    assert_eq!(renders(&child, cx), before);
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    click_first_copy(&mut visual, &child, cx);
+    assert_eq!(
+        cx.read(|cx| cx.read_from_clipboard().unwrap().text())
+            .as_deref(),
+        Some(source)
+    );
+}
+
+#[gpui::test]
 fn same_size_composer_and_root_notifications_reuse_populated_transcript(cx: &mut TestAppContext) {
     let source = "  **copy source**\n你好 👩🏽‍💻 e\u{301}\r\n\t";
     let mut rows = messages(30);
@@ -222,7 +970,7 @@ fn same_size_composer_and_root_notifications_reuse_populated_transcript(cx: &mut
     let child = transcript(&root, cx);
     let before = renders(&child, cx);
     assert!(before > 0);
-    let viewport = scroll(&child, cx).bounds();
+    let viewport = scroll(&child, cx).viewport_bounds();
     for _ in 0..3 {
         root.update(cx, |_, cx| cx.notify());
         cx.run_until_parked();
@@ -234,7 +982,7 @@ fn same_size_composer_and_root_notifications_reuse_populated_transcript(cx: &mut
                 .update(cx, |editor, cx| editor.set_text(text.into(), cx));
         });
         cx.run_until_parked();
-        assert_eq!(scroll(&child, cx).bounds(), viewport);
+        assert_eq!(scroll(&child, cx).viewport_bounds(), viewport);
         assert_eq!(
             renders(&child, cx),
             before,
@@ -261,32 +1009,32 @@ fn same_size_composer_and_root_notifications_reuse_populated_transcript(cx: &mut
         Some(source)
     );
     let handle = scroll(&child, cx);
-    let wheel_target = handle.bounds().center();
-    assert!(handle.max_offset().height > px(100.));
+    let wheel_target = handle.viewport_bounds().center();
+    assert!(handle.item_count() > 10);
     visual.simulate_mouse_move(wheel_target, None::<MouseButton>, Modifiers::none());
     let count = renders(&child, cx);
     root.update(cx, |_, cx| cx.notify());
     cx.run_until_parked();
     assert_eq!(renders(&child, cx), count);
-    let offset = handle.offset();
+    let offset = anchor(&child, cx);
     visual.simulate_event(ScrollWheelEvent {
         position: wheel_target,
         delta: ScrollDelta::Pixels(point(px(0.), px(-100.))),
         ..Default::default()
     });
-    let scrolled = handle.offset();
-    assert!(scrolled.y < offset.y, "cached wheel listener must scroll");
+    let scrolled = anchor(&child, cx);
+    assert_ne!(scrolled, offset, "cached wheel listener must scroll");
     let count = renders(&child, cx);
     root.update(cx, |_, cx| cx.notify());
     cx.run_until_parked();
     assert_eq!(renders(&child, cx), count);
-    assert_eq!(handle.offset(), scrolled);
+    assert_eq!(anchor(&child, cx), scrolled);
     // Explicit negative control: GPUI refresh deliberately bypasses its cache.
     // It must not be confused with a production parent-notification cache hit.
     visual.update(|window, _| window.refresh());
     cx.run_until_parked();
     assert!(renders(&child, cx) > count);
-    assert_eq!(handle.offset(), scrolled);
+    assert_eq!(anchor(&child, cx), scrolled);
 }
 
 #[gpui::test]
@@ -367,6 +1115,7 @@ fn fresh_session_arc_same_ids_reasoning_state_and_order_invalidate(cx: &mut Test
     let count = renders(&child, cx);
     snapshot_change(&root, cx, |session| session.messages.swap(0, 1));
     assert!(renders(&child, cx) > count);
+    jump_to(&child, 0, 0., cx);
     assert!(
         visual.debug_bounds("transcript-row-second").unwrap().top()
             < visual.debug_bounds("transcript-row-first").unwrap().top()
@@ -374,9 +1123,9 @@ fn fresh_session_arc_same_ids_reasoning_state_and_order_invalidate(cx: &mut Test
     snapshot_change(&root, cx, |session| {
         session.messages.remove(1);
     });
-    // GPUI retains old debug selectors; current scroll children are authoritative.
-    assert!(scroll(&child, cx).bounds_for_item(0).is_some());
-    assert!(scroll(&child, cx).bounds_for_item(1).is_none());
+    // Logical identity/count are authoritative: GPUI retains old debug selectors.
+    assert_eq!(scroll(&child, cx).item_count(), 1);
+    assert_eq!(row_ids(&child, cx), ["second"]);
     assert_eq!(transcript(&root, cx).entity_id(), child.entity_id());
 }
 
@@ -436,8 +1185,8 @@ fn earlier_button_expands_current_prefix_and_retains_child(cx: &mut TestAppConte
     cx.run_until_parked();
     let child = transcript(&root, cx);
     let handle = scroll(&child, cx);
-    assert!(handle.bounds_for_item(2).is_some());
-    assert!(handle.bounds_for_item(3).is_none());
+    assert_eq!(handle.item_count(), 3);
+    assert_eq!(row_ids(&child, cx), ["@earlier", "message-3", "message-4"]);
     let before = renders(&child, cx);
     let target = first_child_target(&child, cx);
     let mut visual = VisualTestContext::from_window(window.into(), cx);
@@ -446,18 +1195,45 @@ fn earlier_button_expands_current_prefix_and_retains_child(cx: &mut TestAppConte
     assert_eq!(cx.read(|cx| root.read(cx).visible_messages), 102);
     assert!(renders(&child, cx) > before);
     assert_eq!(transcript(&root, cx).entity_id(), child.entity_id());
-    assert!(handle.bounds_for_item(4).is_some());
-    assert!(handle.bounds_for_item(5).is_none());
-    assert!(
-        visual
-            .debug_bounds("transcript-row-message-0")
-            .unwrap()
-            .top()
-            < visual
-                .debug_bounds("transcript-row-message-4")
-                .unwrap()
-                .top()
+    assert_eq!(scroll(&child, cx).item_count(), 5);
+    assert_eq!(
+        row_ids(&child, cx),
+        (0..5)
+            .map(|index| format!("message-{index}"))
+            .collect::<Vec<_>>()
     );
+    jump_to(&child, 0, 0., cx);
+    current_row_bounds(&mut visual, &child, "message-0", cx);
+    jump_to(&child, 4, 0., cx);
+    current_row_bounds(&mut visual, &child, "message-4", cx);
+}
+
+#[gpui::test]
+fn repeated_earlier_clicks_reveal_first_message_when_header_disappears(cx: &mut TestAppContext) {
+    let (_directory, window, root) = fixture(cx, messages(220), 0);
+    let child = transcript(&root, cx);
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    assert_eq!(cx.read(|cx| root.read(cx).visible_messages), 100);
+    assert_eq!(anchor(&child, cx), ("@earlier".into(), px(0.)));
+    visual.simulate_click(first_child_target(&child, cx), Modifiers::none());
+    cx.run_until_parked();
+    assert_eq!(cx.read(|cx| root.read(cx).visible_messages), 200);
+    assert_eq!(anchor(&child, cx), ("@earlier".into(), px(0.)));
+    assert_eq!(row_ids(&child, cx)[1], "message-20");
+    current_row_bounds(&mut visual, &child, "message-20", cx);
+    // The last reveal removes the header. The newly revealed first message
+    // must be reachable from this click without an artificial test scroll.
+    visual.simulate_click(first_child_target(&child, cx), Modifiers::none());
+    cx.run_until_parked();
+    assert_eq!(cx.read(|cx| root.read(cx).visible_messages), 300);
+    assert_eq!(scroll(&child, cx).item_count(), 220);
+    assert_eq!(anchor(&child, cx), ("message-0".into(), px(0.)));
+    assert_eq!(
+        current_row_bounds(&mut visual, &child, "message-0", cx).top(),
+        scroll(&child, cx).viewport_bounds().top()
+    );
+    assert_eq!(transcript(&root, cx).entity_id(), child.entity_id());
+    assert!(materialized(&child, cx).len() < 40);
 }
 
 #[gpui::test]
@@ -465,14 +1241,14 @@ fn queue_composer_and_window_geometry_relayout_cached_viewport(cx: &mut TestAppC
     let (_directory, window, root) = fixture(cx, messages(12), 6);
     let child = transcript(&root, cx);
     let mut visual = VisualTestContext::from_window(window.into(), cx);
-    let queued = scroll(&child, cx).bounds();
+    let queued = scroll(&child, cx).viewport_bounds();
     let before = renders(&child, cx);
     root.update(cx, |view, cx| {
         view.queue_open = false;
         cx.notify();
     });
     cx.run_until_parked();
-    let collapsed = scroll(&child, cx).bounds();
+    let collapsed = scroll(&child, cx).viewport_bounds();
     assert!(collapsed.size.height > queued.size.height);
     assert!(
         renders(&child, cx) > before,
@@ -485,7 +1261,7 @@ fn queue_composer_and_window_geometry_relayout_cached_viewport(cx: &mut TestAppC
         });
     });
     cx.run_until_parked();
-    let tall = scroll(&child, cx).bounds();
+    let tall = scroll(&child, cx).viewport_bounds();
     assert!(tall.size.height < collapsed.size.height);
     assert!(renders(&child, cx) > before);
     for (width, height, split) in [(920., 600., false), (1180., 812., true), (920., 600., true)] {
@@ -496,7 +1272,7 @@ fn queue_composer_and_window_geometry_relayout_cached_viewport(cx: &mut TestAppC
         });
         visual.simulate_resize(size(px(width), px(height)));
         cx.run_until_parked();
-        let viewport = scroll(&child, cx).bounds();
+        let viewport = scroll(&child, cx).viewport_bounds();
         let composer = visual.debug_bounds("queue-measured-composer").unwrap();
         let footer = visual.debug_bounds("queue-measured-footer").unwrap();
         assert!(viewport.size.height >= px(0.));
@@ -524,13 +1300,9 @@ fn navigation_preserves_chat_child_identity_and_scroll_offset(cx: &mut TestAppCo
     let child = transcript(&root, cx);
     let first_id = cx.read(|cx| root.read(cx).record.id.clone());
     let composer = cx.read(|cx| root.read(cx).composer.clone());
-    let handle = scroll(&child, cx);
-    assert!(handle.max_offset().height > px(120.));
-    handle.set_offset(point(px(0.), px(-120.)));
-    child.update(cx, |_, cx| cx.notify());
-    cx.run_until_parked();
-    let offset = handle.offset();
-    assert!(offset.y < px(0.));
+    jump_to(&child, 3, 7., cx);
+    let offset = anchor(&child, cx);
+    assert_eq!(offset, ("message-3".into(), px(7.)));
     window
         .update(cx, |view, window, cx| view.new_chat(window, cx))
         .unwrap();
@@ -556,7 +1328,7 @@ fn navigation_preserves_chat_child_identity_and_scroll_offset(cx: &mut TestAppCo
         cx.read(|cx| root.read(cx).composer.entity_id()),
         composer.entity_id()
     );
-    assert_eq!(scroll(&child, cx).offset(), offset);
+    assert_eq!(anchor(&child, cx), offset);
     assert_eq!(cx.read(|cx| composer.read(cx).text().to_owned()), "draft");
 }
 
@@ -628,8 +1400,8 @@ fn empty_populated_loading_and_failure_prefixes_preserve_rows(cx: &mut TestAppCo
     }
     snapshot_change(&root, cx, |session| session.messages = messages(2));
     let child = transcript(&root, cx);
-    assert!(scroll(&child, cx).bounds_for_item(1).is_some());
-    assert!(scroll(&child, cx).bounds_for_item(2).is_none());
+    assert_eq!(scroll(&child, cx).item_count(), 2);
+    assert_eq!(row_ids(&child, cx), ["message-0", "message-1"]);
     for (loading, failed) in [(true, false), (false, true), (true, true)] {
         let count = renders(&child, cx);
         root.update(cx, |view, cx| {
@@ -640,13 +1412,18 @@ fn empty_populated_loading_and_failure_prefixes_preserve_rows(cx: &mut TestAppCo
         cx.run_until_parked();
         assert!(renders(&child, cx) > count);
         let handle = scroll(&child, cx);
-        assert!(
-            handle.bounds_for_item(2).is_some(),
-            "prefix must coexist with both rows"
+        assert_eq!(
+            handle.item_count(),
+            3,
+            "only one status prefix plus both rows"
         );
-        assert!(
-            handle.bounds_for_item(3).is_none(),
-            "loading wins over failure; only one prefix"
+        assert_eq!(
+            row_ids(&child, cx),
+            [
+                if loading { "@loading" } else { "@retry" },
+                "message-0",
+                "message-1"
+            ]
         );
         assert_eq!(transcript(&root, cx).entity_id(), child.entity_id());
     }
@@ -765,4 +1542,319 @@ fn cached_redraw_and_stream_update_preserve_synthetic_ime_and_selection(cx: &mut
             assert_eq!(view.draft_revision, revision);
         })
         .unwrap();
+}
+
+// A native delta must travel beyond the initially measured viewport/buffer.
+// Equal one-line assistant rows make the expected pixel distance exact.
+#[gpui::test]
+fn single_large_native_wheel_preserves_requested_distance(cx: &mut TestAppContext) {
+    let rows = (0..220)
+        .map(|index| message(&format!("wheel-{index}"), "assistant", "one line"))
+        .collect();
+    let (_directory, _window, root) = fixture_with_visible(cx, rows, 0, Some(usize::MAX));
+    let (mut visual, child) = host(&root, input(&root, cx), cx);
+    let handle = scroll(&child, cx);
+    let row_height = handle.bounds_for_item(0).unwrap().size.height;
+    let target = handle.viewport_bounds().center();
+    visual.simulate_mouse_move(target, None::<MouseButton>, Modifiers::none());
+    visual.simulate_event(ScrollWheelEvent {
+        position: target,
+        delta: ScrollDelta::Pixels(point(px(0.), px(-5000.))),
+        ..Default::default()
+    });
+    cx.run_until_parked();
+    let offset = scroll(&child, cx).logical_scroll_top();
+    let travelled = row_height * offset.item_ix as f32 + offset.offset_in_item;
+    assert_eq!(
+        travelled,
+        px(5000.),
+        "native delta was clamped to the measured-only extent: {offset:?}, row height {row_height:?}"
+    );
+    assert!(
+        materialized(&child, cx).len() < 40,
+        "large wheel must not build crossed row trees"
+    );
+}
+
+#[gpui::test]
+fn large_native_wheels_reverse_and_clamp_at_real_document_edges(cx: &mut TestAppContext) {
+    let rows = (0..220)
+        .map(|index| message(&format!("wheel-{index}"), "assistant", "one line"))
+        .collect();
+    let (_directory, _window, root) = fixture_with_visible(cx, rows, 0, Some(usize::MAX));
+    let (mut visual, child) = host(&root, input(&root, cx), cx);
+    let handle = scroll(&child, cx);
+    let row_height = handle.bounds_for_item(0).unwrap().size.height;
+    let target = handle.viewport_bounds().center();
+    visual.simulate_mouse_move(target, None::<MouseButton>, Modifiers::none());
+    for (delta, expected) in [
+        (-5000., 5000.),
+        (3500., 1500.),
+        (
+            -100_000.,
+            220. * f32::from(row_height) - 16. + 13.
+                - f32::from(handle.viewport_bounds().size.height),
+        ),
+        (100_000., 0.),
+    ] {
+        visual.simulate_event(ScrollWheelEvent {
+            position: target,
+            delta: ScrollDelta::Pixels(point(px(0.), px(delta))),
+            ..Default::default()
+        });
+        cx.run_until_parked();
+        let offset = scroll(&child, cx).logical_scroll_top();
+        assert_eq!(
+            row_height * offset.item_ix as f32 + offset.offset_in_item,
+            px(expected)
+        );
+        assert!(materialized(&child, cx).len() < 40);
+    }
+}
+
+#[gpui::test]
+fn native_line_pixel_and_outside_wheels_keep_delta_and_hitbox_semantics(cx: &mut TestAppContext) {
+    let rows = (0..220)
+        .map(|index| message(&format!("wheel-{index}"), "assistant", "one line"))
+        .collect();
+    let (_directory, _window, root) = fixture_with_visible(cx, rows, 0, Some(usize::MAX));
+    let (mut visual, child) = host(&root, input(&root, cx), cx);
+    let handle = scroll(&child, cx);
+    let row_height = handle.bounds_for_item(0).unwrap().size.height;
+    let target = handle.viewport_bounds().center();
+    visual.simulate_mouse_move(target, None::<MouseButton>, Modifiers::none());
+    let line_distance = f32::from(visual.update(|window, _| window.line_height())) * 150.;
+    for (delta, expected) in [
+        (ScrollDelta::Lines(point(0., -150.)), line_distance),
+        (
+            ScrollDelta::Pixels(point(px(0.), px(-2000.))),
+            line_distance + 2000.,
+        ),
+        (
+            ScrollDelta::Pixels(point(px(0.), px(300.))),
+            line_distance + 1700.,
+        ),
+        (
+            ScrollDelta::Pixels(point(px(100.), px(0.))),
+            line_distance + 1600.,
+        ),
+    ] {
+        visual.simulate_event(ScrollWheelEvent {
+            position: target,
+            delta,
+            ..Default::default()
+        });
+        cx.run_until_parked();
+        let offset = scroll(&child, cx).logical_scroll_top();
+        assert_eq!(
+            row_height * offset.item_ix as f32 + offset.offset_in_item,
+            px(expected)
+        );
+    }
+    let before = anchor(&child, cx);
+    let outside = point(px(900.), px(900.));
+    visual.simulate_mouse_move(outside, None::<MouseButton>, Modifiers::none());
+    visual.simulate_event(ScrollWheelEvent {
+        position: outside,
+        delta: ScrollDelta::Pixels(point(px(0.), px(-5000.))),
+        ..Default::default()
+    });
+    cx.run_until_parked();
+    assert_eq!(anchor(&child, cx), before);
+}
+
+#[gpui::test]
+fn estimated_target_normalizes_real_height_without_losing_residual(cx: &mut TestAppContext) {
+    let mut rows: Vec<_> = (0..220)
+        .map(|index| message(&format!("mixed-{index}"), "assistant", "one line"))
+        .collect();
+    rows[20].text = "short\nrow".into();
+    let (_directory, _window, root) = fixture_with_visible(cx, rows, 0, Some(usize::MAX));
+    let (_visual, child) = host(&root, input(&root, cx), cx);
+    let height = scroll(&child, cx).bounds_for_item(0).unwrap().size.height;
+    // NoopTextSystem gives every glyph equal advance. Inject the logical target
+    // produced by a real-font overestimate, so this regression tests residual
+    // normalization independently of platform font metrics.
+    child.update(cx, |view, _| view.override_navigation_estimate(px(5000.)));
+    scroll(&child, cx).scroll_to(ListOffset {
+        item_ix: 20,
+        offset_in_item: px(150.),
+    });
+    child.update(cx, |_, cx| cx.notify());
+    cx.run_until_parked();
+    let handle = scroll(&child, cx);
+    let offset = handle.logical_scroll_top();
+    assert!(offset.item_ix > 20);
+    let actual = height + px(21.);
+    let travelled = height * (offset.item_ix - 1) as f32 + actual + offset.offset_in_item;
+    assert_eq!(travelled, height * 20. + px(150.));
+    assert!(offset.offset_in_item < handle.bounds_for_item(offset.item_ix).unwrap().size.height);
+    assert!(materialized(&child, cx).len() < 40);
+}
+
+#[gpui::test]
+fn native_large_wheel_preserves_mixed_height_distance(cx: &mut TestAppContext) {
+    let rows = (0..220)
+        .map(|index| {
+            message(
+                &format!("mixed-{index}"),
+                if index % 2 == 0 { "user" } else { "assistant" },
+                if index % 3 == 0 {
+                    "one\ntwo\nthree"
+                } else {
+                    "one"
+                },
+            )
+        })
+        .collect();
+    let (_directory, _window, root) = fixture_with_visible(cx, rows, 0, Some(usize::MAX));
+    let (mut visual, child) = host(&root, input(&root, cx), cx);
+    let target = scroll(&child, cx).viewport_bounds().center();
+    visual.simulate_mouse_move(target, None::<MouseButton>, Modifiers::none());
+    for (delta, expected) in [(-5000., 5000.), (3500., 1500.)] {
+        visual.simulate_event(ScrollWheelEvent {
+            position: target,
+            delta: ScrollDelta::Pixels(point(px(0.), px(delta))),
+            ..Default::default()
+        });
+        cx.run_until_parked();
+        let offset = scroll(&child, cx).logical_scroll_top();
+        let prefix: f32 = (0..offset.item_ix)
+            .map(|index| {
+                77. + if index % 2 == 0 { 18. } else { 0. } + if index % 3 == 0 { 42. } else { 0. }
+            })
+            .sum();
+        assert_eq!(px(prefix) + offset.offset_in_item, px(expected));
+        assert!(materialized(&child, cx).len() < 40);
+    }
+}
+
+#[gpui::test]
+fn reverse_wheel_uses_exact_leading_overdraw_height(cx: &mut TestAppContext) {
+    let mut rows: Vec<_> = (0..100)
+        .map(|index| message(&format!("leading-{index}"), "assistant", "one line"))
+        .collect();
+    rows[29].text = "i".repeat(5000);
+    let (_directory, _window, root) = fixture_with_visible(cx, rows, 0, Some(usize::MAX));
+    let (mut visual, child) = host(&root, input(&root, cx), cx);
+    jump_to(&child, 30, 0., cx);
+    assert!(
+        materialized(&child, cx).contains(&29),
+        "leading buffer must measure row29"
+    );
+    let target = scroll(&child, cx).viewport_bounds().center();
+    visual.simulate_mouse_move(target, None::<MouseButton>, Modifiers::none());
+    visual.simulate_event(ScrollWheelEvent {
+        position: target,
+        delta: ScrollDelta::Pixels(point(px(0.), px(100.))),
+        ..Default::default()
+    });
+    cx.run_until_parked();
+    let handle = scroll(&child, cx);
+    let offset = handle.logical_scroll_top();
+    assert_eq!(offset.item_ix, 29);
+    let actual = handle.bounds_for_item(29).unwrap().size.height;
+    assert_eq!(offset.offset_in_item, actual - px(100.));
+}
+
+#[gpui::test]
+fn pathological_estimates_normalize_with_bounded_per_frame_work(cx: &mut TestAppContext) {
+    let rows = (0..220)
+        .map(|index| message(&format!("bounded-{index}"), "assistant", "one line"))
+        .collect();
+    let (_directory, _window, root) = fixture_with_visible(cx, rows, 0, Some(usize::MAX));
+    let (_visual, child) = host(&root, input(&root, cx), cx);
+    let height = scroll(&child, cx).bounds_for_item(0).unwrap().size.height;
+    // A test-only estimate override models arbitrarily poor real-font estimates
+    // without pretending NoopTextSystem shapes zero-width Unicode correctly.
+    child.update(cx, |view, _| view.override_navigation_estimate(px(5000.)));
+    scroll(&child, cx).scroll_to(ListOffset {
+        item_ix: 20,
+        offset_in_item: px(2500.),
+    });
+    child.update(cx, |_, cx| cx.notify());
+    cx.run_until_parked();
+    // TestPlatform intentionally does not deliver animation-frame callbacks.
+    // Drive those frames explicitly, while checking the production pending state.
+    let mut frames = 0;
+    while cx.read(|cx| child.read(cx).has_pending_navigation()) {
+        frames += 1;
+        assert!(
+            frames < 220,
+            "each normalization frame must make forward progress"
+        );
+        child.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+        assert!(materialized(&child, cx).len() < 40);
+    }
+    let offset = scroll(&child, cx).logical_scroll_top();
+    assert_eq!(
+        height * offset.item_ix as f32 + offset.offset_in_item,
+        height * 20. + px(2500.)
+    );
+    let counts = cx.read(|cx| child.read(cx).target_preflight_counts());
+    assert!(
+        counts.iter().filter(|&&count| count > 0).count() > 2,
+        "fixture must require deferred normalization: {counts:?}"
+    );
+    assert!(
+        counts.iter().all(|&count| count <= 2),
+        "unbounded target work: {counts:?}"
+    );
+    assert!(materialized(&child, cx).len() < 40);
+}
+
+#[gpui::test]
+fn newer_wheel_and_resize_supersede_deferred_navigation(cx: &mut TestAppContext) {
+    let rows = (0..220)
+        .map(|index| message(&format!("pending-{index}"), "assistant", "one line"))
+        .collect();
+    let (_directory, _window, root) = fixture_with_visible(cx, rows, 0, Some(usize::MAX));
+    let (mut visual, child) = host(&root, input(&root, cx), cx);
+    child.update(cx, |view, _| view.override_navigation_estimate(px(5000.)));
+    for resize in [false, true] {
+        scroll(&child, cx).scroll_to(ListOffset {
+            item_ix: 100,
+            offset_in_item: px(2500.),
+        });
+        child.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+        assert!(cx.read(|cx| child.read(cx).has_pending_navigation()));
+        if resize {
+            visual.simulate_resize(size(px(600.), px(500.)));
+        } else {
+            let target = scroll(&child, cx).viewport_bounds().center();
+            visual.simulate_mouse_move(target, None::<MouseButton>, Modifiers::none());
+            visual.simulate_event(ScrollWheelEvent {
+                position: target,
+                delta: ScrollDelta::Pixels(point(px(0.), px(-20.))),
+                ..Default::default()
+            });
+        }
+        cx.run_until_parked();
+        assert!(!cx.read(|cx| child.read(cx).has_pending_navigation()));
+        let after = anchor(&child, cx);
+        child.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+        assert_eq!(
+            anchor(&child, cx),
+            after,
+            "old animation callback must not restore stale navigation"
+        );
+    }
+}
+
+#[test]
+fn mixed_native_wheel_units_and_reversals_match_original_div_semantics() {
+    let mut distance = px(0.);
+    for (delta, expected) in [
+        (ScrollDelta::Lines(point(0., -3.)), 78.),
+        (ScrollDelta::Pixels(point(px(0.), px(-22.))), 100.),
+        (ScrollDelta::Lines(point(0., 1.)), 74.),
+        (ScrollDelta::Pixels(point(px(-10.), px(0.))), 84.),
+        (ScrollDelta::Pixels(point(px(100.), px(-16.))), 100.),
+    ] {
+        distance += crate::transcript_view::vertical_wheel_distance(delta, px(26.));
+        assert_eq!(distance, px(expected));
+    }
 }
