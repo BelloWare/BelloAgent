@@ -1053,3 +1053,427 @@ fn dirty_prompt_consumed_enter_repeat_and_keyup_cannot_submit_after_pane_changes
     });
     assert!(cx.read(|cx| root.read(cx).draft_revision) > revision);
 }
+
+fn stop_key() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "cmd-."
+    } else {
+        "ctrl-."
+    }
+}
+
+// A held-open loopback request proves the real root shortcut cancels the actor.
+// The server never completes a reply and is released only after assertions.
+struct ShortcutRun {
+    controller: Arc<Controller>,
+    release: Option<std::sync::mpsc::Sender<()>>,
+    server: Option<std::thread::JoinHandle<()>>,
+}
+impl Drop for ShortcutRun {
+    fn drop(&mut self) {
+        let _ = self.controller.stop();
+        let _ = self.release.take().unwrap().send(());
+        let _ = self.server.take().unwrap().join();
+    }
+}
+fn shortcut_run(window: WindowHandle<AgentView>, cx: &mut TestAppContext) -> ShortcutRun {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    let server = std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        let (mut socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+            .unwrap();
+        let mut raw = Vec::new();
+        let mut buffer = [0; 4096];
+        loop {
+            let n = socket.read(&mut buffer).unwrap();
+            assert_ne!(n, 0);
+            raw.extend_from_slice(&buffer[..n]);
+            if let Some(end) = raw.windows(4).position(|v| v == b"\r\n\r\n") {
+                let header = String::from_utf8_lossy(&raw[..end]).to_lowercase();
+                let length: usize = header
+                    .lines()
+                    .find_map(|v| v.strip_prefix("content-length: "))
+                    .unwrap_or("0")
+                    .parse()
+                    .unwrap();
+                if raw.len() >= end + 4 + length {
+                    break;
+                }
+            }
+        }
+        socket
+            .write_all(
+                b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n",
+            )
+            .unwrap();
+        socket.flush().unwrap();
+        ready_tx.send(()).unwrap();
+        let _ = released.recv_timeout(std::time::Duration::from_secs(15));
+    });
+    let profile = serde_json::from_value(serde_json::json!({"id":"shortcut-fixture", "api":"openai-responses", "providerId":"litellm", "modelId":"fixture", "baseUrl":format!("http://{address}"), "contextWindow":32000, "maxOutputTokens":4096})).unwrap();
+    let controller = window
+        .update(cx, |view, window, cx| {
+            let controller = Controller::new(
+                SessionStore::pending(),
+                Some((
+                    profile,
+                    bello_agent_core::Credential::new("loopback-only".into()).unwrap(),
+                )),
+            )
+            .unwrap();
+            let id = controller.snapshot().id;
+            let record = ChatRecord::new(
+                id.clone(),
+                "Shortcut fixture".into(),
+                view.chat_directory.join(format!("{id}.json")),
+            );
+            controller.materialize(&record.snapshot).unwrap();
+            view.workspace
+                .lock()
+                .unwrap()
+                .register(record.clone(), DraftRecord::default())
+                .unwrap();
+            view.records.push(record.clone());
+            let chat = crate::chat::ChatState::new(
+                controller.clone(),
+                record,
+                crate::chat::RestoredDraft {
+                    draft: DraftRecord {
+                        text: "Keep 日本語 e\u{301}".into(),
+                        ..Default::default()
+                    },
+                    cancellation: None,
+                },
+                false,
+                view.palette,
+                window,
+                cx,
+            );
+            view.install_chat(chat, window, cx);
+            controller
+                .submit("synthetic request".into(), bello_agent_core::Lane::FollowUp)
+                .unwrap();
+            controller
+        })
+        .unwrap();
+    ready_rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .unwrap();
+    window
+        .update(cx, |view, _, cx| {
+            view.refresh(cx);
+            view.error = Some("routing sentinel".into());
+        })
+        .unwrap();
+    ShortcutRun {
+        controller,
+        release: Some(release),
+        server: Some(server),
+    }
+}
+
+fn assert_shortcut_unconsumed(root: &Entity<AgentView>, run: &ShortcutRun, cx: &TestAppContext) {
+    assert_eq!(
+        cx.read(|cx| root.read(cx).error.clone()).as_deref(),
+        Some("routing sentinel")
+    );
+    assert_eq!(
+        run.controller.snapshot().state,
+        bello_agent_core::RunState::Running
+    );
+}
+
+fn await_shortcut_stop(run: &ShortcutRun) {
+    // Observe the cancellation's actual publication, not an arbitrary poll count.
+    let mut updates = run.controller.subscribe();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while updates.borrow_and_update().state == bello_agent_core::RunState::Running {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "shortcut did not stop the worker"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert_eq!(
+        run.controller.snapshot().state,
+        bello_agent_core::RunState::Paused
+    );
+}
+
+#[gpui::test]
+fn stop_shortcut_exact_modifiers_and_modal_ownership(cx: &mut TestAppContext) {
+    let (_dir, window, root) = fixture(cx);
+    let run = shortcut_run(window, cx);
+    let wrong_platform = if cfg!(target_os = "macos") {
+        "ctrl-."
+    } else {
+        "cmd-."
+    };
+    for key in [
+        ".",
+        "alt-.",
+        wrong_platform,
+        "cmd-ctrl-.",
+        "ctrl-shift-.",
+        "cmd-shift-.",
+        "ctrl-alt-.",
+        "cmd-alt-.",
+        "ctrl-fn-.",
+        "cmd-fn-.",
+    ] {
+        cx.simulate_keystrokes(window.into(), key);
+        assert_shortcut_unconsumed(&root, &run, cx);
+    }
+    window
+        .update(cx, |view, _, _| view.close_dialog = true)
+        .unwrap();
+    cx.simulate_keystrokes(window.into(), stop_key());
+    assert_shortcut_unconsumed(&root, &run, cx);
+    window
+        .update(cx, |view, window, cx| {
+            view.close_dialog = false;
+            view.quick_open
+                .update(cx, |picker, cx| picker.show(window, cx));
+        })
+        .unwrap();
+    cx.simulate_keystrokes(window.into(), stop_key());
+    assert_shortcut_unconsumed(&root, &run, cx);
+    cx.simulate_keystrokes(window.into(), "escape");
+    #[cfg(not(target_os = "macos"))]
+    {
+        window
+            .update(cx, |view, window, cx| {
+                view.open_sidebar_menu(
+                    &view.record.id.clone(),
+                    gpui::point(gpui::px(80.), gpui::px(150.)),
+                    window,
+                    cx,
+                )
+            })
+            .unwrap();
+        cx.simulate_keystrokes(window.into(), stop_key());
+        assert_shortcut_unconsumed(&root, &run, cx);
+        cx.simulate_keystrokes(window.into(), "escape");
+    }
+    cx.simulate_keystrokes(window.into(), stop_key());
+    await_shortcut_stop(&run);
+}
+
+#[gpui::test]
+fn stop_shortcut_file_text_and_dirty_prompt_own_keys(cx: &mut TestAppContext) {
+    use gpui::EntityInputHandler;
+    let (dir, window, root) = fixture(cx);
+    let run = shortcut_run(window, cx);
+    let path = dir.path().join("stop-focus.txt");
+    std::fs::write(&path, "original").unwrap();
+    window
+        .update(cx, |view, window, cx| {
+            view.open_file(path.clone(), None, window, cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+    cx.simulate_input(window.into(), "unsaved");
+    cx.simulate_keystrokes(window.into(), stop_key());
+    assert_shortcut_unconsumed(&root, &run, cx);
+    let editor = cx.read(|cx| root.read(cx).files[0].view.read(cx).editor_for_test());
+    window
+        .update(cx, |_, window, cx| {
+            editor.update(cx, |editor, cx| {
+                editor.replace_and_mark_text_in_range(None, "漢字", Some(2..2), window, cx)
+            });
+        })
+        .unwrap();
+    cx.simulate_keystrokes(window.into(), stop_key());
+    assert_shortcut_unconsumed(&root, &run, cx);
+    assert!(cx.read(|cx| editor.read(cx).has_marked_text()));
+    window
+        .update(cx, |_, window, cx| {
+            editor.update(cx, |editor, cx| editor.unmark_text(window, cx));
+        })
+        .unwrap();
+    window
+        .update(cx, |view, window, cx| {
+            view.files[0]
+                .view
+                .update(cx, |file, cx| file.request_close(cx));
+            view.composer.read(cx).focus(window);
+        })
+        .unwrap();
+    cx.simulate_keystrokes(window.into(), stop_key());
+    assert_shortcut_unconsumed(&root, &run, cx);
+    cx.simulate_keystrokes(window.into(), "escape");
+    cx.simulate_keystrokes(window.into(), stop_key());
+    await_shortcut_stop(&run);
+    assert_eq!(std::fs::read_to_string(path).unwrap(), "original");
+    cx.read(|cx| assert!(root.read(cx).files[0].view.read(cx).is_dirty(cx)));
+}
+
+#[gpui::test]
+fn stop_shortcut_targets_current_chat_and_preserves_composition(cx: &mut TestAppContext) {
+    use gpui::{EntityInputHandler, Focusable};
+    let (_dir, window, root) = fixture(cx);
+    let run = shortcut_run(window, cx);
+    let original = run.controller.snapshot().id;
+    window
+        .update(cx, |view, window, cx| view.new_chat(window, cx))
+        .unwrap();
+    cx.simulate_keystrokes(window.into(), stop_key());
+    assert_eq!(
+        run.controller.snapshot().state,
+        bello_agent_core::RunState::Running
+    );
+    window
+        .update(cx, |view, window, cx| {
+            view.select_chat(&original, window, cx);
+            view.composer.update(cx, |editor, cx| {
+                editor.replace_and_mark_text_in_range(None, "漢字", Some(2..2), window, cx);
+            });
+        })
+        .unwrap();
+    let before = cx.read(|cx| root.read(cx).composer.read(cx).text().to_owned());
+    cx.simulate_keystrokes(window.into(), stop_key());
+    await_shortcut_stop(&run);
+    window
+        .update(cx, |view, window, cx| {
+            assert_eq!(view.record.id, original);
+            assert_eq!(view.composer.read(cx).text(), before);
+            assert!(view.composer.read(cx).has_marked_text());
+            assert!(view.composer.read(cx).focus_handle(cx).is_focused(window));
+            view.error = Some("preserve idle notice".into());
+        })
+        .unwrap();
+    cx.simulate_keystrokes(window.into(), stop_key());
+    assert_eq!(
+        cx.read(|cx| root.read(cx).error.clone()).as_deref(),
+        Some("preserve idle notice")
+    );
+}
+
+#[gpui::test]
+fn stop_shortcut_readonly_preview_is_not_editable_tab_text(cx: &mut TestAppContext) {
+    let (dir, window, _root) = fixture(cx);
+    let path = dir.path().join("large-preview.txt");
+    std::fs::write(
+        &path,
+        vec![b'x'; bello_workbench::editor::MAX_EDIT_BYTES + 1],
+    )
+    .unwrap();
+    window
+        .update(cx, |view, window, cx| {
+            view.open_file(path, None, window, cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+    window
+        .update(cx, |view, window, cx| {
+            assert!(view.stop_shortcut_allowed(window, cx));
+            // Query the engine's real mode, including its safety limit, rather
+            // than inferring editability from a document/notice or file type.
+            let editor = view.files[0].view.read(cx).editor_for_test();
+            editor.update(cx, |editor, cx| editor.set_read_only(false, cx));
+            assert!(!view.stop_shortcut_allowed(window, cx));
+            editor.update(cx, |editor, cx| editor.set_read_only(true, cx));
+            assert!(view.stop_shortcut_allowed(window, cx));
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+fn stop_shortcut_embedded_workbench_focus_respects_visibility_and_readonly(
+    cx: &mut TestAppContext,
+) {
+    use gpui::{Modifiers, point, px};
+    let (dir, window, root) = fixture(cx);
+    let run = shortcut_run(window, cx);
+    let path = dir.path().join("embedded.txt");
+    std::fs::write(&path, "editable embedded file").unwrap();
+    window
+        .update(cx, |view, _, cx| {
+            view.open_changes(cx);
+            view.workbench
+                .update(cx, |workbench, cx| workbench.open_file(path.clone(), cx));
+        })
+        .unwrap();
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let pane = visual.debug_bounds("adjacent-pane").unwrap();
+    // Enter the actual shared editor through its rendered input surface.
+    visual.simulate_click(
+        point(pane.origin.x + px(100.), pane.origin.y + px(135.)),
+        Modifiers::none(),
+    );
+    window
+        .update(cx, |view, window, cx| {
+            assert!(
+                view.workbench
+                    .read(cx)
+                    .has_focused_editable_text(window, cx)
+            );
+            assert!(!view.stop_shortcut_allowed(window, cx));
+        })
+        .unwrap();
+    cx.simulate_keystrokes(window.into(), stop_key());
+    assert_shortcut_unconsumed(&root, &run, cx);
+    // Both internal panel switching and hiding the outer pane leave old focus
+    // handles retained. A hidden editor must not veto a chat command.
+    window
+        .update(cx, |view, window, cx| {
+            for panel in [
+                crate::WorkbenchPanel::Changes,
+                crate::WorkbenchPanel::History,
+            ] {
+                view.workbench
+                    .update(cx, |workbench, cx| workbench.set_panel(panel, cx));
+                assert!(view.stop_shortcut_allowed(window, cx));
+            }
+            view.workbench.update(cx, |workbench, cx| {
+                workbench.set_panel(crate::WorkbenchPanel::Editor, cx)
+            });
+            assert!(!view.stop_shortcut_allowed(window, cx));
+            view.show_files = false;
+            assert!(view.stop_shortcut_allowed(window, cx));
+            view.show_files = true;
+        })
+        .unwrap();
+    // A large text preview retains the very same editor/focus identity, but its
+    // actual read-only state must allow the shortcut, matching Swift NSTextView.
+    let preview = dir.path().join("embedded-preview.txt");
+    std::fs::write(
+        &preview,
+        vec![b'x'; bello_workbench::editor::MAX_EDIT_BYTES + 1],
+    )
+    .unwrap();
+    window
+        .update(cx, |view, _, cx| {
+            view.workbench
+                .update(cx, |workbench, cx| workbench.open_file(preview, cx));
+        })
+        .unwrap();
+    cx.run_until_parked();
+    visual.simulate_click(
+        point(pane.origin.x + px(100.), pane.origin.y + px(135.)),
+        Modifiers::none(),
+    );
+    window
+        .update(cx, |view, window, cx| {
+            assert!(
+                !view
+                    .workbench
+                    .read(cx)
+                    .has_focused_editable_text(window, cx)
+            );
+            assert!(view.stop_shortcut_allowed(window, cx));
+        })
+        .unwrap();
+    cx.simulate_keystrokes(window.into(), stop_key());
+    await_shortcut_stop(&run);
+    assert_eq!(
+        std::fs::read_to_string(path).unwrap(),
+        "editable embedded file"
+    );
+}

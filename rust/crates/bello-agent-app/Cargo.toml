@@ -15,8 +15,8 @@ objc = "=0.2.7"
 
 [dependencies]
 bello-agent-core = { path = "../bello-agent-core" }
-bello-workbench = { git = "https://github.com/BelloWare/BelloBox.git", rev = "ee0d27a89aa52524c29b2be5937716b5e799e748" }
-bello-workbench-ui = { git = "https://github.com/BelloWare/BelloBox.git", rev = "ee0d27a89aa52524c29b2be5937716b5e799e748" }
+bello-workbench = { git = "https://github.com/BelloWare/BelloBox.git", rev = "393133cd19d134ffd93c3a86449d94a7b1040683" }
+bello-workbench-ui = { git = "https://github.com/BelloWare/BelloBox.git", rev = "393133cd19d134ffd93c3a86449d94a7b1040683" }
 gpui = { workspace = true, default-features = false, features = ["x11", "wayland", "font-kit"] }
 libc = "=0.2.186"
 serde_json.workspace = true

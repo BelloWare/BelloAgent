@@ -20,6 +20,7 @@ mod queue_presentation;
 mod quick_open;
 mod shutdown_barrier;
 mod sidebar_actions;
+mod stop_shortcut;
 mod theme;
 mod transcript_actions;
 #[cfg(test)]
@@ -739,6 +740,14 @@ impl AgentView {
             mods.control && !mods.platform
         };
         if navigation_command
+            && !mods.alt
+            && !mods.shift
+            && !mods.function
+            && event.keystroke.key == "."
+        {
+            self.stop_from_shortcut(window, cx);
+            cx.stop_propagation();
+        } else if navigation_command
             && mods.alt
             && !mods.shift
             && matches!(event.keystroke.key.as_str(), "up" | "down")
@@ -856,6 +865,7 @@ impl AgentView {
             );
         }
         let mut pane = div()
+            .debug_selector(|| "adjacent-pane".into())
             .w(px(width))
             .flex_shrink_0()
             .h_full()
@@ -1996,8 +2006,7 @@ impl AgentView {
                     .cursor_pointer()
                     .child(svg().path("stop").size(px(15.)).text_color(p.on_accent()))
                     .on_click(cx.listener(|v, _, _, cx| {
-                        let result = v.controller.stop();
-                        v.result(result, cx);
+                        v.stop_current_run(cx);
                     })),
             );
         }

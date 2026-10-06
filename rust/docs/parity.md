@@ -1382,3 +1382,57 @@ new close/quit policy, and the existing safe Linux final-window quit remains unc
 5. Close Git/editor/terminal/rich transcript/usage parity and platform behavior.
 6. Establish equal-workload Swift/GPUI latency and memory baselines on the same
    hardware, then optimize measured bottlenecks and regressions.
+
+## Source Stop keyboard shortcut (2026-10-06)
+
+`PiApp.swift:132–134` and `WorkspaceChanges.swift:67–85` define Command-period
+as the focused chat's Stop action, except while a sheet or editable tab text owns
+input. Rust now routes that exact shortcut (Control-period on Linux) through the
+same cancellation/result path as its existing Stop button. Extra modifiers are
+rejected. Current-chat identity is resolved at the event; an inactive running
+chat is not stopped by a shortcut in a newly selected idle chat. Idle presses do
+not clear an unrelated notice. The composer is not replaced, focused or committed,
+so its draft, marked text and selection remain owned by the editor.
+
+Existing Quick Open, context-menu and close-dialog keyboard ownership remains in
+front of the shortcut. File close prompts and the currently visible editable file
+also block it. The embedded editor reached by selecting an untracked Changes row
+uses the shared workbench's actual focus/read-only state. Both the outer pane/tab
+and internal Editor panel must be visible; a retained hidden editor focus handle
+does not veto the command. Read-only previews do not count as editable tab text.
+This restores keyboard access to the existing Rust running-worker Stop behavior,
+not missing Swift helper-loss recovery, pending-only queue semantics or native
+Conversation-menu entries.
+
+Both shared Git pins advance together from `ee0d27a` to published
+`393133cd19d134ffd93c3a86449d94a7b1040683`. Besides the small read-only workbench
+query, the imported source delta consists of the already-published additive
+`EditorEditState`/retained-memory API and platform-separated filesystem tests.
+Agent does not call the new edit-state transfer API. Shared manifests/GPUI/library
+versions are unchanged; Cargo.lock changes only the two Git source entries.
+Independent review checked this dependency scope and final shortcut routing.
+
+Five GPUI fake-platform tests exercise actual root routing and held-open synthetic
+loopback requests, current/inactive chats, exact modifier rejection, modal and
+dirty-file guards, composer/file marked text, actual rendered embedded-editor
+focus, hidden internal/outer panels and large read-only previews. Removing the
+Stop call, file edit guard or workbench edit guard makes its targeted regression
+fail. Final restored-source gates pass: 396 default workspace tests, one explicitly
+ignored fixture, strict workspace/all-target Clippy, formatting and native Linux
+build. The shared checkpoint separately passed 101 tests with one ignored fixture
+and strict shared all-target Clippy. These are headless/loopback and compile checks;
+native Linux shortcut QA and macOS keyboard/OS IME acceptance remain separate.
+
+Fresh Linux desktop validation of immutable binary
+`e6de9e2d480059832e44a3399bfc1b9a32f62272d10b93a2ff2574b1873110c6`
+used three local gated synthetic requests. Control-period cancelled the first
+from the composer and retained `draft keep`. During the second, Quick Open,
+a dirty-file prompt, a focused tracked-file editor and the Changes pane's
+untracked-file editor each left the request running; returning to the composer
+and pressing the shortcut cancelled it. The third cancelled from the actual
+focused greater-than-8-MiB read-only preview, again retaining the draft. Gateway
+request/cancellation records and screenshots corroborate each outcome. This is
+Linux native shortcut evidence, not macOS keyboard or OS IME acceptance.
+The exact shared dependency checkpoint also passed both
+[Linux CI](https://github.com/BelloWare/BelloBox/actions/runs/37418779184) and
+[macOS CI](https://github.com/BelloWare/BelloBox/actions/runs/37418779183).

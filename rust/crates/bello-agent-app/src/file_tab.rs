@@ -170,6 +170,10 @@ impl FileTabView {
         let editor = self.editor.read(cx);
         editor.focus_handle(cx).is_focused(window) && editor.has_marked_text()
     }
+    pub(crate) fn has_focused_editable_text(&self, window: &Window, cx: &App) -> bool {
+        let editor = self.editor.read(cx);
+        !editor.engine.read_only && editor.focus_handle(cx).is_focused(window)
+    }
     pub fn focus(&self, window: &mut Window, cx: &App) {
         self.editor.read(cx).focus(window);
     }
