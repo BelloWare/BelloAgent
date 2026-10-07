@@ -567,18 +567,19 @@ impl ContextInspector {
             };
             focuses[index].focus(window);
             cx.stop_propagation();
-        } else if !command && !key.modifiers.alt && matches!(key.key.as_str(), "enter" | "space") {
-            if let Some(control) = self
+        } else if !command
+            && !key.modifiers.alt
+            && matches!(key.key.as_str(), "enter" | "space")
+            && let Some(control) = self
                 .controls
                 .iter()
                 .find(|(_, focus)| focus.is_focused(window))
                 .map(|(control, _)| *control)
-            {
-                if !event.is_held {
-                    self.activate(control, self.generation, window, cx);
-                }
-                cx.stop_propagation();
+        {
+            if !event.is_held {
+                self.activate(control, self.generation, window, cx);
             }
+            cx.stop_propagation();
         }
     }
 

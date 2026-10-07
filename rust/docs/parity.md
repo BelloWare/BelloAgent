@@ -1977,3 +1977,18 @@ Focused integration validation passed 40 synthetic-enabled preview/resource/host
 tests and 43 default preview/provider/tool/inspection regressions. Independent
 integration review found no remaining blocker. These local checks do not replace
 exact CI or the pending Inspector GUI execution.
+
+### Inspector compilation and first GPUI execution (2026-10-07)
+
+The handoff's qualified pure test attribute did not prevent GPUI's own generated
+bare `#[test]` from resolving to the inherited GPUI macro. The tests now explicitly
+import their dependencies instead of the parent's glob. No recursion-limit bump,
+test exclusion or assertion relaxation was used. The now-visible unused fixture
+binding and strict-Clippy collapsible key conditional were also corrected.
+
+All 13 focused Inspector tests (12 GPUI and one pure paging property test) passed
+on restored Linux/Rust 1.99.0, including a repeat after the lint correction.
+Strict app all-target Clippy and formatting passed. Independent narrow review
+checked macro resolution and preserved test bodies. These are the first executed
+Inspector GPUI regressions, not native macOS IME/accessibility or full Inspector
+parity. Exact published-commit CI and real desktop interaction remain separate.

@@ -64,7 +64,14 @@ Focused core tests cover actual loopback dispatch equality, unchanged journal
 bytes, active and waiting-tool projection, paused/error state, unavailable
 configuration/counts, credential suffix redaction, stale state and weak lifetime.
 The pure paging property test reconstructs every byte across Unicode pages.
-GPUI regressions cover actual footer clicks, window reuse, original-chat
-binding, IME/Undo, stale results/copies, bounded pages and teardown. Local GUI
-compilation/execution is unavailable because cloud build prerequisites remain
-blocked; exact CI and native interaction remain distinct validation gates.
+On 2026-10-07, all 12 GPUI regressions and the pure Unicode paging test compiled
+and passed on a restored Linux development environment with Rust 1.99.0.
+They cover actual footer clicks, window reuse, original-chat binding, synthetic
+IME/Undo events, stale results/copies, bounded pages and teardown. Strict app
+all-target Clippy also passed. The test module now uses explicit imports:
+inheriting GPUI's `test` macro through the parent glob made the macro-generated
+bare `#[test]` recursively expand; qualifying only the pure paging test was
+insufficient. A previously hidden unused fixture binding and collapsible key
+handler conditional were corrected without changing test assertions.
+Exact-commit CI, desktop interaction and native macOS input/accessibility remain
+distinct validation gates; these fake-platform events are not native IME proof.

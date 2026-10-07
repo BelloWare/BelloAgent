@@ -1,9 +1,19 @@
-use super::*;
-use crate::{LaunchState, shutdown_barrier::ShutdownOutcome};
-use bello_agent_core::{
-    Credential, Profile, SessionStore,
-    workspace::{ChatRecord, DraftRecord},
+// Do not glob-import the parent's GPUI `test` macro: `gpui::test` emits a
+// built-in `#[test]`, which would resolve back to GPUI and recurse.
+use super::{
+    COUNT_UNAVAILABLE, ContextInspector, Control, MINIMUM_SIZE, PAGE_BYTES, PreparedDocument,
+    page_ranges, summary,
 };
+use crate::{AgentView, LaunchState, shutdown_barrier::ShutdownOutcome};
+use bello_agent_core::{
+    Controller, Credential, Profile, SessionStore,
+    workspace::{ChatRecord, DraftRecord, WorkspaceStore},
+};
+use gpui::{
+    ClipboardItem, Entity, EntityInputHandler, Focusable, Modifiers, TestAppContext,
+    VisualTestContext, WindowHandle, px, size,
+};
+use std::sync::{Arc, Mutex};
 
 fn configured(store: SessionStore) -> Arc<Controller> {
     let profile: Profile = serde_json::from_value(serde_json::json!({
@@ -80,7 +90,7 @@ fn open(
     (handle, inspector)
 }
 
-#[::core::prelude::v1::test]
+#[test]
 fn pages_preserve_every_unicode_byte_and_never_exceed_editor_bound() {
     for text in [
         String::new(),
@@ -325,7 +335,7 @@ fn idle_draft_change_and_newer_refresh_reject_stale_completion(cx: &mut TestAppC
 fn older_prepare_completion_cannot_replace_newer_refresh_or_copied_document(
     cx: &mut TestAppContext,
 ) {
-    let (_directory, window, root) = fixture(cx, "older prepared draft", true);
+    let (_directory, window, _root) = fixture(cx, "older prepared draft", true);
     let (_, inspector) = open(window, cx);
     let (older_generation, older_document) = cx.read(|cx| {
         let view = inspector.read(cx);
