@@ -173,6 +173,7 @@ fn settings_save_select_and_real_composer_send_use_selected_fixture(cx: &mut Tes
                 Err(e) => panic!("{e}"),
             }
         };
+        stream.set_nonblocking(false).unwrap();
         stream
             .set_read_timeout(Some(Duration::from_secs(3)))
             .unwrap();
@@ -791,6 +792,7 @@ impl DeletionGateway {
                     }
                     Err(error) => panic!("loopback accept: {error}"),
                 };
+                stream.set_nonblocking(false).unwrap();
                 stream
                     .set_read_timeout(Some(Duration::from_secs(2)))
                     .unwrap();
@@ -824,6 +826,7 @@ impl DeletionGateway {
                         "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
                         "data: {\"type\":\"response.output_text.delta\",\"delta\":\"retained active partial\"}\n\n"
                     ).as_bytes()).unwrap();
+                    stream.set_nonblocking(false).unwrap();
                     stream
                         .set_read_timeout(Some(Duration::from_millis(80)))
                         .unwrap();
@@ -1423,6 +1426,7 @@ fn composer_saved_factory_executes_actual_ls_and_replays_durable_result(cx: &mut
                     Err(error) => panic!("{error}"),
                 }
             };
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(3)))
                 .unwrap();

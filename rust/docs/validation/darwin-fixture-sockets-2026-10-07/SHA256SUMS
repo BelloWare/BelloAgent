@@ -1,0 +1,4 @@
+1b3954c10b5d896c1a2c7bbdd97a075808ca81a815076ab02d67801befb90ffa  rust/crates/bello-agent-app/src/mcp_inspector_controller_tests.rs
+a7ad5d21bd3d765fa0435a743070dffaea9cb2c3467e63bc8ca54c26131b2743  rust/crates/bello-agent-app/src/connection_settings_controller_tests.rs
+d75d63dbd3dbbcb50a5918b72a46fa5d3d1c5456e02d9d0a2537619f99257cf2  rust/crates/bello-agent-app/src/transcript_read_native_ui_tests.rs
+d6e3b371e511e50e774fd57b6db5eb618ea9d6b7caf76e37d032d2eeb3ea32ad  rust/crates/bello-agent-app/src/transcript_edit_native_ui_tests.rs

@@ -388,6 +388,41 @@ struct Gateway {
     stop: Arc<std::sync::atomic::AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
+fn configure_gateway_stream(stream: &std::net::TcpStream) {
+    // Darwin accept inherits the listener's nonblocking flag. This fixture's
+    // bounded synchronous parser must not treat a not-yet-arrived body as EOF.
+    stream.set_nonblocking(false).unwrap();
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+        .unwrap();
+    stream
+        .set_write_timeout(Some(std::time::Duration::from_secs(3)))
+        .unwrap();
+}
+#[test]
+fn gateway_normalizes_inherited_nonblocking_socket_before_parsing() {
+    use std::os::fd::AsRawFd;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let _client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+    let (stream, _) = listener.accept().unwrap();
+    // Reproduce Darwin's inherited state on every Unix test host.
+    stream.set_nonblocking(true).unwrap();
+    let before = unsafe { libc::fcntl(stream.as_raw_fd(), libc::F_GETFL) };
+    assert_ne!(before, -1);
+    assert_ne!(before & libc::O_NONBLOCK, 0);
+    configure_gateway_stream(&stream);
+    let after = unsafe { libc::fcntl(stream.as_raw_fd(), libc::F_GETFL) };
+    assert_ne!(after, -1);
+    assert_eq!(after & libc::O_NONBLOCK, 0);
+    assert_eq!(
+        stream.read_timeout().unwrap(),
+        Some(std::time::Duration::from_secs(3))
+    );
+    assert_eq!(
+        stream.write_timeout().unwrap(),
+        Some(std::time::Duration::from_secs(3))
+    );
+}
 impl Gateway {
     fn new(disconnect_call: bool) -> Self {
         Self::with_mode(u8::from(disconnect_call))
@@ -415,9 +450,7 @@ impl Gateway {
                     }
                     Err(_) => break,
                 };
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(3)))
-                    .unwrap();
+                configure_gateway_stream(&stream);
                 let mut data = Vec::new();
                 let mut buffer = [0u8; 4096];
                 let mut parsed = None;
