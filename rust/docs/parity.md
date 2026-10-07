@@ -1894,3 +1894,39 @@ blocked by the cloud build-prerequisite runtime failure; exact-checkpoint CI
 remains the compile and automated app-test gate. No new desktop acceptance,
 production trust, native Keychain access or tool activation is claimed. See
 `current-project-host.md` for remaining source workflows and failure boundaries.
+
+### Synthetic project runtime and instruction delivery
+
+The explicit synthetic-authority core path now connects a confirmed saved
+project ID/revision and ReadOnly chat to actual fixture-only Controller requests,
+read-only tools and delivery instruction snapshots. Production defaults remain
+disabled, with no app caller, UI switch, native access or external provider path.
+Numeric-loopback requests use a dedicated no-proxy, no-redirect client and fixed
+fake credentials. All instruction paths/settings are supplied explicitly.
+
+Resource delivery preserves source lifetimes: resolve before dequeue, retain the
+applied snapshot through active continuations and same-controller Retry, refresh
+on new delivery or reopened Retry. Skills remain unsupported; no all-resource
+snapshot is persisted on Submission. Candidate/edit/Stop/retirement guards retain
+pending text. Failed steering preparation preserves completed tool results and
+prevents automatic replay. Revocation blocks new admission/continuation while
+already-admitted work may settle; existing Stop/retirement owns cancellation.
+
+Review corrected proxy inheritance and wrong-ID recovery before rejection, then
+closed a nonregular-file opening regression with bounded nonblocking descriptor
+validation. Focused tests cover the actual loopback ls/result path, proxy and FIFO
+subprocesses, exact source prompt/lifetimes, stale authority, missing/mismatched
+journals and default disabled behavior. See `synthetic-project-runtime.md` for
+scope and admission boundaries. This does not establish production trust,
+selected skills, context Inspector UI or native Keychain acceptance.
+
+Local validation passed 28 new synthetic loopback/resource/binding tests and 31
+affected default recovery, inspection and tool-lifecycle regressions. Negative
+controls removing proxy isolation or the pre-recovery ID check each fail their
+regression, then pass after exact source restoration. Strict core all-target
+Clippy passes both default and synthetic builds, as do formatting and independent
+host/resource reviews. A test-only pause tuple was factored into a type alias to
+satisfy strict Clippy. Both CI workflows now run the new focused synthetic suites;
+macOS execution for this checkpoint remains pending exact CI. The preceding
+f443882 identity/mode checkpoint passed both Linux and macOS CI, including its
+GPUI coordinator and native lifecycle checks.

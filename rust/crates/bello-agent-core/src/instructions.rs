@@ -1,9 +1,9 @@
 //! Instruction-discovery subset of PiAgentCore/Resources.swift.
 //!
-//! Disconnected groundwork: this does not read environment variables, parse
-//! Codex settings, discover skills, grant trust, or send instructions to a model.
-//! The caller supplies already-resolved paths and settings. A later resource
-//! layer must freeze the complete request (including skills) before admission.
+//! The caller supplies resolved paths/settings; discovery reads no environment,
+//! Codex settings or skills and grants no trust. Production remains disconnected.
+//! The explicit synthetic-authority delivery path uses fixture-only snapshots
+//! with source delivery/retry lifetimes; selected skills remain unsupported.
 use crate::{Result, invalid};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};

@@ -6,6 +6,12 @@ pub use admission::IdleAdmissionGuard;
 pub(crate) mod tool_runtime;
 pub use tool_runtime::{RuntimeOptions, TrustedReadOnlyTools};
 
+#[cfg(feature = "synthetic-authority")]
+#[path = "resource_runtime.rs"]
+mod resource_runtime;
+#[cfg(feature = "synthetic-authority")]
+pub use resource_runtime::{AppliedInstructionSnapshot, SyntheticResources, SyntheticRuntimeGuard};
+
 use crate::{
     Credential, Lane, Profile, QueueEditState, QueueEditStatus, ResponsesClient, Result, RunState,
     Session, SessionStore, Submission, invalid,
@@ -25,6 +31,8 @@ struct Inner {
     worker_running: bool,
     cancel: Option<CancellationToken>,
     fatal: Option<String>,
+    #[cfg(feature = "synthetic-authority")]
+    applied_instructions: Option<Arc<AppliedInstructionSnapshot>>,
 }
 type WorkerJoin = Shared<BoxFuture<'static, std::result::Result<(), String>>>;
 
@@ -48,6 +56,8 @@ pub struct Controller {
     worker_active: AtomicBool,
     config: Option<Arc<Configuration>>,
     options: RuntimeOptions,
+    #[cfg(feature = "synthetic-authority")]
+    resources: Option<SyntheticResources>,
     client: ResponsesClient,
     runtime: tokio::runtime::Handle,
     worker: Mutex<Option<tokio::task::JoinHandle<()>>>,
@@ -104,9 +114,13 @@ impl Controller {
                 worker_running: false,
                 cancel: None,
                 fatal: None,
+                #[cfg(feature = "synthetic-authority")]
+                applied_instructions: None,
             }),
             config: configuration,
             options,
+            #[cfg(feature = "synthetic-authority")]
+            resources: None,
             client: ResponsesClient::new()?,
             runtime: shared_runtime()?.handle().clone(),
             worker: Mutex::new(None),
@@ -122,6 +136,7 @@ impl Controller {
             .is_ok_and(|inner| inner.store.is_persistent())
     }
     pub fn materialize(&self, path: &std::path::Path) -> Result<()> {
+        self.confirm_resources()?;
         let mut inner = self
             .inner
             .lock()
@@ -312,10 +327,18 @@ impl Controller {
     }
     pub fn resume(self: &Arc<Self>) -> Result<()> {
         self.require_config()?;
+        #[cfg(feature = "synthetic-authority")]
+        if self.resources.is_some() {
+            return self.resume_with_resources();
+        }
         self.change_and_launch(|session| session.resume().map(|()| None))
     }
     pub fn retry(self: &Arc<Self>) -> Result<()> {
         self.require_config()?;
+        #[cfg(feature = "synthetic-authority")]
+        if self.resources.is_some() {
+            return self.retry_with_resources();
+        }
         self.change_and_launch(|session| session.retry_turn().map(Some))
     }
     /// Recovery reads serialize with edits and commits. Published snapshots may
@@ -342,6 +365,7 @@ impl Controller {
         edit_id: &str,
         turn_id: &str,
     ) -> Result<QueueEditStatus> {
+        self.confirm_resources()?;
         {
             let mut inner = self
                 .inner
@@ -426,6 +450,7 @@ impl Controller {
                 "Chat admission is suspended while project configuration changes.",
             ));
         }
+        self.check_resources()?;
         Ok(())
     }
     fn require_config(&self) -> Result<()> {
@@ -443,6 +468,7 @@ impl Controller {
         check: impl FnOnce(&Inner) -> Result<()>,
         action: impl FnOnce(&mut Session) -> Result<T>,
     ) -> Result<T> {
+        self.confirm_resources()?;
         let mut inner = self
             .inner
             .lock()
@@ -463,6 +489,7 @@ impl Controller {
         self: &Arc<Self>,
         action: impl FnOnce(&mut Session) -> Result<Option<Submission>>,
     ) -> Result<()> {
+        self.confirm_resources()?;
         let mut inner = self
             .inner
             .lock()
@@ -524,6 +551,11 @@ impl Controller {
         }));
     }
     async fn run(self: Arc<Self>, mut first: Option<Submission>) {
+        #[cfg(feature = "synthetic-authority")]
+        if self.resources.is_some() {
+            self.run_with_resources(first).await;
+            return;
+        }
         loop {
             let prepared = {
                 let mut inner = self.inner.lock().expect("session mutex poisoned");
@@ -595,6 +627,23 @@ impl Controller {
                 return;
             }
         }
+    }
+
+    // Defaults remain inert. Synthetic confirmation may inspect fixture paths
+    // and therefore must be called before acquiring the actor mutex.
+    fn confirm_resources(&self) -> Result<()> {
+        #[cfg(feature = "synthetic-authority")]
+        if let Some(resources) = &self.resources {
+            return resources.guard.confirm();
+        }
+        Ok(())
+    }
+    fn check_resources(&self) -> Result<()> {
+        #[cfg(feature = "synthetic-authority")]
+        if let Some(resources) = &self.resources {
+            return resources.guard.check();
+        }
+        Ok(())
     }
 }
 

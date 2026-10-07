@@ -153,6 +153,23 @@ impl Session {
         results: Vec<ToolResultRow>,
         stop: bool,
     ) -> Result<()> {
+        let steering = self
+            .pending
+            .iter()
+            .find(|item| item.lane == Lane::Steering)
+            .map(|item| item.id.clone());
+        self.settle_tools_with_steering(reply_id, results, stop, steering.as_deref())
+    }
+
+    /// Synthetic delivery prepares one captured steering candidate before this
+    /// atomic checkpoint. Later arrivals must not be implicitly consumed here.
+    pub(crate) fn settle_tools_with_steering(
+        &mut self,
+        reply_id: &str,
+        results: Vec<ToolResultRow>,
+        stop: bool,
+        steering: Option<&str>,
+    ) -> Result<()> {
         if self.active_reply.as_deref() != Some(reply_id) {
             return Err(invalid("Stale tool batch completion"));
         }
@@ -191,7 +208,7 @@ impl Session {
             && let Some(index) = self
                 .pending
                 .iter()
-                .position(|item| item.lane == Lane::Steering)
+                .position(|item| item.lane == Lane::Steering && Some(item.id.as_str()) == steering)
         {
             item = self.pending.remove(index);
             let mut user = message("user", item.text.clone(), item.model.clone());
@@ -248,20 +265,26 @@ impl Controller {
             }
             let callback_id = reply_id.clone();
             let callback_self = Arc::clone(self);
-            let response = self
-                .client
-                .complete_with_tools(
-                    &profile,
-                    &config.credential,
-                    &snapshot.messages,
-                    &self.options.instructions,
-                    &snapshot.id,
-                    &item.id,
-                    &definitions,
-                    cancel.clone(),
-                    move |delta| callback_self.stream_delta(&callback_id, delta),
-                )
-                .await;
+            let instructions = self.turn_instructions(&item);
+            let ready = self.confirm_turn_resources(cancel.clone()).await;
+            let response = match ready {
+                Err(error) => Err(error),
+                Ok(()) => {
+                    self.client
+                        .complete_with_tools(
+                            &profile,
+                            &config.credential,
+                            &snapshot.messages,
+                            &instructions,
+                            &snapshot.id,
+                            &item.id,
+                            &definitions,
+                            cancel.clone(),
+                            move |delta| callback_self.stream_delta(&callback_id, delta),
+                        )
+                        .await
+                }
+            };
             let prepared = {
                 let mut inner = self.inner.lock().expect("session mutex poisoned");
                 // Stop wins a terminal response already in flight.
@@ -279,7 +302,7 @@ impl Controller {
                             let body = request_body_with_tools(
                                 &profile,
                                 &session.messages,
-                                &self.options.instructions,
+                                &instructions,
                                 &session.id,
                                 &definitions,
                             )?;
@@ -330,15 +353,54 @@ impl Controller {
                 return;
             };
             let tools = self.options.tools.as_ref().expect("tools checked");
+            // A fixture authority change after the provider completed may not
+            // authorize even a read-only invocation. Retain explicit results.
+            if let Err(error) = self.confirm_turn_resources(cancel.clone()).await {
+                let results = calls
+                    .iter()
+                    .map(|_| {
+                        ToolResultRow::error(
+                            format!("Not executed: {error}"),
+                            ToolOutcome::NotExecuted,
+                        )
+                    })
+                    .collect();
+                let mut inner = self.inner.lock().expect("session mutex poisoned");
+                if let Err(error) = inner.store.transact(|session| {
+                    session.settle_tools(&reply_id, results, true)?;
+                    session.error = Some(error.to_string());
+                    Ok(())
+                }) {
+                    inner.fatal = Some(error.to_string());
+                }
+                self.publish(&inner);
+                return;
+            }
             // join_all keeps result order; NativeTools bounds actual file workers.
             // Await every running read even after Stop, rather than freeing slots
             // or reporting shutdown while an uninterruptible syscall still runs.
-            let results = join_all(
-                calls
-                    .iter()
-                    .map(|call| run_call(&tools.native, call, &output_directory, cancel.clone())),
-            )
+            let results = join_all(calls.iter().map(|call| async {
+                if let Err(error) = self.check_resources() {
+                    return ToolResultRow::error(
+                        format!("Not executed: {error}"),
+                        ToolOutcome::NotExecuted,
+                    );
+                }
+                run_call(&tools.native, call, &output_directory, cancel.clone()).await
+            }))
             .await;
+            #[cfg(feature = "synthetic-authority")]
+            if self.resources.is_some() {
+                let Some((next_item, next_snapshot)) = self
+                    .settle_resource_tools(&reply_id, results, cancel.clone())
+                    .await
+                else {
+                    return;
+                };
+                item = next_item;
+                snapshot = next_snapshot;
+                continue;
+            }
             let mut inner = self.inner.lock().expect("session mutex poisoned");
             let stopped = self.is_retired() || cancel.is_cancelled();
             if let Err(error) = inner
@@ -356,6 +418,29 @@ impl Controller {
             snapshot = inner.store.snapshot();
             item = snapshot.active.clone().expect("continuation assigned");
         }
+    }
+
+    fn turn_instructions(&self, item: &Submission) -> String {
+        #[cfg(feature = "synthetic-authority")]
+        if self.resources.is_some() {
+            return self
+                .applied_instruction_snapshot()
+                .filter(|snapshot| snapshot.turn_id == item.id)
+                .expect("delivered synthetic turn has an applied snapshot")
+                .instructions
+                .clone();
+        }
+        let _ = item;
+        self.options.instructions.clone()
+    }
+
+    async fn confirm_turn_resources(&self, cancel: CancellationToken) -> Result<()> {
+        #[cfg(feature = "synthetic-authority")]
+        if self.resources.is_some() {
+            return self.confirm_resources_async(cancel).await;
+        }
+        let _ = cancel;
+        Ok(())
     }
 }
 

@@ -323,6 +323,21 @@ impl ResponsesClient {
                 .map_err(|_| invalid("Could not initialize HTTPS client"))?,
         })
     }
+    /// Loopback fixtures must not inherit an HTTP proxy from the process. The
+    /// synthetic Controller separately validates a numeric loopback endpoint;
+    /// redirects stay disabled just as in the ordinary client.
+    #[cfg(feature = "synthetic-authority")]
+    pub(crate) fn new_synthetic_fixture() -> Result<Self> {
+        Ok(Self {
+            client: reqwest::Client::builder()
+                .no_proxy()
+                .redirect(reqwest::redirect::Policy::none())
+                .connect_timeout(Duration::from_secs(30))
+                .read_timeout(Duration::from_secs(300))
+                .build()
+                .map_err(|_| invalid("Could not initialize fixture HTTP client"))?,
+        })
+    }
     // Mirrors the source ModelClient boundary; request and per-turn identities are explicit.
     #[allow(clippy::too_many_arguments)]
     pub async fn complete(

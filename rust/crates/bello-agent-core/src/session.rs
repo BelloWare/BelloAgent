@@ -731,7 +731,20 @@ fn open_inspection_file(path: &Path, writable: bool) -> Result<File> {
             "Session inspection requires existing regular files",
         ));
     }
-    let file = OpenOptions::new().read(true).write(writable).open(path)?;
+    let mut options = OpenOptions::new();
+    options.read(true).write(writable);
+    // A regular path can be replaced by a FIFO between metadata and open.
+    // Never wait for its peer before descriptor identity/type validation.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        #[cfg(target_os = "linux")]
+        const O_NONBLOCK: i32 = 0x800;
+        #[cfg(target_os = "macos")]
+        const O_NONBLOCK: i32 = 0x4;
+        options.custom_flags(O_NONBLOCK);
+    }
+    let file = options.open(path)?;
     verify_inspection_file(path, &file, &before)?;
     Ok(file)
 }
@@ -844,12 +857,32 @@ impl SessionStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         Self::open_seeded(path.as_ref(), None)
     }
+    /// Fixture composition must not create a missing saved chat or recover a
+    /// different chat before checking its identity. Both checkpoint and lock
+    /// must already exist; validate the ID under the same writer lock used by
+    /// normal recovery, before migration, journal replay or checkpoint writes.
+    #[cfg(feature = "synthetic-authority")]
+    pub(crate) fn open_existing_with_id(path: &Path, expected_id: &str) -> Result<Self> {
+        Uuid::parse_str(expected_id).map_err(|_| invalid("Invalid saved chat identity"))?;
+        if !path.is_absolute() {
+            return Err(invalid("A saved chat requires an absolute checkpoint path"));
+        }
+        Self::open_seeded_checked(path, None, Some(expected_id), confirm_existing_checkpoint)
+    }
     fn open_seeded(path: &Path, initial: Option<Session>) -> Result<Self> {
         Self::open_seeded_with_confirmation(path, initial, confirm_existing_checkpoint)
     }
     fn open_seeded_with_confirmation(
         path: &Path,
         initial: Option<Session>,
+        confirm: impl FnOnce(&Path) -> Result<()>,
+    ) -> Result<Self> {
+        Self::open_seeded_checked(path, initial, None, confirm)
+    }
+    fn open_seeded_checked(
+        path: &Path,
+        initial: Option<Session>,
+        existing_id: Option<&str>,
         confirm: impl FnOnce(&Path) -> Result<()>,
     ) -> Result<Self> {
         let path = if path.is_absolute() {
@@ -860,24 +893,56 @@ impl SessionStore {
         let parent = path
             .parent()
             .ok_or_else(|| invalid("Session path has no parent"))?;
-        let mut directories = fs::DirBuilder::new();
-        directories.recursive(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::DirBuilderExt;
-            directories.mode(0o700);
+        if existing_id.is_none() {
+            let mut directories = fs::DirBuilder::new();
+            directories.recursive(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                directories.mode(0o700);
+            }
+            directories.create(parent)?;
         }
-        directories.create(parent)?;
         let mut options = OpenOptions::new();
-        options.read(true).write(true).create(true).truncate(false);
+        options
+            .read(true)
+            .write(true)
+            .create(existing_id.is_none())
+            .truncate(false);
         #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
         }
-        let lock = SessionLock::acquire(options.open(path.with_extension("lock"))?)?;
-        let exists = path.exists();
-        let mut session: Session = if exists {
+        let lock_path = path.with_extension("lock");
+        let lock = if existing_id.is_some() {
+            let lock = SessionLock::acquire(open_inspection_file(&lock_path, true)?)?;
+            verify_inspection_file(&lock_path, &lock.0, &lock.0.metadata()?)?;
+            lock
+        } else {
+            SessionLock::acquire(options.open(lock_path)?)?
+        };
+        let existing_file = if existing_id.is_some() {
+            let file = open_inspection_file(&path, false)?;
+            let before = file.metadata()?;
+            Some((file, before))
+        } else {
+            None
+        };
+        let exists = existing_file.is_some() || path.exists();
+        let mut session: Session = if let Some((file, before)) = &existing_file {
+            if before.len() > MAX_SNAPSHOT_BYTES as u64 {
+                return Err(invalid("Session exceeds 256 MiB safety limit"));
+            }
+            let mut bytes = Vec::new();
+            file.take(MAX_SNAPSHOT_BYTES as u64 + 1)
+                .read_to_end(&mut bytes)?;
+            if bytes.len() > MAX_SNAPSHOT_BYTES {
+                return Err(invalid("Session exceeds 256 MiB safety limit"));
+            }
+            verify_inspection_file(&path, file, before)?;
+            serde_json::from_slice(&bytes)?
+        } else if exists {
             let metadata = fs::metadata(&path)?;
             if metadata.len() > 256 * 1024 * 1024 {
                 return Err(invalid("Session exceeds 256 MiB safety limit"));
@@ -886,9 +951,10 @@ impl SessionStore {
         } else {
             initial.clone().unwrap_or_default()
         };
-        if initial
-            .as_ref()
-            .is_some_and(|expected| expected.id != session.id)
+        if existing_id.is_some_and(|expected| expected != session.id)
+            || initial
+                .as_ref()
+                .is_some_and(|expected| expected.id != session.id)
         {
             return Err(invalid("The session file belongs to another chat"));
         }
@@ -904,7 +970,15 @@ impl SessionStore {
             session.stream_sequence = 0;
         }
         session.validate_checkpoint()?;
-        if exists {
+        if let Some((file, before)) = &existing_file {
+            // Confirm the validated descriptor instead of reopening a pathname
+            // which could now name a different file or a blocking FIFO.
+            verify_inspection_file(&path, file, before)?;
+            file.sync_all()
+                .map_err(|error| Error::PersistenceUncertain(error.to_string()))?;
+            sync_committed_directory(parent)?;
+            verify_inspection_file(&path, file, before)?;
+        } else if exists {
             // Reading bytes after an uncertain rename does not prove durability.
             // Confirm the validated file and its directory without rewriting it.
             confirm(&path)?;

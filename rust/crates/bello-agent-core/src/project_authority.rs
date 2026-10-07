@@ -584,6 +584,13 @@ pub mod synthetic {
         pub(super) storage: Arc<MemoryStorage>,
     }
     impl SyntheticAuthorityControl {
+        /// An authority bound to this in-memory fixture only. A synthetic host
+        /// accepts this handle instead of an arbitrary native authority.
+        pub fn authority(&self) -> ProjectAuthority {
+            ProjectAuthority {
+                storage: Some(self.storage.clone()),
+            }
+        }
         pub(super) fn new(bytes: Option<Vec<u8>>) -> AuthorityResult<Self> {
             check_size(bytes.as_deref())?;
             Ok(Self {
