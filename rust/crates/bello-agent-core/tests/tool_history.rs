@@ -47,6 +47,7 @@ fn result(id: &str, owner: &str, call: &str, text: &str) -> Message {
         call_id: call.into(),
         is_error: false,
         outcome: ToolOutcome::Completed,
+        content: None,
     }));
     message
 }

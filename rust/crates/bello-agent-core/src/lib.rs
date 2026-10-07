@@ -10,6 +10,7 @@ pub mod sse;
 mod stream_journal;
 #[cfg(feature = "synthetic-authority")]
 pub mod synthetic_project_runtime;
+pub mod tool_content;
 pub mod tool_history;
 pub mod tools;
 pub mod workspace;

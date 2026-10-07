@@ -4,12 +4,52 @@
 use bello_agent_core::{
     Message, RunState, Session,
     provider::ToolCall,
+    tool_content::ContentBlock,
     tool_history::{Completion, ToolOutcome, ToolRecord},
 };
 use std::{
+    borrow::Cow,
     collections::{HashMap, HashSet},
+    fmt::Write as _,
     io::{self, Write},
 };
+
+/// SessionTools.swift's displayText / ToolView.output: the retained textual
+/// projection followed by one short descriptor per image. Source/provider text
+/// never acquires these UI-only lines. Validated canonical base64 supplies the
+/// decoded byte count from length/padding without decoding or scanning its data.
+pub(super) fn display_text(message: &Message) -> Cow<'_, str> {
+    let Some(ToolRecord::Result(record)) = &message.tool_record else {
+        return Cow::Borrowed(&message.text);
+    };
+    let Some(content) = &record.content else {
+        return Cow::Borrowed(&message.text);
+    };
+    let mut shown = Cow::Borrowed(message.text.as_str());
+    for block in &content.blocks {
+        if let ContentBlock::Image { data, mime_type } = block {
+            let padding = if data.ends_with("==") {
+                2
+            } else {
+                usize::from(data.ends_with('='))
+            };
+            let bytes = (data.len() / 4 * 3).saturating_sub(padding);
+            let shown = shown.to_mut();
+            if !shown.is_empty() {
+                shown.push('\n');
+            }
+            write!(shown, "[{mime_type} result, {bytes} bytes]").expect("writing a String");
+        }
+    }
+    shown
+}
+
+pub(super) fn has_display_text(message: &Message) -> bool {
+    !message.text.is_empty()
+        || matches!(&message.tool_record,
+        Some(ToolRecord::Result(record)) if record.content.as_ref().is_some_and(|content|
+            content.blocks.iter().any(|block| matches!(block, ContentBlock::Image { .. }))))
+}
 
 pub(super) const PREVIEW_BYTES: usize = 8 * 1024;
 pub(super) const SECTION_CAP: f32 = 150.;
@@ -213,6 +253,14 @@ pub(super) fn same_content(
                         && a.call_id == b.call_id
                         && a.outcome == b.outcome
                         && a.is_error == b.is_error
+                        && match (&a.content, &b.content) {
+                            // Payloads are immutable and may retain megabytes of images.
+                            // New/reopened allocations remeasure rather than comparing
+                            // their bytes synchronously on the UI thread.
+                            (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b),
+                            (None, None) => true,
+                            _ => false,
+                        }
                 }
                 (Some(ToolRecord::Assistant(a)), Some(ToolRecord::Assistant(b))) => {
                     a.completion == b.completion
@@ -322,9 +370,79 @@ mod tests {
             call_id: "same-call".into(),
             is_error: outcome != ToolOutcome::Completed,
             outcome,
+            content: None,
         }));
         message
     }
+    #[test]
+    fn source_image_descriptors_count_validated_payloads_without_changing_retained_text() {
+        use bello_agent_core::tool_content::ToolContent;
+        use std::sync::Arc;
+        let mut message = result("r", "owner", ToolOutcome::Completed);
+        message.text = "Read image file [image/png]".into();
+        let original = message.text.clone();
+        let content = ToolContent {
+            blocks: vec![
+                ContentBlock::Text {
+                    text: original.clone(),
+                },
+                ContentBlock::Image {
+                    data: "YQ==".into(),
+                    mime_type: "image/png".into(),
+                },
+                ContentBlock::Image {
+                    data: "YWI=".into(),
+                    mime_type: "image/jpeg".into(),
+                },
+                ContentBlock::Image {
+                    data: "YWJj".into(),
+                    mime_type: "image/webp".into(),
+                },
+            ],
+            stats: None,
+        };
+        content.validate().unwrap();
+        let Some(ToolRecord::Result(record)) = &mut message.tool_record else {
+            panic!()
+        };
+        record.content = Some(Arc::new(content));
+        assert_eq!(
+            display_text(&message),
+            "Read image file [image/png]\n[image/png result, 1 bytes]\n[image/jpeg result, 2 bytes]\n[image/webp result, 3 bytes]"
+        );
+        assert_eq!(message.text, original);
+        let Some(ToolRecord::Result(record)) = &message.tool_record else {
+            panic!()
+        };
+        assert_eq!(record.content.as_ref().unwrap().text(), original);
+        assert!(has_display_text(&message));
+        message.text.clear();
+        assert!(has_display_text(&message));
+        assert!(display_text(&message).starts_with("[image/png result, 1 bytes]"));
+    }
+
+    #[test]
+    fn omitted_images_and_legacy_text_do_not_invent_descriptors_or_allocate() {
+        use bello_agent_core::tool_content::ToolContent;
+        let mut message = result("r", "owner", ToolOutcome::Completed);
+        message.text =
+            "Read image file [image/png]\n[Image omitted: fixture conversion failed.]".into();
+        assert!(matches!(display_text(&message), Cow::Borrowed(_)));
+        let Some(ToolRecord::Result(record)) = &mut message.tool_record else {
+            panic!()
+        };
+        record.content = Some(std::sync::Arc::new(ToolContent {
+            blocks: vec![ContentBlock::Text {
+                text: message.text.clone(),
+            }],
+            stats: None,
+        }));
+        assert!(matches!(display_text(&message), Cow::Borrowed(_)));
+        assert_eq!(display_text(&message), message.text);
+        message.text.clear();
+        assert!(!has_display_text(&message));
+    }
+
     #[test]
     fn pair_by_explicit_owner_preserve_prose_and_standalone_page_results() {
         let mut session = Session::new();

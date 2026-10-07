@@ -728,3 +728,19 @@ async fn successful_empty_queue_settlement_needs_no_additional_vault_read() {
     );
     controller.retire_and_wait().await.unwrap();
 }
+
+#[test]
+fn explicit_image_input_metadata_survives_vault_save_reload_and_name_edit() {
+    let (authority, _, loaded) = fixture();
+    let mut form = draft();
+    form.profile.input = vec!["text".into(), "image".into()];
+    let saved = authority.save_connection(&loaded, &form).unwrap();
+    assert!(saved.profile.available);
+    assert!(saved.profile.profile.supports_images());
+    let loaded = authority.load_connections().unwrap();
+    let mut renamed = loaded.edit(&saved.profile.profile.id).unwrap();
+    renamed.name = "Image fixture renamed".into();
+    let saved = authority.save_connection(&loaded, &renamed).unwrap();
+    assert!(saved.profile.available);
+    assert!(saved.profile.profile.supports_images());
+}

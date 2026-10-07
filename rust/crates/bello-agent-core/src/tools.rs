@@ -1,4 +1,4 @@
-//! Source-backed native tools: `ls`, plus Foundation `find` and `grep` on macOS.
+//! Source-backed native tools: `ls`, plus Foundation `read`/`find`/`grep` on macOS.
 //!
 //! This module never independently offers tools to a provider. The Controller's
 //! explicit TrustedReadOnlyTools option can invoke it; desktop constructors keep
@@ -13,14 +13,19 @@
 //! macOS Find and Grep use Foundation's invocation-time expansion.
 //!
 //! `invoke` matches NativeTools' native validation; `invoke_prepared` additionally
-//! applies SessionTools' schema preparation, for the offered ls/find/grep schemas. The general
+//! applies SessionTools' schema preparation, for the offered read/ls/find/grep schemas. The general
 //! JSON Schema coercer remains a separate gap. The opt-in core
-//! Controller retains text above 64 KiB in private files (32 KiB preview,
+//! Controller retains large non-read text above 64 KiB in private files (32 KiB preview,
 //! 16 MiB maximum), checkpoints call/result history, and continues the tool loop.
+//! Native read adds bounded durable text/image content and resolved viewer stats.
 //! Native ls itself has an entry bound, not a byte bound, and no `stats` field.
 
 mod find;
 mod grep;
+mod read;
+mod read_image;
+mod read_image_sniff;
+mod read_text;
 
 use crate::provider::ToolCall;
 use serde::{Deserialize, Serialize};
@@ -85,6 +90,7 @@ fn check_cancelled(token: &CancellationToken) -> ToolResult<()> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Capability {
+    Read,
     Ls,
     Find,
     Grep,
@@ -95,6 +101,14 @@ pub struct ToolDefinition {
     pub name: String,
     pub description: String,
     pub schema: Value,
+}
+
+fn read_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "read".into(),
+        description: "Read a file. Supports UTF-8 text and images (jpg, png, gif, webp, bmp); images are sent as attachments. For text, offset is a 1-based line number; use limit for paging. Large output is truncated explicitly.".into(),
+        schema: json!({"type":"object","properties":{"path":{"type":"string"},"offset":{"type":"integer","minimum":1},"limit":{"type":"integer","minimum":1}},"required":["path"],"additionalProperties":false}),
+    }
 }
 
 fn ls_definition() -> ToolDefinition {
@@ -173,10 +187,15 @@ impl NativeTools {
         }
         let capabilities: BTreeSet<_> = capabilities.into_iter().collect();
         #[cfg(not(target_os = "macos"))]
-        if capabilities.contains(&Capability::Find) || capabilities.contains(&Capability::Grep) {
+        if capabilities.contains(&Capability::Read)
+            || capabilities.contains(&Capability::Find)
+            || capabilities.contains(&Capability::Grep)
+        {
             return Err(ToolError::failure(
                 "tool_unavailable",
-                if capabilities.contains(&Capability::Grep) {
+                if capabilities.contains(&Capability::Read) {
+                    "Read requires the macOS Foundation/ImageIO implementation"
+                } else if capabilities.contains(&Capability::Grep) {
                     "Grep requires the macOS Foundation implementation"
                 } else {
                     "Find requires the macOS Foundation implementation"
@@ -206,6 +225,9 @@ impl NativeTools {
 
     pub fn definitions(&self) -> Vec<ToolDefinition> {
         let mut definitions = Vec::new();
+        if self.capabilities.contains(&Capability::Read) {
+            definitions.push(read_definition());
+        }
         if self.capabilities.contains(&Capability::Ls) {
             definitions.push(ls_definition());
         }
@@ -220,6 +242,9 @@ impl NativeTools {
 
     pub fn capability_ids(&self) -> Vec<&'static str> {
         let mut ids = Vec::new();
+        if self.capabilities.contains(&Capability::Read) {
+            ids.push("read");
+        }
         if self.capabilities.contains(&Capability::Ls) {
             ids.push("ls");
         }
@@ -234,6 +259,7 @@ impl NativeTools {
 
     fn offers(&self, name: &str) -> bool {
         match name {
+            "read" => self.capabilities.contains(&Capability::Read),
             "ls" => self.capabilities.contains(&Capability::Ls),
             "find" => self.capabilities.contains(&Capability::Find),
             "grep" => self.capabilities.contains(&Capability::Grep),
@@ -253,7 +279,9 @@ impl NativeTools {
             return prepared;
         };
         // Optional properties do not accept null in their source schemas.
-        let optional = if call.name == "grep" {
+        let optional = if call.name == "read" {
+            &["offset", "limit"][..]
+        } else if call.name == "grep" {
             &["path", "limit", "literal", "ignoreCase"][..]
         } else {
             &["path", "limit"][..]
@@ -272,7 +300,9 @@ impl NativeTools {
                 continue;
             };
             match value {
-                Value::Null if *key == "pattern" => *value = Value::String(String::new()),
+                Value::Null if *key == "pattern" || (call.name == "read" && *key == "path") => {
+                    *value = Value::String(String::new())
+                }
                 Value::Bool(flag) => *value = Value::String(flag.to_string()),
                 Value::Number(number) => {
                     if let Some(number) = number.as_f64() {
@@ -299,7 +329,14 @@ impl NativeTools {
                 }
             }
         }
-        if let Some(value) = fields.get_mut("limit") {
+        for key in if call.name == "read" {
+            &["offset", "limit"][..]
+        } else {
+            &["limit"][..]
+        } {
+            let Some(value) = fields.get_mut(*key) else {
+                continue;
+            };
             let number = match value {
                 Value::Bool(flag) => Some(if *flag { 1.0 } else { 0.0 }),
                 Value::String(text) if !text.trim_matches(js_space).is_empty() => js_number(text),
@@ -332,6 +369,22 @@ impl NativeTools {
         call: &ToolCall,
         cancellation: CancellationToken,
     ) -> ToolResult<Value> {
+        self.invoke_mapped(call, cancellation, Ok).await
+    }
+
+    /// Map an owned native result before releasing its bounded worker slot.
+    /// The Controller uses this to validate/reserve media without queuing large
+    /// returned Values in a second conversion queue.
+    pub(crate) async fn invoke_mapped<T, F>(
+        &self,
+        call: &ToolCall,
+        cancellation: CancellationToken,
+        map: F,
+    ) -> ToolResult<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(Value) -> ToolResult<T> + Send + 'static,
+    {
         check_cancelled(&cancellation)?;
         if !self.offers(&call.name) {
             return Err(ToolError::failure(
@@ -342,15 +395,18 @@ impl NativeTools {
         let fields = call.arguments.as_object().ok_or_else(|| {
             ToolError::failure("tool_arguments", "Tool arguments must be an object")
         })?;
+        let is_read = call.name == "read";
         let is_find = call.name == "find";
         let is_grep = call.name == "grep";
         let is_search = is_find || is_grep;
         if fields.keys().any(|key| {
             key != "path"
                 && key != "limit"
+                && !(is_read && key == "offset")
                 && !(is_search && key == "pattern")
                 && !(is_grep && (key == "literal" || key == "ignoreCase"))
         }) || (is_search && !fields.contains_key("pattern"))
+            || (is_read && !fields.contains_key("path"))
         {
             return Err(ToolError::failure(
                 "tool_arguments",
@@ -367,13 +423,16 @@ impl NativeTools {
                 if let Some(callback) = before_read {
                     callback();
                 }
-                if is_grep {
+                let value = if is_read {
+                    read::invoke_with_processor(&paths, &arguments, &cancel, read_image::process)
+                } else if is_grep {
                     grep::invoke(&paths, &arguments, &cancel)
                 } else if is_find {
                     find::invoke(&paths, &arguments, &cancel)
                 } else {
                     paths.ls(&arguments, &cancel)
-                }
+                }?;
+                map(value)
             })
             .await
     }
@@ -841,3 +900,7 @@ mod find_preparation_tests;
 #[cfg(test)]
 #[path = "tools/grep_preparation_tests.rs"]
 mod grep_preparation_tests;
+
+#[cfg(test)]
+#[path = "tools/read_preparation_tests.rs"]
+mod read_preparation_tests;

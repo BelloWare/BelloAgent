@@ -16,7 +16,10 @@ use std::{
     fs,
     io::Write,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -43,6 +46,9 @@ pub(super) fn effective_profile(base: &Profile, item: Option<&Submission>) -> Pr
     let mut profile = base.clone();
     if let Some(item) = item {
         if let Some(model) = &item.model {
+            if profile.model_id != *model {
+                profile.input = vec!["text".into()];
+            }
             profile.model_id = model.clone();
         }
         if let Some(effort) = &item.effort {
@@ -88,12 +94,14 @@ impl TrustedReadOnlyTools {
 #[derive(Clone, Debug)]
 pub(crate) struct ToolResultRow {
     pub text: String,
+    pub content: Option<Arc<crate::tool_content::ToolContent>>,
     pub outcome: ToolOutcome,
 }
 impl ToolResultRow {
     fn error(text: impl Into<String>, outcome: ToolOutcome) -> Self {
         Self {
             text: text.into(),
+            content: None,
             outcome,
         }
     }
@@ -164,7 +172,7 @@ impl Session {
             binding: ReplayBinding::from_profile(profile)?,
             provider_items: reply.provider_items.clone(),
         }));
-        self.version = 3;
+        self.version = self.version.max(3);
         crate::tool_history::validate(&self.messages)
     }
 
@@ -211,6 +219,7 @@ impl Session {
                 call_id: call.id.clone(),
                 is_error: result.outcome != ToolOutcome::Completed,
                 outcome: result.outcome,
+                content: result.content,
             }));
             self.messages.push(row);
         }
@@ -393,6 +402,7 @@ impl Controller {
             // join_all keeps result order; NativeTools bounds actual file workers.
             // Await every running read even after Stop, rather than freeing slots
             // or reporting shutdown while an uninterruptible syscall still runs.
+            let content_budget = Arc::new(BatchContentBudget::default());
             let results = join_all(calls.iter().map(|call| async {
                 if let Err(error) = self.check_resources() {
                     return ToolResultRow::error(
@@ -400,7 +410,14 @@ impl Controller {
                         ToolOutcome::NotExecuted,
                     );
                 }
-                run_call(&tools.native, call, &output_directory, cancel.clone()).await
+                run_call_with_budget(
+                    &tools.native,
+                    call,
+                    &output_directory,
+                    cancel.clone(),
+                    content_budget.clone(),
+                )
+                .await
             }))
             .await;
             #[cfg(feature = "synthetic-authority")]
@@ -458,11 +475,109 @@ impl Controller {
     }
 }
 
+const MAX_BATCH_CONTENT_BYTES: usize = 32 * 1024 * 1024;
+
+/// Charges successful durable content until the entire batch settles. This is
+/// not a whole-process bound: four active native decoders have their own budgets.
+struct BatchContentBudget {
+    used: AtomicUsize,
+    maximum: usize,
+}
+impl Default for BatchContentBudget {
+    fn default() -> Self {
+        Self {
+            used: AtomicUsize::new(0),
+            maximum: MAX_BATCH_CONTENT_BYTES,
+        }
+    }
+}
+impl BatchContentBudget {
+    fn reserve(&self, bytes: usize) -> bool {
+        let mut used = self.used.load(Ordering::Acquire);
+        loop {
+            let Some(next) = used
+                .checked_add(bytes)
+                .filter(|total| *total <= self.maximum)
+            else {
+                return false;
+            };
+            match self
+                .used
+                .compare_exchange_weak(used, next, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => return true,
+                Err(observed) => used = observed,
+            }
+        }
+    }
+}
+struct NativeOutput {
+    text: String,
+    content: Option<Arc<crate::tool_content::ToolContent>>,
+}
+fn retain_native_content(
+    value: Value,
+    budget: &BatchContentBudget,
+) -> std::result::Result<NativeOutput, ToolError> {
+    let text = value["content"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|part| part["text"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let content = if value.get("stats").is_some()
+        || value["content"]
+            .as_array()
+            .is_some_and(|parts| parts.iter().any(|part| part["type"] == "image"))
+    {
+        let content = crate::tool_content::ToolContent::from_native(&value).map_err(|error| {
+            ToolError::Failure {
+                code: "tool_result",
+                message: error.to_string(),
+            }
+        })?;
+        let bytes = content
+            .encoded_len()
+            .ok()
+            .and_then(|bytes| bytes.checked_add(text.len()))
+            .ok_or_else(|| ToolError::Failure {
+                code: "tool_result",
+                message: "Tool result exceeds its retention limit".into(),
+            })?;
+        if !budget.reserve(bytes) {
+            return Err(ToolError::Failure {code:"tool_result",message:"Tool result could not be retained: this batch exceeds the 32 MiB content limit. No automatic replay.".into()});
+        }
+        Some(Arc::new(content))
+    } else {
+        None
+    };
+    Ok(NativeOutput { text, content })
+}
+
+#[cfg(test)]
 async fn run_call(
     tools: &NativeTools,
     call: &ToolCall,
     directory: &Path,
     cancel: CancellationToken,
+) -> ToolResultRow {
+    run_call_with_budget(
+        tools,
+        call,
+        directory,
+        cancel,
+        Arc::new(BatchContentBudget::default()),
+    )
+    .await
+}
+
+async fn run_call_with_budget(
+    tools: &NativeTools,
+    call: &ToolCall,
+    directory: &Path,
+    cancel: CancellationToken,
+    budget: Arc<BatchContentBudget>,
 ) -> ToolResultRow {
     if cancel.is_cancelled() {
         return ToolResultRow::error(
@@ -473,18 +588,18 @@ async fn run_call(
     // Source SessionTools marks invocation begun before NativeTools worker
     // admission. Cancellation from this point has an unknown output, even
     // when a queued filesystem read never reached the operating system.
-    match tools.invoke_prepared(call, cancel.clone()).await {
-        Ok(value) => {
-            let text = value["content"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|part| part["text"].as_str())
-                .collect::<Vec<_>>()
-                .join("\n");
+    let prepared = tools.prepare_call(call);
+    match tools
+        .invoke_mapped(&prepared, cancel.clone(), move |value| {
+            retain_native_content(value, &budget)
+        })
+        .await
+    {
+        Ok(NativeOutput { text, content }) => {
             if text.len() <= 65536 {
                 return ToolResultRow {
                     text,
+                    content,
                     outcome: ToolOutcome::Completed,
                 };
             }
@@ -495,6 +610,7 @@ async fn run_call(
             {
                 Ok(text) => ToolResultRow {
                     text,
+                    content: None,
                     outcome: ToolOutcome::Completed,
                 },
                 Err(ToolError::Cancelled) => ToolResultRow::error(
@@ -657,6 +773,7 @@ mod tests {
         vec![ToolResultRow {
             text: "kept result".into(),
             outcome: ToolOutcome::Completed,
+            content: None,
         }]
     }
 
@@ -1030,5 +1147,94 @@ mod tests {
         assert_eq!(snapshot.state, RunState::Paused);
         assert!(snapshot.messages.iter().any(|row|matches!(&row.tool_record,Some(ToolRecord::Result(record)) if record.outcome==ToolOutcome::Unknown)));
         server.join().unwrap();
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn model_id_override_does_not_inherit_another_models_image_capability() {
+    let profile: Profile = serde_json::from_value(serde_json::json!({"id":"fixture","api":"openai-responses","providerId":"litellm","modelId":"image-fixture","baseUrl":"http://127.0.0.1:9","contextWindow":32000,"maxOutputTokens":4096,"input":["text","image"]})).unwrap();
+    let mut item = Submission::new("fixture".into(), Lane::FollowUp);
+    item.model = Some(profile.model_id.clone());
+    assert!(effective_profile(&profile, Some(&item)).supports_images());
+    item.model = Some("unknown-other-fixture".into());
+    assert!(!effective_profile(&profile, Some(&item)).supports_images());
+    assert!(profile.supports_images());
+}
+
+#[cfg(all(test, target_os = "macos"))]
+#[path = "read_runtime_tests.rs"]
+mod read_tests;
+
+#[cfg(test)]
+mod read_budget_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn concurrent_content_reservation_bounds_completed_results_before_batch_settlement() {
+        let value = json!({"content":[{"type":"text","text":"image note"},{"type":"image","mimeType":"image/png","data":"YWJj"}],"stats":{"path":"/fixture/image.png"},"isError":false});
+        let bytes = crate::tool_content::ToolContent::from_native(&value)
+            .unwrap()
+            .encoded_len()
+            .unwrap()
+            + "image note".len();
+        let budget = Arc::new(BatchContentBudget {
+            used: AtomicUsize::new(0),
+            maximum: bytes * 3,
+        });
+        let barrier = Arc::new(std::sync::Barrier::new(17));
+        let results = std::thread::scope(|scope| {
+            let workers = (0..16)
+                .map(|_| {
+                    let budget = budget.clone();
+                    let barrier = barrier.clone();
+                    let value = value.clone();
+                    scope.spawn(move || {
+                        barrier.wait();
+                        retain_native_content(value, &budget)
+                    })
+                })
+                .collect::<Vec<_>>();
+            barrier.wait();
+            workers
+                .into_iter()
+                .map(|worker| worker.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 3);
+        assert_eq!(budget.used.load(Ordering::Acquire), bytes * 3);
+        for error in results.into_iter().filter_map(|result| result.err()) {
+            let row = failed_tool_result(error, false);
+            assert_eq!(row.outcome, ToolOutcome::Failed);
+            assert!(row.content.is_none());
+            assert!(row.text.contains("32 MiB content limit"));
+            assert!(row.text.contains("No automatic replay"));
+        }
+        // Charges live until the whole batch budget drops, not until a waiter
+        // briefly releases its Arc or another native worker completes.
+        assert_eq!(budget.used.load(Ordering::Acquire), bytes * 3);
+        assert!(!budget.reserve(usize::MAX));
+        assert!(!budget.reserve(1));
+    }
+    #[test]
+    fn rejected_content_never_mutates_an_earlier_retained_result() {
+        let value = json!({"content":[{"type":"text","text":"kept"}],"stats":{"path":"/fixture"}});
+        let bytes = crate::tool_content::ToolContent::from_native(&value)
+            .unwrap()
+            .encoded_len()
+            .unwrap()
+            + 4;
+        let budget = BatchContentBudget {
+            used: AtomicUsize::new(0),
+            maximum: bytes,
+        };
+        let first = retain_native_content(value.clone(), &budget).unwrap();
+        let retained = serde_json::to_value(first.content.as_ref().unwrap()).unwrap();
+        assert!(retain_native_content(value, &budget).is_err());
+        assert_eq!(first.text, "kept");
+        assert_eq!(
+            serde_json::to_value(first.content.as_ref().unwrap()).unwrap(),
+            retained
+        );
     }
 }

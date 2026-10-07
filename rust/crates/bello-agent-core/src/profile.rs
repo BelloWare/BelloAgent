@@ -42,6 +42,9 @@ pub struct Profile {
     pub api: String,
     pub provider_id: String,
     pub model_id: String,
+    /// Explicit declared model inputs; absent legacy metadata stays text-only.
+    #[serde(default = "default_input")]
+    pub input: Vec<String>,
     pub base_url: String,
     pub context_window: u32,
     pub max_output_tokens: u32,
@@ -58,6 +61,9 @@ pub struct Profile {
     #[serde(default)]
     pub compat: Compatibility,
 }
+fn default_input() -> Vec<String> {
+    vec!["text".into()]
+}
 fn default_effort() -> String {
     "default".into()
 }
@@ -72,7 +78,19 @@ pub struct Compatibility {
     pub supports_developer_role: Option<bool>,
 }
 impl Profile {
+    pub fn supports_images(&self) -> bool {
+        self.input.iter().any(|input| input == "image")
+    }
     pub fn validate(&self) -> Result<()> {
+        if self.input.len() > 2
+            || self
+                .input
+                .iter()
+                .any(|input| !["text", "image"].contains(&input.as_str()))
+            || (self.input.len() == 2 && self.input[0] == self.input[1])
+        {
+            return Err(invalid("Invalid declared model inputs"));
+        }
         for (value, max) in [
             (&self.id, 128),
             (&self.provider_id, 128),
@@ -268,5 +286,22 @@ mod tests {
             profile().safe_error(&c, "bad super-secret"),
             "bad [REDACTED]"
         );
+    }
+    #[test]
+    fn image_input_is_explicit_and_invalid_declarations_fail_closed() {
+        let mut p = profile();
+        assert_eq!(p.input, vec!["text"]);
+        assert!(!p.supports_images());
+        p.input = vec!["text".into(), "image".into()];
+        p.validate().unwrap();
+        assert!(p.supports_images());
+        for input in [
+            vec!["audio"],
+            vec!["image", "image"],
+            vec!["text", "image", "text"],
+        ] {
+            p.input = input.into_iter().map(str::to_owned).collect();
+            assert!(p.validate().is_err());
+        }
     }
 }

@@ -55,6 +55,7 @@ impl RetainedForm {
         draft.profile.base_url = self.fields.base_url.clone();
         if draft.profile.model_id != self.fields.model {
             draft.profile.model_output_limit = None;
+            draft.profile.input = vec!["text".into()];
         }
         draft.profile.model_id = self.fields.model.clone();
         draft.profile.context_window = self

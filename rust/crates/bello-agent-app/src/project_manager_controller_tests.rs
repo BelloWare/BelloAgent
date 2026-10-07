@@ -713,6 +713,7 @@ async fn retiring_tool_focus_case(cx: &mut TestAppContext, dismiss_early: bool, 
             call_id: "tool-call".into(),
             is_error: false,
             outcome: ToolOutcome::Completed,
+            content: None,
         })),
     };
     root.update(cx, |view, cx| {

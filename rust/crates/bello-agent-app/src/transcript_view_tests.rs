@@ -2031,6 +2031,7 @@ fn retained_tool_rows(count: usize, output: &str) -> Vec<Message> {
                 call_id: "reused".into(),
                 is_error: false,
                 outcome: ToolOutcome::Completed,
+                content: None,
             }));
             [assistant, result]
         })
@@ -2427,3 +2428,6 @@ fn retained_tool_detail_newer_composer_focus_wins(cx: &mut TestAppContext) {
 fn retained_tool_detail_replaced_child_cannot_restore_old_editor(cx: &mut TestAppContext) {
     retained_tool_detail_restore_case(cx, false, false, true);
 }
+
+#[path = "transcript_read_ui_tests.rs"]
+mod read_ui;

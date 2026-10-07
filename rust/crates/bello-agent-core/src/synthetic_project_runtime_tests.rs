@@ -103,6 +103,7 @@ fn profile(endpoint: &str) -> Profile {
         api: "openai-responses".into(),
         provider_id: "litellm".into(),
         model_id: "fixture-model".into(),
+        input: vec!["text".into()],
         base_url: endpoint.into(),
         context_window: 8192,
         max_output_tokens: 1024,
@@ -810,3 +811,7 @@ async fn source_retry_holds_instructions_and_reopen_resolves_current_fixture_byt
     settled(&reopened, |state| state.state == RunState::Idle).await;
     reopened.retire_and_wait().await.unwrap();
 }
+
+#[cfg(target_os = "macos")]
+#[path = "read_synthetic_tests.rs"]
+mod read_tests;

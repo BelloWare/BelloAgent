@@ -90,6 +90,8 @@ pub struct ResultRecord {
     pub call_id: String,
     pub is_error: bool,
     pub outcome: ToolOutcome,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<std::sync::Arc<crate::tool_content::ToolContent>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -262,6 +264,14 @@ pub fn validate(messages: &[Message]) -> Result<()> {
                     return Err(invalid("Tool results are duplicated or out of call order"));
                 }
                 last_result = Some(index);
+                if let Some(content) = &record.content {
+                    content.validate()?;
+                    if content.text() != message.text || record.outcome != ToolOutcome::Completed {
+                        return Err(invalid(
+                            "Retained tool content disagrees with result text or outcome",
+                        ));
+                    }
+                }
                 if message.text.len() > MAX_RESULT_BYTES {
                     return Err(invalid("Recorded tool result exceeds 16 MiB"));
                 }
@@ -378,20 +388,21 @@ fn call_item(call: &ToolCall, provider_id: Option<&str>) -> Result<Value> {
 /// placeholders, not queued work and never instructions to invoke anything.
 pub fn project(messages: &[Message], profile: &Profile) -> Result<Vec<Value>> {
     validate(messages)?;
+    let mut image_bytes = 0usize;
     let mut output = Vec::new();
     let mut pending: Vec<String> = Vec::new();
-    let mut results = BTreeMap::<String, String>::new();
+    let mut results = BTreeMap::<String, Value>::new();
     let mut active_owner: Option<&str> = None;
     fn settle(
         output: &mut Vec<Value>,
         pending: &mut Vec<String>,
-        results: &mut BTreeMap<String, String>,
+        results: &mut BTreeMap<String, Value>,
     ) {
         for call in pending.drain(..) {
             let value = match results.remove(&call) {
-                Some(text) if text.is_empty() => EMPTY_RESULT.into(),
-                Some(text) => text,
-                None => MISSING_RESULT.into(),
+                Some(Value::String(text)) if text.is_empty() => json!(EMPTY_RESULT),
+                Some(value) => value,
+                None => json!(MISSING_RESULT),
             };
             output.push(json!({"type":"function_call_output","call_id":call,"output":value}));
         }
@@ -400,7 +411,27 @@ pub fn project(messages: &[Message], profile: &Profile) -> Result<Vec<Value>> {
     for message in messages {
         if let Some(ToolRecord::Result(record)) = &message.tool_record {
             if message.replay_eligible && active_owner == Some(record.assistant_id.as_str()) {
-                results.insert(record.call_id.clone(), message.text.clone());
+                // Count only content that is actually projected. An ineligible
+                // historical assistant/result must not consume wire capacity.
+                if profile.supports_images()
+                    && let Some(content) = &record.content
+                {
+                    for block in &content.blocks {
+                        if let crate::tool_content::ContentBlock::Image { data, .. } = block {
+                            image_bytes = image_bytes.saturating_add(data.len());
+                            if image_bytes > crate::provider::MAX_REQUEST_BYTES {
+                                return Err(invalid("Serialized request exceeds 32 MiB"));
+                            }
+                        }
+                    }
+                }
+                results.insert(
+                    record.call_id.clone(),
+                    record.content.as_ref().map_or_else(
+                        || json!(message.text),
+                        |content| content.provider_output(profile.supports_images()),
+                    ),
+                );
             }
             continue;
         }

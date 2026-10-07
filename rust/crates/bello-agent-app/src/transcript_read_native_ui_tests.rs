@@ -1,0 +1,203 @@
+//! Fake GPUI platform + real native read + disposable loopback provider.
+//! No native windows, permissions, credentials or existing project are accessed.
+use super::*;
+use bello_agent_core::{
+    Profile,
+    project_authority::ProjectAuthority,
+    synthetic_project_runtime::{SyntheticChatOptions, SyntheticProjectRuntime},
+    tools::Capability,
+    workspace::ChatToolMode,
+};
+use std::{
+    io::{Read, Write},
+    net::{TcpListener, TcpStream},
+    thread,
+    time::{Duration, Instant},
+};
+
+fn request(listener: &TcpListener) -> (TcpStream, serde_json::Value) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut stream = loop {
+        match listener.accept() {
+            Ok((stream, _)) => break stream,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                assert!(Instant::now() < deadline, "fixture provider accept timeout");
+                thread::sleep(Duration::from_millis(5));
+            }
+            Err(error) => panic!("fixture accept: {error}"),
+        }
+    };
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    stream
+        .set_write_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut raw = Vec::new();
+    loop {
+        let mut bytes = [0; 4096];
+        let count = stream.read(&mut bytes).unwrap();
+        assert!(count > 0);
+        raw.extend_from_slice(&bytes[..count]);
+        assert!(raw.len() < 1024 * 1024);
+        if let Some(end) = raw.windows(4).position(|part| part == b"\r\n\r\n") {
+            let headers = String::from_utf8_lossy(&raw[..end]).to_ascii_lowercase();
+            let length: usize = headers
+                .lines()
+                .find_map(|line| line.strip_prefix("content-length: "))
+                .unwrap()
+                .parse()
+                .unwrap();
+            if raw.len() >= end + 4 + length {
+                return (
+                    stream,
+                    serde_json::from_slice(&raw[end + 4..end + 4 + length]).unwrap(),
+                );
+            }
+        }
+    }
+}
+fn response(mut stream: TcpStream, body: serde_json::Value) {
+    let body = body.to_string();
+    write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+}
+fn output(body: &serde_json::Value) -> &serde_json::Value {
+    &body["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["type"] == "function_call_output")
+        .unwrap()["output"]
+}
+fn wait_idle(controller: &Controller, expected: &str, cx: &mut TestAppContext) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        cx.run_until_parked();
+        let snapshot = controller.snapshot_shared();
+        if snapshot.state == RunState::Idle
+            && snapshot.pending.is_empty()
+            && snapshot.active.is_none()
+            && snapshot
+                .messages
+                .last()
+                .is_some_and(|message| message.text == expected)
+        {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "read fixture did not settle: {:?}",
+            controller.snapshot_shared().error
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[gpui::test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Native read requires macOS ImageIO"
+)]
+async fn read_native_workflow_trust_loopback_checkpoint_replay_and_numbered_ui(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(directory.path()).unwrap();
+    let project = root.join("project");
+    let home = root.join("fixture-home");
+    std::fs::create_dir_all(project.join(".git")).unwrap();
+    std::fs::create_dir(&home).unwrap();
+    let original = project.join("input.txt");
+    std::fs::write(&original, "first\nsecond\nthird").unwrap();
+    let (authority, control) = ProjectAuthority::with_synthetic_bytes(None).unwrap();
+    let mut draft = authority.load().unwrap().edit();
+    let saved_project = draft
+        .trust_project(&uuid::Uuid::new_v4().to_string(), &project, &[])
+        .unwrap();
+    let saved = authority.save(&mut draft).unwrap();
+    let mut workspace = WorkspaceStore::open(root.join("catalog.json"), &project).unwrap();
+    workspace
+        .bind_project_identity(
+            authority
+                .confirm_project_binding(&saved, &saved_project)
+                .unwrap(),
+        )
+        .unwrap();
+    let id = uuid::Uuid::new_v4().to_string();
+    let path = workspace.chat_path(&id).unwrap();
+    let mut store = SessionStore::pending_with_id(&id).unwrap();
+    store.persist_to(&path).unwrap();
+    drop(store);
+    let mut record = ChatRecord::new(id.clone(), "Read fixture".into(), path.clone());
+    record.tool_mode = ChatToolMode::ReadOnly;
+    workspace.register(record, DraftRecord::default()).unwrap();
+    let workspace = Arc::new(Mutex::new(workspace));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let server = thread::spawn(move || {
+        let (stream, body) = request(&listener);
+        assert_eq!(body["tools"][0]["name"], "read");
+        response(
+            stream,
+            json!({"status":"completed","output":[{"type":"function_call","call_id":"native-read","name":"read","arguments":"{\"path\":\"input.txt\",\"offset\":2,\"limit\":1}"}]}),
+        );
+        for answer in ["Read complete", "Replay complete"] {
+            let (stream, body) = request(&listener);
+            assert_eq!(
+                output(&body),
+                "second\n[Truncated. 3 total lines; read another range.]"
+            );
+            response(
+                stream,
+                json!({"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":answer}]}]}),
+            );
+        }
+    });
+    let profile:Profile=serde_json::from_value(json!({"id":"fixture","api":"openai-responses","providerId":"litellm","modelId":"fixture","baseUrl":endpoint,"contextWindow":32000,"maxOutputTokens":4096})).unwrap();
+    let options = || SyntheticChatOptions {
+        home: home.clone(),
+        capabilities: vec![Capability::Read],
+        instructions: None,
+    };
+    let runtime = SyntheticProjectRuntime::confirm(&control, workspace.clone()).unwrap();
+    let controller = runtime.open_chat(&id, profile.clone(), options()).unwrap();
+    controller
+        .submit("Read synthetic file".into(), Lane::FollowUp)
+        .unwrap();
+    wait_idle(&controller, "Read complete", cx);
+    controller.retire_and_wait().await.unwrap();
+    std::fs::remove_file(&original).unwrap();
+    let runtime = SyntheticProjectRuntime::confirm(&control, workspace).unwrap();
+    let reopened = runtime.open_chat(&id, profile, options()).unwrap();
+    reopened
+        .submit("Replay without reading again".into(), Lane::FollowUp)
+        .unwrap();
+    wait_idle(&reopened, "Replay complete", cx);
+    reopened.retire_and_wait().await.unwrap();
+    server.join().unwrap();
+    let restored = SessionStore::open(&path).unwrap();
+    assert_eq!(restored.snapshot().version, 4);
+    let rows = restored
+        .snapshot()
+        .messages
+        .into_iter()
+        .filter(|message| message.tool_record.is_some())
+        .collect::<Vec<_>>();
+    assert_eq!(rows.len(), 2);
+    drop(restored);
+    let (_ui_directory, window, view) = fixture(cx, rows, 0);
+    let child = transcript(&view, cx);
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let editor = super::output(&child, cx);
+    assert_eq!(cx.read(|cx| editor.read(cx).text().to_owned()), "2  second");
+    assert!(
+        visual
+            .debug_bounds(selector(&child, "read-note", cx))
+            .is_some()
+    );
+    assert!(
+        !original.exists(),
+        "render/replay must not recreate or reread the original"
+    );
+}

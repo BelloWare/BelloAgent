@@ -36,6 +36,7 @@ fn typed_fixture_history(profile: &Profile) -> Vec<bello_agent_core::Message> {
         call_id: "fixture-call".into(),
         is_error: false,
         outcome: ToolOutcome::Completed,
+        content: None,
     }));
     vec![assistant, result]
 }

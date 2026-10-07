@@ -102,3 +102,32 @@ then copy the **entire Rust session directory**, including any `.stream.jsonl`
 files. Preserve a damaged or uncertain snapshot and its journals together for
 inspection rather than deleting a journal to force an open. There is no automatic
 Swift migration or source-app backup/restore integration.
+
+## Read results and snapshot v4
+
+The opt-in macOS read capability retains text/image blocks and resolved viewer
+path/line stats in the result checkpoint. Source image base64 is strictly below
+4,718,592 bytes per image; content JSON is bounded at 16 MiB. Snapshot v4 marks
+this payload, and older v1–3 snapshots remain readable. Idle v2–3 reads remain
+byte-preserving; the existing v1-to-v2 migration and journal/interruption recovery
+still checkpoint when required. Absent content is omitted from legacy result serialization. Results with payload
+require v4, matching visible text and a completed outcome; malformed records are
+refused without silently stripping media. Image data is shared immutably across
+in-memory snapshot clones and still serialized into private durable storage.
+
+Replay reads retained bytes, never the original file and never a historical tool
+invocation. A model must explicitly declare image input. Otherwise the source
+placeholder replaces images in the provider projection while durable data remains
+unchanged. An unknown manual model-ID override loses inferred image support.
+The existing 32 MiB request, 256 MiB snapshot, 16 MiB journal-record and 512 MiB
+journal-recovery bounds remain; a capacity or uncertain-write failure does not
+publish a success or drop the original recovery evidence. ImageIO's opaque native
+allocations are additional to the documented read/decode bounds.
+
+Successful read content is also charged against a 32 MiB per-batch budget before
+its original file worker returns: serialized content/stats plus duplicated visible
+text bytes. Charges remain until the batch settles; exhausted results explicitly
+fail retention with no content and no automatic replay. Earlier accepted content
+is unchanged. Native per-read/transient decode allocations are additional. The
+snapshot encoder uses a bounded writer and includes the final newline in its
+256 MiB limit; it never builds an oversized candidate buffer before rejecting it.

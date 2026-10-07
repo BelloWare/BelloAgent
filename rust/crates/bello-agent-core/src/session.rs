@@ -421,7 +421,20 @@ impl Session {
         self.error = None;
         Ok(())
     }
+    fn has_retained_tool_content(&self) -> bool {
+        self.messages
+            .iter()
+            .any(|message| match &message.tool_record {
+                Some(crate::tool_history::ToolRecord::Result(record)) => record.content.is_some(),
+                _ => false,
+            })
+    }
     fn validate_tool_history(&self) -> Result<()> {
+        if self.version < 4 && self.has_retained_tool_content() {
+            return Err(invalid(
+                "Retained tool content requires Rust snapshot version 4",
+            ));
+        }
         if self.version < 3
             && self
                 .messages
@@ -680,7 +693,7 @@ impl SessionInspectionLease {
         if session.id != expected_session_id {
             return Err(invalid("The session file belongs to another chat"));
         }
-        if ![1, 2, 3].contains(&session.version) {
+        if ![1, 2, 3, 4].contains(&session.version) {
             return Err(invalid(
                 "Unsupported Rust session format. Swift journals are not imported automatically.",
             ));
@@ -958,7 +971,7 @@ impl SessionStore {
         {
             return Err(invalid("The session file belongs to another chat"));
         }
-        if ![1, 2, 3].contains(&session.version) {
+        if ![1, 2, 3, 4].contains(&session.version) {
             return Err(invalid(
                 "Unsupported Rust session format. Swift journals are not imported automatically.",
             ));
@@ -1079,7 +1092,12 @@ impl SessionStore {
             .iter()
             .any(|message| message.tool_record.is_some())
         {
-            next.version = 3;
+            let required_version = if next.has_retained_tool_content() {
+                4
+            } else {
+                3
+            };
+            next.version = next.version.max(required_version);
         }
         next.revision = next
             .revision
@@ -1296,16 +1314,44 @@ fn confirm_existing_checkpoint(path: &Path) -> Result<()> {
 }
 
 fn encode_snapshot(session: &Session) -> Result<Vec<u8>> {
+    encode_snapshot_with_limit(session, MAX_SNAPSHOT_BYTES)
+}
+
+fn encode_snapshot_with_limit(session: &Session, maximum: usize) -> Result<Vec<u8>> {
     session.validate_tool_history()?;
     session.validate_edits()?;
-    let mut bytes = serde_json::to_vec(session)?;
-    bytes.push(b'\n');
-    if bytes.len() > MAX_SNAPSHOT_BYTES {
+    struct BoundedBytes {
+        bytes: Vec<u8>,
+        maximum: usize,
+    }
+    impl std::io::Write for BoundedBytes {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if bytes.len() > self.maximum.saturating_sub(self.bytes.len()) {
+                return Err(std::io::Error::other("snapshot byte limit"));
+            }
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut bytes = BoundedBytes {
+        bytes: Vec::new(),
+        maximum: maximum.min(MAX_SNAPSHOT_BYTES),
+    };
+    if let Err(error) = serde_json::to_writer(&mut bytes, session) {
+        if !error.is_io() {
+            return Err(error.into());
+        }
         return Err(invalid(
             "Session exceeds 256 MiB safety limit; previous snapshot is preserved",
         ));
     }
-    Ok(bytes)
+    std::io::Write::write_all(&mut bytes, b"\n").map_err(|_| {
+        invalid("Session exceeds 256 MiB safety limit; previous snapshot is preserved")
+    })?;
+    Ok(bytes.bytes)
 }
 
 #[cfg(test)]
@@ -1660,6 +1706,7 @@ mod tests {
             call_id: "fixture-call".into(),
             is_error: false,
             outcome: ToolOutcome::Completed,
+            content: None,
         }));
         vec![assistant, result]
     }
@@ -2778,6 +2825,7 @@ mod tool_recovery_capacity_tests {
             .map(|_| ToolResultRow {
                 text: "result".into(),
                 outcome: ToolOutcome::Completed,
+                content: None,
             })
             .collect();
         assert!(
@@ -2800,3 +2848,7 @@ mod tool_recovery_capacity_tests {
         assert!(encode_snapshot(&restored).unwrap().len() <= recovered_size + 1024);
     }
 }
+
+#[cfg(test)]
+#[path = "read_storage_tests.rs"]
+mod read_storage_tests;

@@ -1121,3 +1121,14 @@ fn window_close_captures_local_typing_before_owner_acknowledgment_and_keep_retai
         assert!(!view.controller.is_persistent());
     });
 }
+
+#[::core::prelude::v1::test]
+fn manual_model_change_clears_inherited_image_capability_but_name_edit_keeps_it() {
+    let mut form = new_form();
+    form.draft.profile.input = vec!["text".into(), "image".into()];
+    form.fields.name = "Renamed fixture".into();
+    assert!(form.capture().unwrap().profile.supports_images());
+    form.fields.model = "unknown-other-model".into();
+    assert!(!form.capture().unwrap().profile.supports_images());
+    assert!(form.draft.profile.supports_images());
+}
