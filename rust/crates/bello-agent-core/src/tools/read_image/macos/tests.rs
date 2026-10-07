@@ -317,33 +317,77 @@ fn supported_under_limit_data_is_preserved_byte_for_byte() {
     assert_eq!(output["hints"], json!([]));
 }
 
-#[test]
-fn metadata_budget_rejects_bomb_before_full_decode() {
-    let mut bytes = bmp(1, 1, false);
-    bytes[18..22].copy_from_slice(&100_000_u32.to_le_bytes());
-    bytes[22..26].copy_from_slice(&100_000_u32.to_le_bytes());
+// A valid, transparent PNG with exactly one column beyond the pixel budget.
+// The known dimensions are 64 MiB + 16 KiB RGBA8-equivalent; row alignment
+// and native encoder storage are additional. This uses CoreGraphics creation
+// and encoding, not the production ImageIO decode path.
+// All fixture native owners drop before the tested read begins.
+fn valid_oversize_png() -> Vec<u8> {
+    let color = CGColorSpace::new_device_rgb().unwrap();
+    let context = unsafe {
+        CGBitmapContextCreate(
+            ptr::null_mut(),
+            4097,
+            4096,
+            8,
+            0,
+            Some(&color),
+            CGImageAlphaInfo::PremultipliedLast.0,
+        )
+    }
+    .expect("bounded synthetic bitmap allocation");
+    CGContext::clear_rect(
+        Some(&context),
+        CGRect {
+            origin: CGPoint { x: 0., y: 0. },
+            size: CGSize {
+                width: 4097.,
+                height: 4096.,
+            },
+        },
+    );
+    let image = CGBitmapContextCreateImage(Some(&context)).unwrap();
     let token = CancellationToken::new();
-    // A mere omission would also pass if ImageIO rejected this intentionally
-    // truncated file before reaching our guard. Require readable, excessive
-    // native metadata first, then prove our checked size rejects that metadata.
-    let source = source(&bytes, &token)
-        .unwrap()
-        .expect("ImageIO must expose the synthetic BMP header");
+    let bytes = encode(&image, None, &token).unwrap().unwrap();
+    assert!(
+        bytes.len() < 16 * 1024 * 1024,
+        "fixture must fit native read's file bound"
+    );
+    bytes
+}
+
+#[test]
+fn metadata_budget_rejects_valid_oversize_png_before_full_decode() {
+    let bytes = valid_oversize_png();
+    let token = CancellationToken::new();
+    // Require valid ImageIO metadata first, rather than allowing malformed-file
+    // rejection to masquerade as proof that our pixel budget was exercised.
+    let source = source(&bytes, &token).unwrap().expect("valid fixture PNG");
     assert!(unsafe { source.count() } > 0);
-    let properties = unsafe { source.properties_at_index(0, None) }
-        .expect("ImageIO must expose the synthetic BMP dimensions");
+    let properties = unsafe { source.properties_at_index(0, None) }.expect("valid PNG dimensions");
     assert_eq!(
         number(&properties, unsafe { kCGImagePropertyPixelWidth }),
-        Some(100_000)
+        Some(4097)
     );
     assert_eq!(
         number(&properties, unsafe { kCGImagePropertyPixelHeight }),
-        Some(100_000)
+        Some(4096)
     );
     assert!(size(&source, &token).unwrap().is_none());
     // process_in_pool requires this validated Size before calling oriented(),
-    // so the over-budget metadata cannot reach the full-frame thumbnail decode.
-    let output = result_json(process(&bytes, "image/bmp", &token).unwrap());
+    // so excessive metadata cannot reach the full-frame thumbnail decode.
+    let output = result_json(process(&bytes, "image/png", &token).unwrap());
+    assert_eq!(output, json!({"omitted":RESIZE_FAILURE}));
+}
+
+#[test]
+fn truncated_bmp_with_excessive_declared_dimensions_is_omitted() {
+    let mut bytes = bmp(1, 1, false);
+    bytes[18..22].copy_from_slice(&100_000_u32.to_le_bytes());
+    bytes[22..26].copy_from_slice(&100_000_u32.to_le_bytes());
+    // Actual Apple CI established that ImageIO omits these malformed dimensions.
+    // This tests malformed-input rejection, not the independent pixel guard.
+    let output = result_json(process(&bytes, "image/bmp", &CancellationToken::new()).unwrap());
     assert_eq!(output, json!({"omitted":CONVERSION_FAILURE}));
 }
 
