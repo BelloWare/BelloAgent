@@ -113,7 +113,7 @@ fn selected_metadata_and_ordered_loaded_images_match_checked_in_swift() {
         ("loose.gif",b"GIF8xx".to_vec()),("truncated.png",b"\x89PNG\r\n\x1a\n".to_vec()),
         ("empty.png",vec![]),("text.png",b"ordinary text".to_vec()),
     ];
-    let paths: Vec<_> = cases
+    let mut paths: Vec<_> = cases
         .iter()
         .map(|(name, bytes)| {
             let path = d.path().join(name);
@@ -121,6 +121,14 @@ fn selected_metadata_and_ordered_loaded_images_match_checked_in_swift() {
             path.to_str().unwrap().to_owned()
         })
         .collect();
+    // Exercise source symlink resolution, including a distinct same-byte file:
+    // canonical path comparison must not become content-only equivalence.
+    let duplicate = d.path().join("same-bytes.gif");
+    fs::copy(&paths[0], &duplicate).unwrap();
+    paths.push(duplicate.to_str().unwrap().to_owned());
+    let alias = d.path().join("alias.gif");
+    std::os::unix::fs::symlink(&paths[0], &alias).unwrap();
+    paths.push(alias.to_str().unwrap().to_owned());
     let expected = oracle(&paths);
     for (index, path) in paths.iter().enumerate() {
         match AttachmentRecord::inspect(Path::new(path)) {
@@ -128,7 +136,18 @@ fn selected_metadata_and_ordered_loaded_images_match_checked_in_swift() {
             Ok(record) => {
                 let mut metadata = serde_json::to_value(&record).unwrap();
                 metadata["id"] = Value::Null;
-                assert_eq!(metadata, expected[index]["record"]);
+                let mut expected_metadata = expected[index]["record"].clone();
+                // Foundation may preserve Darwin's /var spelling while Rust
+                // resolves it to /private/var. Require the same existing target,
+                // rather than deleting the path assertion or rewriting prefixes.
+                expected_metadata["path"] = json!(
+                    Path::new(expected_metadata["path"].as_str().unwrap())
+                        .canonicalize()
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                );
+                assert_eq!(metadata, expected_metadata);
                 let loaded = load(
                     &[record],
                     &CancellationToken::new(),
