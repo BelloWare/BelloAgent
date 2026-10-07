@@ -1,0 +1,21 @@
+   Compiling bello-agent-app v0.1.0 (/workspace/shared/agent-attachments-stage/rust/crates/bello-agent-app)
+    Finished `test` profile [unoptimized] target(s) in 21.95s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running unittests src/main.rs (/workspace/scratch/8b6fda578834/agent-mcp-ui-target/debug/deps/bello_agent-0274791bd73f2652)
+
+running 1 test
+
+thread 'context_inspector::tests::attachment_only_change_marks_captured_preview_stale_and_refresh_is_honest' (54) panicked at crates/bello-agent-app/src/context_inspector_tests.rs:651:9:
+assertion failed: !view.current(view.document.as_ref().unwrap(), cx).unwrap()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test context_inspector::tests::attachment_only_change_marks_captured_preview_stale_and_refresh_is_honest ... FAILED
+
+failures:
+
+failures:
+    context_inspector::tests::attachment_only_change_marks_captured_preview_stale_and_refresh_is_honest
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 521 filtered out; finished in 0.06s
+
+error: test failed, to rerun pass `-p bello-agent-app --bin bello-agent`

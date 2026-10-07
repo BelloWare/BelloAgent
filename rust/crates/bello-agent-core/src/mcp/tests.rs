@@ -124,6 +124,7 @@ impl Fixture {
             .lock()
             .unwrap()
             .begin_submission(SubmissionIntent {
+                attachments: Vec::new(),
                 id: item.id.clone(),
                 chat_id: record.id.clone(),
                 text: text.into(),

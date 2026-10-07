@@ -394,6 +394,14 @@ fn call_item(call: &ToolCall, provider_id: Option<&str>) -> Result<Value> {
 /// placeholders, not queued work and never instructions to invoke anything.
 pub fn project(messages: &[Message], profile: &Profile) -> Result<Vec<Value>> {
     validate(messages)?;
+    for message in messages {
+        if let Some(content) = &message.user_content {
+            if message.role != "user" {
+                return Err(invalid("Retained image content has no user owner"));
+            }
+            content.validate_display(&message.text)?;
+        }
+    }
     let active = crate::compaction::active_context(messages)?;
     project_active(&active, profile)
 }
@@ -462,7 +470,21 @@ pub(crate) fn project_active(messages: &[&Message], profile: &Profile) -> Result
             continue;
         }
         match message.role.as_str() {
-            "user" => output.push(json!({"role":"user","content":[{"type":"input_text","text":message.text}]})),
+            "user" => {
+                let content = if let Some(content) = &message.user_content {
+                    content.validate_display(&message.text)?;
+                    if profile.supports_images() {
+                        for block in &content.blocks {
+                            if let crate::tool_content::ContentBlock::Image {data,..} = block {
+                                image_bytes = image_bytes.saturating_add(data.len());
+                                if image_bytes > crate::provider::MAX_REQUEST_BYTES { return Err(invalid("Request image content exceeds 32 MiB")); }
+                            }
+                        }
+                    }
+                    content.provider_content(profile.supports_images())
+                } else { vec![json!({"type":"input_text","text":message.text})] };
+                output.push(json!({"role":"user","content":content}));
+            },
             "assistant" => output.push(json!({"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":message.text,"annotations":[]}]})),
             _ => return Err(invalid("Unsupported replay role in Rust session")),
         }

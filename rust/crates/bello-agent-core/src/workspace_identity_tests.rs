@@ -15,6 +15,7 @@ fn fixture(mode: ChatToolMode) -> (tempfile::TempDir, WorkspaceStore, ChatRecord
     );
     chat.tool_mode = mode;
     let draft = DraftRecord {
+        attachments: Vec::new(),
         revision: 4,
         text: "unsent ordinary draft".into(),
         queued_edit: Some(QueuedDraft {
@@ -121,6 +122,7 @@ fn all_legacy_versions_open_without_binding_or_rewrite_then_migrate_on_draft_wri
             .unwrap();
         assert_eq!(fs::read(&path).unwrap(), before);
         let newer = DraftRecord {
+            attachments: Vec::new(),
             revision: draft.revision + 1,
             ..draft
         };
@@ -307,6 +309,7 @@ fn mode_pre_and_post_rename_failures_preserve_recovery_material_and_fence_writes
                     .save_draft(
                         &chat.id,
                         DraftRecord {
+                            attachments: Vec::new(),
                             revision: 5,
                             ..draft
                         }

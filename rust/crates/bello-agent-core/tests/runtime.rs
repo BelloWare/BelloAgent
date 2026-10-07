@@ -788,6 +788,7 @@ fn reordered_queue_reopens_with_each_captured_model_effort_and_full_text() {
         .transact(|session| {
             for (id, text, model, effort) in rows {
                 session.submit(Submission {
+                    attachments: Vec::new(),
                     id: id.into(),
                     text: text.into(),
                     lane: Lane::FollowUp,
@@ -926,6 +927,7 @@ fn rejected_reorder_without_a_worker_preserves_publication_counter() {
 fn paused_resume_fixture(path: &std::path::Path) -> (SessionStore, Vec<Submission>) {
     let items = vec![
         Submission {
+            attachments: Vec::new(),
             id: "resume-first".into(),
             text: "first persisted follow-up".into(),
             lane: Lane::FollowUp,
@@ -933,6 +935,7 @@ fn paused_resume_fixture(path: &std::path::Path) -> (SessionStore, Vec<Submissio
             effort: Some("low".into()),
         },
         Submission {
+            attachments: Vec::new(),
             id: "resume-middle".into(),
             text: format!("{}\nfull persisted follow-up 🦋", "x".repeat(2048)),
             lane: Lane::FollowUp,
@@ -940,6 +943,7 @@ fn paused_resume_fixture(path: &std::path::Path) -> (SessionStore, Vec<Submissio
             effort: Some("medium".into()),
         },
         Submission {
+            attachments: Vec::new(),
             id: "resume-last".into(),
             text: "last persisted follow-up".into(),
             lane: Lane::FollowUp,

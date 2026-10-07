@@ -49,6 +49,7 @@ fn fixture(
         )),
         record,
         draft: DraftRecord {
+            attachments: Vec::new(),
             text: "retained composer 日本語".into(),
             ..Default::default()
         },
@@ -676,6 +677,7 @@ async fn retiring_tool_focus_case(cx: &mut TestAppContext, dismiss_early: bool, 
         .unwrap();
     cx.run_until_parked();
     let assistant = Message {
+        user_content: None,
         id: "assistant-tool".into(),
         role: "assistant".into(),
         text: String::new(),
@@ -703,6 +705,7 @@ async fn retiring_tool_focus_case(cx: &mut TestAppContext, dismiss_early: bool, 
         })),
     };
     let result = Message {
+        user_content: None,
         id: "result-tool".into(),
         role: "toolResult".into(),
         text: "selectable output".into(),
@@ -854,6 +857,7 @@ async fn completed_save_preserves_both_chat_drafts_after_newer_selection(cx: &mu
                 record.clone(),
                 crate::chat::RestoredDraft {
                     draft: DraftRecord {
+                        attachments: Vec::new(),
                         text: "second composer".into(),
                         ..Default::default()
                     },
@@ -1086,6 +1090,7 @@ fn history_fixture(
         .transact(|session| {
             session.title = "Saved conversation".into();
             session.messages.push(bello_agent_core::Message {
+                user_content: None,
                 id: Uuid::new_v4().to_string(),
                 role: "assistant".into(),
                 text: "Durable conversation history".into(),

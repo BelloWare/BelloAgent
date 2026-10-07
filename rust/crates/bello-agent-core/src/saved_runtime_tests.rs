@@ -87,6 +87,7 @@ impl Fixture {
     fn prepare(&self, record: &ChatRecord, actor: &Arc<Controller>, text: &str) -> Submission {
         let item = Submission::new(text.into(), Lane::FollowUp);
         let intent = SubmissionIntent {
+            attachments: Vec::new(),
             id: item.id.clone(),
             chat_id: record.id.clone(),
             text: text.into(),
@@ -351,6 +352,7 @@ async fn receipt_transition_crash_requires_checkpoint_and_preserves_text() {
         .lock()
         .unwrap()
         .begin_submission(SubmissionIntent {
+            attachments: Vec::new(),
             id: item.id.clone(),
             chat_id: record.id.clone(),
             text: item.text.clone(),
@@ -394,6 +396,7 @@ async fn pending_unexpected_checkpoint_and_wrong_existing_identity_never_mutate_
                 .lock()
                 .unwrap()
                 .begin_submission(SubmissionIntent {
+                    attachments: Vec::new(),
                     id: uuid::Uuid::new_v4().to_string(),
                     chat_id: record.id.clone(),
                     text: "kept".into(),
@@ -813,4 +816,83 @@ async fn saved_runtime_tail_stop_or_retirement_keeps_accepted_pending_work_pause
             next.retire_and_wait().await.unwrap();
         }
     }
+}
+
+#[tokio::test]
+async fn saved_factory_image_receipt_delivery_and_reopen_use_the_normal_trusted_route() {
+    let (listener, url) = listener().await;
+    let f = Fixture::new(&url);
+    let loaded = f.authority.load_connections().unwrap();
+    let mut draft = loaded.edit(&f.connection).unwrap();
+    draft.profile.input = vec!["text".into(), "image".into()];
+    let saved = f.authority.save_connection(&loaded, &draft).unwrap();
+    assert!(!saved.forked);
+    let (record, actor) = f.pending();
+    assert!(actor.supports_image_attachments());
+    let source = f.root.join("fixture.gif");
+    std::fs::write(&source,b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x01L\x00;").unwrap();
+    let mut item = Submission::new(String::new(), Lane::FollowUp);
+    item.attachments = vec![crate::attachments::AttachmentRecord::inspect(&source).unwrap()];
+    let intent = SubmissionIntent {
+        id: item.id.clone(),
+        chat_id: record.id.clone(),
+        text: item.text.clone(),
+        lane: item.lane.clone(),
+        draft_revision: 1,
+        attachments: item.attachments.clone(),
+    };
+    {
+        let mut catalog = f.workspace.lock().unwrap();
+        catalog
+            .register(
+                record.clone(),
+                DraftRecord {
+                    revision: 1,
+                    text: String::new(),
+                    queued_edit: None,
+                    attachments: item.attachments.clone(),
+                },
+            )
+            .unwrap();
+        catalog.begin_submission(intent.clone()).unwrap();
+    }
+    actor.materialize(&record.snapshot).unwrap();
+    actor
+        .submit_identified_with_attachments(item)
+        .await
+        .unwrap();
+    assert!(actor.submission_intent_status(&intent).unwrap());
+    let request = Request::accept(&listener).await;
+    let expected = request.body["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["role"] == "user")
+        .unwrap()["content"]
+        .clone();
+    assert_eq!(expected[0]["type"], "input_image");
+    request.complete("retained").await;
+    settled(&actor).await;
+    f.workspace
+        .lock()
+        .unwrap()
+        .acknowledge_submission(&intent.id)
+        .unwrap();
+    actor.retire_and_wait().await.unwrap();
+    std::fs::remove_file(source).unwrap();
+    let reopened = f.factory.open_registered(&f.current(&record.id)).unwrap();
+    reopened.submit("continue".into(), Lane::FollowUp).unwrap();
+    let replay = Request::accept(&listener).await;
+    assert_eq!(
+        replay.body["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["role"] == "user")
+            .unwrap()["content"],
+        expected
+    );
+    replay.complete("replayed retained bytes").await;
+    settled(&reopened).await;
+    reopened.retire_and_wait().await.unwrap();
 }

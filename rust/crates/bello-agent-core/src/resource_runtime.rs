@@ -90,15 +90,11 @@ fn resource_prompt(snapshot: &InstructionSnapshot) -> String {
 struct Candidate {
     item: Submission,
     admission_generation: u64,
+    stop_epoch: u64,
+    configuration: Arc<super::Configuration>,
 }
 
-fn same_submission(left: &Submission, right: &Submission) -> bool {
-    left.id == right.id
-        && left.text == right.text
-        && left.lane == right.lane
-        && left.model == right.model
-        && left.effort == right.effort
-}
+use crate::session::same_submission;
 
 fn pending_candidate(session: &Session) -> Option<&Submission> {
     if session.state == RunState::Running || session.queue_paused || session.edit.is_some() {
@@ -339,14 +335,32 @@ impl Controller {
                 let candidate = Candidate {
                     item,
                     admission_generation: self.suspension_generation.load(Ordering::Acquire),
+                    stop_epoch: self.stop_epoch.load(Ordering::Acquire),
+                    configuration: self.configuration().expect("configured"),
                 };
                 let cancel = self.register_resource_cancel(&mut inner);
                 (candidate, retained, cancel)
             };
             let (candidate, retained, cancel) = captured;
-            let prepared = self
-                .prepare_resources(&candidate.item, retained, cancel.clone())
-                .await;
+            let prepared = async {
+                let resources = self
+                    .prepare_resources(&candidate.item, retained, cancel.clone())
+                    .await?;
+                let images = if retry.is_none() {
+                    self.prepare_user_input(
+                        &candidate.item,
+                        &candidate.configuration,
+                        cancel.clone(),
+                        false,
+                    )
+                    .await?
+                } else {
+                    None
+                };
+                self.confirm_resources_async(cancel.clone()).await?;
+                Ok((resources, images))
+            }
+            .await;
             let admitted = {
                 let mut inner = self.inner.lock().expect("session mutex poisoned");
                 if self.is_retired()
@@ -358,6 +372,10 @@ impl Controller {
                 }
                 if self.suspension_generation.load(Ordering::Acquire)
                     != candidate.admission_generation
+                    || self.stop_epoch.load(Ordering::Acquire) != candidate.stop_epoch
+                    || !self
+                        .configuration()
+                        .is_some_and(|config| Arc::ptr_eq(&config, &candidate.configuration))
                 {
                     self.resource_failure(
                         &mut inner,
@@ -400,11 +418,13 @@ impl Controller {
                         .store
                         .transact(|session| session.retry_turn().map(Some))
                 } else {
-                    inner.store.transact(Session::start_next)
+                    inner
+                        .store
+                        .transact(|session| session.start_next_with_content(prepared.1))
                 };
                 match next {
                     Ok(Some(item)) => {
-                        inner.applied_instructions = Some(prepared);
+                        inner.applied_instructions = Some(prepared.0);
                         self.publish(&inner);
                         Some((item, inner.store.snapshot()))
                     }
@@ -456,18 +476,33 @@ impl Controller {
             let candidate = steering_candidate(&session).cloned().map(|item| Candidate {
                 item,
                 admission_generation: self.suspension_generation.load(Ordering::Acquire),
+                stop_epoch: self.stop_epoch.load(Ordering::Acquire),
+                configuration: self.configuration().expect("configured"),
             });
             (candidate, inner.applied_instructions.clone())
         };
         let (candidate, retained) = captured;
         let prepared = if let Some(candidate) = &candidate {
-            self.prepare_resources(&candidate.item, None, cancel.clone())
-                .await
-                .map(Some)
+            async {
+                let resources = self
+                    .prepare_resources(&candidate.item, None, cancel.clone())
+                    .await?;
+                let images = self
+                    .prepare_user_input(
+                        &candidate.item,
+                        &candidate.configuration,
+                        cancel.clone(),
+                        false,
+                    )
+                    .await?;
+                self.confirm_resources_async(cancel.clone()).await?;
+                Ok((Some(resources), images))
+            }
+            .await
         } else {
             self.confirm_resources_async(cancel.clone())
                 .await
-                .map(|()| retained)
+                .map(|()| (retained, None))
         };
         let mut inner = self.inner.lock().expect("session mutex poisoned");
         let mut error = if self.is_retired()
@@ -481,16 +516,20 @@ impl Controller {
         let current = inner.store.snapshot();
         let candidate_current = candidate.as_ref().filter(|candidate| {
             self.suspension_generation.load(Ordering::Acquire) == candidate.admission_generation
+                && self.stop_epoch.load(Ordering::Acquire) == candidate.stop_epoch
+                && self
+                    .configuration()
+                    .is_some_and(|config| Arc::ptr_eq(&config, &candidate.configuration))
                 && steering_candidate(&current)
                     .is_some_and(|item| same_submission(item, &candidate.item))
         });
-        let applied = match prepared {
+        let (applied, images) = match prepared {
             Ok(applied) => applied,
             Err(preparation_error) => {
                 if error.is_none() {
                     error = Some(preparation_error);
                 }
-                None
+                (None, None)
             }
         };
         // A held, removed, or edited steering message stays pending. Completed
@@ -499,7 +538,9 @@ impl Controller {
         let steering = candidate_current.map(|candidate| candidate.item.id.as_str());
         let stopped = error.is_some();
         let persisted = inner.store.transact(|session| {
-            session.settle_tools_with_steering(reply_id, results, stopped, steering)?;
+            session.settle_tools_with_prepared_steering(
+                reply_id, results, stopped, steering, images,
+            )?;
             if let Some(error) = &error {
                 session.error = Some(error.to_string());
             }
@@ -514,12 +555,13 @@ impl Controller {
             inner.applied_instructions = applied;
         }
         self.publish(&inner);
-        if stopped {
-            return None;
-        }
         let session = inner.store.snapshot();
         Some((
-            session.active.clone().expect("continuation assigned"),
+            session
+                .active
+                .clone()
+                .or_else(|| session.retry.clone())
+                .expect("continuation or retry assigned"),
             session,
         ))
     }

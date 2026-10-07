@@ -1,3 +1,6 @@
+#[path = "attachment_runtime.rs"]
+mod attachment_runtime;
+
 #[path = "compaction_runtime.rs"]
 mod compaction_runtime;
 
@@ -137,6 +140,12 @@ pub struct Controller {
     config: RwLock<Option<Arc<Configuration>>>,
     pending_settings: AtomicBool,
     options: RuntimeOptions,
+    attachment_workers: crate::tools::BlockingWorkExecutor,
+    attachment_jobs: Arc<attachment_runtime::AttachmentJobs>,
+    #[cfg(test)]
+    fixture_images: AtomicBool,
+    #[cfg(test)]
+    attachment_processor_barrier: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     authority: Option<Arc<dyn RuntimeAuthorityGuard>>,
     #[cfg(feature = "synthetic-authority")]
     resources: Option<SyntheticResources>,
@@ -248,6 +257,12 @@ impl Controller {
             config: RwLock::new(configuration),
             pending_settings: AtomicBool::new(false),
             options,
+            attachment_workers: crate::tools::BlockingWorkExecutor::shared(),
+            attachment_jobs: Arc::new(attachment_runtime::AttachmentJobs::default()),
+            #[cfg(test)]
+            fixture_images: AtomicBool::new(false),
+            #[cfg(test)]
+            attachment_processor_barrier: Mutex::new(None),
             authority,
             #[cfg(feature = "synthetic-authority")]
             resources: None,
@@ -452,6 +467,11 @@ impl Controller {
         self.submit_identified(Submission::new(text, lane))
     }
     pub fn submit_identified(self: &Arc<Self>, mut item: Submission) -> Result<()> {
+        if !item.attachments.is_empty() {
+            return Err(invalid(
+                "Image submissions require asynchronous attachment preparation",
+            ));
+        }
         let confirmed = self.confirm_resources()?;
         let mut inner = self
             .inner
@@ -483,6 +503,7 @@ impl Controller {
             .stop_epoch
             .fetch_add(1, Ordering::AcqRel)
             .wrapping_add(1);
+        self.attachment_jobs.cancel();
         if self.worker_active.load(Ordering::Acquire) {
             self.stop_requested.store(true, Ordering::Release);
         }
@@ -525,6 +546,7 @@ impl Controller {
         let joined = self.join_workers().await;
         joined?;
         retired?;
+        self.attachment_jobs.join().await?;
         self.wait_for_idle_guard_release().await;
         self.inner
             .lock()
@@ -547,6 +569,7 @@ impl Controller {
         let stopped_after_admission = self.stop();
         // A failed stop/barrier must not abandon a still-owned worker handle.
         self.join_workers().await?;
+        self.attachment_jobs.join().await?;
         {
             let inner = self
                 .inner
@@ -851,134 +874,13 @@ impl Controller {
             this.run(first).await;
         }));
     }
-    async fn run(self: Arc<Self>, mut first: Option<Submission>) {
+    async fn run(self: Arc<Self>, first: Option<Submission>) {
         #[cfg(feature = "synthetic-authority")]
         if self.resources.is_some() {
             self.run_with_resources(first).await;
             return;
         }
-        loop {
-            // An already completed run needs no further vault read. Settle
-            // under the actor so a simultaneous submission cannot be stranded.
-            if first.is_none() {
-                let mut inner = self.inner.lock().expect("session mutex poisoned");
-                if self.settle_empty_completed_tail(&mut inner) {
-                    return;
-                }
-                let session = inner.store.snapshot_ref();
-                if !self.is_retired()
-                    && !self.stop_requested.load(Ordering::Acquire)
-                    && (session.pending.is_empty()
-                        || session.queue_paused
-                        || session.edit.is_some()
-                        || session.state == RunState::Running)
-                {
-                    self.worker_finished(&mut inner);
-                    self.publish(&inner);
-                    return;
-                }
-            }
-            // Fresh membership before dequeue, outside the actor. Accepted
-            // queued text remains pending if the saved connection disappeared.
-            let confirmation = async {
-                self.configuration()
-                    .expect("configuration checked")
-                    .confirm_for_request()
-                    .await?;
-                self.confirm_runtime_authority(CancellationToken::new())
-                    .await
-            }
-            .await;
-            let prepared = {
-                let mut inner = self.inner.lock().expect("session mutex poisoned");
-                let stopped = self.is_retired()
-                    || self.check_resources().is_err()
-                    || self
-                        .configuration()
-                        .is_some_and(|config| config.check().is_err())
-                    || (first.is_none() && self.stop_requested.swap(false, Ordering::AcqRel));
-                let failure = if stopped {
-                    Some(crate::Error::Cancelled)
-                } else {
-                    confirmation.err()
-                };
-                if let Some(error) = failure {
-                    let result = inner.store.transact(|session| {
-                        if let Some(reply_id) = session.active_reply.clone() {
-                            return session.finish(&reply_id, Err(error));
-                        }
-                        session.queue_paused = true;
-                        session.state = if matches!(error, crate::Error::Cancelled) {
-                            RunState::Paused
-                        } else {
-                            RunState::Error
-                        };
-                        if !matches!(error, crate::Error::Cancelled) {
-                            session.error = Some(error.to_string());
-                        }
-                        Ok(())
-                    });
-                    if let Err(error) = result {
-                        inner.fatal = Some(error.to_string());
-                    }
-                    self.worker_finished(&mut inner);
-                    self.publish(&inner);
-                    return;
-                }
-                let next = match first.take() {
-                    Some(item) => Ok(Some(item)),
-                    None => inner.store.transact(Session::start_next),
-                };
-                match next {
-                    Ok(Some(item)) => {
-                        let snapshot = inner.store.snapshot();
-                        let cancel = CancellationToken::new();
-                        if self.is_retired() || self.stop_requested.swap(false, Ordering::AcqRel) {
-                            cancel.cancel();
-                        }
-                        inner.cancel = Some(cancel.clone());
-                        *self
-                            .active_cancel
-                            .write()
-                            .expect("cancellation lock poisoned") = Some(cancel.clone());
-                        self.publish(&inner);
-                        Some((item, snapshot, cancel))
-                    }
-                    Ok(None) => {
-                        self.worker_finished(&mut inner);
-                        self.publish(&inner);
-                        None
-                    }
-                    Err(error) => {
-                        inner.fatal = Some(error.to_string());
-                        self.worker_finished(&mut inner);
-                        self.publish(&inner);
-                        None
-                    }
-                }
-            };
-            let Some((item, snapshot, cancel)) = prepared else {
-                return;
-            };
-            self.run_turn(item, snapshot, cancel).await;
-            {
-                let mut inner = self.inner.lock().expect("session mutex poisoned");
-                if inner.fatal.is_some() {
-                    self.worker_finished(&mut inner);
-                    self.publish(&inner);
-                    return;
-                }
-                inner.cancel = None;
-                self.publish(&inner);
-                if self.is_retired() || inner.store.snapshot().state != RunState::Idle {
-                    self.worker_finished(&mut inner);
-                    self.stop_requested.store(false, Ordering::Release);
-                    return;
-                }
-            }
-            #[cfg(all(test, feature = "synthetic-authority"))]
-            worker_tail_test_gate::pause(&self).await;
-        }
+        self.run_with_images(first).await;
     }
 
     // Defaults remain inert. Synthetic confirmation may inspect fixture paths

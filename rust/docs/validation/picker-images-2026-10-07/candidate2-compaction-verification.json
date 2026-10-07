@@ -1,0 +1,21 @@
+{
+  "compaction_phase": "completed",
+  "same_retained_user_content": true,
+  "all_six_original_sources_absent": true,
+  "compaction_user_image_counts": [
+    1,
+    4,
+    0,
+    1,
+    0
+  ],
+  "following_request_user_image_counts": [
+    0,
+    0,
+    1,
+    0
+  ],
+  "provider_requests": 6,
+  "state": "idle",
+  "pending": 0
+}

@@ -3,6 +3,15 @@ use super::*;
 use crate::chat_organization::catalog_operation;
 use bello_agent_core::Submission;
 use std::time::Duration;
+
+/// Extracting a user-reviewed receipt from a missing checkpoint is distinct from
+/// certain nonacceptance. It never revives the failed loader or enables Send.
+enum IntentResolution {
+    Accepted,
+    Absent,
+    ExtractUnavailable,
+}
+
 impl AgentView {
     pub(crate) fn chat_mut(&mut self, id: &str) -> Option<&mut ChatState> {
         if self.chat.record.id == id {
@@ -125,6 +134,7 @@ impl AgentView {
             && !outgoing.busy
             && !self.organization_operations.contains_key(&id)
             && outgoing.inflight_submission.is_none()
+            && !self.picker_owns_chat(&id)
             && outgoing.saved_draft(cx).is_empty()
             && !self.recoveries.values().any(|intent| intent.chat_id == id)
         {
@@ -145,6 +155,7 @@ impl AgentView {
             && !self.controller.is_retired()
             && !self.busy
             && !self.organization_operations.contains_key(&self.record.id)
+            && !self.picker_owns_chat(&self.record.id)
             && self.saved_draft(cx).is_empty()
         {
             self.focus_visible_composer(window, cx);
@@ -394,8 +405,23 @@ impl AgentView {
             cx.notify();
             return;
         }
+        if self
+            .recoveries
+            .values()
+            .any(|intent| intent.chat_id == self.record.id)
+        {
+            self.error = Some("Resolve the unconfirmed submission before sending again.".into());
+            self.reconcile_intents(&self.record.id.clone(), cx);
+            cx.notify();
+            return;
+        }
         let text = self.composer.read(cx).text().to_owned();
-        if text.trim().is_empty() {
+        if text.trim().is_empty() && self.attachments.is_empty() {
+            return;
+        }
+        if let Err(error) = bello_agent_core::attachments::validate_selection(&self.attachments) {
+            self.error = Some(error.to_string());
+            cx.notify();
             return;
         }
         let captured = self.saved_draft(cx);
@@ -409,8 +435,10 @@ impl AgentView {
         self.busy = true;
         self.error = None;
         self.dismissed_error = None;
-        let item = Submission::new(text.clone(), lane);
+        let mut item = Submission::new(text.clone(), lane);
+        item.attachments = self.attachments.clone();
         let intent = SubmissionIntent {
+            attachments: item.attachments.clone(),
             id: item.id.clone(),
             chat_id: self.record.id.clone(),
             text: text.clone(),
@@ -419,11 +447,14 @@ impl AgentView {
         };
         self.inflight_submission = Some(intent.clone());
         // Every debounce from this clear carries the captured intent atomically.
+        self.attachments.clear();
         self.composer
             .update(cx, |editor, cx| editor.set_text(String::new(), cx));
         let record = self.record.clone();
         let id = record.id.clone();
         let controller = self.controller.clone();
+        let source = Arc::downgrade(&controller);
+        let project = self.project.clone();
         let workspace = self.workspace.clone();
         let receipt = intent.clone();
         let task = cx.background_executor().spawn(async move {
@@ -434,10 +465,13 @@ impl AgentView {
                 Ok(())
             });
             let catalog_uncertain = prepare.uncertain;
-            let outcome = prepare.result.and_then(|()| {
-                controller.materialize(&record.snapshot)?;
-                controller.submit_identified(item)
-            });
+            let outcome = match prepare.result {
+                Ok(()) => match controller.materialize(&record.snapshot) {
+                    Ok(()) => controller.submit_identified_with_attachments(item).await,
+                    Err(error) => Err(error),
+                },
+                Err(error) => Err(error),
+            };
             let registered = workspace
                 .lock()
                 .is_ok_and(|store| store.snapshot().chats.iter().any(|chat| chat.id == id));
@@ -458,7 +492,8 @@ impl AgentView {
                 }
                 Err(error) => {
                     let uncertain =
-                        matches!(error, bello_agent_core::Error::PersistenceUncertain(_));
+                        matches!(error, bello_agent_core::Error::PersistenceUncertain(_))
+                            || catalog_uncertain;
                     (
                         false,
                         registered,
@@ -476,7 +511,9 @@ impl AgentView {
         cx.spawn(async move |view, cx| {
             let (accepted, registered, uncertain, error, catalog_uncertain) = task.await;
             let _ = view.update(cx, move |view, cx| {
+                if view.project != project { return; }
                 view.observe_catalog_uncertainty(catalog_uncertain, cx);
+                if view.chat_ref(&id).is_none_or(|chat| !source.ptr_eq(&Arc::downgrade(&chat.controller)) || chat.inflight_submission.as_ref() != Some(&receipt)) { return; }
                 let latest = view.workspace.lock().ok().and_then(|store| store.snapshot().chats.into_iter().find(|record| record.id == id));
                 if let Some(record) = &latest && let Some(row) = view.records.iter_mut().find(|record| record.id == id) {
                     row.materialization = record.materialization;
@@ -485,25 +522,27 @@ impl AgentView {
                 let mut revision_exhausted = false;
                 if let Some(chat) = view.chat_mut(&id) {
                     if let Some(record) = &latest { chat.record.materialization = record.materialization; }
-                    chat.busy = !accepted;
+                    chat.busy = !accepted && !uncertain;
                     chat.inflight_submission = None;
                     chat.error = error;
                     if registered || accepted {
                         chat.pending = false;
                     }
                     chat.session = chat.controller.snapshot_shared();
-                    if !accepted {
+                    // An uncertain acceptance lives only in its durable receipt.
+                    // Re-inserting it now could duplicate an accepted input on reopen.
+                    if !accepted && !uncertain {
+                        match bello_agent_core::attachments::restore(&receipt.attachments,&chat.attachments) {
+                            Ok(restored)=>chat.attachments=restored,
+                            Err(error)=>{chat.error=Some(error.to_string());revision_exhausted=true;chat.busy=false;}
+                        }
                         let later = chat.composer.read(cx).text();
-                        let merged = if later.is_empty() {
-                            text
-                        } else {
-                            format!("{text}\n\n{later}")
-                        };
+                        let merged = merge_restored_text(&text, later);
                         chat.composer
                             .update(cx, |editor, cx| editor.set_text(merged, cx));
                         if let Some(revision) = chat.draft_revision.checked_add(1) {
                             chat.draft_revision = revision;
-                            restore = Some((chat.record.clone(), chat.saved_draft(cx)));
+                            if !revision_exhausted { restore = Some((chat.record.clone(), chat.saved_draft(cx))); }
                         } else {
                             revision_exhausted = true;
                             chat.busy = false;
@@ -524,10 +563,14 @@ impl AgentView {
                         })
                     });
                     let settled_chat = id.clone();
+                    let recovery_source = source.clone();
+                    let recovery_project = project.clone();
                     cx.spawn(async move |view, cx| {
                         let outcome = task.await;
                         let _ = view.update(cx, |view, cx| {
+                            if view.project != recovery_project { return; }
                             view.observe_catalog_uncertainty(outcome.uncertain, cx);
+                            if view.chat_ref(&settled_chat).is_none_or(|chat| !recovery_source.ptr_eq(&Arc::downgrade(&chat.controller))) { return; }
                             let result = outcome.display_result();
                             if let Some(chat) = view.chat_mut(&settled_chat) {
                                 chat.busy = false;
@@ -655,54 +698,78 @@ impl AgentView {
         let Some(chat) = self.chat_ref(id) else {
             return;
         };
-        let accepted: Vec<_> = self
+        let intents: Vec<_> = self
             .recoveries
             .values()
-            .filter(|intent| {
-                intent.chat_id == id
-                    && (chat
-                        .session
-                        .messages
-                        .iter()
-                        .any(|message| message.id == intent.id)
-                        || chat.session.pending.iter().any(|item| item.id == intent.id)
-                        || chat
-                            .session
-                            .active
-                            .as_ref()
-                            .is_some_and(|item| item.id == intent.id)
-                        || chat
-                            .session
-                            .retry
-                            .as_ref()
-                            .is_some_and(|item| item.id == intent.id))
-            })
-            .map(|intent| intent.id.clone())
+            .filter(|intent| intent.chat_id == id)
+            .cloned()
             .collect();
-        if accepted.is_empty() {
+        if intents.is_empty() {
             return;
         }
+        let controller = chat.controller.clone();
+        let source = Arc::downgrade(&controller);
+        let project = self.project.clone();
+        let chat_id = id.to_owned();
         let workspace = self.workspace.clone();
-        let done = accepted.clone();
         let task = cx.background_executor().spawn(async move {
-            catalog_operation(&workspace, |store| {
-                for id in accepted {
-                    store.acknowledge_submission(&id)?;
+            let mut accepted = Vec::new();
+            let mut error = None;
+            for intent in intents {
+                match controller.submission_intent_status(&intent) {
+                    Ok(true) => accepted.push(intent.id),
+                    Ok(false) => {}
+                    Err(problem) => {
+                        error = Some(format!("Submission recovery is not confirmed: {problem}"));
+                        break;
+                    }
                 }
-                Ok(())
-            })
+            }
+            let outcome = if accepted.is_empty() {
+                None
+            } else {
+                Some(catalog_operation(&workspace, |store| {
+                    for id in &accepted {
+                        store.acknowledge_submission(id)?;
+                    }
+                    Ok(())
+                }))
+            };
+            (accepted, outcome, error)
         });
         cx.spawn(async move |view, cx| {
-            let outcome = task.await;
+            let (accepted, outcome, error) = task.await;
             let _ = view.update(cx, |view, cx| {
-                view.observe_catalog_uncertainty(outcome.uncertain, cx);
-                match outcome.display_result() {
-                    Ok(()) => {
-                        for id in done {
-                            view.recoveries.remove(&id);
+                if view.project != project {
+                    return;
+                }
+                if let Some(outcome) = &outcome {
+                    view.observe_catalog_uncertainty(outcome.uncertain, cx);
+                }
+                if view
+                    .chat_ref(&chat_id)
+                    .is_none_or(|chat| !source.ptr_eq(&Arc::downgrade(&chat.controller)))
+                {
+                    return;
+                }
+                if let Some(outcome) = outcome {
+                    match outcome.display_result() {
+                        Ok(()) => {
+                            for id in accepted {
+                                view.recoveries.remove(&id);
+                            }
+                        }
+                        Err(error) => {
+                            if let Some(chat) = view.chat_mut(&chat_id) {
+                                chat.error = Some(error);
+                            }
                         }
                     }
-                    Err(error) => view.error = Some(error.to_string()),
+                }
+                if let Some(error) = error
+                    && let Some(chat) = view.chat_mut(&chat_id)
+                {
+                    chat.error = Some(error);
                 }
                 cx.notify();
             });
@@ -716,6 +783,7 @@ impl AgentView {
             || self.shutting_down
             || self.edit_recovery.blocked
             || self.has_pending_cancel(&self.record.id)
+            || self.picker_owns_chat(&self.record.id)
         {
             return;
         }
@@ -729,15 +797,10 @@ impl AgentView {
         if draft.queued_edit.is_some() {
             self.error =
                 Some("Finish the queued edit before recovering another submission.".into());
+            cx.notify();
             return;
         }
-        if insert {
-            draft.text = if draft.text.is_empty() {
-                intent.text.clone()
-            } else {
-                format!("{}\n\n{}", intent.text, draft.text)
-            };
-        }
+        let draft_source = draft.clone();
         let Some(revision) = self.draft_revision.checked_add(1) else {
             self.error = Some(
                 "Draft revision limit reached; text and recovery receipt are preserved.".into(),
@@ -746,32 +809,128 @@ impl AgentView {
             return;
         };
         self.draft_revision = revision;
-        draft.revision = self.draft_revision;
+        draft.revision = revision;
         self.busy = true;
         self.composer
             .update(cx, |editor, cx| editor.set_read_only(true, cx));
         let workspace = self.workspace.clone();
-        let saved = draft.clone();
+        let controller = self.controller.clone();
+        let source = Arc::downgrade(&controller);
+        let project = self.project.clone();
+        let unavailable_placeholder = self.load_failed
+            && controller.is_retired()
+            && !controller.configured()
+            && controller.is_never_materialized();
+        let record = self.record.clone();
+        let checkpoint = record.snapshot.clone();
+        let load_generation = self.load_generation;
+        let workspace_identity = Arc::downgrade(&workspace);
+        let binding = self.window_binding;
         let receipt = intent.clone();
         let task = cx.background_executor().spawn(async move {
-            catalog_operation(&workspace, |store| {
-                store.withdraw_submission(&receipt.id, saved)
-            })
+            let resolution = if unavailable_placeholder {
+                match std::fs::symlink_metadata(&checkpoint) {
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound =>
+                        Ok(IntentResolution::ExtractUnavailable),
+                    _ => Err(bello_agent_core::Error::Invalid(
+                        "The unavailable checkpoint could not be confirmed missing; the receipt is preserved.".into(),
+                    )),
+                }
+            } else {
+                controller.submission_intent_status(&receipt).map(|accepted| {
+                    if accepted { IntentResolution::Accepted } else { IntentResolution::Absent }
+                })
+            };
+            let accepted = matches!(resolution, Ok(IntentResolution::Accepted));
+            let extracted_unavailable = matches!(resolution, Ok(IntentResolution::ExtractUnavailable));
+            let prepared = resolution.and_then(|_| {
+                if insert && !accepted {
+                    draft.attachments = bello_agent_core::attachments::restore(
+                        &receipt.attachments,
+                        &draft.attachments,
+                    )?;
+                    draft.text = merge_restored_text(&receipt.text, &draft.text);
+                }
+                Ok(())
+            });
+            let outcome = catalog_operation(&workspace, |store| {
+                prepared?;
+                // A saved receipt is the recovery source. A cached UI row is
+                // insufficient, especially when no session can be inspected.
+                let saved = store.snapshot();
+                if saved.intents.get(&receipt.id) != Some(&receipt) {
+                    return Err(bello_agent_core::Error::Invalid(
+                        "The saved submission receipt changed; recovery was not applied.".into(),
+                    ));
+                }
+                let same_chat = saved.chats.iter().any(|chat| chat.id == record.id
+                    && chat.snapshot == record.snapshot && chat.connection_id == record.connection_id
+                    && chat.tool_mode == record.tool_mode && chat.materialization == record.materialization);
+                let current_draft = saved.drafts.get(&receipt.chat_id).cloned().unwrap_or_default();
+                if !same_chat || current_draft.revision > draft_source.revision
+                    || (current_draft.revision == draft_source.revision && current_draft != draft_source) {
+                    return Err(bello_agent_core::Error::Invalid(
+                        "The saved chat or draft changed; the submission receipt is preserved.".into(),
+                    ));
+                }
+                if extracted_unavailable && !matches!(std::fs::symlink_metadata(&checkpoint),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound) {
+                    return Err(bello_agent_core::Error::Invalid(
+                        "The checkpoint changed during recovery; the submission receipt is preserved.".into(),
+                    ));
+                }
+                if accepted {
+                    store.acknowledge_submission(&receipt.id)
+                } else {
+                    store.withdraw_submission(&receipt.id, draft.clone())
+                }
+            });
+            (outcome, draft, accepted, extracted_unavailable)
         });
         cx.spawn(async move |view, cx| {
-            let outcome = task.await;
+            let (outcome, draft, accepted, extracted_unavailable) = task.await;
             let _ = view.update(cx, |view, cx| {
+                if view.project != project || !workspace_identity.ptr_eq(&Arc::downgrade(&view.workspace)) {
+                    return;
+                }
                 view.observe_catalog_uncertainty(outcome.uncertain, cx);
+                if view
+                    .chat_ref(&intent.chat_id)
+                    .is_none_or(|chat| !source.ptr_eq(&Arc::downgrade(&chat.controller)))
+                {
+                    return;
+                }
                 let result = outcome.display_result();
+                // Durable draft ownership is per workspace/chat. A window-only
+                // rebind can adopt the same data but never triggers focus or
+                // navigation. Runtime/load replacement cannot adopt old input.
+                let _window_rebound = view.window_binding != binding;
+                let current_owner = view.chat_ref(&intent.chat_id).is_some_and(|chat| {
+                    chat.load_generation == load_generation && (!extracted_unavailable
+                        || (chat.load_failed && chat.controller.is_retired()
+                            && !chat.controller.configured() && chat.controller.is_never_materialized()))
+                });
+                if !current_owner { return; }
                 let archived = view.chat_is_archived(&intent.chat_id);
                 if let Some(chat) = view.chat_mut(&intent.chat_id) {
                     chat.busy = false;
                     chat.composer
                         .update(cx, |editor, cx| editor.set_read_only(archived, cx));
                     match &result {
-                        Ok(()) => chat
-                            .composer
-                            .update(cx, |editor, cx| editor.set_text(draft.text, cx)),
+                        Ok(()) if !accepted => {
+                            chat.attachments = draft.attachments;
+                            chat.composer
+                                .update(cx, |editor, cx| editor.set_text(draft.text, cx));
+                            if extracted_unavailable && insert {
+                                chat.error = Some("The unverified receipt was copied into the draft. It may already have executed. The checkpoint is unavailable, so sending remains blocked.".into());
+                            }
+                        }
+                        Ok(()) => {
+                            chat.error = Some(
+                                "This submission was already accepted; it was not inserted again."
+                                    .into(),
+                            );
+                        }
                         Err(error) => chat.error = Some(error.clone()),
                     }
                 }
@@ -922,5 +1081,15 @@ impl AgentView {
                 false
             }
         }
+    }
+}
+
+fn merge_restored_text(captured: &str, newer: &str) -> String {
+    if captured.is_empty() {
+        newer.to_owned()
+    } else if newer.is_empty() {
+        captured.to_owned()
+    } else {
+        format!("{captured}\n\n{newer}")
     }
 }

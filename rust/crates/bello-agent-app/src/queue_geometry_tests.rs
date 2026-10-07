@@ -191,6 +191,7 @@ fn queue_geometry_edit_and_recovery_banners_are_measured_and_floor_stays_reachab
     root.update(cx, |view, cx| {
         view.editing = None;
         let intent = SubmissionIntent {
+            attachments: Vec::new(),
             id: "synthetic-recovery".into(),
             chat_id: view.record.id.clone(),
             text: "retained unconfirmed input ".repeat(20),

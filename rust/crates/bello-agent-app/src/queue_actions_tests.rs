@@ -30,6 +30,7 @@ fn fixture(
         )),
         record: ChatRecord::new(snapshot.id, "Fixture".into(), project.join("session.json")),
         draft: DraftRecord {
+            attachments: Vec::new(),
             text: "keep draft e\u{301} 日本語".into(),
             ..Default::default()
         },

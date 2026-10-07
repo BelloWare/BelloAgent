@@ -1,0 +1,7 @@
+{
+  "state": "error",
+  "error": "No such file or directory (os error 2)",
+  "queued_attachment_metadata_retained": true,
+  "provider_requests": 1,
+  "missing_queued_source": true
+}

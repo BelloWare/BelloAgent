@@ -13,6 +13,7 @@ fn profile(endpoint: String) -> Profile {
 }
 fn row(id: &str, role: &str, text: String) -> Message {
     Message {
+        user_content: None,
         id: id.into(),
         role: role.into(),
         text,
@@ -112,6 +113,10 @@ async fn settled(controller: &Controller) -> Session {
     })
     .await
     .unwrap();
+    // worker_finished clears its atomic activity flag while still holding the
+    // actor through final publication. Cross that actual settlement barrier
+    // before testing a deliberately nonblocking Context preview.
+    drop(controller.inner.lock().unwrap());
     snapshot
 }
 

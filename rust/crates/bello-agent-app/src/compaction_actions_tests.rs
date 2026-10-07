@@ -32,6 +32,7 @@ fn fixture(
             project.join("session.json"),
         ),
         draft: DraftRecord {
+            attachments: Vec::new(),
             text: "Keep this unsent draft 日本語".into(),
             ..Default::default()
         },
@@ -154,6 +155,7 @@ fn labels_distinguish_compaction_from_normal_generation() {
     session.compaction.as_mut().unwrap().phase = Phase::Summarizing;
     assert!(progress_label(&session).contains("Summarizing"));
     let row = bello_agent_core::Message {
+        user_content: None,
         id: "progress".into(),
         role: "assistant".into(),
         text: "Partial summary".into(),
@@ -189,6 +191,7 @@ fn older_compaction_receipt_displays_its_exact_retained_failure() {
         http_attempts: 1,
     });
     let row = bello_agent_core::Message {
+        user_content: None,
         id: "old-progress".into(),
         role: "assistant".into(),
         text: String::new(),

@@ -64,7 +64,7 @@ impl std::fmt::Debug for ContextPreview {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ContextPreview")
             .field("metadata", &self.metadata)
-            .field("request_json", &self.request_json)
+            .field("request_json_bytes", &self.request_json.len())
             .finish()
     }
 }
@@ -86,6 +86,55 @@ impl Controller {
     /// simulate Retry, deliver queued turns, or replay retained partial output.
     /// Call from background work: serialization can process up to 32 MiB.
     pub fn prepare_context(self: &Arc<Self>, draft: &str) -> Result<ContextPreview> {
+        self.prepare_context_prepared(draft, None, None, false)
+    }
+    /// Picker draft preparation is explicit. Active work defers the draft and
+    /// never opens its files. All image work runs outside the conversation actor.
+    pub async fn prepare_context_with_attachments(
+        self: &Arc<Self>,
+        draft: &str,
+        attachments: &[crate::attachments::AttachmentRecord],
+    ) -> Result<ContextPreview> {
+        if attachments.is_empty() {
+            return self.prepare_context(draft);
+        }
+        #[cfg(feature = "synthetic-authority")]
+        if self.resources.is_some() {
+            return Err(invalid(
+                "Context inspection is not yet available for synthetic resource runtimes",
+            ));
+        }
+        if draft.len() > MAX_DRAFT_BYTES {
+            return Err(invalid(
+                "Draft exceeds the supported 256 KiB submission limit",
+            ));
+        }
+        crate::attachments::validate_selection(attachments)?;
+        let state = self.preview_state()?;
+        let content = if state.active {
+            None
+        } else {
+            let mut item = crate::Submission::new(draft.to_owned(), crate::Lane::FollowUp);
+            item.attachments = attachments.to_vec();
+            item.model = Some(state.configuration.profile.model_id.clone());
+            self.prepare_user_input(
+                &item,
+                &state.configuration,
+                tokio_util::sync::CancellationToken::new(),
+                false,
+            )
+            .await?
+            .map(|prepared| prepared.content)
+        };
+        self.prepare_context_prepared(draft, Some(state), content, true)
+    }
+    fn prepare_context_prepared(
+        self: &Arc<Self>,
+        draft: &str,
+        captured: Option<PreviewState>,
+        content: Option<Arc<crate::user_content::UserContent>>,
+        has_attachments: bool,
+    ) -> Result<ContextPreview> {
         // The synthetic delivery path resolves instructions per turn. Its
         // lifetime-fixed options cannot truthfully describe that request, and
         // read-only inspection must not silently discover fresh resources.
@@ -109,7 +158,10 @@ impl Controller {
             active,
             configuration: config,
             active_epoch,
-        } = self.preview_state()?;
+        } = match captured {
+            Some(state) => state,
+            None => self.preview_state()?,
+        };
         let confirmed = super::AdmissionConfirmation {
             configuration: Some(config.clone()),
             active_epoch,
@@ -125,9 +177,10 @@ impl Controller {
         let boundary = preview_messages(&snapshot, active);
         let context_messages = crate::compaction::active_context(boundary)?.len();
         let mut messages = Cow::Borrowed(boundary);
-        let draft_included = !active && !draft.is_empty();
+        let draft_included = !active && (!draft.is_empty() || has_attachments);
         if draft_included {
             messages.to_mut().push(Message {
+                user_content: content,
                 id: uuid::Uuid::new_v4().to_string(),
                 role: "user".into(),
                 text: draft.into(),
@@ -177,7 +230,7 @@ impl Controller {
             model: redact_text(&profile.model_id, &secrets, &mut redacted),
             thinking_level: redact_text(&profile.thinking_level, &secrets, &mut redacted),
             draft_included,
-            draft_deferred: active && !draft.is_empty(),
+            draft_deferred: active && (!draft.is_empty() || has_attachments),
             queue_count: snapshot.pending.len(),
             context_messages,
             input_items,

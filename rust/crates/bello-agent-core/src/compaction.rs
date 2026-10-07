@@ -282,6 +282,18 @@ fn message_tokens(row: &Message) -> u64 {
         }
         _ => {}
     }
+    if let Some(content) = &row.user_content {
+        chars = content
+            .blocks
+            .iter()
+            .map(|block| match block {
+                crate::tool_content::ContentBlock::Text { text } => {
+                    text.encode_utf16().count() as u64
+                }
+                crate::tool_content::ContentBlock::Image { .. } => 4800,
+            })
+            .fold(0, u64::saturating_add);
+    }
     chars.div_ceil(4)
 }
 fn input_budget(profile: &Profile) -> u64 {
@@ -387,15 +399,20 @@ pub(crate) fn prepare_checked(
     crate::tool_history::validate(messages)?;
     let active = active_context(messages)?;
     if !profile.supports_images()
-        && active.iter().any(|row| match &row.tool_record {
-            Some(crate::tool_history::ToolRecord::Result(record)) => {
-                record.content.as_ref().is_some_and(|content| {
-                    content.blocks.iter().any(|block| {
-                        matches!(block, crate::tool_content::ContentBlock::Image { .. })
-                    })
-                })
-            }
-            _ => false,
+        && active.iter().any(|row| {
+            row.user_content
+                .as_ref()
+                .is_some_and(|content| content.image_count() > 0)
+                || match &row.tool_record {
+                    Some(crate::tool_history::ToolRecord::Result(record)) => {
+                        record.content.as_ref().is_some_and(|content| {
+                            content.blocks.iter().any(|block| {
+                                matches!(block, crate::tool_content::ContentBlock::Image { .. })
+                            })
+                        })
+                    }
+                    _ => false,
+                }
         })
     {
         return Err(invalid(

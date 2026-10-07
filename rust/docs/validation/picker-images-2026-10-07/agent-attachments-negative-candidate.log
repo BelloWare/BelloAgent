@@ -1,0 +1,22 @@
+   Compiling bello-agent-core v0.1.0 (/workspace/shared/agent-attachments-stage/rust/crates/bello-agent-core)
+    Finished `test` profile [unoptimized] target(s) in 16.44s
+     Running unittests src/lib.rs (/workspace/shared/agent-attachments-target/debug/deps/bello_agent_core-066ff34ba6df5110)
+
+running 1 test
+test session::attachment_storage_tests::unprepared_or_mismatched_delivery_cannot_remove_pending_metadata ... FAILED
+
+failures:
+
+---- session::attachment_storage_tests::unprepared_or_mismatched_delivery_cannot_remove_pending_metadata stdout ----
+
+thread 'session::attachment_storage_tests::unprepared_or_mismatched_delivery_cannot_remove_pending_metadata' (111) panicked at crates/bello-agent-core/src/attachment_storage_tests.rs:99:5:
+assertion failed: s.start_next_with_content(Some(wrong)).is_err()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    session::attachment_storage_tests::unprepared_or_mismatched_delivery_cannot_remove_pending_metadata
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 457 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p bello-agent-core --lib`

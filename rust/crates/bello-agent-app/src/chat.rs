@@ -26,6 +26,8 @@ pub struct ChatState {
     pub queued_turn_id: Option<String>,
     pub queued_original: Option<String>,
     pub draft_before_edit: String,
+    pub attachments: Vec<bello_agent_core::attachments::AttachmentRecord>,
+    pub draft_before_edit_attachments: Vec<bello_agent_core::attachments::AttachmentRecord>,
     pub retained_edit: Option<QueuedDraft>,
     pub begin_error: Option<crate::queue_begin::BeginFailure>,
     pub begin_operation: Option<crate::queue_begin::BeginOperation>,
@@ -146,6 +148,16 @@ impl ChatState {
             cancel_operation: None,
             begin_operation: None,
             begin_error: None,
+            attachments: if !retain_unowned && draft.queued_edit.is_some() {
+                Vec::new()
+            } else {
+                draft.attachments.clone()
+            },
+            draft_before_edit_attachments: if !retain_unowned && draft.queued_edit.is_some() {
+                draft.attachments.clone()
+            } else {
+                Vec::new()
+            },
             draft_before_edit: if !retain_unowned && draft.queued_edit.is_some() {
                 draft.text
             } else {
@@ -261,6 +273,11 @@ impl ChatState {
             })
             .or_else(|| self.retained_edit.clone());
         DraftRecord {
+            attachments: if self.editing.is_some() {
+                self.draft_before_edit_attachments.clone()
+            } else {
+                self.attachments.clone()
+            },
             revision: self.draft_revision,
             text: if self.editing.is_some() {
                 self.draft_before_edit.clone()

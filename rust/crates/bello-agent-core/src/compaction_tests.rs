@@ -8,6 +8,7 @@ fn profile() -> Profile {
 }
 fn row(id: &str, role: &str, text: &str) -> Message {
     Message {
+        user_content: None,
         id: id.into(),
         role: role.into(),
         text: text.into(),
@@ -569,4 +570,37 @@ fn two_successive_checkpoints_reconstruct_only_latest_summary_and_retained_path(
     let body = crate::provider::request_body(&profile(), &rows, "", "session").unwrap();
     assert!(!body.to_string().contains("First checkpoint"));
     assert!(body.to_string().contains("Updated checkpoint"));
+}
+
+#[test]
+fn user_images_block_placeholder_compaction_and_count_as_image_allowance() {
+    let mut messages = history();
+    let metadata = crate::attachments::AttachmentRecord {
+        id: uuid::Uuid::new_v4().to_string(),
+        path: "/fixture/image.gif".into(),
+        sha256: "a".repeat(64),
+        bytes: 3,
+        mime_type: "image/gif".into(),
+    };
+    let mut image = row("image-user", "user", "");
+    image.user_content = Some(std::sync::Arc::new(
+        crate::user_content::UserContent::new(
+            "",
+            vec![metadata],
+            vec![crate::tool_content::ContentBlock::Image {
+                data: "YWJj".into(),
+                mime_type: "image/gif".into(),
+            }],
+        )
+        .unwrap(),
+    ));
+    assert_eq!(message_tokens(&image), 1200);
+    messages.insert(1, image);
+    let error = prepare(&messages, &profile(), "", "session", &[], "operation", None)
+        .err()
+        .unwrap();
+    assert!(error.to_string().contains("existing images"));
+    let mut supported = profile();
+    supported.input = vec!["text".into(), "image".into()];
+    assert!(prepare(&messages, &supported, "", "session", &[], "operation", None).is_ok());
 }

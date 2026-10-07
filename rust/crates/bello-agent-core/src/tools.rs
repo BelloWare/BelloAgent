@@ -20,6 +20,7 @@
 //! Native read adds bounded durable text/image content and resolved viewer stats.
 //! Native ls itself has an entry bound, not a byte bound, and no `stats` field.
 
+pub(crate) mod attachment_images;
 mod edit;
 mod find;
 mod grep;

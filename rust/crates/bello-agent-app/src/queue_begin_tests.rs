@@ -38,6 +38,7 @@ fn fixture(
         .unwrap();
     let record = ChatRecord::new(store.snapshot().id, "Begin fixture".into(), path);
     let draft = DraftRecord {
+        attachments: Vec::new(),
         revision,
         text: "ordinary é 日本語".into(),
         queued_edit: None,
@@ -826,6 +827,7 @@ fn queue_begin_single_flowed_hold_uses_measured_content_and_keeps_constrained_fl
         v.recoveries.insert(
             "fixture-intent".into(),
             SubmissionIntent {
+                attachments: Vec::new(),
                 id: "fixture-intent".into(),
                 chat_id: id.clone(),
                 text: "unconfirmed input ".repeat(20),

@@ -39,6 +39,7 @@ fn fixture(
         .unwrap();
     let record = ChatRecord::new(store.snapshot().id, "Recovery fixture".into(), path);
     let draft = DraftRecord {
+        attachments: Vec::new(),
         revision,
         text,
         queued_edit: Some(QueuedDraft {

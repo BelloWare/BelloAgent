@@ -1,0 +1,23 @@
+[
+  {
+    "mutation": "digest",
+    "exit_code": 101,
+    "caught_by": "attachments::tests::changed_missing_empty_directory_and_limits_are_rejected",
+    "original_sha256": "a48c5be5d040d46f2d6616471a491d24afaee41f548e0dfa652f6bb3a700e24a",
+    "log": "agent-attachments-negative-digest.log"
+  },
+  {
+    "mutation": "candidate",
+    "exit_code": 101,
+    "caught_by": "session::attachment_storage_tests::unprepared_or_mismatched_delivery_cannot_remove_pending_metadata",
+    "original_sha256": "ab010e1f5d3154e9118332b4e5959374978db5b2ded79924a1c541ae9e69decd",
+    "log": "agent-attachments-negative-candidate.log"
+  },
+  {
+    "mutation": "compaction",
+    "exit_code": 101,
+    "caught_by": "compaction::tests::user_images_block_placeholder_compaction_and_count_as_image_allowance",
+    "original_sha256": "87e57b6c587271ad1a3fa6cbcd56b2fbc6a120420a01f89146d892364166e2cf",
+    "log": "agent-attachments-negative-compaction.log"
+  }
+]

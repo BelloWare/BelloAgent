@@ -1,0 +1,28 @@
+   Compiling bello-agent-app v0.1.0 (/workspace/shared/agent-attachments-rebased/rust/crates/bello-agent-app)
+    Finished `test` profile [unoptimized] target(s) in 23.93s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running unittests src/main.rs (/workspace/scratch/8b6fda578834/agent-mcp-ui-target/debug/deps/bello_agent-0274791bd73f2652)
+
+running 19 tests
+test composer_attachments::tests::chip_file_urls_encode_reserved_unicode_and_shell_bytes_without_retargeting ... ok
+test composer_attachments::tests::fresh_picker_rejects_unowned_hold_and_recovery_but_allows_streaming ... ok
+test composer_attachments::tests::clicking_chip_opens_exact_captured_file_without_changing_draft ... ok
+test composer_attachments::tests::accepted_intent_insert_acknowledges_exact_metadata_without_duplicate_draft ... ok
+test composer_attachments::tests::image_only_labels_are_presentation_without_invented_source_text ... ok
+test composer_attachments::tests::chooser_cancel_rejection_and_over_limit_keep_text_chips_and_editor ... ok
+test composer_attachments::tests::failed_send_prepends_captured_images_to_newer_draft_without_losing_text ... ok
+test composer_attachments::tests::chip_remove_is_uuid_scoped_and_never_bubbles_into_open ... ok
+test composer_attachments::tests::failed_four_image_send_keeps_all_four_newer_images_recoverable ... ok
+test composer_attachments::tests::missing_declared_capability_cannot_adopt_or_enable_picker ... ok
+test composer_attachments::tests::matching_id_with_different_metadata_retains_recovery_and_never_inserts ... ok
+test composer_attachments::tests::stale_picker_cannot_cross_runtime_or_window_replacement ... ok
+test composer_attachments::tests::removing_one_chip_uses_uuid_and_preserves_composer_and_other_same_path_chip ... ok
+test composer_attachments::tests::picker_result_stays_with_origin_chat_after_navigation ... ok
+test composer_attachments::tests::fresh_picker_is_disabled_through_begin_held_save_and_cancel ... ok
+test composer_attachments::tests::chip_callbacks_reject_navigation_window_and_controller_replacements ... ok
+test composer_attachments::tests::late_started_picker_parks_images_while_new_picker_stays_disabled ... ok
+test composer_attachments::tests::held_draft_reopen_retains_ordinary_images_and_cancel_restores_them ... ok
+test composer_attachments::tests::held_image_only_save_keeps_queued_images_and_restores_new_ordinary_images ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 515 filtered out; finished in 0.37s

@@ -540,13 +540,9 @@ fn estimated_height(presentation: &Presentation, index: usize, width: Pixels) ->
             .sum::<f32>()
             * line_height
     };
-    let text = if message.text.is_empty() && message.state == "streaming" {
-        "Generating response…"
-    } else {
-        &message.text
-    };
+    let text = crate::composer_attachments::message_label(message);
     let mut height =
-        12. + 6. + transcript_actions::ACTION_BAND_HEIGHT + gap + plain(text, 14.5, 21.);
+        12. + 6. + transcript_actions::ACTION_BAND_HEIGHT + gap + plain(&text, 14.5, 21.);
     if user {
         height += 18.;
     }
@@ -1624,11 +1620,7 @@ fn render_row(
                         .max_w_full()
                         .text_size(px(14.5))
                         .line_height(px(21.))
-                        .child(if message.text.is_empty() && message.state == "streaming" {
-                            "Generating response…".into()
-                        } else {
-                            message.text.clone()
-                        }),
+                        .child(crate::composer_attachments::message_label(message).into_owned()),
                 );
                 if message.state == "interrupted" {
                     body = body.child(

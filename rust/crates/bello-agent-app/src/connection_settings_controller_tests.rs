@@ -59,6 +59,7 @@ fn fixture_with_trust(
         project,
         record,
         draft: DraftRecord {
+            attachments: Vec::new(),
             text: "keep composer 日本語".into(),
             ..Default::default()
         },
@@ -501,6 +502,7 @@ fn unloaded_legacy_chat_stays_disconnected_after_another_chat_selects_a_saved_co
             );
             record.materialization = bello_agent_core::workspace::ChatMaterialization::Pending;
             let draft = DraftRecord {
+                attachments: Vec::new(),
                 text: "Legacy draft stays disconnected 日本語".into(),
                 ..Default::default()
             };
@@ -1263,6 +1265,7 @@ fn checkpoint_required_missing_on_navigation_keeps_draft_and_inert_placeholder(
             );
             record.connection_id = Some(saved.clone());
             let draft = DraftRecord {
+                attachments: Vec::new(),
                 text: "never replace lost checkpoint".into(),
                 ..Default::default()
             };
@@ -1309,6 +1312,7 @@ fn first_send_crash_before_checkpoint_can_recover_complete_receipt_without_openi
     let id = uuid::Uuid::new_v4().to_string();
     let full = format!("{}日本語 last retained words", "retained input ".repeat(80));
     let intent = SubmissionIntent {
+        attachments: Vec::new(),
         id: uuid::Uuid::new_v4().to_string(),
         chat_id: id.clone(),
         text: full.clone(),
@@ -1496,5 +1500,247 @@ fn composer_saved_factory_executes_actual_ls_and_replays_durable_result(cx: &mut
         assert!(view.controller.is_persistent());
         assert!(view.session.messages.iter().any(|message| matches!(&message.tool_record, Some(bello_agent_core::tool_history::ToolRecord::Result(result)) if result.outcome == bello_agent_core::tool_history::ToolOutcome::Completed)));
         assert_eq!(view.workspace.lock().unwrap().snapshot().chats[0].materialization, bello_agent_core::workspace::ChatMaterialization::CheckpointRequired);
+    });
+}
+
+use bello_agent_core::workspace::SubmissionIntent;
+use gpui::Focusable;
+
+fn missing_image_receipt(
+    cx: &mut TestAppContext,
+) -> (
+    tempfile::TempDir,
+    WindowHandle<AgentView>,
+    Entity<AgentView>,
+    SubmissionIntent,
+) {
+    let (directory, _control, window, root) = fixture(cx);
+    let saved = save_fixture(window, &root, cx);
+    let id = uuid::Uuid::new_v4().to_string();
+    let intent = SubmissionIntent {
+        id: uuid::Uuid::new_v4().to_string(),
+        chat_id: id.clone(),
+        text: "unverified image caption".into(),
+        lane: Lane::FollowUp,
+        draft_revision: 0,
+        attachments: vec![bello_agent_core::attachments::AttachmentRecord {
+            id: uuid::Uuid::new_v4().to_string(),
+            path: "/missing/original.gif".into(),
+            sha256: "a".repeat(64),
+            bytes: 6,
+            mime_type: "image/gif".into(),
+        }],
+    };
+    window
+        .update(cx, |view, window, cx| {
+            let mut record = ChatRecord::new(
+                id.clone(),
+                "Unverified image receipt".into(),
+                view.chat_directory.join(format!("{id}.json")),
+            );
+            record.materialization = bello_agent_core::workspace::ChatMaterialization::Pending;
+            record.connection_id = Some(saved);
+            {
+                let mut catalog = view.workspace.lock().unwrap();
+                catalog
+                    .register(record.clone(), DraftRecord::default())
+                    .unwrap();
+                catalog.begin_submission(intent.clone()).unwrap();
+                record = catalog
+                    .snapshot()
+                    .chats
+                    .into_iter()
+                    .find(|record| record.id == id)
+                    .unwrap();
+            }
+            view.records.push(record);
+            view.recoveries.insert(intent.id.clone(), intent.clone());
+            view.select_chat(&id, window, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    root.update(cx, |view, _| {
+        assert!(view.load_failed && view.controller.is_retired());
+        assert!(!view.controller.configured());
+        assert!(view.controller.is_never_materialized());
+        assert_eq!(
+            view.record.materialization,
+            bello_agent_core::workspace::ChatMaterialization::CheckpointRequired
+        );
+    });
+    (directory, window, root, intent)
+}
+
+#[gpui::test]
+fn unavailable_image_receipt_extracts_only_to_draft_across_window_rebind(cx: &mut TestAppContext) {
+    let (_directory, window, _root, intent) = missing_image_receipt(cx);
+    window
+        .update(cx, |view, window, cx| {
+            view.resolve_intent(&intent.id, true, cx);
+            view.bind_window(window, cx);
+            view.filter.read(cx).focus(window);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    window
+        .update(cx, |view, window, cx| {
+            assert_eq!(view.composer.read(cx).text(), intent.text);
+            assert_eq!(view.attachments, intent.attachments);
+            assert!(view.filter.read(cx).focus_handle(cx).is_focused(window));
+            assert!(view.load_failed && view.controller.is_retired());
+            assert!(!view.controller.configured());
+            assert!(view.session.messages.is_empty() && view.session.pending.is_empty());
+            assert_eq!(
+                view.record.materialization,
+                bello_agent_core::workspace::ChatMaterialization::CheckpointRequired
+            );
+            assert!(!view.record.snapshot.exists());
+            assert!(!view.record.snapshot.with_extension("lock").exists());
+            let saved = view.workspace.lock().unwrap().snapshot();
+            assert_eq!(
+                saved.drafts[&intent.chat_id].attachments,
+                intent.attachments
+            );
+            assert!(!saved.intents.contains_key(&intent.id));
+            assert!(
+                view.error
+                    .as_deref()
+                    .unwrap()
+                    .contains("may already have executed")
+            );
+            view.resolve_intent(&intent.id, true, cx);
+            view.submit(Lane::FollowUp, cx);
+            assert_eq!(view.composer.read(cx).text(), intent.text);
+            assert_eq!(view.attachments, intent.attachments);
+            assert!(view.session.messages.is_empty() && view.session.pending.is_empty());
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+fn unavailable_receipt_preserves_existing_file_directory_symlink_and_fifo(cx: &mut TestAppContext) {
+    for kind in ["file", "directory", "symlink", "fifo"] {
+        let (_directory, _window, root, intent) = missing_image_receipt(cx);
+        let path = cx.read(|cx| root.read(cx).record.snapshot.clone());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        match kind {
+            "file" => std::fs::write(&path, b"existing unknown checkpoint").unwrap(),
+            "directory" => std::fs::create_dir(&path).unwrap(),
+            #[cfg(unix)]
+            "symlink" => std::os::unix::fs::symlink("missing-target", &path).unwrap(),
+            #[cfg(unix)]
+            "fifo" => {
+                use std::os::unix::ffi::OsStrExt;
+                let cpath = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+                assert_eq!(unsafe { libc::mkfifo(cpath.as_ptr(), 0o600) }, 0);
+            }
+            _ => continue,
+        }
+        root.update(cx, |view, cx| view.resolve_intent(&intent.id, true, cx));
+        cx.run_until_parked();
+        root.update(cx, |view, cx| {
+            assert_eq!(view.composer.read(cx).text(), "");
+            assert!(view.attachments.is_empty());
+            assert!(view.load_failed);
+            assert!(view.recoveries.contains_key(&intent.id));
+            assert_eq!(
+                view.workspace.lock().unwrap().snapshot().intents[&intent.id],
+                intent
+            );
+            assert!(!view.busy);
+            assert!(view.session.messages.is_empty());
+            assert!(!path.with_extension("lock").exists());
+        });
+        assert!(std::fs::symlink_metadata(path).is_ok());
+    }
+}
+
+#[gpui::test]
+fn unavailable_receipt_rejects_changed_saved_receipt_and_catalog_chat_identity(
+    cx: &mut TestAppContext,
+) {
+    for changed_chat in [false, true] {
+        let (_directory, _window, root, intent) = missing_image_receipt(cx);
+        root.update(cx, |view, cx| {
+            if changed_chat {
+                view.record.snapshot = view.record.snapshot.with_extension("different-missing");
+            } else {
+                view.recoveries.get_mut(&intent.id).unwrap().attachments[0].sha256 = "b".repeat(64);
+            }
+            view.resolve_intent(&intent.id, true, cx);
+        });
+        cx.run_until_parked();
+        root.update(cx, |view, cx| {
+            assert_eq!(view.composer.read(cx).text(), "");
+            assert!(view.attachments.is_empty() && view.load_failed);
+            assert!(view.recoveries.contains_key(&intent.id));
+            assert_eq!(
+                view.workspace.lock().unwrap().snapshot().intents[&intent.id],
+                intent
+            );
+        });
+    }
+}
+
+#[gpui::test]
+fn unavailable_receipt_never_erases_newer_saved_draft_or_its_receipt(cx: &mut TestAppContext) {
+    let (_directory, _window, root, intent) = missing_image_receipt(cx);
+    root.update(cx, |view, cx| {
+        view.resolve_intent(&intent.id, true, cx);
+        let newer = DraftRecord {
+            revision: view.draft_revision + 1,
+            text: "newer catalog draft".into(),
+            attachments: intent.attachments.clone(),
+            queued_edit: None,
+        };
+        view.workspace
+            .lock()
+            .unwrap()
+            .save_draft(&intent.chat_id, newer)
+            .unwrap();
+    });
+    cx.run_until_parked();
+    root.update(cx, |view, cx| {
+        assert_eq!(view.composer.read(cx).text(), "");
+        assert!(view.attachments.is_empty());
+        assert!(view.recoveries.contains_key(&intent.id));
+        let saved = view.workspace.lock().unwrap().snapshot();
+        assert_eq!(saved.intents[&intent.id], intent);
+        assert_eq!(saved.drafts[&intent.chat_id].text, "newer catalog draft");
+        assert_eq!(
+            saved.drafts[&intent.chat_id].attachments,
+            intent.attachments
+        );
+        assert!(view.load_failed && !view.busy);
+    });
+}
+
+#[gpui::test]
+fn unavailable_receipt_non_not_found_metadata_error_is_not_absence(cx: &mut TestAppContext) {
+    let (_directory, _window, root, intent) = missing_image_receipt(cx);
+    root.update(cx, |view, cx| {
+        let file = view.record.snapshot.clone();
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, b"parent is an ordinary file").unwrap();
+        view.record.snapshot = file.join("child");
+        let error = std::fs::symlink_metadata(&view.record.snapshot).unwrap_err();
+        assert_ne!(error.kind(), std::io::ErrorKind::NotFound);
+        view.resolve_intent(&intent.id, true, cx);
+    });
+    cx.run_until_parked();
+    root.update(cx, |view, cx| {
+        assert_eq!(view.composer.read(cx).text(), "");
+        assert!(view.attachments.is_empty());
+        assert!(
+            view.error
+                .as_deref()
+                .unwrap()
+                .contains("could not be confirmed missing")
+        );
+        assert_eq!(
+            view.workspace.lock().unwrap().snapshot().intents[&intent.id],
+            intent
+        );
+        assert!(view.load_failed && !view.busy);
     });
 }

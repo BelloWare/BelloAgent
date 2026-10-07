@@ -28,7 +28,8 @@ fn content(session: &Session, chat_id: &str, turn_id: &str) -> Option<Content> {
         } else {
             "Follow-up"
         },
-        text: item.text.clone(),
+        text: crate::composer_attachments::input_label(&item.text, item.attachments.len())
+            .into_owned(),
         model: item
             .model
             .clone()

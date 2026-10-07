@@ -51,6 +51,7 @@ fn fixture(
         project.join("session.json"),
     );
     let draft = DraftRecord {
+        attachments: Vec::new(),
         text: draft.into(),
         ..Default::default()
     };
@@ -611,4 +612,79 @@ fn large_request_uses_bounded_pages_and_copies_exact_full_immutable_body(cx: &mu
     );
     cx.run_until_parked();
     assert!(cx.read(|cx| inspector.read(cx).closed));
+}
+
+#[gpui::test]
+fn attachment_only_change_marks_captured_preview_stale_and_refresh_is_honest(
+    cx: &mut TestAppContext,
+) {
+    let (_directory, window, root) = fixture(cx, "same text", true);
+    let (_, inspector) = open(window, cx);
+    let captured = cx.read(|cx| {
+        inspector
+            .read(cx)
+            .document
+            .as_ref()
+            .unwrap()
+            .preview
+            .request_json()
+            .to_owned()
+    });
+    root.update(cx, |view, cx| {
+        view.attachments
+            .push(bello_agent_core::attachments::AttachmentRecord {
+                id: uuid::Uuid::new_v4().to_string(),
+                path: "/missing/preview.gif".into(),
+                sha256: "a".repeat(64),
+                bytes: 6,
+                mime_type: "image/gif".into(),
+            });
+        // Isolate metadata equality: revision and text deliberately stay equal.
+        cx.notify();
+    });
+    cx.run_until_parked();
+    inspector.update(cx, |view, cx| {
+        assert_eq!(
+            view.document.as_ref().unwrap().preview.request_json(),
+            captured
+        );
+        assert!(!view.current(view.document.as_ref().unwrap(), cx).unwrap());
+        assert!(
+            view.notice
+                .as_deref()
+                .unwrap()
+                .contains("captured snapshot")
+        );
+        view.refresh(cx);
+    });
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let reader = inspector.read(cx);
+        assert!(reader.document.is_none());
+        assert!(reader.notice.is_some());
+        let owner = root.read(cx);
+        assert_eq!(owner.composer.read(cx).text(), "same text");
+        assert_eq!(owner.attachments.len(), 1);
+        assert!(owner.controller.snapshot().messages.is_empty());
+        assert!(!owner.controller.is_persistent());
+    });
+}
+
+#[gpui::test]
+fn attachment_capture_compares_full_metadata_and_revision_even_after_equal_text(
+    cx: &mut TestAppContext,
+) {
+    let (_directory, window, root) = fixture(cx, "unchanged", true);
+    let (_, inspector) = open(window, cx);
+    let revision = cx.read(|cx| root.read(cx).draft_revision);
+    root.update(cx, |view, cx| {
+        let id = view.record.id.clone();
+        view.draft_changed(&id, cx);
+        cx.notify();
+    });
+    cx.run_until_parked();
+    inspector.update(cx, |view, cx| {
+        assert_eq!(view.draft_revision, revision);
+        assert!(!view.current(view.document.as_ref().unwrap(), cx).unwrap());
+    });
 }

@@ -78,6 +78,7 @@ fn pending_chat_pin_atomically_materializes_draft_without_a_transcript() {
     let (dir, path, mut store) = fixture();
     let chat = record(dir.path(), 7, "New chat");
     let draft = DraftRecord {
+        attachments: Vec::new(),
         revision: 4,
         text: "unsent 你好".into(),
         queued_edit: Some(QueuedDraft {
@@ -106,12 +107,14 @@ fn pin_patches_only_organization_not_newer_title_draft_receipt_or_selection() {
         .unwrap();
     store.name_chat(&chat.id, "streaming title").unwrap();
     let draft = DraftRecord {
+        attachments: Vec::new(),
         revision: 4,
         text: "new typing".into(),
         queued_edit: None,
     };
     store.save_draft(&chat.id, draft.clone()).unwrap();
     let intent = SubmissionIntent {
+        attachments: Vec::new(),
         id: Uuid::new_v4().to_string(),
         chat_id: chat.id.clone(),
         text: "accepted maybe".into(),
@@ -211,15 +214,15 @@ fn new_organization_format_is_explicit_and_mislabeled_v1_is_preserved() {
     store
         .register(chat.clone(), DraftRecord::default())
         .unwrap();
-    assert_eq!(store.snapshot().version, 7);
+    assert_eq!(store.snapshot().version, 8);
     store
         .set_pinned(chat.clone(), DraftRecord::default(), true, 4)
         .unwrap();
-    assert_eq!(store.snapshot().version, 7);
+    assert_eq!(store.snapshot().version, 8);
     store
         .set_pinned(chat.clone(), DraftRecord::default(), false, 5)
         .unwrap();
-    assert_eq!(store.snapshot().version, 7); // Never downgrade after metadata use.
+    assert_eq!(store.snapshot().version, 8); // Never downgrade after metadata use.
     store
         .set_pinned(chat, DraftRecord::default(), true, 6)
         .unwrap();

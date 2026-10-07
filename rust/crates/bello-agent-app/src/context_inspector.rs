@@ -82,6 +82,8 @@ impl ContextInspectorTarget {
         Ok(PreviewInput {
             controller: chat.controller.clone(),
             draft: chat.composer.read(cx).text().to_owned(),
+            attachments: chat.attachments.clone(),
+            draft_revision: chat.draft_revision,
         })
     }
 }
@@ -177,6 +179,8 @@ impl AgentView {
 struct PreviewInput {
     controller: Arc<Controller>,
     draft: String,
+    attachments: Vec<bello_agent_core::attachments::AttachmentRecord>,
+    draft_revision: u64,
 }
 
 struct PreparedDocument {
@@ -228,6 +232,8 @@ pub(crate) struct ContextInspector {
     controls: Vec<(Control, FocusHandle)>,
     document: Option<Arc<PreparedDocument>>,
     draft: String,
+    attachments: Vec<bello_agent_core::attachments::AttachmentRecord>,
+    draft_revision: u64,
     page: usize,
     generation: uuid::Uuid,
     loading: bool,
@@ -294,6 +300,8 @@ impl ContextInspector {
             controls,
             document: None,
             draft: String::new(),
+            attachments: Vec::new(),
+            draft_revision: 0,
             page: 0,
             generation: uuid::Uuid::new_v4(),
             loading: false,
@@ -350,12 +358,15 @@ impl ContextInspector {
         };
         let generation = self.generation;
         self.draft = input.draft.clone();
+        self.attachments = input.attachments.clone();
+        self.draft_revision = input.draft_revision;
         self.loading = true;
         self.notice = None;
         let task = cx.background_executor().spawn(async move {
             input
                 .controller
-                .prepare_context(&input.draft)
+                .prepare_context_with_attachments(&input.draft, &input.attachments)
+                .await
                 .map(PreparedDocument::new)
                 .map(Arc::new)
                 .map_err(|error| error.to_string())
@@ -369,7 +380,10 @@ impl ContextInspector {
 
     fn current(&self, document: &PreparedDocument, cx: &App) -> Result<bool, String> {
         let input = self.input(cx)?;
-        if input.draft != self.draft {
+        if input.draft != self.draft
+            || input.attachments != self.attachments
+            || input.draft_revision != self.draft_revision
+        {
             return Ok(false);
         }
         input
@@ -498,6 +512,7 @@ impl ContextInspector {
         self.copy_task = None;
         self.document = None;
         self.draft.clear();
+        self.attachments.clear();
         self.loading = false;
         self.copying = false;
         self.reader

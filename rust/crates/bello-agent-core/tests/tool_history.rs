@@ -12,6 +12,7 @@ fn profile() -> Profile {
 }
 fn message(id: &str, role: &str, text: &str) -> Message {
     Message {
+        user_content: None,
         id: id.into(),
         role: role.into(),
         text: text.into(),

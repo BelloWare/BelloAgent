@@ -175,6 +175,7 @@ impl ToolResultRow {
 
 fn message(role: &str, text: String, model: Option<String>) -> Message {
     Message {
+        user_content: None,
         id: Uuid::new_v4().to_string(),
         role: role.into(),
         text,
@@ -268,9 +269,33 @@ impl Session {
         stop: bool,
         steering: Option<&str>,
     ) -> Result<()> {
+        self.settle_tools_with_prepared_steering(reply_id, results, stop, steering, None)
+    }
+    pub(crate) fn settle_tools_with_prepared_steering(
+        &mut self,
+        reply_id: &str,
+        results: Vec<ToolResultRow>,
+        stop: bool,
+        steering: Option<&str>,
+        prepared: Option<crate::session::PreparedUserInput>,
+    ) -> Result<()> {
         if self.active_reply.as_deref() != Some(reply_id) {
             return Err(invalid("Stale tool batch completion"));
         }
+        // Validate before appending any tool rows in this pure state operation.
+        let content = if !stop && self.edit.is_none() && !self.queue_paused {
+            if let Some(item) = self
+                .pending
+                .iter()
+                .find(|item| item.lane == Lane::Steering && Some(item.id.as_str()) == steering)
+            {
+                crate::session::checked_prepared(item, prepared)?
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let calls = self
             .active_tool_calls()
             .ok_or_else(|| invalid("No active tool batch"))?
@@ -312,6 +337,7 @@ impl Session {
             item = self.pending.remove(index);
             let mut user = message("user", item.text.clone(), item.model.clone());
             user.id = item.id.clone();
+            user.user_content = content;
             self.messages.push(user);
         }
         self.activate(item);
@@ -557,22 +583,19 @@ impl Controller {
                 }
                 item = next_item;
                 snapshot = next_snapshot;
-                continue;
-            }
-            {
-                let mut inner = self.inner.lock().expect("session mutex poisoned");
-                let stopped = self.is_retired() || cancel.is_cancelled();
-                if let Err(error) = inner
-                    .store
-                    .transact(|session| session.settle_tools(&reply_id, results, stopped))
-                {
-                    inner.fatal = Some(error.to_string());
-                    self.publish(&inner);
+                if snapshot.state != RunState::Running {
                     return;
                 }
-                self.publish(&inner);
-                snapshot = inner.store.snapshot();
+                continue;
             }
+            let Some((next_item, next_snapshot)) = self
+                .settle_image_tools(&reply_id, results, cancel.clone())
+                .await
+            else {
+                return;
+            };
+            item = next_item;
+            snapshot = next_snapshot;
             if let Err(error) = settle_mcp_receipts(receipts).await {
                 let mut inner = self.inner.lock().expect("session mutex poisoned");
                 inner.fatal = Some(error.to_string());
@@ -582,7 +605,6 @@ impl Controller {
             if snapshot.state != RunState::Running {
                 return;
             }
-            item = snapshot.active.clone().expect("continuation assigned");
         }
     }
 

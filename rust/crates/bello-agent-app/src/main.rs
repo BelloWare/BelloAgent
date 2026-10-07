@@ -1,9 +1,12 @@
 mod assets;
+#[cfg(all(feature = "synthetic-authority", debug_assertions))]
+mod attachment_fixture;
 mod chat;
 mod chat_navigation;
 mod chat_organization;
 mod chat_tool_mode;
 mod compaction_actions;
+mod composer_attachments;
 mod connection_settings_controller;
 mod connection_settings_view;
 mod context_inspector;
@@ -119,6 +122,7 @@ struct LaunchState {
 
 struct AgentView {
     chat: ChatState,
+    attachment_picker: Option<composer_attachments::PickerOperation>,
     inactive: BTreeMap<String, ChatState>,
     records: Vec<ChatRecord>,
     workspace: Arc<Mutex<WorkspaceStore>>,
@@ -354,6 +358,7 @@ impl AgentView {
         }
         let launch_archive_reveal = chat.record.archived_at.is_some() && !state.show_archived;
         let mut view = Self {
+            attachment_picker: None,
             chat,
             inactive: BTreeMap::new(),
             records,
@@ -423,6 +428,7 @@ impl AgentView {
     }
     fn bind_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.close_context_inspectors(cx);
+        self.attachment_picker = None;
         self.cancel_queue_drag(window, cx);
         self.queue_geometry = None;
         self.sidebar_menu = None;
@@ -649,6 +655,11 @@ impl AgentView {
             return;
         };
         let text = self.composer.read(cx).text().to_owned();
+        if outcome == "saved" && !self.composer_has_input(cx) {
+            self.error = Some("Type the message, or Cancel to keep it as it was.".into());
+            cx.notify();
+            return;
+        }
         let outcome = outcome.to_owned();
         self.command(
             cx,
@@ -666,6 +677,7 @@ impl AgentView {
                 view.queued_turn_id = None;
                 view.queued_original = None;
                 let draft = std::mem::take(&mut view.draft_before_edit);
+                view.attachments = std::mem::take(&mut view.draft_before_edit_attachments);
                 view.composer
                     .update(cx, |editor, cx| editor.set_text(draft, cx));
             },
@@ -694,6 +706,7 @@ impl AgentView {
                     view.queued_turn_id = None;
                     view.queued_original = None;
                     let draft = std::mem::take(&mut view.draft_before_edit);
+                    view.attachments = std::mem::take(&mut view.draft_before_edit_attachments);
                     view.composer
                         .update(cx, |editor, cx| editor.set_text(draft, cx));
                 }
@@ -1575,8 +1588,8 @@ impl AgentView {
                 geometry.pane_width.min(self.pane_width)
             }) - 58.)
                 .max(0.);
-            let preview_text = item
-                .text
+            let item_label = composer_attachments::input_label(&item.text, item.attachments.len());
+            let preview_text = item_label
                 .lines()
                 .next()
                 .unwrap_or("")
@@ -1641,7 +1654,7 @@ impl AgentView {
             let offers_promotion = queue_actions::offers_promotion(&self.chat, &id);
             let drag = if reorder_enabled {
                 row.follow_up_number
-                    .map(|number| self.queue_drag_payload(&id, number, &item.text))
+                    .map(|number| self.queue_drag_payload(&id, number, &item_label))
             } else {
                 None
             };
@@ -2151,7 +2164,8 @@ impl AgentView {
             .child(
                 self.icon_button("attach-image", "photo", 28.)
                     .bg(p.fill())
-                    .opacity(0.45),
+                    .opacity(if self.can_attach_images() { 1. } else { 0.45 })
+                    .on_click(cx.listener(|view, _, window, cx| view.choose_images(window, cx))),
             )
             .child(
                 self.icon_button("skills", "command", 28.)
@@ -2183,11 +2197,17 @@ impl AgentView {
                         "Steer run"
                     },
                 )
-                .opacity(if self.actor_mutation_blocked(&self.record.id) {
-                    0.45
-                } else {
-                    1.
-                })
+                .opacity(
+                    if self.actor_mutation_blocked(&self.record.id)
+                        || self.busy
+                        || self.editing.is_some()
+                        || !self.composer_has_input(cx)
+                    {
+                        0.45
+                    } else {
+                        1.
+                    },
+                )
                 .on_click(cx.listener(|v, _, _, cx| v.submit(Lane::Steering, cx))),
             );
         }
@@ -2328,7 +2348,9 @@ impl AgentView {
             && !self.edit_recovery.blocked
             && !self.loading
             && !self.shutting_down
-            && !self.composer.read(cx).text().trim().is_empty();
+            && !self.has_pending_cancel(&self.record.id)
+            && self.queue_operation.is_none()
+            && self.composer_has_input(cx);
         bar = bar.child(
             div()
                 .id("send")
@@ -2413,7 +2435,7 @@ impl AgentView {
                 );
             composer = composer.child(div().px(px(12.)).py(px(8.)).bg(p.accent_soft()).flex().flex_col().gap(px(6.))
                 .child(div().text_size(px(11.5)).child("Unconfirmed submission · It may have been accepted. Review before sending again."))
-                .child(div().text_size(px(12.)).max_h(px(60.)).overflow_hidden().child(intent.text.chars().take(300).collect::<String>()))
+                .child(div().text_size(px(12.)).max_h(px(60.)).overflow_hidden().child(composer_attachments::input_label(&intent.text, intent.attachments.len()).chars().take(300).collect::<String>()))
                 .child(actions));
         }
         if self.editing.is_some() {
@@ -2426,6 +2448,9 @@ impl AgentView {
                     .text_color(rgb(p.accent))
                     .child("Editing queued message · Save keeps its place in the queue"),
             );
+        }
+        if !self.attachments.is_empty() {
+            composer = composer.child(self.attachment_chips(cx));
         }
         composer = composer.child(field).child(bar);
         let geometry_owner = cx.weak_entity();
@@ -3259,6 +3284,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut credential_stdin = false;
     #[cfg(all(feature = "synthetic-authority", debug_assertions))]
     let mut synthetic_authority = false;
+    #[cfg(all(feature = "synthetic-authority", debug_assertions))]
+    let mut synthetic_connections = false;
+    #[cfg(all(feature = "synthetic-authority", debug_assertions))]
+    let mut attachment_fixture_path = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--project" => {
@@ -3270,8 +3299,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             "--credential-stdin" => credential_stdin = true,
             #[cfg(all(feature = "synthetic-authority", debug_assertions))]
-            "--synthetic-project-authority" | "--synthetic-connections" => {
-                synthetic_authority = true
+            "--synthetic-project-authority" => synthetic_authority = true,
+            #[cfg(all(feature = "synthetic-authority", debug_assertions))]
+            "--synthetic-connections" => {
+                synthetic_authority = true;
+                synthetic_connections = true;
+            }
+            #[cfg(all(feature = "synthetic-authority", debug_assertions))]
+            "--synthetic-attachment-fixture" => {
+                if attachment_fixture_path.is_some() {
+                    return Err("Only one synthetic attachment fixture is allowed".into());
+                }
+                attachment_fixture_path = Some(PathBuf::from(
+                    args.next()
+                        .ok_or("--synthetic-attachment-fixture needs a profile file")?,
+                ));
             }
             "--help" | "-h" => {
                 println!(
@@ -3279,13 +3321,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
                 #[cfg(all(feature = "synthetic-authority", debug_assertions))]
                 println!(
-                    "  --synthetic-project-authority  debug QA only; in-memory trust and fixture Connections/tools, never native storage\n  --synthetic-connections  same isolated fixture; fixed fake key and numeric loopback only"
+                    "  --synthetic-project-authority  debug QA only; in-memory trust and fixture Connections/tools, never native storage\n  --synthetic-connections  same isolated fixture; fixed fake key and numeric loopback only\n  --synthetic-attachment-fixture PROFILE  debug QA saved image connection; requires --synthetic-connections; select and trust through the UI"
                 );
                 return Ok(());
             }
             _ => return Err(format!("Unknown argument: {arg}").into()),
         }
     }
+    #[cfg(all(feature = "synthetic-authority", debug_assertions))]
+    let attachment_fixture = if let Some(path) = attachment_fixture_path {
+        if profile_path.is_some() {
+            return Err(
+                "--synthetic-attachment-fixture cannot be combined with legacy --profile".into(),
+            );
+        }
+        if !synthetic_connections {
+            return Err(
+                "--synthetic-attachment-fixture requires explicit --synthetic-connections".into(),
+            );
+        }
+        let key = if credential_stdin {
+            let mut key = zeroize::Zeroizing::new(String::new());
+            std::io::stdin().take(16_385).read_to_string(&mut key)?;
+            let length = key.trim_end_matches(['\n', '\r']).len();
+            key.truncate(length);
+            credential_stdin = false;
+            Some(key)
+        } else {
+            None
+        };
+        Some(attachment_fixture::AttachmentFixture::read(
+            &path,
+            synthetic_connections,
+            key.as_deref().map(String::as_str),
+        )?)
+    } else {
+        None
+    };
     let configuration = if let Some(path) = profile_path {
         if !credential_stdin {
             return Err("--profile requires --credential-stdin; no automatic key discovery".into());
@@ -3337,6 +3409,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let fixture = synthetic.is_some();
     #[cfg(not(all(feature = "synthetic-authority", debug_assertions)))]
     let fixture = false;
+    #[cfg(all(feature = "synthetic-authority", debug_assertions))]
+    if let Some(fixture) = attachment_fixture {
+        fixture.seed(&authority)?;
+    }
     let runtime = saved_runtime_adapter::AppRuntime::new(
         authority.clone(),
         workspace.clone(),

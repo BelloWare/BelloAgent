@@ -330,6 +330,7 @@ mod tests {
 
     pub(super) fn message(id: &str) -> Message {
         Message {
+            user_content: None,
             id: id.into(),
             role: "assistant".into(),
             text: String::new(),

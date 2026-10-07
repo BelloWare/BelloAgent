@@ -648,6 +648,7 @@ fn add_navigation_records(window: WindowHandle<AgentView>, cx: &mut TestAppConte
                     connection_id: None,
                 };
                 let draft = DraftRecord {
+                    attachments: Vec::new(),
                     text: format!("{title} draft"),
                     ..Default::default()
                 };
@@ -1191,6 +1192,7 @@ fn shortcut_run_with_partial(
                 record,
                 crate::chat::RestoredDraft {
                     draft: DraftRecord {
+                        attachments: Vec::new(),
                         text: "Keep 日本語 e\u{301}".into(),
                         ..Default::default()
                     },

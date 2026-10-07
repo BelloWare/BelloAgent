@@ -334,6 +334,8 @@ impl AgentView {
         }
         chat.clear_confirmed_begin_failure(&key.turn);
         chat.draft_before_edit = source.text;
+        chat.draft_before_edit_attachments = source.attachments;
+        chat.attachments.clear();
         chat.editing = Some(key.edit.clone());
         chat.queued_turn_id = Some(key.turn.clone());
         chat.queued_original = Some(original);

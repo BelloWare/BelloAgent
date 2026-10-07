@@ -140,6 +140,7 @@ mod tests {
     use bello_agent_core::{Message, Session};
     fn message(id: &str, role: &str, text: &str) -> Message {
         Message {
+            user_content: None,
             id: id.into(),
             role: role.into(),
             text: text.into(),
@@ -161,6 +162,32 @@ mod tests {
             let key = MessageKey::new(session.id.clone(), "message".into());
             assert_eq!(copy_text(&session, &key).as_deref(), Some(original));
         }
+    }
+    #[test]
+    fn image_only_copy_never_exposes_retained_payload_or_attachment_path() {
+        let mut session = Session::new();
+        let mut row = message("image-row", "user", "");
+        row.user_content = Some(std::sync::Arc::new(
+            bello_agent_core::user_content::UserContent::new(
+                "",
+                vec![bello_agent_core::attachments::AttachmentRecord {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    path: "/private/selected.gif".into(),
+                    sha256: "a".repeat(64),
+                    bytes: 3,
+                    mime_type: "image/gif".into(),
+                }],
+                vec![bello_agent_core::tool_content::ContentBlock::Image {
+                    data: "YWJj".into(),
+                    mime_type: "image/gif".into(),
+                }],
+            )
+            .unwrap(),
+        ));
+        assert_eq!(crate::composer_attachments::message_label(&row), "Image");
+        session.messages.push(row);
+        let key = MessageKey::new(session.id.clone(), "image-row".into());
+        assert_eq!(copy_text(&session, &key).as_deref(), Some(""));
     }
     #[test]
     fn same_key_reads_latest_streaming_text_and_empty_text_is_not_placeholder() {
@@ -293,6 +320,7 @@ mod tests {
                 snapshot: path,
             },
             draft: DraftRecord {
+                attachments: Vec::new(),
                 text: draft,
                 ..Default::default()
             },

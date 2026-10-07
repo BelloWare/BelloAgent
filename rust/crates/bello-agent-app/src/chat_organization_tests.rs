@@ -34,6 +34,7 @@ fn fixture(
         )),
         record: ChatRecord::new(snapshot.id, "First".into(), project.join("first.json")),
         draft: DraftRecord {
+            attachments: Vec::new(),
             text: "retained draft 日本語".into(),
             ..Default::default()
         },
@@ -66,6 +67,7 @@ fn second(
         record.clone(),
         crate::chat::RestoredDraft {
             draft: DraftRecord {
+                attachments: Vec::new(),
                 text: format!("{title} draft"),
                 ..Default::default()
             },
@@ -120,7 +122,7 @@ fn archive_fifo_waits_for_live_work_without_polling_and_preserves_every_intent(
         let state = view.workspace.lock().unwrap().snapshot();
         assert!(state.chats[0].pinned_at.is_none());
         assert!(state.chats[0].archived_at.is_none());
-        assert_eq!(state.version, 7);
+        assert_eq!(state.version, 8);
         assert_eq!(view.composer.read(cx).text(), "retained draft 日本語");
         assert!(!view.controller.is_persistent());
     });
@@ -469,6 +471,7 @@ fn archive_stable_load_failure_does_not_block_and_unloaded_fallback_keeps_draft(
             view.unloaded_drafts.insert(
                 bad.clone(),
                 DraftRecord {
+                    attachments: Vec::new(),
                     text: "unloaded draft survives failed construction".into(),
                     ..Default::default()
                 },
@@ -658,6 +661,7 @@ fn archive_controller_load_never_replaces_current_organization_patch_in_either_o
                 let path = view.chat_directory.join(format!("{target}.json"));
                 let record = ChatRecord::new(target.clone(), "Unloaded target".into(), path);
                 let draft = DraftRecord {
+                    attachments: Vec::new(),
                     text: "unloaded preserved".into(),
                     ..Default::default()
                 };

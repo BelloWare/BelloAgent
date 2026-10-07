@@ -25,6 +25,8 @@ pub enum RunState {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Submission {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<crate::attachments::AttachmentRecord>,
     pub id: String,
     pub text: String,
     pub lane: Lane,
@@ -35,6 +37,7 @@ impl Submission {
     pub fn new(text: String, lane: Lane) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
+            attachments: Vec::new(),
             text,
             lane,
             model: None,
@@ -44,6 +47,8 @@ impl Submission {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Message {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_content: Option<std::sync::Arc<crate::user_content::UserContent>>,
     pub id: String,
     pub role: String,
     pub text: String,
@@ -75,6 +80,7 @@ impl Message {
             state: state.into(),
             usage: Value::Null,
             model,
+            user_content: None,
             tool_record: None,
             compaction: None,
         }
@@ -157,7 +163,7 @@ impl Session {
         }
     }
     pub fn submit(&mut self, item: Submission) -> Result<()> {
-        validate_text(&item.text)?;
+        validate_submission(&item)?;
         if self.pending.len() >= 64 {
             return Err(invalid("The queue limit is 64 messages"));
         }
@@ -203,7 +209,24 @@ impl Session {
             return Err(invalid("Invalid edit outcome"));
         }
         if outcome == "saved" {
-            validate_text(text.ok_or_else(|| invalid("Save requires text"))?)?;
+            let text = text.ok_or_else(|| invalid("Save requires text"))?;
+            let attachments = self
+                .edit
+                .as_ref()
+                .and_then(|edit| self.pending.iter().find(|item| item.id == edit.turn_id))
+                .map(|item| item.attachments.as_slice())
+                .unwrap_or(&[]);
+            if self
+                .outcomes
+                .iter()
+                .any(|outcome| outcome.edit_id == edit_id)
+            {
+                if text.len() > 262_144 {
+                    return Err(invalid("Message exceeds 256 KiB"));
+                }
+            } else {
+                validate_input(text, attachments)?;
+            }
         } else if text.is_some() {
             return Err(invalid("Cancel and Remove do not accept text"));
         }
@@ -304,6 +327,12 @@ impl Session {
         Ok(())
     }
     pub fn start_next(&mut self) -> Result<Option<Submission>> {
+        self.start_next_with_content(None)
+    }
+    pub(crate) fn start_next_with_content(
+        &mut self,
+        prepared: Option<PreparedUserInput>,
+    ) -> Result<Option<Submission>> {
         if self.state == RunState::Running
             || self.queue_paused
             || self.edit.is_some()
@@ -316,18 +345,26 @@ impl Session {
             .iter()
             .position(|v| v.lane == Lane::Steering)
             .unwrap_or(0);
-        let item = self.pending.remove(index);
+        let item = self.pending[index].clone();
+        let content = checked_prepared(&item, prepared)?;
+        self.pending.remove(index);
         if self.messages.is_empty() {
-            self.title = item.text.chars().take(60).collect();
+            self.title = if item.text.is_empty() {
+                image_label(item.attachments.len())
+            } else {
+                item.text.chars().take(60).collect()
+            };
         }
-        self.messages.push(Message::new(
+        let mut message = Message::new(
             item.id.clone(),
             "user",
             item.text.clone(),
             true,
             "complete",
             item.model.clone(),
-        ));
+        );
+        message.user_content = content;
+        self.messages.push(message);
         self.activate(item.clone());
         Ok(Some(item))
     }
@@ -454,7 +491,55 @@ impl Session {
         self.messages.iter().any(|message| matches!(&message.tool_record,
             Some(crate::tool_history::ToolRecord::Result(record)) if record.content.is_some() && record.outcome == crate::tool_history::ToolOutcome::Failed))
     }
+    fn has_user_attachments(&self) -> bool {
+        self.messages.iter().any(|m| m.user_content.is_some())
+            || self
+                .pending
+                .iter()
+                .chain(self.active.iter())
+                .chain(self.retry.iter())
+                .any(|s| !s.attachments.is_empty())
+    }
     fn validate_tool_history(&self) -> Result<()> {
+        if self.version < 7 && self.has_user_attachments() {
+            return Err(invalid("User images require Rust snapshot version 7"));
+        }
+        for item in self
+            .pending
+            .iter()
+            .chain(self.active.iter())
+            .chain(self.retry.iter())
+        {
+            validate_submission(item)?;
+        }
+        for item in self
+            .active
+            .iter()
+            .chain(self.retry.iter())
+            .filter(|item| !item.attachments.is_empty())
+        {
+            if !self.messages.iter().any(|row| {
+                row.id == item.id
+                    && row.role == "user"
+                    && row
+                        .user_content
+                        .as_ref()
+                        .is_some_and(|content| content.attachments == item.attachments)
+            }) {
+                return Err(invalid(
+                    "Active image submission disagrees with retained user input",
+                ));
+            }
+        }
+        for row in &self.messages {
+            if let Some(content) = &row.user_content {
+                if row.role != "user" || row.tool_record.is_some() || row.compaction.is_some() {
+                    return Err(invalid("Retained image content has no user owner"));
+                }
+                content.validate_display(&row.text)?;
+            }
+        }
+
         if self.version < 6 && self.has_failed_tool_content() {
             return Err(invalid(
                 "Retained failed MCP content requires Rust snapshot version 6",
@@ -508,7 +593,7 @@ impl Session {
             if pending.next().is_some() {
                 return Err(invalid("Held edit has duplicate pending messages"));
             }
-            validate_text(&item.text)?;
+            validate_submission(item)?;
         }
         Ok(())
     }
@@ -642,14 +727,58 @@ fn valid_edit_digest(digest: &str) -> bool {
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
-fn validate_text(text: &str) -> Result<()> {
-    if text.trim().is_empty() {
-        return Err(invalid("Enter a message"));
+pub(crate) fn validate_input(
+    text: &str,
+    attachments: &[crate::attachments::AttachmentRecord],
+) -> Result<()> {
+    if text.trim().is_empty() && attachments.is_empty() {
+        return Err(invalid("Enter a message or select an image"));
     }
     if text.len() > 262_144 {
         return Err(invalid("Message exceeds 256 KiB"));
     }
-    Ok(())
+    crate::attachments::validate_selection(attachments)
+}
+pub(crate) fn validate_submission(item: &Submission) -> Result<()> {
+    validate_input(&item.text, &item.attachments)
+}
+pub(crate) fn same_submission(a: &Submission, b: &Submission) -> bool {
+    a.id == b.id
+        && a.text == b.text
+        && a.lane == b.lane
+        && a.model == b.model
+        && a.effort == b.effort
+        && a.attachments == b.attachments
+}
+pub fn image_label(count: usize) -> String {
+    if count == 1 {
+        "Image".into()
+    } else {
+        format!("{count} images")
+    }
+}
+/// Prepared bytes are inseparably bound to their exact captured input.
+pub(crate) struct PreparedUserInput {
+    pub item: Submission,
+    pub content: std::sync::Arc<crate::user_content::UserContent>,
+}
+pub(crate) fn checked_prepared(
+    item: &Submission,
+    prepared: Option<PreparedUserInput>,
+) -> Result<Option<std::sync::Arc<crate::user_content::UserContent>>> {
+    match prepared {
+        Some(value)
+            if same_submission(item, &value.item)
+                && value.content.attachments == item.attachments =>
+        {
+            value.content.validate_display(&item.text)?;
+            Ok(Some(value.content))
+        }
+        None if item.attachments.is_empty() => Ok(None),
+        _ => Err(invalid(
+            "Image delivery requires preparation for this exact submission",
+        )),
+    }
 }
 
 /// Single-owner, atomic, synced snapshots. A failure never silently commits an
@@ -736,7 +865,7 @@ impl SessionInspectionLease {
         if session.id != expected_session_id {
             return Err(invalid("The session file belongs to another chat"));
         }
-        if ![1, 2, 3, 4, 5, 6].contains(&session.version) {
+        if ![1, 2, 3, 4, 5, 6, 7].contains(&session.version) {
             return Err(invalid(
                 "Unsupported Rust session format. Swift journals are not imported automatically.",
             ));
@@ -1016,7 +1145,7 @@ impl SessionStore {
         {
             return Err(invalid("The session file belongs to another chat"));
         }
-        if ![1, 2, 3, 4, 5, 6].contains(&session.version) {
+        if ![1, 2, 3, 4, 5, 6, 7].contains(&session.version) {
             return Err(invalid(
                 "Unsupported Rust session format. Swift journals are not imported automatically.",
             ));
@@ -1132,6 +1261,9 @@ impl SessionStore {
         }
         let mut next = self.session.clone();
         let result = change(&mut next)?;
+        if next.has_user_attachments() {
+            next.version = next.version.max(7);
+        }
         if next
             .messages
             .iter()
@@ -2280,6 +2412,7 @@ mod tests {
         ] {
             session
                 .submit(Submission {
+                    attachments: Vec::new(),
                     id: id.into(),
                     text: format!("{id}: {}\ncomplete Unicode text 🦋", "x".repeat(2048)),
                     lane,
@@ -2902,3 +3035,7 @@ mod tool_recovery_capacity_tests {
 #[cfg(test)]
 #[path = "read_storage_tests.rs"]
 mod read_storage_tests;
+
+#[cfg(test)]
+#[path = "attachment_storage_tests.rs"]
+mod attachment_storage_tests;

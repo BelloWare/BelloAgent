@@ -10,6 +10,7 @@ impl Message {
         checkpoint: Option<Checkpoint>,
     ) -> Self {
         Self {
+            user_content: None,
             id,
             role: "system".into(),
             text: format!("{}{text}", compaction::REPLAY_PREFIX),

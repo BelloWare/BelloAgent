@@ -1,0 +1,11 @@
+{
+  "candidate": "candidate2",
+  "restart_history_visible": true,
+  "draft_records_exact": false,
+  "draft_attachment_count": 4,
+  "missing_retry_source": true,
+  "expected_memory_only_authority_refusal": "Saved chat is unavailable: The saved project identity and original root disagree",
+  "provider_requests": 0,
+  "explicit_chip_open_result": "ImageMagick: four.gif window50332638;1x1 generated source; no provider request",
+  "reopen_runtime_admission_claim": false
+}

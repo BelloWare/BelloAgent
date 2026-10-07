@@ -95,6 +95,7 @@ fn seed(path: &PathBuf, rows: usize, chars: usize) -> Result<Value, Failure> {
     s.title = "Synthetic ASCII transcript".into();
     s.messages = (0..rows)
         .map(|i| Message {
+            user_content: None,
             id: format!("history-{i:06}"),
             role: if i % 2 == 0 { "user" } else { "assistant" }.into(),
             text: (0..chars)

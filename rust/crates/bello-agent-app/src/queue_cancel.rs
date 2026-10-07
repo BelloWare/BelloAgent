@@ -493,6 +493,8 @@ impl AgentView {
             chat.queued_turn_id = None;
             chat.queued_original = None;
             chat.draft_before_edit.clear();
+            chat.draft_before_edit_attachments.clear();
+            chat.attachments = reconciled.attachments.clone();
             chat.composer.update(cx, |editor, cx| {
                 editor.set_text(reconciled.text.clone(), cx)
             });
@@ -581,6 +583,8 @@ impl AgentView {
             chat.queued_turn_id = None;
             chat.queued_original = None;
             chat.draft_before_edit.clear();
+            chat.draft_before_edit_attachments.clear();
+            chat.attachments = reconciled.attachments.clone();
             chat.composer
                 .update(cx, |editor, cx| editor.set_text(reconciled.text, cx));
         }

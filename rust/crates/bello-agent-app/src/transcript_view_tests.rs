@@ -20,6 +20,7 @@ use std::sync::{Arc, Mutex};
 
 fn message(id: &str, role: &str, text: &str) -> Message {
     Message {
+        user_content: None,
         id: id.into(),
         role: role.into(),
         text: text.into(),
@@ -73,6 +74,7 @@ fn fixture_with_visible(
     let snapshot = store.snapshot();
     let record = ChatRecord::new(snapshot.id, "Transcript fixture".into(), path);
     let draft = DraftRecord {
+        attachments: Vec::new(),
         text: "draft".into(),
         ..Default::default()
     };
