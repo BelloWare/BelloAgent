@@ -1,0 +1,26 @@
+{
+  "case": "remove both semantic compaction refusal guards from preview_state and context_preview_current",
+  "exit_code": 101,
+  "detected_by_test_assertion": true,
+  "original_sha256": "b66383a5f87c83bf1a9e977d1fd1159efcdf61518f4e5767a5afb55d89c62d68",
+  "mutant_sha256": "bf039a8424eb82bf5b62781bc4f9dac086719bd558ff0f1d1ee7fdd4cbeeb26e",
+  "log_sha256": "9b599b878fe088dd3fcafa0cac4302edb6c5d01ebddcec133afc1157f319e0ec",
+  "source_restored": true,
+  "command": [
+    "cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-j",
+    "1",
+    "--config",
+    "profile.test.package.bello-agent-core.codegen-units=16",
+    "-p",
+    "bello-agent-core",
+    "--lib",
+    "runtime::compaction_runtime::tests::stop_during_summary_retains_stream_and_held_queue_without_adoption",
+    "--",
+    "--exact",
+    "--nocapture"
+  ]
+}

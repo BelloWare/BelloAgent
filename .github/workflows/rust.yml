@@ -55,6 +55,13 @@ jobs:
           cargo test --locked -p bello-agent-app --features synthetic-authority composer_skills::
           cargo test --locked -p bello-agent-app --features synthetic-authority context_inspector::
           cargo test --locked -p bello-agent-app --features synthetic-authority attachment_fixture::
+      - name: Trusted Bash full feature regressions
+        # Generated process/loopback fixtures only; production authority remains gated.
+        run: |
+          cargo test --locked -p bello-agent-core --all-features
+          cargo test --locked -p bello-agent-app --features synthetic-authority
+          cargo clippy --locked -p bello-agent-core --all-targets --all-features -- -D warnings
+          cargo clippy --locked -p bello-agent-app --all-targets --features synthetic-authority -- -D warnings
       - name: Lints
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Build native applications

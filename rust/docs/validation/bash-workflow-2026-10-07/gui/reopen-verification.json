@@ -1,0 +1,9 @@
+{
+  "session_bytes_unchanged": true,
+  "before_sha256": "1b6513f7549388b8ab9ddcbcd8300ac993d3d1ee52d1fa0e977e587484487cf5",
+  "after_sha256": "1b6513f7549388b8ab9ddcbcd8300ac993d3d1ee52d1fa0e977e587484487cf5",
+  "failed_results_retained": 3,
+  "unknown_results_retained": 1,
+  "new_provider_requests_after_reopen": 0,
+  "runtime_note": "Memory-only fake authority loses trust across process restart; UI retains history and blocks sends until verified trust. No native vault claim."
+}

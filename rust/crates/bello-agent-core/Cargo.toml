@@ -10,7 +10,7 @@ default = []
 # In-memory QA fixtures only. This never enables native storage or model tools.
 synthetic-authority = []
 # Compiles the separate native adapter; never selects it through new()/Default.
-native-authority = ["dep:security-framework", "dep:security-framework-sys", "dep:core-foundation", "dep:objc2-local-authentication", "dep:libc"]
+native-authority = ["dep:security-framework", "dep:security-framework-sys", "dep:core-foundation", "dep:objc2-local-authentication"]
 
 [dependencies]
 serde = { workspace = true, features = ["rc"] }
@@ -42,9 +42,9 @@ security-framework-sys = { version = "=2.17.0", optional = true, default-feature
 core-foundation = { version = "=0.10.0", optional = true }
 objc2-local-authentication = { version = "=0.3.2", optional = true, default-features = false, features = ["std", "LAContext"] }
 
-# Portable fake-lock tests need libc only when the native feature is selected.
+# Unix process ownership and portable fake-lock contracts use the pinned libc.
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
-libc = { version = "=0.2.186", optional = true }
+libc = "=0.2.186"
 
 [dev-dependencies]
 tempfile = "3"

@@ -69,7 +69,7 @@ pub(super) fn effective_profile(base: &Profile, item: Option<&Submission>) -> Pr
 /// discovery; explicit macOS file searches may resolve named-user paths when invoked.
 #[derive(Clone)]
 pub struct TrustedReadOnlyTools {
-    native: NativeTools,
+    pub(super) native: NativeTools,
     pub(super) mcp: Option<McpTools>,
 }
 #[derive(Clone)]
@@ -78,6 +78,14 @@ pub(super) struct McpTools {
     pub read_only: bool,
 }
 impl TrustedReadOnlyTools {
+    #[cfg(all(test, unix))]
+    pub(crate) fn with_shell_environment(
+        mut self,
+        environment: crate::tools::bash::Environment,
+    ) -> Self {
+        self.native = self.native.with_shell_environment(environment);
+        self
+    }
     pub(crate) fn with_mcp(
         mut self,
         manager: Arc<crate::mcp::McpManager>,
@@ -102,12 +110,14 @@ impl TrustedReadOnlyTools {
         capabilities: impl IntoIterator<Item = Capability>,
     ) -> Result<Self> {
         let capabilities: Vec<_> = capabilities.into_iter().collect();
-        if capabilities
-            .iter()
-            .any(|capability| matches!(capability, Capability::Write | Capability::Edit))
-        {
+        if capabilities.iter().any(|capability| {
+            matches!(
+                capability,
+                Capability::Write | Capability::Edit | Capability::Bash
+            )
+        }) {
             return Err(invalid(
-                "Read-only tool authority cannot offer write or edit",
+                "Read-only tool authority cannot offer write, edit or bash",
             ));
         }
         Ok(Self {
@@ -516,6 +526,7 @@ impl Controller {
                 let budget = content_budget.clone();
                 let token = cancel.clone();
                 let directory = &output_directory;
+                let reply_id = &reply_id;
                 async move {
                     if call.name == "mcp"
                         && let Some(mcp) = &tools.mcp
@@ -527,8 +538,23 @@ impl Controller {
                             .await;
                         return (index, result, receipt);
                     }
+                    let live = (call.name == "bash")
+                        .then(|| self.live_tool_identity(reply_id, &call.id))
+                        .flatten();
+                    #[cfg(unix)]
+                    let native =
+                        tools
+                            .native
+                            .clone()
+                            .with_shell_update(live.clone().map(|identity| {
+                                Arc::new(move |update: crate::tools::bash::Update| {
+                                    identity.update(update.sequence, update.preview)
+                                }) as crate::tools::bash::OnUpdate
+                            }));
+                    #[cfg(not(unix))]
+                    let native = tools.native.clone();
                     let result = run_call_with_admission(
-                        &tools.native,
+                        &native,
                         call,
                         directory,
                         token.clone(),
@@ -549,6 +575,9 @@ impl Controller {
                         },
                     )
                     .await;
+                    if let Some(live) = live {
+                        live.finish(&result.text, result.outcome);
+                    }
                     (index, result, None)
                 }
             };
@@ -815,6 +844,7 @@ impl BatchContentBudget {
     }
 }
 struct NativeOutput {
+    is_error: bool,
     text: String,
     content: Option<Arc<crate::tool_content::ToolContent>>,
 }
@@ -855,7 +885,11 @@ fn retain_native_content(
     } else {
         None
     };
-    Ok(NativeOutput { text, content })
+    Ok(NativeOutput {
+        is_error: value["isError"].as_bool().unwrap_or(false),
+        text,
+        content,
+    })
 }
 
 #[cfg(test)]
@@ -904,43 +938,42 @@ async fn run_call_with_admission(
     // admission. Cancellation from this point has an unknown output, even
     // when a queued filesystem read never reached the operating system.
     let prepared = tools.prepare_call(call);
+    #[cfg(unix)]
+    let configured = tools.clone().with_shell_output(directory.to_owned());
+    #[cfg(unix)]
+    let tools = &configured;
+    let retained_directory = directory.to_owned();
     match tools
         .invoke_mapped_with_admission(
             &prepared,
             cancel.clone(),
-            move |value| retain_native_content(value, &budget),
+            move |value| {
+                let mut output = retain_native_content(value, &budget)?;
+                if output.text.len() > 65_536 {
+                    // Still inside physical editing admission, including the
+                    // malformed-UTF8 Bash preview's second retention layer.
+                    output.text = retain_output(&retained_directory, &output.text)?;
+                    output.content = None;
+                }
+                Ok(output)
+            },
             admission,
         )
         .await
     {
-        Ok(NativeOutput { text, content }) => {
-            if text.len() <= 65536 {
-                return ToolResultRow {
-                    text,
-                    content,
-                    outcome: ToolOutcome::Completed,
-                };
-            }
-            let directory = directory.to_owned();
-            match BlockingWorkExecutor::shared()
-                .run(cancel, move |_| retain_output(&directory, &text))
-                .await
-            {
-                Ok(text) => ToolResultRow {
-                    text,
-                    content: None,
-                    outcome: ToolOutcome::Completed,
-                },
-                Err(ToolError::Cancelled) => ToolResultRow::error(
-                    "Tool interrupted before its output was retained. Its output is unknown. No automatic replay.",
-                    ToolOutcome::Unknown,
-                ),
-                Err(error) => ToolResultRow::error(
-                    format!("Tool result could not be retained: {error}"),
-                    ToolOutcome::Failed,
-                ),
-            }
-        }
+        Ok(NativeOutput {
+            text,
+            content,
+            is_error,
+        }) => ToolResultRow {
+            text,
+            content,
+            outcome: if is_error {
+                ToolOutcome::Failed
+            } else {
+                ToolOutcome::Completed
+            },
+        },
         Err(ToolError::NotExecuted(text)) => ToolResultRow::error(text, ToolOutcome::NotExecuted),
         Err(ToolError::Cancelled) => ToolResultRow::error(
             if tools.editing_call(call) {
@@ -998,6 +1031,7 @@ fn failed_tool_result_with_editing(
                 | "missing_path"
                 | "tool_output"
                 | "missing_executable"
+                | "process_spawn"
         )
     });
     let outcome = if editing && !rejected {
@@ -1605,3 +1639,7 @@ mod read_budget_tests {
 #[cfg(test)]
 #[path = "edit_runtime_tests.rs"]
 mod edit_runtime_tests;
+
+#[cfg(all(test, unix))]
+#[path = "bash_runtime_tests.rs"]
+mod bash_tests;

@@ -1,0 +1,65 @@
+[
+  {
+    "control": "failed-status",
+    "test": "failed_bash_status_survives_long_lossy_output_generic_retention_reopen_and_replay",
+    "exit_code": 101,
+    "detected_by_assertion": true,
+    "source_sha256": "5a12ced278ee374f9075323f8f3e369c8dd176d0fa11e286172726958e565837",
+    "baseline_manifest_sha256": "46dd6bc1d1711ad37d64933d5f628b21eea4e5d8519fad80ea47cb12175dd1ab",
+    "log": "agent-shell-candidate2-negative-failed-status.log"
+  },
+  {
+    "control": "physical-admission",
+    "test": "cancellation_and_dropped_awaiter_hold_gate_through_owned_escalation",
+    "exit_code": 101,
+    "detected_by_assertion": true,
+    "source_sha256": "774ec91dc3a0f23542cbc6a303e1ec87f2823aacdc700ae62068cb4db752146f",
+    "baseline_manifest_sha256": "46dd6bc1d1711ad37d64933d5f628b21eea4e5d8519fad80ea47cb12175dd1ab",
+    "log": "agent-shell-candidate2-negative-physical-admission.log"
+  },
+  {
+    "control": "post-drain-deadline",
+    "test": "deadline_uses_fresh_time_after_drain_even_if_leader_and_pipes_already_finished",
+    "exit_code": 101,
+    "detected_by_assertion": true,
+    "source_sha256": "682f5b1f1b2a3e639beadd1c435380000dba212de84c720887697552da968e52",
+    "baseline_manifest_sha256": "46dd6bc1d1711ad37d64933d5f628b21eea4e5d8519fad80ea47cb12175dd1ab",
+    "log": "agent-shell-candidate2-negative-post-drain-deadline.log"
+  },
+  {
+    "control": "retention-cap",
+    "test": "drains_beyond_64mib_retention_without_unbounded_memory_or_reader_threads",
+    "exit_code": 101,
+    "detected_by_assertion": true,
+    "source_sha256": "682f5b1f1b2a3e639beadd1c435380000dba212de84c720887697552da968e52",
+    "baseline_manifest_sha256": "46dd6bc1d1711ad37d64933d5f628b21eea4e5d8519fad80ea47cb12175dd1ab",
+    "log": "agent-shell-candidate2-negative-retention-cap.log"
+  },
+  {
+    "control": "generic-late-publication",
+    "test": "prepared_generic_publication_after_stop_preserves_durable_state_but_strips_live_output",
+    "exit_code": 101,
+    "detected_by_assertion": true,
+    "source_sha256": "3a86a7f813987ceb4fc4125b281918433466894bb393e959b464111b3fe2ae34",
+    "baseline_manifest_sha256": "46dd6bc1d1711ad37d64933d5f628b21eea4e5d8519fad80ea47cb12175dd1ab",
+    "log": "agent-shell-candidate2-negative-generic-late-publication.log"
+  },
+  {
+    "control": "live-late-publication",
+    "test": "publication_rechecks_stop_inside_watch_barrier_after_preparation",
+    "exit_code": 101,
+    "detected_by_assertion": true,
+    "source_sha256": "3a86a7f813987ceb4fc4125b281918433466894bb393e959b464111b3fe2ae34",
+    "baseline_manifest_sha256": "46dd6bc1d1711ad37d64933d5f628b21eea4e5d8519fad80ea47cb12175dd1ab",
+    "log": "agent-shell-candidate2-negative-live-late-publication.log"
+  },
+  {
+    "control": "physical-registry",
+    "test": "cancelled_retirement_waiter_keeps_writer_and_gate_after_logical_shell_result",
+    "exit_code": 101,
+    "detected_by_assertion": true,
+    "source_sha256": "774ec91dc3a0f23542cbc6a303e1ec87f2823aacdc700ae62068cb4db752146f",
+    "baseline_manifest_sha256": "46dd6bc1d1711ad37d64933d5f628b21eea4e5d8519fad80ea47cb12175dd1ab",
+    "log": "agent-shell-candidate2-negative-physical-registry.log"
+  }
+]

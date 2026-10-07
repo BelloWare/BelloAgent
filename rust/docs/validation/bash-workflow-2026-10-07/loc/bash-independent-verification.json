@@ -1,0 +1,42 @@
+{
+  "delta": {
+    "production": 980,
+    "tests_and_test_support": 1824,
+    "benchmark_example": 0
+  },
+  "counts": {
+    "production": 43570,
+    "tests_and_test_support": 58052,
+    "benchmark_example": 1192
+  },
+  "total": 102814,
+  "rust_files": 197,
+  "changed_rust_files": 21,
+  "unchanged_rust_files": 176,
+  "preserved_nonblank_counts": {
+    "production": 8155,
+    "tests_and_test_support": 9089,
+    "benchmark_example": 0
+  },
+  "preserved_nonblank_lines_verified": 17244,
+  "baseline_source_manifest_sha256": "d5402de8e36c31ae70d245e78624dc3ca9efa7bf9ddb7d110f8eeac259f8d9f4",
+  "candidate_source_manifest_sha256": "74fcbe4cfd34dfce465afdf088c2e92576c5b263efa224f7bdaa5a17b8c5079e",
+  "status": "PASS",
+  "baseline_input": "e41551e2cdc390c040820870eede7fdd2d4363ce",
+  "baseline_tree": "e41551e2cdc390c040820870eede7fdd2d4363ce",
+  "original_local_unpublished_baseline_commit": "b44e47c9a4ad882431c567889df72c35fe574da8",
+  "baseline_publication_verified": false,
+  "candidate": {
+    "kind": "source_manifest_only",
+    "publication_verified": false
+  },
+  "manifested_candidate_files_verified": 1768,
+  "baseline_files_verified": 1757,
+  "changed_files_verified": 25,
+  "freeze_sha256": "0129e22e28ac05f2c610804dc6d1bdde366f98ff4e2d6243addcdfc4dca546e4",
+  "unmanifested_generated_cache_files_excluded": {
+    "rust/fixtures/__pycache__/bash_workflow_fixture.cpython-312.pyc": "db8ad27c9aeff6951a9cd5a3c1fd2909ea890421553f43b0bca417b487e800bb"
+  },
+  "baseline_classification_basis": "Exact-blob inherited Skills ledger; prior verifier rerun recorded separately",
+  "limits": "LOC verifies source identity and reviewed category accounting, not tests, GUI acceptance, macOS oracle, feature parity, ETA, performance, or remote publication."
+}

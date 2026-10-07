@@ -1,0 +1,22 @@
+   Compiling bello-agent-core v0.1.0 (/workspace/shared/agent-shell-negative/rust/crates/bello-agent-core)
+    Finished `test` profile [unoptimized] target(s) in 24.08s
+     Running unittests src/lib.rs (/workspace/shared/agent-attachments-target/debug/deps/bello_agent_core-4b871c0f4d9050f4)
+
+running 1 test
+test runtime::tool_runtime::bash_tests::cancelled_retirement_waiter_keeps_writer_and_gate_after_logical_shell_result ... FAILED
+
+failures:
+
+---- runtime::tool_runtime::bash_tests::cancelled_retirement_waiter_keeps_writer_and_gate_after_logical_shell_result stdout ----
+
+thread 'runtime::tool_runtime::bash_tests::cancelled_retirement_waiter_keeps_writer_and_gate_after_logical_shell_result' (1541) panicked at crates/bello-agent-core/src/bash_runtime_tests.rs:235:5:
+assertion failed: futures_util::poll!(&mut first).is_pending()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    runtime::tool_runtime::bash_tests::cancelled_retirement_waiter_keeps_writer_and_gate_after_logical_shell_result
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 535 filtered out; finished in 3.03s
+
+error: test failed, to rerun pass `-p bello-agent-core --lib`

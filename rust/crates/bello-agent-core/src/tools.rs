@@ -21,6 +21,8 @@
 //! Native ls itself has an entry bound, not a byte bound, and no `stats` field.
 
 pub(crate) mod attachment_images;
+#[cfg(unix)]
+pub mod bash;
 mod edit;
 mod find;
 mod grep;
@@ -102,6 +104,7 @@ pub enum Capability {
     Grep,
     Write,
     Edit,
+    Bash,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -174,6 +177,14 @@ fn edit_definition() -> ToolDefinition {
     }
 }
 
+fn bash_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "bash".into(),
+        description: "Run a non-interactive bash command in the workspace. Output is bounded and retained in a file when large. timeout is seconds (1–600).".into(),
+        schema: json!({"type":"object","properties":{"command":{"type":"string"},"timeout":{"type":"integer","minimum":1}},"required":["command"],"additionalProperties":false}),
+    }
+}
+
 pub fn result_text(text: impl Into<String>, is_error: bool) -> Value {
     json!({"content": [{"type": "text", "text": text.into()}], "isError": is_error})
 }
@@ -184,6 +195,16 @@ pub struct NativeTools {
     capabilities: BTreeSet<Capability>,
     workers: BlockingWorkExecutor,
     editing_gate: Arc<tokio::sync::Mutex<()>>,
+    #[cfg(unix)]
+    shell_jobs: Arc<bash::Jobs>,
+    #[cfg(unix)]
+    shell_environment: Option<bash::Environment>,
+    #[cfg(unix)]
+    shell_output: Option<PathBuf>,
+    #[cfg(unix)]
+    shell_update: Option<bash::OnUpdate>,
+    #[cfg(all(test, unix))]
+    shell_cleanup_fixture: Option<Arc<dyn Fn() + Send + Sync>>,
     #[cfg(all(test, not(target_os = "macos")))]
     synthetic_mutations: bool,
     #[cfg(test)]
@@ -241,6 +262,16 @@ impl NativeTools {
             capabilities,
             workers: BlockingWorkExecutor::shared(),
             editing_gate: Arc::new(tokio::sync::Mutex::new(())),
+            #[cfg(unix)]
+            shell_jobs: Arc::new(bash::Jobs::default()),
+            #[cfg(unix)]
+            shell_environment: None,
+            #[cfg(unix)]
+            shell_output: None,
+            #[cfg(unix)]
+            shell_update: None,
+            #[cfg(all(test, unix))]
+            shell_cleanup_fixture: None,
             #[cfg(all(test, not(target_os = "macos")))]
             synthetic_mutations: false,
             #[cfg(test)]
@@ -260,7 +291,7 @@ impl NativeTools {
         if capabilities.iter().any(|capability| {
             !matches!(
                 capability,
-                Capability::Ls | Capability::Write | Capability::Edit
+                Capability::Ls | Capability::Write | Capability::Edit | Capability::Bash
             )
         }) {
             return Err(ToolError::failure(
@@ -280,9 +311,40 @@ impl NativeTools {
     }
 
     pub(crate) fn editing_call(&self, call: &ToolCall) -> bool {
-        matches!(call.name.as_str(), "write" | "edit")
-            && (self.capabilities.contains(&Capability::Write)
-                || self.capabilities.contains(&Capability::Edit))
+        matches!(call.name.as_str(), "write" | "edit" | "bash") && self.offers(&call.name)
+    }
+
+    #[cfg(unix)]
+    pub fn with_shell_environment(mut self, environment: bash::Environment) -> Self {
+        self.shell_environment = Some(environment);
+        self
+    }
+    #[cfg(unix)]
+    pub fn with_shell_output(mut self, directory: PathBuf) -> Self {
+        self.shell_output = Some(directory);
+        self
+    }
+    #[cfg(unix)]
+    pub(crate) fn with_shell_update(mut self, update: Option<bash::OnUpdate>) -> Self {
+        self.shell_update = update;
+        self
+    }
+    #[cfg(all(test, unix))]
+    pub(crate) fn with_pending_shell_cleanup(
+        mut self,
+        barrier: Arc<dyn Fn() + Send + Sync>,
+    ) -> Self {
+        self.shell_cleanup_fixture = Some(barrier);
+        self
+    }
+    pub(crate) fn cancel_processes(&self) {
+        #[cfg(unix)]
+        self.shell_jobs.cancel();
+    }
+    pub(crate) async fn join_processes(&self) -> crate::Result<()> {
+        #[cfg(unix)]
+        self.shell_jobs.join().await?;
+        Ok(())
     }
 
     /// Isolated executor injection for deterministic synthetic fixtures.
@@ -323,6 +385,9 @@ impl NativeTools {
         if self.capabilities.contains(&Capability::Edit) {
             definitions.push(edit_definition());
         }
+        if self.capabilities.contains(&Capability::Bash) {
+            definitions.push(bash_definition());
+        }
         definitions
     }
 
@@ -346,6 +411,9 @@ impl NativeTools {
         if self.capabilities.contains(&Capability::Edit) {
             ids.push("edit");
         }
+        if self.capabilities.contains(&Capability::Bash) {
+            ids.push("bash");
+        }
         ids
     }
 
@@ -357,6 +425,7 @@ impl NativeTools {
             "grep" => self.capabilities.contains(&Capability::Grep),
             "write" => self.capabilities.contains(&Capability::Write),
             "edit" => self.capabilities.contains(&Capability::Edit),
+            "bash" => self.capabilities.contains(&Capability::Bash),
             _ => false,
         }
     }
@@ -375,6 +444,8 @@ impl NativeTools {
         // Optional properties do not accept null in their source schemas.
         let optional = if matches!(call.name.as_str(), "write" | "edit") {
             &[][..]
+        } else if call.name == "bash" {
+            &["timeout"][..]
         } else if call.name == "read" {
             &["offset", "limit"][..]
         } else if call.name == "grep" {
@@ -389,6 +460,8 @@ impl NativeTools {
         }
         for key in if call.name == "write" {
             &["path", "content"][..]
+        } else if call.name == "bash" {
+            &["command"][..]
         } else if call.name == "edit" {
             &["path", "oldText", "newText"][..]
         } else if matches!(call.name.as_str(), "find" | "grep") {
@@ -402,7 +475,7 @@ impl NativeTools {
             match value {
                 Value::Null
                     if *key == "pattern"
-                        || matches!(call.name.as_str(), "read" | "write" | "edit") =>
+                        || matches!(call.name.as_str(), "read" | "write" | "edit" | "bash") =>
                 {
                     *value = Value::String(String::new())
                 }
@@ -434,6 +507,8 @@ impl NativeTools {
         }
         for key in if matches!(call.name.as_str(), "write" | "edit") {
             &[][..]
+        } else if call.name == "bash" {
+            &["timeout"][..]
         } else if call.name == "read" {
             &["offset", "limit"][..]
         } else {
@@ -550,6 +625,90 @@ impl NativeTools {
             return Err(ToolError::failure(
                 "tool_arguments",
                 "Missing or unsupported tool arguments",
+            ));
+        }
+        if call.name == "bash" {
+            #[cfg(unix)]
+            {
+                // Validate fully before output creation or spawning. Queue wait
+                // does not consume the command's timeout.
+                let request = bash::Request::parse(&call.arguments)?;
+                #[cfg(test)]
+                let request = request.with_cleanup_fixture(self.shell_cleanup_fixture.clone());
+                let directory = self.shell_output.clone().ok_or_else(|| {
+                    ToolError::failure(
+                        "tool_output",
+                        "Bash requires an explicit retained output directory",
+                    )
+                })?;
+                let environment = self
+                    .shell_environment
+                    .clone()
+                    .unwrap_or_else(|| bash::Environment::from_process(self.paths.home.clone()));
+                let cwd = self.paths.cwd.clone();
+                let update = self.shell_update.clone();
+                let token = cancellation.child_token();
+                let job = self.shell_jobs.register(token.clone())?;
+                let guard = token.clone().drop_guard();
+                let workers = self.workers.clone();
+                let (sender, receiver) = oneshot::channel();
+                // The worker owns job/admission, not this receiver or its Tokio
+                // awaiter. Bounded logical completion can precede final reaping.
+                tokio::spawn(async move {
+                    let sender = Arc::new(Mutex::new(Some(sender)));
+                    let fallback = sender.clone();
+                    let result = workers
+                        .run(token, move |cancel| {
+                            let _job = job;
+                            let editing = _editing;
+                            let mut completion =
+                                bash::run(request, &cwd, &directory, environment, &cancel, update)?;
+                            let result = std::mem::replace(
+                                &mut completion.result,
+                                Err(ToolError::Cancelled),
+                            )
+                            .and_then(map);
+                            if completion.physically_settled() {
+                                drop(editing);
+                                if let Some(sender) =
+                                    sender.lock().expect("Bash result mutex").take()
+                                {
+                                    let _ = sender.send(result);
+                                }
+                            } else {
+                                if let Some(sender) =
+                                    sender.lock().expect("Bash result mutex").take()
+                                {
+                                    let _ = sender.send(result);
+                                }
+                                completion.reap();
+                                drop(editing);
+                            }
+                            Ok(())
+                        })
+                        .await;
+                    if let Some(sender) = fallback.lock().expect("Bash result mutex").take() {
+                        let _ = sender.send(Err(result.err().unwrap_or_else(|| {
+                            ToolError::failure(
+                                "tool_worker",
+                                "Bash worker stopped without a result",
+                            )
+                        })));
+                    }
+                });
+                let result = receiver.await.unwrap_or_else(|_| {
+                    Err(ToolError::failure(
+                        "tool_worker",
+                        "Bash worker stopped without a result",
+                    ))
+                });
+                guard.disarm();
+                return result;
+            }
+            #[cfg(not(unix))]
+            return Err(ToolError::failure(
+                "tool_unavailable",
+                "Bash requires a Unix process owner",
             ));
         }
         let is_read = call.name == "read";

@@ -1624,3 +1624,7 @@ async fn same_workspace_root_retrust_rebinds_without_losing_lease_or_quarantine(
     assert_eq!(server.starts.load(Ordering::SeqCst), 2);
     assert!(Arc::ptr_eq(&rebound, &f.manager()));
 }
+
+#[cfg(unix)]
+#[path = "bash_tests.rs"]
+mod bash_tests;

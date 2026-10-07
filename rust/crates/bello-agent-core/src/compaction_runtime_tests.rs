@@ -285,12 +285,32 @@ async fn stop_during_summary_retains_stream_and_held_queue_without_adoption() {
             .is_some_and(|row| row.text.contains("Partial checkpoint"))
     })
     .await;
+    // A watch notification precedes stream_delta releasing the actor mutex.
+    // The server sends no more chunks: acquiring this lock is an explicit
+    // publication-settlement barrier before checking the semantic refusal.
+    {
+        let inner = actor.inner.lock().unwrap();
+        assert_eq!(
+            inner
+                .store
+                .snapshot_ref()
+                .compaction
+                .as_ref()
+                .unwrap()
+                .phase,
+            Phase::Summarizing
+        );
+        let busy = actor.prepare_context("").unwrap_err().to_string();
+        assert_eq!(
+            busy,
+            "The conversation is changing. Refresh the context preview."
+        );
+        eprintln!("Context preview while actor lock is held: {busy}");
+    }
+    let error = actor.prepare_context("").unwrap_err().to_string();
     assert!(
-        actor
-            .prepare_context("")
-            .unwrap_err()
-            .to_string()
-            .contains("Compaction")
+        error.contains("Compaction"),
+        "Unexpected preview refusal: {error}"
     );
     actor
         .submit("Never drop queued input".into(), Lane::FollowUp)

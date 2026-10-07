@@ -1,0 +1,93 @@
+{
+  "status": "PASS",
+  "final_handoff_sha256": "2b40e4bec5c26bd637e3c465adee1f69c125ad8afe75fd6206b2b06e2d725a8d",
+  "rust_source_manifest_sha256": "c8cf03a1f18770cc7595c747b66e5691136dfd05c09a238643b1b4a55fb7a896",
+  "all_1841_manifested_stage_files_unchanged": true,
+  "checks": [
+    {
+      "name": "supplemental-core-default-clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "--offline",
+        "--locked",
+        "-j",
+        "1",
+        "-p",
+        "bello-agent-core",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "log_sha256": "b194250fd134ffc318a52ce986b570eaef06e1a583f5668bfbbc1447fd59cbfc",
+      "log_path": "/workspace/shared/agent-shell-recovery-2026-10-07/supplemental-core-default-clippy.log"
+    },
+    {
+      "name": "supplemental-core-all-clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "--offline",
+        "--locked",
+        "-j",
+        "1",
+        "-p",
+        "bello-agent-core",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "log_sha256": "363495cca70d67f15f1bba35d5382a6feac7169fe57149b167b9bce25ff94439",
+      "log_path": "/workspace/shared/agent-shell-recovery-2026-10-07/supplemental-core-all-clippy.log"
+    },
+    {
+      "name": "supplemental-app-default-clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "--offline",
+        "--locked",
+        "-j",
+        "1",
+        "-p",
+        "bello-agent-app",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "log_sha256": "b7534762d2af3318d7275f45bb0aa399a1c20af223fa25bfb7c31c813dc6507d",
+      "log_path": "/workspace/shared/agent-shell-recovery-2026-10-07/supplemental-app-default-clippy.log"
+    },
+    {
+      "name": "supplemental-app-synthetic-clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "--offline",
+        "--locked",
+        "-j",
+        "1",
+        "-p",
+        "bello-agent-app",
+        "--all-targets",
+        "--features",
+        "synthetic-authority",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "log_sha256": "182367b6147b5249a04d589b976815ea00492a6ef271ca7262a95c1f17bc145d",
+      "log_path": "/workspace/shared/agent-shell-recovery-2026-10-07/supplemental-app-synthetic-clippy.log"
+    }
+  ],
+  "app_package_clean": "Only bello-agent-app and bello-agent-core cleaned in agent-mcp-ui-target; dependencies preserved.",
+  "limits": "Clippy compiles/checks test targets but does not execute final all-feature/app tests. Those still require exact published CI."
+}

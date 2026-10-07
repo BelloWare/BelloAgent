@@ -1,0 +1,22 @@
+   Compiling bello-agent-core v0.1.0 (/workspace/shared/agent-shell-negative/rust/crates/bello-agent-core)
+    Finished `test` profile [unoptimized] target(s) in 24.46s
+     Running unittests src/lib.rs (/workspace/shared/agent-attachments-target/debug/deps/bello_agent_core-4b871c0f4d9050f4)
+
+running 1 test
+test tools::bash::tests::cancellation_and_dropped_awaiter_hold_gate_through_owned_escalation ... FAILED
+
+failures:
+
+---- tools::bash::tests::cancellation_and_dropped_awaiter_hold_gate_through_owned_escalation stdout ----
+
+thread 'tools::bash::tests::cancellation_and_dropped_awaiter_hold_gate_through_owned_escalation' (112) panicked at crates/bello-agent-core/src/tools/bash_tests.rs:153:6:
+called `Result::unwrap()` on an `Err` value: Elapsed(())
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    tools::bash::tests::cancellation_and_dropped_awaiter_hold_gate_through_owned_escalation
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 535 filtered out; finished in 3.00s
+
+error: test failed, to rerun pass `-p bello-agent-core --lib`

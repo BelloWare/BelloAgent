@@ -904,3 +904,7 @@ async fn saved_factory_image_receipt_delivery_and_reopen_use_the_normal_trusted_
 
 #[path = "saved_runtime_skill_tests.rs"]
 mod skills;
+
+#[cfg(unix)]
+#[path = "bash_saved_runtime_tests.rs"]
+mod bash_tests;

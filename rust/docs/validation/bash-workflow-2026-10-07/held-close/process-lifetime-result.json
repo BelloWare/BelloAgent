@@ -1,0 +1,13 @@
+{
+  "app_exit_code": 0,
+  "held_ready_observed": true,
+  "held_ready_at": 52494.144984173,
+  "term_observed_at": 52538.397665991,
+  "shell_identity_disappeared_at": 52539.405651074,
+  "app_exit_observed_at": 52539.480803021,
+  "app_alive_while_term_cleanup_samples": 89,
+  "app_alive_after_shell_reap_samples": 7,
+  "app_exited_before_owned_shell_absent": false,
+  "normal_finish_marker_exists": false,
+  "limit": "10 ms observations corroborate source ordering; Linux process evidence is not macOS acceptance."
+}

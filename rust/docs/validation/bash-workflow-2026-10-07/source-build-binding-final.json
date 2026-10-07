@@ -1,0 +1,24 @@
+{
+  "binary_sha256": "504d5291b53264673b85981009b3cb0c8655aa011e03ecf0b0009ad5adfefbdc",
+  "build_source_manifest_sha256": "46dd6bc1d1711ad37d64933d5f628b21eea4e5d8519fad80ea47cb12175dd1ab",
+  "current_candidate_manifest_sha256": "e86b8655d266fa7649ba4c5addce98599b9ac76a286ba6e009ca920f76dc040e",
+  "post_build_rust_changes_test_only": [
+    "rust/crates/bello-agent-app/src/connection_settings_controller_tests.rs",
+    "rust/crates/bello-agent-app/src/mcp_inspector_controller_tests.rs",
+    "rust/crates/bello-agent-app/src/transcript_edit_native_ui_tests.rs",
+    "rust/crates/bello-agent-app/src/transcript_read_native_ui_tests.rs",
+    "rust/crates/bello-agent-core/src/compaction_runtime_tests.rs",
+    "rust/crates/bello-agent-core/tests/project_skills_native.rs"
+  ],
+  "production_rust_and_cargo_inputs_unchanged": true,
+  "fresh_rebuild": false,
+  "fixture_script_sha256": "336f1430be8ab4592f53d0560c21cf2a1bda8119b4a024e3175d2320e96b7e72",
+  "generated_png_sha256": "cbaacb8dd0360f97078df7611cdf281a6e6196f947f8578488db72a5cd70fd7b",
+  "limits": "GUI evidence uses original candidate2 binary with exact production-equivalent source, not a rebuild on published Skills baseline. All post-build Rust changes are test-only; final full tests/native acceptance tracked separately.",
+  "final_integration_parent": "c0df34001f512c2bc374329c13708afe9bfa0aaa",
+  "final_rust_source_manifest_sha256": "c8cf03a1f18770cc7595c747b66e5691136dfd05c09a238643b1b4a55fb7a896",
+  "native_read_parent_support_carry": 11,
+  "compaction_test_support_delta": 20,
+  "all_runtime_and_cargo_inputs_unchanged": true,
+  "app_not_rebuilt_on_final_parent": true
+}

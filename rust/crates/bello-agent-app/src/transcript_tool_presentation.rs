@@ -158,6 +158,7 @@ pub(super) enum Status {
     Cancelled,
     Missing,
     Awaiting,
+    Running,
 }
 impl Status {
     pub(super) fn label(self, name: &str) -> &'static str {
@@ -173,6 +174,7 @@ impl Status {
             (Self::Cancelled, _) => "Cancelled; no result retained",
             (Self::Missing, _) => "Outcome not recorded",
             (Self::Awaiting, _) => "Awaiting result",
+            (Self::Running, _) => "Running",
         }
     }
     pub(super) fn is_error(self) -> bool {
@@ -192,6 +194,16 @@ pub(super) fn status(session: &Session, row: ProjectedRow) -> Status {
             ToolOutcome::Cancelled => Status::Cancelled,
         };
     }
+    if let Some(live) = live(session, row) {
+        return match live.outcome {
+            None => Status::Running,
+            Some(ToolOutcome::Completed) => Status::Completed,
+            Some(ToolOutcome::Failed) => Status::Failed,
+            Some(ToolOutcome::Unknown) => Status::Unknown,
+            Some(ToolOutcome::NotExecuted) => Status::NotExecuted,
+            Some(ToolOutcome::Cancelled) => Status::Cancelled,
+        };
+    }
     if let ProjectedRow::Call { assistant, .. } = row {
         let message = &session.messages[assistant];
         // The batch is admitted, not necessarily this call. No start time,
@@ -209,6 +221,26 @@ pub(super) fn status(session: &Session, row: ProjectedRow) -> Status {
     Status::Missing
 }
 
+pub(super) fn live(
+    session: &Session,
+    row: ProjectedRow,
+) -> Option<&bello_agent_core::tool_history::LiveToolView> {
+    let ProjectedRow::Call {
+        assistant,
+        call,
+        result: None,
+    } = row
+    else {
+        return None;
+    };
+    let owner = &session.messages[assistant].id;
+    let id = &call_at(session, assistant, call).id;
+    session
+        .live_tools
+        .iter()
+        .find(|view| &view.assistant_id == owner && &view.call_id == id)
+}
+
 pub(super) fn same_content(
     a: &Session,
     a_row: ProjectedRow,
@@ -217,6 +249,7 @@ pub(super) fn same_content(
 ) -> bool {
     if std::mem::discriminant(&a_row) != std::mem::discriminant(&b_row)
         || status(a, a_row) != status(b, b_row)
+        || live(a, a_row) != live(b, b_row)
     {
         return false;
     }
@@ -555,6 +588,56 @@ mod tests {
                 "{change}"
             );
         }
+    }
+    #[test]
+    fn live_bash_projection_is_call_owned_bounded_and_invalidates_render_cache() {
+        let mut session = Session::new();
+        session.state = RunState::Running;
+        session.active_reply = Some("one".into());
+        session.messages = vec![assistant("one")];
+        if let Some(ToolRecord::Assistant(record)) = &mut session.messages[0].tool_record {
+            record.calls[0].name = "bash".into();
+        }
+        let row = project(&session, 0)[0];
+        assert_eq!(status(&session, row), Status::Awaiting);
+        let old = session.clone();
+        session
+            .live_tools
+            .push(bello_agent_core::tool_history::LiveToolView {
+                assistant_id: "one".into(),
+                call_id: "same-call".into(),
+                sequence: 1,
+                preview: "growing output".into(),
+                outcome: None,
+            });
+        assert_eq!(status(&session, row).label("bash"), "Running");
+        assert!(!same_content(&old, row, &session, row));
+        let previous = session.clone();
+        session.live_tools[0].sequence = 2;
+        session.live_tools[0].preview = "\u{fffd}".repeat(32768).into();
+        assert!(!same_content(&previous, row, &session, row));
+        assert!(preview(&live(&session, row).unwrap().preview).text.len() <= PREVIEW_BYTES);
+        session.live_tools[0].outcome = Some(ToolOutcome::Failed);
+        assert_eq!(status(&session, row), Status::Failed);
+        session.messages = vec![assistant("later")];
+        assert!(live(&session, project(&session, 0)[0]).is_none());
+    }
+    #[test]
+    fn retained_terminal_result_overrides_ephemeral_bash_display() {
+        let mut session = Session::new();
+        session.messages = vec![assistant("one"), result("r", "one", ToolOutcome::Unknown)];
+        session
+            .live_tools
+            .push(bello_agent_core::tool_history::LiveToolView {
+                assistant_id: "one".into(),
+                call_id: "same-call".into(),
+                sequence: 99,
+                preview: "late".into(),
+                outcome: Some(ToolOutcome::Completed),
+            });
+        let row = project(&session, 0)[0];
+        assert_eq!(status(&session, row), Status::Unknown);
+        assert!(live(&session, row).is_none());
     }
     #[test]
     fn ambiguous_results_are_not_hidden_or_arbitrarily_paired() {

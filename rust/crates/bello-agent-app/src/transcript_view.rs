@@ -1905,7 +1905,11 @@ fn render_tool_card(
     }
     let shown_output = projected
         .result()
-        .map(|index| tool_presentation::display_text(&session.messages[index]));
+        .map(|index| tool_presentation::display_text(&session.messages[index]))
+        .or_else(|| {
+            tool_presentation::live(session, projected)
+                .map(|view| std::borrow::Cow::Borrowed(view.preview.as_ref()))
+        });
     let edit_preview =
         editors
             .borrow_mut()

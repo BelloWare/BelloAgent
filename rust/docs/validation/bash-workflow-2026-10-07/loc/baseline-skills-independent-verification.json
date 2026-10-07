@@ -1,0 +1,21 @@
+{
+  "after": "b44e47c9a4ad882431c567889df72c35fe574da8",
+  "ledger_status": "source_frozen_publication_pending",
+  "source_manifest_sha256": "d5402de8e36c31ae70d245e78624dc3ca9efa7bf9ddb7d110f8eeac259f8d9f4",
+  "baseline": "110cde32753930599b2e10d76388bcffcf23624e",
+  "delta": {
+    "production": 3794,
+    "tests_and_test_support": 3184,
+    "benchmark_example": 3
+  },
+  "counts": {
+    "production": 42590,
+    "tests_and_test_support": 56228,
+    "benchmark_example": 1192
+  },
+  "total": 100010,
+  "rust_files": 189,
+  "preserved_nonblank_lines_verified": 55959,
+  "unchanged_rust_files": 103,
+  "publication_commit_recorded_in_ledger": null
+}

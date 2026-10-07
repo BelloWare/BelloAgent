@@ -1,0 +1,10 @@
+   Compiling bello-agent-core v0.1.0 (/workspace/shared/agent-shell-stage/rust/crates/bello-agent-core)
+    Finished `test` profile [unoptimized] target(s) in 17.01s
+     Running unittests src/lib.rs (/workspace/shared/agent-attachments-target/debug/deps/bello_agent_core-75375b53305821cd)
+
+running 1 test
+Context preview while actor lock is held: The conversation is changing. Refresh the context preview.
+test runtime::compaction_runtime::tests::stop_during_summary_retains_stream_and_held_queue_without_adoption ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 382 filtered out; finished in 0.03s
+

@@ -1,0 +1,33 @@
+   Compiling bello-agent-core v0.1.0 (/workspace/shared/agent-shell-negative/rust/crates/bello-agent-core)
+warning: variable does not need to be mutable
+   --> crates/bello-agent-core/src/runtime.rs:473:32
+    |
+473 |     fn publish_prepared(&self, mut snapshot: Session, stop: u64, live_only: bool) {
+    |                                ----^^^^^^^^
+    |                                |
+    |                                help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: `bello-agent-core` (lib test) generated 1 warning (run `cargo fix --lib -p bello-agent-core --tests` to apply 1 suggestion)
+    Finished `test` profile [unoptimized] target(s) in 22.73s
+     Running unittests src/lib.rs (/workspace/shared/agent-attachments-target/debug/deps/bello_agent_core-4b871c0f4d9050f4)
+
+running 1 test
+test runtime::live_tool_runtime::tests::prepared_generic_publication_after_stop_preserves_durable_state_but_strips_live_output ... FAILED
+
+failures:
+
+---- runtime::live_tool_runtime::tests::prepared_generic_publication_after_stop_preserves_durable_state_but_strips_live_output stdout ----
+
+thread 'runtime::live_tool_runtime::tests::prepared_generic_publication_after_stop_preserves_durable_state_but_strips_live_output' (981) panicked at crates/bello-agent-core/src/live_tool_runtime_tests.rs:127:5:
+assertion failed: shown.live_tools.is_empty()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    runtime::live_tool_runtime::tests::prepared_generic_publication_after_stop_preserves_durable_state_but_strips_live_output
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 535 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p bello-agent-core --lib`

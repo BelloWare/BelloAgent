@@ -1,0 +1,24 @@
+   Compiling bello-agent-core v0.1.0 (/workspace/shared/agent-shell-negative/rust/crates/bello-agent-core)
+    Finished `test` profile [unoptimized] target(s) in 22.58s
+     Running unittests src/lib.rs (/workspace/shared/agent-attachments-target/debug/deps/bello_agent_core-4b871c0f4d9050f4)
+
+running 1 test
+test runtime::live_tool_runtime::tests::publication_rechecks_stop_inside_watch_barrier_after_preparation ... FAILED
+
+failures:
+
+---- runtime::live_tool_runtime::tests::publication_rechecks_stop_inside_watch_barrier_after_preparation stdout ----
+
+thread 'runtime::live_tool_runtime::tests::publication_rechecks_stop_inside_watch_barrier_after_preparation' (1254) panicked at crates/bello-agent-core/src/live_tool_runtime_tests.rs:109:5:
+assertion `left == right` failed
+  left: 2
+ right: 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    runtime::live_tool_runtime::tests::publication_rechecks_stop_inside_watch_barrier_after_preparation
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 535 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p bello-agent-core --lib`

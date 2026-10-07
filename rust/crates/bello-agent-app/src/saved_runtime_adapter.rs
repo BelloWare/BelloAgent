@@ -63,6 +63,13 @@ impl AppRuntime {
         } else {
             editing_capabilities
         };
+        let editing_capabilities = if fixture {
+            let mut capabilities = editing_capabilities;
+            capabilities.push(bello_agent_core::tools::Capability::Bash);
+            capabilities
+        } else {
+            editing_capabilities
+        };
         SavedChatOptions {
             home,
             read_only_capabilities,

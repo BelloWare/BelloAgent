@@ -1,0 +1,28 @@
+{
+  "manifest_sha256": "0129e22e28ac05f2c610804dc6d1bdde366f98ff4e2d6243addcdfc4dca546e4",
+  "baseline_commit": "b44e47c9a4ad882431c567889df72c35fe574da8",
+  "baseline_tree": "e41551e2cdc390c040820870eede7fdd2d4363ce",
+  "manifested_files_verified": 1768,
+  "baseline_files_verified": 1757,
+  "changed_files": 25,
+  "changed_rust_files": 21,
+  "new_files": [
+    "rust/crates/bello-agent-core/src/bash_runtime_tests.rs",
+    "rust/crates/bello-agent-core/src/bash_saved_runtime_tests.rs",
+    "rust/crates/bello-agent-core/src/live_tool_runtime.rs",
+    "rust/crates/bello-agent-core/src/live_tool_runtime_tests.rs",
+    "rust/crates/bello-agent-core/src/mcp/bash_tests.rs",
+    "rust/crates/bello-agent-core/src/tools/bash.rs",
+    "rust/crates/bello-agent-core/src/tools/bash_tests.rs",
+    "rust/crates/bello-agent-core/tests/bash_native.rs",
+    "rust/docs/trusted-bash-workflow.md",
+    "rust/fixtures/bash_workflow_fixture.py",
+    "rust/fixtures/launch_bash_gui.sh"
+  ],
+  "removed_files": [],
+  "unmanifested_generated_files_excluded": {
+    "rust/fixtures/__pycache__/bash_workflow_fixture.cpython-312.pyc": "db8ad27c9aeff6951a9cd5a3c1fd2909ea890421553f43b0bca417b487e800bb"
+  },
+  "candidate_manifested_source_unchanged": true,
+  "checks": "All manifested candidate files match SHA-256 and exact source set. Immutable baseline blob bytes show exactly the frozen changed-file set. One reported Python cache file is not source; target/.git excluded. No source files edited."
+}

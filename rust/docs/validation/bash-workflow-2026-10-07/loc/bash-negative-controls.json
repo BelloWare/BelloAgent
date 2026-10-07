@@ -1,0 +1,125 @@
+{
+  "status": "PASS",
+  "negative_controls_detected": 18,
+  "controls": [
+    {
+      "case": "modified Rust source byte",
+      "detected": true,
+      "error": "candidate full-source manifest differs (source changed, missing, or extra file)",
+      "source_modified_on_disk": false
+    },
+    {
+      "case": "extra Rust source file",
+      "detected": true,
+      "error": "candidate full-source manifest differs (source changed, missing, or extra file)",
+      "source_modified_on_disk": false
+    },
+    {
+      "case": "missing Rust source file",
+      "detected": true,
+      "error": "candidate full-source manifest differs (source changed, missing, or extra file)",
+      "source_modified_on_disk": false
+    },
+    {
+      "case": "modified non-Rust frozen fixture",
+      "detected": true,
+      "error": "candidate full-source manifest differs (source changed, missing, or extra file)",
+      "source_modified_on_disk": false
+    },
+    {
+      "case": "modified immutable baseline blob in memory",
+      "detected": true,
+      "error": "baseline full-source manifest differs",
+      "source_modified_on_disk": false
+    },
+    {
+      "case": "baseline category total altered",
+      "detected": true,
+      "error": "Skills baseline category totals differ",
+      "source_modified_on_disk": false
+    },
+    {
+      "case": "aggregate delta altered",
+      "detected": true,
+      "error": "aggregate delta differs",
+      "source_modified_on_disk": false
+    },
+    {
+      "case": "benchmark incorrectly included in support",
+      "detected": true,
+      "error": "after totals differ",
+      "source_modified_on_disk": false
+    },
+    {
+      "case": "publication asserted by ledger",
+      "detected": true,
+      "error": "this frozen audit cannot establish publication",
+      "source_modified_on_disk": false
+    },
+    {
+      "case": "prior classification provenance altered",
+      "detected": true,
+      "error": "committed ledger identity differs: rust/docs/validation/loc-project-mcp-2026-10-07-delta.json",
+      "source_modified_on_disk": false
+    },
+    {
+      "case": "changed-span evidence altered",
+      "detected": true,
+      "error": "changed-span evidence differs: rust/crates/bello-agent-app/src/saved_runtime_adapter.rs",
+      "source_modified_on_disk": false
+    },
+    {
+      "case": "preserved-line evidence altered",
+      "detected": true,
+      "error": "preserved-line evidence differs: rust/crates/bello-agent-app/src/saved_runtime_adapter.rs",
+      "source_modified_on_disk": false
+    },
+    {
+      "case": "support anchor altered",
+      "detected": true,
+      "error": "support start anchor mismatch",
+      "source_modified_on_disk": false
+    },
+    {
+      "case": "self-consistent new support-to-production reclassification",
+      "detected": true,
+      "error": "reviewed support spans differ: rust/crates/bello-agent-core/src/tools/bash.rs",
+      "source_modified_on_disk": false
+    },
+    {
+      "case": "self-consistent inherited support-to-production reclassification",
+      "detected": true,
+      "error": "inherited classification differs: rust/crates/bello-agent-app/src/saved_runtime_adapter.rs",
+      "source_modified_on_disk": false
+    },
+    {
+      "case": "blob object rejected as baseline revision",
+      "detected": true,
+      "error": "error: 0d4d9261ef7625283b1959c34bc5c4ed80cf2cf9^{tree}: expected tree type, but the object dereferences to blob type\nfatal: Needed a single revision\nFAIL: Command '['git', '-C', '/workspace/scratch/8b6fda578834/BelloAgent', 'rev-parse', '--verify', '0d4d9261ef7625283b1959c34bc5c4ed80cf2cf9^{tree}']' returned non-zero exit status 128.",
+      "source_modified_on_disk": false
+    },
+    {
+      "case": "different valid baseline commit tree",
+      "detected": true,
+      "error": "FAIL: baseline revision does not resolve to the reviewed tree",
+      "source_modified_on_disk": false
+    },
+    {
+      "case": "equal nonblank line reclassification",
+      "detected": true,
+      "error": "unchanged nonblank line reclassified",
+      "source_modified_on_disk": false
+    }
+  ],
+  "positive_controls": [
+    "Exact frozen candidate passes",
+    "Baseline immutable tree ID passes without requiring original local commit lookup",
+    "Supplied original baseline commit accepted only after tree equality",
+    "Nonblank comments count; blank lines do not"
+  ],
+  "no_source_or_git_state_changes": true,
+  "candidate_total": 102814,
+  "ignored_generated_cache_files": {
+    "rust/fixtures/__pycache__/bash_workflow_fixture.cpython-312.pyc": "db8ad27c9aeff6951a9cd5a3c1fd2909ea890421553f43b0bca417b487e800bb"
+  }
+}

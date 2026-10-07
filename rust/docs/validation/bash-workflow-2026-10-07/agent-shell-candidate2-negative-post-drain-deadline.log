@@ -1,0 +1,24 @@
+   Compiling bello-agent-core v0.1.0 (/workspace/shared/agent-shell-negative/rust/crates/bello-agent-core)
+    Finished `test` profile [unoptimized] target(s) in 23.54s
+     Running unittests src/lib.rs (/workspace/shared/agent-attachments-target/debug/deps/bello_agent_core-4b871c0f4d9050f4)
+
+running 1 test
+test tools::bash::tests::deadline_uses_fresh_time_after_drain_even_if_leader_and_pipes_already_finished ... FAILED
+
+failures:
+
+---- tools::bash::tests::deadline_uses_fresh_time_after_drain_even_if_leader_and_pipes_already_finished stdout ----
+
+thread 'tools::bash::tests::deadline_uses_fresh_time_after_drain_even_if_leader_and_pipes_already_finished' (424) panicked at crates/bello-agent-core/src/tools/bash_tests.rs:338:5:
+assertion `left == right` failed
+  left: Bool(false)
+ right: true
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    tools::bash::tests::deadline_uses_fresh_time_after_drain_even_if_leader_and_pipes_already_finished
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 535 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p bello-agent-core --lib`

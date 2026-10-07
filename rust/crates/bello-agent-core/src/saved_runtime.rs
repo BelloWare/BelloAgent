@@ -29,6 +29,8 @@ pub struct SavedRuntimeFactory {
     authority: ProjectAuthority,
     workspace: Arc<Mutex<WorkspaceStore>>,
     options: SavedChatOptions,
+    #[cfg(all(test, unix))]
+    shell_environment: Option<crate::tools::bash::Environment>,
     #[cfg(test)]
     confirmations: Arc<std::sync::atomic::AtomicUsize>,
     #[cfg(all(test, feature = "synthetic-authority", not(target_os = "macos")))]
@@ -44,6 +46,8 @@ impl SavedRuntimeFactory {
             authority,
             workspace,
             options,
+            #[cfg(all(test, unix))]
+            shell_environment: None,
             #[cfg(test)]
             confirmations: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             #[cfg(all(test, feature = "synthetic-authority", not(target_os = "macos")))]
@@ -265,6 +269,12 @@ impl SavedRuntimeFactory {
                     gate,
                 )?
             }
+        };
+        #[cfg(all(test, unix))]
+        let tools = if let Some(environment) = &self.shell_environment {
+            tools.with_shell_environment(environment.clone())
+        } else {
+            tools
         };
         let tools = tools.with_mcp(
             self.project_mcp(&guard.binding)?,

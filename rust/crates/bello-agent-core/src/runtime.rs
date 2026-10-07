@@ -1,3 +1,6 @@
+#[path = "live_tool_runtime.rs"]
+mod live_tool_runtime;
+
 #[path = "attachment_runtime.rs"]
 mod attachment_runtime;
 #[path = "project_input_runtime.rs"]
@@ -41,6 +44,7 @@ use std::sync::{
 use tokio_util::sync::CancellationToken;
 
 struct Inner {
+    live_tools: Vec<crate::tool_history::LiveToolView>,
     store: SessionStore,
     applied_project: Option<project_input_runtime::AppliedProjectResources>,
     worker_running: bool,
@@ -252,6 +256,7 @@ impl Controller {
             suspension_released: tokio::sync::Notify::new(),
             worker_active: AtomicBool::new(false),
             inner: Mutex::new(Inner {
+                live_tools: Vec::new(),
                 store,
                 worker_running: false,
                 compaction_pending: false,
@@ -429,15 +434,61 @@ impl Controller {
     pub fn subscribe(&self) -> tokio::sync::watch::Receiver<Arc<Session>> {
         self.published.subscribe()
     }
-    fn publish(&self, inner: &Inner) {
+    fn display_snapshot(&self, inner: &Inner) -> Session {
         let mut snapshot = inner.store.snapshot();
+        // Only current, unfenced invocation state is eligible for display.
+        if !self.is_retired()
+            && !self.stop_requested.load(Ordering::Acquire)
+            && inner
+                .cancel
+                .as_ref()
+                .is_none_or(|cancel| !cancel.is_cancelled())
+        {
+            snapshot.live_tools = inner
+                .live_tools
+                .iter()
+                .filter(|view| {
+                    snapshot.active_reply.as_deref() == Some(&view.assistant_id)
+                        && snapshot
+                            .active_tool_calls()
+                            .is_some_and(|calls| calls.iter().any(|call| call.id == view.call_id))
+                })
+                .cloned()
+                .collect();
+        }
         if let Some(error) = &inner.fatal {
             snapshot.error = Some(error.clone());
             snapshot.state = RunState::Error;
             snapshot.queue_paused = true;
         }
-        self.published.send_replace(Arc::new(snapshot));
-        self.published_revision.fetch_add(1, Ordering::Release);
+        snapshot
+    }
+    fn publish(&self, inner: &Inner) {
+        let stop = self.stop_epoch.load(Ordering::Acquire);
+        self.publish_prepared(self.display_snapshot(inner), stop, false);
+    }
+    fn publish_live(&self, inner: &Inner, stop: u64) {
+        self.publish_prepared(self.display_snapshot(inner), stop, true);
+    }
+    fn publish_prepared(&self, mut snapshot: Session, stop: u64, live_only: bool) {
+        // All preparation is outside the watch critical section. Generic queue
+        // or durable publications can race Stop too: they still publish required
+        // state but must strip a live preview prepared before the fence.
+        if self.published.send_if_modified(|current| {
+            if self.is_retired()
+                || self.stop_requested.load(Ordering::Acquire)
+                || self.stop_epoch.load(Ordering::Acquire) != stop
+            {
+                if live_only {
+                    return false;
+                }
+                snapshot.live_tools.clear();
+            }
+            *current = Arc::new(snapshot);
+            true
+        }) {
+            self.published_revision.fetch_add(1, Ordering::Release);
+        }
     }
     fn worker_finished(&self, inner: &mut Inner) {
         let configured = if let Some(configuration) = inner.pending_configuration.take() {
@@ -522,6 +573,9 @@ impl Controller {
             .fetch_add(1, Ordering::AcqRel)
             .wrapping_add(1);
         self.attachment_jobs.cancel();
+        if let Some(tools) = &self.options.tools {
+            tools.native.cancel_processes();
+        }
         if self.worker_active.load(Ordering::Acquire) {
             self.stop_requested.store(true, Ordering::Release);
         }
@@ -533,6 +587,10 @@ impl Controller {
         {
             cancel.cancel();
         }
+        // Any live publication that won the watch lock happened before this
+        // barrier; a later one rechecks stop_epoch under that lock and refuses.
+        // No persistence or process wait is performed while this lock is held.
+        drop(self.published.borrow());
         Ok(epoch)
     }
     /// Permanently reject new commands and worker continuations on this controller.
@@ -565,6 +623,9 @@ impl Controller {
         joined?;
         retired?;
         self.attachment_jobs.join().await?;
+        if let Some(tools) = &self.options.tools {
+            tools.native.join_processes().await?;
+        }
         self.wait_for_idle_guard_release().await;
         self.inner
             .lock()
@@ -588,6 +649,9 @@ impl Controller {
         // A failed stop/barrier must not abandon a still-owned worker handle.
         self.join_workers().await?;
         self.attachment_jobs.join().await?;
+        if let Some(tools) = &self.options.tools {
+            tools.native.join_processes().await?;
+        }
         {
             let inner = self
                 .inner
@@ -875,6 +939,7 @@ impl Controller {
             }
         }
         inner.worker_running = true;
+        inner.live_tools.clear();
         inner.worker_epoch = Arc::new(());
         self.worker_active.store(true, Ordering::Release);
         let mut worker = self.worker.lock().expect("worker handle lock poisoned");

@@ -46,6 +46,12 @@ jobs:
       - name: Retain project skill source and Darwin alias characterization
         # Generated fixtures only; exact matrix plus separately labeled alias gap.
         run: cargo test --locked -p bello-agent-core --test project_skills_native -- --nocapture
+      - name: Trusted Bash full feature suites and exact Swift process oracle
+        # Owned generated processes and temporary files; no native vault or user data.
+        run: |
+          cargo test --locked -p bello-agent-core --all-features
+          cargo test --locked -p bello-agent-core --all-features --test bash_native -- --nocapture
+          cargo test --locked -p bello-agent-app --features synthetic-authority
       - name: Project authority fixture contracts and native type checks
         # Fake API and temporary-file fixtures; no native authority or credentials are accessed.
         run: |

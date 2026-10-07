@@ -6,6 +6,17 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
+/// A Controller-owned, non-durable display snapshot. It is deliberately absent
+/// from Session serialization; only ResultRecord proves a retained outcome.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LiveToolView {
+    pub assistant_id: String,
+    pub call_id: String,
+    pub sequence: u64,
+    pub preview: std::sync::Arc<str>,
+    pub outcome: Option<ToolOutcome>,
+}
+
 pub const MISSING_RESULT: &str = "No result provided";
 pub const EMPTY_RESULT: &str = "(no tool output)";
 const MAX_ARGUMENT_BYTES: usize = 2 * 1024 * 1024;

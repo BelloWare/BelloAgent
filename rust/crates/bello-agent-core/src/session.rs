@@ -122,6 +122,8 @@ pub struct EditOutcome {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Session {
+    #[serde(skip)]
+    pub live_tools: Vec<crate::tool_history::LiveToolView>,
     pub version: u32,
     #[serde(default)]
     pub stream_generation: String,
@@ -148,6 +150,7 @@ pub struct Session {
 impl Session {
     pub fn new() -> Self {
         Self {
+            live_tools: Vec::new(),
             version: 2,
             stream_generation: Uuid::new_v4().to_string(),
             stream_sequence: 0,

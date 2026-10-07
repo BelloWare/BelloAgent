@@ -1,0 +1,16 @@
+{
+  "README.md": "e3555a682e1ae0fce7989ace613dca864fa26eb46411e29ac77d3e02bda1407b",
+  "loc-bash-workflow-2026-10-07-delta.json": "bd418b263e420f78df1cb9420fd928dbca5987e89cc5c0b670da9c3ce1e24427",
+  "verify-loc-bash-workflow-2026-10-07.py": "03e07eefc209178a2339b46d836a2cb4c8e6c7051e6d33bb86dd77b21c0c97d8",
+  "bash-independent-verification.json": "2f0e02e1f61a20769ae2256206bffcacefa37af683238e86f011139749c0ffe2",
+  "test-loc-bash-negative-controls.py": "3bfb075e4d0ea438df15d7aa69e167064fd971967a0ed266f25848d67322b0f6",
+  "bash-negative-controls.json": "bf9a36c0b2535c0f201753755fb81a04d487d437774644730dbd05ee5135b4dd",
+  "independent-source-verification.json": "fe646e4cfce6668a099180ecf2368026c068a72ad767cfde812509e6c4b24925",
+  "independent-classification-review.json": "2e186c339395461dacf96ad2c448d5169a824c393c29786b5ece4589f03e244d",
+  "reviewed-support-ranges.json": "3b0a91118e7132009370107864157439bfcb9f1ca244ba5e16ec4977a9afe411",
+  "bash-loc-per-file.csv": "bfdcfb566e13354a04c04a996a42d7f4b80bfba632ba370998a1937cc3a163c8",
+  "agent-shell-rebased-files.json": "0129e22e28ac05f2c610804dc6d1bdde366f98ff4e2d6243addcdfc4dca546e4",
+  "verify-baseline-project-skills.py": "e244dc2bc2d881903992e952c28075290a7c9a543a6f5a0c8cf659cadb648e75",
+  "baseline-project-skills-ledger.json": "e530726af07bee1382e9b545076d15200e16b6f382d9380b028a944a6604f203",
+  "baseline-skills-independent-verification.json": "9be9f3ffc7b916dfbf0984e96c1921d3c69f6d5e00ab9be2d77b3a6eb81ba8fc"
+}

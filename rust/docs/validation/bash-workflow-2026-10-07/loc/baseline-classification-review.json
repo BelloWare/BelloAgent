@@ -1,0 +1,1179 @@
+{
+  "rust/crates/bello-agent-app/src/saved_runtime_adapter.rs": {
+    "origin": {
+      "kind": "committed_ledger",
+      "path": "rust/docs/validation/loc-project-mcp-2026-10-07-delta.json",
+      "git_blob": "68d3370a3f0ef87c15cf38621360804733e3b201",
+      "sha256": "67e073244749babe3b029546761d8065750f0df8ac3897ed6fd86659592e41af",
+      "side": "after"
+    },
+    "classification": {
+      "nonblank": 243,
+      "counts": {
+        "production": 226,
+        "tests_and_test_support": 17,
+        "benchmark_example": 0
+      },
+      "reviewed_support_ranges": [
+        {
+          "start": 230,
+          "end": 246,
+          "reason": "#[cfg(test)]",
+          "start_text": "#[cfg(test)]",
+          "end_text": "}"
+        }
+      ]
+    }
+  },
+  "rust/crates/bello-agent-app/src/transcript_edit_presentation.rs": {
+    "origin": {
+      "kind": "committed_ledger",
+      "path": "rust/docs/validation/loc-edit-compaction-2026-10-07-delta.json",
+      "git_blob": "7acbce4eae42fd5429518967ee055e78493c7fb0",
+      "sha256": "e825426ddee750acd490a15c175d53881f796301a84b4b50cd880b86fc6575bb",
+      "side": "after"
+    },
+    "classification": {
+      "nonblank": 540,
+      "counts": {
+        "production": 451,
+        "tests_and_test_support": 89,
+        "benchmark_example": 0
+      },
+      "reviewed_support_ranges": [
+        {
+          "start": 337,
+          "end": 398,
+          "reason": "test",
+          "start_text": "#[cfg(test)]",
+          "end_text": "}"
+        },
+        {
+          "start": 409,
+          "end": 410,
+          "reason": "test",
+          "start_text": "    #[cfg(test)]",
+          "end_text": "    pub computations: usize,"
+        },
+        {
+          "start": 475,
+          "end": 478,
+          "reason": "test",
+          "start_text": "        #[cfg(test)]",
+          "end_text": "        }"
+        },
+        {
+          "start": 527,
+          "end": 547,
+          "reason": "test",
+          "start_text": "#[cfg(test)]",
+          "end_text": "}"
+        }
+      ]
+    }
+  },
+  "rust/crates/bello-agent-app/src/transcript_tool_presentation.rs": {
+    "origin": {
+      "kind": "committed_ledger",
+      "path": "rust/docs/validation/loc-project-skills-2026-10-07-delta.json",
+      "git_blob": "0d4d9261ef7625283b1959c34bc5c4ed80cf2cf9",
+      "sha256": "e530726af07bee1382e9b545076d15200e16b6f382d9380b028a944a6604f203",
+      "side": "after"
+    },
+    "classification": {
+      "nonblank": 564,
+      "counts": {
+        "production": 311,
+        "tests_and_test_support": 253,
+        "benchmark_example": 0
+      },
+      "reviewed_support_ranges": [
+        {
+          "start": 325,
+          "end": 580,
+          "reason": "#[cfg(test)]",
+          "start_text": "#[cfg(test)]",
+          "end_text": "}"
+        }
+      ]
+    }
+  },
+  "rust/crates/bello-agent-app/src/transcript_view.rs": {
+    "origin": {
+      "kind": "committed_ledger",
+      "path": "rust/docs/validation/loc-project-skills-2026-10-07-delta.json",
+      "git_blob": "0d4d9261ef7625283b1959c34bc5c4ed80cf2cf9",
+      "sha256": "e530726af07bee1382e9b545076d15200e16b6f382d9380b028a944a6604f203",
+      "side": "after"
+    },
+    "classification": {
+      "nonblank": 2120,
+      "counts": {
+        "production": 1909,
+        "tests_and_test_support": 211,
+        "benchmark_example": 0
+      },
+      "reviewed_support_ranges": [
+        {
+          "start": 67,
+          "end": 68,
+          "reason": "#[cfg(test)]",
+          "start_text": "    #[cfg(test)]",
+          "end_text": "    estimate_override: std::cell::Cell<Option<Pixels>>,"
+        },
+        {
+          "start": 201,
+          "end": 202,
+          "reason": "#[cfg(test)]",
+          "start_text": "            #[cfg(test)]",
+          "end_text": "            estimate_override: std::cell::Cell::new(None),"
+        },
+        {
+          "start": 359,
+          "end": 360,
+          "reason": "#[cfg(test)]",
+          "start_text": "    #[cfg(test)]",
+          "end_text": "    target_preflights: Vec<usize>,"
+        },
+        {
+          "start": 361,
+          "end": 362,
+          "reason": "#[cfg(test)]",
+          "start_text": "    #[cfg(test)]",
+          "end_text": "    tool_height_invalidations: usize,"
+        },
+        {
+          "start": 374,
+          "end": 375,
+          "reason": "#[cfg(test)]",
+          "start_text": "            #[cfg(test)]",
+          "end_text": "            target_preflights: Vec::new(),"
+        },
+        {
+          "start": 376,
+          "end": 377,
+          "reason": "#[cfg(test)]",
+          "start_text": "            #[cfg(test)]",
+          "end_text": "            tool_height_invalidations: 0,"
+        },
+        {
+          "start": 399,
+          "end": 404,
+          "reason": "#[cfg(test)]",
+          "start_text": "            #[cfg(test)]",
+          "end_text": "                .count();"
+        },
+        {
+          "start": 423,
+          "end": 431,
+          "reason": "#[cfg(test)]",
+          "start_text": "            #[cfg(test)]",
+          "end_text": "            }"
+        },
+        {
+          "start": 499,
+          "end": 502,
+          "reason": "#[cfg(test)]",
+          "start_text": "    #[cfg(test)]",
+          "end_text": "    }"
+        },
+        {
+          "start": 686,
+          "end": 692,
+          "reason": "#[cfg(test)]",
+          "start_text": "#[cfg(test)]",
+          "end_text": "}"
+        },
+        {
+          "start": 703,
+          "end": 704,
+          "reason": "#[cfg(test)]",
+          "start_text": "    #[cfg(test)]",
+          "end_text": "    materialized: Rc<RefCell<Materialized>>,"
+        },
+        {
+          "start": 705,
+          "end": 706,
+          "reason": "#[cfg(test)]",
+          "start_text": "    #[cfg(test)]",
+          "end_text": "    render_count: usize,"
+        },
+        {
+          "start": 721,
+          "end": 722,
+          "reason": "#[cfg(test)]",
+          "start_text": "            #[cfg(test)]",
+          "end_text": "            materialized: Rc::new(RefCell::new(Materialized::default())),"
+        },
+        {
+          "start": 723,
+          "end": 724,
+          "reason": "#[cfg(test)]",
+          "start_text": "            #[cfg(test)]",
+          "end_text": "            render_count: 0,"
+        },
+        {
+          "start": 968,
+          "end": 971,
+          "reason": "#[cfg(test)]",
+          "start_text": "    #[cfg(test)]",
+          "end_text": "    }"
+        },
+        {
+          "start": 972,
+          "end": 986,
+          "reason": "#[cfg(test)]",
+          "start_text": "    #[cfg(test)]",
+          "end_text": "    }"
+        },
+        {
+          "start": 988,
+          "end": 991,
+          "reason": "#[cfg(test)]",
+          "start_text": "    #[cfg(test)]",
+          "end_text": "    }"
+        },
+        {
+          "start": 993,
+          "end": 996,
+          "reason": "#[cfg(test)]",
+          "start_text": "    #[cfg(test)]",
+          "end_text": "    }"
+        },
+        {
+          "start": 998,
+          "end": 1011,
+          "reason": "#[cfg(test)]",
+          "start_text": "    #[cfg(test)]",
+          "end_text": "    }"
+        },
+        {
+          "start": 1012,
+          "end": 1020,
+          "reason": "#[cfg(test)]",
+          "start_text": "    #[cfg(test)]",
+          "end_text": "    }"
+        },
+        {
+          "start": 1022,
+          "end": 1025,
+          "reason": "#[cfg(test)]",
+          "start_text": "    #[cfg(test)]",
+          "end_text": "    }"
+        },
+        {
+          "start": 1026,
+          "end": 1029,
+          "reason": "#[cfg(test)]",
+          "start_text": "    #[cfg(test)]",
+          "end_text": "    }"
+        },
+        {
+          "start": 1030,
+          "end": 1033,
+          "reason": "#[cfg(test)]",
+          "start_text": "    #[cfg(test)]",
+          "end_text": "    }"
+        },
+        {
+          "start": 1034,
+          "end": 1037,
+          "reason": "#[cfg(test)]",
+          "start_text": "    #[cfg(test)]",
+          "end_text": "    }"
+        },
+        {
+          "start": 1038,
+          "end": 1041,
+          "reason": "#[cfg(test)]",
+          "start_text": "    #[cfg(test)]",
+          "end_text": "    }"
+        },
+        {
+          "start": 1042,
+          "end": 1045,
+          "reason": "#[cfg(test)]",
+          "start_text": "    #[cfg(test)]",
+          "end_text": "    }"
+        },
+        {
+          "start": 1046,
+          "end": 1049,
+          "reason": "#[cfg(test)]",
+          "start_text": "    #[cfg(test)]",
+          "end_text": "    }"
+        },
+        {
+          "start": 1050,
+          "end": 1053,
+          "reason": "#[cfg(test)]",
+          "start_text": "    #[cfg(test)]",
+          "end_text": "    }"
+        },
+        {
+          "start": 1054,
+          "end": 1057,
+          "reason": "#[cfg(test)]",
+          "start_text": "    #[cfg(test)]",
+          "end_text": "    }"
+        },
+        {
+          "start": 1058,
+          "end": 1078,
+          "reason": "#[cfg(test)]",
+          "start_text": "    #[cfg(test)]",
+          "end_text": "    }"
+        },
+        {
+          "start": 1093,
+          "end": 1094,
+          "reason": "#[cfg(test)]",
+          "start_text": "    #[cfg(test)]",
+          "end_text": "    materialized: Rc<RefCell<Materialized>>,"
+        },
+        {
+          "start": 1105,
+          "end": 1106,
+          "reason": "#[cfg(test)]",
+          "start_text": "        #[cfg(test)]",
+          "end_text": "        let materialized = self.materialized.clone();"
+        },
+        {
+          "start": 1119,
+          "end": 1120,
+          "reason": "#[cfg(test)]",
+          "start_text": "                #[cfg(test)]",
+          "end_text": "                &materialized,"
+        },
+        {
+          "start": 1161,
+          "end": 1173,
+          "reason": "#[cfg(test)]",
+          "start_text": "    #[cfg(test)]",
+          "end_text": "    }"
+        },
+        {
+          "start": 1175,
+          "end": 1188,
+          "reason": "#[cfg(test)]",
+          "start_text": "    #[cfg(test)]",
+          "end_text": "    };"
+        },
+        {
+          "start": 1227,
+          "end": 1230,
+          "reason": "#[cfg(test)]",
+          "start_text": "        #[cfg(test)]",
+          "end_text": "        }"
+        },
+        {
+          "start": 1247,
+          "end": 1248,
+          "reason": "#[cfg(test)]",
+          "start_text": "                #[cfg(test)]",
+          "end_text": "                &self.materialized,"
+        },
+        {
+          "start": 1290,
+          "end": 1291,
+          "reason": "#[cfg(test)]",
+          "start_text": "        #[cfg(test)]",
+          "end_text": "        let mut target_preflights = 0;"
+        },
+        {
+          "start": 1304,
+          "end": 1307,
+          "reason": "#[cfg(test)]",
+          "start_text": "            #[cfg(test)]",
+          "end_text": "            }"
+        },
+        {
+          "start": 1319,
+          "end": 1320,
+          "reason": "#[cfg(test)]",
+          "start_text": "                #[cfg(test)]",
+          "end_text": "                &self.materialized,"
+        },
+        {
+          "start": 1370,
+          "end": 1374,
+          "reason": "#[cfg(test)]",
+          "start_text": "        #[cfg(test)]",
+          "end_text": "            .push(target_preflights);"
+        },
+        {
+          "start": 1455,
+          "end": 1458,
+          "reason": "#[cfg(test)]",
+          "start_text": "        #[cfg(test)]",
+          "end_text": "        }"
+        },
+        {
+          "start": 1475,
+          "end": 1476,
+          "reason": "#[cfg(test)]",
+          "start_text": "            #[cfg(test)]",
+          "end_text": "            materialized: self.materialized.clone(),"
+        }
+      ]
+    }
+  },
+  "rust/crates/bello-agent-app/src/transcript_view_tests.rs": {
+    "origin": {
+      "kind": "committed_ledger",
+      "path": "rust/docs/validation/loc-project-skills-2026-10-07-delta.json",
+      "git_blob": "0d4d9261ef7625283b1959c34bc5c4ed80cf2cf9",
+      "sha256": "e530726af07bee1382e9b545076d15200e16b6f382d9380b028a944a6604f203",
+      "side": "after"
+    },
+    "classification": {
+      "nonblank": 2370,
+      "counts": {
+        "production": 0,
+        "tests_and_test_support": 2370,
+        "benchmark_example": 0
+      },
+      "reviewed_support_ranges": [
+        {
+          "start": 1,
+          "end": 2441,
+          "reason": "entire test or explicit fixture-only module",
+          "start_text": "//! Fake-platform regression tests for the retained, visible-row transcript.",
+          "end_text": "mod edit_ui_tests;"
+        }
+      ]
+    }
+  },
+  "rust/crates/bello-agent-core/src/mcp/tests.rs": {
+    "origin": {
+      "kind": "committed_ledger",
+      "path": "rust/docs/validation/loc-project-skills-2026-10-07-delta.json",
+      "git_blob": "0d4d9261ef7625283b1959c34bc5c4ed80cf2cf9",
+      "sha256": "e530726af07bee1382e9b545076d15200e16b6f382d9380b028a944a6604f203",
+      "side": "after"
+    },
+    "classification": {
+      "nonblank": 1615,
+      "counts": {
+        "production": 0,
+        "tests_and_test_support": 1615,
+        "benchmark_example": 0
+      },
+      "reviewed_support_ranges": [
+        {
+          "start": 1,
+          "end": 1626,
+          "reason": "entire test or explicit fixture-only module",
+          "start_text": "use super::*;",
+          "end_text": "}"
+        }
+      ]
+    }
+  },
+  "rust/crates/bello-agent-core/src/runtime.rs": {
+    "origin": {
+      "kind": "committed_ledger",
+      "path": "rust/docs/validation/loc-project-skills-2026-10-07-delta.json",
+      "git_blob": "0d4d9261ef7625283b1959c34bc5c4ed80cf2cf9",
+      "sha256": "e530726af07bee1382e9b545076d15200e16b6f382d9380b028a944a6604f203",
+      "side": "after"
+    },
+    "classification": {
+      "nonblank": 2297,
+      "counts": {
+        "production": 910,
+        "tests_and_test_support": 1387,
+        "benchmark_example": 0
+      },
+      "reviewed_support_ranges": [
+        {
+          "start": 19,
+          "end": 21,
+          "reason": "#[cfg(feature = \"synthetic-authority\")]",
+          "start_text": "#[cfg(feature = \"synthetic-authority\")]",
+          "end_text": "mod resource_runtime;"
+        },
+        {
+          "start": 22,
+          "end": 23,
+          "reason": "#[cfg(feature = \"synthetic-authority\")]",
+          "start_text": "#[cfg(feature = \"synthetic-authority\")]",
+          "end_text": "pub use resource_runtime::{AppliedInstructionSnapshot, SyntheticResources, SyntheticRuntimeGuard};"
+        },
+        {
+          "start": 53,
+          "end": 54,
+          "reason": "#[cfg(feature = \"synthetic-authority\")]",
+          "start_text": "    #[cfg(feature = \"synthetic-authority\")]",
+          "end_text": "    applied_instructions: Option<Arc<AppliedInstructionSnapshot>>,"
+        },
+        {
+          "start": 150,
+          "end": 151,
+          "reason": "#[cfg(test)]",
+          "start_text": "    #[cfg(test)]",
+          "end_text": "    fixture_images: AtomicBool,"
+        },
+        {
+          "start": 152,
+          "end": 153,
+          "reason": "#[cfg(test)]",
+          "start_text": "    #[cfg(test)]",
+          "end_text": "    attachment_processor_barrier: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,"
+        },
+        {
+          "start": 154,
+          "end": 155,
+          "reason": "#[cfg(test)]",
+          "start_text": "    #[cfg(test)]",
+          "end_text": "    resource_preparation_barrier: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,"
+        },
+        {
+          "start": 156,
+          "end": 157,
+          "reason": "#[cfg(test)]",
+          "start_text": "    #[cfg(test)]",
+          "end_text": "    input_commit_gate: Mutex<Option<(String, Arc<project_input_runtime::InputCommitGate>)>>,"
+        },
+        {
+          "start": 159,
+          "end": 160,
+          "reason": "#[cfg(feature = \"synthetic-authority\")]",
+          "start_text": "    #[cfg(feature = \"synthetic-authority\")]",
+          "end_text": "    resources: Option<SyntheticResources>,"
+        },
+        {
+          "start": 167,
+          "end": 174,
+          "reason": "#[cfg(all(test, feature = \"synthetic-authority\"))]",
+          "start_text": "    #[cfg(all(test, feature = \"synthetic-authority\"))]",
+          "end_text": "    }"
+        },
+        {
+          "start": 175,
+          "end": 178,
+          "reason": "#[cfg(all(test, feature = \"synthetic-authority\"))]",
+          "start_text": "    #[cfg(all(test, feature = \"synthetic-authority\"))]",
+          "end_text": "    }"
+        },
+        {
+          "start": 264,
+          "end": 265,
+          "reason": "#[cfg(feature = \"synthetic-authority\")]",
+          "start_text": "                #[cfg(feature = \"synthetic-authority\")]",
+          "end_text": "                applied_instructions: None,"
+        },
+        {
+          "start": 274,
+          "end": 275,
+          "reason": "#[cfg(test)]",
+          "start_text": "            #[cfg(test)]",
+          "end_text": "            fixture_images: AtomicBool::new(false),"
+        },
+        {
+          "start": 276,
+          "end": 277,
+          "reason": "#[cfg(test)]",
+          "start_text": "            #[cfg(test)]",
+          "end_text": "            attachment_processor_barrier: Mutex::new(None),"
+        },
+        {
+          "start": 278,
+          "end": 279,
+          "reason": "#[cfg(test)]",
+          "start_text": "            #[cfg(test)]",
+          "end_text": "            resource_preparation_barrier: Mutex::new(None),"
+        },
+        {
+          "start": 280,
+          "end": 281,
+          "reason": "#[cfg(test)]",
+          "start_text": "            #[cfg(test)]",
+          "end_text": "            input_commit_gate: Mutex::new(None),"
+        },
+        {
+          "start": 283,
+          "end": 284,
+          "reason": "#[cfg(feature = \"synthetic-authority\")]",
+          "start_text": "            #[cfg(feature = \"synthetic-authority\")]",
+          "end_text": "            resources: None,"
+        },
+        {
+          "start": 363,
+          "end": 368,
+          "reason": "#[cfg(feature = \"synthetic-authority\")]",
+          "start_text": "        #[cfg(feature = \"synthetic-authority\")]",
+          "end_text": "        }"
+        },
+        {
+          "start": 415,
+          "end": 418,
+          "reason": "#[cfg(all(test, feature = \"synthetic-authority\"))]",
+          "start_text": "    #[cfg(all(test, feature = \"synthetic-authority\"))]",
+          "end_text": "    }"
+        },
+        {
+          "start": 659,
+          "end": 662,
+          "reason": "#[cfg(feature = \"synthetic-authority\")]",
+          "start_text": "        #[cfg(feature = \"synthetic-authority\")]",
+          "end_text": "        }"
+        },
+        {
+          "start": 667,
+          "end": 670,
+          "reason": "#[cfg(feature = \"synthetic-authority\")]",
+          "start_text": "        #[cfg(feature = \"synthetic-authority\")]",
+          "end_text": "        }"
+        },
+        {
+          "start": 896,
+          "end": 900,
+          "reason": "#[cfg(feature = \"synthetic-authority\")]",
+          "start_text": "        #[cfg(feature = \"synthetic-authority\")]",
+          "end_text": "        }"
+        },
+        {
+          "start": 925,
+          "end": 928,
+          "reason": "#[cfg(feature = \"synthetic-authority\")]",
+          "start_text": "        #[cfg(feature = \"synthetic-authority\")]",
+          "end_text": "        }"
+        },
+        {
+          "start": 973,
+          "end": 976,
+          "reason": "#[cfg(feature = \"synthetic-authority\")]",
+          "start_text": "        #[cfg(feature = \"synthetic-authority\")]",
+          "end_text": "        }"
+        },
+        {
+          "start": 996,
+          "end": 2344,
+          "reason": "#[cfg(test)]",
+          "start_text": "#[cfg(test)]",
+          "end_text": "}"
+        },
+        {
+          "start": 2346,
+          "end": 2348,
+          "reason": "#[cfg(all(test, feature = \"synthetic-authority\"))]",
+          "start_text": "#[cfg(all(test, feature = \"synthetic-authority\"))]",
+          "end_text": "mod configuration_tests;"
+        },
+        {
+          "start": 2350,
+          "end": 2352,
+          "reason": "#[cfg(all(test, feature = \"synthetic-authority\"))]",
+          "start_text": "#[cfg(all(test, feature = \"synthetic-authority\"))]",
+          "end_text": "pub(crate) mod worker_tail_test_gate;"
+        }
+      ]
+    }
+  },
+  "rust/crates/bello-agent-core/src/saved_runtime.rs": {
+    "origin": {
+      "kind": "committed_ledger",
+      "path": "rust/docs/validation/loc-project-skills-2026-10-07-delta.json",
+      "git_blob": "0d4d9261ef7625283b1959c34bc5c4ed80cf2cf9",
+      "sha256": "e530726af07bee1382e9b545076d15200e16b6f382d9380b028a944a6604f203",
+      "side": "after"
+    },
+    "classification": {
+      "nonblank": 489,
+      "counts": {
+        "production": 448,
+        "tests_and_test_support": 41,
+        "benchmark_example": 0
+      },
+      "reviewed_support_ranges": [
+        {
+          "start": 32,
+          "end": 33,
+          "reason": "#[cfg(test)]",
+          "start_text": "    #[cfg(test)]",
+          "end_text": "    confirmations: Arc<std::sync::atomic::AtomicUsize>,"
+        },
+        {
+          "start": 34,
+          "end": 35,
+          "reason": "#[cfg(all(test, feature = \"synthetic-authority\", not(target_os = \"macos\")))]",
+          "start_text": "    #[cfg(all(test, feature = \"synthetic-authority\", not(target_os = \"macos\")))]",
+          "end_text": "    synthetic_mutations: bool,"
+        },
+        {
+          "start": 47,
+          "end": 48,
+          "reason": "#[cfg(test)]",
+          "start_text": "            #[cfg(test)]",
+          "end_text": "            confirmations: Arc::new(std::sync::atomic::AtomicUsize::new(0)),"
+        },
+        {
+          "start": 49,
+          "end": 50,
+          "reason": "#[cfg(all(test, feature = \"synthetic-authority\", not(target_os = \"macos\")))]",
+          "start_text": "            #[cfg(all(test, feature = \"synthetic-authority\", not(target_os = \"macos\")))]",
+          "end_text": "            synthetic_mutations: false,"
+        },
+        {
+          "start": 124,
+          "end": 127,
+          "reason": "#[cfg(all(test, feature = \"synthetic-authority\"))]",
+          "start_text": "    #[cfg(all(test, feature = \"synthetic-authority\"))]",
+          "end_text": "    }"
+        },
+        {
+          "start": 208,
+          "end": 209,
+          "reason": "#[cfg(test)]",
+          "start_text": "            #[cfg(test)]",
+          "end_text": "            confirmations: self.confirmations.clone(),"
+        },
+        {
+          "start": 241,
+          "end": 258,
+          "reason": "#[cfg(all(test, feature = \"synthetic-authority\", not(target_os = \"macos\")))]",
+          "start_text": "                #[cfg(all(test, feature = \"synthetic-authority\", not(target_os = \"macos\")))]",
+          "end_text": "                }"
+        },
+        {
+          "start": 369,
+          "end": 370,
+          "reason": "#[cfg(test)]",
+          "start_text": "    #[cfg(test)]",
+          "end_text": "    confirmations: Arc<std::sync::atomic::AtomicUsize>,"
+        },
+        {
+          "start": 473,
+          "end": 476,
+          "reason": "#[cfg(test)]",
+          "start_text": "        #[cfg(test)]",
+          "end_text": "        }"
+        },
+        {
+          "start": 487,
+          "end": 489,
+          "reason": "#[cfg(all(test, feature = \"synthetic-authority\"))]",
+          "start_text": "#[cfg(all(test, feature = \"synthetic-authority\"))]",
+          "end_text": "mod tests;"
+        }
+      ]
+    }
+  },
+  "rust/crates/bello-agent-core/src/saved_runtime_tests.rs": {
+    "origin": {
+      "kind": "committed_ledger",
+      "path": "rust/docs/validation/loc-project-skills-2026-10-07-delta.json",
+      "git_blob": "0d4d9261ef7625283b1959c34bc5c4ed80cf2cf9",
+      "sha256": "e530726af07bee1382e9b545076d15200e16b6f382d9380b028a944a6604f203",
+      "side": "after"
+    },
+    "classification": {
+      "nonblank": 897,
+      "counts": {
+        "production": 0,
+        "tests_and_test_support": 897,
+        "benchmark_example": 0
+      },
+      "reviewed_support_ranges": [
+        {
+          "start": 1,
+          "end": 906,
+          "reason": "entire test or explicit fixture-only module",
+          "start_text": "use super::*;",
+          "end_text": "mod skills;"
+        }
+      ]
+    }
+  },
+  "rust/crates/bello-agent-core/src/session.rs": {
+    "origin": {
+      "kind": "committed_ledger",
+      "path": "rust/docs/validation/loc-project-skills-2026-10-07-delta.json",
+      "git_blob": "0d4d9261ef7625283b1959c34bc5c4ed80cf2cf9",
+      "sha256": "e530726af07bee1382e9b545076d15200e16b6f382d9380b028a944a6604f203",
+      "side": "after"
+    },
+    "classification": {
+      "nonblank": 3095,
+      "counts": {
+        "production": 1573,
+        "tests_and_test_support": 1522,
+        "benchmark_example": 0
+      },
+      "reviewed_support_ranges": [
+        {
+          "start": 868,
+          "end": 876,
+          "reason": "#[cfg(test)]",
+          "start_text": "#[cfg(test)]",
+          "end_text": "}"
+        },
+        {
+          "start": 1046,
+          "end": 1047,
+          "reason": "#[cfg(test)]",
+          "start_text": "    #[cfg(test)]",
+          "end_text": "    pub(crate) fault: WriteFault,"
+        },
+        {
+          "start": 1065,
+          "end": 1066,
+          "reason": "#[cfg(test)]",
+          "start_text": "            #[cfg(test)]",
+          "end_text": "            fault: WriteFault::None,"
+        },
+        {
+          "start": 1271,
+          "end": 1272,
+          "reason": "#[cfg(test)]",
+          "start_text": "            #[cfg(test)]",
+          "end_text": "            fault: WriteFault::None,"
+        },
+        {
+          "start": 1434,
+          "end": 1439,
+          "reason": "#[cfg(test)]",
+          "start_text": "        #[cfg(test)]",
+          "end_text": "        };"
+        },
+        {
+          "start": 1518,
+          "end": 1521,
+          "reason": "#[cfg(test)]",
+          "start_text": "            #[cfg(test)]",
+          "end_text": "            }"
+        },
+        {
+          "start": 1523,
+          "end": 1528,
+          "reason": "#[cfg(test)]",
+          "start_text": "            #[cfg(test)]",
+          "end_text": "            }"
+        },
+        {
+          "start": 1624,
+          "end": 1626,
+          "reason": "#[cfg(test)]",
+          "start_text": "#[cfg(test)]",
+          "end_text": "mod inspection_tests;"
+        },
+        {
+          "start": 1628,
+          "end": 3028,
+          "reason": "#[cfg(test)]",
+          "start_text": "#[cfg(test)]",
+          "end_text": "}"
+        },
+        {
+          "start": 3030,
+          "end": 3119,
+          "reason": "#[cfg(test)]",
+          "start_text": "#[cfg(test)]",
+          "end_text": "}"
+        },
+        {
+          "start": 3121,
+          "end": 3123,
+          "reason": "#[cfg(test)]",
+          "start_text": "#[cfg(test)]",
+          "end_text": "mod read_storage_tests;"
+        },
+        {
+          "start": 3125,
+          "end": 3127,
+          "reason": "#[cfg(test)]",
+          "start_text": "#[cfg(test)]",
+          "end_text": "mod attachment_storage_tests;"
+        },
+        {
+          "start": 3129,
+          "end": 3131,
+          "reason": "#[cfg(test)]",
+          "start_text": "#[cfg(test)]",
+          "end_text": "mod skill_storage_tests;"
+        }
+      ]
+    }
+  },
+  "rust/crates/bello-agent-core/src/tool_history.rs": {
+    "origin": {
+      "kind": "committed_ledger",
+      "path": "rust/docs/validation/loc-picker-images-2026-10-07-delta.json",
+      "git_blob": "462d2bdd0b9ce9ffde30310182f9bf4572da73cd",
+      "sha256": "7552fd02af28a1208656c8cee34528bdc32edd920de1955a76766cde4bffb26f",
+      "side": "after"
+    },
+    "classification": {
+      "nonblank": 480,
+      "counts": {
+        "production": 480,
+        "tests_and_test_support": 0,
+        "benchmark_example": 0
+      },
+      "reviewed_support_ranges": []
+    }
+  },
+  "rust/crates/bello-agent-core/src/tool_runtime.rs": {
+    "origin": {
+      "kind": "committed_ledger",
+      "path": "rust/docs/validation/loc-project-skills-2026-10-07-delta.json",
+      "git_blob": "0d4d9261ef7625283b1959c34bc5c4ed80cf2cf9",
+      "sha256": "e530726af07bee1382e9b545076d15200e16b6f382d9380b028a944a6604f203",
+      "side": "after"
+    },
+    "classification": {
+      "nonblank": 1566,
+      "counts": {
+        "production": 957,
+        "tests_and_test_support": 609,
+        "benchmark_example": 0
+      },
+      "reviewed_support_ranges": [
+        {
+          "start": 136,
+          "end": 150,
+          "reason": "#[cfg(all(test, not(target_os = \"macos\"), feature = \"synthetic-authority\"))]",
+          "start_text": "    #[cfg(all(test, not(target_os = \"macos\"), feature = \"synthetic-authority\"))]",
+          "end_text": "    }"
+        },
+        {
+          "start": 586,
+          "end": 606,
+          "reason": "#[cfg(feature = \"synthetic-authority\")]",
+          "start_text": "            #[cfg(feature = \"synthetic-authority\")]",
+          "end_text": "            }"
+        },
+        {
+          "start": 640,
+          "end": 648,
+          "reason": "#[cfg(feature = \"synthetic-authority\")]",
+          "start_text": "        #[cfg(feature = \"synthetic-authority\")]",
+          "end_text": "        }"
+        },
+        {
+          "start": 660,
+          "end": 663,
+          "reason": "#[cfg(feature = \"synthetic-authority\")]",
+          "start_text": "        #[cfg(feature = \"synthetic-authority\")]",
+          "end_text": "        }"
+        },
+        {
+          "start": 861,
+          "end": 876,
+          "reason": "#[cfg(test)]",
+          "start_text": "#[cfg(test)]",
+          "end_text": "}"
+        },
+        {
+          "start": 878,
+          "end": 887,
+          "reason": "#[cfg(test)]",
+          "start_text": "#[cfg(test)]",
+          "end_text": "}"
+        },
+        {
+          "start": 959,
+          "end": 962,
+          "reason": "#[cfg(test)]",
+          "start_text": "#[cfg(test)]",
+          "end_text": "}"
+        },
+        {
+          "start": 1015,
+          "end": 1051,
+          "reason": "#[cfg(test)]",
+          "start_text": "#[cfg(test)]",
+          "end_text": "}"
+        },
+        {
+          "start": 1100,
+          "end": 1514,
+          "reason": "#[cfg(test)]",
+          "start_text": "#[cfg(test)]",
+          "end_text": "}"
+        },
+        {
+          "start": 1516,
+          "end": 1526,
+          "reason": "#[cfg(test)]",
+          "start_text": "#[cfg(test)]",
+          "end_text": "}"
+        },
+        {
+          "start": 1528,
+          "end": 1530,
+          "reason": "#[cfg(all(test, target_os = \"macos\"))]",
+          "start_text": "#[cfg(all(test, target_os = \"macos\"))]",
+          "end_text": "mod read_tests;"
+        },
+        {
+          "start": 1532,
+          "end": 1603,
+          "reason": "#[cfg(test)]",
+          "start_text": "#[cfg(test)]",
+          "end_text": "}"
+        },
+        {
+          "start": 1605,
+          "end": 1607,
+          "reason": "#[cfg(test)]",
+          "start_text": "#[cfg(test)]",
+          "end_text": "mod edit_runtime_tests;"
+        }
+      ]
+    }
+  },
+  "rust/crates/bello-agent-core/src/tools.rs": {
+    "origin": {
+      "kind": "committed_ledger",
+      "path": "rust/docs/validation/loc-picker-images-2026-10-07-delta.json",
+      "git_blob": "462d2bdd0b9ce9ffde30310182f9bf4572da73cd",
+      "sha256": "7552fd02af28a1208656c8cee34528bdc32edd920de1955a76766cde4bffb26f",
+      "side": "after"
+    },
+    "classification": {
+      "nonblank": 1018,
+      "counts": {
+        "production": 939,
+        "tests_and_test_support": 79,
+        "benchmark_example": 0
+      },
+      "reviewed_support_ranges": [
+        {
+          "start": 187,
+          "end": 188,
+          "reason": "#[cfg(all(test, not(target_os = \"macos\")))]",
+          "start_text": "    #[cfg(all(test, not(target_os = \"macos\")))]",
+          "end_text": "    synthetic_mutations: bool,"
+        },
+        {
+          "start": 189,
+          "end": 190,
+          "reason": "#[cfg(test)]",
+          "start_text": "    #[cfg(test)]",
+          "end_text": "    before_read: Option<Arc<dyn Fn() + Send + Sync>>,"
+        },
+        {
+          "start": 191,
+          "end": 192,
+          "reason": "#[cfg(test)]",
+          "start_text": "    #[cfg(test)]",
+          "end_text": "    after_mutation: Option<Arc<dyn Fn() + Send + Sync>>,"
+        },
+        {
+          "start": 244,
+          "end": 245,
+          "reason": "#[cfg(all(test, not(target_os = \"macos\")))]",
+          "start_text": "            #[cfg(all(test, not(target_os = \"macos\")))]",
+          "end_text": "            synthetic_mutations: false,"
+        },
+        {
+          "start": 246,
+          "end": 247,
+          "reason": "#[cfg(test)]",
+          "start_text": "            #[cfg(test)]",
+          "end_text": "            before_read: None,"
+        },
+        {
+          "start": 248,
+          "end": 249,
+          "reason": "#[cfg(test)]",
+          "start_text": "            #[cfg(test)]",
+          "end_text": "            after_mutation: None,"
+        },
+        {
+          "start": 253,
+          "end": 275,
+          "reason": "#[cfg(all(test, not(target_os = \"macos\")))]",
+          "start_text": "    #[cfg(all(test, not(target_os = \"macos\")))]",
+          "end_text": "    }"
+        },
+        {
+          "start": 294,
+          "end": 298,
+          "reason": "#[cfg(test)]",
+          "start_text": "    #[cfg(test)]",
+          "end_text": "    }"
+        },
+        {
+          "start": 300,
+          "end": 304,
+          "reason": "#[cfg(test)]",
+          "start_text": "    #[cfg(test)]",
+          "end_text": "    }"
+        },
+        {
+          "start": 561,
+          "end": 562,
+          "reason": "#[cfg(all(test, not(target_os = \"macos\")))]",
+          "start_text": "        #[cfg(all(test, not(target_os = \"macos\")))]",
+          "end_text": "        let synthetic_mutations = self.synthetic_mutations;"
+        },
+        {
+          "start": 564,
+          "end": 565,
+          "reason": "#[cfg(test)]",
+          "start_text": "        #[cfg(test)]",
+          "end_text": "        let before_read = self.before_read.clone();"
+        },
+        {
+          "start": 566,
+          "end": 567,
+          "reason": "#[cfg(test)]",
+          "start_text": "        #[cfg(test)]",
+          "end_text": "        let after_mutation = self.after_mutation.clone();"
+        },
+        {
+          "start": 573,
+          "end": 576,
+          "reason": "#[cfg(test)]",
+          "start_text": "                #[cfg(test)]",
+          "end_text": "                }"
+        },
+        {
+          "start": 578,
+          "end": 583,
+          "reason": "#[cfg(all(test, not(target_os = \"macos\")))]",
+          "start_text": "                    #[cfg(all(test, not(target_os = \"macos\")))]",
+          "end_text": "                    };"
+        },
+        {
+          "start": 586,
+          "end": 591,
+          "reason": "#[cfg(test)]",
+          "start_text": "                    #[cfg(test)]",
+          "end_text": "                    }"
+        },
+        {
+          "start": 1063,
+          "end": 1065,
+          "reason": "#[cfg(test)]",
+          "start_text": "#[cfg(test)]",
+          "end_text": "mod find_preparation_tests;"
+        },
+        {
+          "start": 1067,
+          "end": 1069,
+          "reason": "#[cfg(test)]",
+          "start_text": "#[cfg(test)]",
+          "end_text": "mod grep_preparation_tests;"
+        },
+        {
+          "start": 1071,
+          "end": 1073,
+          "reason": "#[cfg(test)]",
+          "start_text": "#[cfg(test)]",
+          "end_text": "mod read_preparation_tests;"
+        },
+        {
+          "start": 1075,
+          "end": 1077,
+          "reason": "#[cfg(test)]",
+          "start_text": "#[cfg(test)]",
+          "end_text": "mod edit_preparation_tests;"
+        }
+      ]
+    }
+  }
+}

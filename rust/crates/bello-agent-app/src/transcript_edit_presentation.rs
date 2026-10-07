@@ -131,9 +131,13 @@ fn action_title(editing: bool, created: bool, status: Status) -> &'static str {
                 "Skipped writing"
             }
         }
-        Status::Completed | Status::Awaiting | Status::Failed if editing => "Edited",
-        Status::Completed | Status::Awaiting | Status::Failed if created => "Created",
-        Status::Completed | Status::Awaiting | Status::Failed => "Wrote",
+        Status::Completed | Status::Awaiting | Status::Running | Status::Failed if editing => {
+            "Edited"
+        }
+        Status::Completed | Status::Awaiting | Status::Running | Status::Failed if created => {
+            "Created"
+        }
+        Status::Completed | Status::Awaiting | Status::Running | Status::Failed => "Wrote",
     }
 }
 
@@ -216,7 +220,7 @@ impl<'a> EditRequest<'a> {
         };
         let suffix = match self.status {
             Status::Completed => "",
-            Status::Awaiting => " · in progress",
+            Status::Awaiting | Status::Running => " · in progress",
             Status::Unknown | Status::Missing | Status::Cancelled => " · outcome unknown",
             _ if self.editing => " · not applied",
             _ => " · not written",

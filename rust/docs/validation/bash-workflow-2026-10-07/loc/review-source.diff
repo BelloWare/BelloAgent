@@ -1,0 +1,1416 @@
+--- a/rust/crates/bello-agent-app/src/saved_runtime_adapter.rs
++++ b/rust/crates/bello-agent-app/src/saved_runtime_adapter.rs
+@@ -58,16 +58,23 @@
+             capabilities.extend([
+                 bello_agent_core::tools::Capability::Write,
+                 bello_agent_core::tools::Capability::Edit,
+             ]);
+             capabilities
+         } else {
+             editing_capabilities
+         };
++        let editing_capabilities = if fixture {
++            let mut capabilities = editing_capabilities;
++            capabilities.push(bello_agent_core::tools::Capability::Bash);
++            capabilities
++        } else {
++            editing_capabilities
++        };
+         SavedChatOptions {
+             home,
+             read_only_capabilities,
+             editing_capabilities,
+             instructions: String::new(),
+         }
+     }
+     pub fn mcp_manager(&self) -> Result<Arc<bello_agent_core::mcp::McpManager>> {
+--- a/rust/crates/bello-agent-app/src/transcript_edit_presentation.rs
++++ b/rust/crates/bello-agent-app/src/transcript_edit_presentation.rs
+@@ -126,19 +126,23 @@
+         }
+         Status::NotExecuted => {
+             if editing {
+                 "Skipped editing"
+             } else {
+                 "Skipped writing"
+             }
+         }
+-        Status::Completed | Status::Awaiting | Status::Failed if editing => "Edited",
+-        Status::Completed | Status::Awaiting | Status::Failed if created => "Created",
+-        Status::Completed | Status::Awaiting | Status::Failed => "Wrote",
++        Status::Completed | Status::Awaiting | Status::Running | Status::Failed if editing => {
++            "Edited"
++        }
++        Status::Completed | Status::Awaiting | Status::Running | Status::Failed if created => {
++            "Created"
++        }
++        Status::Completed | Status::Awaiting | Status::Running | Status::Failed => "Wrote",
+     }
+ }
+ 
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ pub(super) enum Kind {
+     Context,
+     Removed,
+     Added,
+@@ -211,17 +215,17 @@
+     pub fn label(&self) -> String {
+         let base = if self.editing {
+             "Requested edit"
+         } else {
+             "Requested content"
+         };
+         let suffix = match self.status {
+             Status::Completed => "",
+-            Status::Awaiting => " · in progress",
++            Status::Awaiting | Status::Running => " · in progress",
+             Status::Unknown | Status::Missing | Status::Cancelled => " · outcome unknown",
+             _ if self.editing => " · not applied",
+             _ => " · not written",
+         };
+         format!("{base}{suffix}")
+     }
+     pub fn collapsible(&self) -> bool {
+         self.too_large || self.rows.len() > 13
+--- a/rust/crates/bello-agent-app/src/transcript_tool_presentation.rs
++++ b/rust/crates/bello-agent-app/src/transcript_tool_presentation.rs
+@@ -153,31 +153,33 @@
+ pub(super) enum Status {
+     Completed,
+     Failed,
+     NotExecuted,
+     Unknown,
+     Cancelled,
+     Missing,
+     Awaiting,
++    Running,
+ }
+ impl Status {
+     pub(super) fn label(self, name: &str) -> &'static str {
+         match (self, name == "ls") {
+             (Self::Completed, true) => "Listed directory",
+             (Self::Failed, true) => "Failed listing",
+             (Self::NotExecuted, true) => "Skipped listing",
+             (Self::Unknown, true) => "Stopped listing; outcome unknown",
+             (Self::Completed, _) => "Completed",
+             (Self::Failed, _) => "Failed",
+             (Self::NotExecuted, _) => "Not executed",
+             (Self::Unknown, _) => "Outcome unknown",
+             (Self::Cancelled, _) => "Cancelled; no result retained",
+             (Self::Missing, _) => "Outcome not recorded",
+             (Self::Awaiting, _) => "Awaiting result",
++            (Self::Running, _) => "Running",
+         }
+     }
+     pub(super) fn is_error(self) -> bool {
+         matches!(self, Self::Failed | Self::Unknown)
+     }
+ }
+ 
+ pub(super) fn status(session: &Session, row: ProjectedRow) -> Status {
+@@ -185,16 +187,26 @@
+         && let Some(ToolRecord::Result(record)) = &session.messages[index].tool_record
+     {
+         return match record.outcome {
+             ToolOutcome::Completed => Status::Completed,
+             ToolOutcome::Failed => Status::Failed,
+             ToolOutcome::NotExecuted => Status::NotExecuted,
+             ToolOutcome::Unknown => Status::Unknown,
+             ToolOutcome::Cancelled => Status::Cancelled,
++        };
++    }
++    if let Some(live) = live(session, row) {
++        return match live.outcome {
++            None => Status::Running,
++            Some(ToolOutcome::Completed) => Status::Completed,
++            Some(ToolOutcome::Failed) => Status::Failed,
++            Some(ToolOutcome::Unknown) => Status::Unknown,
++            Some(ToolOutcome::NotExecuted) => Status::NotExecuted,
++            Some(ToolOutcome::Cancelled) => Status::Cancelled,
+         };
+     }
+     if let ProjectedRow::Call { assistant, .. } = row {
+         let message = &session.messages[assistant];
+         // The batch is admitted, not necessarily this call. No start time,
+         // per-call progress or completion can be inferred from an active batch.
+         if session.state == RunState::Running
+             && session.active_reply.as_deref() == Some(&message.id)
+@@ -204,24 +216,45 @@
+             && matches!(&message.tool_record, Some(ToolRecord::Assistant(record)) if record.completion == Completion::Complete)
+         {
+             return Status::Awaiting;
+         }
+     }
+     Status::Missing
+ }
+ 
++pub(super) fn live(
++    session: &Session,
++    row: ProjectedRow,
++) -> Option<&bello_agent_core::tool_history::LiveToolView> {
++    let ProjectedRow::Call {
++        assistant,
++        call,
++        result: None,
++    } = row
++    else {
++        return None;
++    };
++    let owner = &session.messages[assistant].id;
++    let id = &call_at(session, assistant, call).id;
++    session
++        .live_tools
++        .iter()
++        .find(|view| &view.assistant_id == owner && &view.call_id == id)
++}
++
+ pub(super) fn same_content(
+     a: &Session,
+     a_row: ProjectedRow,
+     b: &Session,
+     b_row: ProjectedRow,
+ ) -> bool {
+     if std::mem::discriminant(&a_row) != std::mem::discriminant(&b_row)
+         || status(a, a_row) != status(b, b_row)
++        || live(a, a_row) != live(b, b_row)
+     {
+         return false;
+     }
+     if let (
+         ProjectedRow::Call {
+             assistant: ai,
+             call: ac,
+             ..
+@@ -552,16 +585,66 @@
+             }
+             assert!(
+                 !same_content(&session, row, &next, project(&next, 0)[0]),
+                 "{change}"
+             );
+         }
+     }
+     #[test]
++    fn live_bash_projection_is_call_owned_bounded_and_invalidates_render_cache() {
++        let mut session = Session::new();
++        session.state = RunState::Running;
++        session.active_reply = Some("one".into());
++        session.messages = vec![assistant("one")];
++        if let Some(ToolRecord::Assistant(record)) = &mut session.messages[0].tool_record {
++            record.calls[0].name = "bash".into();
++        }
++        let row = project(&session, 0)[0];
++        assert_eq!(status(&session, row), Status::Awaiting);
++        let old = session.clone();
++        session
++            .live_tools
++            .push(bello_agent_core::tool_history::LiveToolView {
++                assistant_id: "one".into(),
++                call_id: "same-call".into(),
++                sequence: 1,
++                preview: "growing output".into(),
++                outcome: None,
++            });
++        assert_eq!(status(&session, row).label("bash"), "Running");
++        assert!(!same_content(&old, row, &session, row));
++        let previous = session.clone();
++        session.live_tools[0].sequence = 2;
++        session.live_tools[0].preview = "\u{fffd}".repeat(32768).into();
++        assert!(!same_content(&previous, row, &session, row));
++        assert!(preview(&live(&session, row).unwrap().preview).text.len() <= PREVIEW_BYTES);
++        session.live_tools[0].outcome = Some(ToolOutcome::Failed);
++        assert_eq!(status(&session, row), Status::Failed);
++        session.messages = vec![assistant("later")];
++        assert!(live(&session, project(&session, 0)[0]).is_none());
++    }
++    #[test]
++    fn retained_terminal_result_overrides_ephemeral_bash_display() {
++        let mut session = Session::new();
++        session.messages = vec![assistant("one"), result("r", "one", ToolOutcome::Unknown)];
++        session
++            .live_tools
++            .push(bello_agent_core::tool_history::LiveToolView {
++                assistant_id: "one".into(),
++                call_id: "same-call".into(),
++                sequence: 99,
++                preview: "late".into(),
++                outcome: Some(ToolOutcome::Completed),
++            });
++        let row = project(&session, 0)[0];
++        assert_eq!(status(&session, row), Status::Unknown);
++        assert!(live(&session, row).is_none());
++    }
++    #[test]
+     fn ambiguous_results_are_not_hidden_or_arbitrarily_paired() {
+         let mut session = Session::new();
+         session.messages = vec![
+             assistant("one"),
+             result("r1", "one", ToolOutcome::Completed),
+             result("r2", "one", ToolOutcome::Failed),
+         ];
+         assert_eq!(
+--- a/rust/crates/bello-agent-app/src/transcript_view.rs
++++ b/rust/crates/bello-agent-app/src/transcript_view.rs
+@@ -1900,17 +1900,21 @@
+                     }),
+                 ),
+         );
+     if !row.expanded {
+         return card;
+     }
+     let shown_output = projected
+         .result()
+-        .map(|index| tool_presentation::display_text(&session.messages[index]));
++        .map(|index| tool_presentation::display_text(&session.messages[index]))
++        .or_else(|| {
++            tool_presentation::live(session, projected)
++                .map(|view| std::borrow::Cow::Borrowed(view.preview.as_ref()))
++        });
+     let edit_preview =
+         editors
+             .borrow_mut()
+             .edit_previews
+             .get(&row.key, session, projected, row.read_expanded);
+     if let Some(edit) = &edit_preview {
+         input = Some(tool_presentation::Preview {
+             text: edit.text(row.read_expanded).to_owned(),
+--- a/rust/crates/bello-agent-app/src/transcript_view_tests.rs
++++ b/rust/crates/bello-agent-app/src/transcript_view_tests.rs
+@@ -2434,8 +2434,66 @@
+     retained_tool_detail_restore_case(cx, false, false, true);
+ }
+ 
+ #[path = "transcript_read_ui_tests.rs"]
+ mod read_ui;
+ 
+ #[path = "transcript_edit_ui_tests.rs"]
+ mod edit_ui_tests;
++
++#[gpui::test]
++fn live_bash_output_remeasures_existing_card_then_settles_to_retained_result(
++    cx: &mut TestAppContext,
++) {
++    use bello_agent_core::tool_history::{LiveToolView, ToolOutcome, ToolRecord};
++    let (_directory, _window, root) = fixture(cx, messages(1), 0);
++    let mut changed = input(&root, cx);
++    let mut session = (*changed.session).clone();
++    session.messages = retained_tool_rows(1, "pending");
++    session.messages.truncate(1);
++    session.state = bello_agent_core::RunState::Running;
++    let assistant = session.messages[0].id.clone();
++    session.active_reply = Some(assistant.clone());
++    let call = if let Some(ToolRecord::Assistant(record)) = &mut session.messages[0].tool_record {
++        record.calls[0].name = "bash".into();
++        record.calls[0].arguments = serde_json::json!({"command":"printf fixture"});
++        record.calls[0].id.clone()
++    } else {
++        panic!("fixture assistant")
++    };
++    session.live_tools.push(LiveToolView {
++        assistant_id: assistant,
++        call_id: call,
++        sequence: 1,
++        preview: "first".into(),
++        outcome: None,
++    });
++    changed.session = Arc::new(session);
++    changed.visible_messages = usize::MAX;
++    let (_visual, child) = host(&root, changed.clone(), cx);
++    cx.run_until_parked();
++    let invalidations = cx.read(|cx| child.read(cx).tool_height_invalidation_count());
++    let mut next = (*changed.session).clone();
++    next.live_tools[0].sequence = 2;
++    next.live_tools[0].preview = "growing output\n".repeat(30).into();
++    changed.session = Arc::new(next);
++    child.update(cx, |view, cx| view.update_inputs(changed.clone(), cx));
++    cx.run_until_parked();
++    assert!(cx.read(|cx| child.read(cx).tool_height_invalidation_count()) > invalidations);
++    let editors = cx.read(|cx| child.read(cx).tool_section_editors());
++    assert!(
++        editors
++            .iter()
++            .any(|(_, editor)| { cx.read(|cx| editor.read(cx).text().contains("growing output")) })
++    );
++    let mut next = (*changed.session).clone();
++    next.live_tools[0].outcome = Some(ToolOutcome::Failed);
++    next.live_tools[0].preview = "failed\nExit code: 7".into();
++    changed.session = Arc::new(next);
++    child.update(cx, |view, cx| view.update_inputs(changed.clone(), cx));
++    cx.run_until_parked();
++    assert!(
++        cx.read(|cx| child.read(cx).tool_section_editors())
++            .iter()
++            .any(|(_, editor)| cx.read(|cx| editor.read(cx).text().contains("Exit code: 7")))
++    );
++}
+--- a/rust/crates/bello-agent-core/src/mcp/tests.rs
++++ b/rust/crates/bello-agent-core/src/mcp/tests.rs
+@@ -1619,8 +1619,12 @@
+     rebound.acknowledge_unknown(&unknown, true).unwrap();
+     settle(invoke(&rebound, "ok").await.unwrap()).await;
+     assert_eq!(server.calls.load(Ordering::SeqCst), 1);
+     // The rebound manager initializes fresh transport/catalog state, while the
+     // old authority cannot dispatch even though an external Arc still exists.
+     assert_eq!(server.starts.load(Ordering::SeqCst), 2);
+     assert!(Arc::ptr_eq(&rebound, &f.manager()));
+ }
++
++#[cfg(unix)]
++#[path = "bash_tests.rs"]
++mod bash_tests;
+--- a/rust/crates/bello-agent-core/src/runtime.rs
++++ b/rust/crates/bello-agent-core/src/runtime.rs
+@@ -1,8 +1,11 @@
++#[path = "live_tool_runtime.rs"]
++mod live_tool_runtime;
++
+ #[path = "attachment_runtime.rs"]
+ mod attachment_runtime;
+ #[path = "project_input_runtime.rs"]
+ pub(crate) mod project_input_runtime;
+ 
+ #[path = "compaction_runtime.rs"]
+ mod compaction_runtime;
+ 
+@@ -36,16 +39,17 @@
+ };
+ use std::sync::{
+     Arc, Mutex, OnceLock, RwLock,
+     atomic::{AtomicBool, AtomicU64, Ordering},
+ };
+ use tokio_util::sync::CancellationToken;
+ 
+ struct Inner {
++    live_tools: Vec<crate::tool_history::LiveToolView>,
+     store: SessionStore,
+     applied_project: Option<project_input_runtime::AppliedProjectResources>,
+     worker_running: bool,
+     compaction_pending: bool,
+     worker_epoch: Arc<()>,
+     cancel: Option<CancellationToken>,
+     fatal: Option<String>,
+     pending_configuration: Option<Arc<Configuration>>,
+@@ -247,16 +251,17 @@
+             stop_epoch: AtomicU64::new(0),
+             retired: AtomicBool::new(false),
+             admission_suspension: AtomicU64::new(0),
+             suspension_generation: AtomicU64::new(0),
+             suspension_owner: AtomicU64::new(0),
+             suspension_released: tokio::sync::Notify::new(),
+             worker_active: AtomicBool::new(false),
+             inner: Mutex::new(Inner {
++                live_tools: Vec::new(),
+                 store,
+                 worker_running: false,
+                 compaction_pending: false,
+                 worker_epoch: Arc::new(()),
+                 cancel: None,
+                 fatal: None,
+                 pending_configuration: None,
+                 applied_project: None,
+@@ -424,25 +429,71 @@
+     }
+     /// UI reads never take the persistence/actor mutex or wait for fsync.
+     pub fn snapshot_shared(&self) -> Arc<Session> {
+         self.published.borrow().clone()
+     }
+     pub fn subscribe(&self) -> tokio::sync::watch::Receiver<Arc<Session>> {
+         self.published.subscribe()
+     }
+-    fn publish(&self, inner: &Inner) {
++    fn display_snapshot(&self, inner: &Inner) -> Session {
+         let mut snapshot = inner.store.snapshot();
++        // Only current, unfenced invocation state is eligible for display.
++        if !self.is_retired()
++            && !self.stop_requested.load(Ordering::Acquire)
++            && inner
++                .cancel
++                .as_ref()
++                .is_none_or(|cancel| !cancel.is_cancelled())
++        {
++            snapshot.live_tools = inner
++                .live_tools
++                .iter()
++                .filter(|view| {
++                    snapshot.active_reply.as_deref() == Some(&view.assistant_id)
++                        && snapshot
++                            .active_tool_calls()
++                            .is_some_and(|calls| calls.iter().any(|call| call.id == view.call_id))
++                })
++                .cloned()
++                .collect();
++        }
+         if let Some(error) = &inner.fatal {
+             snapshot.error = Some(error.clone());
+             snapshot.state = RunState::Error;
+             snapshot.queue_paused = true;
+         }
+-        self.published.send_replace(Arc::new(snapshot));
+-        self.published_revision.fetch_add(1, Ordering::Release);
++        snapshot
++    }
++    fn publish(&self, inner: &Inner) {
++        let stop = self.stop_epoch.load(Ordering::Acquire);
++        self.publish_prepared(self.display_snapshot(inner), stop, false);
++    }
++    fn publish_live(&self, inner: &Inner, stop: u64) {
++        self.publish_prepared(self.display_snapshot(inner), stop, true);
++    }
++    fn publish_prepared(&self, mut snapshot: Session, stop: u64, live_only: bool) {
++        // All preparation is outside the watch critical section. Generic queue
++        // or durable publications can race Stop too: they still publish required
++        // state but must strip a live preview prepared before the fence.
++        if self.published.send_if_modified(|current| {
++            if self.is_retired()
++                || self.stop_requested.load(Ordering::Acquire)
++                || self.stop_epoch.load(Ordering::Acquire) != stop
++            {
++                if live_only {
++                    return false;
++                }
++                snapshot.live_tools.clear();
++            }
++            *current = Arc::new(snapshot);
++            true
++        }) {
++            self.published_revision.fetch_add(1, Ordering::Release);
++        }
+     }
+     fn worker_finished(&self, inner: &mut Inner) {
+         let configured = if let Some(configuration) = inner.pending_configuration.take() {
+             *self.config.write().expect("configuration lock poisoned") = Some(configuration);
+             self.configuration_generation.fetch_add(1, Ordering::AcqRel);
+             true
+         } else {
+             false
+@@ -517,27 +568,34 @@
+         self.stop_with_epoch().map(|_| ())
+     }
+     fn stop_with_epoch(&self) -> Result<u64> {
+         let epoch = self
+             .stop_epoch
+             .fetch_add(1, Ordering::AcqRel)
+             .wrapping_add(1);
+         self.attachment_jobs.cancel();
++        if let Some(tools) = &self.options.tools {
++            tools.native.cancel_processes();
++        }
+         if self.worker_active.load(Ordering::Acquire) {
+             self.stop_requested.store(true, Ordering::Release);
+         }
+         if let Some(cancel) = self
+             .active_cancel
+             .read()
+             .map_err(|_| invalid("Session is unavailable"))?
+             .as_ref()
+         {
+             cancel.cancel();
+         }
++        // Any live publication that won the watch lock happened before this
++        // barrier; a later one rechecks stop_epoch under that lock and refuses.
++        // No persistence or process wait is performed while this lock is held.
++        drop(self.published.borrow());
+         Ok(epoch)
+     }
+     /// Permanently reject new commands and worker continuations on this controller.
+     /// This synchronous fence never releases its SessionStore ownership. Already
+     /// admitted work may settle; retire_and_wait releases the writer only after
+     /// every worker successfully joins, even when stale Arcs still exist.
+     pub fn retire(&self) -> Result<()> {
+         self.retired.store(true, Ordering::Release);
+@@ -560,16 +618,19 @@
+     /// awaiting this method; retaining it intentionally keeps the writer leased.
+     pub async fn retire_and_wait(&self) -> Result<()> {
+         let retired = self.retire();
+         // Even a cancellation failure must not skip joining an owned worker.
+         let joined = self.join_workers().await;
+         joined?;
+         retired?;
+         self.attachment_jobs.join().await?;
++        if let Some(tools) = &self.options.tools {
++            tools.native.join_processes().await?;
++        }
+         self.wait_for_idle_guard_release().await;
+         self.inner
+             .lock()
+             .map_err(|_| invalid("Session is unavailable"))?
+             .store
+             .retire_writer();
+         Ok(())
+     }
+@@ -583,16 +644,19 @@
+             .inner
+             .lock()
+             .map(|_| ())
+             .map_err(|_| invalid("Session is unavailable"));
+         let stopped_after_admission = self.stop();
+         // A failed stop/barrier must not abandon a still-owned worker handle.
+         self.join_workers().await?;
+         self.attachment_jobs.join().await?;
++        if let Some(tools) = &self.options.tools {
++            tools.native.join_processes().await?;
++        }
+         {
+             let inner = self
+                 .inner
+                 .lock()
+                 .map_err(|_| invalid("Session is unavailable"))?;
+             // Stop may observe an active worker just before its final exit and
+             // set the flag just after worker_finished. A joined idle generation
+             // must not carry that late flag into an explicit reopen/Resume.
+@@ -870,16 +934,17 @@
+                 || snapshot.queue_paused
+                 || snapshot.edit.is_some()
+                 || snapshot.pending.is_empty()
+             {
+                 return;
+             }
+         }
+         inner.worker_running = true;
++        inner.live_tools.clear();
+         inner.worker_epoch = Arc::new(());
+         self.worker_active.store(true, Ordering::Release);
+         let mut worker = self.worker.lock().expect("worker handle lock poisoned");
+         if let Some(previous) = worker.take() {
+             Self::remember_worker(
+                 &mut self
+                     .worker_joins
+                     .lock()
+--- a/rust/crates/bello-agent-core/src/saved_runtime.rs
++++ b/rust/crates/bello-agent-core/src/saved_runtime.rs
+@@ -24,31 +24,35 @@
+ }
+ /// Owns no session writer and sends nothing. Opens obtain fresh authority;
+ /// clones share the existing workspace editing gate, not a second registry.
+ #[derive(Clone)]
+ pub struct SavedRuntimeFactory {
+     authority: ProjectAuthority,
+     workspace: Arc<Mutex<WorkspaceStore>>,
+     options: SavedChatOptions,
++    #[cfg(all(test, unix))]
++    shell_environment: Option<crate::tools::bash::Environment>,
+     #[cfg(test)]
+     confirmations: Arc<std::sync::atomic::AtomicUsize>,
+     #[cfg(all(test, feature = "synthetic-authority", not(target_os = "macos")))]
+     synthetic_mutations: bool,
+ }
+ impl SavedRuntimeFactory {
+     pub fn new(
+         authority: ProjectAuthority,
+         workspace: Arc<Mutex<WorkspaceStore>>,
+         options: SavedChatOptions,
+     ) -> Self {
+         Self {
+             authority,
+             workspace,
+             options,
++            #[cfg(all(test, unix))]
++            shell_environment: None,
+             #[cfg(test)]
+             confirmations: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+             #[cfg(all(test, feature = "synthetic-authority", not(target_os = "macos")))]
+             synthetic_mutations: false,
+         }
+     }
+     /// The workspace owner holds exactly one manager for its current saved
+     /// project. Multiple factory instances/clones and chats reuse that manager.
+@@ -261,16 +265,22 @@
+                     project.path.clone(),
+                     project.paths.clone(),
+                     home,
+                     capabilities,
+                     gate,
+                 )?
+             }
+         };
++        #[cfg(all(test, unix))]
++        let tools = if let Some(environment) = &self.shell_environment {
++            tools.with_shell_environment(environment.clone())
++        } else {
++            tools
++        };
+         let tools = tools.with_mcp(
+             self.project_mcp(&guard.binding)?,
+             record.tool_mode == ChatToolMode::ReadOnly,
+         );
+         // Permission errors/symlinks/FIFOs are not absence. Existing-only opening
+         // checks identity under its existing writer lock before recovery writes.
+         let store = match std::fs::symlink_metadata(&record.snapshot) {
+             Err(error)
+--- a/rust/crates/bello-agent-core/src/saved_runtime_tests.rs
++++ b/rust/crates/bello-agent-core/src/saved_runtime_tests.rs
+@@ -899,8 +899,12 @@
+     );
+     replay.complete("replayed retained bytes").await;
+     settled(&reopened).await;
+     reopened.retire_and_wait().await.unwrap();
+ }
+ 
+ #[path = "saved_runtime_skill_tests.rs"]
+ mod skills;
++
++#[cfg(unix)]
++#[path = "bash_saved_runtime_tests.rs"]
++mod bash_tests;
+--- a/rust/crates/bello-agent-core/src/session.rs
++++ b/rust/crates/bello-agent-core/src/session.rs
+@@ -117,16 +117,18 @@
+ #[derive(Clone, Debug, Serialize, Deserialize)]
+ pub struct EditOutcome {
+     pub edit_id: String,
+     pub outcome: String,
+     pub digest: Option<String>,
+ }
+ #[derive(Clone, Debug, Serialize, Deserialize)]
+ pub struct Session {
++    #[serde(skip)]
++    pub live_tools: Vec<crate::tool_history::LiveToolView>,
+     pub version: u32,
+     #[serde(default)]
+     pub stream_generation: String,
+     #[serde(default)]
+     pub stream_sequence: u64,
+     pub id: String,
+     pub title: String,
+     pub messages: Vec<Message>,
+@@ -143,16 +145,17 @@
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     pub compaction: Option<crate::compaction::Operation>,
+     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+     pub compaction_history: Vec<crate::compaction::Operation>,
+ }
+ impl Session {
+     pub fn new() -> Self {
+         Self {
++            live_tools: Vec::new(),
+             version: 2,
+             stream_generation: Uuid::new_v4().to_string(),
+             stream_sequence: 0,
+             id: Uuid::new_v4().to_string(),
+             title: "New chat".into(),
+             messages: Vec::new(),
+             pending: Vec::new(),
+             state: RunState::Idle,
+--- a/rust/crates/bello-agent-core/src/tool_history.rs
++++ b/rust/crates/bello-agent-core/src/tool_history.rs
+@@ -1,15 +1,26 @@
+ //! Non-executing tool history groundwork. Source: ResponsesInput.swift,
+ //! Routing.swift and SessionTools.swift. Nothing here offers or invokes a tool.
+ use crate::{Message, Profile, Result, invalid, provider::ToolCall};
+ use serde::{Deserialize, Serialize};
+ use serde_json::{Value, json};
+ use sha2::{Digest, Sha256};
+ use std::collections::{BTreeMap, BTreeSet};
++
++/// A Controller-owned, non-durable display snapshot. It is deliberately absent
++/// from Session serialization; only ResultRecord proves a retained outcome.
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub struct LiveToolView {
++    pub assistant_id: String,
++    pub call_id: String,
++    pub sequence: u64,
++    pub preview: std::sync::Arc<str>,
++    pub outcome: Option<ToolOutcome>,
++}
+ 
+ pub const MISSING_RESULT: &str = "No result provided";
+ pub const EMPTY_RESULT: &str = "(no tool output)";
+ const MAX_ARGUMENT_BYTES: usize = 2 * 1024 * 1024;
+ const MAX_RESULT_BYTES: usize = 16 * 1024 * 1024;
+ const MAX_PROVIDER_BYTES: usize = 64 * 1024 * 1024;
+ 
+ /// The non-secret subset of Profile.binding / ProviderClient.replayBinding.
+--- a/rust/crates/bello-agent-core/src/tool_runtime.rs
++++ b/rust/crates/bello-agent-core/src/tool_runtime.rs
+@@ -64,25 +64,33 @@
+ }
+ 
+ /// Construct only after the host has obtained explicit project trust and chosen
+ /// read-only tools. Roots resolve relative paths; absolute/parent/tilde/symlink
+ /// paths may leave them, exactly as in the source. Construction performs no
+ /// discovery; explicit macOS file searches may resolve named-user paths when invoked.
+ #[derive(Clone)]
+ pub struct TrustedReadOnlyTools {
+-    native: NativeTools,
++    pub(super) native: NativeTools,
+     pub(super) mcp: Option<McpTools>,
+ }
+ #[derive(Clone)]
+ pub(super) struct McpTools {
+     pub manager: Arc<crate::mcp::McpManager>,
+     pub read_only: bool,
+ }
+ impl TrustedReadOnlyTools {
++    #[cfg(all(test, unix))]
++    pub(crate) fn with_shell_environment(
++        mut self,
++        environment: crate::tools::bash::Environment,
++    ) -> Self {
++        self.native = self.native.with_shell_environment(environment);
++        self
++    }
+     pub(crate) fn with_mcp(
+         mut self,
+         manager: Arc<crate::mcp::McpManager>,
+         read_only: bool,
+     ) -> Self {
+         self.mcp = Some(McpTools { manager, read_only });
+         self
+     }
+@@ -97,22 +105,24 @@
+     /// Unsupported platform capabilities fail rather than being silently offered.
+     pub fn new_with_capabilities(
+         cwd: PathBuf,
+         additional_roots: Vec<PathBuf>,
+         home: PathBuf,
+         capabilities: impl IntoIterator<Item = Capability>,
+     ) -> Result<Self> {
+         let capabilities: Vec<_> = capabilities.into_iter().collect();
+-        if capabilities
+-            .iter()
+-            .any(|capability| matches!(capability, Capability::Write | Capability::Edit))
+-        {
++        if capabilities.iter().any(|capability| {
++            matches!(
++                capability,
++                Capability::Write | Capability::Edit | Capability::Bash
++            )
++        }) {
+             return Err(invalid(
+-                "Read-only tool authority cannot offer write or edit",
++                "Read-only tool authority cannot offer write, edit or bash",
+             ));
+         }
+         Ok(Self {
+             mcp: None,
+             native: NativeTools::new(cwd, additional_roots, home, capabilities)
+                 .map_err(|error| invalid(error.to_string()))?,
+         })
+     }
+@@ -511,29 +521,45 @@
+             // Source SessionTools runs editing calls in original call order
+             // beside concurrent readers, and joins every entered worker on Stop.
+             let content_budget = Arc::new(BatchContentBudget::default());
+             let execute = |index: usize| {
+                 let call = &calls[index];
+                 let budget = content_budget.clone();
+                 let token = cancel.clone();
+                 let directory = &output_directory;
++                let reply_id = &reply_id;
+                 async move {
+                     if call.name == "mcp"
+                         && let Some(mcp) = &tools.mcp
+                     {
+                         let (result, receipt) =
+                             run_mcp_call(mcp, call, directory, token.clone(), budget, || async {
+                                 self.confirm_turn_resources(token.clone()).await
+                             })
+                             .await;
+                         return (index, result, receipt);
+                     }
++                    let live = (call.name == "bash")
++                        .then(|| self.live_tool_identity(reply_id, &call.id))
++                        .flatten();
++                    #[cfg(unix)]
++                    let native =
++                        tools
++                            .native
++                            .clone()
++                            .with_shell_update(live.clone().map(|identity| {
++                                Arc::new(move |update: crate::tools::bash::Update| {
++                                    identity.update(update.sequence, update.preview)
++                                }) as crate::tools::bash::OnUpdate
++                            }));
++                    #[cfg(not(unix))]
++                    let native = tools.native.clone();
+                     let result = run_call_with_admission(
+-                        &tools.native,
++                        &native,
+                         call,
+                         directory,
+                         token.clone(),
+                         budget,
+                         async {
+                             let confirmation = if tools.native.editing_call(call) {
+                                 self.confirm_turn_resources(token.clone()).await
+                             } else {
+@@ -544,16 +570,19 @@
+                                     "Not executed: cancelled before invocation".into()
+                                 } else {
+                                     format!("Not executed: {error}")
+                                 })
+                             })
+                         },
+                     )
+                     .await;
++                    if let Some(live) = live {
++                        live.finish(&result.text, result.outcome);
++                    }
+                     (index, result, None)
+                 }
+             };
+             let (mut completed, edited) = tokio::join!(
+                 async {
+                     join_all(
+                         calls
+                             .iter()
+@@ -810,16 +839,17 @@
+             {
+                 Ok(_) => return true,
+                 Err(observed) => used = observed,
+             }
+         }
+     }
+ }
+ struct NativeOutput {
++    is_error: bool,
+     text: String,
+     content: Option<Arc<crate::tool_content::ToolContent>>,
+ }
+ fn retain_native_content(
+     value: Value,
+     budget: &BatchContentBudget,
+ ) -> std::result::Result<NativeOutput, ToolError> {
+     let text = value["content"]
+@@ -850,17 +880,21 @@
+             })?;
+         if !budget.reserve(bytes) {
+             return Err(ToolError::Failure {code:"tool_result",message:"Tool result could not be retained: this batch exceeds the 32 MiB content limit. No automatic replay.".into()});
+         }
+         Some(Arc::new(content))
+     } else {
+         None
+     };
+-    Ok(NativeOutput { text, content })
++    Ok(NativeOutput {
++        is_error: value["isError"].as_bool().unwrap_or(false),
++        text,
++        content,
++    })
+ }
+ 
+ #[cfg(test)]
+ async fn run_call(
+     tools: &NativeTools,
+     call: &ToolCall,
+     directory: &Path,
+     cancel: CancellationToken,
+@@ -899,53 +933,52 @@
+             "Not executed: cancelled before invocation",
+             ToolOutcome::NotExecuted,
+         );
+     }
+     // Source SessionTools marks invocation begun before NativeTools worker
+     // admission. Cancellation from this point has an unknown output, even
+     // when a queued filesystem read never reached the operating system.
+     let prepared = tools.prepare_call(call);
++    #[cfg(unix)]
++    let configured = tools.clone().with_shell_output(directory.to_owned());
++    #[cfg(unix)]
++    let tools = &configured;
++    let retained_directory = directory.to_owned();
+     match tools
+         .invoke_mapped_with_admission(
+             &prepared,
+             cancel.clone(),
+-            move |value| retain_native_content(value, &budget),
++            move |value| {
++                let mut output = retain_native_content(value, &budget)?;
++                if output.text.len() > 65_536 {
++                    // Still inside physical editing admission, including the
++                    // malformed-UTF8 Bash preview's second retention layer.
++                    output.text = retain_output(&retained_directory, &output.text)?;
++                    output.content = None;
++                }
++                Ok(output)
++            },
+             admission,
+         )
+         .await
+     {
+-        Ok(NativeOutput { text, content }) => {
+-            if text.len() <= 65536 {
+-                return ToolResultRow {
+-                    text,
+-                    content,
+-                    outcome: ToolOutcome::Completed,
+-                };
+-            }
+-            let directory = directory.to_owned();
+-            match BlockingWorkExecutor::shared()
+-                .run(cancel, move |_| retain_output(&directory, &text))
+-                .await
+-            {
+-                Ok(text) => ToolResultRow {
+-                    text,
+-                    content: None,
+-                    outcome: ToolOutcome::Completed,
+-                },
+-                Err(ToolError::Cancelled) => ToolResultRow::error(
+-                    "Tool interrupted before its output was retained. Its output is unknown. No automatic replay.",
+-                    ToolOutcome::Unknown,
+-                ),
+-                Err(error) => ToolResultRow::error(
+-                    format!("Tool result could not be retained: {error}"),
+-                    ToolOutcome::Failed,
+-                ),
+-            }
+-        }
++        Ok(NativeOutput {
++            text,
++            content,
++            is_error,
++        }) => ToolResultRow {
++            text,
++            content,
++            outcome: if is_error {
++                ToolOutcome::Failed
++            } else {
++                ToolOutcome::Completed
++            },
++        },
+         Err(ToolError::NotExecuted(text)) => ToolResultRow::error(text, ToolOutcome::NotExecuted),
+         Err(ToolError::Cancelled) => ToolResultRow::error(
+             if tools.editing_call(call) {
+                 "Tool interrupted. Effects may already have occurred; inspect before retrying. No automatic replay."
+             } else {
+                 "Tool interrupted. Its output is unknown. No automatic replay."
+             },
+             ToolOutcome::Unknown,
+@@ -993,16 +1026,17 @@
+                 | "edit_match"
+                 | "file_unavailable"
+                 | "not_regular_file"
+                 | "file_too_large"
+                 | "binary_file"
+                 | "missing_path"
+                 | "tool_output"
+                 | "missing_executable"
++                | "process_spawn"
+         )
+     });
+     let outcome = if editing && !rejected {
+         ToolOutcome::Unknown
+     } else {
+         ToolOutcome::Failed
+     };
+     let text = match error {
+@@ -1600,8 +1634,12 @@
+             retained
+         );
+     }
+ }
+ 
+ #[cfg(test)]
+ #[path = "edit_runtime_tests.rs"]
+ mod edit_runtime_tests;
++
++#[cfg(all(test, unix))]
++#[path = "bash_runtime_tests.rs"]
++mod bash_tests;
+--- a/rust/crates/bello-agent-core/src/tools.rs
++++ b/rust/crates/bello-agent-core/src/tools.rs
+@@ -16,16 +16,18 @@
+ //! applies SessionTools' schema preparation, for the offered read/ls/find/grep schemas. The general
+ //! JSON Schema coercer remains a separate gap. The opt-in core
+ //! Controller retains large non-read text above 64 KiB in private files (32 KiB preview,
+ //! 16 MiB maximum), checkpoints call/result history, and continues the tool loop.
+ //! Native read adds bounded durable text/image content and resolved viewer stats.
+ //! Native ls itself has an entry bound, not a byte bound, and no `stats` field.
+ 
+ pub(crate) mod attachment_images;
++#[cfg(unix)]
++pub mod bash;
+ mod edit;
+ mod find;
+ mod grep;
+ pub(crate) mod mcp_images;
+ mod read;
+ mod read_image;
+ mod read_image_sniff;
+ mod read_text;
+@@ -97,16 +99,17 @@
+ #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+ pub enum Capability {
+     Read,
+     Ls,
+     Find,
+     Grep,
+     Write,
+     Edit,
++    Bash,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+ pub struct ToolDefinition {
+     pub name: String,
+     pub description: String,
+     pub schema: Value,
+ }
+@@ -169,26 +172,44 @@
+ fn edit_definition() -> ToolDefinition {
+     ToolDefinition {
+         name: "edit".into(),
+         description: "Replace exactly one occurrence of oldText with newText. Fails if text is missing or ambiguous; no fuzzy edit.".into(),
+         schema: json!({"type":"object","properties":{"path":{"type":"string"},"oldText":{"type":"string"},"newText":{"type":"string"}},"required":["path","oldText","newText"],"additionalProperties":false}),
+     }
+ }
+ 
++fn bash_definition() -> ToolDefinition {
++    ToolDefinition {
++        name: "bash".into(),
++        description: "Run a non-interactive bash command in the workspace. Output is bounded and retained in a file when large. timeout is seconds (1–600).".into(),
++        schema: json!({"type":"object","properties":{"command":{"type":"string"},"timeout":{"type":"integer","minimum":1}},"required":["command"],"additionalProperties":false}),
++    }
++}
++
+ pub fn result_text(text: impl Into<String>, is_error: bool) -> Value {
+     json!({"content": [{"type": "text", "text": text.into()}], "isError": is_error})
+ }
+ 
+ #[derive(Clone)]
+ pub struct NativeTools {
+     paths: FileToolContext,
+     capabilities: BTreeSet<Capability>,
+     workers: BlockingWorkExecutor,
+     editing_gate: Arc<tokio::sync::Mutex<()>>,
++    #[cfg(unix)]
++    shell_jobs: Arc<bash::Jobs>,
++    #[cfg(unix)]
++    shell_environment: Option<bash::Environment>,
++    #[cfg(unix)]
++    shell_output: Option<PathBuf>,
++    #[cfg(unix)]
++    shell_update: Option<bash::OnUpdate>,
++    #[cfg(all(test, unix))]
++    shell_cleanup_fixture: Option<Arc<dyn Fn() + Send + Sync>>,
+     #[cfg(all(test, not(target_os = "macos")))]
+     synthetic_mutations: bool,
+     #[cfg(test)]
+     before_read: Option<Arc<dyn Fn() + Send + Sync>>,
+     #[cfg(test)]
+     after_mutation: Option<Arc<dyn Fn() + Send + Sync>>,
+ }
+ 
+@@ -236,16 +257,26 @@
+                 },
+             ));
+         }
+         Ok(Self {
+             paths: FileToolContext { cwd, roots, home },
+             capabilities,
+             workers: BlockingWorkExecutor::shared(),
+             editing_gate: Arc::new(tokio::sync::Mutex::new(())),
++            #[cfg(unix)]
++            shell_jobs: Arc::new(bash::Jobs::default()),
++            #[cfg(unix)]
++            shell_environment: None,
++            #[cfg(unix)]
++            shell_output: None,
++            #[cfg(unix)]
++            shell_update: None,
++            #[cfg(all(test, unix))]
++            shell_cleanup_fixture: None,
+             #[cfg(all(test, not(target_os = "macos")))]
+             synthetic_mutations: false,
+             #[cfg(test)]
+             before_read: None,
+             #[cfg(test)]
+             after_mutation: None,
+         })
+     }
+@@ -255,17 +286,17 @@
+         cwd: PathBuf,
+         roots: Vec<PathBuf>,
+         home: PathBuf,
+         capabilities: Vec<Capability>,
+     ) -> ToolResult<Self> {
+         if capabilities.iter().any(|capability| {
+             !matches!(
+                 capability,
+-                Capability::Ls | Capability::Write | Capability::Edit
++                Capability::Ls | Capability::Write | Capability::Edit | Capability::Bash
+             )
+         }) {
+             return Err(ToolError::failure(
+                 "tool_unavailable",
+                 "The synthetic mutation fixture only supports ls/write/edit",
+             ));
+         }
+         let mut tools = Self::new(cwd, roots, home, [])?;
+@@ -275,19 +306,50 @@
+     }
+ 
+     pub(crate) fn with_editing_gate(mut self, gate: Arc<tokio::sync::Mutex<()>>) -> Self {
+         self.editing_gate = gate;
+         self
+     }
+ 
+     pub(crate) fn editing_call(&self, call: &ToolCall) -> bool {
+-        matches!(call.name.as_str(), "write" | "edit")
+-            && (self.capabilities.contains(&Capability::Write)
+-                || self.capabilities.contains(&Capability::Edit))
++        matches!(call.name.as_str(), "write" | "edit" | "bash") && self.offers(&call.name)
++    }
++
++    #[cfg(unix)]
++    pub fn with_shell_environment(mut self, environment: bash::Environment) -> Self {
++        self.shell_environment = Some(environment);
++        self
++    }
++    #[cfg(unix)]
++    pub fn with_shell_output(mut self, directory: PathBuf) -> Self {
++        self.shell_output = Some(directory);
++        self
++    }
++    #[cfg(unix)]
++    pub(crate) fn with_shell_update(mut self, update: Option<bash::OnUpdate>) -> Self {
++        self.shell_update = update;
++        self
++    }
++    #[cfg(all(test, unix))]
++    pub(crate) fn with_pending_shell_cleanup(
++        mut self,
++        barrier: Arc<dyn Fn() + Send + Sync>,
++    ) -> Self {
++        self.shell_cleanup_fixture = Some(barrier);
++        self
++    }
++    pub(crate) fn cancel_processes(&self) {
++        #[cfg(unix)]
++        self.shell_jobs.cancel();
++    }
++    pub(crate) async fn join_processes(&self) -> crate::Result<()> {
++        #[cfg(unix)]
++        self.shell_jobs.join().await?;
++        Ok(())
+     }
+ 
+     /// Isolated executor injection for deterministic synthetic fixtures.
+     pub fn with_executor(mut self, workers: BlockingWorkExecutor) -> Self {
+         self.workers = workers;
+         self
+     }
+ 
+@@ -318,16 +380,19 @@
+             definitions.push(grep_definition());
+         }
+         if self.capabilities.contains(&Capability::Write) {
+             definitions.push(write_definition());
+         }
+         if self.capabilities.contains(&Capability::Edit) {
+             definitions.push(edit_definition());
+         }
++        if self.capabilities.contains(&Capability::Bash) {
++            definitions.push(bash_definition());
++        }
+         definitions
+     }
+ 
+     pub fn capability_ids(&self) -> Vec<&'static str> {
+         let mut ids = Vec::new();
+         if self.capabilities.contains(&Capability::Read) {
+             ids.push("read");
+         }
+@@ -340,28 +405,32 @@
+         if self.capabilities.contains(&Capability::Grep) {
+             ids.push("grep");
+         }
+         if self.capabilities.contains(&Capability::Write) {
+             ids.push("write");
+         }
+         if self.capabilities.contains(&Capability::Edit) {
+             ids.push("edit");
++        }
++        if self.capabilities.contains(&Capability::Bash) {
++            ids.push("bash");
+         }
+         ids
+     }
+ 
+     fn offers(&self, name: &str) -> bool {
+         match name {
+             "read" => self.capabilities.contains(&Capability::Read),
+             "ls" => self.capabilities.contains(&Capability::Ls),
+             "find" => self.capabilities.contains(&Capability::Find),
+             "grep" => self.capabilities.contains(&Capability::Grep),
+             "write" => self.capabilities.contains(&Capability::Write),
+             "edit" => self.capabilities.contains(&Capability::Edit),
++            "bash" => self.capabilities.contains(&Capability::Bash),
+             _ => false,
+         }
+     }
+ 
+     /// SessionTools.piPrepared's exact applicable subset. Unknown/unoffered
+     /// tools and non-object arguments pass through for native rejection.
+     /// The original call is never mutated.
+     pub fn prepare_call(&self, call: &ToolCall) -> ToolCall {
+@@ -370,44 +439,48 @@
+             return prepared;
+         }
+         let Some(fields) = prepared.arguments.as_object_mut() else {
+             return prepared;
+         };
+         // Optional properties do not accept null in their source schemas.
+         let optional = if matches!(call.name.as_str(), "write" | "edit") {
+             &[][..]
++        } else if call.name == "bash" {
++            &["timeout"][..]
+         } else if call.name == "read" {
+             &["offset", "limit"][..]
+         } else if call.name == "grep" {
+             &["path", "limit", "literal", "ignoreCase"][..]
+         } else {
+             &["path", "limit"][..]
+         };
+         for key in optional {
+             if fields.get(*key).is_some_and(Value::is_null) {
+                 fields.remove(*key);
+             }
+         }
+         for key in if call.name == "write" {
+             &["path", "content"][..]
++        } else if call.name == "bash" {
++            &["command"][..]
+         } else if call.name == "edit" {
+             &["path", "oldText", "newText"][..]
+         } else if matches!(call.name.as_str(), "find" | "grep") {
+             &["path", "pattern"][..]
+         } else {
+             &["path"][..]
+         } {
+             let Some(value) = fields.get_mut(*key) else {
+                 continue;
+             };
+             match value {
+                 Value::Null
+                     if *key == "pattern"
+-                        || matches!(call.name.as_str(), "read" | "write" | "edit") =>
++                        || matches!(call.name.as_str(), "read" | "write" | "edit" | "bash") =>
+                 {
+                     *value = Value::String(String::new())
+                 }
+                 Value::Bool(flag) => *value = Value::String(flag.to_string()),
+                 Value::Number(number) => {
+                     if let Some(number) = number.as_f64() {
+                         *value = Value::String(js_string(number));
+                     }
+@@ -429,16 +502,18 @@
+                 };
+                 if let Some(flag) = flag {
+                     *value = Value::Bool(flag);
+                 }
+             }
+         }
+         for key in if matches!(call.name.as_str(), "write" | "edit") {
+             &[][..]
++        } else if call.name == "bash" {
++            &["timeout"][..]
+         } else if call.name == "read" {
+             &["offset", "limit"][..]
+         } else {
+             &["limit"][..]
+         } {
+             let Some(value) = fields.get_mut(*key) else {
+                 continue;
+             };
+@@ -545,16 +620,100 @@
+                 .as_array()
+                 .expect("required array")
+                 .iter()
+                 .any(|key| !fields.contains_key(key.as_str().expect("required name")))
+         {
+             return Err(ToolError::failure(
+                 "tool_arguments",
+                 "Missing or unsupported tool arguments",
++            ));
++        }
++        if call.name == "bash" {
++            #[cfg(unix)]
++            {
++                // Validate fully before output creation or spawning. Queue wait
++                // does not consume the command's timeout.
++                let request = bash::Request::parse(&call.arguments)?;
++                #[cfg(test)]
++                let request = request.with_cleanup_fixture(self.shell_cleanup_fixture.clone());
++                let directory = self.shell_output.clone().ok_or_else(|| {
++                    ToolError::failure(
++                        "tool_output",
++                        "Bash requires an explicit retained output directory",
++                    )
++                })?;
++                let environment = self
++                    .shell_environment
++                    .clone()
++                    .unwrap_or_else(|| bash::Environment::from_process(self.paths.home.clone()));
++                let cwd = self.paths.cwd.clone();
++                let update = self.shell_update.clone();
++                let token = cancellation.child_token();
++                let job = self.shell_jobs.register(token.clone())?;
++                let guard = token.clone().drop_guard();
++                let workers = self.workers.clone();
++                let (sender, receiver) = oneshot::channel();
++                // The worker owns job/admission, not this receiver or its Tokio
++                // awaiter. Bounded logical completion can precede final reaping.
++                tokio::spawn(async move {
++                    let sender = Arc::new(Mutex::new(Some(sender)));
++                    let fallback = sender.clone();
++                    let result = workers
++                        .run(token, move |cancel| {
++                            let _job = job;
++                            let editing = _editing;
++                            let mut completion =
++                                bash::run(request, &cwd, &directory, environment, &cancel, update)?;
++                            let result = std::mem::replace(
++                                &mut completion.result,
++                                Err(ToolError::Cancelled),
++                            )
++                            .and_then(map);
++                            if completion.physically_settled() {
++                                drop(editing);
++                                if let Some(sender) =
++                                    sender.lock().expect("Bash result mutex").take()
++                                {
++                                    let _ = sender.send(result);
++                                }
++                            } else {
++                                if let Some(sender) =
++                                    sender.lock().expect("Bash result mutex").take()
++                                {
++                                    let _ = sender.send(result);
++                                }
++                                completion.reap();
++                                drop(editing);
++                            }
++                            Ok(())
++                        })
++                        .await;
++                    if let Some(sender) = fallback.lock().expect("Bash result mutex").take() {
++                        let _ = sender.send(Err(result.err().unwrap_or_else(|| {
++                            ToolError::failure(
++                                "tool_worker",
++                                "Bash worker stopped without a result",
++                            )
++                        })));
++                    }
++                });
++                let result = receiver.await.unwrap_or_else(|_| {
++                    Err(ToolError::failure(
++                        "tool_worker",
++                        "Bash worker stopped without a result",
++                    ))
++                });
++                guard.disarm();
++                return result;
++            }
++            #[cfg(not(unix))]
++            return Err(ToolError::failure(
++                "tool_unavailable",
++                "Bash requires a Unix process owner",
+             ));
+         }
+         let is_read = call.name == "read";
+         let is_find = call.name == "find";
+         let is_grep = call.name == "grep";
+         let is_write = call.name == "write";
+         let is_edit = call.name == "edit";
+         let paths = self.paths.clone();

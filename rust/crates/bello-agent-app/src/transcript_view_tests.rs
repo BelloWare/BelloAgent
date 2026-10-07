@@ -2439,3 +2439,61 @@ mod read_ui;
 
 #[path = "transcript_edit_ui_tests.rs"]
 mod edit_ui_tests;
+
+#[gpui::test]
+fn live_bash_output_remeasures_existing_card_then_settles_to_retained_result(
+    cx: &mut TestAppContext,
+) {
+    use bello_agent_core::tool_history::{LiveToolView, ToolOutcome, ToolRecord};
+    let (_directory, _window, root) = fixture(cx, messages(1), 0);
+    let mut changed = input(&root, cx);
+    let mut session = (*changed.session).clone();
+    session.messages = retained_tool_rows(1, "pending");
+    session.messages.truncate(1);
+    session.state = bello_agent_core::RunState::Running;
+    let assistant = session.messages[0].id.clone();
+    session.active_reply = Some(assistant.clone());
+    let call = if let Some(ToolRecord::Assistant(record)) = &mut session.messages[0].tool_record {
+        record.calls[0].name = "bash".into();
+        record.calls[0].arguments = serde_json::json!({"command":"printf fixture"});
+        record.calls[0].id.clone()
+    } else {
+        panic!("fixture assistant")
+    };
+    session.live_tools.push(LiveToolView {
+        assistant_id: assistant,
+        call_id: call,
+        sequence: 1,
+        preview: "first".into(),
+        outcome: None,
+    });
+    changed.session = Arc::new(session);
+    changed.visible_messages = usize::MAX;
+    let (_visual, child) = host(&root, changed.clone(), cx);
+    cx.run_until_parked();
+    let invalidations = cx.read(|cx| child.read(cx).tool_height_invalidation_count());
+    let mut next = (*changed.session).clone();
+    next.live_tools[0].sequence = 2;
+    next.live_tools[0].preview = "growing output\n".repeat(30).into();
+    changed.session = Arc::new(next);
+    child.update(cx, |view, cx| view.update_inputs(changed.clone(), cx));
+    cx.run_until_parked();
+    assert!(cx.read(|cx| child.read(cx).tool_height_invalidation_count()) > invalidations);
+    let editors = cx.read(|cx| child.read(cx).tool_section_editors());
+    assert!(
+        editors
+            .iter()
+            .any(|(_, editor)| { cx.read(|cx| editor.read(cx).text().contains("growing output")) })
+    );
+    let mut next = (*changed.session).clone();
+    next.live_tools[0].outcome = Some(ToolOutcome::Failed);
+    next.live_tools[0].preview = "failed\nExit code: 7".into();
+    changed.session = Arc::new(next);
+    child.update(cx, |view, cx| view.update_inputs(changed.clone(), cx));
+    cx.run_until_parked();
+    assert!(
+        cx.read(|cx| child.read(cx).tool_section_editors())
+            .iter()
+            .any(|(_, editor)| cx.read(|cx| editor.read(cx).text().contains("Exit code: 7")))
+    );
+}

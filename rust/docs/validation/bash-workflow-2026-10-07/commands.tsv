@@ -1,0 +1,17 @@
+2026-10-07T17:44:54Z	START	fmt	cargo fmt --all -- --check 
+2026-10-07T17:44:56Z	END	fmt	0
+2026-10-07T17:44:56Z	START	core-package-clean	cargo clean --offline --locked -p bello-agent-core 
+2026-10-07T17:44:56Z	END	core-package-clean	0
+2026-10-07T17:44:56Z	START	core-default	cargo test --offline --locked -j 1 -p bello-agent-core 
+2026-10-07T17:45:39Z	END	core-default	101
+2026-10-07T17:46:53Z	START	core-all-features	cargo test --offline --locked -j 1 -p bello-agent-core --all-features 
+2026-10-07T17:48:54Z	END	core-all-features	101
+2026-10-07T17:53:37Z	START	final-fmt	cargo fmt --all -- --check 
+2026-10-07T17:53:38Z	END	final-fmt	0
+2026-10-07T17:53:38Z	START	final-core-default	cargo test --offline --locked -j 1 --config profile.test.package.bello-agent-core.codegen-units=16 -p bello-agent-core 
+2026-10-07T17:54:27Z	END	final-core-default	0
+2026-10-07T17:54:27Z	START	final-core-all-features	cargo test --offline --locked -j 1 --config profile.test.package.bello-agent-core.codegen-units=16 -p bello-agent-core --all-features 
+2026-10-07T18:01:52Z	START	final-core-all-features	cargo test --offline --locked -j 1 --config profile.test.package.bello-agent-core.codegen-units=16 -p bello-agent-core --all-features 
+2026-10-07T18:07:01Z	END	final-core-all-features	101
+2026-10-07T18:32:22Z	START	final-core-all-features-unrestricted	cargo test --offline --locked -j 1 --config profile.test.package.bello-agent-core.codegen-units=16 -p bello-agent-core --all-features 
+2026-10-07T18:34:33Z	END	final-core-all-features-unrestricted	101

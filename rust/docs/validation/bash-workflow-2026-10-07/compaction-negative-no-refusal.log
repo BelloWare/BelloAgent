@@ -1,0 +1,20 @@
+   Compiling bello-agent-core v0.1.0 (/workspace/shared/agent-shell-stage/rust/crates/bello-agent-core)
+    Finished `test` profile [unoptimized] target(s) in 16.66s
+     Running unittests src/lib.rs (/workspace/shared/agent-attachments-target/debug/deps/bello_agent_core-75375b53305821cd)
+
+running 1 test
+Context preview while actor lock is held: The conversation is changing. Refresh the context preview.
+
+thread 'runtime::compaction_runtime::tests::stop_during_summary_retains_stream_and_held_queue_without_adoption' (54) panicked at crates/bello-agent-core/src/compaction_runtime_tests.rs:310:43:
+called `Result::unwrap_err()` on an `Ok` value: ContextPreview { metadata: ContextPreviewMetadata { mode: ActiveContext, session_id: "3ebb58fc-4d26-419f-a6b0-32dba2060ded", session_revision: 4, input_binding: "0b51eef1209addbe0b51df8ccf052fda81a18dcc761307d175ba817846b52d3e", model: "fixture", thinking_level: "default", draft_included: false, draft_deferred: false, queue_count: 0, context_messages: 2, input_items: 2, context_window: 65536, output_budget: 4096, output_cap: None, tokens: None, count_source: "Token count unavailable: this runtime does not calculate request tokens", credentials_redacted: false }, request_json_bytes: 92489 }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test runtime::compaction_runtime::tests::stop_during_summary_retains_stream_and_held_queue_without_adoption ... FAILED
+
+failures:
+
+failures:
+    runtime::compaction_runtime::tests::stop_during_summary_retains_stream_and_held_queue_without_adoption
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 382 filtered out; finished in 0.02s
+
+error: test failed, to rerun pass `-p bello-agent-core --lib`

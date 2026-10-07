@@ -1,0 +1,10 @@
+{
+  "pid": 525848,
+  "stat": {
+    "pid": 525848,
+    "start_ticks": 5232305,
+    "state": "R"
+  },
+  "binary_sha256": "504d5291b53264673b85981009b3cb0c8655aa011e03ecf0b0009ad5adfefbdc",
+  "started_monotonic": 52323.051937911
+}

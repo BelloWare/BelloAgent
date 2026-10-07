@@ -1,0 +1,24 @@
+   Compiling bello-agent-core v0.1.0 (/workspace/shared/agent-shell-negative/rust/crates/bello-agent-core)
+    Finished `test` profile [unoptimized] target(s) in 25.22s
+     Running unittests src/lib.rs (/workspace/shared/agent-attachments-target/debug/deps/bello_agent_core-4b871c0f4d9050f4)
+
+running 1 test
+test runtime::tool_runtime::bash_tests::failed_bash_status_survives_long_lossy_output_generic_retention_reopen_and_replay ... FAILED
+
+failures:
+
+---- runtime::tool_runtime::bash_tests::failed_bash_status_survives_long_lossy_output_generic_retention_reopen_and_replay stdout ----
+
+thread 'runtime::tool_runtime::bash_tests::failed_bash_status_survives_long_lossy_output_generic_retention_reopen_and_replay' (62) panicked at crates/bello-agent-core/src/bash_runtime_tests.rs:58:9:
+assertion `left == right` failed
+  left: Completed
+ right: Failed
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    runtime::tool_runtime::bash_tests::failed_bash_status_survives_long_lossy_output_generic_retention_reopen_and_replay
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 535 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p bello-agent-core --lib`
