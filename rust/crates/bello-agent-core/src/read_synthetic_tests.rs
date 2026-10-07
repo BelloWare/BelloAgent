@@ -73,7 +73,7 @@ async fn trusted_project_read_text_persists_stats_and_replays_after_source_remov
         std::fs::canonicalize(&stats.path).unwrap(),
         path.canonicalize().unwrap()
     );
-    assert_eq!(state.version, 4);
+    assert_eq!(state.version, 8);
     controller.retire_and_wait().await.unwrap();
     std::fs::remove_file(&path).unwrap();
     let reopened = fixture
@@ -130,7 +130,7 @@ async fn trusted_project_read_image_persists_original_bytes_and_replays_with_cap
     assert_eq!(output(&continuation.body), &expected);
     continuation.complete("Read image").await;
     let state = settled(&controller, |s| s.state == RunState::Idle).await;
-    assert_eq!(state.version, 4);
+    assert_eq!(state.version, 8);
     controller.retire_and_wait().await.unwrap();
     std::fs::remove_file(path).unwrap();
     for images in [true, false] {

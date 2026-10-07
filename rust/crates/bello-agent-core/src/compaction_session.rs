@@ -10,6 +10,7 @@ impl Message {
         checkpoint: Option<Checkpoint>,
     ) -> Self {
         Self {
+            task_root_id: None,
             user_content: None,
             id,
             role: "system".into(),

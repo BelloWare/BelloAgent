@@ -26,6 +26,8 @@ pub enum RunState {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Submission {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub frozen_skills: Vec<crate::skills::FrozenSkill>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<crate::attachments::AttachmentRecord>,
     pub id: String,
     pub text: String,
@@ -37,6 +39,7 @@ impl Submission {
     pub fn new(text: String, lane: Lane) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
+            frozen_skills: Vec::new(),
             attachments: Vec::new(),
             text,
             lane,
@@ -47,6 +50,8 @@ impl Submission {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Message {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_root_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_content: Option<std::sync::Arc<crate::user_content::UserContent>>,
     pub id: String,
@@ -80,6 +85,7 @@ impl Message {
             state: state.into(),
             usage: Value::Null,
             model,
+            task_root_id: None,
             user_content: None,
             tool_record: None,
             compaction: None,
@@ -214,8 +220,8 @@ impl Session {
                 .edit
                 .as_ref()
                 .and_then(|edit| self.pending.iter().find(|item| item.id == edit.turn_id))
-                .map(|item| item.attachments.as_slice())
-                .unwrap_or(&[]);
+                .map(|item| (item.attachments.as_slice(), item.frozen_skills.as_slice()))
+                .unwrap_or((&[], &[]));
             if self
                 .outcomes
                 .iter()
@@ -225,7 +231,7 @@ impl Session {
                     return Err(invalid("Message exceeds 256 KiB"));
                 }
             } else {
-                validate_input(text, attachments)?;
+                validate_skill_input(text, attachments.0, !attachments.1.is_empty())?;
             }
         } else if text.is_some() {
             return Err(invalid("Cancel and Remove do not accept text"));
@@ -350,7 +356,7 @@ impl Session {
         self.pending.remove(index);
         if self.messages.is_empty() {
             self.title = if item.text.is_empty() {
-                image_label(item.attachments.len())
+                submission_label(&item)
             } else {
                 item.text.chars().take(60).collect()
             };
@@ -363,6 +369,8 @@ impl Session {
             "complete",
             item.model.clone(),
         );
+        message.task_root_id = Some(item.id.clone());
+        self.version = self.version.max(8);
         message.user_content = content;
         self.messages.push(message);
         self.activate(item.clone());
@@ -500,7 +508,30 @@ impl Session {
                 .chain(self.retry.iter())
                 .any(|s| !s.attachments.is_empty())
     }
+    fn has_skill_fields(&self) -> bool {
+        self.messages.iter().any(|row| {
+            row.task_root_id.is_some()
+                || row
+                    .user_content
+                    .as_ref()
+                    .is_some_and(|content| !content.skills.is_empty())
+        }) || self
+            .pending
+            .iter()
+            .chain(self.active.iter())
+            .chain(self.retry.iter())
+            .any(|item| !item.frozen_skills.is_empty())
+    }
+    fn validate_task_roots(&self) -> Result<()> {
+        validate_task_provenance(&self.messages).map(|_| ())
+    }
     fn validate_tool_history(&self) -> Result<()> {
+        if self.version < 8 && self.has_skill_fields() {
+            return Err(invalid(
+                "Skills and task roots require Rust snapshot version 8",
+            ));
+        }
+        self.validate_task_roots()?;
         if self.version < 7 && self.has_user_attachments() {
             return Err(invalid("User images require Rust snapshot version 7"));
         }
@@ -516,7 +547,7 @@ impl Session {
             .active
             .iter()
             .chain(self.retry.iter())
-            .filter(|item| !item.attachments.is_empty())
+            .filter(|item| !item.attachments.is_empty() || !item.frozen_skills.is_empty())
         {
             if !self.messages.iter().any(|row| {
                 row.id == item.id
@@ -524,7 +555,7 @@ impl Session {
                     && row
                         .user_content
                         .as_ref()
-                        .is_some_and(|content| content.attachments == item.attachments)
+                        .is_some_and(|content| content.validate_submission(item).is_ok())
             }) {
                 return Err(invalid(
                     "Active image submission disagrees with retained user input",
@@ -727,11 +758,12 @@ fn valid_edit_digest(digest: &str) -> bool {
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
-pub(crate) fn validate_input(
+pub(crate) fn validate_skill_input(
     text: &str,
     attachments: &[crate::attachments::AttachmentRecord],
+    has_skills: bool,
 ) -> Result<()> {
-    if text.trim().is_empty() && attachments.is_empty() {
+    if text.trim().is_empty() && attachments.is_empty() && !has_skills {
         return Err(invalid("Enter a message or select an image"));
     }
     if text.len() > 262_144 {
@@ -740,7 +772,42 @@ pub(crate) fn validate_input(
     crate::attachments::validate_selection(attachments)
 }
 pub(crate) fn validate_submission(item: &Submission) -> Result<()> {
-    validate_input(&item.text, &item.attachments)
+    validate_skill_input(
+        &item.text,
+        &item.attachments,
+        !item.frozen_skills.is_empty(),
+    )?;
+    crate::skills::validate_frozen_skills(&item.frozen_skills)
+}
+/// A legacy rootless prefix is readable. Once explicit provenance begins,
+/// user rows form contiguous tasks; unknown steering may never erase a root.
+pub(crate) fn validate_task_provenance(messages: &[Message]) -> Result<Option<&str>> {
+    let mut current = None;
+    for row in messages {
+        if let Some(root) = row.task_root_id.as_deref() {
+            if row.role != "user" || root.is_empty() || root.len() > 128 {
+                return Err(invalid("Invalid user task-root provenance"));
+            }
+            if root == row.id {
+                current = Some(root);
+            } else if current != Some(root) {
+                return Err(invalid("Foreign or noncontiguous user task root"));
+            }
+        } else if row.role == "user" && current.is_some() {
+            return Err(invalid(
+                "Missing user task-root provenance after skill adoption",
+            ));
+        }
+        if row
+            .user_content
+            .as_ref()
+            .is_some_and(|content| !content.skills.is_empty())
+            && row.task_root_id.is_none()
+        {
+            return Err(invalid("Skill-bearing input requires task-root provenance"));
+        }
+    }
+    Ok(current)
 }
 pub(crate) fn same_submission(a: &Submission, b: &Submission) -> bool {
     a.id == b.id
@@ -749,6 +816,20 @@ pub(crate) fn same_submission(a: &Submission, b: &Submission) -> bool {
         && a.model == b.model
         && a.effort == b.effort
         && a.attachments == b.attachments
+        && a.frozen_skills == b.frozen_skills
+}
+pub fn submission_label(item: &Submission) -> String {
+    if !item.text.is_empty() {
+        item.text.chars().take(60).collect()
+    } else if !item.frozen_skills.is_empty() {
+        item.frozen_skills
+            .iter()
+            .map(|s| format!("/{}", s.name))
+            .collect::<Vec<_>>()
+            .join(" ")
+    } else {
+        image_label(item.attachments.len())
+    }
 }
 pub fn image_label(count: usize) -> String {
     if count == 1 {
@@ -758,6 +839,7 @@ pub fn image_label(count: usize) -> String {
     }
 }
 /// Prepared bytes are inseparably bound to their exact captured input.
+#[derive(Clone)]
 pub(crate) struct PreparedUserInput {
     pub item: Submission,
     pub content: std::sync::Arc<crate::user_content::UserContent>,
@@ -771,10 +853,10 @@ pub(crate) fn checked_prepared(
             if same_submission(item, &value.item)
                 && value.content.attachments == item.attachments =>
         {
-            value.content.validate_display(&item.text)?;
+            value.content.validate_submission(item)?;
             Ok(Some(value.content))
         }
-        None if item.attachments.is_empty() => Ok(None),
+        None if item.attachments.is_empty() && item.frozen_skills.is_empty() => Ok(None),
         _ => Err(invalid(
             "Image delivery requires preparation for this exact submission",
         )),
@@ -861,11 +943,11 @@ impl SessionInspectionLease {
             return Err(invalid("Session exceeds 256 MiB safety limit"));
         }
         verify_inspection_file(&path, &file, &before)?;
-        let mut session: Session = serde_json::from_slice(&bytes)?;
+        let mut session: Session = crate::skill_schema::parse_snapshot(&bytes)?;
         if session.id != expected_session_id {
             return Err(invalid("The session file belongs to another chat"));
         }
-        if ![1, 2, 3, 4, 5, 6, 7].contains(&session.version) {
+        if ![1, 2, 3, 4, 5, 6, 7, 8].contains(&session.version) {
             return Err(invalid(
                 "Unsupported Rust session format. Swift journals are not imported automatically.",
             ));
@@ -1128,13 +1210,13 @@ impl SessionStore {
                 return Err(invalid("Session exceeds 256 MiB safety limit"));
             }
             verify_inspection_file(&path, file, before)?;
-            serde_json::from_slice(&bytes)?
+            crate::skill_schema::parse_snapshot(&bytes)?
         } else if exists {
             let metadata = fs::metadata(&path)?;
             if metadata.len() > 256 * 1024 * 1024 {
                 return Err(invalid("Session exceeds 256 MiB safety limit"));
             }
-            serde_json::from_slice(&fs::read(&path)?)?
+            crate::skill_schema::parse_snapshot(&fs::read(&path)?)?
         } else {
             initial.clone().unwrap_or_default()
         };
@@ -1145,7 +1227,7 @@ impl SessionStore {
         {
             return Err(invalid("The session file belongs to another chat"));
         }
-        if ![1, 2, 3, 4, 5, 6, 7].contains(&session.version) {
+        if ![1, 2, 3, 4, 5, 6, 7, 8].contains(&session.version) {
             return Err(invalid(
                 "Unsupported Rust session format. Swift journals are not imported automatically.",
             ));
@@ -1261,6 +1343,9 @@ impl SessionStore {
         }
         let mut next = self.session.clone();
         let result = change(&mut next)?;
+        if next.has_skill_fields() {
+            next.version = next.version.max(8);
+        }
         if next.has_user_attachments() {
             next.version = next.version.max(7);
         }
@@ -2045,7 +2130,7 @@ mod tests {
             .unwrap();
         let original = fs::read(&journal).unwrap();
         let snapshot = SessionStore::open(&path).unwrap().snapshot();
-        assert_eq!(snapshot.version, 3);
+        assert_eq!(snapshot.version, 8);
         assert_eq!(snapshot.state, RunState::Paused);
         assert_eq!(snapshot.messages.last().unwrap().text, "retained partial");
         assert!(!snapshot.messages.last().unwrap().replay_eligible);
@@ -2412,6 +2497,7 @@ mod tests {
         ] {
             session
                 .submit(Submission {
+                    frozen_skills: Vec::new(),
                     attachments: Vec::new(),
                     id: id.into(),
                     text: format!("{id}: {}\ncomplete Unicode text 🦋", "x".repeat(2048)),
@@ -3039,3 +3125,7 @@ mod read_storage_tests;
 #[cfg(test)]
 #[path = "attachment_storage_tests.rs"]
 mod attachment_storage_tests;
+
+#[cfg(test)]
+#[path = "skill_storage_tests.rs"]
+mod skill_storage_tests;

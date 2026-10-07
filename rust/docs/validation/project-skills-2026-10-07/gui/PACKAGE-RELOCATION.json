@@ -1,0 +1,25 @@
+{
+  "note": "Selected generated inputs are copied byte-for-byte. Original private verifiers/results remain in source evidence roots. This package verifier rechecks only bundled selected evidence; it validates exact binary/source identity metadata, not availability or content of an unbundled binary. Complete binary was SHA-verified before each real launch and by original offline verifier.",
+  "mapping": [
+    {
+      "original_evidence_root": "/workspace/shared/agent-skills-gui-candidate2-fresh/evidence",
+      "package_root": "skills",
+      "selected": "Listed in FILES.json; screenshot metadata relocated to screenshots.json"
+    },
+    {
+      "original_evidence_root": "/workspace/shared/agent-skills-gui-candidate2-compaction/evidence",
+      "package_root": "compaction",
+      "selected": "Listed in FILES.json; exact prior build manifest is reused without source reseal"
+    },
+    {
+      "original_evidence_root": "/workspace/shared/agent-skills-mcp-candidate2/evidence",
+      "package_root": "mcp",
+      "selected": "Listed in FILES.json"
+    },
+    {
+      "original_evidence_root": "/workspace/shared/agent-skills-gui-candidate1/evidence",
+      "package_root": "candidate1",
+      "selected": "Only four app screenshots; separate binary attribution"
+    }
+  ]
+}

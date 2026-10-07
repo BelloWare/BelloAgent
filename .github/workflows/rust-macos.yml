@@ -43,6 +43,9 @@ jobs:
       - name: Run pure domain and filesystem tests
         # No GPUI application launch, permissions, keychain, capture or updater actions.
         run: cargo test --locked -p bello-agent-core
+      - name: Retain project skill source and Darwin alias characterization
+        # Generated fixtures only; exact matrix plus separately labeled alias gap.
+        run: cargo test --locked -p bello-agent-core --test project_skills_native -- --nocapture
       - name: Project authority fixture contracts and native type checks
         # Fake API and temporary-file fixtures; no native authority or credentials are accessed.
         run: |
@@ -62,8 +65,9 @@ jobs:
           cargo test --locked -p bello-agent-app chat_tool_mode::
           cargo test --locked -p bello-agent-app --features synthetic-authority mcp_inspector
           cargo test --locked -p bello-agent-app --features synthetic-authority composer_attachments::
-          cargo test --locked -p bello-agent-app --features synthetic-authority attachment_fixture::
+          cargo test --locked -p bello-agent-app --features synthetic-authority composer_skills::
           cargo test --locked -p bello-agent-app --features synthetic-authority context_inspector::
+          cargo test --locked -p bello-agent-app --features synthetic-authority attachment_fixture::
       - name: Synthetic native file tools through fake-platform transcript
         # Temporary files and loopback provider only; GPUI uses its test platform.
         # No native window, input automation, TCC, vault, or user data is accessed.

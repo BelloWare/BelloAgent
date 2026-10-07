@@ -1,0 +1,11 @@
+{
+  "kind": "post-GUI-native-oracle-test-only-correction",
+  "file": "rust/crates/bello-agent-core/tests/project_skills_native.rs",
+  "build_sha256": "132951aed11968ddd17b259c818f4cba29beb629e21f82f814af116ce69e854a",
+  "final_stage_sha256": "77179c390fe95a5970c862d52e3e2cbe4e59be67dbcd49c71f7990bf5e8d486b",
+  "added_nonblank_support_lines": 61,
+  "production_changed": false,
+  "reason": "Relocate main exact source oracle fixtures outside Darwin /var alias; add separate same-file alias characterization without asserting cross-language path-ID or expansion parity.",
+  "execution": "macOS CI pending; not included in earlier Linux or GUI evidence",
+  "review": "Root reviewed and approved structure plus focused native CI --nocapture command."
+}

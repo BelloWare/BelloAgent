@@ -223,6 +223,8 @@ pub struct McpStatus {
 pub struct McpManager {
     project: SavedProject,
     configuration: RwLock<LoadedMcp>,
+    configuration_identity: String,
+    configuration_generation: std::sync::atomic::AtomicU64,
     gate: Arc<Mutex<()>>,
     servers: Mutex<BTreeMap<String, Server>>,
     editing_gate: Arc<Mutex<()>>,
@@ -269,6 +271,8 @@ impl McpManager {
             project: loaded.project.clone(),
             servers: Mutex::new(server_map(&loaded)),
             configuration: RwLock::new(loaded),
+            configuration_identity: uuid::Uuid::new_v4().to_string(),
+            configuration_generation: std::sync::atomic::AtomicU64::new(0),
             gate: Arc::new(Mutex::new(())),
             editing_gate,
             ledger,
@@ -293,6 +297,8 @@ impl McpManager {
             project: loaded.project.clone(),
             servers: Mutex::new(server_map(&loaded)),
             configuration: RwLock::new(loaded),
+            configuration_identity: uuid::Uuid::new_v4().to_string(),
+            configuration_generation: std::sync::atomic::AtomicU64::new(0),
             gate: self.gate.clone(),
             editing_gate: self.editing_gate.clone(),
             ledger: self.ledger.clone(),
@@ -316,6 +322,52 @@ impl McpManager {
         self.configuration
             .try_read()
             .is_ok_and(|current| current.same_configuration(loaded))
+    }
+    /// Presence-only immutable names, without networking, server initialization,
+    /// tool gates or header exposure. Full confirmation is outside the lock.
+    pub(crate) fn configured_names_snapshot(&self, confirm: bool) -> Result<(Vec<String>, String)> {
+        use std::sync::atomic::Ordering;
+        let (loaded, generation) = {
+            let loaded = self
+                .configuration
+                .try_read()
+                .map_err(|_| invalid("MCP configuration is changing"))?;
+            let generation = self.configuration_generation.load(Ordering::Acquire);
+            if !confirm {
+                let names = loaded
+                    .configuration
+                    .servers
+                    .iter()
+                    .filter(|(_, server)| server.enabled)
+                    .map(|(name, _)| name.clone())
+                    .collect();
+                return Ok((
+                    names,
+                    format!("{}:{generation}", self.configuration_identity),
+                ));
+            }
+            (loaded.clone(), generation)
+        };
+        if confirm {
+            loaded
+                .confirm()
+                .map_err(|_| invalid("MCP dependency configuration changed"))?;
+        }
+        let names = loaded
+            .configuration
+            .servers
+            .iter()
+            .filter(|(_, server)| server.enabled)
+            .map(|(name, _)| name.clone())
+            .collect();
+        let revision = format!("{}:{generation}", self.configuration_identity);
+        if !self.configuration.try_read().is_ok_and(|current| {
+            current.same_configuration(&loaded)
+                && generation == self.configuration_generation.load(Ordering::Acquire)
+        }) {
+            return Err(invalid("MCP dependency configuration changed"));
+        }
+        Ok((names, revision))
     }
     pub fn status(&self) -> McpStatus {
         let gate = self.gate.try_lock().ok();
@@ -768,11 +820,15 @@ impl McpConfigurationChange {
                     return Err(crate::Error::Cancelled);
                 }
                 *self.manager.servers.lock().await = server_map(&loaded);
-                *self
+                let mut configuration = self
                     .manager
                     .configuration
                     .write()
-                    .map_err(|_| invalid("MCP configuration is unavailable"))? = loaded;
+                    .map_err(|_| invalid("MCP configuration is unavailable"))?;
+                *configuration = loaded;
+                self.manager
+                    .configuration_generation
+                    .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
                 Ok(())
             })
             .await

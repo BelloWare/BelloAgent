@@ -330,6 +330,7 @@ mod tests {
 
     pub(super) fn message(id: &str) -> Message {
         Message {
+            task_root_id: None,
             user_content: None,
             id: id.into(),
             role: "assistant".into(),

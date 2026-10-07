@@ -8,10 +8,14 @@ pub mod instructions;
 pub mod mcp;
 pub mod profile;
 pub mod project_authority;
+pub mod project_resources;
 pub mod provider;
 pub mod runtime;
 pub mod saved_runtime;
 pub mod session;
+mod skill_metadata;
+mod skill_schema;
+pub mod skills;
 pub mod sse;
 mod stream_journal;
 #[cfg(feature = "synthetic-authority")]

@@ -19,12 +19,14 @@ fn fixture(d: &Path) -> (WorkspaceStore, ChatRecord, DraftRecord, SubmissionInte
         d.join("chat.json"),
     );
     let draft = DraftRecord {
+        skills: Vec::new(),
         revision: 1,
         text: String::new(),
         queued_edit: None,
         attachments: records(1),
     };
     let intent = SubmissionIntent {
+        skills: Vec::new(),
         id: Uuid::new_v4().to_string(),
         chat_id: chat.id.clone(),
         text: String::new(),
@@ -50,7 +52,7 @@ fn image_only_receipt_and_draft_clear_have_one_owner_at_each_rename_boundary() {
         }
         drop(store);
         let restored = WorkspaceStore::open(&path, d.path()).unwrap().snapshot();
-        assert_eq!(restored.version, 8);
+        assert_eq!(restored.version, 9);
         assert_eq!(restored.intents.contains_key(&intent.id), committed);
         if committed {
             assert!(restored.drafts[&chat.id].is_empty());

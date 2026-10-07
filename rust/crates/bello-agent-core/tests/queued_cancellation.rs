@@ -41,6 +41,7 @@ fn fixture(retain_rewrite: bool) -> Fixture {
         archived_at: None,
     };
     let draft = DraftRecord {
+        skills: Vec::new(),
         attachments: Vec::new(),
         revision: 8,
         text: "displaced ordinary draft".into(),
@@ -237,6 +238,7 @@ fn owned_live_cancel_discards_its_rewrite_but_keeps_the_ordinary_draft() {
         .resolve_edit("held-edit", "cancelled", None)
         .unwrap();
     let restored = DraftRecord {
+        skills: Vec::new(),
         attachments: Vec::new(),
         revision: draft.revision.checked_add(1).unwrap(),
         text: draft.text.clone(),
@@ -268,6 +270,7 @@ fn cancelling_an_abandoned_identity_does_not_erase_a_different_held_edit() {
         QueuedCancelReceipt::pending(0, "abandoned-before-begin".into(), "old-turn".into())
             .unwrap();
     let ordinary = DraftRecord {
+        skills: Vec::new(),
         attachments: Vec::new(),
         revision: draft.revision + 1,
         text: "ordinary pending adoption".into(),

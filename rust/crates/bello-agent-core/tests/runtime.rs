@@ -228,7 +228,7 @@ fn live_unoffered_call_fails_once_and_reopens_without_execution_or_resubmission(
     let reopened = SessionStore::open(&path).unwrap().snapshot();
     assert_eq!(reopened.state, RunState::Error);
     assert_eq!(reopened.messages.len(), snapshot.messages.len());
-    assert_eq!(reopened.version, 2);
+    assert_eq!(reopened.version, 8);
     finished.send(()).unwrap();
     server.join().unwrap();
 }
@@ -291,7 +291,7 @@ fn stopping_streamed_call_arguments_never_creates_executable_history() {
         "waiting for terminal"
     );
     assert!(reopened.queue_paused);
-    assert_eq!(reopened.version, 2);
+    assert_eq!(reopened.version, 8);
     finished.send(()).unwrap();
     server.join().unwrap();
 }
@@ -788,6 +788,7 @@ fn reordered_queue_reopens_with_each_captured_model_effort_and_full_text() {
         .transact(|session| {
             for (id, text, model, effort) in rows {
                 session.submit(Submission {
+                    frozen_skills: Vec::new(),
                     attachments: Vec::new(),
                     id: id.into(),
                     text: text.into(),
@@ -927,6 +928,7 @@ fn rejected_reorder_without_a_worker_preserves_publication_counter() {
 fn paused_resume_fixture(path: &std::path::Path) -> (SessionStore, Vec<Submission>) {
     let items = vec![
         Submission {
+            frozen_skills: Vec::new(),
             attachments: Vec::new(),
             id: "resume-first".into(),
             text: "first persisted follow-up".into(),
@@ -935,6 +937,7 @@ fn paused_resume_fixture(path: &std::path::Path) -> (SessionStore, Vec<Submissio
             effort: Some("low".into()),
         },
         Submission {
+            frozen_skills: Vec::new(),
             attachments: Vec::new(),
             id: "resume-middle".into(),
             text: format!("{}\nfull persisted follow-up 🦋", "x".repeat(2048)),
@@ -943,6 +946,7 @@ fn paused_resume_fixture(path: &std::path::Path) -> (SessionStore, Vec<Submissio
             effort: Some("medium".into()),
         },
         Submission {
+            frozen_skills: Vec::new(),
             attachments: Vec::new(),
             id: "resume-last".into(),
             text: "last persisted follow-up".into(),

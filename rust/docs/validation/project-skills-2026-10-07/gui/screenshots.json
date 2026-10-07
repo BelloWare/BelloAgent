@@ -1,0 +1,93 @@
+[
+  {
+    "path": "skills/screenshots/15-latest-queued-alpha.jpg",
+    "bytes": 52161,
+    "sha256": "0a419acc793824b8c55251b91237cc82738de39195588d5e6519894c61e0fcc0",
+    "utc": "2026-10-07T14:46:04.517Z",
+    "binary_sha256": "19588b1d3652f622b3be5d8a73dc4c339b2ae95e81d63529cc3331738fdda586"
+  },
+  {
+    "path": "skills/screenshots/18-active-context-captured-queued-exclusion.jpg",
+    "bytes": 127855,
+    "sha256": "9ef174a3c93dc31bd2d5d644629d41b45623dbd97ea7d836878abba7e996c1eb",
+    "utc": "2026-10-07T14:47:45.142Z",
+    "binary_sha256": "19588b1d3652f622b3be5d8a73dc4c339b2ae95e81d63529cc3331738fdda586"
+  },
+  {
+    "path": "skills/screenshots/19-policy-revocation-pauses-queued-selection.jpg",
+    "bytes": 65048,
+    "sha256": "3120fa8cfd75bc77b189d9aaf0346d36fc8abc911e49743b34b3880c16361800",
+    "utc": "2026-10-07T14:50:16.965Z",
+    "binary_sha256": "19588b1d3652f622b3be5d8a73dc4c339b2ae95e81d63529cc3331738fdda586"
+  },
+  {
+    "path": "skills/screenshots/20-held-skill-edit-parks-ordinary-draft.jpg",
+    "bytes": 70831,
+    "sha256": "d737b869304bc690cb1e9c473eaf96d65471c6cdc08fde415178fcf4597749e9",
+    "utc": "2026-10-07T14:51:02.133Z",
+    "binary_sha256": "19588b1d3652f622b3be5d8a73dc4c339b2ae95e81d63529cc3331738fdda586"
+  },
+  {
+    "path": "skills/screenshots/21-cancel-restores-ordinary-skill.jpg",
+    "bytes": 67322,
+    "sha256": "ad6d5761c363bbc47be5512a3e5e04662eaedabb1b81407130de73711e38095e",
+    "utc": "2026-10-07T14:51:11.478Z",
+    "binary_sha256": "19588b1d3652f622b3be5d8a73dc4c339b2ae95e81d63529cc3331738fdda586"
+  },
+  {
+    "path": "skills/screenshots/25-retry-after-source-deletion.jpg",
+    "bytes": 60600,
+    "sha256": "94cfd289cba1cf793db22d5c5b354f8633ff328d879c67a946e9234ce3adf5e1",
+    "utc": "2026-10-07T14:52:25.577Z",
+    "binary_sha256": "19588b1d3652f622b3be5d8a73dc4c339b2ae95e81d63529cc3331738fdda586"
+  },
+  {
+    "path": "skills/screenshots/26-same-process-project-trust-reload.jpg",
+    "bytes": 76681,
+    "sha256": "bdfec1d6b1f5f5e3d3b03215bdcaa9d34800c6cbf30144e9d4ab410fbbf31dc1",
+    "utc": "2026-10-07T14:54:05.413Z",
+    "binary_sha256": "19588b1d3652f622b3be5d8a73dc4c339b2ae95e81d63529cc3331738fdda586"
+  },
+  {
+    "path": "compaction/screenshots/30-steering-real-tool-and-large-continuation.jpg",
+    "bytes": 94312,
+    "sha256": "8c35037845f598139d3d187260190a809f338ca85209f71c8d0e8ea46ba6b431",
+    "utc": "2026-10-07T15:05:59.328Z",
+    "binary_sha256": "19588b1d3652f622b3be5d8a73dc4c339b2ae95e81d63529cc3331738fdda586"
+  },
+  {
+    "path": "compaction/screenshots/31-compaction-summary-completed.jpg",
+    "bytes": 126624,
+    "sha256": "4fdb0d7e87bdc9567d9c6dca47e2e7dd9aa0674449a24847a6ddb188bcaeadcb",
+    "utc": "2026-10-07T15:07:16.785Z",
+    "binary_sha256": "19588b1d3652f622b3be5d8a73dc4c339b2ae95e81d63529cc3331738fdda586"
+  },
+  {
+    "path": "compaction/screenshots/32-post-compaction-continuation.jpg",
+    "bytes": 105671,
+    "sha256": "b467d7f74995b29d545b0d2497fc5bbeef4c0372d38d2fa2a113d69faa55fc44",
+    "utc": "2026-10-07T15:08:07.137Z",
+    "binary_sha256": "19588b1d3652f622b3be5d8a73dc4c339b2ae95e81d63529cc3331738fdda586"
+  },
+  {
+    "path": "mcp/screenshots/27-mcp-one-invocation-completed.jpg",
+    "bytes": 101650,
+    "sha256": "cc68dabc448bf7813fccf7a610d29696bbd5cc1caa552c7c3b52499dd46aea7d",
+    "utc": "2026-10-07T15:01:09.585Z",
+    "binary_sha256": "19588b1d3652f622b3be5d8a73dc4c339b2ae95e81d63529cc3331738fdda586"
+  },
+  {
+    "path": "mcp/screenshots/28-mcp-reload-retained-result.jpg",
+    "bytes": 101759,
+    "sha256": "5abb8a584188f0f2fa2dbfcddedbb049faf30cf164750744ae46fc0b1a3ab487",
+    "utc": "2026-10-07T15:01:29.590Z",
+    "binary_sha256": "19588b1d3652f622b3be5d8a73dc4c339b2ae95e81d63529cc3331738fdda586"
+  },
+  {
+    "path": "mcp/screenshots/29-mcp-reloaded-output-bytes.jpg",
+    "bytes": 99556,
+    "sha256": "59604b96e704e7d100fb263c13780069062c749700a539206e2340e8471f7537",
+    "utc": "2026-10-07T15:01:30.070Z",
+    "binary_sha256": "19588b1d3652f622b3be5d8a73dc4c339b2ae95e81d63529cc3331738fdda586"
+  }
+]

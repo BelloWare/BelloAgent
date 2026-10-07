@@ -1,5 +1,6 @@
 //! Picker metadata and bounded attachment acquisition. Metadata can survive file
-//! deletion; only delivery reads files. No image bytes belong in a catalog draft.
+//! deletion; selection, acceptance and delivery read/recheck files.
+//! No image bytes belong in a catalog draft.
 use crate::{Error, Result, invalid};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};

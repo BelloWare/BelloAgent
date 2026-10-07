@@ -99,11 +99,11 @@ Native UI paths begin `apps/macos/PiApp/` (abbreviated `App/`).
 | Durable queued editing | Core/SessionQueueEdit.swift | Implemented hold/save/cancel/remove and idempotent identity subset. Both lanes held, restart retains hold; tests. Source revision-basis/outcome pruning not ported |
 | Queued follow-up promotion | Core/SessionQueue.swift steerQueued; App/Workspaces/QueuePanel.swift | Implemented pending follow-up → steering action, same identity/payload/choices and durable lane order. Active worker, edit-hold and persistence guards apply. Rust delivery remains at the current response boundary; production tool-batch parity is still missing. Validation recorded below |
 | Queue presentation | App/Workspaces/QueuePanel.swift | Partial. Bounded/collapsible panel, truthful timing, stable lane grouping, full-text editing, and per-chat full-message/model-choice popover. Durable follow-up drag reorder and measured adaptive room budgeting are implemented below; source 52pt floor and wrapped-footer adaptation are explicit. Native macOS interaction validation remains pending |
-| Images/attachments/image-only submissions | Core/PiImage.swift; App/Composer/Attachments.swift; Core/SessionQueue.swift validate | Unported. Attachment control unavailable; transport currently accepts text only |
+| Images/attachments/image-only submissions | Core/PiImage.swift; App/Composer/Attachments.swift; Core/SessionQueue.swift validate | Project picker and ordered retained images implemented through normal saved runtime with synthetic acceptance; native production gates remain separate. See picker/images validation |
 | Built-in tool definitions/execution | Core/Tools.swift; Core/SessionTools.swift; Core/SessionRun.swift | Production unported. Fixture-only ls module + bounded/cancellable executor now implemented; no tool definitions sent or executed by Controller, no fabricated result |
 | MCP lifecycle/invocation | Core/MCP.swift; Core/HostService.swift mcp.* | Unported |
-| Skills and resource resolution | Core/Resources.swift; Core/HostService.swift resources.* | Unported |
-| Project instructions and instruction precedence | Core/Resources.swift; Core/SessionRun.swift; Core/HostService.swift | Missing in production. Provider supports an instructions argument, but runtime.rs passes an empty string; no project instruction discovery or skills UI is implied |
+| Skills and resource resolution | Core/Resources.swift; Core/HostService.swift resources.* | Project-only explicit picker, bounded metadata/discovery, literal arguments, frozen queue input and retained replay implemented. Home/config discovery, leading commands and full native token UX remain deferred |
+| Project instructions and instruction precedence | Core/Resources.swift; Core/SessionRun.swift; Core/HostService.swift | Normal SavedRuntimeFactory composes project-only instructions/resources per delivery, retaining applied instructions for active turns and same-controller Retry. No home/config/credential discovery; ordinary production startup remains gated |
 | Compaction / context preview | Core/SessionCompaction.swift; Core/CompactionPlanner.swift; Core/ContextPreview.swift | Unported; no claim that local context budgeting is complete |
 | Historical message edits/versions | Core/SessionVersions.swift; Core/EditReplayPlan.swift; Core/MessageVersions.swift | Unported |
 | Branch/fork/side conversations | Core/SessionBranching.swift; Core/SessionSide.swift; Core/SessionPersistence.swift | Unported |
@@ -2148,3 +2148,53 @@ and exact published CI are recorded separately before completion is claimed.
 No production/native vault, signing, real-credential or native macOS UI gate was
 opened. See [the workflow contract](project-mcp-workflow.md) and
 [Inspector scope](mcp-project-inspector.md).
+
+
+## Project-only picker skills (2026-10-07)
+
+This checkpoint supersedes the earlier disconnected-resource and selected-skill
+limitations above. One normal saved-runtime input path freezes explicit picker
+selections and prepares images outside the actor, retaining physical worker
+ownership through Stop, dropped awaiters and retirement. Fresh acceptance checks
+both source hashes; queued delivery checks metadata/policy/dependencies and keeps
+the originally accepted body. The exact Swift metadata hash formula is preserved,
+including its no-frontmatter body sensitivity. A separate Rust body digest checks
+persisted stripped-body integrity. The resource content revision is local;
+controller/configuration/dependency scope remains a separate typed binding.
+
+The composer persists ordered metadata-only chips, supports separate literal
+arguments, and keeps ordinary chips parked while editing queued text. Recovery
+stores up to sixteen exact selection variants, while a fresh Send still permits
+only eight unique skill identities. Skill-only, text+skill and skill+image history
+retain the single ordered provider-content projection alongside raw Copy text.
+Retry never reloads delivered skill bodies/images; reopening refreshes project
+resources separately. Context freezes an idle draft without sending or persisting,
+and uses applied resources while active. Compaction protects the latest user row
+when unanswered or skill-bearing plus every skill-bearing row of the current
+task; a later unrelated task releases older carriers. Unknown/noncontiguous
+provenance fails closed, and repeated checkpoints preserve exact carrier order.
+
+Schema promotion is snapshot v8 for newly delivered task roots/skills and catalog
+v9 for skill drafts/receipts. Existing v1–v7 snapshots and v1–v8 catalogs retain
+read-only opening behavior; new fields mislabeled with old versions are refused
+without rewriting. The source-derived expanded-text limit is separate from raw
+256 KiB draft text. Actual bounded JSON writers enforce 32 MiB skill-bearing
+UserContent, unchanged 20 MiB image-only UserContent, unchanged 32 MiB final
+request, and unchanged 256 MiB snapshot bounds. Individually legal inputs can
+still exceed the complete request bound and are retained for explicit recovery.
+
+Portable acceptance uses generated projects, fake saved credentials, loopback
+providers/MCP and real GPUI controls. The Apple oracle compiles checked-in Swift
+Resources, MetadataYAML, SessionContext expansion and CompactionPlanner selection
+logic against the same disposable fixtures. Linux tests are not native oracle
+execution. Explicit documented parser differences fail more conservatively for
+inline duplicate JSON keys, trailing commas and combined nesting. See the
+[oracle contract](validation/project-skills-native-oracle.md) and
+[GUI fixture recipe](project-skills-gui-fixture.md).
+The [checkpoint validation record](validation/project-skills-2026-10-07.md)
+separates completed portable/actual-cloud-GUI evidence from pending Apple gates,
+including the explicit Darwin path-derived identity compatibility gap.
+
+No home/auth/config discovery, script execution, implicit slash selection,
+dependency installation, additional tool grants, production gate lifting, owner
+Mac acceptance, real credentials/provider spend, release or signing is included.

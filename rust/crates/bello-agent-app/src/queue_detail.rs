@@ -28,8 +28,25 @@ fn content(session: &Session, chat_id: &str, turn_id: &str) -> Option<Content> {
         } else {
             "Follow-up"
         },
-        text: crate::composer_attachments::input_label(&item.text, item.attachments.len())
-            .into_owned(),
+        text: {
+            let text = crate::composer_skills::submission_label(item).into_owned();
+            if item.frozen_skills.is_empty() {
+                text
+            } else {
+                format!(
+                    "{}\n\nCaptured skills (unchanged by text edits):\n{}",
+                    text,
+                    item.frozen_skills
+                        .iter()
+                        .map(|skill| format!(
+                            "/{}\n{}\nArguments: {}",
+                            skill.name, skill.path, skill.arguments
+                        ))
+                        .collect::<Vec<_>>()
+                        .join("\n\n")
+                )
+            }
+        },
         model: item
             .model
             .clone()

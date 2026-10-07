@@ -124,6 +124,7 @@ impl Fixture {
             .lock()
             .unwrap()
             .begin_submission(SubmissionIntent {
+                skills: Vec::new(),
                 attachments: Vec::new(),
                 id: item.id.clone(),
                 chat_id: record.id.clone(),
@@ -620,7 +621,7 @@ async fn actual_controller_wrapper_failed_images_structured_replay_and_reopen() 
         .await;
     settled(&actor).await;
     let snapshot = actor.snapshot();
-    assert_eq!(snapshot.version, 6);
+    assert_eq!(snapshot.version, 8);
     // V6 is narrow: only a matching MCP owner can retain an explicit Failed
     // result. It never legitimizes an unknown or mispaired payload.
     for mutation in [
@@ -679,7 +680,7 @@ async fn actual_controller_wrapper_failed_images_structured_replay_and_reopen() 
         .find(|r| r.id == record.id)
         .unwrap();
     let reopened = f.factory.open_registered(&saved).unwrap();
-    assert_eq!(reopened.snapshot().version, 6);
+    assert_eq!(reopened.snapshot().version, 8);
     assert_eq!(mcp.calls.load(Ordering::SeqCst), 1);
     assert_eq!(
         mcp.requests

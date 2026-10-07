@@ -19,12 +19,12 @@ pub(super) struct AttachmentJobs {
     pending: Mutex<std::collections::BTreeMap<u64, CancellationToken>>,
     released: tokio::sync::Notify,
 }
-struct AttachmentJob {
+pub(super) struct AttachmentJob {
     owner: Arc<AttachmentJobs>,
     id: u64,
 }
 impl AttachmentJobs {
-    fn register(self: &Arc<Self>, token: CancellationToken) -> Result<AttachmentJob> {
+    pub(super) fn register(self: &Arc<Self>, token: CancellationToken) -> Result<AttachmentJob> {
         let mut id = self.next.load(Ordering::Acquire);
         loop {
             let next = id
@@ -124,7 +124,18 @@ impl Controller {
                 "Submission receipt belongs to another chat or has invalid identity",
             ));
         }
-        crate::session::validate_input(&intent.text, &intent.attachments)?;
+        crate::skills::validate_chips(&intent.skills, 8)?;
+        crate::session::validate_skill_input(
+            &intent.text,
+            &intent.attachments,
+            !intent.skills.is_empty(),
+        )?;
+        let selections = intent
+            .skills
+            .iter()
+            .map(|chip| chip.selection.clone())
+            .collect::<Vec<_>>();
+        crate::skills::validate_selections(&selections)?;
         let mut found = false;
         for row in session.messages.iter().filter(|row| row.id == intent.id) {
             let attachments = row
@@ -132,7 +143,22 @@ impl Controller {
                 .as_ref()
                 .map(|content| content.attachments.as_slice())
                 .unwrap_or(&[]);
-            if row.role != "user" || row.text != intent.text || attachments != intent.attachments {
+            let skills = row
+                .user_content
+                .as_ref()
+                .map(|content| {
+                    content
+                        .skills
+                        .iter()
+                        .map(|skill| skill.selection.clone())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            if row.role != "user"
+                || row.text != intent.text
+                || attachments != intent.attachments
+                || skills != selections
+            {
                 return Err(invalid(
                     "Accepted submission conflicts with its recovery receipt; review before sending again",
                 ));
@@ -146,7 +172,15 @@ impl Controller {
             .chain(session.retry.iter())
             .filter(|item| item.id == intent.id)
         {
-            if item.text != intent.text || item.attachments != intent.attachments {
+            if item.text != intent.text
+                || item.attachments != intent.attachments
+                || item
+                    .frozen_skills
+                    .iter()
+                    .map(|skill| skill.selection())
+                    .collect::<Vec<_>>()
+                    != selections
+            {
                 return Err(invalid(
                     "Accepted submission conflicts with its recovery receipt; review before sending again",
                 ));
@@ -190,11 +224,11 @@ impl Controller {
         acceptance: bool,
     ) -> Result<Option<PreparedUserInput>> {
         crate::session::validate_submission(item)?;
-        if item.attachments.is_empty() {
+        if item.attachments.is_empty() && item.frozen_skills.is_empty() {
             return Ok(None);
         }
         let profile = super::tool_runtime::effective_profile(&config.profile, Some(item));
-        if !profile.supports_images() {
+        if !item.attachments.is_empty() && !profile.supports_images() {
             return Err(invalid(crate::attachments::IMAGES_UNSUPPORTED));
         }
         let fixture = self.use_fixture_images(config);
@@ -236,8 +270,7 @@ impl Controller {
                             crate::tools::attachment_images::process(bytes, mime, token)
                         },
                     )?;
-                    let content =
-                        UserContent::new(&captured.text, captured.attachments.clone(), blocks)?;
+                    let content = UserContent::from_submission(&captured, blocks)?;
                     if acceptance && content.image_count() != captured.attachments.len() {
                         return Err(invalid(
                             "An image could not be prepared for the model; select another",
@@ -261,9 +294,33 @@ impl Controller {
     /// place until every file worker has returned and actor admission is rechecked.
     pub async fn submit_identified_with_attachments(
         self: &Arc<Self>,
-        mut item: Submission,
+        item: Submission,
     ) -> Result<()> {
-        if item.attachments.is_empty() {
+        self.submit_identified_with_inputs(item, Vec::new()).await
+    }
+    pub async fn submit_identified_with_inputs(
+        self: &Arc<Self>,
+        mut item: Submission,
+        selections: Vec<crate::skills::SkillSelection>,
+    ) -> Result<()> {
+        if !item.frozen_skills.is_empty() {
+            return Err(invalid("Fresh admission cannot supply frozen skill bodies"));
+        }
+        crate::skills::validate_selections(&selections)?;
+        if selections
+            .iter()
+            .any(|selection| selection.intent != crate::skills::SkillIntent::Picker)
+        {
+            return Err(invalid(
+                "This workflow accepts explicit picker selections only",
+            ));
+        }
+        crate::session::validate_skill_input(
+            &item.text,
+            &item.attachments,
+            !selections.is_empty(),
+        )?;
+        if item.attachments.is_empty() && selections.is_empty() {
             return self.submit_identified(item);
         }
         let stop = self.stop_epoch.load(Ordering::Acquire);
@@ -275,11 +332,30 @@ impl Controller {
             .ok_or_else(|| invalid("No connection configured"))?;
         item.model = Some(config.profile.model_id.clone());
         item.effort = Some(config.profile.thinking_level.clone());
-        self.prepare_user_input(&item, &config, CancellationToken::new(), true)
+        let cancel = CancellationToken::new();
+        let (frozen, mut resource_snapshot) = self
+            .freeze_submission_skills(item, &selections, &config, cancel.clone())
             .await?;
+        item = frozen;
+        self.prepare_user_input(&item, &config, cancel.clone(), true)
+            .await?;
+        if resource_snapshot.is_some() {
+            let current = self
+                .prepare_project_snapshot(&config, None, cancel)
+                .await?
+                .ok_or_else(|| invalid("Project skills are unavailable"))?;
+            if current.freeze(&selections)? != item.frozen_skills {
+                return Err(invalid(
+                    "Selected skills changed before acceptance; refresh and select them again",
+                ));
+            }
+            resource_snapshot = Some(current);
+        }
         // Native preparation can outlive a vault/catalog change. Repeat full
         // confirmation outside the actor, then bind both captured generations.
         let reconfirmed = self.confirm_resources()?;
+        #[cfg(test)]
+        self.pause_input_commit_for_test("acceptance").await;
         let mut inner = self
             .inner
             .lock()
@@ -297,6 +373,14 @@ impl Controller {
             return Err(invalid(error.clone()));
         }
         inner.store.require_certain()?;
+        if resource_snapshot
+            .as_ref()
+            .is_some_and(|snapshot| !self.project_skills_catalog_current(snapshot))
+        {
+            return Err(invalid(
+                "Skill scope changed before acceptance; input was not accepted",
+            ));
+        }
         if self.authority.is_some() && !inner.store.is_persistent() {
             return Err(invalid("Materialize this saved chat before sending"));
         }
@@ -338,6 +422,14 @@ impl Controller {
             };
             let (candidate, config, generation, stop, cancel) = captured;
             let prepared = async {
+                let resources = self
+                    .prepare_delivery_resources(
+                        &candidate,
+                        &config,
+                        first.is_some(),
+                        cancel.clone(),
+                    )
+                    .await?;
                 let content = if first.is_none() {
                     self.prepare_user_input(&candidate, &config, cancel.clone(), false)
                         .await?
@@ -346,9 +438,27 @@ impl Controller {
                 };
                 config.confirm_for_request().await?;
                 self.confirm_runtime_authority(cancel.clone()).await?;
-                Ok(content)
+                self.confirm_dependency_snapshot(resources.as_ref())?;
+                let mut projection = self
+                    .inner
+                    .lock()
+                    .map_err(|_| invalid("Session is unavailable"))?
+                    .store
+                    .snapshot();
+                if first.is_none() {
+                    projection.start_next_with_content(content.clone())?;
+                }
+                self.validate_prepared_request(
+                    &candidate,
+                    &projection.messages,
+                    &config,
+                    resources.as_ref(),
+                )?;
+                Ok((content, resources))
             }
             .await;
+            #[cfg(test)]
+            self.pause_input_commit_for_test("delivery").await;
             let admitted = {
                 let mut inner = self.inner.lock().expect("session mutex poisoned");
                 let changed = generation != self.suspension_generation.load(Ordering::Acquire)
@@ -383,15 +493,24 @@ impl Controller {
                         return;
                     }
                 };
+                if prepared
+                    .1
+                    .as_ref()
+                    .is_some_and(|applied| !self.project_skills_catalog_current(&applied.snapshot))
+                {
+                    self.image_delivery_failure(&mut inner, invalid("Skill scope or dependencies changed before delivery; queued input is retained"));
+                    return;
+                }
                 let next = if let Some(item) = first.take() {
                     Ok(Some(item))
                 } else {
                     inner
                         .store
-                        .transact(|session| session.start_next_with_content(prepared))
+                        .transact(|session| session.start_next_with_content(prepared.0))
                 };
                 match next {
                     Ok(Some(item)) => {
+                        inner.applied_project = prepared.1;
                         self.publish(&inner);
                         Some((item, inner.store.snapshot()))
                     }
@@ -476,16 +595,46 @@ impl Controller {
             )
         };
         let prepared = if let Some(item) = &candidate {
-            self.prepare_user_input(item, &config, cancel.clone(), false)
-                .await
+            async {
+                let resources = self
+                    .prepare_delivery_resources(item, &config, false, cancel.clone())
+                    .await?;
+                let content = self
+                    .prepare_user_input(item, &config, cancel.clone(), false)
+                    .await?;
+                self.confirm_dependency_snapshot(resources.as_ref())?;
+                let mut projection = self
+                    .inner
+                    .lock()
+                    .map_err(|_| invalid("Session is unavailable"))?
+                    .store
+                    .snapshot();
+                projection.settle_tools_with_prepared_steering(
+                    reply,
+                    results.clone(),
+                    false,
+                    Some(&item.id),
+                    content.clone(),
+                )?;
+                self.validate_prepared_request(
+                    item,
+                    &projection.messages,
+                    &config,
+                    resources.as_ref(),
+                )?;
+                Ok((content, resources))
+            }
+            .await
         } else {
-            Ok(None)
+            Ok((None, None))
         };
         let confirmation = async {
             config.confirm_for_request().await?;
             self.confirm_runtime_authority(cancel.clone()).await
         }
         .await;
+        #[cfg(test)]
+        self.pause_input_commit_for_test("steering").await;
         let mut inner = self.inner.lock().expect("session mutex poisoned");
         let changed = generation != self.suspension_generation.load(Ordering::Acquire)
             || stop != self.stop_epoch.load(Ordering::Acquire)
@@ -505,15 +654,25 @@ impl Controller {
             steering_candidate(inner.store.snapshot_ref())
                 .is_some_and(|now| same_submission(captured, now))
         });
-        let prepared = match prepared {
+        let (prepared, applied) = match prepared {
             Ok(value) => value,
             Err(failure) => {
                 if current.is_some() && error.is_none() {
                     error = Some(failure);
                 }
-                None
+                (None, None)
             }
         };
+        if current.is_some()
+            && error.is_none()
+            && applied
+                .as_ref()
+                .is_some_and(|applied| !self.project_skills_catalog_current(&applied.snapshot))
+        {
+            error = Some(invalid(
+                "Skill scope or dependencies changed before steering delivery",
+            ));
+        }
         let steering = current.map(|item| item.id.as_str());
         let stopped = error.is_some();
         let outcome = inner.store.transact(|session| {
@@ -528,6 +687,9 @@ impl Controller {
             inner.fatal = Some(error.to_string());
             self.publish(&inner);
             return None;
+        }
+        if !stopped && current.is_some() {
+            inner.applied_project = applied;
         }
         self.publish(&inner);
         let session = inner.store.snapshot();

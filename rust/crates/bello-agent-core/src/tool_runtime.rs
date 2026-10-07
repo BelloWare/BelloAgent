@@ -175,6 +175,7 @@ impl ToolResultRow {
 
 fn message(role: &str, text: String, model: Option<String>) -> Message {
     Message {
+        task_root_id: None,
         user_content: None,
         id: Uuid::new_v4().to_string(),
         role: role.into(),
@@ -334,9 +335,24 @@ impl Session {
                 .iter()
                 .position(|item| item.lane == Lane::Steering && Some(item.id.as_str()) == steering)
         {
+            let root = self
+                .messages
+                .iter()
+                .find(|row| row.role == "user" && row.id == item.id)
+                .and_then(|row| row.task_root_id.clone())
+                .unwrap_or_else(|| item.id.clone());
+            self.version = self.version.max(8);
+            if let Some(row) = self
+                .messages
+                .iter_mut()
+                .find(|row| row.role == "user" && row.id == root)
+            {
+                row.task_root_id = Some(root.clone());
+            }
             item = self.pending.remove(index);
             let mut user = message("user", item.text.clone(), item.model.clone());
             user.id = item.id.clone();
+            user.task_root_id = Some(root);
             user.user_content = content;
             self.messages.push(user);
         }
@@ -609,6 +625,18 @@ impl Controller {
     }
 
     fn turn_instructions(&self, item: &Submission) -> String {
+        if self.project_resources.is_some() {
+            return self
+                .inner
+                .lock()
+                .expect("session mutex poisoned")
+                .applied_project
+                .as_ref()
+                .filter(|applied| applied.turn_id == item.id)
+                .expect("delivered project turn has applied resources")
+                .instructions
+                .clone();
+        }
         #[cfg(feature = "synthetic-authority")]
         if self.resources.is_some() {
             return self
@@ -1121,7 +1149,7 @@ mod tests {
             .transact(|s| s.begin_tools(&id, &reply(), &profile()))
             .unwrap();
         let batch = store.snapshot();
-        assert_eq!(batch.version, 3);
+        assert_eq!(batch.version, 8);
         assert_eq!(batch.state, RunState::Running);
         // Exact pre-integration v3 reader invariant. It rejects before the
         // existing open path's confirm/recover/write stages can run.

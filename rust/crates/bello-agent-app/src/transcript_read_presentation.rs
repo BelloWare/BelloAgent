@@ -177,6 +177,7 @@ mod tests {
 
     fn fixture(arguments: Value, text: &str, stats: Option<ReadStats>) -> Session {
         let base = Message {
+            task_root_id: None,
             user_content: None,
             id: "owner".into(),
             role: "assistant".into(),

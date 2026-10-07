@@ -87,6 +87,7 @@ impl Fixture {
     fn prepare(&self, record: &ChatRecord, actor: &Arc<Controller>, text: &str) -> Submission {
         let item = Submission::new(text.into(), Lane::FollowUp);
         let intent = SubmissionIntent {
+            skills: Vec::new(),
             attachments: Vec::new(),
             id: item.id.clone(),
             chat_id: record.id.clone(),
@@ -352,6 +353,7 @@ async fn receipt_transition_crash_requires_checkpoint_and_preserves_text() {
         .lock()
         .unwrap()
         .begin_submission(SubmissionIntent {
+            skills: Vec::new(),
             attachments: Vec::new(),
             id: item.id.clone(),
             chat_id: record.id.clone(),
@@ -396,6 +398,7 @@ async fn pending_unexpected_checkpoint_and_wrong_existing_identity_never_mutate_
                 .lock()
                 .unwrap()
                 .begin_submission(SubmissionIntent {
+                    skills: Vec::new(),
                     attachments: Vec::new(),
                     id: uuid::Uuid::new_v4().to_string(),
                     chat_id: record.id.clone(),
@@ -481,11 +484,11 @@ async fn queued_mutation_reconfirms_after_shared_workspace_gate() {
 }
 async fn compaction_actor(f: &Fixture, listener: &TcpListener) -> (ChatRecord, Arc<Controller>) {
     let (record, actor) = f.pending();
-    let item = f.prepare(&record, &actor, &"Objective constraints. ".repeat(1800));
+    let item = f.prepare(&record, &actor, &"Objective constraints. ".repeat(1700));
     actor.submit_identified(item).unwrap();
     Request::accept(listener)
         .await
-        .complete(&"Verified progress evidence. ".repeat(1800))
+        .complete(&"Verified progress evidence. ".repeat(1700))
         .await;
     settled(&actor).await;
     (record, actor)
@@ -834,6 +837,7 @@ async fn saved_factory_image_receipt_delivery_and_reopen_use_the_normal_trusted_
     let mut item = Submission::new(String::new(), Lane::FollowUp);
     item.attachments = vec![crate::attachments::AttachmentRecord::inspect(&source).unwrap()];
     let intent = SubmissionIntent {
+        skills: Vec::new(),
         id: item.id.clone(),
         chat_id: record.id.clone(),
         text: item.text.clone(),
@@ -847,6 +851,7 @@ async fn saved_factory_image_receipt_delivery_and_reopen_use_the_normal_trusted_
             .register(
                 record.clone(),
                 DraftRecord {
+                    skills: Vec::new(),
                     revision: 1,
                     text: String::new(),
                     queued_edit: None,
@@ -896,3 +901,6 @@ async fn saved_factory_image_receipt_delivery_and_reopen_use_the_normal_trusted_
     settled(&reopened).await;
     reopened.retire_and_wait().await.unwrap();
 }
+
+#[path = "saved_runtime_skill_tests.rs"]
+mod skills;

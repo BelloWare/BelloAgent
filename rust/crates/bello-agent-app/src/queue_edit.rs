@@ -267,7 +267,9 @@ impl AgentView {
                     chat.queued_original = None;
                     chat.draft_before_edit.clear();
                     chat.draft_before_edit_attachments.clear();
+                    chat.draft_before_edit_skills.clear();
                     chat.attachments = draft.attachments;
+                    chat.skills = draft.skills;
                     chat.composer
                         .update(cx, |editor, cx| editor.set_text(draft.text, cx));
                     if chat.error.is_none() {

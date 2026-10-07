@@ -256,10 +256,13 @@ async fn mutation_stats_require_v5_and_rejected_older_marker_does_not_rewrite_fi
     store
         .transact(|s| s.settle_tools(&id, vec![result], true))
         .unwrap();
-    assert_eq!(store.snapshot().version, 5);
+    assert_eq!(store.snapshot().version, 8);
     drop(store);
     let mut bytes: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     bytes["version"] = json!(4);
+    for row in bytes["messages"].as_array_mut().unwrap() {
+        row.as_object_mut().unwrap().remove("task_root_id");
+    }
     let bytes = serde_json::to_vec(&bytes).unwrap();
     fs::write(&path, &bytes).unwrap();
     assert!(SessionStore::open(&path).is_err());

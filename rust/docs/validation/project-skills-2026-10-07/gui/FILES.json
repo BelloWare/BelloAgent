@@ -1,0 +1,255 @@
+{
+  "kind": "curated-generated-gui-evidence-v1",
+  "files": [
+    {
+      "path": "PACKAGE-RELOCATION.json",
+      "bytes": 1284,
+      "sha256": "4b2a496677d2cf5c2c21074ef1fc92989777b72e938880b341925a9467e514c8"
+    },
+    {
+      "path": "README.md",
+      "bytes": 4391,
+      "sha256": "f9a7bb0177bba52f509e18e60c254c70e6e8b21d4e6cd6a42be9869d6a4fabab"
+    },
+    {
+      "path": "candidate1/attribution.json",
+      "bytes": 184,
+      "sha256": "805fe2d40dd5da37abfe686ec3e8f8a8e44de2d0ad82deda0a78ff5c44254325"
+    },
+    {
+      "path": "candidate1/screenshots/05-policy-inspection.jpg",
+      "bytes": 86878,
+      "sha256": "f43bf0d42a3ee9f4283e584259ab8c681a498fa43df00e1f9343d27167bd20b4"
+    },
+    {
+      "path": "candidate1/screenshots/07-literal-arguments.jpg",
+      "bytes": 72962,
+      "sha256": "bea9be53cc150cfda3ee4b615359a7ad43b214eedb582a47f3e11f6fafe719da"
+    },
+    {
+      "path": "candidate1/screenshots/08-idle-context-selected-skills.jpg",
+      "bytes": 134368,
+      "sha256": "24d13066345258280fc01178f18ff0f50808fa62250eb814dd42c7f197d5c29a"
+    },
+    {
+      "path": "candidate1/screenshots/12-skill-and-image-delivered.jpg",
+      "bytes": 61545,
+      "sha256": "4d02d37d7c196fc4e7c2a43e2ff64ba93023c830806812d5d86436b40095ebc8"
+    },
+    {
+      "path": "compaction/checkpoints/30-alpha-steering-accepted.json",
+      "bytes": 3691,
+      "sha256": "8c68e186606b48398e4eda16ebba5f9f0122d727e8ce96e1363f64dcceae9581"
+    },
+    {
+      "path": "compaction/checkpoints/31-before-compact.json",
+      "bytes": 40920,
+      "sha256": "086b764dc965e41fb86f03388b5a565ae0fac4fbafceda37cfeff6e7267300a8"
+    },
+    {
+      "path": "compaction/checkpoints/32-compacted.json",
+      "bytes": 42999,
+      "sha256": "3cf8564c2e0508bccdd6b10252d9700338fba0af3b0f1a9a9f5d12d6be589f9b"
+    },
+    {
+      "path": "compaction/checkpoints/33-after-compaction-continuation.json",
+      "bytes": 43475,
+      "sha256": "abe10fd962c8b81e57e6cf648d8b2279ab994588d5620a8891917f1515080380"
+    },
+    {
+      "path": "compaction/fixture-build-binding.json",
+      "bytes": 452,
+      "sha256": "58b779397b1d1668c384e4b42ca2cbbf0278f07946217aee9e5f9a2ff93eee31"
+    },
+    {
+      "path": "compaction/requests/request-0002.json",
+      "bytes": 3817,
+      "sha256": "32e6fbde708ecc4735049c99973bc2ca1bb5e97141961732d30c986ad200ff46"
+    },
+    {
+      "path": "compaction/requests/request-0003.json",
+      "bytes": 42299,
+      "sha256": "e72bc4627d25c1866ff03893d4adc6929ec55b4f937330f29ede75286ef71b6f"
+    },
+    {
+      "path": "compaction/requests/request-0004.json",
+      "bytes": 4319,
+      "sha256": "541e55e8365eb191ab4d108dc67e8fe39b40733b24899fb5cbe573ab6f2f355e"
+    },
+    {
+      "path": "compaction/screenshots/30-steering-real-tool-and-large-continuation.jpg",
+      "bytes": 94312,
+      "sha256": "8c35037845f598139d3d187260190a809f338ca85209f71c8d0e8ea46ba6b431"
+    },
+    {
+      "path": "compaction/screenshots/31-compaction-summary-completed.jpg",
+      "bytes": 126624,
+      "sha256": "4fdb0d7e87bdc9567d9c6dca47e2e7dd9aa0674449a24847a6ddb188bcaeadcb"
+    },
+    {
+      "path": "compaction/screenshots/32-post-compaction-continuation.jpg",
+      "bytes": 105671,
+      "sha256": "b467d7f74995b29d545b0d2497fc5bbeef4c0372d38d2fa2a113d69faa55fc44"
+    },
+    {
+      "path": "compaction/verified-compaction.json",
+      "bytes": 895,
+      "sha256": "d9085718d9a8df4601a0b308ee53b728b4e71a8f7d0eec2fcba9f0033486b1fc"
+    },
+    {
+      "path": "exact-build-manifest.json",
+      "bytes": 40496,
+      "sha256": "65a049a70881b4169bd5ad4e18c7ed2045cb08c9ce8ddcd1e2e5fa88f93712f2"
+    },
+    {
+      "path": "mcp/after-invoke-before-reload.jsonl",
+      "bytes": 492,
+      "sha256": "435cc3ea72bfe514f7b6d63e546c1c70ed5a624e50c1285c6492ed9189445d78"
+    },
+    {
+      "path": "mcp/after-reload.jsonl",
+      "bytes": 492,
+      "sha256": "435cc3ea72bfe514f7b6d63e546c1c70ed5a624e50c1285c6492ed9189445d78"
+    },
+    {
+      "path": "mcp/before-invoke.jsonl",
+      "bytes": 411,
+      "sha256": "94bfba453b469633574f3a36f6006faf9bebd58b97dab55d90f507bc9d8b3333"
+    },
+    {
+      "path": "mcp/retained-mcp-latest-result.json",
+      "bytes": 266,
+      "sha256": "128d72ed2f16043059b3baa2fcc59df54125ca2302a6a5e1a02118f27cac3613"
+    },
+    {
+      "path": "mcp/retained-mcp-outcome.json",
+      "bytes": 75,
+      "sha256": "47be50ce942ff23f42be60915b0fe85a649d07d7e078c705b97958488f301d0e"
+    },
+    {
+      "path": "mcp/screenshots/27-mcp-one-invocation-completed.jpg",
+      "bytes": 101650,
+      "sha256": "cc68dabc448bf7813fccf7a610d29696bbd5cc1caa552c7c3b52499dd46aea7d"
+    },
+    {
+      "path": "mcp/screenshots/28-mcp-reload-retained-result.jpg",
+      "bytes": 101759,
+      "sha256": "5abb8a584188f0f2fa2dbfcddedbb049faf30cf164750744ae46fc0b1a3ab487"
+    },
+    {
+      "path": "mcp/screenshots/29-mcp-reloaded-output-bytes.jpg",
+      "bytes": 99556,
+      "sha256": "59604b96e704e7d100fb263c13780069062c749700a539206e2340e8471f7537"
+    },
+    {
+      "path": "post-build-native-oracle.json",
+      "bytes": 751,
+      "sha256": "d47ef15c896092767ed9c56892807ebf85f1e7756157aafe5e20cc375f09e134"
+    },
+    {
+      "path": "screenshots.json",
+      "bytes": 4053,
+      "sha256": "00a20f0f80ad402bd7776a8287ec9e2497954f8088149c06e8e96d27da177ddc"
+    },
+    {
+      "path": "skills/checkpoints/15-queued-alpha-v1.json",
+      "bytes": 3693,
+      "sha256": "8d465094f68cb290871b220505c231b40cd71c0fea3bfbe830df4972ef5d83bd"
+    },
+    {
+      "path": "skills/checkpoints/17-alpha-v1-delivered-after-v2-source.json",
+      "bytes": 3612,
+      "sha256": "8ac958de72026491079b59b36764b7831e5ad404b4ca126f355cad0891745616"
+    },
+    {
+      "path": "skills/checkpoints/19-policy-paused.json",
+      "bytes": 5001,
+      "sha256": "edde9001d4b22dbe41d39088fb01a33e9a715c988c560c7bc411fe6bd4aac3cc"
+    },
+    {
+      "path": "skills/checkpoints/19-queued-alpha-v2-before-policy.json",
+      "bytes": 5085,
+      "sha256": "22e167686a3af8572cc44e65ae75a3c7e1624df8a99a3407b4c5aeca1cac1e1b"
+    },
+    {
+      "path": "skills/checkpoints/22-empty-held-save.json",
+      "bytes": 5232,
+      "sha256": "b3c8b6bb5f1e57e94a39b37520dd62c249d66aaff61ce502725ba0ee1cbbd65b"
+    },
+    {
+      "path": "skills/checkpoints/24-beta-active-before-stop.json",
+      "bytes": 6795,
+      "sha256": "54d85808d12908fb8b5012b5d989c8bdef914a96360063538204c78aba0deb4f"
+    },
+    {
+      "path": "skills/checkpoints/25-retried-deleted-beta.json",
+      "bytes": 6181,
+      "sha256": "d150a8354fb47acfd2fba404d4613da1a1e5de24cff169fb36fc253ea436cc50"
+    },
+    {
+      "path": "skills/post-build-source-delta.json",
+      "bytes": 1499,
+      "sha256": "4875ce2f26b80d342487121db45c62d1ebafd59d7a7b5fe4bbe6b76f77373ffe"
+    },
+    {
+      "path": "skills/requests/request-0002.json",
+      "bytes": 3789,
+      "sha256": "37d7fcc3dca42e714f1fcb859bdb8837a7e33fdac67e9a21df827d3334233b43"
+    },
+    {
+      "path": "skills/requests/request-0004.json",
+      "bytes": 4901,
+      "sha256": "4b6c9ac81685453a38815ac7ad30d1bd82699193bad7792b0cd7d3fcf737f329"
+    },
+    {
+      "path": "skills/requests/request-0005.json",
+      "bytes": 4901,
+      "sha256": "4b6c9ac81685453a38815ac7ad30d1bd82699193bad7792b0cd7d3fcf737f329"
+    },
+    {
+      "path": "skills/screenshots/15-latest-queued-alpha.jpg",
+      "bytes": 52161,
+      "sha256": "0a419acc793824b8c55251b91237cc82738de39195588d5e6519894c61e0fcc0"
+    },
+    {
+      "path": "skills/screenshots/18-active-context-captured-queued-exclusion.jpg",
+      "bytes": 127855,
+      "sha256": "9ef174a3c93dc31bd2d5d644629d41b45623dbd97ea7d836878abba7e996c1eb"
+    },
+    {
+      "path": "skills/screenshots/19-policy-revocation-pauses-queued-selection.jpg",
+      "bytes": 65048,
+      "sha256": "3120fa8cfd75bc77b189d9aaf0346d36fc8abc911e49743b34b3880c16361800"
+    },
+    {
+      "path": "skills/screenshots/20-held-skill-edit-parks-ordinary-draft.jpg",
+      "bytes": 70831,
+      "sha256": "d737b869304bc690cb1e9c473eaf96d65471c6cdc08fde415178fcf4597749e9"
+    },
+    {
+      "path": "skills/screenshots/21-cancel-restores-ordinary-skill.jpg",
+      "bytes": 67322,
+      "sha256": "ad6d5761c363bbc47be5512a3e5e04662eaedabb1b81407130de73711e38095e"
+    },
+    {
+      "path": "skills/screenshots/25-retry-after-source-deletion.jpg",
+      "bytes": 60600,
+      "sha256": "94cfd289cba1cf793db22d5c5b354f8633ff328d879c67a946e9234ce3adf5e1"
+    },
+    {
+      "path": "skills/screenshots/26-same-process-project-trust-reload.jpg",
+      "bytes": 76681,
+      "sha256": "bdfec1d6b1f5f5e3d3b03215bdcaa9d34800c6cbf30144e9d4ab410fbbf31dc1"
+    },
+    {
+      "path": "skills/verified-candidate2.json",
+      "bytes": 1375,
+      "sha256": "75ec2f0a32e9d4942298799440102bcadd9cca7b2fa971066a2e93fbb0e1ccd5"
+    },
+    {
+      "path": "verify_evidence.py",
+      "bytes": 6814,
+      "sha256": "4d9bcf23359985a3884a91392c62aa468d44a27512670016517990e8f12b1d34"
+    }
+  ]
+}

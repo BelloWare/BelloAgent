@@ -46,6 +46,7 @@ fn fixture(
     let record = ChatRecord::new(snapshot.id, snapshot.title, path);
     let mut workspace = WorkspaceStore::open(project.join("workspace.json"), &project).unwrap();
     let draft = DraftRecord {
+        skills: Vec::new(),
         attachments: Vec::new(),
         text: "untouched draft".into(),
         ..Default::default()

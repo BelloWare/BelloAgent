@@ -222,6 +222,7 @@ fn metadata(config: &Config) -> Value {
 
 fn payload(kind: &str, index: usize) -> Message {
     Message {
+        task_root_id: None,
         user_content: None,
         id: format!("message-{index:05}"),
         role: if index.is_multiple_of(2) {
@@ -283,6 +284,7 @@ fn fixture(
         .expect("write synthetic session");
     let record = ChatRecord::new(store.snapshot().id, "Transcript CPU fixture".into(), path);
     let draft = DraftRecord {
+        skills: Vec::new(),
         attachments: Vec::new(),
         revision: 17,
         text: DRAFT.into(),

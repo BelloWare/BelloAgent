@@ -1,0 +1,22 @@
+     Removed 103 files, 224.8MiB total
+   Compiling bello-agent-core v0.1.0 (/workspace/shared/agent-skills-candidate2-negative/rust/crates/bello-agent-core)
+    Finished `test` profile [unoptimized] target(s) in 35.46s
+     Running unittests src/lib.rs (/workspace/shared/agent-attachments-target/debug/deps/bello_agent_core-066ff34ba6df5110)
+
+running 1 test
+
+thread 'session::skill_storage_tests::compaction_protects_answered_latest_and_current_task_but_not_older_task_forever' (1453) panicked at crates/bello-agent-core/src/skill_storage_tests.rs:280:5:
+assertion `left == right` failed
+  left: {}
+ right: {"898b35a8-adf3-4ac8-9393-7fce1fca5e86", "steering-carrier"}
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test session::skill_storage_tests::compaction_protects_answered_latest_and_current_task_but_not_older_task_forever ... FAILED
+
+failures:
+
+failures:
+    session::skill_storage_tests::compaction_protects_answered_latest_and_current_task_but_not_older_task_forever
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 494 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p bello-agent-core --lib`

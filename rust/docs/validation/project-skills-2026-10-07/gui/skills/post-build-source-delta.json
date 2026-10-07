@@ -1,0 +1,30 @@
+{
+  "published_test_only_fix": "110cde32753930599b2e10d76388bcffcf23624e",
+  "differences": [
+    {
+      "path": "rust/crates/bello-agent-app/src/connection_settings_controller_tests.rs",
+      "build_sha256": "3f9aa18982eb5f02aa2b0c02280ad2b3bca5832ed251f37d9fc3df058b887d59",
+      "final_stage_sha256": "f1b5306dc8999265bec926993fd2d92160dc901d0a871cc361cbbf4dc0d2b24a"
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/mcp_inspector_controller_tests.rs",
+      "build_sha256": "651b5678cf483b745becf8cbffab4649ca20d3246f1b6d81da10c8f8fbb2111c",
+      "final_stage_sha256": "b3a2d1a16f0c5c954fba37da5886002e030f8e8c959e463bc502f996dc2fc508"
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/transcript_edit_native_ui_tests.rs",
+      "build_sha256": "d15d9535257306e55207d2725d77138b5dbd226c603847f7225c0d61861e1d2a",
+      "final_stage_sha256": "72288b23f1591e97c14ae0d75783a2022275f30ebf0b1c6d94121395bd28b078"
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/transcript_read_native_ui_tests.rs",
+      "build_sha256": "f135442358cf046ba152f5a1cf40a36717a7eff33da797f4d70c01a1ff77e47f",
+      "final_stage_sha256": "d75d63dbd3dbbcb50a5918b72a46fa5d3d1c5456e02d9d0a2537619f99257cf2"
+    },
+    {
+      "path": "rust/scripts/verify-loc-project-skills-2026-10-07.py",
+      "build_sha256": "0581ac5cce9da4c673664f1dfa97b8e16c78e19880d54152859618bc97811d79",
+      "final_stage_sha256": "3d7b4348f305e3388cd443a96c97c418baea2bd7fa6201c0c6a5bfb2fb9af73f"
+    }
+  ]
+}

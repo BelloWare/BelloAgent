@@ -1,0 +1,7 @@
+{
+  "fixture_id": "285126cd-a799-4fcd-8662-c0bb99d718c2",
+  "port": 47891,
+  "reused_build_manifest_sha256": "65a049a70881b4169bd5ad4e18c7ed2045cb08c9ce8ddcd1e2e5fa88f93712f2",
+  "binary_sha256": "19588b1d3652f622b3be5d8a73dc4c339b2ae95e81d63529cc3331738fdda586",
+  "note": "Reuses exact prior build manifest; its original fixture ID is not this new fixture. Generated baseline independently records this root. No reseal from post-build test edits."
+}

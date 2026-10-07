@@ -51,6 +51,7 @@ fn fixture(
         project.join("session.json"),
     );
     let draft = DraftRecord {
+        skills: Vec::new(),
         attachments: Vec::new(),
         text: draft.into(),
         ..Default::default()
@@ -686,5 +687,108 @@ fn attachment_capture_compares_full_metadata_and_revision_even_after_equal_text(
     inspector.update(cx, |view, cx| {
         assert_eq!(view.draft_revision, revision);
         assert!(!view.current(view.document.as_ref().unwrap(), cx).unwrap());
+    });
+}
+
+#[cfg(feature = "synthetic-authority")]
+fn wait_skill_preview(inspector: &Entity<ContextInspector>, cx: &mut TestAppContext) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    loop {
+        cx.run_until_parked();
+        if cx.read(|cx| !inspector.read(cx).loading && !inspector.read(cx).copying) {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "skill preview did not settle"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(3));
+    }
+}
+
+#[cfg(feature = "synthetic-authority")]
+#[gpui::test]
+fn saved_skill_context_captures_ordered_arguments_and_keeps_immutable_copy(
+    cx: &mut TestAppContext,
+) {
+    use crate::composer_skills::tests::saved_ui;
+    let (_directory, window, root) = saved_ui::fixture(cx, "raw draft");
+    let selected = saved_ui::select(&root, 1, cx);
+    saved_ui::close(window, cx);
+    let before = cx.read(|cx| serde_json::to_value(root.read(cx).controller.snapshot()).unwrap());
+    let (_handle, inspector) = open(window, cx);
+    wait_skill_preview(&inspector, cx);
+    let original = inspector.update(cx, |view, _| {
+        let document = view
+            .document
+            .as_ref()
+            .unwrap_or_else(|| panic!("{:?}", view.notice));
+        assert_eq!(view.skills, vec![selected.selection.clone()]);
+        let json = document.preview.request_json().to_owned();
+        assert!(json.contains("BODY-MARKER-a"));
+        assert!(json.contains("Current explicit selection IDs:"));
+        assert!(json.contains("raw draft"));
+        json
+    });
+    root.update(cx, |view, cx| {
+        view.skills[0].selection.arguments = "later literal /review arguments".into();
+        let id = view.record.id.clone();
+        view.draft_changed(&id, cx);
+        cx.notify();
+    });
+    cx.run_until_parked();
+    inspector.update(cx, |view, cx| {
+        assert!(!view.current(view.document.as_ref().unwrap(), cx).unwrap());
+        assert!(
+            view.notice
+                .as_deref()
+                .unwrap()
+                .contains("captured snapshot")
+        );
+        view.copy_request(cx);
+    });
+    wait_skill_preview(&inspector, cx);
+    assert_eq!(
+        cx.read(|cx| cx.read_from_clipboard().unwrap().text().unwrap()),
+        original
+    );
+    inspector.update(cx, |view, cx| view.refresh(cx));
+    wait_skill_preview(&inspector, cx);
+    inspector.update(cx, |view, _| {
+        let json = view
+            .document
+            .as_ref()
+            .unwrap_or_else(|| panic!("{:?}", view.notice))
+            .preview
+            .request_json();
+        assert!(json.contains("later literal /review arguments"));
+    });
+    assert_eq!(
+        cx.read(|cx| serde_json::to_value(root.read(cx).controller.snapshot()).unwrap()),
+        before
+    );
+}
+
+#[cfg(feature = "synthetic-authority")]
+#[gpui::test]
+fn changed_skill_source_blocks_idle_context_without_losing_draft_selection(
+    cx: &mut TestAppContext,
+) {
+    use crate::composer_skills::tests::saved_ui;
+    let (_directory, window, root) = saved_ui::fixture(cx, "raw draft");
+    let selected = saved_ui::select(&root, 1, cx);
+    saved_ui::close(window, cx);
+    std::fs::write(&selected.path, "---\nname: review\ndescription: changed\ndisable-model-invocation: true\n---\nchanged source\n").unwrap();
+    let (_handle, inspector) = open(window, cx);
+    wait_skill_preview(&inspector, cx);
+    inspector.update(cx, |view, _| {
+        assert!(view.document.is_none());
+        assert!(view.notice.is_some());
+    });
+    root.update(cx, |view, cx| {
+        assert_eq!(view.skills, vec![selected]);
+        assert_eq!(view.composer.read(cx).text(), "raw draft");
+        assert!(view.session.pending.is_empty());
+        assert!(view.session.messages.is_empty());
     });
 }

@@ -7,6 +7,7 @@ mod chat_organization;
 mod chat_tool_mode;
 mod compaction_actions;
 mod composer_attachments;
+mod composer_skills;
 mod connection_settings_controller;
 mod connection_settings_view;
 mod context_inspector;
@@ -23,6 +24,8 @@ mod native_smoke;
 mod project_host;
 mod project_manager_controller;
 mod project_manager_view;
+mod project_skills_controller;
+mod project_skills_view;
 mod queue_actions;
 mod queue_begin;
 mod queue_cancel;
@@ -42,6 +45,7 @@ mod transcript_actions;
 #[cfg(test)]
 #[path = "../../../benches/transcript.rs"]
 mod transcript_benchmark;
+mod transcript_skills;
 mod transcript_view;
 #[cfg(test)]
 mod transcript_view_tests;
@@ -123,6 +127,7 @@ struct LaunchState {
 struct AgentView {
     chat: ChatState,
     attachment_picker: Option<composer_attachments::PickerOperation>,
+    skill_picker: Option<project_skills_view::SkillPicker>,
     inactive: BTreeMap<String, ChatState>,
     records: Vec<ChatRecord>,
     workspace: Arc<Mutex<WorkspaceStore>>,
@@ -359,6 +364,7 @@ impl AgentView {
         let launch_archive_reveal = chat.record.archived_at.is_some() && !state.show_archived;
         let mut view = Self {
             attachment_picker: None,
+            skill_picker: None,
             chat,
             inactive: BTreeMap::new(),
             records,
@@ -429,6 +435,7 @@ impl AgentView {
     fn bind_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.close_context_inspectors(cx);
         self.attachment_picker = None;
+        self.skill_picker = None;
         self.cancel_queue_drag(window, cx);
         self.queue_geometry = None;
         self.sidebar_menu = None;
@@ -678,6 +685,7 @@ impl AgentView {
                 view.queued_original = None;
                 let draft = std::mem::take(&mut view.draft_before_edit);
                 view.attachments = std::mem::take(&mut view.draft_before_edit_attachments);
+                view.skills = std::mem::take(&mut view.draft_before_edit_skills);
                 view.composer
                     .update(cx, |editor, cx| editor.set_text(draft, cx));
             },
@@ -707,6 +715,7 @@ impl AgentView {
                     view.queued_original = None;
                     let draft = std::mem::take(&mut view.draft_before_edit);
                     view.attachments = std::mem::take(&mut view.draft_before_edit_attachments);
+                    view.skills = std::mem::take(&mut view.draft_before_edit_skills);
                     view.composer
                         .update(cx, |editor, cx| editor.set_text(draft, cx));
                 }
@@ -870,6 +879,10 @@ impl AgentView {
         }
     }
     fn global_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.skill_picker.is_some() {
+            self.skill_picker_key(event, window, cx);
+            return;
+        }
         if self.mcp.open {
             if self
                 .mcp
@@ -1588,7 +1601,7 @@ impl AgentView {
                 geometry.pane_width.min(self.pane_width)
             }) - 58.)
                 .max(0.);
-            let item_label = composer_attachments::input_label(&item.text, item.attachments.len());
+            let item_label = composer_skills::submission_label(item);
             let preview_text = item_label
                 .lines()
                 .next()
@@ -2169,8 +2182,12 @@ impl AgentView {
             )
             .child(
                 self.icon_button("skills", "command", 28.)
+                    .debug_selector(|| "skills-open".into())
                     .bg(p.fill())
-                    .opacity(0.45),
+                    .opacity(if self.can_choose_skills() { 1. } else { 0.45 })
+                    .on_click(
+                        cx.listener(|view, _, window, cx| view.open_skill_picker(window, cx)),
+                    ),
             )
             .child(div().flex_1());
         if self.editing.is_some() {
@@ -2435,7 +2452,7 @@ impl AgentView {
                 );
             composer = composer.child(div().px(px(12.)).py(px(8.)).bg(p.accent_soft()).flex().flex_col().gap(px(6.))
                 .child(div().text_size(px(11.5)).child("Unconfirmed submission · It may have been accepted. Review before sending again."))
-                .child(div().text_size(px(12.)).max_h(px(60.)).overflow_hidden().child(composer_attachments::input_label(&intent.text, intent.attachments.len()).chars().take(300).collect::<String>()))
+                .child(div().text_size(px(12.)).max_h(px(60.)).overflow_hidden().child(composer_skills::input_label(&intent.text, intent.attachments.len(), intent.skills.iter().map(|s| s.name.as_str())).chars().take(300).collect::<String>()))
                 .child(actions));
         }
         if self.editing.is_some() {
@@ -2451,6 +2468,9 @@ impl AgentView {
         }
         if !self.attachments.is_empty() {
             composer = composer.child(self.attachment_chips(cx));
+        }
+        if !self.skills.is_empty() {
+            composer = composer.child(self.skill_chips(cx));
         }
         composer = composer.child(field).child(bar);
         let geometry_owner = cx.weak_entity();
@@ -3097,6 +3117,9 @@ impl Render for AgentView {
         }
         if let Some(menu) = self.sidebar_menu_element(cx) {
             element = element.child(menu);
+        }
+        if let Some(picker) = self.skill_picker_element(window, cx) {
+            element = element.child(picker);
         }
         if self.quick_open.read(cx).is_open() {
             element = element.child(

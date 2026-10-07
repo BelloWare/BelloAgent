@@ -288,7 +288,20 @@ impl SavedRuntimeFactory {
         };
         guard.confirm()?;
         guard.confirm_open_provenance()?;
-        Controller::with_authority(
+        let binding = crate::runtime::project_input_runtime::ProjectRuntimeBinding {
+            project_id: project.id.clone(),
+            roots: std::iter::once(project.path.clone())
+                .chain(project.paths.clone())
+                .collect(),
+            chat_id: record.id.clone(),
+            controller_id: uuid::Uuid::new_v4().to_string(),
+            tool_mode: match record.tool_mode {
+                ChatToolMode::Editing => "editing",
+                ChatToolMode::ReadOnly => "read-only",
+            }
+            .into(),
+        };
+        Ok(Controller::with_authority(
             store,
             Some(configuration),
             RuntimeOptions {
@@ -296,7 +309,8 @@ impl SavedRuntimeFactory {
                 tools: Some(tools),
             },
             Some(guard),
-        )
+        )?
+        .with_project_resources(binding))
     }
 }
 /// The complete original project identity remains equal. Unrelated envelope

@@ -1,0 +1,20 @@
+     Removed 103 files, 224.8MiB total
+   Compiling bello-agent-core v0.1.0 (/workspace/shared/agent-skills-candidate2-negative/rust/crates/bello-agent-core)
+    Finished `test` profile [unoptimized] target(s) in 37.08s
+     Running unittests src/lib.rs (/workspace/shared/agent-attachments-target/debug/deps/bello_agent_core-066ff34ba6df5110)
+
+running 1 test
+
+thread 'saved_runtime::tests::skills::queued_body_is_frozen_metadata_revocation_pauses_and_empty_edit_preserves_selection' (963) panicked at crates/bello-agent-core/src/saved_runtime_tests.rs:194:6:
+called `Result::unwrap()` on an `Err` value: Elapsed(())
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test saved_runtime::tests::skills::queued_body_is_frozen_metadata_revocation_pauses_and_empty_edit_preserves_selection ... FAILED
+
+failures:
+
+failures:
+    saved_runtime::tests::skills::queued_body_is_frozen_metadata_revocation_pauses_and_empty_edit_preserves_selection
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 494 filtered out; finished in 5.04s
+
+error: test failed, to rerun pass `-p bello-agent-core --lib`

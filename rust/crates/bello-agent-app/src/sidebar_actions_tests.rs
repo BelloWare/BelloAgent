@@ -29,6 +29,7 @@ fn fixture(
         )),
         record: ChatRecord::new(snapshot.id, "Fixture".into(), project.join("session.json")),
         draft: DraftRecord {
+            skills: Vec::new(),
             attachments: Vec::new(),
             text: "first draft 日本語".into(),
             ..Default::default()

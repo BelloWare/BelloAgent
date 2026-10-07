@@ -494,7 +494,9 @@ impl AgentView {
             chat.queued_original = None;
             chat.draft_before_edit.clear();
             chat.draft_before_edit_attachments.clear();
+            chat.draft_before_edit_skills.clear();
             chat.attachments = reconciled.attachments.clone();
+            chat.skills = reconciled.skills.clone();
             chat.composer.update(cx, |editor, cx| {
                 editor.set_text(reconciled.text.clone(), cx)
             });
@@ -584,7 +586,9 @@ impl AgentView {
             chat.queued_original = None;
             chat.draft_before_edit.clear();
             chat.draft_before_edit_attachments.clear();
+            chat.draft_before_edit_skills.clear();
             chat.attachments = reconciled.attachments.clone();
+            chat.skills = reconciled.skills.clone();
             chat.composer
                 .update(cx, |editor, cx| editor.set_text(reconciled.text, cx));
         }

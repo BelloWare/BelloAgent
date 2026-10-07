@@ -1,0 +1,121 @@
+{
+  "baseline_commit": "a890af0a7797197ee5eee4a538098eabbed2a492",
+  "baseline_tree": "8bfe718df279f5131c5b280ce1342ab48243e971",
+  "source_status": "staging source frozen; exact Rust manifest recorded in adjacent LOC ledger; publication pending root",
+  "core_default": {
+    "unit": 360,
+    "integration": 125,
+    "total": 485,
+    "failed": 0,
+    "ignored": 0
+  },
+  "core_all_features": {
+    "unit": 509,
+    "integration": 125,
+    "total": 634,
+    "failed": 0,
+    "ignored": 0,
+    "nested_subprocess_log_repeats_excluded": 2
+  },
+  "checks": {
+    "default_clippy_all_targets": "passed -D warnings",
+    "all_features_clippy_all_targets": "passed -D warnings",
+    "workspace_fmt": "passed",
+    "three_mutation_controls": "each intended runtime/storage test failed; no compile-error substitution; source restored",
+    "existing_ui_harness_self_tests": 12,
+    "existing_benchmark_parser_self_tests": 42,
+    "skills_fixture_self_tests": 5,
+    "candidate2_three_mutation_controls": "All three intended tests fail under isolated mutations on MCP-inclusive source; restored all-feature full suite and Clippy pass."
+  },
+  "pending": {
+    "actual_gui": "in progress, separate observed case report required",
+    "native_macos_source_oracle": "not executed on Linux; CI for final published checkpoint required",
+    "production_startup": "still gated; no gate lifted"
+  },
+  "logs": [
+    {
+      "file": "candidate2-core-default.log",
+      "sha256": "a7fec85773ec2d5faaf4e1203d37a15f2a66af61d84a4643514d0c56e11c3f05",
+      "bytes": 50115
+    },
+    {
+      "file": "candidate2-core-all-features.log",
+      "sha256": "633f559e33628d0b607e35add538b8d8b7e56d552c498db8916072b2dd0aacb1",
+      "bytes": 67011
+    },
+    {
+      "file": "candidate2-core-default-clippy.log",
+      "sha256": "a845272894d8de3214c716ea9f0506b5e14755b7039b77a284cc85491a3011f1",
+      "bytes": 166
+    },
+    {
+      "file": "candidate2-core-all-features-clippy.log",
+      "sha256": "f6534c10d9be37cae593a2d96f498e8e979818e66d15b47801cb65da626f7670",
+      "bytes": 166
+    },
+    {
+      "file": "candidate2-app-default.log",
+      "sha256": "208e0202e4b66027894ffab772547e0cc1f1cba7fea7317ee8ad4459ba30a401",
+      "bytes": 45400
+    },
+    {
+      "file": "candidate2-app-synthetic.log",
+      "sha256": "6f5266a4dff6a812fef22896d0e3dd904ddf62a208d9391439bfabe42a2cc4dc",
+      "bytes": 58885
+    },
+    {
+      "file": "candidate2-app-default-clippy.log",
+      "sha256": "d92b82ee6082d14020f8aae9400f95955ed670f7dbfaa62ac1d70f669e6324d4",
+      "bytes": 524
+    },
+    {
+      "file": "candidate2-app-synthetic-clippy.log",
+      "sha256": "534c5ca518d8ca819faf4d33d1b99291b1c82e3af3bd1f63d3d7e9d361660a33",
+      "bytes": 524
+    },
+    {
+      "file": "candidate2-build.log",
+      "sha256": "c679c543b8d24d33067b0ec91c0fe2797bc66aff169545336820b77a4c5bd23e",
+      "bytes": 524
+    },
+    {
+      "file": "candidate2-restored-core-all-features.log",
+      "sha256": "a1c1b82075ce0a1248e40d433a69f76324eaf16cc7a879d196fa56af52ae8ab8",
+      "bytes": 67011
+    },
+    {
+      "file": "candidate2-restored-core-clippy.log",
+      "sha256": "b99b4f74ba6ef1750f7ecd811c11139b2390d1c34ce9e4f8b486732a9fb90ddb",
+      "bytes": 166
+    },
+    {
+      "file": "candidate2-negative-delivery-scope.log",
+      "sha256": "2c7f3303b27a6bdb106ef193ce4bc3ab041ce7f4832d99dc24c49bb0e9cf55fb",
+      "bytes": 1126
+    },
+    {
+      "file": "candidate2-negative-metadata-revocation.log",
+      "sha256": "76196c8f0ed3045f02bf449f5a932c611d5098db2d602f63d67cec50c46aa5ed",
+      "bytes": 1129
+    },
+    {
+      "file": "candidate2-negative-task-carrier.log",
+      "sha256": "ad9e8a00a86fa0308abd1d9f46b54c498102917925f0e96f5111e5ebcabd8c56",
+      "bytes": 1174
+    }
+  ],
+  "candidate": "candidate2-after-MCP-admission-fix",
+  "candidate1": "candidate1-portable-validation.json preserves pre-MCP-fix logs and mutation controls; changed skill fences are byte-identical in candidate2",
+  "app_default": {
+    "passed": 432,
+    "failed": 0,
+    "ignored": 1
+  },
+  "app_synthetic": {
+    "passed": 548,
+    "failed": 0,
+    "ignored": 3
+  },
+  "binary_sha256": "19588b1d3652f622b3be5d8a73dc4c339b2ae95e81d63529cc3331738fdda586",
+  "rust_source_manifest_sha256": "9aaf4c1572c4d5460ba80e10f1c74addc060284211b383df75c9589061ca8482"
+}

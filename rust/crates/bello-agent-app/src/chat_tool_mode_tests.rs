@@ -44,6 +44,7 @@ fn fixture() -> (tempfile::TempDir, ChatModeChange) {
         .register(
             record.clone(),
             DraftRecord {
+                skills: Vec::new(),
                 attachments: Vec::new(),
                 text: "unsent 日本語".into(),
                 revision: 1,
@@ -90,6 +91,7 @@ fn closes_before_mode_save_and_preserves_latest_metadata_and_drafts() {
             store.save_draft(
                 &id,
                 DraftRecord {
+                    skills: Vec::new(),
                     attachments: Vec::new(),
                     text: "newer unsent".into(),
                     revision: 2,

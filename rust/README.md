@@ -120,3 +120,31 @@ BELLO_TEST_APPEARANCE=dark BELLO_TEST_WINDOW_SIZE=920x600 cargo run -p bello-age
 Omit them to follow the native window appearance. Sidebar width (200–420 pixels,
 default 300) and adjacent-pane ratio (30–70%, default 50%) use the source bounds
 and persist after dragging. The temporary UI layout record contains no credentials.
+
+### Project skills (explicit picker)
+
+The normal `SavedRuntimeFactory` path now discovers only the confirmed project's
+`.agents/skills` and project instruction chain. The Skills picker creates an
+explicit ordered selection with optional literal arguments. Typed or pasted
+`/name` text does not select a skill. Selection neither runs scripts nor grants
+tools; dependencies reflect the chat's actual builtins and enabled configured
+MCP names, without probing or installing servers.
+
+Skill-only and skill+image input share durable receipts, queue preparation,
+retained provider content, Stop/Resume/Retry, Context and task-root-aware
+compaction. Pending input freezes the selected bodies; delivery rechecks current
+metadata/policy/dependencies. Retry replays delivered bytes after source removal.
+New user deliveries record task provenance in snapshot v8; skill drafts and
+receipts use catalog v9. Older supported files open without rewriting; mutations
+promote versions. Expanded text remains bounded, skill-bearing UserContent is
+limited to 32 MiB, legacy image-only content to 20 MiB, and the complete provider
+request to 32 MiB. Oversized combinations are refused without truncation.
+
+Ordinary native startup is still unavailable until its separate production
+signing, Keychain and authority gates are accepted. The disposable no-cost
+[GUI fixture recipe](docs/project-skills-gui-fixture.md) exercises this same saved
+runtime using generated project files and numeric-loopback synthetic authority.
+Home/Codex configuration discovery, leading-command parsing, implicit execution,
+and complete native token/accessibility parity remain outside this slice.
+See the [implemented checkpoint and observed GUI evidence](docs/validation/project-skills-2026-10-07.md)
+for tested paths, exact binary attribution and remaining Apple/publication gates.

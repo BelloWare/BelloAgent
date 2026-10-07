@@ -1,0 +1,5 @@
+    Checking bello-agent-core v0.1.0 (/workspace/shared/agent-skills-stage/rust/crates/bello-agent-core)
+    Checking bello-agent-app v0.1.0 (/workspace/shared/agent-skills-stage/rust/crates/bello-agent-app)
+    Finished `dev` profile [unoptimized] target(s) in 18.50s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`

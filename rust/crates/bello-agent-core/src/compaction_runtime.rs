@@ -148,7 +148,33 @@ impl Controller {
         let Some((reply_id, snapshot, cancel)) = started else {
             return;
         };
-        let instructions = self.options.instructions.clone();
+        let resources = self
+            .prepare_project_snapshot(&configuration, None, cancel.clone())
+            .await;
+        let applied = self
+            .inner
+            .lock()
+            .expect("session mutex poisoned")
+            .applied_project
+            .clone();
+        let instructions = applied
+            .as_ref()
+            .map(|value| value.instructions.clone())
+            .or_else(|| {
+                resources
+                    .as_ref()
+                    .ok()
+                    .and_then(|value| value.as_ref())
+                    .map(|snapshot| {
+                        let mut instructions = self.options.instructions.clone();
+                        if !instructions.is_empty() {
+                            instructions.push_str("\n\n");
+                        }
+                        instructions.push_str(&snapshot.instructions);
+                        instructions
+                    })
+            })
+            .unwrap_or_else(|| self.options.instructions.clone());
         let definitions = self.options.definitions();
         let preparation_profile = configuration.profile.clone();
         let preparation_instructions = instructions.clone();
@@ -156,27 +182,31 @@ impl Controller {
         let preparation_id = operation_id.clone();
         let session_id = snapshot.id.clone();
         let preparation_cancel = cancel.clone();
-        let prepared = tokio::task::spawn_blocking(move || {
-            compaction::prepare_checked(
-                &snapshot.messages,
-                &preparation_profile,
-                &preparation_instructions,
-                &snapshot.id,
-                &preparation_definitions,
-                &preparation_id,
-                focus.as_deref(),
-                || {
-                    if preparation_cancel.is_cancelled() {
-                        Err(crate::Error::Cancelled)
-                    } else {
-                        Ok(())
-                    }
-                },
-            )
-        })
-        .await
-        .map_err(|_| invalid("Compaction preparation worker failed"))
-        .and_then(|result| result);
+        let prepared = if let Err(error) = &resources {
+            Err(invalid(error.to_string()))
+        } else {
+            tokio::task::spawn_blocking(move || {
+                compaction::prepare_checked(
+                    &snapshot.messages,
+                    &preparation_profile,
+                    &preparation_instructions,
+                    &snapshot.id,
+                    &preparation_definitions,
+                    &preparation_id,
+                    focus.as_deref(),
+                    || {
+                        if preparation_cancel.is_cancelled() {
+                            Err(crate::Error::Cancelled)
+                        } else {
+                            Ok(())
+                        }
+                    },
+                )
+            })
+            .await
+            .map_err(|_| invalid("Compaction preparation worker failed"))
+            .and_then(|result| result)
+        };
         let mut observed_reply = None;
         let outcome = async {
             let prepared = prepared?;
@@ -228,11 +258,40 @@ impl Controller {
             )?;
             configuration.confirm_for_request().await?;
             self.confirm_runtime_authority(cancel.clone()).await?;
+            if let Ok(Some(original)) = &resources {
+                let current = self
+                    .prepare_project_snapshot(&configuration, None, cancel.clone())
+                    .await?
+                    .ok_or_else(|| invalid("Project resources are unavailable"))?;
+                if current.revision != original.revision
+                    || current.scope != original.scope
+                    || current.dependencies != original.dependencies
+                {
+                    return Err(invalid(
+                        "Resources changed while summarizing; original context is retained",
+                    ));
+                }
+            }
             let mut inner = self
                 .inner
                 .lock()
                 .map_err(|_| invalid("Session is unavailable"))?;
+            if inner
+                .applied_project
+                .as_ref()
+                .map(|value| (&value.turn_id, &value.snapshot.revision))
+                != applied
+                    .as_ref()
+                    .map(|value| (&value.turn_id, &value.snapshot.revision))
+            {
+                return Err(invalid(
+                    "Applied resources changed while summarizing; original context is retained",
+                ));
+            }
             self.check_compaction_binding(&inner, &configuration, &operation_id, &cancel)?;
+            if let Ok(Some(original)) = &resources && !self.project_skills_catalog_current(original) {
+                return Err(invalid("Resource scope changed before checkpoint adoption; original context is retained"));
+            }
             inner
                 .store
                 .transact(|session| session.adopt_compaction(&operation_id, candidate, &reply))?;

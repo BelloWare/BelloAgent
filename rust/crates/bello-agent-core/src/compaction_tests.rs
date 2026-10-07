@@ -8,6 +8,7 @@ fn profile() -> Profile {
 }
 fn row(id: &str, role: &str, text: &str) -> Message {
     Message {
+        task_root_id: None,
         user_content: None,
         id: id.into(),
         role: role.into(),
@@ -603,4 +604,17 @@ fn user_images_block_placeholder_compaction_and_count_as_image_allowance() {
     let mut supported = profile();
     supported.input = vec!["text".into(), "image".into()];
     assert!(prepare(&messages, &supported, "", "session", &[], "operation", None).is_ok());
+}
+
+#[test]
+fn prepared_debug_never_formats_request_or_retained_payload() {
+    let mut prepared = plan(&history());
+    prepared.request = json!({"input":[{"text":"SECRET_SKILL_BODY /private/source/path literal-secret-args"}],"image":"SECRET_BASE64"});
+    prepared.kept[0].text = "SECRET_SKILL_BODY".into();
+    let debug = format!("{prepared:?}");
+    assert!(debug.len() < 300);
+    for private in ["SECRET_", "/private/", "literal-secret"] {
+        assert!(!debug.contains(private));
+    }
+    assert!(debug.contains("input_items"));
 }

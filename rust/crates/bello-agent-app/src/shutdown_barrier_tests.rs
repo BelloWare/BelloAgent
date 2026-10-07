@@ -32,6 +32,7 @@ fn fixture() -> (tempfile::TempDir, ShutdownPlan) {
         drafts: vec![(
             record,
             DraftRecord {
+                skills: Vec::new(),
                 attachments: Vec::new(),
                 revision: 10,
                 text: "latest".into(),
@@ -64,6 +65,7 @@ fn saved_capture_precedes_stop_and_rejects_late_draft_and_selection(cx: &mut Tes
                     .save_draft(
                         &selected,
                         DraftRecord {
+                            skills: Vec::new(),
                             attachments: Vec::new(),
                             revision: 9,
                             text: "late".into(),
@@ -88,6 +90,7 @@ fn queued_edit_and_unsettled_receipt_survive_save_stop_and_reopen(cx: &mut TestA
     let (dir, mut plan) = fixture();
     let id = plan.selected.clone();
     let intent = SubmissionIntent {
+        skills: Vec::new(),
         attachments: Vec::new(),
         id: uuid::Uuid::new_v4().to_string(),
         chat_id: id.clone(),
@@ -101,6 +104,7 @@ fn queued_edit_and_unsettled_receipt_survive_save_stop_and_reopen(cx: &mut TestA
             .register(
                 plan.drafts[0].0.clone(),
                 DraftRecord {
+                    skills: Vec::new(),
                     attachments: Vec::new(),
                     revision: 1,
                     text: intent.text.clone(),

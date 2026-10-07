@@ -545,6 +545,9 @@ fn estimated_height(presentation: &Presentation, index: usize, width: Pixels) ->
         12. + 6. + transcript_actions::ACTION_BAND_HEIGHT + gap + plain(&text, 14.5, 21.);
     if user {
         height += 18.;
+        if let Some(content) = &message.user_content {
+            height += content.skills.len() as f32 * 30.;
+        }
     }
     if !message.reasoning.is_empty() {
         height += 6. + plain(&message.reasoning, 12., 18.);
@@ -1606,6 +1609,9 @@ fn render_row(
                             .text_color(rgb(p.secondary))
                             .child(message.reasoning.clone()),
                     );
+                }
+                if let Some(pills) = crate::transcript_skills::pills(message, p) {
+                    body = body.child(pills);
                 }
                 body = body.child(
                     div()

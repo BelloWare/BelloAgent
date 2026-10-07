@@ -128,6 +128,7 @@ impl AgentView {
         cx: &mut Context<Self>,
     ) {
         self.cancel_queue_drag(window, cx);
+        self.skill_picker = None;
         let outgoing = std::mem::replace(&mut self.chat, chat);
         let id = outgoing.record.id.clone();
         if outgoing.pending
@@ -135,6 +136,7 @@ impl AgentView {
             && !self.organization_operations.contains_key(&id)
             && outgoing.inflight_submission.is_none()
             && !self.picker_owns_chat(&id)
+            && !outgoing.skill_catalog.loading()
             && outgoing.saved_draft(cx).is_empty()
             && !self.recoveries.values().any(|intent| intent.chat_id == id)
         {
@@ -156,6 +158,8 @@ impl AgentView {
             && !self.busy
             && !self.organization_operations.contains_key(&self.record.id)
             && !self.picker_owns_chat(&self.record.id)
+            && self.skill_picker.is_none()
+            && !self.skill_catalog.loading()
             && self.saved_draft(cx).is_empty()
         {
             self.focus_visible_composer(window, cx);
@@ -416,7 +420,7 @@ impl AgentView {
             return;
         }
         let text = self.composer.read(cx).text().to_owned();
-        if text.trim().is_empty() && self.attachments.is_empty() {
+        if text.trim().is_empty() && self.attachments.is_empty() && self.skills.is_empty() {
             return;
         }
         if let Err(error) = bello_agent_core::attachments::validate_selection(&self.attachments) {
@@ -424,6 +428,16 @@ impl AgentView {
             cx.notify();
             return;
         }
+        if let Err(error) = crate::composer_skills::validate_fresh(&self.skills) {
+            self.error = Some(error.to_string());
+            cx.notify();
+            return;
+        }
+        let selections = self
+            .skills
+            .iter()
+            .map(|chip| chip.selection.clone())
+            .collect();
         let captured = self.saved_draft(cx);
         let captured_revision = self.draft_revision;
         let Some(revision) = self.draft_revision.checked_add(1) else {
@@ -438,6 +452,7 @@ impl AgentView {
         let mut item = Submission::new(text.clone(), lane);
         item.attachments = self.attachments.clone();
         let intent = SubmissionIntent {
+            skills: self.skills.clone(),
             attachments: item.attachments.clone(),
             id: item.id.clone(),
             chat_id: self.record.id.clone(),
@@ -448,6 +463,7 @@ impl AgentView {
         self.inflight_submission = Some(intent.clone());
         // Every debounce from this clear carries the captured intent atomically.
         self.attachments.clear();
+        self.skills.clear();
         self.composer
             .update(cx, |editor, cx| editor.set_text(String::new(), cx));
         let record = self.record.clone();
@@ -467,7 +483,11 @@ impl AgentView {
             let catalog_uncertain = prepare.uncertain;
             let outcome = match prepare.result {
                 Ok(()) => match controller.materialize(&record.snapshot) {
-                    Ok(()) => controller.submit_identified_with_attachments(item).await,
+                    Ok(()) => {
+                        controller
+                            .submit_identified_with_inputs(item, selections)
+                            .await
+                    }
                     Err(error) => Err(error),
                 },
                 Err(error) => Err(error),
@@ -535,6 +555,10 @@ impl AgentView {
                         match bello_agent_core::attachments::restore(&receipt.attachments,&chat.attachments) {
                             Ok(restored)=>chat.attachments=restored,
                             Err(error)=>{chat.error=Some(error.to_string());revision_exhausted=true;chat.busy=false;}
+                        }
+                        match crate::composer_skills::restore_chips(&receipt.skills, &chat.skills) {
+                            Ok(restored) => chat.skills = restored,
+                            Err(error) => { chat.error = Some(error.to_string()); revision_exhausted = true; chat.busy = false; }
                         }
                         let later = chat.composer.read(cx).text();
                         let merged = merge_restored_text(&text, later);
@@ -849,6 +873,7 @@ impl AgentView {
                         &receipt.attachments,
                         &draft.attachments,
                     )?;
+                    draft.skills = crate::composer_skills::restore_chips(&receipt.skills, &draft.skills)?;
                     draft.text = merge_restored_text(&receipt.text, &draft.text);
                 }
                 Ok(())
@@ -919,6 +944,7 @@ impl AgentView {
                     match &result {
                         Ok(()) if !accepted => {
                             chat.attachments = draft.attachments;
+                            chat.skills = draft.skills;
                             chat.composer
                                 .update(cx, |editor, cx| editor.set_text(draft.text, cx));
                             if extracted_unavailable && insert {

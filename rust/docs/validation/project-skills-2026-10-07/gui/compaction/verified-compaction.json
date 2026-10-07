@@ -1,0 +1,21 @@
+{
+  "binary_sha256": "19588b1d3652f622b3be5d8a73dc4c339b2ae95e81d63529cc3331738fdda586",
+  "checks": {
+    "accepted_alpha_promoted_to_steering": true,
+    "original_task_root_shared": true,
+    "selected_beta_then_alpha": true,
+    "real_ls_completed": true,
+    "large_continuation_generated": true,
+    "one_completed_summary_request": true,
+    "kept_and_protected_exact_original_carrier_order": true,
+    "token_estimate_reduced": true,
+    "history_carriers_unchanged": true,
+    "post_compaction_carriers_exact_once_in_order": true,
+    "summary_then_carriers_then_new_plain_prompt": true,
+    "prior_large_output_removed_from_provider_projection": true,
+    "final_idle_no_pending": true,
+    "screenshot_sha_30-steering-real-tool-and-large-continuation": true,
+    "screenshot_sha_31-compaction-summary-completed": true,
+    "screenshot_sha_32-post-compaction-continuation": true
+  }
+}

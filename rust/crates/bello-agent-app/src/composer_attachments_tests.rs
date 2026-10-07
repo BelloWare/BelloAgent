@@ -329,6 +329,7 @@ fn accepted_intent_insert_acknowledges_exact_metadata_without_duplicate_draft(
     let (_dir, _window, root) = fixture(cx, "newer draft", true, Some(item.clone()));
     root.update(cx, |view, cx| {
         let receipt = SubmissionIntent {
+            skills: Vec::new(),
             id: item.id.clone(),
             chat_id: view.record.id.clone(),
             text: item.text.clone(),
@@ -362,6 +363,7 @@ fn matching_id_with_different_metadata_retains_recovery_and_never_inserts(cx: &m
     let (_dir, _window, root) = fixture(cx, "newer", true, Some(item.clone()));
     root.update(cx, |view, cx| {
         let receipt = SubmissionIntent {
+            skills: Vec::new(),
             id: item.id.clone(),
             chat_id: view.record.id.clone(),
             text: item.text.clone(),

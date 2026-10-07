@@ -146,6 +146,41 @@ pub(crate) fn provider_summary(row: &Message) -> Value {
     json!({"role":"user","content":[{"type":"input_text","text":format!("{PROVIDER_PREFIX}{}\n</summary>",summary_text(row))}]})
 }
 
+/// Authorization carriers required by the source task-root compaction rule.
+/// Returned identities refer only to retained user history, never fresh grants.
+pub fn protected_input_ids(messages: &[Message]) -> Result<BTreeSet<String>> {
+    let active = active_context(messages)?;
+    let mut protected = BTreeSet::new();
+    if let Some(index) = active.iter().rposition(|row| row.role == "user") {
+        let row = active[index];
+        if !active[index + 1..]
+            .iter()
+            .any(|row| row.role == "assistant")
+            || row
+                .user_content
+                .as_ref()
+                .is_some_and(|content| !content.skills.is_empty())
+        {
+            protected.insert(row.id.clone());
+        }
+    }
+    let current_task = crate::session::validate_task_provenance(messages)?;
+    for row in active.iter().filter(|row| {
+        row.user_content
+            .as_ref()
+            .is_some_and(|content| !content.skills.is_empty())
+    }) {
+        let root = row
+            .task_root_id
+            .as_deref()
+            .ok_or_else(|| invalid("Cannot compact skill input with unknown task provenance"))?;
+        if Some(root) == current_task {
+            protected.insert(row.id.clone());
+        }
+    }
+    Ok(protected)
+}
+
 /// Complete assistant/result occurrences are indivisible; repeated call IDs in
 /// later assistant batches are valid. A missing result is unsafe to summarize.
 fn groups<'a>(messages: &[&'a Message]) -> Result<Vec<Vec<&'a Message>>> {
@@ -353,12 +388,29 @@ fn select_cut(
     })
 }
 
-#[derive(Debug)]
 pub(crate) struct Prepared {
     pub profile: Profile,
     pub request: Value,
     pub kept: Vec<Message>,
     pub checkpoint: Checkpoint,
+}
+
+impl std::fmt::Debug for Prepared {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreparedCompaction")
+            .field(
+                "input_items",
+                &self
+                    .request
+                    .get("input")
+                    .and_then(Value::as_array)
+                    .map_or(0, Vec::len),
+            )
+            .field("kept_messages", &self.kept.len())
+            .field("source_ids", &self.checkpoint.source_ids.len())
+            .field("protected_ids", &self.checkpoint.protected_ids.len())
+            .finish_non_exhaustive()
+    }
 }
 
 #[cfg(test)]
@@ -474,16 +526,7 @@ pub(crate) fn prepare_checked(
             "Already compacted: nothing has been added since the last compaction",
         ));
     }
-    let protected: BTreeSet<&str> = active
-        .iter()
-        .rposition(|row| row.role == "user")
-        .filter(|index| {
-            !active[index + 1..]
-                .iter()
-                .any(|row| row.role == "assistant")
-        })
-        .map(|index| BTreeSet::from([active[index].id.as_str()]))
-        .unwrap_or_default();
+    let protected = protected_input_ids(messages)?;
     let keep_recent =
         20_000.min((profile.context_window - 16_384.min(profile.context_window / 2)) / 2) as u64;
     let mut used = 0u64;

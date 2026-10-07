@@ -200,7 +200,7 @@ async fn edit_native_workflow_trust_loopback_mutation_checkpoint_replay_and_diff
     reopened.retire_and_wait().await.unwrap();
     server.join().unwrap();
     let restored = SessionStore::open(&path).unwrap();
-    assert_eq!(restored.snapshot().version, 5);
+    assert_eq!(restored.snapshot().version, 8);
     let rows = restored
         .snapshot()
         .messages

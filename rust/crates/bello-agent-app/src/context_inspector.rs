@@ -83,6 +83,11 @@ impl ContextInspectorTarget {
             controller: chat.controller.clone(),
             draft: chat.composer.read(cx).text().to_owned(),
             attachments: chat.attachments.clone(),
+            skills: chat
+                .skills
+                .iter()
+                .map(|chip| chip.selection.clone())
+                .collect(),
             draft_revision: chat.draft_revision,
         })
     }
@@ -180,6 +185,7 @@ struct PreviewInput {
     controller: Arc<Controller>,
     draft: String,
     attachments: Vec<bello_agent_core::attachments::AttachmentRecord>,
+    skills: Vec<bello_agent_core::skills::SkillSelection>,
     draft_revision: u64,
 }
 
@@ -233,6 +239,7 @@ pub(crate) struct ContextInspector {
     document: Option<Arc<PreparedDocument>>,
     draft: String,
     attachments: Vec<bello_agent_core::attachments::AttachmentRecord>,
+    skills: Vec<bello_agent_core::skills::SkillSelection>,
     draft_revision: u64,
     page: usize,
     generation: uuid::Uuid,
@@ -301,6 +308,7 @@ impl ContextInspector {
             document: None,
             draft: String::new(),
             attachments: Vec::new(),
+            skills: Vec::new(),
             draft_revision: 0,
             page: 0,
             generation: uuid::Uuid::new_v4(),
@@ -359,13 +367,14 @@ impl ContextInspector {
         let generation = self.generation;
         self.draft = input.draft.clone();
         self.attachments = input.attachments.clone();
+        self.skills = input.skills.clone();
         self.draft_revision = input.draft_revision;
         self.loading = true;
         self.notice = None;
         let task = cx.background_executor().spawn(async move {
             input
                 .controller
-                .prepare_context_with_attachments(&input.draft, &input.attachments)
+                .prepare_context_with_inputs(&input.draft, &input.attachments, &input.skills)
                 .await
                 .map(PreparedDocument::new)
                 .map(Arc::new)
@@ -382,6 +391,7 @@ impl ContextInspector {
         let input = self.input(cx)?;
         if input.draft != self.draft
             || input.attachments != self.attachments
+            || input.skills != self.skills
             || input.draft_revision != self.draft_revision
         {
             return Ok(false);
@@ -513,6 +523,7 @@ impl ContextInspector {
         self.document = None;
         self.draft.clear();
         self.attachments.clear();
+        self.skills.clear();
         self.loading = false;
         self.copying = false;
         self.reader

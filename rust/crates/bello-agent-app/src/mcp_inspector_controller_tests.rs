@@ -156,6 +156,7 @@ async fn fixture(
         project,
         record,
         draft: DraftRecord {
+            skills: Vec::new(),
             attachments: Vec::new(),
             text: "retained composer 日本語".into(),
             ..Default::default()

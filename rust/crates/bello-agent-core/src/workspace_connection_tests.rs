@@ -13,6 +13,7 @@ fn fixture() -> (tempfile::TempDir, WorkspaceStore, ChatRecord) {
         .register(
             chat.clone(),
             DraftRecord {
+                skills: Vec::new(),
                 attachments: Vec::new(),
                 revision: 3,
                 text: "unsent 日本語".into(),

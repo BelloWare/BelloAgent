@@ -366,6 +366,7 @@ fn authority_write_never_holds_catalog_mutex_and_binding_keeps_concurrent_draft(
             .save_draft(
                 &id,
                 DraftRecord {
+                    skills: Vec::new(),
                     attachments: Vec::new(),
                     text: "concurrent draft".into(),
                     revision: 4,

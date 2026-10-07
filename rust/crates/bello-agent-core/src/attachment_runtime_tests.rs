@@ -126,7 +126,7 @@ async fn image_only_retains_exact_bytes_retry_and_reopen_never_reread_source() {
         .as_ref()
         .unwrap()
         .clone();
-    assert_eq!(failed.version, 7);
+    assert_eq!(failed.version, 8);
     assert_eq!(image.image_count(), 1);
     c.retry().unwrap();
     let (socket, retry) = request(&l).await;
@@ -478,6 +478,7 @@ fn certain_submission_receipt_compares_metadata_and_never_calls_absence_on_confl
     let c = controller(&d.path().join("session.json"), "http://127.0.0.1:9", true);
     let input = item(&d.path().join("image.gif"), "");
     let mut receipt = crate::workspace::SubmissionIntent {
+        skills: Vec::new(),
         id: input.id.clone(),
         chat_id: c.snapshot().id,
         text: input.text.clone(),

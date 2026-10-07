@@ -28,6 +28,9 @@ pub struct ChatState {
     pub draft_before_edit: String,
     pub attachments: Vec<bello_agent_core::attachments::AttachmentRecord>,
     pub draft_before_edit_attachments: Vec<bello_agent_core::attachments::AttachmentRecord>,
+    pub skills: Vec<bello_agent_core::skills::SkillChip>,
+    pub draft_before_edit_skills: Vec<bello_agent_core::skills::SkillChip>,
+    pub skill_catalog: crate::project_skills_controller::SkillCatalog,
     pub retained_edit: Option<QueuedDraft>,
     pub begin_error: Option<crate::queue_begin::BeginFailure>,
     pub begin_operation: Option<crate::queue_begin::BeginOperation>,
@@ -158,6 +161,17 @@ impl ChatState {
             } else {
                 Vec::new()
             },
+            skills: if !retain_unowned && draft.queued_edit.is_some() {
+                Vec::new()
+            } else {
+                draft.skills.clone()
+            },
+            draft_before_edit_skills: if !retain_unowned && draft.queued_edit.is_some() {
+                draft.skills.clone()
+            } else {
+                Vec::new()
+            },
+            skill_catalog: Default::default(),
             draft_before_edit: if !retain_unowned && draft.queued_edit.is_some() {
                 draft.text
             } else {
@@ -221,6 +235,7 @@ impl ChatState {
     pub fn replace_controller(&mut self, controller: Arc<Controller>, cx: &mut Context<AgentView>) {
         if !Arc::ptr_eq(&self.controller, &controller) {
             self.transcript = None;
+            self.skill_catalog = Default::default();
             self.queue_drag = None;
             self.queue_drag_task = None;
             self.queue_operation = None;
@@ -273,6 +288,11 @@ impl ChatState {
             })
             .or_else(|| self.retained_edit.clone());
         DraftRecord {
+            skills: if self.editing.is_some() {
+                self.draft_before_edit_skills.clone()
+            } else {
+                self.skills.clone()
+            },
             attachments: if self.editing.is_some() {
                 self.draft_before_edit_attachments.clone()
             } else {

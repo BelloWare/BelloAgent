@@ -2,9 +2,9 @@
 //!
 //! The caller supplies resolved paths/settings; discovery reads no environment,
 //! Codex settings or skills and grants no trust. Production remains disconnected.
-//! The explicit synthetic-authority delivery path uses fixture-only snapshots
-//! with source delivery/retry lifetimes; selected skills remain unsupported.
-use crate::{Result, invalid};
+//! Saved runtimes use the explicit project-only entry point. Legacy synthetic
+//! fixtures may supply a separate home explicitly; it is never inferred.
+use crate::{Error, Result, invalid};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -13,6 +13,7 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
 };
+use tokio_util::sync::CancellationToken;
 
 const FILE_LIMIT: usize = 1024 * 1024;
 pub const DEFAULT_INSTRUCTION_BYTES: usize = 32768;
@@ -59,59 +60,63 @@ pub struct InstructionSnapshot {
 }
 
 pub fn discover(options: &InstructionOptions) -> Result<InstructionSnapshot> {
-    if options.limit > MAX_INSTRUCTION_BYTES || options.roots.is_empty() {
+    discover_with(
+        &options.roots,
+        Some(&options.codex_home),
+        options.limit,
+        &options.fallback_names,
+        &options.additional_paths,
+        &CancellationToken::new(),
+    )
+}
+
+/// Project-only discovery. There is no Codex home and no home/config fallback.
+pub fn discover_project(
+    roots: &[PathBuf],
+    limit: usize,
+    cancel: &CancellationToken,
+) -> Result<InstructionSnapshot> {
+    discover_with(roots, None, limit, &[], &[], cancel)
+}
+
+fn discover_with(
+    root_paths: &[PathBuf],
+    home: Option<&PathBuf>,
+    limit: usize,
+    fallback_names: &[String],
+    extra_paths: &[PathBuf],
+    cancel: &CancellationToken,
+) -> Result<InstructionSnapshot> {
+    check_cancel(cancel)?;
+    if limit > MAX_INSTRUCTION_BYTES || root_paths.is_empty() {
         return Err(invalid(
             "Invalid instruction limit or missing workspace root",
         ));
     }
-    let all_paths = options
-        .roots
-        .iter()
-        .chain(std::iter::once(&options.codex_home))
-        .chain(&options.additional_paths);
+    let all_paths = root_paths.iter().chain(home).chain(extra_paths);
     if all_paths
         .clone()
         .any(|p| !p.is_absolute() || p.to_str().is_none())
     {
         return Err(invalid("Instruction paths must be absolute UTF-8 paths"));
     }
-    if options
-        .fallback_names
+    if fallback_names
         .iter()
         .any(|name| name.is_empty() || name.contains('/') || name == "." || name == "..")
     {
         return Err(invalid("Fallbacks must be filenames"));
     }
-    let codex_home = canonical_path(&options.codex_home)?;
-    let additional_paths = options
-        .additional_paths
+    let codex_home = home.map(|p| canonical_path(p)).transpose()?;
+    let additional_paths = extra_paths
         .iter()
         .map(|p| canonical_path(p))
         .collect::<Result<Vec<_>>>()?;
-    let mut roots = vec![];
-    for root in &options.roots {
-        let root = fs::canonicalize(root)?;
-        if !root.is_dir() {
-            return Err(invalid("Workspace root is not a directory"));
-        }
-        if !roots.contains(&root) {
-            roots.push(root);
-        }
-    }
-    let mut seen = HashSet::new();
-    let mut directories = vec![];
-    for root in &roots {
-        for directory in repository_chain(root) {
-            if seen.insert(directory.clone()) {
-                directories.push(directory);
-            }
-        }
-    }
+    let (roots, directories) = project_directories(root_paths, cancel)?;
     let mut snapshot = InstructionSnapshot {
         repository_root: directories[0].clone(),
         roots,
-        codex_home: codex_home.clone(),
-        limit: options.limit,
+        codex_home: codex_home.clone().unwrap_or_default(),
+        limit,
         included_bytes: 0,
         sources: vec![],
         diagnostics: vec![],
@@ -120,25 +125,26 @@ pub fn discover(options: &InstructionOptions) -> Result<InstructionSnapshot> {
     let mut chunks = vec![];
     let names = ["AGENTS.override.md", "AGENTS.md"]
         .into_iter()
-        .chain(options.fallback_names.iter().map(String::as_str))
+        .chain(fallback_names.iter().map(String::as_str))
         .collect::<Vec<_>>();
-    for directory in std::iter::once(&codex_home).chain(&directories) {
+    for directory in codex_home.iter().chain(&directories) {
+        check_cancel(cancel)?;
         // Swift tests directory equality, rather than the iteration position.
-        let global = directory == &codex_home;
+        let global = codex_home.as_ref() == Some(directory);
         for name in names.iter().take(if global { 2 } else { names.len() }) {
             let path = directory.join(name);
-            let Some(text) = string_file(&path)? else {
+            let Some((text, canonical)) = read_resource_file(&path, FILE_LIMIT, cancel)? else {
                 continue;
             };
             if text.chars().all(source_whitespace) {
                 continue;
             }
-            let included = preview(&text, options.limit.saturating_sub(snapshot.included_bytes));
+            let included = preview(&text, limit.saturating_sub(snapshot.included_bytes));
             let count = included.len();
             snapshot.included_bytes += count;
             let truncated = count < text.len();
             snapshot.sources.push(InstructionSource {
-                path: fs::canonicalize(&path)?,
+                path: canonical,
                 scope: if global { "global" } else { "project" }.into(),
                 hash: hash(&text),
                 bytes: text.len(),
@@ -160,8 +166,8 @@ pub fn discover(options: &InstructionOptions) -> Result<InstructionSnapshot> {
         }
     }
     for path in &additional_paths {
-        if let Some(text) = string_file(path)? {
-            let included = preview(&text, options.limit.saturating_sub(snapshot.included_bytes));
+        if let Some((text, canonical)) = read_resource_file(path, FILE_LIMIT, cancel)? {
+            let included = preview(&text, limit.saturating_sub(snapshot.included_bytes));
             snapshot.included_bytes += included.len();
             if !included.is_empty() {
                 chunks.push(format!(
@@ -171,7 +177,7 @@ pub fn discover(options: &InstructionOptions) -> Result<InstructionSnapshot> {
             }
             let truncated = included.len() < text.len();
             snapshot.sources.push(InstructionSource {
-                path: fs::canonicalize(path)?,
+                path: canonical,
                 scope: "approved additional".into(),
                 hash: hash(&text),
                 bytes: text.len(),
@@ -187,7 +193,7 @@ pub fn discover(options: &InstructionOptions) -> Result<InstructionSnapshot> {
     Ok(snapshot)
 }
 
-fn repository_chain(root: &Path) -> Vec<PathBuf> {
+pub(crate) fn repository_chain(root: &Path) -> Vec<PathBuf> {
     repository_chain_by(root, |directory| directory.join(".git").exists())
 }
 fn repository_chain_by(root: &Path, is_repository: impl Fn(&Path) -> bool) -> Vec<PathBuf> {
@@ -203,7 +209,7 @@ fn repository_chain_by(root: &Path, is_repository: impl Fn(&Path) -> bool) -> Ve
     vec![root.to_path_buf()]
 }
 
-fn canonical_path(path: &Path) -> Result<PathBuf> {
+pub(crate) fn canonical_path(path: &Path) -> Result<PathBuf> {
     // Foundation resolves existing symlinks even when the final component does
     // not exist. Keep missing optional resource directories discoverable.
     if path.exists() {
@@ -218,15 +224,69 @@ fn canonical_path(path: &Path) -> Result<PathBuf> {
     Ok(canonical_path(parent)?.join(name))
 }
 
-fn string_file(path: &Path) -> Result<Option<String>> {
-    // Source's fileExists skips missing paths (including dangling symlinks).
-    if !path.exists() {
-        return Ok(None);
+/// Canonical primary-first roots and repository chains, with shared ancestors
+/// visited once. Canonical symlinks are source identity, not containment policy.
+pub(crate) fn project_directories(
+    root_paths: &[PathBuf],
+    cancel: &CancellationToken,
+) -> Result<(Vec<PathBuf>, Vec<PathBuf>)> {
+    if root_paths.is_empty() || root_paths.len() > 128 {
+        return Err(invalid("Invalid project resource roots"));
     }
+    let mut roots = Vec::new();
+    for root in root_paths {
+        check_cancel(cancel)?;
+        if !root.is_absolute()
+            || root
+                .to_str()
+                .is_none_or(|v| v.len() > 65_536 || v.contains('\0'))
+        {
+            return Err(invalid("Resource roots must be absolute UTF-8 paths"));
+        }
+        let root = fs::canonicalize(root)?;
+        if !root.is_dir() {
+            return Err(invalid("Workspace root is not a directory"));
+        }
+        if !roots.contains(&root) {
+            roots.push(root);
+        }
+    }
+    let mut seen = HashSet::new();
+    let mut directories = Vec::new();
+    for root in &roots {
+        check_cancel(cancel)?;
+        for directory in repository_chain(root) {
+            check_cancel(cancel)?;
+            if seen.insert(directory.clone()) {
+                directories.push(directory);
+            }
+        }
+    }
+    Ok((roots, directories))
+}
+pub(crate) fn check_cancel(cancel: &CancellationToken) -> Result<()> {
+    if cancel.is_cancelled() {
+        Err(Error::Cancelled)
+    } else {
+        Ok(())
+    }
+}
+/// Nonblocking acquisition, descriptor regular-file verification, maximum-plus-
+/// one chunked reads, and observable replacement/growth checks. Never opens home
+/// or configuration files on its own. Callers supply the exact resource path.
+pub(crate) fn read_resource_file(
+    path: &Path,
+    limit: usize,
+    cancel: &CancellationToken,
+) -> Result<Option<(String, PathBuf)>> {
+    check_cancel(cancel)?;
+    let canonical = match fs::canonicalize(path) {
+        Ok(path) => path,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
     let mut options = OpenOptions::new();
     options.read(true);
-    // Match Support.readBounded's nonblocking open, followed by descriptor-based
-    // regular-file validation, including replacement races and symlink targets.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -236,22 +296,55 @@ fn string_file(path: &Path) -> Result<Option<String>> {
         const O_NONBLOCK: i32 = 0x4;
         options.custom_flags(O_NONBLOCK);
     }
-    let file = options.open(path)?;
-    let metadata = file.metadata()?;
-    if !metadata.is_file() {
-        return Err(invalid("Only regular files can be read"));
+    let mut file = options.open(path)?;
+    let before = file.metadata()?;
+    if !before.is_file() {
+        return Err(invalid("Only regular resource files can be read"));
     }
-    if metadata.len() > FILE_LIMIT as u64 {
-        return Err(invalid("File exceeds the supported size limit"));
+    if before.len() > limit as u64 {
+        return Err(invalid("Resource file exceeds the supported size limit"));
     }
-    let mut bytes = vec![];
-    file.take(FILE_LIMIT as u64 + 1).read_to_end(&mut bytes)?;
-    if bytes.len() > FILE_LIMIT {
-        return Err(invalid("File exceeds the supported size limit"));
+    let mut bytes = Vec::with_capacity(before.len() as usize);
+    let mut chunk = [0u8; 65_536];
+    loop {
+        check_cancel(cancel)?;
+        let maximum = (limit + 1 - bytes.len()).min(chunk.len());
+        let count = file.read(&mut chunk[..maximum])?;
+        if count == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&chunk[..count]);
+        if bytes.len() > limit || bytes.len() > before.len() as usize {
+            return Err(invalid("Resource file changed or exceeded its size limit"));
+        }
     }
-    String::from_utf8(bytes)
-        .map(Some)
-        .map_err(|_| invalid("Resource is not valid UTF-8"))
+    let unchanged = |current: &fs::Metadata| {
+        let same = current.is_file()
+            && current.len() == before.len()
+            && current.modified().ok() == before.modified().ok();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            same && current.dev() == before.dev()
+                && current.ino() == before.ino()
+                && current.ctime() == before.ctime()
+                && current.ctime_nsec() == before.ctime_nsec()
+        }
+        #[cfg(not(unix))]
+        {
+            same
+        }
+    };
+    if bytes.len() != before.len() as usize
+        || !unchanged(&file.metadata()?)
+        || !unchanged(&fs::metadata(path)?)
+        || fs::canonicalize(path)? != canonical
+    {
+        return Err(invalid("Resource changed during discovery; refresh"));
+    }
+    check_cancel(cancel)?;
+    let text = String::from_utf8(bytes).map_err(|_| invalid("Resource is not valid UTF-8"))?;
+    Ok(Some((text, canonical)))
 }
 
 // Foundation CharacterSet.whitespacesAndNewlines includes U+200B, unlike

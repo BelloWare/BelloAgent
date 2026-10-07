@@ -1,0 +1,76 @@
+{
+  "baseline_commit": "af1ce5f7567b67358db03fd56339bce1c83bcb3f",
+  "baseline_tree": "b3f558ca185153e60c5fe82227fad009c7b2424b",
+  "source_status": "staging source frozen; exact Rust manifest recorded in adjacent LOC ledger; publication pending root",
+  "core_default": {
+    "unit": 360,
+    "integration": 125,
+    "total": 485,
+    "failed": 0,
+    "ignored": 0
+  },
+  "core_all_features": {
+    "unit": 506,
+    "integration": 125,
+    "total": 631,
+    "failed": 0,
+    "ignored": 0,
+    "nested_subprocess_log_repeats_excluded": 2
+  },
+  "checks": {
+    "default_clippy_all_targets": "passed -D warnings",
+    "all_features_clippy_all_targets": "passed -D warnings",
+    "workspace_fmt": "passed",
+    "three_mutation_controls": "each intended runtime/storage test failed; no compile-error substitution; source restored",
+    "existing_ui_harness_self_tests": 12,
+    "existing_benchmark_parser_self_tests": 42,
+    "skills_fixture_self_tests": 5
+  },
+  "pending": {
+    "actual_gui": "in progress, separate observed case report required",
+    "native_macos_source_oracle": "not executed on Linux; CI for final published checkpoint required",
+    "production_startup": "still gated; no gate lifted"
+  },
+  "logs": [
+    {
+      "file": "core-default.log",
+      "sha256": "7483ca45a0cceabf11735115bfd2d627fbfd22f23a17556477ee06e2f6924d37",
+      "bytes": 50115
+    },
+    {
+      "file": "core-all-features.log",
+      "sha256": "095387da5683ede0b5b3ec8b71ead7701161fea40a7b40efee1adc58d3a75a8d",
+      "bytes": 66743
+    },
+    {
+      "file": "core-default-clippy.log",
+      "sha256": "8371b9acce4242d3c43be9fc76aa48fae158b11937555d870d0b977f068770a3",
+      "bytes": 166
+    },
+    {
+      "file": "core-all-features-clippy.log",
+      "sha256": "3a5d1fbb6da715ece3f82d1db7410bc837ebd65ee2e73eb2662f84a65e43b92f",
+      "bytes": 166
+    },
+    {
+      "file": "workspace-fmt.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "file": "negative-delivery-scope.log",
+      "sha256": "971fcb505cc2df0e71c5390eae7e195ff67e9bc060b5eaeb43466fddd33e8823",
+      "bytes": 1114
+    },
+    {
+      "file": "negative-metadata-revocation.log",
+      "sha256": "a9bd897f88be9ba4c0cf3a0c6a804ba862f27f6024e0a9bcc7e2bb1ba2aa646b",
+      "bytes": 1118
+    },
+    {
+      "file": "negative-task-carrier.log",
+      "sha256": "63e73ea59cef4af99e6391d19b7229124212575ae4bc5be363e2a1d8a8e624f9",
+      "bytes": 1163
+    }
+  ]
+}

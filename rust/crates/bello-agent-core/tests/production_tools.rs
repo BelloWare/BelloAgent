@@ -150,7 +150,7 @@ async fn trusted_controller_executes_ordered_batch_and_replays_results_after_reo
     assert_eq!(reopened.messages.len(), complete.messages.len());
     // Shutdown may win the queue worker's final boundary and durably pause it.
     assert_eq!(reopened.state, settled_state);
-    assert_eq!(reopened.version, 3);
+    assert_eq!(reopened.version, 8);
 }
 
 #[tokio::test]

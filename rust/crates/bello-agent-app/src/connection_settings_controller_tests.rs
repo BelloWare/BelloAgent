@@ -59,6 +59,7 @@ fn fixture_with_trust(
         project,
         record,
         draft: DraftRecord {
+            skills: Vec::new(),
             attachments: Vec::new(),
             text: "keep composer 日本語".into(),
             ..Default::default()
@@ -503,6 +504,7 @@ fn unloaded_legacy_chat_stays_disconnected_after_another_chat_selects_a_saved_co
             );
             record.materialization = bello_agent_core::workspace::ChatMaterialization::Pending;
             let draft = DraftRecord {
+                skills: Vec::new(),
                 attachments: Vec::new(),
                 text: "Legacy draft stays disconnected 日本語".into(),
                 ..Default::default()
@@ -1268,6 +1270,7 @@ fn checkpoint_required_missing_on_navigation_keeps_draft_and_inert_placeholder(
             );
             record.connection_id = Some(saved.clone());
             let draft = DraftRecord {
+                skills: Vec::new(),
                 attachments: Vec::new(),
                 text: "never replace lost checkpoint".into(),
                 ..Default::default()
@@ -1315,6 +1318,7 @@ fn first_send_crash_before_checkpoint_can_recover_complete_receipt_without_openi
     let id = uuid::Uuid::new_v4().to_string();
     let full = format!("{}日本語 last retained words", "retained input ".repeat(80));
     let intent = SubmissionIntent {
+        skills: Vec::new(),
         attachments: Vec::new(),
         id: uuid::Uuid::new_v4().to_string(),
         chat_id: id.clone(),
@@ -1522,6 +1526,7 @@ fn missing_image_receipt(
     let saved = save_fixture(window, &root, cx);
     let id = uuid::Uuid::new_v4().to_string();
     let intent = SubmissionIntent {
+        skills: Vec::new(),
         id: uuid::Uuid::new_v4().to_string(),
         chat_id: id.clone(),
         text: "unverified image caption".into(),
@@ -1692,6 +1697,7 @@ fn unavailable_receipt_never_erases_newer_saved_draft_or_its_receipt(cx: &mut Te
     root.update(cx, |view, cx| {
         view.resolve_intent(&intent.id, true, cx);
         let newer = DraftRecord {
+            skills: Vec::new(),
             revision: view.draft_revision + 1,
             text: "newer catalog draft".into(),
             attachments: intent.attachments.clone(),

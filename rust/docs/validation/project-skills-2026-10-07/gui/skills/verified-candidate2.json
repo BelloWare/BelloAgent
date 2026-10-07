@@ -1,0 +1,29 @@
+{
+  "binary_sha256": "19588b1d3652f622b3be5d8a73dc4c339b2ae95e81d63529cc3331738fdda586",
+  "fixture_id": "5974a752-8ed7-4ba4-a2cd-f1d8f57fc855",
+  "checks": {
+    "immutable_binary_matches_manifest": true,
+    "accepted_skill_only_queued_with_frozen_v1": true,
+    "body_mutation_kept_metadata_hash": true,
+    "body_mutation_changed_content_hash": true,
+    "queued_delivery_v1_only": true,
+    "body_change_drained_queue": true,
+    "policy_change_paused_retained_same_selection": true,
+    "empty_edit_saved_same_held_selection": true,
+    "retry_after_source_deleted_retains_exact_recorded_user_rows": true,
+    "retry_provider_replays_recorded_beta": true,
+    "retry_has_no_duplicate_user": true,
+    "final_idle_queue_empty": true,
+    "source_beta_deleted": true,
+    "snapshot_v8": true,
+    "screenshot_sha_15-latest-queued-alpha": true,
+    "screenshot_sha_16-active-context-excludes-pending-alpha": true,
+    "screenshot_sha_17-frozen-alpha-delivered": true,
+    "screenshot_sha_18-active-context-captured-queued-exclusion": true,
+    "screenshot_sha_19-policy-revocation-pauses-queued-selection": true,
+    "screenshot_sha_20-held-skill-edit-parks-ordinary-draft": true,
+    "screenshot_sha_21-cancel-restores-ordinary-skill": true,
+    "screenshot_sha_25-retry-after-source-deletion": true,
+    "screenshot_sha_26-same-process-project-trust-reload": true
+  }
+}

@@ -52,6 +52,8 @@ jobs:
           cargo test --locked -p bello-agent-app --features synthetic-authority connection_
           cargo test --locked -p bello-agent-app --features synthetic-authority mcp_inspector
           cargo test --locked -p bello-agent-app --features synthetic-authority composer_attachments::
+          cargo test --locked -p bello-agent-app --features synthetic-authority composer_skills::
+          cargo test --locked -p bello-agent-app --features synthetic-authority context_inspector::
           cargo test --locked -p bello-agent-app --features synthetic-authority attachment_fixture::
       - name: Lints
         run: cargo clippy --locked --workspace --all-targets -- -D warnings

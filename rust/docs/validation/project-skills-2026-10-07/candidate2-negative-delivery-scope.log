@@ -1,0 +1,20 @@
+     Removed 436 files, 506.6MiB total
+   Compiling bello-agent-core v0.1.0 (/workspace/shared/agent-skills-candidate2-negative/rust/crates/bello-agent-core)
+    Finished `test` profile [unoptimized] target(s) in 39.33s
+     Running unittests src/lib.rs (/workspace/shared/agent-attachments-target/debug/deps/bello_agent_core-066ff34ba6df5110)
+
+running 1 test
+
+thread 'saved_runtime::tests::skills::mcp_presence_scope_is_rechecked_at_acceptance_delivery_and_settled_steering_commit' (479) panicked at crates/bello-agent-core/src/saved_runtime_tests.rs:194:6:
+called `Result::unwrap()` on an `Err` value: Elapsed(())
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test saved_runtime::tests::skills::mcp_presence_scope_is_rechecked_at_acceptance_delivery_and_settled_steering_commit ... FAILED
+
+failures:
+
+failures:
+    saved_runtime::tests::skills::mcp_presence_scope_is_rechecked_at_acceptance_delivery_and_settled_steering_commit
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 494 filtered out; finished in 5.06s
+
+error: test failed, to rerun pass `-p bello-agent-core --lib`

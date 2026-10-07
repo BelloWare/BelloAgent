@@ -1,5 +1,7 @@
 #[path = "attachment_runtime.rs"]
 mod attachment_runtime;
+#[path = "project_input_runtime.rs"]
+pub(crate) mod project_input_runtime;
 
 #[path = "compaction_runtime.rs"]
 mod compaction_runtime;
@@ -40,6 +42,7 @@ use tokio_util::sync::CancellationToken;
 
 struct Inner {
     store: SessionStore,
+    applied_project: Option<project_input_runtime::AppliedProjectResources>,
     worker_running: bool,
     compaction_pending: bool,
     worker_epoch: Arc<()>,
@@ -138,6 +141,8 @@ pub struct Controller {
     suspension_released: tokio::sync::Notify,
     worker_active: AtomicBool,
     config: RwLock<Option<Arc<Configuration>>>,
+    configuration_generation: AtomicU64,
+    project_resources: Option<project_input_runtime::ProjectRuntimeBinding>,
     pending_settings: AtomicBool,
     options: RuntimeOptions,
     attachment_workers: crate::tools::BlockingWorkExecutor,
@@ -146,6 +151,10 @@ pub struct Controller {
     fixture_images: AtomicBool,
     #[cfg(test)]
     attachment_processor_barrier: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    #[cfg(test)]
+    resource_preparation_barrier: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    #[cfg(test)]
+    input_commit_gate: Mutex<Option<(String, Arc<project_input_runtime::InputCommitGate>)>>,
     authority: Option<Arc<dyn RuntimeAuthorityGuard>>,
     #[cfg(feature = "synthetic-authority")]
     resources: Option<SyntheticResources>,
@@ -250,11 +259,14 @@ impl Controller {
                 cancel: None,
                 fatal: None,
                 pending_configuration: None,
+                applied_project: None,
                 configuration_epoch: Arc::new(()),
                 #[cfg(feature = "synthetic-authority")]
                 applied_instructions: None,
             }),
             config: RwLock::new(configuration),
+            configuration_generation: AtomicU64::new(0),
+            project_resources: None,
             pending_settings: AtomicBool::new(false),
             options,
             attachment_workers: crate::tools::BlockingWorkExecutor::shared(),
@@ -263,6 +275,10 @@ impl Controller {
             fixture_images: AtomicBool::new(false),
             #[cfg(test)]
             attachment_processor_barrier: Mutex::new(None),
+            #[cfg(test)]
+            resource_preparation_barrier: Mutex::new(None),
+            #[cfg(test)]
+            input_commit_gate: Mutex::new(None),
             authority,
             #[cfg(feature = "synthetic-authority")]
             resources: None,
@@ -392,6 +408,7 @@ impl Controller {
             .config
             .write()
             .map_err(|_| invalid("Connection is unavailable"))? = Some(configuration);
+        self.configuration_generation.fetch_add(1, Ordering::AcqRel);
         self.publish(&inner);
         Ok(true)
     }
@@ -425,6 +442,7 @@ impl Controller {
     fn worker_finished(&self, inner: &mut Inner) {
         let configured = if let Some(configuration) = inner.pending_configuration.take() {
             *self.config.write().expect("configuration lock poisoned") = Some(configuration);
+            self.configuration_generation.fetch_add(1, Ordering::AcqRel);
             true
         } else {
             false
@@ -467,7 +485,7 @@ impl Controller {
         self.submit_identified(Submission::new(text, lane))
     }
     pub fn submit_identified(self: &Arc<Self>, mut item: Submission) -> Result<()> {
-        if !item.attachments.is_empty() {
+        if !item.attachments.is_empty() || !item.frozen_skills.is_empty() {
             return Err(invalid(
                 "Image submissions require asynchronous attachment preparation",
             ));

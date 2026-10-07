@@ -140,6 +140,7 @@ mod tests {
     use bello_agent_core::{Message, Session};
     fn message(id: &str, role: &str, text: &str) -> Message {
         Message {
+            task_root_id: None,
             user_content: None,
             id: id.into(),
             role: role.into(),
@@ -320,6 +321,7 @@ mod tests {
                 snapshot: path,
             },
             draft: DraftRecord {
+                skills: Vec::new(),
                 attachments: Vec::new(),
                 text: draft,
                 ..Default::default()

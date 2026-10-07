@@ -65,12 +65,17 @@ pub(crate) fn message_label(message: &Message) -> Cow<'_, str> {
     if message.text.is_empty() && message.state == "streaming" {
         Cow::Borrowed("Generating response…")
     } else {
-        input_label(
+        crate::composer_skills::input_label(
             &message.text,
             message
                 .user_content
                 .as_ref()
                 .map_or(0, |content| content.attachments.len()),
+            message
+                .user_content
+                .as_ref()
+                .into_iter()
+                .flat_map(|content| content.skills.iter().map(|s| s.name.as_str())),
         )
     }
 }
@@ -127,9 +132,9 @@ impl AgentView {
     pub(crate) fn composer_has_input(&self, cx: &App) -> bool {
         !self.composer.read(cx).text().trim().is_empty()
             || if self.editing.is_some() {
-                self.held_input_has_images()
+                self.held_input_has_images() || self.held_input_has_skills()
             } else {
-                !self.attachments.is_empty()
+                !self.attachments.is_empty() || !self.skills.is_empty()
             }
     }
     pub(crate) fn choose_images(&mut self, _window: &mut Window, cx: &mut Context<Self>) {

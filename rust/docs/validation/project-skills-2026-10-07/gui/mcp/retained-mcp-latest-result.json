@@ -1,0 +1,1 @@
+{"version":1,"project":"6e6e1773-0808-4d1c-83c7-3ba0d73ac950","invocation":"15e735a3-e871-48ac-857c-f0c4c06c11fc","server":"fixture","tool":"echo","result":{"content":[{"type":"text","text":"MCP loopback fixture result: one invocation completed."}],"isError":false}}

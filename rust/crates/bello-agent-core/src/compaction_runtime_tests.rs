@@ -13,6 +13,7 @@ fn profile(endpoint: String) -> Profile {
 }
 fn row(id: &str, role: &str, text: String) -> Message {
     Message {
+        task_root_id: None,
         user_content: None,
         id: id.into(),
         role: role.into(),

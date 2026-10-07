@@ -12,7 +12,7 @@ use uuid::Uuid;
 const MAX_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CHATS: usize = 512;
 const MAX_DRAFT_BYTES: usize = 262_144;
-const CURRENT_VERSION: u32 = 8;
+const CURRENT_VERSION: u32 = 9;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct QueuedDraft {
@@ -25,6 +25,8 @@ pub struct QueuedDraft {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DraftRecord {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<crate::skills::SkillChip>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<crate::attachments::AttachmentRecord>,
     pub revision: u64,
     pub text: String,
@@ -32,7 +34,10 @@ pub struct DraftRecord {
 }
 impl DraftRecord {
     pub fn is_empty(&self) -> bool {
-        self.text.trim().is_empty() && self.attachments.is_empty() && self.queued_edit.is_none()
+        self.text.trim().is_empty()
+            && self.attachments.is_empty()
+            && self.skills.is_empty()
+            && self.queued_edit.is_none()
     }
     /// Pure-model comparison for callers that already own a certain model.
     /// Never pass a cached UI snapshot here for persistence recovery; query
@@ -93,6 +98,7 @@ impl DraftRecord {
     }
     fn validate(&self) -> Result<()> {
         crate::attachments::validate_draft(&self.attachments)?;
+        crate::skills::validate_chips(&self.skills, 16)?;
         if self.text.len() > MAX_DRAFT_BYTES
             || self.queued_edit.as_ref().is_some_and(|v| {
                 v.rewrite.len() > MAX_DRAFT_BYTES
@@ -199,6 +205,8 @@ pub fn organization_timestamp() -> u64 {
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SubmissionIntent {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<crate::skills::SkillChip>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<crate::attachments::AttachmentRecord>,
     pub id: String,
@@ -319,8 +327,8 @@ impl<'de> Deserialize<'de> for WorkspaceSnapshot {
             project_id: Option<String>,
             revision: u64,
             chats: Vec<Box<serde_json::value::RawValue>>,
-            drafts: BTreeMap<String, DraftRecord>,
-            intents: BTreeMap<String, SubmissionIntent>,
+            drafts: BTreeMap<String, Box<serde_json::value::RawValue>>,
+            intents: BTreeMap<String, Box<serde_json::value::RawValue>>,
             selected: Option<String>,
             selection_revision: u64,
             #[serde(default)]
@@ -429,14 +437,41 @@ impl<'de> Deserialize<'de> for WorkspaceSnapshot {
             })
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(serde::de::Error::custom)?;
+        if record.version < 9 {
+            for raw in record.drafts.values().chain(record.intents.values()) {
+                if crate::skill_schema::old_catalog_record_has_skills(raw.get())
+                    .map_err(serde::de::Error::custom)?
+                {
+                    return Err(serde::de::Error::custom(
+                        "Skill fields require Rust workspace catalog version 9",
+                    ));
+                }
+            }
+        }
+        let drafts = record
+            .drafts
+            .into_iter()
+            .map(|(key, value)| {
+                serde_json::from_str::<DraftRecord>(value.get()).map(|value| (key, value))
+            })
+            .collect::<std::result::Result<BTreeMap<_, _>, _>>()
+            .map_err(serde::de::Error::custom)?;
+        let intents = record
+            .intents
+            .into_iter()
+            .map(|(key, value)| {
+                serde_json::from_str::<SubmissionIntent>(value.get()).map(|value| (key, value))
+            })
+            .collect::<std::result::Result<BTreeMap<_, _>, _>>()
+            .map_err(serde::de::Error::custom)?;
         Ok(Self {
             version: record.version,
             project: record.project,
             project_id: record.project_id,
             revision: record.revision,
             chats,
-            drafts: record.drafts,
-            intents: record.intents,
+            drafts,
+            intents,
             selected: record.selected,
             selection_revision: record.selection_revision,
             show_archived: record.show_archived,
@@ -492,6 +527,14 @@ impl WorkspaceSnapshot {
             .is_some_and(|id| Uuid::parse_str(id).is_err())
         {
             return Err(invalid("Invalid saved project identity"));
+        }
+        if self.version < 9
+            && (self.drafts.values().any(|d| !d.skills.is_empty())
+                || self.intents.values().any(|i| !i.skills.is_empty()))
+        {
+            return Err(invalid(
+                "Skill drafts require Rust workspace catalog version 9",
+            ));
         }
         if self.version < 8
             && (self.drafts.values().any(|d| !d.attachments.is_empty())
@@ -579,10 +622,29 @@ impl WorkspaceSnapshot {
         }
         for (id, intent) in &self.intents {
             crate::attachments::validate_selection(&intent.attachments)?;
+            crate::skills::validate_chips(&intent.skills, 8)?;
+            if intent
+                .skills
+                .iter()
+                .any(|chip| chip.selection.intent != crate::skills::SkillIntent::Picker)
+            {
+                return Err(invalid(
+                    "Submission receipts require explicit picker selections",
+                ));
+            }
+            crate::skills::validate_selections(
+                &intent
+                    .skills
+                    .iter()
+                    .map(|chip| chip.selection.clone())
+                    .collect::<Vec<_>>(),
+            )?;
             if id != &intent.id
                 || Uuid::parse_str(id).is_err()
                 || !ids.contains(&intent.chat_id)
-                || (intent.text.trim().is_empty() && intent.attachments.is_empty())
+                || (intent.text.trim().is_empty()
+                    && intent.attachments.is_empty()
+                    && intent.skills.is_empty())
                 || intent.text.len() > MAX_DRAFT_BYTES
             {
                 return Err(invalid("Invalid retained submission intent"));
@@ -1234,6 +1296,7 @@ impl WorkspaceStore {
             if draft.revision == intent.draft_revision
                 && draft.text == intent.text
                 && draft.attachments == intent.attachments
+                && draft.skills == intent.skills
                 && draft.queued_edit.is_none()
             {
                 draft.revision = draft
@@ -1242,6 +1305,7 @@ impl WorkspaceStore {
                     .ok_or_else(|| invalid("Draft revision overflow"))?;
                 draft.text.clear();
                 draft.attachments.clear();
+                draft.skills.clear();
             }
             let chat = state
                 .chats
@@ -1545,6 +1609,7 @@ mod tests {
         let (dir, mut store, chat) = fixture();
         assert!(!dir.path().join("workspace.json").exists());
         let draft = DraftRecord {
+            skills: Vec::new(),
             attachments: Vec::new(),
             revision: 1,
             text: "Half a thought".into(),
@@ -1565,6 +1630,7 @@ mod tests {
             .register(chat.clone(), DraftRecord::default())
             .unwrap();
         let mut draft = DraftRecord {
+            skills: Vec::new(),
             attachments: Vec::new(),
             revision: 1000,
             text: "new".into(),
@@ -1585,6 +1651,7 @@ mod tests {
             .register(
                 chat.clone(),
                 DraftRecord {
+                    skills: Vec::new(),
                     attachments: Vec::new(),
                     revision: 3,
                     text: "first".into(),
@@ -1593,6 +1660,7 @@ mod tests {
             )
             .unwrap();
         let mut intent = SubmissionIntent {
+            skills: Vec::new(),
             attachments: Vec::new(),
             id: Uuid::new_v4().to_string(),
             chat_id: chat.id.clone(),
@@ -1607,6 +1675,7 @@ mod tests {
             .save_draft(
                 &chat.id,
                 DraftRecord {
+                    skills: Vec::new(),
                     attachments: Vec::new(),
                     revision: 5,
                     text: "newer".into(),
@@ -1650,6 +1719,7 @@ mod tests {
             .register(
                 chat.clone(),
                 DraftRecord {
+                    skills: Vec::new(),
                     attachments: Vec::new(),
                     revision: 3,
                     text: "first".into(),
@@ -1658,6 +1728,7 @@ mod tests {
             )
             .unwrap();
         let intent = SubmissionIntent {
+            skills: Vec::new(),
             attachments: Vec::new(),
             id: Uuid::new_v4().to_string(),
             chat_id: chat.id.clone(),
@@ -1666,6 +1737,7 @@ mod tests {
             draft_revision: 3,
         };
         let second = DraftRecord {
+            skills: Vec::new(),
             attachments: Vec::new(),
             revision: 5,
             text: "second".into(),
@@ -1682,6 +1754,7 @@ mod tests {
             .save_submitting_draft(
                 chat.clone(),
                 DraftRecord {
+                    skills: Vec::new(),
                     attachments: Vec::new(),
                     revision: 6,
                     ..second
@@ -1702,6 +1775,7 @@ mod tests {
                 .register(
                     chat.clone(),
                     DraftRecord {
+                        skills: Vec::new(),
                         attachments: Vec::new(),
                         revision: 3,
                         text: "first".into(),
@@ -1713,6 +1787,7 @@ mod tests {
         assert!(store.snapshot().chats.is_empty());
         store.fault = Fault::None;
         let intent = SubmissionIntent {
+            skills: Vec::new(),
             attachments: Vec::new(),
             id: Uuid::new_v4().to_string(),
             chat_id: chat.id.clone(),
@@ -1721,6 +1796,7 @@ mod tests {
             draft_revision: 3,
         };
         let restored = DraftRecord {
+            skills: Vec::new(),
             attachments: Vec::new(),
             revision: 6,
             text: "first\n\nsecond".into(),
@@ -1733,6 +1809,7 @@ mod tests {
             .save_submitting_draft(
                 chat.clone(),
                 DraftRecord {
+                    skills: Vec::new(),
                     attachments: Vec::new(),
                     revision: 5,
                     text: "second".into(),
@@ -1748,6 +1825,7 @@ mod tests {
     fn failed_intent_commit_keeps_text_or_durable_receipt_at_each_rename_boundary() {
         let (dir, mut store, chat) = fixture();
         let draft = DraftRecord {
+            skills: Vec::new(),
             attachments: Vec::new(),
             revision: 3,
             text: "first".into(),
@@ -1755,6 +1833,7 @@ mod tests {
         };
         store.register(chat.clone(), draft.clone()).unwrap();
         let intent = SubmissionIntent {
+            skills: Vec::new(),
             attachments: Vec::new(),
             id: Uuid::new_v4().to_string(),
             chat_id: chat.id.clone(),
@@ -1781,6 +1860,7 @@ mod tests {
                 .save_draft(
                     &chat.id,
                     DraftRecord {
+                        skills: Vec::new(),
                         attachments: Vec::new(),
                         revision: 10,
                         text: "must wait".into(),
@@ -1800,6 +1880,7 @@ mod tests {
     fn pin_commit_failure_preserves_old_state_or_marks_uncertain_until_reopen() {
         let (dir, mut store, chat) = fixture();
         let draft = DraftRecord {
+            skills: Vec::new(),
             attachments: Vec::new(),
             revision: 3,
             text: "keep draft".into(),
@@ -1894,6 +1975,7 @@ mod tests {
                     .unwrap();
             }
             let mut intent = SubmissionIntent {
+                skills: Vec::new(),
                 attachments: Vec::new(),
                 id: Uuid::new_v4().to_string(),
                 chat_id: chat.id.clone(),
@@ -2064,6 +2146,7 @@ mod tests {
             .prepare_queued_cancel(&chat.id, pending.clone(), draft.clone())
             .unwrap();
         let intent = SubmissionIntent {
+            skills: Vec::new(),
             attachments: Vec::new(),
             id: Uuid::new_v4().to_string(),
             chat_id: chat.id.clone(),
@@ -2346,6 +2429,7 @@ mod tests {
         let mut pending = chat.clone();
         pending.id = Uuid::new_v4().to_string();
         let oversized = DraftRecord {
+            skills: Vec::new(),
             attachments: Vec::new(),
             text: "x".repeat(MAX_DRAFT_BYTES + 1),
             ..DraftRecord::default()
@@ -2476,6 +2560,7 @@ mod tests {
             .unwrap();
         assert_eq!(store.snapshot().version, CURRENT_VERSION);
         let later = DraftRecord {
+            skills: Vec::new(),
             attachments: Vec::new(),
             revision: merged.revision + 1,
             text: "later".into(),
@@ -2487,6 +2572,7 @@ mod tests {
             .flush_draft_exact(
                 &chat.id,
                 DraftRecord {
+                    skills: Vec::new(),
                     attachments: Vec::new(),
                     revision: later.revision + 1,
                     ..later.clone()
@@ -2495,6 +2581,7 @@ mod tests {
             .unwrap();
         assert_eq!(store.snapshot().version, CURRENT_VERSION);
         let mut intent = SubmissionIntent {
+            skills: Vec::new(),
             attachments: Vec::new(),
             id: Uuid::new_v4().to_string(),
             chat_id: chat.id.clone(),
@@ -2542,6 +2629,7 @@ mod tests {
     }
     fn held_draft(revision: u64) -> DraftRecord {
         DraftRecord {
+            skills: Vec::new(),
             attachments: Vec::new(),
             revision,
             text: "displaced draft".into(),
@@ -2794,6 +2882,7 @@ mod tests {
         let merged = reconciled(&draft);
         store.save_draft(&chat.id, merged.clone()).unwrap();
         let newer = DraftRecord {
+            skills: Vec::new(),
             attachments: Vec::new(),
             revision: merged.revision + 1,
             text: "new postmerge typing".into(),
@@ -2949,6 +3038,7 @@ mod tests {
                     &pending,
                     &overflow,
                     DraftRecord {
+                        skills: Vec::new(),
                         attachments: Vec::new(),
                         revision: 0,
                         text: String::new(),
@@ -3089,6 +3179,7 @@ mod tests {
             .set_pinned(chat.clone(), DraftRecord::default(), true, 1)
             .unwrap();
         let intent = SubmissionIntent {
+            skills: Vec::new(),
             attachments: Vec::new(),
             id: Uuid::new_v4().to_string(),
             chat_id: chat.id.clone(),
@@ -3106,6 +3197,7 @@ mod tests {
             .unwrap();
         let settled = store.snapshot().queued_cancellations[&chat.id].clone();
         let later = DraftRecord {
+            skills: Vec::new(),
             attachments: Vec::new(),
             revision: merged.revision + 1,
             text: "later".into(),
@@ -3203,6 +3295,7 @@ mod tests {
     fn cancel_without_a_retained_queued_draft_preserves_ordinary_typing() {
         let (dir, mut store, chat) = fixture();
         let initial = DraftRecord {
+            skills: Vec::new(),
             attachments: Vec::new(),
             revision: 7,
             text: "ordinary draft".into(),
@@ -3214,6 +3307,7 @@ mod tests {
             .prepare_queued_cancel(&chat.id, pending.clone(), initial.clone())
             .unwrap();
         let latest = DraftRecord {
+            skills: Vec::new(),
             attachments: Vec::new(),
             revision: 8,
             text: "newer ordinary typing".into(),
@@ -3431,6 +3525,7 @@ mod materialization_tests {
             ChatRecord::new(id.clone(), "Pending".into(), store.chat_path(&id).unwrap());
         record.materialization = ChatMaterialization::Pending;
         let draft = DraftRecord {
+            skills: Vec::new(),
             attachments: Vec::new(),
             revision: 1,
             text: "exact retained text".into(),
@@ -3438,6 +3533,7 @@ mod materialization_tests {
         };
         store.register(record.clone(), draft.clone()).unwrap();
         let intent = SubmissionIntent {
+            skills: Vec::new(),
             attachments: Vec::new(),
             id: Uuid::new_v4().to_string(),
             chat_id: id,
@@ -3497,6 +3593,7 @@ mod materialization_tests {
             .save_submitting_draft(
                 record.clone(),
                 DraftRecord {
+                    skills: Vec::new(),
                     attachments: Vec::new(),
                     revision: 8,
                     text: "newer".into(),

@@ -58,7 +58,7 @@ fn user_delivery_checkpoint_has_exactly_one_recovery_owner_at_rename_failures() 
         }
         drop(store);
         let reopened = SessionStore::open(&path).unwrap().snapshot();
-        assert_eq!(reopened.version, 7);
+        assert_eq!(reopened.version, if delivered { 8 } else { 7 });
         assert_eq!(
             reopened.pending.iter().filter(|s| s.id == item.id).count(),
             usize::from(!delivered)

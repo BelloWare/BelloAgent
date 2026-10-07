@@ -51,6 +51,7 @@ pub struct ContextPreview {
     request_json: String,
     owner: Weak<Controller>,
     configuration: Weak<super::Configuration>,
+    resources: Option<Arc<crate::project_resources::ProjectResourceSnapshot>>,
 }
 impl ContextPreview {
     pub fn metadata(&self) -> &ContextPreviewMetadata {
@@ -86,7 +87,17 @@ impl Controller {
     /// simulate Retry, deliver queued turns, or replay retained partial output.
     /// Call from background work: serialization can process up to 32 MiB.
     pub fn prepare_context(self: &Arc<Self>, draft: &str) -> Result<ContextPreview> {
-        self.prepare_context_prepared(draft, None, None, false)
+        let state = self.preview_state()?;
+        let resources = if state.active {
+            self.inner
+                .try_lock()
+                .map_err(|_| invalid("The conversation is changing. Refresh the context preview."))?
+                .applied_project
+                .clone()
+        } else {
+            None
+        };
+        self.prepare_context_prepared(draft, Some(state), None, false, resources)
     }
     /// Picker draft preparation is explicit. Active work defers the draft and
     /// never opens its files. All image work runs outside the conversation actor.
@@ -95,38 +106,70 @@ impl Controller {
         draft: &str,
         attachments: &[crate::attachments::AttachmentRecord],
     ) -> Result<ContextPreview> {
-        if attachments.is_empty() {
-            return self.prepare_context(draft);
-        }
-        #[cfg(feature = "synthetic-authority")]
-        if self.resources.is_some() {
-            return Err(invalid(
-                "Context inspection is not yet available for synthetic resource runtimes",
-            ));
-        }
+        self.prepare_context_with_inputs(draft, attachments, &[])
+            .await
+    }
+    pub async fn prepare_context_with_inputs(
+        self: &Arc<Self>,
+        draft: &str,
+        attachments: &[crate::attachments::AttachmentRecord],
+        selections: &[crate::skills::SkillSelection],
+    ) -> Result<ContextPreview> {
         if draft.len() > MAX_DRAFT_BYTES {
             return Err(invalid(
                 "Draft exceeds the supported 256 KiB submission limit",
             ));
         }
         crate::attachments::validate_selection(attachments)?;
+        crate::skills::validate_selections(selections)?;
         let state = self.preview_state()?;
-        let content = if state.active {
+        let active = state.active;
+        let config = state.configuration.clone();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let resources = if active {
+            self.inner
+                .try_lock()
+                .map_err(|_| invalid("The conversation is changing. Refresh the context preview."))?
+                .applied_project
+                .clone()
+        } else {
+            let item = crate::Submission::new(draft.to_owned(), crate::Lane::FollowUp);
+            self.prepare_delivery_resources(&item, &config, false, cancel.clone())
+                .await?
+        };
+        let has_input = !attachments.is_empty() || !selections.is_empty();
+        let content = if active || !has_input {
             None
         } else {
             let mut item = crate::Submission::new(draft.to_owned(), crate::Lane::FollowUp);
             item.attachments = attachments.to_vec();
-            item.model = Some(state.configuration.profile.model_id.clone());
-            self.prepare_user_input(
-                &item,
-                &state.configuration,
-                tokio_util::sync::CancellationToken::new(),
-                false,
-            )
-            .await?
-            .map(|prepared| prepared.content)
+            item.model = Some(config.profile.model_id.clone());
+            if !selections.is_empty() {
+                item.frozen_skills = resources
+                    .as_ref()
+                    .ok_or_else(|| invalid("Project skills require a saved project runtime"))?
+                    .snapshot
+                    .freeze(selections)?;
+            }
+            self.prepare_user_input(&item, &config, cancel.clone(), false)
+                .await?
+                .map(|prepared| prepared.content)
         };
-        self.prepare_context_prepared(draft, Some(state), content, true)
+        self.confirm_dependency_snapshot(resources.as_ref())?;
+        if !active && let Some(resources) = &resources {
+            let fresh = self
+                .prepare_project_snapshot(&config, None, cancel)
+                .await?
+                .ok_or_else(|| invalid("Project resources are unavailable"))?;
+            if fresh.revision != resources.snapshot.revision
+                || fresh.scope != resources.snapshot.scope
+            {
+                return Err(invalid(
+                    "Project resources changed. Refresh the context preview.",
+                ));
+            }
+        }
+        self.prepare_context_prepared(draft, Some(state), content, has_input, resources)
     }
     fn prepare_context_prepared(
         self: &Arc<Self>,
@@ -134,6 +177,7 @@ impl Controller {
         captured: Option<PreviewState>,
         content: Option<Arc<crate::user_content::UserContent>>,
         has_attachments: bool,
+        resources: Option<super::project_input_runtime::AppliedProjectResources>,
     ) -> Result<ContextPreview> {
         // The synthetic delivery path resolves instructions per turn. Its
         // lifetime-fixed options cannot truthfully describe that request, and
@@ -142,6 +186,11 @@ impl Controller {
         if self.resources.is_some() {
             return Err(invalid(
                 "Context inspection is not yet available for synthetic resource runtimes",
+            ));
+        }
+        if self.project_resources.is_some() && resources.is_none() {
+            return Err(invalid(
+                "Project Context requires asynchronous resource preparation; refresh the inspector",
             ));
         }
         // The source bounds even a draft deferred by active work.
@@ -180,6 +229,7 @@ impl Controller {
         let draft_included = !active && (!draft.is_empty() || has_attachments);
         if draft_included {
             messages.to_mut().push(Message {
+                task_root_id: None,
                 user_content: content,
                 id: uuid::Uuid::new_v4().to_string(),
                 role: "user".into(),
@@ -193,18 +243,22 @@ impl Controller {
                 compaction: None,
             });
         }
+        let instructions = resources
+            .as_ref()
+            .map(|resources| resources.instructions.as_str())
+            .unwrap_or(&self.options.instructions);
         let body = crate::provider::request_body_with_tools(
             &profile,
             &messages,
-            &self.options.instructions,
+            instructions,
             &snapshot.id,
             &self.options.definitions(),
         )?;
         // Check the unredacted request first; redaction cannot turn an
         // undispatchable oversized request into a purported valid preview.
         crate::provider::serialize_request(&body)?;
-        let input_items = body["input"].as_array().map_or(0, Vec::len)
-            - usize::from(!self.options.instructions.is_empty());
+        let input_items =
+            body["input"].as_array().map_or(0, Vec::len) - usize::from(!instructions.is_empty());
         let secrets: Vec<&str> = std::iter::once(config.credential.expose())
             .chain(
                 profile
@@ -246,6 +300,7 @@ impl Controller {
             request_json,
             owner: Arc::downgrade(self),
             configuration: Arc::downgrade(&config),
+            resources: resources.map(|resources| resources.snapshot),
         };
         // Match the source's final input-change guard. Rust builds outside the
         // actor lock, so recheck delivered inputs after serialization; partial
@@ -311,6 +366,19 @@ impl Controller {
                 && std::ptr::eq(preview.configuration.as_ptr(), Arc::as_ptr(&config))
         }) {
             return Ok(false);
+        }
+        if let Some(resources) = &preview.resources {
+            if !self.project_skills_catalog_current(resources) {
+                return Ok(false);
+            }
+            if inner.worker_running
+                && !inner.applied_project.as_ref().is_some_and(|applied| {
+                    applied.snapshot.revision == resources.revision
+                        && applied.snapshot.scope == resources.scope
+                })
+            {
+                return Ok(false);
+            }
         }
         Ok(
             input_binding(inner.store.snapshot_ref(), inner.worker_running)

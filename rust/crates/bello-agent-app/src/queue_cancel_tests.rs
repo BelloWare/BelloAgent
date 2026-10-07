@@ -40,6 +40,7 @@ fn fixture(
         .unwrap();
     let record = ChatRecord::new(store.snapshot().id, "Recovery fixture".into(), path);
     let draft = DraftRecord {
+        skills: Vec::new(),
         attachments: Vec::new(),
         revision,
         text,

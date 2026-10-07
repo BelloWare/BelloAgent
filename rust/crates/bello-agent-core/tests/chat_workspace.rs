@@ -242,6 +242,7 @@ fn register(
 }
 fn draft(revision: u64, text: &str) -> DraftRecord {
     DraftRecord {
+        skills: Vec::new(),
         attachments: Vec::new(),
         revision,
         text: text.into(),
@@ -250,6 +251,7 @@ fn draft(revision: u64, text: &str) -> DraftRecord {
 }
 fn intent(chat: &ChatRecord, revision: u64, text: &str) -> SubmissionIntent {
     SubmissionIntent {
+        skills: Vec::new(),
         attachments: Vec::new(),
         id: Uuid::new_v4().to_string(),
         chat_id: chat.id.clone(),
@@ -530,6 +532,7 @@ async fn held_edit_preserves_rewrite_and_displaced_drafts_across_reopen() {
         queued.text
     );
     let held = DraftRecord {
+        skills: Vec::new(),
         attachments: Vec::new(),
         revision: 2,
         text: "displaced composer thought".into(),
@@ -720,6 +723,7 @@ fn submitted_receipt_cannot_clear_a_held_edit_or_a_different_same_revision_draft
         snapshot: dir.path().join("chat.json"),
     };
     let held = DraftRecord {
+        skills: Vec::new(),
         attachments: Vec::new(),
         revision: 6,
         text: "displaced composer".into(),
@@ -847,6 +851,7 @@ fn resolved_queue_edit_recovery_preserves_only_unsaved_rewriting_and_is_idempote
             snapshot: session_path.clone(),
         };
         let held = DraftRecord {
+            skills: Vec::new(),
             attachments: Vec::new(),
             revision: 11,
             text: "displaced draft".into(),
@@ -910,6 +915,7 @@ fn resolved_queue_edit_recovery_preserves_only_unsaved_rewriting_and_is_idempote
 fn failed_queue_edit_reconciliation_keeps_the_entire_original_draft() {
     for (revision, text) in [(u64::MAX, "displaced".into()), (5, "x".repeat(262_144))] {
         let mut record = DraftRecord {
+            skills: Vec::new(),
             attachments: Vec::new(),
             revision,
             text,
@@ -953,6 +959,7 @@ async fn cancelled_and_retained_submissions_never_automatically_resubmit_on_reop
     workspace.begin_submission(accepted.clone()).unwrap();
     controller
         .submit_identified(Submission {
+            frozen_skills: Vec::new(),
             attachments: Vec::new(),
             id: accepted.id.clone(),
             text: accepted.text.clone(),
@@ -1008,6 +1015,7 @@ async fn cancelled_and_retained_submissions_never_automatically_resubmit_on_reop
     assert!(
         controller
             .submit_identified(Submission {
+                frozen_skills: Vec::new(),
                 attachments: Vec::new(),
                 id: accepted.id.clone(),
                 text: accepted.text.clone(),
@@ -1064,6 +1072,7 @@ fn typed_edit_status_reconciliation_preserves_identity_conflicts_and_unknown_rew
         .unwrap();
     let controller = Controller::new(store, None).unwrap();
     let mut draft = DraftRecord {
+        skills: Vec::new(),
         attachments: Vec::new(),
         revision: 9,
         text: "displaced".into(),
