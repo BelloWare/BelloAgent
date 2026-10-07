@@ -80,7 +80,7 @@ fn open(
     (handle, inspector)
 }
 
-#[test]
+#[::core::prelude::v1::test]
 fn pages_preserve_every_unicode_byte_and_never_exceed_editor_bound() {
     for text in [
         String::new(),
