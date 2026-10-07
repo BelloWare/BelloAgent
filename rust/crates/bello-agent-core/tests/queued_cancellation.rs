@@ -31,6 +31,7 @@ fn fixture(retain_rewrite: bool) -> Fixture {
         .unwrap();
     let chat = ChatRecord {
         tool_mode: Default::default(),
+        connection_id: None,
         id: session.snapshot().id,
         title: "Durable Cancel fixture".into(),
         snapshot: session_path,

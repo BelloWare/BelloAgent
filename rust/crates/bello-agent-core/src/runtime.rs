@@ -33,16 +33,94 @@ use tokio_util::sync::CancellationToken;
 struct Inner {
     store: SessionStore,
     worker_running: bool,
+    worker_epoch: Arc<()>,
     cancel: Option<CancellationToken>,
     fatal: Option<String>,
+    pending_configuration: Option<Arc<Configuration>>,
+    configuration_epoch: Arc<()>,
     #[cfg(feature = "synthetic-authority")]
     applied_instructions: Option<Arc<AppliedInstructionSnapshot>>,
+}
+/// Full confirmation is made outside the actor; this token rejects a delayed
+/// active-run result once that worker settles or its applied config changes.
+struct AdmissionConfirmation {
+    configuration: Option<Arc<Configuration>>,
+    active_epoch: Option<Arc<()>>,
 }
 type WorkerJoin = Shared<BoxFuture<'static, std::result::Result<(), String>>>;
 
 pub struct Configuration {
     profile: Profile,
     credential: Credential,
+    #[cfg(feature = "synthetic-authority")]
+    connection: Option<Arc<crate::project_authority::connections::ConnectionLease>>,
+}
+impl Configuration {
+    #[cfg(feature = "synthetic-authority")]
+    pub(crate) fn synthetic_connection(
+        profile: Profile,
+        credential: Credential,
+        connection: Arc<crate::project_authority::connections::ConnectionLease>,
+    ) -> Self {
+        Self {
+            profile,
+            credential,
+            connection: Some(connection),
+        }
+    }
+    fn check(&self) -> Result<()> {
+        #[cfg(feature = "synthetic-authority")]
+        if let Some(connection) = &self.connection {
+            connection.check()?;
+        }
+        Ok(())
+    }
+    fn confirm(&self, exact: bool) -> Result<()> {
+        #[cfg(feature = "synthetic-authority")]
+        if let Some(connection) = &self.connection {
+            return connection.confirm(exact);
+        }
+        let _ = exact;
+        Ok(())
+    }
+    async fn confirm_for_request(self: &Arc<Self>) -> Result<()> {
+        #[cfg(feature = "synthetic-authority")]
+        if self.connection.is_some() {
+            let configuration = self.clone();
+            return tokio::task::spawn_blocking(move || configuration.confirm(false))
+                .await
+                .map_err(|_| invalid("Connection confirmation worker failed"))?;
+        }
+        self.check()
+    }
+    fn has_saved_connection(&self) -> bool {
+        #[cfg(feature = "synthetic-authority")]
+        {
+            self.connection.is_some()
+        }
+        #[cfg(not(feature = "synthetic-authority"))]
+        {
+            false
+        }
+    }
+    fn same_route(&self, other: &Self) -> bool {
+        self.profile.id == other.profile.id
+            && self.profile.api == other.profile.api
+            && self.profile.base_url == other.profile.base_url
+            && self.profile.model_id == other.profile.model_id
+    }
+    fn compatible_authority(&self, other: &Self) -> bool {
+        #[cfg(feature = "synthetic-authority")]
+        {
+            match (&self.connection, &other.connection) {
+                (Some(left), Some(right)) => return left.same_authority(right),
+                (None, None) => {}
+                _ => return false,
+            }
+        }
+        let _ = other;
+        true
+    }
 }
 /// One provider worker per conversation. UI commands and response completion
 /// serialize through the same mutex; disk commits precede acknowledging commands.
@@ -58,7 +136,8 @@ pub struct Controller {
     suspension_owner: AtomicU64,
     suspension_released: tokio::sync::Notify,
     worker_active: AtomicBool,
-    config: Option<Arc<Configuration>>,
+    config: RwLock<Option<Arc<Configuration>>>,
+    pending_settings: AtomicBool,
     options: RuntimeOptions,
     #[cfg(feature = "synthetic-authority")]
     resources: Option<SyntheticResources>,
@@ -83,6 +162,8 @@ impl Controller {
             Arc::new(Configuration {
                 profile,
                 credential,
+                #[cfg(feature = "synthetic-authority")]
+                connection: None,
             })
         });
         Self::with_configuration_and_options(store, configuration, options)
@@ -100,7 +181,24 @@ impl Controller {
     ) -> Result<Arc<Self>> {
         if let Some(configuration) = &configuration {
             configuration.profile.validate()?;
+            configuration.confirm(true)?;
+            #[cfg(feature = "synthetic-authority")]
+            if configuration.connection.is_some() && options.tools.is_some() {
+                return Err(invalid(
+                    "Saved synthetic connections do not enable model tools",
+                ));
+            }
         }
+        let client = ResponsesClient::new()?;
+        #[cfg(feature = "synthetic-authority")]
+        let client = if configuration
+            .as_ref()
+            .is_some_and(|c| c.connection.is_some())
+        {
+            ResponsesClient::new_synthetic_fixture()?
+        } else {
+            client
+        };
         let initial = Arc::new(store.snapshot());
         Ok(Arc::new(Self {
             published: tokio::sync::watch::channel(initial).0,
@@ -116,23 +214,27 @@ impl Controller {
             inner: Mutex::new(Inner {
                 store,
                 worker_running: false,
+                worker_epoch: Arc::new(()),
                 cancel: None,
                 fatal: None,
+                pending_configuration: None,
+                configuration_epoch: Arc::new(()),
                 #[cfg(feature = "synthetic-authority")]
                 applied_instructions: None,
             }),
-            config: configuration,
+            config: RwLock::new(configuration),
+            pending_settings: AtomicBool::new(false),
             options,
             #[cfg(feature = "synthetic-authority")]
             resources: None,
-            client: ResponsesClient::new()?,
+            client,
             runtime: shared_runtime()?.handle().clone(),
             worker: Mutex::new(None),
             worker_joins: Mutex::new(Vec::new()),
         }))
     }
     pub fn configuration(&self) -> Option<Arc<Configuration>> {
-        self.config.clone()
+        self.config.read().ok()?.clone()
     }
     pub fn is_persistent(&self) -> bool {
         self.inner
@@ -140,21 +242,80 @@ impl Controller {
             .is_ok_and(|inner| inner.store.is_persistent())
     }
     pub fn materialize(&self, path: &std::path::Path) -> Result<()> {
-        self.confirm_resources()?;
+        let confirmed = self.confirm_resources()?;
         let mut inner = self
             .inner
             .lock()
             .map_err(|_| invalid("Session is unavailable"))?;
-        self.require_admission()?;
+        self.require_confirmed_admission(&inner, &confirmed)?;
         inner.store.persist_to(path)?;
         self.publish(&inner);
         Ok(())
     }
     pub fn configured(&self) -> bool {
-        self.config.is_some()
+        self.configuration().is_some()
     }
-    pub fn profile(&self) -> Option<&Profile> {
-        self.config.as_ref().map(|v| &v.profile)
+    pub fn profile(&self) -> Option<Profile> {
+        let mut profile = self.configuration()?.profile.clone();
+        profile.headers.clear();
+        Some(profile)
+    }
+    pub fn settings_pending(&self) -> bool {
+        self.pending_settings.load(Ordering::Acquire)
+    }
+    /// Same route only. Never changes an entered worker's configuration; the
+    /// latest pending save takes effect at full settlement, including Stop/error.
+    pub fn configure(&self, configuration: Arc<Configuration>) -> Result<bool> {
+        #[cfg(feature = "synthetic-authority")]
+        if self.resources.is_some() {
+            return Err(invalid(
+                "Synthetic resource runtime configuration is immutable",
+            ));
+        }
+        configuration.profile.validate()?;
+        let expected_epoch = self
+            .inner
+            .lock()
+            .map_err(|_| invalid("Session is unavailable"))?
+            .configuration_epoch
+            .clone();
+        configuration.confirm(true)?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| invalid("Session is unavailable"))?;
+        self.require_admission()?;
+        if !Arc::ptr_eq(&expected_epoch, &inner.configuration_epoch) {
+            return Err(invalid(
+                "A newer connection configuration already took effect; this completion was not applied",
+            ));
+        }
+        inner.store.require_certain()?;
+        if let Some(error) = &inner.fatal {
+            return Err(invalid(error.clone()));
+        }
+        let current = self
+            .configuration()
+            .ok_or_else(|| invalid("This session has no bound connection"))?;
+        if !current.same_route(&configuration) || !current.compatible_authority(&configuration) {
+            return Err(invalid(
+                "Changed connection, API, endpoint or model requires a separately bound session",
+            ));
+        }
+        configuration.check()?;
+        inner.configuration_epoch = Arc::new(());
+        if inner.worker_running {
+            inner.pending_configuration = Some(configuration);
+            self.pending_settings.store(true, Ordering::Release);
+            self.publish(&inner);
+            return Ok(false);
+        }
+        *self
+            .config
+            .write()
+            .map_err(|_| invalid("Connection is unavailable"))? = Some(configuration);
+        self.publish(&inner);
+        Ok(true)
     }
     pub fn revision(&self) -> u64 {
         self.published_revision.load(Ordering::Acquire)
@@ -180,6 +341,13 @@ impl Controller {
         self.published_revision.fetch_add(1, Ordering::Release);
     }
     fn worker_finished(&self, inner: &mut Inner) {
+        let configured = if let Some(configuration) = inner.pending_configuration.take() {
+            *self.config.write().expect("configuration lock poisoned") = Some(configuration);
+            true
+        } else {
+            false
+        };
+        self.pending_settings.store(false, Ordering::Release);
         inner.worker_running = false;
         inner.cancel = None;
         self.worker_active.store(false, Ordering::Release);
@@ -187,16 +355,31 @@ impl Controller {
             .active_cancel
             .write()
             .expect("cancellation lock poisoned") = None;
+        if configured {
+            self.publish(inner);
+        }
     }
     pub fn submit(self: &Arc<Self>, text: String, lane: Lane) -> Result<()> {
         self.submit_identified(Submission::new(text, lane))
     }
     pub fn submit_identified(self: &Arc<Self>, mut item: Submission) -> Result<()> {
-        self.require_admission()?;
-        let config=self.config.as_ref().ok_or_else(||invalid("No connection configured. Launch with --profile and --credential-stdin; no credentials are discovered automatically."))?;
+        let confirmed = self.confirm_resources()?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| invalid("Session is unavailable"))?;
+        self.require_confirmed_admission(&inner, &confirmed)?;
+        if let Some(error) = &inner.fatal {
+            return Err(invalid(error.clone()));
+        }
+        inner.store.require_certain()?;
+        let config = self.configuration().ok_or_else(|| invalid("No connection configured. Launch with --profile and --credential-stdin; no credentials are discovered automatically."))?;
         item.model = Some(config.profile.model_id.clone());
         item.effort = Some(config.profile.thinking_level.clone());
-        self.change_and_launch(|session| session.submit(item).map(|()| None))
+        inner.store.transact(|session| session.submit(item))?;
+        self.publish(&inner);
+        self.launch(&mut inner, None);
+        Ok(())
     }
     pub fn stop(&self) -> Result<()> {
         if self.worker_active.load(Ordering::Acquire) {
@@ -369,13 +552,13 @@ impl Controller {
         edit_id: &str,
         turn_id: &str,
     ) -> Result<QueueEditStatus> {
-        self.confirm_resources()?;
+        let confirmed = self.confirm_resources()?;
         {
             let mut inner = self
                 .inner
                 .lock()
                 .map_err(|_| invalid("Session is unavailable"))?;
-            self.require_admission()?;
+            self.require_confirmed_admission(&inner, &confirmed)?;
             if let Some(error) = &inner.fatal {
                 return Err(invalid(error.clone()));
             }
@@ -403,7 +586,7 @@ impl Controller {
             self.publish(&inner);
             let snapshot = inner.store.snapshot();
             let launch = released_hold
-                && self.config.is_some()
+                && self.configuration().is_some()
                 && !inner.worker_running
                 && snapshot.state == RunState::Idle
                 && !snapshot.queue_paused
@@ -455,11 +638,14 @@ impl Controller {
             ));
         }
         self.check_resources()?;
+        if let Some(config) = self.configuration() {
+            config.check()?;
+        }
         Ok(())
     }
     fn require_config(&self) -> Result<()> {
         self.require_admission()?;
-        if self.config.is_none() {
+        if self.configuration().is_none() {
             return Err(invalid("No connection configured"));
         }
         Ok(())
@@ -472,12 +658,12 @@ impl Controller {
         check: impl FnOnce(&Inner) -> Result<()>,
         action: impl FnOnce(&mut Session) -> Result<T>,
     ) -> Result<T> {
-        self.confirm_resources()?;
+        let confirmed = self.confirm_resources()?;
         let mut inner = self
             .inner
             .lock()
             .map_err(|_| invalid("Session is unavailable"))?;
-        self.require_admission()?;
+        self.require_confirmed_admission(&inner, &confirmed)?;
         if let Some(error) = &inner.fatal {
             return Err(invalid(error.clone()));
         }
@@ -493,12 +679,12 @@ impl Controller {
         self: &Arc<Self>,
         action: impl FnOnce(&mut Session) -> Result<Option<Submission>>,
     ) -> Result<()> {
-        self.confirm_resources()?;
+        let confirmed = self.confirm_resources()?;
         let mut inner = self
             .inner
             .lock()
             .map_err(|_| invalid("Session is unavailable"))?;
-        self.require_admission()?;
+        self.require_confirmed_admission(&inner, &confirmed)?;
         if let Some(error) = &inner.fatal {
             return Err(invalid(error.clone()));
         }
@@ -524,7 +710,7 @@ impl Controller {
     /// A concurrent retirement joins even a worker registered after its fence;
     /// that worker sees retirement before it can start any external request.
     fn launch(self: &Arc<Self>, inner: &mut Inner, first: Option<Submission>) {
-        if self.config.is_none() || inner.worker_running || inner.fatal.is_some() {
+        if self.configuration().is_none() || inner.worker_running || inner.fatal.is_some() {
             return;
         }
         if first.is_none() {
@@ -538,6 +724,7 @@ impl Controller {
             }
         }
         inner.worker_running = true;
+        inner.worker_epoch = Arc::new(());
         self.worker_active.store(true, Ordering::Release);
         let mut worker = self.worker.lock().expect("worker handle lock poisoned");
         if let Some(previous) = worker.take() {
@@ -561,17 +748,55 @@ impl Controller {
             return;
         }
         loop {
+            // An already completed run needs no further vault read. Settle
+            // under the actor so a simultaneous submission cannot be stranded.
+            if first.is_none() && !self.is_retired() && !self.stop_requested.load(Ordering::Acquire)
+            {
+                let mut inner = self.inner.lock().expect("session mutex poisoned");
+                let session = inner.store.snapshot_ref();
+                if session.pending.is_empty()
+                    || session.queue_paused
+                    || session.edit.is_some()
+                    || session.state == RunState::Running
+                {
+                    self.worker_finished(&mut inner);
+                    self.publish(&inner);
+                    return;
+                }
+            }
+            // Fresh membership before dequeue, outside the actor. Accepted
+            // queued text remains pending if the saved connection disappeared.
+            let confirmation = self
+                .configuration()
+                .expect("configuration checked")
+                .confirm_for_request()
+                .await;
             let prepared = {
                 let mut inner = self.inner.lock().expect("session mutex poisoned");
-                if self.is_retired()
-                    || (first.is_none() && self.stop_requested.swap(false, Ordering::AcqRel))
-                {
+                let stopped = self.is_retired()
+                    || self
+                        .configuration()
+                        .is_some_and(|config| config.check().is_err())
+                    || (first.is_none() && self.stop_requested.swap(false, Ordering::AcqRel));
+                let failure = if stopped {
+                    Some(crate::Error::Cancelled)
+                } else {
+                    confirmation.err()
+                };
+                if let Some(error) = failure {
                     let result = inner.store.transact(|session| {
                         if let Some(reply_id) = session.active_reply.clone() {
-                            return session.finish(&reply_id, Err(crate::Error::Cancelled));
+                            return session.finish(&reply_id, Err(error));
                         }
                         session.queue_paused = true;
-                        session.state = RunState::Paused;
+                        session.state = if matches!(error, crate::Error::Cancelled) {
+                            RunState::Paused
+                        } else {
+                            RunState::Error
+                        };
+                        if !matches!(error, crate::Error::Cancelled) {
+                            session.error = Some(error.to_string());
+                        }
                         Ok(())
                     });
                     if let Err(error) = result {
@@ -635,10 +860,51 @@ impl Controller {
 
     // Defaults remain inert. Synthetic confirmation may inspect fixture paths
     // and therefore must be called before acquiring the actor mutex.
-    fn confirm_resources(&self) -> Result<()> {
+    fn confirm_resources(&self) -> Result<AdmissionConfirmation> {
+        let confirmed = {
+            let inner = self
+                .inner
+                .lock()
+                .map_err(|_| invalid("Session is unavailable"))?;
+            let configuration = self.configuration();
+            let saved_active = inner.worker_running
+                && configuration
+                    .as_ref()
+                    .is_some_and(|config| config.has_saved_connection());
+            AdmissionConfirmation {
+                configuration,
+                active_epoch: saved_active.then(|| inner.worker_epoch.clone()),
+            }
+        };
         #[cfg(feature = "synthetic-authority")]
         if let Some(resources) = &self.resources {
-            return resources.guard.confirm();
+            resources.guard.confirm()?;
+        }
+        if let Some(config) = &confirmed.configuration {
+            config.confirm(confirmed.active_epoch.is_none())?;
+        }
+        Ok(confirmed)
+    }
+    fn require_confirmed_admission(
+        &self,
+        inner: &Inner,
+        confirmed: &AdmissionConfirmation,
+    ) -> Result<()> {
+        self.require_admission()?;
+        let current = self.configuration();
+        let same_configuration = match (&confirmed.configuration, &current) {
+            (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+            (None, None) => true,
+            _ => false,
+        };
+        if !same_configuration
+            || confirmed.active_epoch.as_ref().is_some_and(|epoch| {
+                !inner.worker_running || !Arc::ptr_eq(epoch, &inner.worker_epoch)
+            })
+        {
+            return Err(invalid(
+                "The run or connection changed while confirming. Your input was not accepted; try again with the current settings",
+            ));
         }
         Ok(())
     }
@@ -2015,3 +2281,7 @@ mod edit_status_tests {
         assert!(controller.edit_status(&"x".repeat(129)).is_err());
     }
 }
+
+#[cfg(all(test, feature = "synthetic-authority"))]
+#[path = "runtime_configuration_tests.rs"]
+mod configuration_tests;

@@ -8,6 +8,7 @@ fn record(root: &Path, order: u64, title: &str) -> ChatRecord {
     let id = Uuid::new_v4().to_string();
     ChatRecord {
         tool_mode: Default::default(),
+        connection_id: None,
         snapshot: root.join(format!("{id}.json")),
         id,
         title: title.into(),
@@ -183,6 +184,10 @@ fn legacy_catalog_without_organization_fields_opens_without_rewrite() {
         .as_object_mut()
         .unwrap()
         .remove("tool_mode");
+    legacy["chats"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("connection_id");
     let before = serde_json::to_vec(&legacy).unwrap();
     std::fs::write(&path, &before).unwrap();
     assert!(!String::from_utf8_lossy(&before).contains("pinned_at"));
@@ -201,15 +206,15 @@ fn new_organization_format_is_explicit_and_mislabeled_v1_is_preserved() {
     store
         .register(chat.clone(), DraftRecord::default())
         .unwrap();
-    assert_eq!(store.snapshot().version, 5);
+    assert_eq!(store.snapshot().version, 6);
     store
         .set_pinned(chat.clone(), DraftRecord::default(), true, 4)
         .unwrap();
-    assert_eq!(store.snapshot().version, 5);
+    assert_eq!(store.snapshot().version, 6);
     store
         .set_pinned(chat.clone(), DraftRecord::default(), false, 5)
         .unwrap();
-    assert_eq!(store.snapshot().version, 5); // Never downgrade after metadata use.
+    assert_eq!(store.snapshot().version, 6); // Never downgrade after metadata use.
     store
         .set_pinned(chat, DraftRecord::default(), true, 6)
         .unwrap();
@@ -223,6 +228,10 @@ fn new_organization_format_is_explicit_and_mislabeled_v1_is_preserved() {
         .as_object_mut()
         .unwrap()
         .remove("tool_mode");
+    value["chats"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("connection_id");
     let malformed = serde_json::to_vec(&value).unwrap();
     std::fs::write(&path, &malformed).unwrap();
     assert!(WorkspaceStore::open(&path, dir.path()).is_err());

@@ -284,6 +284,7 @@ mod tests {
                 pinned_at: None,
                 archived_at: None,
                 tool_mode: Default::default(),
+                connection_id: None,
                 id: snapshot.id,
                 title: snapshot.title,
                 snapshot: path,

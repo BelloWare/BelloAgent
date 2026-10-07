@@ -135,7 +135,11 @@ impl ProjectManagerController {
 
 impl AgentView {
     pub(crate) fn project_actions_blocked(&self) -> bool {
-        self.projects.admission_blocked || self.projects.open
+        self.projects.admission_blocked
+            || self.projects.open
+            || self.connections.open
+            || self.connections.presentation.saving
+            || self.connections.picker
     }
 
     pub(crate) fn bind_projects(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -171,7 +175,12 @@ impl AgentView {
     }
 
     pub(crate) fn open_projects(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.shutting_down || self.close_dialog || self.projects.open {
+        if self.shutting_down
+            || self.close_dialog
+            || self.projects.open
+            || self.connections.view.read(cx).is_open()
+            || !self.connections.switches.is_empty()
+        {
             return;
         }
         self.cancel_queue_drag(window, cx);
@@ -561,6 +570,8 @@ impl AgentView {
     fn project_idle_error(&self) -> Option<String> {
         if self.shutting_down
             || !self.chat_mode_operations.is_empty()
+            || !self.connections.switches.is_empty()
+            || self.connections.operation.is_some()
             || !self.chat_mode_blocked.is_empty()
             || !self.organization_operations.is_empty()
             || self.archive_visibility_writes != 0

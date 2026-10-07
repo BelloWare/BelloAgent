@@ -264,7 +264,7 @@ impl Controller {
         mut snapshot: Session,
         cancel: CancellationToken,
     ) {
-        let config = self.config.as_ref().expect("configuration checked");
+        let config = self.configuration().expect("configuration checked");
         let definitions = self.options.definitions();
         loop {
             if self.is_retired() {
@@ -278,7 +278,11 @@ impl Controller {
             let callback_id = reply_id.clone();
             let callback_self = Arc::clone(self);
             let instructions = self.turn_instructions(&item);
-            let ready = self.confirm_turn_resources(cancel.clone()).await;
+            let ready = async {
+                config.confirm_for_request().await?;
+                self.confirm_turn_resources(cancel.clone()).await
+            }
+            .await;
             let response = match ready {
                 Err(error) => Err(error),
                 Ok(()) => {

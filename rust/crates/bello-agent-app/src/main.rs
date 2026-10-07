@@ -3,6 +3,8 @@ mod chat;
 mod chat_navigation;
 mod chat_organization;
 mod chat_tool_mode;
+mod connection_settings_controller;
+mod connection_settings_view;
 mod context_inspector;
 mod draft_status;
 mod file_tab;
@@ -154,6 +156,8 @@ struct AgentView {
     next_file_id: u64,
     quick_open: Entity<QuickOpenView>,
     projects: project_manager_controller::ProjectManagerController,
+    connections: connection_settings_controller::ConnectionSettingsController,
+    legacy_configuration: Option<Arc<bello_agent_core::runtime::Configuration>>,
     inspector_windows: Vec<context_inspector::InspectorWindow>,
     chat_mode_operations: BTreeMap<String, uuid::Uuid>,
     chat_mode_blocked: std::collections::BTreeSet<String>,
@@ -217,6 +221,16 @@ impl AgentView {
             record.snapshot.parent().unwrap().join("layout.json"),
         ));
         let layout = layout_store.load();
+        let legacy_configuration = cx
+            .try_global::<connection_settings_controller::LaunchLegacyConfiguration>()
+            .map(|source| source.0.clone())
+            .unwrap_or_else(|| {
+                if record.connection_id.is_none() {
+                    controller.configuration()
+                } else {
+                    None
+                }
+            });
         let cancel_receipt = state.queued_cancellations.get(&record.id).cloned();
         let chat = ChatState::new(
             controller,
@@ -255,6 +269,8 @@ impl AgentView {
         let quick_open = cx.new(|cx| QuickOpenView::new(project.clone(), palette, window, cx));
         let projects =
             project_manager_controller::ProjectManagerController::new(project.clone(), palette, cx);
+        let connections =
+            connection_settings_controller::ConnectionSettingsController::new(palette, cx);
         let icon = Arc::new(Image::from_bytes(
             ImageFormat::Png,
             include_bytes!("../../../../assets/branding/bello-agent-icon-128.png").to_vec(),
@@ -340,6 +356,8 @@ impl AgentView {
             next_file_id: 1,
             quick_open,
             projects,
+            connections,
+            legacy_configuration,
             inspector_windows: Vec::new(),
             chat_mode_operations: BTreeMap::new(),
             chat_mode_blocked: std::collections::BTreeSet::new(),
@@ -366,6 +384,7 @@ impl AgentView {
         self.window_binding = Some(binding);
         self.organization_window = Some(window.window_handle());
         self.bind_projects(window, cx);
+        self.bind_connections(window, cx);
         let weak = cx.weak_entity();
         window.on_window_should_close(cx, move |window, cx| {
             weak.update(cx, |view, cx| view.request_close_for(binding, window, cx))
@@ -634,6 +653,18 @@ impl AgentView {
         );
     }
     fn request_close(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.connections.operation.is_some() || !self.connections.switches.is_empty() {
+            self.error = Some("Wait for connection changes to finish before closing.".into());
+            cx.notify();
+            return false;
+        }
+        if self.connections.open || self.connections.presentation.dirty {
+            if !self.connections.open {
+                self.open_connections(window, cx);
+            }
+            self.request_connection_close(window, cx);
+            return false;
+        }
         if !self.chat_mode_operations.is_empty() {
             self.error =
                 Some("Wait for the chat tool mode change to finish before closing.".into());
@@ -777,6 +808,20 @@ impl AgentView {
             }
             // A different fresh key must not rearm a still-held confirmation.
             self.cancelled_prompt_key = None;
+        }
+        if self.connections.view.read(cx).is_open() {
+            if self
+                .connections
+                .view
+                .update(cx, |view, cx| view.key(event, window, cx))
+            {
+                cx.stop_propagation();
+            }
+            return;
+        }
+        if self.connections.picker {
+            self.connection_picker_key(event, window, cx);
+            return;
         }
         if self.projects.view.read(cx).is_open() {
             // Modal ownership is decided before routing the key. Dismissal or
@@ -1201,14 +1246,6 @@ impl AgentView {
             .text_size(px(10.5))
             .child(self.icon(name, 11.))
             .child(label)
-    }
-    fn unavailable(&mut self, feature: &str, cx: &mut Context<Self>) {
-        self.dismissed_error = None;
-        self.error_expanded = false;
-        self.error = Some(format!(
-            "{feature} is not implemented in the Rust migration yet."
-        ));
-        cx.notify();
     }
     fn queue(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
         let p = self.palette;
@@ -2018,6 +2055,7 @@ impl AgentView {
         }
         let mut bar = div()
             .flex()
+            .flex_wrap()
             .items_center()
             .gap(px(4.))
             .px(px(10.))
@@ -2143,6 +2181,44 @@ impl AgentView {
             .child(self.icon("sparkles", 11.));
         if !compact {
             effort_pill = effort_pill.child(effort);
+        }
+        let connection_choices = self.connections.choices();
+        if connection_choices.len() > 1
+            || !self.controller.configured()
+            || (self.record.connection_id.is_none() && !connection_choices.is_empty())
+        {
+            let name = connection_choices
+                .into_iter()
+                .find(|p| Some(&p.profile.id) == self.record.connection_id.as_ref())
+                .map(|p| p.name)
+                .unwrap_or_else(|| "No saved connection".into());
+            let choice = div()
+                .id("session-connection-picker")
+                .debug_selector(|| "session-connection-picker".into())
+                .flex()
+                .flex_shrink_0()
+                .items_center()
+                .gap(px(5.))
+                .px(px(7.))
+                .py(px(4.))
+                .rounded_full()
+                .bg(p.fill())
+                .text_size(px(12.))
+                .text_color(rgb(p.secondary))
+                .child(self.icon("antenna", 11.))
+                .when(!icons, |choice| {
+                    choice.child(
+                        div()
+                            .max_w(px(if compact { 90. } else { 150. }))
+                            .truncate()
+                            .child(name),
+                    )
+                })
+                .child(self.icon("down", 9.))
+                .on_click(
+                    cx.listener(|view, _, window, cx| view.open_connection_picker(window, cx)),
+                );
+            bar = bar.child(choice);
         }
         bar = bar
             .child(model_pill)
@@ -2572,7 +2648,7 @@ impl AgentView {
         );
         footer = footer.child(div().flex_1()).child(
             self.icon_button("settings", "gear", 28.)
-                .on_click(cx.listener(|v, _, _, cx| v.unavailable("Connection settings", cx))),
+                .on_click(cx.listener(|v, _, window, cx| v.open_connections(window, cx))),
         );
         div()
             .w(px(self.layout.sidebar))
@@ -2686,6 +2762,9 @@ impl Render for AgentView {
             self.quick_open
                 .update(cx, |view, cx| view.set_palette(palette, cx));
             self.projects
+                .view
+                .update(cx, |view, cx| view.set_palette(palette, cx));
+            self.connections
                 .view
                 .update(cx, |view, cx| view.set_palette(palette, cx));
             for entry in &self.files {
@@ -2927,6 +3006,30 @@ impl Render for AgentView {
                     ),
             );
         }
+        if self.connections.picker {
+            element = element.child(self.connection_picker_element(cx));
+        }
+        if self.connections.view.read(cx).is_open() {
+            element = element.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .occlude()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(rgba(0x00000044))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(
+                        div()
+                            .w(px((width - 48.).clamp(320., 1000.)))
+                            .h(px(
+                                (f32::from(window.viewport_size().height) - 48.).clamp(300., 820.)
+                            ))
+                            .child(self.connections.view.clone()),
+                    ),
+            );
+        }
         if self.shutting_down {
             element = element.child(
                 div()
@@ -3036,14 +3139,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             "--credential-stdin" => credential_stdin = true,
             #[cfg(all(feature = "synthetic-authority", debug_assertions))]
-            "--synthetic-project-authority" => synthetic_authority = true,
+            "--synthetic-project-authority" | "--synthetic-connections" => {
+                synthetic_authority = true
+            }
             "--help" | "-h" => {
                 println!(
                     "BelloAgent Rust GPUI preview\n  --project DIR\n  --session FILE    isolated Rust snapshot (never a Swift journal)\n  --profile FILE    explicit non-secret LiteLLM Responses JSON\n  --credential-stdin  read an in-memory key until EOF; never stored\n  BELLO_PERF_LOG=FILE  optional real CPU callback JSONL telemetry"
                 );
                 #[cfg(all(feature = "synthetic-authority", debug_assertions))]
                 println!(
-                    "  --synthetic-project-authority  debug QA only; in-memory trust, never native storage or tools"
+                    "  --synthetic-project-authority  debug QA only; in-memory trust and fixture Connections, never native storage or tools\n  --synthetic-connections  same isolated fixture; fixed fake key and numeric loopback only"
                 );
                 return Ok(());
             }
@@ -3079,7 +3184,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .cloned()
         .unwrap_or_default();
     let workspace = Arc::new(Mutex::new(workspace));
-    let controller = Controller::new(store, configuration)?;
+    // Keep the explicitly supplied CLI route separate from all saved identities.
+    // A temporary pending controller constructs this immutable configuration only;
+    // it has no journal, provider worker or network side effects.
+    let legacy_configuration =
+        Controller::new(SessionStore::pending(), configuration)?.configuration();
+    let controller = Controller::with_configuration(
+        store,
+        if record.connection_id.is_none() {
+            legacy_configuration.clone()
+        } else {
+            None
+        },
+    )?;
     perf(
         "startup_initialized",
         START.get().unwrap().elapsed().as_micros(),
@@ -3088,13 +3205,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_assets(assets::Assets)
         .run(move |cx: &mut App| {
             bello_workbench_ui::init(cx);
+            cx.set_global(connection_settings_controller::LaunchLegacyConfiguration(
+                legacy_configuration,
+            ));
             #[cfg(all(feature = "synthetic-authority", debug_assertions))]
             if synthetic_authority {
-                let (authority, _) =
+                let (authority, control) =
                     bello_agent_core::project_authority::ProjectAuthority::with_synthetic_bytes(
                         None,
                     )
                     .expect("empty in-memory project fixture");
+                cx.set_global(connection_settings_controller::LaunchConnectionAuthority(
+                    control,
+                ));
                 cx.set_global(project_manager_controller::LaunchProjectAuthority {
                     authority: Arc::new(authority),
                     synthetic: true,

@@ -92,6 +92,8 @@ impl AgentView {
     }
     pub(crate) fn actor_mutation_blocked(&self, id: &str) -> bool {
         self.project_actions_blocked()
+            || self.connections.uncertain
+            || self.connections.blocked.contains(id)
             || self.chat_mode_blocked.contains(id)
             || self.known_catalog_uncertainty
             || self.chat_is_archived(id)
@@ -133,6 +135,8 @@ impl AgentView {
         if self.shutting_down
             || self.project_actions_blocked()
             || self.chat_mode_blocked.contains(id)
+            || self.connections.switches.contains_key(id)
+            || self.connections.blocked.contains(id)
         {
             return;
         }

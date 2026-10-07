@@ -119,7 +119,7 @@ fn archive_fifo_waits_for_live_work_without_polling_and_preserves_every_intent(
         let state = view.workspace.lock().unwrap().snapshot();
         assert!(state.chats[0].pinned_at.is_none());
         assert!(state.chats[0].archived_at.is_none());
-        assert_eq!(state.version, 5);
+        assert_eq!(state.version, 6);
         assert_eq!(view.composer.read(cx).text(), "retained draft 日本語");
         assert!(!view.controller.is_persistent());
     });

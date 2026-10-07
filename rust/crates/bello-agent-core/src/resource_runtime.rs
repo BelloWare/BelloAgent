@@ -163,12 +163,12 @@ impl Controller {
     }
 
     pub(super) fn resume_with_resources(self: &Arc<Self>) -> Result<()> {
-        self.confirm_resources()?;
+        let confirmed = self.confirm_resources()?;
         let mut inner = self
             .inner
             .lock()
             .map_err(|_| invalid("Session is unavailable"))?;
-        self.require_admission()?;
+        self.require_confirmed_admission(&inner, &confirmed)?;
         if let Some(error) = &inner.fatal {
             return Err(invalid(error.clone()));
         }
@@ -183,12 +183,12 @@ impl Controller {
     }
 
     pub(super) fn retry_with_resources(self: &Arc<Self>) -> Result<()> {
-        self.confirm_resources()?;
+        let confirmed = self.confirm_resources()?;
         let mut inner = self
             .inner
             .lock()
             .map_err(|_| invalid("Session is unavailable"))?;
-        self.require_admission()?;
+        self.require_confirmed_admission(&inner, &confirmed)?;
         if let Some(error) = &inner.fatal {
             return Err(invalid(error.clone()));
         }

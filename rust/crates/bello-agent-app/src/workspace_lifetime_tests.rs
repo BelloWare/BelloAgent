@@ -36,6 +36,7 @@ fn fixture(
             pinned_at: None,
             archived_at: None,
             tool_mode: Default::default(),
+            connection_id: None,
             id: snapshot.id,
             title: snapshot.title,
             snapshot: project.join("session.json"),
@@ -642,6 +643,7 @@ fn add_navigation_records(window: WindowHandle<AgentView>, cx: &mut TestAppConte
                     pinned_at: pin,
                     archived_at: None,
                     tool_mode: Default::default(),
+                    connection_id: None,
                 };
                 let draft = DraftRecord {
                     text: format!("{title} draft"),

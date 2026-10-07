@@ -8,10 +8,7 @@ use zeroize::Zeroize;
 pub struct Credential(String);
 impl Credential {
     pub fn new(value: String) -> Result<Self> {
-        if value.is_empty()
-            || value.len() > 16_384
-            || value.bytes().any(|b| matches!(b, 0 | 10 | 13))
-        {
+        if value.is_empty() || value.len() > 16_384 || value.bytes().any(|b| b < 32 || b == 127) {
             return Err(invalid(
                 "Supply a nonempty credential without control characters",
             ));
@@ -116,12 +113,15 @@ impl Profile {
             return Err(invalid("Unsupported thinking level"));
         }
         self.endpoint()?;
+        if self.headers.len() > 64 {
+            return Err(invalid("At most 64 custom headers are supported"));
+        }
         for (name, value) in &self.headers {
             if name.is_empty()
                 || name.len() > 128
                 || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
                 || value.len() > 16_384
-                || value.bytes().any(|b| matches!(b, 0 | 10 | 13))
+                || value.bytes().any(|b| b < 32 || b == 127)
             {
                 return Err(invalid("Invalid custom header"));
             }

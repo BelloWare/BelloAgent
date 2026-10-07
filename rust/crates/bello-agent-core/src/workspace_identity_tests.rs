@@ -34,9 +34,14 @@ fn bytes(store: &WorkspaceStore) -> Vec<u8> {
 
 fn legacy(mut value: Value, version: u32) -> Value {
     value["version"] = version.into();
-    value.as_object_mut().unwrap().remove("project_id");
+    if version < 5 {
+        value.as_object_mut().unwrap().remove("project_id");
+    }
     for chat in value["chats"].as_array_mut().unwrap() {
-        chat.as_object_mut().unwrap().remove("tool_mode");
+        if version < 5 {
+            chat.as_object_mut().unwrap().remove("tool_mode");
+        }
+        chat.as_object_mut().unwrap().remove("connection_id");
         if version == 1 {
             chat.as_object_mut().unwrap().remove("sidebar_order");
             chat.as_object_mut().unwrap().remove("pinned_at");
@@ -189,7 +194,7 @@ fn invalid_v5_and_future_metadata_fail_before_confirmation_without_rewriting() {
     let mut unknown = base.clone();
     unknown["future_project_authority"] = json!({"trusted": true});
     cases.push(unknown);
-    for version in [0, 6, u32::MAX] {
+    for version in [0, CURRENT_VERSION + 1, u32::MAX] {
         let mut value = base.clone();
         value["version"] = version.into();
         cases.push(value);
@@ -485,7 +490,7 @@ mod binding {
 
     #[test]
     fn binding_pre_and_post_rename_failures_keep_drafts_archive_and_cancellation() {
-        for version in [4, 5] {
+        for version in [4, 5, CURRENT_VERSION] {
             for fault in [Fault::BeforeRename, Fault::AfterRename] {
                 let (dir, mut store, chat) = fixture(ChatToolMode::ReadOnly);
                 let draft = store.snapshot().drafts[&chat.id].clone();
@@ -496,7 +501,7 @@ mod binding {
                     .unwrap();
                 store.set_archived(chat.clone(), draft, true, 7).unwrap();
                 store.set_archive_visibility(true, 2).unwrap();
-                if version == 4 {
+                if version < CURRENT_VERSION {
                     let value = legacy(serde_json::to_value(store.snapshot()).unwrap(), version);
                     let path = dir.path().join("workspace.json");
                     drop(store);

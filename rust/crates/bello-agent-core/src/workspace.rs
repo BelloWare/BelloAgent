@@ -12,7 +12,7 @@ use uuid::Uuid;
 const MAX_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CHATS: usize = 512;
 const MAX_DRAFT_BYTES: usize = 262_144;
-const CURRENT_VERSION: u32 = 5;
+const CURRENT_VERSION: u32 = 6;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct QueuedDraft {
@@ -128,6 +128,9 @@ pub struct ChatRecord {
     pub title: String,
     pub snapshot: PathBuf,
     pub tool_mode: ChatToolMode,
+    /// Explicit saved connection identity; None keeps the legacy CLI-only route.
+    #[serde(deserialize_with = "present_connection_id")]
+    pub connection_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sidebar_order: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -142,6 +145,7 @@ impl ChatRecord {
             title,
             snapshot,
             tool_mode: ChatToolMode::Editing,
+            connection_id: None,
             sidebar_order: Some(organization_timestamp()),
             pinned_at: None,
             archived_at: None,
@@ -325,6 +329,20 @@ impl<'de> Deserialize<'de> for WorkspaceSnapshot {
             #[serde(default)]
             archived_at: Option<u64>,
         }
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct V5Chat {
+            id: String,
+            title: String,
+            snapshot: PathBuf,
+            tool_mode: ChatToolMode,
+            #[serde(default)]
+            sidebar_order: Option<u64>,
+            #[serde(default)]
+            pinned_at: Option<u64>,
+            #[serde(default)]
+            archived_at: Option<u64>,
+        }
         let record = Record::deserialize(deserializer)?;
         if !(1..=CURRENT_VERSION).contains(&record.version)
             || (record.version < 5 && record.project_id.is_some())
@@ -337,14 +355,26 @@ impl<'de> Deserialize<'de> for WorkspaceSnapshot {
             .chats
             .into_iter()
             .map(|raw| {
-                if record.version >= 5 {
+                if record.version >= 6 {
                     serde_json::from_str(raw.get())
+                } else if record.version == 5 {
+                    serde_json::from_str::<V5Chat>(raw.get()).map(|chat| ChatRecord {
+                        id: chat.id,
+                        title: chat.title,
+                        snapshot: chat.snapshot,
+                        tool_mode: chat.tool_mode,
+                        connection_id: None,
+                        sidebar_order: chat.sidebar_order,
+                        pinned_at: chat.pinned_at,
+                        archived_at: chat.archived_at,
+                    })
                 } else {
                     serde_json::from_str::<LegacyChat>(raw.get()).map(|chat| ChatRecord {
                         id: chat.id,
                         title: chat.title,
                         snapshot: chat.snapshot,
                         tool_mode: ChatToolMode::Editing,
+                        connection_id: None,
                         sidebar_order: chat.sidebar_order,
                         pinned_at: chat.pinned_at,
                         archived_at: chat.archived_at,
@@ -369,6 +399,12 @@ impl<'de> Deserialize<'de> for WorkspaceSnapshot {
             queued_cancellations: record.queued_cancellations,
         })
     }
+}
+fn present_connection_id<'de, D>(deserializer: D) -> std::result::Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer)
 }
 fn present_project_id<'de, D>(deserializer: D) -> std::result::Result<Option<String>, D::Error>
 where
@@ -411,6 +447,11 @@ impl WorkspaceSnapshot {
         {
             return Err(invalid("Invalid saved project identity"));
         }
+        if self.version < 6 && self.chats.iter().any(|chat| chat.connection_id.is_some()) {
+            return Err(invalid(
+                "Saved connections require Rust workspace catalog version 6",
+            ));
+        }
         if self.version < 5
             && (self.project_id.is_some()
                 || self
@@ -452,6 +493,10 @@ impl WorkspaceSnapshot {
                 || !ids.insert(&chat.id)
                 || !chat.snapshot.is_absolute()
                 || chat.title.len() > 512
+                || chat
+                    .connection_id
+                    .as_ref()
+                    .is_some_and(|id| Uuid::parse_str(id).is_err())
             {
                 return Err(invalid("Invalid Rust chat catalog record"));
             }
@@ -628,6 +673,40 @@ impl WorkspaceStore {
                 .find(|chat| chat.id == id)
                 .ok_or_else(|| invalid("Chat is no longer registered"))?;
             chat.tool_mode = ChatToolMode::Editing;
+            Ok(chat.clone())
+        })
+    }
+    /// Patch a saved chat only after the host has fenced admission, confirmed
+    /// the target connection and retired/joined the previous controller. Pending
+    /// chats change their in-memory row instead; this must not materialize them.
+    /// The expected identity rejects a delayed switch; unrelated metadata stays.
+    pub fn set_connection_after_retirement(
+        &mut self,
+        id: &str,
+        expected: Option<&str>,
+        connection_id: &str,
+    ) -> Result<ChatRecord> {
+        self.ensure_certain()?;
+        Uuid::parse_str(connection_id).map_err(|_| invalid("Invalid saved connection identity"))?;
+        let chat = self
+            .state
+            .chats
+            .iter()
+            .find(|chat| chat.id == id)
+            .ok_or_else(|| invalid("Chat is no longer registered"))?;
+        if chat.connection_id.as_deref() != expected {
+            return Err(invalid("The chat connection changed before this switch"));
+        }
+        if chat.connection_id.as_deref() == Some(connection_id) {
+            return Ok(chat.clone());
+        }
+        self.transact(|state| {
+            let chat = state
+                .chats
+                .iter_mut()
+                .find(|chat| chat.id == id)
+                .ok_or_else(|| invalid("Chat is no longer registered"))?;
+            chat.connection_id = Some(connection_id.into());
             Ok(chat.clone())
         })
     }
@@ -1223,8 +1302,8 @@ impl WorkspaceStore {
         }
         let mut state = self.state.clone();
         let result = change(&mut state)?;
-        // All writers, including draft/queue recovery, preserve the v5 binding
-        // and explicit chat modes. Reading older files never rewrites them.
+        // All writers, including draft/queue recovery, preserve project and
+        // connection bindings and explicit chat modes. Reading older files never rewrites them.
         state.version = state.version.max(CURRENT_VERSION);
         if state.show_archived
             || state.archive_visibility_revision != 0
@@ -1345,6 +1424,11 @@ mod tests {
     fn legacy_catalog_value(state: &WorkspaceSnapshot, version: u32) -> serde_json::Value {
         let mut value = serde_json::to_value(state).unwrap();
         value["version"] = version.into();
+        if version < 6 {
+            for chat in value["chats"].as_array_mut().unwrap() {
+                chat.as_object_mut().unwrap().remove("connection_id");
+            }
+        }
         if version < 5 {
             value.as_object_mut().unwrap().remove("project_id");
             for chat in value["chats"].as_array_mut().unwrap() {
@@ -1359,6 +1443,7 @@ mod tests {
         let id = Uuid::new_v4().to_string();
         let chat = ChatRecord {
             tool_mode: ChatToolMode::Editing,
+            connection_id: None,
             sidebar_order: None,
             pinned_at: None,
             archived_at: None,
@@ -2078,7 +2163,7 @@ mod tests {
                 cases.push(value);
             }
         }
-        for version in [0, 6, u32::MAX] {
+        for version in [0, CURRENT_VERSION + 1, u32::MAX] {
             let mut value = base.clone();
             value["version"] = version.into();
             cases.push(value);
@@ -2942,7 +3027,7 @@ mod tests {
         let path = dir.path().join("workspace.json");
         drop(store);
         let mut cases: Vec<Value> = Vec::new();
-        for version in [1, 2, 6] {
+        for version in [1, 2, CURRENT_VERSION + 1] {
             let value = legacy_catalog_value(&base_state, version);
             cases.push(value);
         }
@@ -3208,3 +3293,7 @@ mod tests {
 #[cfg(test)]
 #[path = "workspace_identity_tests.rs"]
 mod identity_tests;
+
+#[cfg(test)]
+#[path = "workspace_connection_tests.rs"]
+mod connection_tests;

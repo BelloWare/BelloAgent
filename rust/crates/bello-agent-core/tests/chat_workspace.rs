@@ -227,6 +227,7 @@ fn register(
     let session = controller.snapshot();
     let chat = ChatRecord {
         tool_mode: Default::default(),
+        connection_id: None,
         sidebar_order: None,
         pinned_at: None,
         archived_at: None,
@@ -269,6 +270,7 @@ fn concurrent_chat_debounces_keep_independent_revisions_after_interleaved_saves(
         .into_iter()
         .map(|title| ChatRecord {
             tool_mode: Default::default(),
+            connection_id: None,
             sidebar_order: None,
             pinned_at: None,
             archived_at: None,
@@ -604,6 +606,7 @@ fn submission_receipt_and_draft_clear_persist_together_without_overwriting_newer
     let mut workspace = WorkspaceStore::open(&path, dir.path()).unwrap();
     let chat = ChatRecord {
         tool_mode: Default::default(),
+        connection_id: None,
         sidebar_order: None,
         pinned_at: None,
         archived_at: None,
@@ -701,6 +704,7 @@ fn submitted_receipt_cannot_clear_a_held_edit_or_a_different_same_revision_draft
     let mut workspace = WorkspaceStore::open(&path, dir.path()).unwrap();
     let chat = ChatRecord {
         tool_mode: Default::default(),
+        connection_id: None,
         sidebar_order: None,
         pinned_at: None,
         archived_at: None,
@@ -825,6 +829,7 @@ fn resolved_queue_edit_recovery_preserves_only_unsaved_rewriting_and_is_idempote
             .unwrap();
         let chat = ChatRecord {
             tool_mode: Default::default(),
+            connection_id: None,
             sidebar_order: None,
             pinned_at: None,
             archived_at: None,

@@ -141,6 +141,8 @@ impl AgentView {
             return;
         }
         if self.pending
+            && self.record.connection_id == self.connections.choice
+            && !self.controller.is_retired()
             && !self.busy
             && !self.organization_operations.contains_key(&self.record.id)
             && self.saved_draft(cx).is_empty()
@@ -152,17 +154,19 @@ impl AgentView {
             self.error = Some("This development workspace supports up to 512 chats".into());
             return;
         }
-        match Controller::with_configuration(
-            SessionStore::pending(),
-            self.controller.configuration(),
-        ) {
+        let store = SessionStore::pending();
+        let id = store.snapshot().id;
+        let mut record = ChatRecord::new(
+            id.clone(),
+            "New chat".into(),
+            self.chat_directory.join(format!("{id}.json")),
+        );
+        record.connection_id = self.connections.choice.clone();
+        let config = self
+            .connections
+            .config_for(&record, self.legacy_configuration.clone());
+        match config.and_then(|config| Controller::with_configuration(store, config)) {
             Ok(controller) => {
-                let id = controller.snapshot_shared().id.clone();
-                let record = ChatRecord::new(
-                    id.clone(),
-                    "New chat".into(),
-                    self.chat_directory.join(format!("{id}.json")),
-                );
                 let chat = ChatState::new(
                     controller,
                     record.clone(),
@@ -272,7 +276,13 @@ impl AgentView {
             return;
         };
         let draft = self.unloaded_drafts.get(id).cloned().unwrap_or_default();
-        let config = self.controller.configuration();
+        let (config, connection_error) = match self
+            .connections
+            .config_for(&record, self.legacy_configuration.clone())
+        {
+            Ok(config) => (config, None),
+            Err(error) => (None, Some(error.to_string())),
+        };
         let placeholder = match SessionStore::pending_with_id(id)
             .and_then(|store| Controller::with_configuration(store, config.clone()))
         {
@@ -283,7 +293,7 @@ impl AgentView {
             }
         };
         self.unloaded_drafts.remove(id);
-        let chat = ChatState::new(
+        let mut chat = ChatState::new(
             placeholder,
             record.clone(),
             chat::RestoredDraft {
@@ -295,6 +305,7 @@ impl AgentView {
             window,
             cx,
         );
+        chat.error = connection_error;
         self.install_chat(chat, window, cx);
         self.load_chat(id, cx);
     }
@@ -302,6 +313,7 @@ impl AgentView {
         if self.shutting_down
             || self.project_actions_blocked()
             || self.chat_mode_blocked.contains(id)
+            || self.connections.switches.contains_key(id)
         {
             return;
         }
@@ -340,7 +352,7 @@ impl AgentView {
             let _ = view.update(cx, |view, cx| {
                 if view.project != project || view
                     .chat_ref(&id)
-                    .is_none_or(|chat| chat.load_generation != generation || !source.ptr_eq(&Arc::downgrade(&chat.controller)))
+                    .is_none_or(|chat| chat.controller.is_retired() || chat.load_generation != generation || !source.ptr_eq(&Arc::downgrade(&chat.controller)))
                 {
                     return;
                 }

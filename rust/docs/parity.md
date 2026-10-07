@@ -2000,3 +2000,31 @@ original-chat binding across New Chat and close/reopen. Two actual screenshots
 and reproducible source/binary attribution are retained in
 `validation/inspector-2026-10-07/README.md`. Interactive Unicode/IME was unavailable
 in the desktop input interface; fake-platform tests are not native acceptance.
+
+### Explicit synthetic Connections Settings and saved route lifecycle
+
+The Connections section now has a usable fixture-only form/picker workflow sharing
+Projects' in-memory whole-envelope vault. Per-tab edits survive navigation, Save
+All reports sequential partial outcomes, blank key/headers preserve and `{}` clears,
+model/route changes fork identity, and existing chats choose a saved route through
+retire/join→catalog binding→fresh runtime publication. Same-route saves freeze the
+active worker and apply the latest pending configuration at settlement. Deletion
+stops/joins and opens disconnected history with paused queue and composer intact.
+No save/picker action sends; actual dispatch remains an explicit chat action.
+
+Catalog v6 adds explicit nullable connection IDs without rewriting v1–5 reads.
+Immutable launch CLI configuration is separate from saved routes. Reviews/tests
+repaired stale admission/worker epochs, old-route resurrection after a committed
+switch, late loaders, pending organization writes, editor acknowledgment and native
+close capture. Production defaults, native vault/signing and tool gates remain off.
+This is not complete Settings/model-catalog or credential-management parity.
+
+Final local gates passed: default workspace669 tests, synthetic app397, synthetic
+core292 unit+101 integration; existing manual benchmarks remain ignored. Strict
+Clippy/check/build/formatting and independent source reviews passed. An actual
+Linux desktop pass created/saved/switched/forked/deleted fixture connections with
+retained tabs, history and draft, and exactly two explicitly requested loopback
+POSTs. Dated screenshots, source/binary hashes, precise counts and limitations are
+preserved in `validation/connection-settings-2026-10-07/README.md`. Exact published
+CI is still a separate gate. See `connection-settings.md` for the scoped behavior,
+late-load admission restriction, visible paused-queue difference and memory limits.

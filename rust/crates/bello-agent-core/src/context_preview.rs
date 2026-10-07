@@ -50,6 +50,7 @@ pub struct ContextPreview {
     metadata: ContextPreviewMetadata,
     request_json: String,
     owner: Weak<Controller>,
+    configuration: Weak<super::Configuration>,
 }
 impl ContextPreview {
     pub fn metadata(&self) -> &ContextPreviewMetadata {
@@ -93,11 +94,7 @@ impl Controller {
                 "Draft exceeds the supported 256 KiB submission limit",
             ));
         }
-        let (snapshot, active) = self.preview_state()?;
-        let config = self
-            .config
-            .as_ref()
-            .ok_or_else(|| invalid("No connection configured for a context preview"))?;
+        let (snapshot, active, config) = self.preview_state()?;
         let profile = effective_profile(
             &config.profile,
             active.then_some(snapshot.active.as_ref()).flatten(),
@@ -171,6 +168,7 @@ impl Controller {
             metadata,
             request_json,
             owner: Arc::downgrade(self),
+            configuration: Arc::downgrade(&config),
         };
         // Match the source's final input-change guard. Rust builds outside the
         // actor lock, so recheck delivered inputs after serialization; partial
@@ -212,13 +210,19 @@ impl Controller {
         inner.store.require_certain()?;
         // A completed request can commit before its outer worker publishes.
         // Read authoritative actor state without cloning retained text.
+        if !self.configuration().is_some_and(|config| {
+            config.check().is_ok()
+                && std::ptr::eq(preview.configuration.as_ptr(), Arc::as_ptr(&config))
+        }) {
+            return Ok(false);
+        }
         Ok(
             input_binding(inner.store.snapshot_ref(), inner.worker_running)
                 == preview.metadata.input_binding,
         )
     }
 
-    fn preview_state(&self) -> Result<(Session, bool)> {
+    fn preview_state(&self) -> Result<(Session, bool, Arc<super::Configuration>)> {
         let inner = self
             .inner
             .try_lock()
@@ -234,7 +238,11 @@ impl Controller {
             ));
         }
         inner.store.require_certain()?;
-        Ok((inner.store.snapshot(), inner.worker_running))
+        let config = self
+            .configuration()
+            .ok_or_else(|| invalid("No connection configured for a context preview"))?;
+        config.check()?;
+        Ok((inner.store.snapshot(), inner.worker_running, config))
     }
 }
 

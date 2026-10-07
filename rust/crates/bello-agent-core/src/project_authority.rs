@@ -22,6 +22,9 @@ use std::{
 const MAX_BYTES: usize = 2_097_152;
 const MAX_PROJECTS: usize = 1000;
 
+#[path = "connection_vault.rs"]
+pub mod connections;
+
 #[cfg(feature = "native-authority")]
 mod native;
 
@@ -45,6 +48,10 @@ pub enum AuthorityError {
     Conflict,
     #[error("Project roots or identifiers are invalid.")]
     InvalidProject,
+    #[error("The connection is invalid or unsupported. Use explicit synthetic fixture settings.")]
+    InvalidConnection,
+    #[error("This saved connection is unavailable for new requests.")]
+    UnsupportedConnection,
     #[error("The project is not currently saved and trusted.")]
     Untrusted,
     #[error("The saved project contains unsupported authority fields.")]
@@ -303,7 +310,7 @@ trait VaultStorage: Send + Sync {
     fn read(&self) -> AuthorityResult<Option<Vec<u8>>>;
     fn replace(&self, expected: Option<&[u8]>, replacement: &[u8]) -> AuthorityResult<()>;
 }
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct ProjectAuthority {
     storage: Option<Arc<dyn VaultStorage>>,
 }
