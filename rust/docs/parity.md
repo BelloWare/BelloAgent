@@ -1992,3 +1992,11 @@ Strict app all-target Clippy and formatting passed. Independent narrow review
 checked macro resolution and preserved test bodies. These are the first executed
 Inspector GPUI regressions, not native macOS IME/accessibility or full Inspector
 parity. Exact published-commit CI and real desktop interaction remain separate.
+
+The published Inspector fix `d2c85d4` passed exact Linux run 37571661607 and macOS
+run 37571661653. Actual Linux desktop QA also passed the read-only request flow,
+no-send invariant, stale snapshot/Refresh, Copy/paste/Undo, per-owner reuse and
+original-chat binding across New Chat and close/reopen. Two actual screenshots
+and reproducible source/binary attribution are retained in
+`validation/inspector-2026-10-07/README.md`. Interactive Unicode/IME was unavailable
+in the desktop input interface; fake-platform tests are not native acceptance.

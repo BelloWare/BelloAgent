@@ -75,3 +75,12 @@ insufficient. A previously hidden unused fixture binding and collapsible key
 handler conditional were corrected without changing test assertions.
 Exact-commit CI, desktop interaction and native macOS input/accessibility remain
 distinct validation gates; these fake-platform events are not native IME proof.
+
+The exact published fix, `d2c85d4b9730fb8aa29a88922116af78de3d1a6b`, subsequently
+passed both Linux and macOS CI. Actual Linux desktop interaction verified draft
+inclusion without sends, immutable stale snapshots, manual Refresh, read-only
+input, Copy/paste/Undo, window reuse, original-chat ownership and close/reopen.
+The [dated evidence and two screenshots](validation/inspector-2026-10-07/README.md)
+record the exact source tree, binary hash, fixture setup and remaining native
+Unicode/IME/accessibility limitations. This does not enable production authority
+or claim complete Swift Inspector parity.
