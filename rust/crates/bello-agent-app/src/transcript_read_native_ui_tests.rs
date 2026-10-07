@@ -178,9 +178,20 @@ async fn read_native_workflow_trust_loopback_checkpoint_replay_and_numbered_ui(
     reopened.retire_and_wait().await.unwrap();
     server.join().unwrap();
     let restored = SessionStore::open(&path).unwrap();
-    assert_eq!(restored.snapshot().version, 4);
-    let rows = restored
-        .snapshot()
+    let snapshot = restored.snapshot();
+    // New user deliveries retain task provenance, which requires snapshot v8.
+    // Retained read content alone still requires only v4 in legacy fixtures.
+    assert_eq!(snapshot.version, 8);
+    let users = snapshot
+        .messages
+        .iter()
+        .filter(|message| message.role == "user")
+        .collect::<Vec<_>>();
+    assert_eq!(users.len(), 2);
+    for user in users {
+        assert_eq!(user.task_root_id.as_deref(), Some(user.id.as_str()));
+    }
+    let rows = snapshot
         .messages
         .into_iter()
         .filter(|message| message.tool_record.is_some())

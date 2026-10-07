@@ -68,3 +68,46 @@ correction remains pending on its exact published commit.
 This assertion adds three nonblank test-support lines: production 28,194;
 tests/support 40,156; benchmark/example 1,184; total 69,534. Concurrent unpublished
 write/edit and compaction work is excluded.
+
+## Project-skills checkpoint: stale native Read schema assertion
+
+Skills checkpoint `e2785bc7ebf6102b1d4d30e34bad40d64ff994c7`, tree
+`e41551e2cdc390c040820870eede7fdd2d4363ce`, failed
+[macOS run 37661601424](https://github.com/BelloWare/BelloAgent/actions/runs/37661601424),
+job 112930238339. The fake-platform `read_native_workflow` fixture reached its
+final reopened snapshot assertion: actual version 8 versus expected version 4.
+Native read, both loopback continuations, retirement and replay after source-file
+removal had completed; the later numbered UI assertions and Edit fixture did not
+run. Native application build and lifecycle steps were also skipped.
+
+The expectation was stale after task provenance landed with project skills.
+`Session::start_next_with_content` records each new task's user-message ID as its
+`task_root_id`, requiring snapshot v8 even for plain text without selected skills.
+This matches the new-task identity in Swift `SessionQueue.swift`'s `deliver`:
+`message.taskRootID = newTask ? submission.turnID : taskRootID`. The two FollowUp
+deliveries in this fixture are separate tasks. Session versions are feature-based;
+an empty session remains v2, and retained read content alone still requires v4.
+There is no exported global current session version to substitute here.
+
+The test now requires v8 and exactly two persisted user rows, each rooted in its
+own ID. Existing exact output, two tool-record rows, numbered text, truncation note
+and no-reread assertions remain intact. The native Edit fixture already requires
+v8. Explicit legacy v4 retained-content/migration tests remain unchanged. No
+runtime behavior, tool safety, authority gate or source oracle is changed.
+
+The same failed workflow had already passed the project-skills Swift oracle,
+including its separately labeled Darwin alias characterization. That reported
+same-file targets and stable Rust alias identity, but unequal Swift/Rust
+path-derived IDs and expanded text. The compatibility gap remains open; this
+Read test correction does not alter or resolve it.
+
+The corrected native Read fixture is compiled but ignored on Linux because it
+requires macOS ImageIO. Actual execution of its remaining UI assertions, the
+native Edit fixture and the complete exact published macOS workflow remain gates.
+This entry records the diagnosis and correction, not a passing corrected CI run.
+
+The correction adds 11 nonblank Rust test-support lines (202 to 213) and changes
+no production or benchmark lines. Test blob before:
+`cf3d90637fa2adcce23ec4b9e7e79ccc9d5ff43a`; after:
+`859000bbf9b944ae2216af4f111a958f1f466e8f`. The project-skills LOC ledger stays
+immutable and remains attributable to `e2785bc`, before this test-only correction.
