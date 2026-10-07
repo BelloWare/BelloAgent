@@ -29,6 +29,10 @@ pub struct ReadStats {
     pub line: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_line: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub added: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub removed: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,10 +82,21 @@ impl ToolContent {
             if stats.path.is_empty() || stats.path.len() > 65_536 {
                 return Err(invalid("Invalid retained read path"));
             }
+            match (stats.added, stats.removed) {
+                (None, None) => {}
+                (Some(added), Some(removed))
+                    if added <= 20 * 1024 * 1024 + 1 && removed <= 20 * 1024 * 1024 + 1 => {}
+                _ => return Err(invalid("Invalid retained mutation line counts")),
+            }
+            let maximum_line = if stats.added.is_some() {
+                20 * 1024 * 1024 + 1
+            } else {
+                16 * 1024 * 1024 + 1
+            };
             match (stats.line, stats.last_line) {
                 (None, None) => {}
-                (Some(first), Some(last))
-                    if first > 0 && first <= last && last <= 16 * 1024 * 1024 + 1 => {}
+                (Some(first), Some(last)) if first > 0 && first <= last && last <= maximum_line => {
+                }
                 _ => return Err(invalid("Invalid retained read line range")),
             }
         }
@@ -271,6 +286,8 @@ mod tests {
                 path: "/fixture".into(),
                 line: Some(1),
                 last_line: Some(2),
+                added: None,
+                removed: None,
             }),
         };
         content.validate().unwrap();
@@ -299,5 +316,25 @@ mod tests {
             stats: None,
         };
         assert!(content.validate().is_err());
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn mutation_stats_pair_and_larger_edited_viewer_bounds_are_strict() {
+    let native = |stats| serde_json::json!({"content":[{"type":"text","text":"Edited fixture"}],"isError":false,"stats":stats});
+    let content=ToolContent::from_native(&native(serde_json::json!({"path":"/fixture","added":0,"removed":1,"line":20*1024*1024+1,"lastLine":20*1024*1024+1}))).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<ToolContent>(&serde_json::to_vec(&content).unwrap()).unwrap(),
+        content
+    );
+    for stats in [
+        serde_json::json!({"path":"/fixture","added":0}),
+        serde_json::json!({"path":"/fixture","removed":0}),
+        serde_json::json!({"path":"/fixture","added":-1,"removed":0}),
+        serde_json::json!({"path":"/fixture","added":20*1024*1024+2,"removed":0}),
+        serde_json::json!({"path":"/fixture","line":16*1024*1024+2,"lastLine":16*1024*1024+2}),
+    ] {
+        assert!(ToolContent::from_native(&native(stats)).is_err());
     }
 }

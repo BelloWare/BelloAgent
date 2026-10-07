@@ -26,6 +26,13 @@ pub(super) fn acquire(
             .path()
             .ok_or_else(|| ToolError::failure("invalid_params", "Invalid path"))?
             .to_string();
+        let bytes = acquire_resolved(&path)?;
+        Ok((path, bytes))
+    })
+}
+
+pub(in crate::tools) fn acquire_resolved(path: &str) -> ToolResult<Vec<u8>> {
+    autoreleasepool(|_| {
         // Swift's C-string bridge retains embedded NUL, whose prefix POSIX open
         // observes. Preserve it rather than silently reading a different path.
         let mut c_path = path.as_bytes().to_vec();
@@ -88,11 +95,11 @@ pub(super) fn acquire(
                 "File exceeds the supported size limit",
             ));
         }
-        Ok((path, bytes))
+        Ok(bytes)
     })
 }
 
-pub(super) fn decode_utf8(bytes: &[u8]) -> Option<String> {
+pub(in crate::tools) fn decode_utf8(bytes: &[u8]) -> Option<String> {
     autoreleasepool(|_| {
         let data = NSData::with_bytes(bytes);
         NSString::initWithData_encoding(NSString::alloc(), &data, NSUTF8StringEncoding)

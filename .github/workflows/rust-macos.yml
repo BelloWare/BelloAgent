@@ -56,10 +56,12 @@ jobs:
           cargo check --locked -p bello-agent-app --all-targets --features synthetic-authority
           cargo test --locked -p bello-agent-app --features synthetic-authority project_host::
           cargo test --locked -p bello-agent-app chat_tool_mode::
-      - name: Synthetic native read through fake-platform transcript
+      - name: Synthetic native file tools through fake-platform transcript
         # Temporary files and loopback provider only; GPUI uses its test platform.
         # No native window, input automation, TCC, vault, or user data is accessed.
-        run: cargo test --locked -p bello-agent-app --features synthetic-authority read_native_workflow
+        run: |
+          cargo test --locked -p bello-agent-app --features synthetic-authority read_native_workflow
+          cargo test --locked -p bello-agent-app --features synthetic-authority edit_native_workflow
       - name: Build native applications without launching
         run: cargo build --locked --workspace
       - name: Test native lifecycle harness policy

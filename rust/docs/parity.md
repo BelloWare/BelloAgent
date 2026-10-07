@@ -2028,3 +2028,79 @@ POSTs. Dated screenshots, source/binary hashes, precise counts and limitations a
 preserved in `validation/connection-settings-2026-10-07/README.md`. Exact published
 CI is still a separate gate. See `connection-settings.md` for the scoped behavior,
 late-load admission restriction, visible paused-queue difference and memory limits.
+
+### Synthetic write/edit tools and requested-change cards (2026-10-07)
+
+The explicit synthetic saved-project host can now open an already-confirmed
+Editing chat with write/edit capabilities. Public read-only runtime constructors
+still reject them, and production/default tools remain disabled. macOS uses
+Foundation path resolution, bounded UTF-8 reads, exact single replacement, atomic
+write and POSIX-mode restoration. The original error ordering, byte limits,
+line-count/viewer rules, and side-effect uncertainty are preserved. The connected
+Controller retains its deliberate 2 MiB JSON-argument safety bound; larger direct
+native limits are not a promise that such calls pass through the model workflow.
+
+A workspace-wide gate spans chats and fresh confirmations. Ordered mutation
+calls run beside concurrent readers; current trust/mode is rechecked after the
+gate wait. Its owned guard moves into the admitted worker, so caller future-drop
+cannot release it while work continues. Waiting cancellation is NotExecuted;
+entered interruption and non-rejection errors are Unknown. Durable v5 stats,
+result-checkpoint failures and reopened replay never automatically rerun a tool.
+
+GPUI displays source requested-edit/content previews with canonical-Unicode LCS,
+source fallback/collapse bounds, exact-text caching capped at 512 entries/32 MiB,
+explicit large-content disclosure, truthful outcome labels, changed-line links
+and unchanged raw Copy. Existing owner/selection/editor fences remain. Source
+background colors/full-range selection and native pixel/input acceptance remain
+outside this checkpoint. Linux actual-mutation fixtures are cfg(test)-only ASCII
+adapters; normal Linux tools are unavailable, not advertised as Foundation parity.
+
+Independent review found and corrected two issues before freeze: a dropped caller
+could release mutation admission while its worker continued, and a paged standalone
+edit result could index an off-page owner key. Negative controls reproduced both
+failures at their new regression assertions; exact source was restored afterward.
+The new macOS 21-case extracted-Swift oracle compares results, bytes, POSIX modes
+and replacement identities; a native synthetic→loopback→mutation→replay→GPUI
+fixture is included. Their execution awaits exact native CI. Local validation and
+explicit remaining limits are detailed in `native-edit-contract.md`.
+
+### Manual compaction, durable replay and recovery (2026-10-07)
+
+The conversation Actions menu now exposes source-defined Compact Now for static
+configured Controllers. It stops/joins an active turn, freezes source history and
+configuration, sends the ordinary intact Responses projection plus the exact
+bounded summary instruction, and disables tools/truncation. Complete tool groups,
+retained recent history and unanswered input are preserved. Images require declared
+model support. Incomplete, refused, empty, tool-bearing, stale, oversized or
+non-reducing summaries cannot become checkpoints.
+
+Snapshot v5 retains chronological history, partial progress and current/prior
+terminal receipts while validating ordered source/retained references. The next
+request and post-settlement Inspector reconstruct the same checkpoint path. Old
+v1–4 behavior is preserved, and recovery never resubmits a summary or queued input.
+A later Stop during predecessor shutdown cancels before sending; pending Retry/
+Resume cannot strand an active reply. One subsequent Resume drains the retained
+queue normally. Uncertain adoption fences later writes and inspection.
+
+Twenty-six focused core tests and six app tests pass. Independent review corrected
+pending admission, cancellation ordering and stale flags, retained-tail metadata
+and quadratic suffix reconstruction. Source-equivalent additive selection is
+checked against full request rebuilding with Unicode, tools/images and protected
+inputs. The combined default workspace passed 372 app, 303 core unit and 107
+integration tests (one existing benchmark ignored); synthetic core passed 376 unit
+and 107 integration. Strict default/synthetic workspace Clippy and formatting pass.
+
+An actual cloud Linux CUA pass verified menu dismissal without sends, durable
+checkpoint adoption with draft/history retained, actual Inspector/next-request
+replay, streamed-summary Stop, queued/unsent input and normal close/reopen. Exactly
+three numeric-loopback POSTs occurred; no real model or reported token/cost usage
+was invented. The immutable binary/source manifest and four unchanged screenshots
+are in `validation/compaction-2026-10-07/README.md`.
+
+This is manual static-option compaction, not full source compaction parity.
+Dynamic synthetic-resource composition, automatic/context-rejection triggers,
+retry settings, compatible usage anchors, cost limits, selected-skill protection,
+full request inspection and native macOS menu/IME/accessibility acceptance remain.
+During compaction Inspector explicitly waits for settlement rather than showing an
+ordinary request as the summary. No production vault/trust/tool gate changed.
+See `manual-compaction.md` for exact invariants and remaining boundaries.

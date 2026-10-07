@@ -131,3 +131,20 @@ fail retention with no content and no automatic replay. Earlier accepted content
 is unchanged. Native per-read/transient decode allocations are additional. The
 snapshot encoder uses a bounded writer and includes the final newline in its
 256 MiB limit; it never builds an oversized candidate buffer before rejecting it.
+
+## Mutation results and snapshot v5
+
+The explicit synthetic Editing runtime retains write/edit output with resolved
+path, added/removed counts and optional changed viewer lines. These new stats
+require v5; declaring them in an older snapshot fails before recovery writes.
+Original call arguments/results stay durable; reopen and Retry never directly
+repeat a historical mutation. Before-rename result failure leaves an Unknown
+outcome on recovery; after-rename uncertainty can recover the committed completed
+result. Both preserve the fact that the target file may already have changed.
+Filesystem mutation and session persistence are separate transactions, with no
+rollback or CAS guarantee. See [write/edit contracts](native-edit-contract.md).
+
+V5 also stores optional ordered compaction checkpoint references and current plus
+terminal operation receipts while retaining the full chronological transcript
+and partial attempts; replay reconstructs summary, retained and newer messages.
+V1–4 read behavior is unchanged. See [manual compaction](manual-compaction.md).

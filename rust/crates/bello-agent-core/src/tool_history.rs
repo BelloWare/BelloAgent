@@ -388,6 +388,11 @@ fn call_item(call: &ToolCall, provider_id: Option<&str>) -> Result<Value> {
 /// placeholders, not queued work and never instructions to invoke anything.
 pub fn project(messages: &[Message], profile: &Profile) -> Result<Vec<Value>> {
     validate(messages)?;
+    let active = crate::compaction::active_context(messages)?;
+    project_active(&active, profile)
+}
+
+pub(crate) fn project_active(messages: &[&Message], profile: &Profile) -> Result<Vec<Value>> {
     let mut image_bytes = 0usize;
     let mut output = Vec::new();
     let mut pending: Vec<String> = Vec::new();
@@ -444,6 +449,10 @@ pub fn project(messages: &[Message], profile: &Profile) -> Result<Vec<Value>> {
             output.extend(assistant_items(message, record, profile)?);
             pending = record.calls.iter().map(|call| call.id.clone()).collect();
             active_owner = Some(&message.id);
+            continue;
+        }
+        if message.compaction.is_some() {
+            output.push(crate::compaction::provider_summary(message));
             continue;
         }
         match message.role.as_str() {

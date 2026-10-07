@@ -186,6 +186,7 @@ mod tests {
             usage: Value::Null,
             model: None,
             tool_record: None,
+            compaction: None,
         };
         let mut assistant = base.clone();
         assistant.tool_record = Some(ToolRecord::Assistant(AssistantRecord {
@@ -229,6 +230,8 @@ mod tests {
             path: "/resolved/name with spaces ".into(),
             line: Some(7),
             last_line: Some(11),
+            added: None,
+            removed: None,
         }
     }
     #[test]

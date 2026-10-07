@@ -20,6 +20,7 @@
 //! Native read adds bounded durable text/image content and resolved viewer stats.
 //! Native ls itself has an entry bound, not a byte bound, and no `stats` field.
 
+mod edit;
 mod find;
 mod grep;
 mod read;
@@ -51,6 +52,9 @@ pub enum ToolError {
     Failure { code: &'static str, message: String },
     #[error("Stopped")]
     Cancelled,
+    /// The workspace editing gate or current authority refused admission.
+    #[error("{0}")]
+    NotExecuted(String),
     // Keep native Foundation failure identity for direct callers and fixtures.
     // The session runtime renders the source's generic non-AgentError message.
     #[error("{message}")]
@@ -94,6 +98,8 @@ pub enum Capability {
     Ls,
     Find,
     Grep,
+    Write,
+    Edit,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -151,6 +157,21 @@ fn grep_definition() -> ToolDefinition {
     }
 }
 
+fn write_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "write".into(),
+        description: "Write UTF-8 content to a file, creating parent directories. This replaces existing content.".into(),
+        schema: json!({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}),
+    }
+}
+fn edit_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "edit".into(),
+        description: "Replace exactly one occurrence of oldText with newText. Fails if text is missing or ambiguous; no fuzzy edit.".into(),
+        schema: json!({"type":"object","properties":{"path":{"type":"string"},"oldText":{"type":"string"},"newText":{"type":"string"}},"required":["path","oldText","newText"],"additionalProperties":false}),
+    }
+}
+
 pub fn result_text(text: impl Into<String>, is_error: bool) -> Value {
     json!({"content": [{"type": "text", "text": text.into()}], "isError": is_error})
 }
@@ -160,8 +181,13 @@ pub struct NativeTools {
     paths: FileToolContext,
     capabilities: BTreeSet<Capability>,
     workers: BlockingWorkExecutor,
+    editing_gate: Arc<tokio::sync::Mutex<()>>,
+    #[cfg(all(test, not(target_os = "macos")))]
+    synthetic_mutations: bool,
     #[cfg(test)]
     before_read: Option<Arc<dyn Fn() + Send + Sync>>,
+    #[cfg(test)]
+    after_mutation: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl NativeTools {
@@ -190,10 +216,16 @@ impl NativeTools {
         if capabilities.contains(&Capability::Read)
             || capabilities.contains(&Capability::Find)
             || capabilities.contains(&Capability::Grep)
+            || capabilities.contains(&Capability::Write)
+            || capabilities.contains(&Capability::Edit)
         {
             return Err(ToolError::failure(
                 "tool_unavailable",
-                if capabilities.contains(&Capability::Read) {
+                if capabilities.contains(&Capability::Write)
+                    || capabilities.contains(&Capability::Edit)
+                {
+                    "Write and edit require the macOS Foundation implementation"
+                } else if capabilities.contains(&Capability::Read) {
                     "Read requires the macOS Foundation/ImageIO implementation"
                 } else if capabilities.contains(&Capability::Grep) {
                     "Grep requires the macOS Foundation implementation"
@@ -206,9 +238,50 @@ impl NativeTools {
             paths: FileToolContext { cwd, roots, home },
             capabilities,
             workers: BlockingWorkExecutor::shared(),
+            editing_gate: Arc::new(tokio::sync::Mutex::new(())),
+            #[cfg(all(test, not(target_os = "macos")))]
+            synthetic_mutations: false,
             #[cfg(test)]
             before_read: None,
+            #[cfg(test)]
+            after_mutation: None,
         })
+    }
+
+    #[cfg(all(test, not(target_os = "macos")))]
+    pub(crate) fn synthetic_mutation_fixture(
+        cwd: PathBuf,
+        roots: Vec<PathBuf>,
+        home: PathBuf,
+        capabilities: Vec<Capability>,
+    ) -> ToolResult<Self> {
+        if capabilities.iter().any(|capability| {
+            !matches!(
+                capability,
+                Capability::Ls | Capability::Write | Capability::Edit
+            )
+        }) {
+            return Err(ToolError::failure(
+                "tool_unavailable",
+                "The synthetic mutation fixture only supports ls/write/edit",
+            ));
+        }
+        let mut tools = Self::new(cwd, roots, home, [])?;
+        tools.capabilities = capabilities.into_iter().collect();
+        tools.synthetic_mutations = true;
+        Ok(tools)
+    }
+
+    #[cfg(feature = "synthetic-authority")]
+    pub(crate) fn with_editing_gate(mut self, gate: Arc<tokio::sync::Mutex<()>>) -> Self {
+        self.editing_gate = gate;
+        self
+    }
+
+    pub(crate) fn editing_call(&self, call: &ToolCall) -> bool {
+        matches!(call.name.as_str(), "write" | "edit")
+            && (self.capabilities.contains(&Capability::Write)
+                || self.capabilities.contains(&Capability::Edit))
     }
 
     /// Isolated executor injection for deterministic synthetic fixtures.
@@ -220,6 +293,12 @@ impl NativeTools {
     #[cfg(test)]
     pub(crate) fn before_read(mut self, callback: Arc<dyn Fn() + Send + Sync>) -> Self {
         self.before_read = Some(callback);
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn after_mutation(mut self, callback: Arc<dyn Fn() + Send + Sync>) -> Self {
+        self.after_mutation = Some(callback);
         self
     }
 
@@ -236,6 +315,12 @@ impl NativeTools {
         }
         if self.capabilities.contains(&Capability::Grep) {
             definitions.push(grep_definition());
+        }
+        if self.capabilities.contains(&Capability::Write) {
+            definitions.push(write_definition());
+        }
+        if self.capabilities.contains(&Capability::Edit) {
+            definitions.push(edit_definition());
         }
         definitions
     }
@@ -254,6 +339,12 @@ impl NativeTools {
         if self.capabilities.contains(&Capability::Grep) {
             ids.push("grep");
         }
+        if self.capabilities.contains(&Capability::Write) {
+            ids.push("write");
+        }
+        if self.capabilities.contains(&Capability::Edit) {
+            ids.push("edit");
+        }
         ids
     }
 
@@ -263,6 +354,8 @@ impl NativeTools {
             "ls" => self.capabilities.contains(&Capability::Ls),
             "find" => self.capabilities.contains(&Capability::Find),
             "grep" => self.capabilities.contains(&Capability::Grep),
+            "write" => self.capabilities.contains(&Capability::Write),
+            "edit" => self.capabilities.contains(&Capability::Edit),
             _ => false,
         }
     }
@@ -279,7 +372,9 @@ impl NativeTools {
             return prepared;
         };
         // Optional properties do not accept null in their source schemas.
-        let optional = if call.name == "read" {
+        let optional = if matches!(call.name.as_str(), "write" | "edit") {
+            &[][..]
+        } else if call.name == "read" {
             &["offset", "limit"][..]
         } else if call.name == "grep" {
             &["path", "limit", "literal", "ignoreCase"][..]
@@ -291,7 +386,11 @@ impl NativeTools {
                 fields.remove(*key);
             }
         }
-        for key in if matches!(call.name.as_str(), "find" | "grep") {
+        for key in if call.name == "write" {
+            &["path", "content"][..]
+        } else if call.name == "edit" {
+            &["path", "oldText", "newText"][..]
+        } else if matches!(call.name.as_str(), "find" | "grep") {
             &["path", "pattern"][..]
         } else {
             &["path"][..]
@@ -300,7 +399,10 @@ impl NativeTools {
                 continue;
             };
             match value {
-                Value::Null if *key == "pattern" || (call.name == "read" && *key == "path") => {
+                Value::Null
+                    if *key == "pattern"
+                        || matches!(call.name.as_str(), "read" | "write" | "edit") =>
+                {
                     *value = Value::String(String::new())
                 }
                 Value::Bool(flag) => *value = Value::String(flag.to_string()),
@@ -329,7 +431,9 @@ impl NativeTools {
                 }
             }
         }
-        for key in if call.name == "read" {
+        for key in if matches!(call.name.as_str(), "write" | "edit") {
+            &[][..]
+        } else if call.name == "read" {
             &["offset", "limit"][..]
         } else {
             &["limit"][..]
@@ -385,6 +489,39 @@ impl NativeTools {
         T: Send + 'static,
         F: FnOnce(Value) -> ToolResult<T> + Send + 'static,
     {
+        self.invoke_mapped_with_admission(call, cancellation, map, async { Ok(()) })
+            .await
+    }
+
+    pub(crate) async fn invoke_mapped_with_admission<T, F>(
+        &self,
+        call: &ToolCall,
+        cancellation: CancellationToken,
+        map: F,
+        admission: impl std::future::Future<Output = ToolResult<()>>,
+    ) -> ToolResult<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(Value) -> ToolResult<T> + Send + 'static,
+    {
+        // Swift acquires the shared workspace gate before marking an editing
+        // invocation begun. Keep the guard through worker settlement/retention.
+        let _editing = if self.editing_call(call) {
+            let guard = tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => return Err(ToolError::NotExecuted("Not executed: cancelled before invocation".into())),
+                guard = self.editing_gate.clone().lock_owned() => guard,
+            };
+            if cancellation.is_cancelled() {
+                return Err(ToolError::NotExecuted(
+                    "Not executed: cancelled before invocation".into(),
+                ));
+            }
+            Some(guard)
+        } else {
+            None
+        };
+        admission.await?;
         check_cancelled(&cancellation)?;
         if !self.offers(&call.name) {
             return Err(ToolError::failure(
@@ -395,35 +532,64 @@ impl NativeTools {
         let fields = call.arguments.as_object().ok_or_else(|| {
             ToolError::failure("tool_arguments", "Tool arguments must be an object")
         })?;
-        let is_read = call.name == "read";
-        let is_find = call.name == "find";
-        let is_grep = call.name == "grep";
-        let is_search = is_find || is_grep;
-        if fields.keys().any(|key| {
-            key != "path"
-                && key != "limit"
-                && !(is_read && key == "offset")
-                && !(is_search && key == "pattern")
-                && !(is_grep && (key == "literal" || key == "ignoreCase"))
-        }) || (is_search && !fields.contains_key("pattern"))
-            || (is_read && !fields.contains_key("path"))
+        let definition = self
+            .definitions()
+            .into_iter()
+            .find(|definition| definition.name == call.name)
+            .expect("offered definition");
+        if fields
+            .keys()
+            .any(|key| definition.schema["properties"].get(key).is_none())
+            || definition.schema["required"]
+                .as_array()
+                .expect("required array")
+                .iter()
+                .any(|key| !fields.contains_key(key.as_str().expect("required name")))
         {
             return Err(ToolError::failure(
                 "tool_arguments",
                 "Missing or unsupported tool arguments",
             ));
         }
+        let is_read = call.name == "read";
+        let is_find = call.name == "find";
+        let is_grep = call.name == "grep";
+        let is_write = call.name == "write";
+        let is_edit = call.name == "edit";
         let paths = self.paths.clone();
+        #[cfg(all(test, not(target_os = "macos")))]
+        let synthetic_mutations = self.synthetic_mutations;
         let arguments = call.arguments.clone();
         #[cfg(test)]
         let before_read = self.before_read.clone();
+        #[cfg(test)]
+        let after_mutation = self.after_mutation.clone();
         self.workers
             .run(cancellation, move |cancel| {
+                // Caller cancellation-by-drop must not release workspace
+                // mutation admission while this native worker still runs.
+                let _editing = _editing;
                 #[cfg(test)]
                 if let Some(callback) = before_read {
                     callback();
                 }
-                let value = if is_read {
+                let value = if is_write || is_edit {
+                    #[cfg(all(test, not(target_os = "macos")))]
+                    let result = if synthetic_mutations {
+                        edit::synthetic::invoke(&paths, &arguments, is_edit, &cancel)
+                    } else {
+                        edit::invoke(&paths, &arguments, is_edit, &cancel)
+                    };
+                    #[cfg(not(all(test, not(target_os = "macos"))))]
+                    let result = edit::invoke(&paths, &arguments, is_edit, &cancel);
+                    #[cfg(test)]
+                    if result.is_ok()
+                        && let Some(callback) = after_mutation
+                    {
+                        callback();
+                    }
+                    result
+                } else if is_read {
                     read::invoke_with_processor(&paths, &arguments, &cancel, read_image::process)
                 } else if is_grep {
                     grep::invoke(&paths, &arguments, &cancel)
@@ -904,3 +1070,7 @@ mod grep_preparation_tests;
 #[cfg(test)]
 #[path = "tools/read_preparation_tests.rs"]
 mod read_preparation_tests;
+
+#[cfg(test)]
+#[path = "tools/edit_preparation_tests.rs"]
+mod edit_preparation_tests;

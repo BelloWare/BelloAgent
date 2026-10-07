@@ -539,6 +539,10 @@ impl WorkspaceSnapshot {
 /// Single writer, atomic small-file transactions. Revision receipts reject stale
 /// debounce work independently of wall-clock changes and task cancellation.
 pub struct WorkspaceStore {
+    // One in-memory source editing gate per live catalog owner. Every synthetic
+    // project confirmation and chat shares it; it is never durable authority.
+    #[cfg(feature = "synthetic-authority")]
+    editing_gate: std::sync::Arc<tokio::sync::Mutex<()>>,
     path: PathBuf,
     _lock: File,
     state: WorkspaceSnapshot,
@@ -606,6 +610,8 @@ impl WorkspaceStore {
             WorkspaceSnapshot::new(project)
         };
         Ok(Self {
+            #[cfg(feature = "synthetic-authority")]
+            editing_gate: std::sync::Arc::new(tokio::sync::Mutex::new(())),
             path,
             _lock: lock,
             state,
@@ -614,6 +620,11 @@ impl WorkspaceStore {
             fault: Fault::None,
         })
     }
+    #[cfg(feature = "synthetic-authority")]
+    pub(crate) fn editing_gate(&self) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+        self.editing_gate.clone()
+    }
+
     pub fn snapshot(&self) -> WorkspaceSnapshot {
         self.state.clone()
     }

@@ -149,6 +149,7 @@ mod tests {
             usage: serde_json::Value::Null,
             model: None,
             tool_record: None,
+            compaction: None,
         }
     }
     #[test]

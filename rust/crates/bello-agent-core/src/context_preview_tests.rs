@@ -118,6 +118,7 @@ fn idle_preview_matches_provider_body_without_sends_writes_or_resource_reads() {
         usage: Value::Null,
         model: Some(profile.model_id.clone()),
         tool_record: None,
+        compaction: None,
     };
     let expected = request_body_with_tools(
         &profile,
@@ -451,6 +452,7 @@ fn proxy_authorization_suffix_is_redacted_from_retained_history_and_draft() {
                     usage: Value::Null,
                     model: None,
                     tool_record: None,
+                    compaction: None,
                 });
                 Ok(())
             })

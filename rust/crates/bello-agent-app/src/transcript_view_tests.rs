@@ -29,6 +29,7 @@ fn message(id: &str, role: &str, text: &str) -> Message {
         usage: serde_json::Value::Null,
         model: None,
         tool_record: None,
+        compaction: None,
     }
 }
 
@@ -2431,3 +2432,6 @@ fn retained_tool_detail_replaced_child_cannot_restore_old_editor(cx: &mut TestAp
 
 #[path = "transcript_read_ui_tests.rs"]
 mod read_ui;
+
+#[path = "transcript_edit_ui_tests.rs"]
+mod edit_ui_tests;

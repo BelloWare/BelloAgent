@@ -682,6 +682,7 @@ async fn retiring_tool_focus_case(cx: &mut TestAppContext, dismiss_early: bool, 
         state: "completed".into(),
         usage: serde_json::Value::Null,
         model: None,
+        compaction: None,
         tool_record: Some(ToolRecord::Assistant(AssistantRecord {
             completion: Completion::Complete,
             calls: vec![ToolCall {
@@ -708,6 +709,7 @@ async fn retiring_tool_focus_case(cx: &mut TestAppContext, dismiss_early: bool, 
         state: "completed".into(),
         usage: serde_json::Value::Null,
         model: None,
+        compaction: None,
         tool_record: Some(ToolRecord::Result(ResultRecord {
             assistant_id: assistant.id.clone(),
             call_id: "tool-call".into(),
@@ -1090,6 +1092,7 @@ fn history_fixture(
                 usage: serde_json::Value::Null,
                 model: None,
                 tool_record: None,
+                compaction: None,
             });
             Ok(())
         })

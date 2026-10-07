@@ -78,11 +78,52 @@ impl TrustedReadOnlyTools {
         home: PathBuf,
         capabilities: impl IntoIterator<Item = Capability>,
     ) -> Result<Self> {
+        let capabilities: Vec<_> = capabilities.into_iter().collect();
+        if capabilities
+            .iter()
+            .any(|capability| matches!(capability, Capability::Write | Capability::Edit))
+        {
+            return Err(invalid(
+                "Read-only tool authority cannot offer write or edit",
+            ));
+        }
         Ok(Self {
             native: NativeTools::new(cwd, additional_roots, home, capabilities)
                 .map_err(|error| invalid(error.to_string()))?,
         })
     }
+    /// Crate-private synthetic composition after a saved Editing mode and
+    /// current project trust have been checked. No default/production caller.
+    #[cfg(feature = "synthetic-authority")]
+    pub(crate) fn new_with_editing_capabilities(
+        cwd: PathBuf,
+        additional_roots: Vec<PathBuf>,
+        home: PathBuf,
+        capabilities: impl IntoIterator<Item = Capability>,
+        gate: Arc<tokio::sync::Mutex<()>>,
+    ) -> Result<Self> {
+        Ok(Self {
+            native: NativeTools::new(cwd, additional_roots, home, capabilities)
+                .map_err(|error| invalid(error.to_string()))?
+                .with_editing_gate(gate),
+        })
+    }
+
+    #[cfg(all(test, not(target_os = "macos"), feature = "synthetic-authority"))]
+    pub(crate) fn synthetic_mutation_fixture(
+        cwd: PathBuf,
+        roots: Vec<PathBuf>,
+        home: PathBuf,
+        capabilities: Vec<Capability>,
+        gate: Arc<tokio::sync::Mutex<()>>,
+    ) -> Result<Self> {
+        Ok(Self {
+            native: NativeTools::synthetic_mutation_fixture(cwd, roots, home, capabilities)
+                .map_err(|error| invalid(error.to_string()))?
+                .with_editing_gate(gate),
+        })
+    }
+
     /// Allows deterministic worker admission tests without using real files or
     /// changing the shared production executor's four-worker/64-waiting limits.
     pub fn with_executor(mut self, executor: BlockingWorkExecutor) -> Self {
@@ -118,6 +159,7 @@ fn message(role: &str, text: String, model: Option<String>) -> Message {
         usage: Value::Null,
         model,
         tool_record: None,
+        compaction: None,
     }
 }
 
@@ -399,27 +441,67 @@ impl Controller {
                 self.publish(&inner);
                 return;
             }
-            // join_all keeps result order; NativeTools bounds actual file workers.
-            // Await every running read even after Stop, rather than freeing slots
-            // or reporting shutdown while an uninterruptible syscall still runs.
+            // Source SessionTools runs editing calls in original call order
+            // beside concurrent readers, and joins every entered worker on Stop.
             let content_budget = Arc::new(BatchContentBudget::default());
-            let results = join_all(calls.iter().map(|call| async {
-                if let Err(error) = self.check_resources() {
-                    return ToolResultRow::error(
-                        format!("Not executed: {error}"),
-                        ToolOutcome::NotExecuted,
-                    );
+            let execute = |index: usize| {
+                let call = &calls[index];
+                let budget = content_budget.clone();
+                let token = cancel.clone();
+                let directory = &output_directory;
+                async move {
+                    let result = run_call_with_admission(
+                        &tools.native,
+                        call,
+                        directory,
+                        token.clone(),
+                        budget,
+                        async {
+                            let confirmation = if tools.native.editing_call(call) {
+                                // A queued mutation can outlive a trust/mode
+                                // change. Reconfirm after the workspace gate,
+                                // outside actor/catalog locks, before invocation.
+                                self.confirm_turn_resources(token.clone()).await
+                            } else {
+                                self.check_resources()
+                            };
+                            confirmation.map_err(|error| {
+                                ToolError::NotExecuted(if token.is_cancelled() {
+                                    "Not executed: cancelled before invocation".into()
+                                } else {
+                                    format!("Not executed: {error}")
+                                })
+                            })
+                        },
+                    )
+                    .await;
+                    (index, result)
                 }
-                run_call_with_budget(
-                    &tools.native,
-                    call,
-                    &output_directory,
-                    cancel.clone(),
-                    content_budget.clone(),
-                )
-                .await
-            }))
-            .await;
+            };
+            let (mut completed, edited) = tokio::join!(
+                async {
+                    join_all(
+                        calls
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, call)| !tools.native.editing_call(call))
+                            .map(|(index, _)| execute(index)),
+                    )
+                    .await
+                },
+                async {
+                    let mut rows = Vec::new();
+                    for (index, call) in calls.iter().enumerate() {
+                        if tools.native.editing_call(call) {
+                            rows.push(execute(index).await);
+                        }
+                    }
+                    rows
+                }
+            );
+            completed.extend(edited);
+            completed.sort_by_key(|(index, _)| *index);
+            let results = completed.into_iter().map(|(_, result)| result).collect();
             #[cfg(feature = "synthetic-authority")]
             if self.resources.is_some() {
                 let Some((next_item, next_snapshot)) = self
@@ -572,12 +654,24 @@ async fn run_call(
     .await
 }
 
+#[cfg(test)]
 async fn run_call_with_budget(
     tools: &NativeTools,
     call: &ToolCall,
     directory: &Path,
     cancel: CancellationToken,
     budget: Arc<BatchContentBudget>,
+) -> ToolResultRow {
+    run_call_with_admission(tools, call, directory, cancel, budget, async { Ok(()) }).await
+}
+
+async fn run_call_with_admission(
+    tools: &NativeTools,
+    call: &ToolCall,
+    directory: &Path,
+    cancel: CancellationToken,
+    budget: Arc<BatchContentBudget>,
+    admission: impl std::future::Future<Output = crate::tools::ToolResult<()>>,
 ) -> ToolResultRow {
     if cancel.is_cancelled() {
         return ToolResultRow::error(
@@ -590,9 +684,12 @@ async fn run_call_with_budget(
     // when a queued filesystem read never reached the operating system.
     let prepared = tools.prepare_call(call);
     match tools
-        .invoke_mapped(&prepared, cancel.clone(), move |value| {
-            retain_native_content(value, &budget)
-        })
+        .invoke_mapped_with_admission(
+            &prepared,
+            cancel.clone(),
+            move |value| retain_native_content(value, &budget),
+            admission,
+        )
         .await
     {
         Ok(NativeOutput { text, content }) => {
@@ -623,30 +720,75 @@ async fn run_call_with_budget(
                 ),
             }
         }
+        Err(ToolError::NotExecuted(text)) => ToolResultRow::error(text, ToolOutcome::NotExecuted),
         Err(ToolError::Cancelled) => ToolResultRow::error(
-            "Tool interrupted. Its output is unknown. No automatic replay.",
+            if tools.editing_call(call) {
+                "Tool interrupted. Effects may already have occurred; inspect before retrying. No automatic replay."
+            } else {
+                "Tool interrupted. Its output is unknown. No automatic replay."
+            },
             ToolOutcome::Unknown,
         ),
-        Err(error) => failed_tool_result(error, cancel.is_cancelled()),
+        Err(error) => {
+            failed_tool_result_with_editing(error, cancel.is_cancelled(), tools.editing_call(call))
+        }
     }
 }
 
+#[cfg(test)]
 fn failed_tool_result(error: ToolError, cancelled: bool) -> ToolResultRow {
+    failed_tool_result_with_editing(error, cancelled, false)
+}
+
+fn failed_tool_result_with_editing(
+    error: ToolError,
+    cancelled: bool,
+    editing: bool,
+) -> ToolResultRow {
     // Cancellation wins over a simultaneous synchronous native failure, just
     // as SessionTools checks Task.isCancelled before classifying its error.
     if cancelled {
         return ToolResultRow::error(
-            "Tool interrupted. Its output is unknown. No automatic replay.",
+            if editing {
+                "Tool interrupted. Effects may already have occurred; inspect before retrying. No automatic replay."
+            } else {
+                "Tool interrupted. Its output is unknown. No automatic replay."
+            },
             ToolOutcome::Unknown,
         );
     }
-    // SessionTools preserves AgentError messages, but hides native NSError
-    // details behind its generic failure text. Native reads remain Failed.
+    // Only the source's pre-effect rejection set can prove a begun mutation
+    // failed without effects. Native filesystem/permission/retention failures
+    // remain unknown, even if their localized error sounds definitive.
+    let rejected = error.code().is_some_and(|code| {
+        matches!(
+            code,
+            "tool_arguments"
+                | "invalid_params"
+                | "invalid_range"
+                | "invalid_identity"
+                | "tool_unavailable"
+                | "read_only"
+                | "edit_match"
+                | "file_unavailable"
+                | "not_regular_file"
+                | "file_too_large"
+                | "binary_file"
+                | "missing_path"
+                | "tool_output"
+                | "missing_executable"
+        )
+    });
+    let outcome = if editing && !rejected {
+        ToolOutcome::Unknown
+    } else {
+        ToolOutcome::Failed
+    };
     let text = match error {
         ToolError::Native { .. } => "Tool failed; inspect its effects before retrying.".to_owned(),
         other => other.to_string(),
     };
-    ToolResultRow::error(text, ToolOutcome::Failed)
+    ToolResultRow::error(text, outcome)
 }
 
 #[cfg(test)]
@@ -1238,3 +1380,7 @@ mod read_budget_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "edit_runtime_tests.rs"]
+mod edit_runtime_tests;

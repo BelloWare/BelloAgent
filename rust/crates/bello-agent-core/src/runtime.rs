@@ -1,3 +1,6 @@
+#[path = "compaction_runtime.rs"]
+mod compaction_runtime;
+
 #[path = "runtime_admission.rs"]
 mod admission;
 pub use admission::IdleAdmissionGuard;
@@ -33,6 +36,7 @@ use tokio_util::sync::CancellationToken;
 struct Inner {
     store: SessionStore,
     worker_running: bool,
+    compaction_pending: bool,
     worker_epoch: Arc<()>,
     cancel: Option<CancellationToken>,
     fatal: Option<String>,
@@ -130,6 +134,7 @@ pub struct Controller {
     published_revision: AtomicU64,
     active_cancel: RwLock<Option<CancellationToken>>,
     stop_requested: AtomicBool,
+    stop_epoch: AtomicU64,
     retired: AtomicBool,
     admission_suspension: AtomicU64,
     suspension_generation: AtomicU64,
@@ -205,6 +210,7 @@ impl Controller {
             published_revision: AtomicU64::new(0),
             active_cancel: RwLock::new(None),
             stop_requested: AtomicBool::new(false),
+            stop_epoch: AtomicU64::new(0),
             retired: AtomicBool::new(false),
             admission_suspension: AtomicU64::new(0),
             suspension_generation: AtomicU64::new(0),
@@ -214,6 +220,7 @@ impl Controller {
             inner: Mutex::new(Inner {
                 store,
                 worker_running: false,
+                compaction_pending: false,
                 worker_epoch: Arc::new(()),
                 cancel: None,
                 fatal: None,
@@ -350,7 +357,8 @@ impl Controller {
         self.pending_settings.store(false, Ordering::Release);
         inner.worker_running = false;
         inner.cancel = None;
-        self.worker_active.store(false, Ordering::Release);
+        self.worker_active
+            .store(inner.compaction_pending, Ordering::Release);
         *self
             .active_cancel
             .write()
@@ -382,6 +390,13 @@ impl Controller {
         Ok(())
     }
     pub fn stop(&self) -> Result<()> {
+        self.stop_with_epoch().map(|_| ())
+    }
+    fn stop_with_epoch(&self) -> Result<u64> {
+        let epoch = self
+            .stop_epoch
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1);
         if self.worker_active.load(Ordering::Acquire) {
             self.stop_requested.store(true, Ordering::Release);
         }
@@ -393,7 +408,7 @@ impl Controller {
         {
             cancel.cancel();
         }
-        Ok(())
+        Ok(epoch)
     }
     /// Permanently reject new commands and worker continuations on this controller.
     /// This synchronous fence never releases its SessionStore ownership. Already
@@ -689,6 +704,11 @@ impl Controller {
             return Err(invalid(error.clone()));
         }
         inner.store.require_certain()?;
+        if inner.compaction_pending {
+            return Err(invalid(
+                "Compaction is waiting for the current run to stop. Try this action after it settles; queued input is retained.",
+            ));
+        }
         let first = inner.store.transact(action)?;
         self.publish(&inner);
         self.launch(&mut inner, first);
@@ -710,7 +730,11 @@ impl Controller {
     /// A concurrent retirement joins even a worker registered after its fence;
     /// that worker sees retirement before it can start any external request.
     fn launch(self: &Arc<Self>, inner: &mut Inner, first: Option<Submission>) {
-        if self.configuration().is_none() || inner.worker_running || inner.fatal.is_some() {
+        if self.configuration().is_none()
+            || inner.worker_running
+            || inner.compaction_pending
+            || inner.fatal.is_some()
+        {
             return;
         }
         if first.is_none() {

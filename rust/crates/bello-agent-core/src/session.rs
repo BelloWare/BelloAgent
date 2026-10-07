@@ -54,6 +54,8 @@ pub struct Message {
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_record: Option<crate::tool_history::ToolRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction: Option<crate::compaction::Checkpoint>,
 }
 impl Message {
     fn new(
@@ -74,6 +76,7 @@ impl Message {
             usage: Value::Null,
             model,
             tool_record: None,
+            compaction: None,
         }
     }
 }
@@ -125,6 +128,10 @@ pub struct Session {
     pub retry: Option<Submission>,
     pub error: Option<String>,
     pub revision: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction: Option<crate::compaction::Operation>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub compaction_history: Vec<crate::compaction::Operation>,
 }
 impl Session {
     pub fn new() -> Self {
@@ -145,6 +152,8 @@ impl Session {
             retry: None,
             error: None,
             revision: 0,
+            compaction: None,
+            compaction_history: Vec::new(),
         }
     }
     pub fn submit(&mut self, item: Submission) -> Result<()> {
@@ -429,7 +438,24 @@ impl Session {
                 _ => false,
             })
     }
+    fn has_mutation_tool_stats(&self) -> bool {
+        self.messages
+            .iter()
+            .any(|message| match &message.tool_record {
+                Some(crate::tool_history::ToolRecord::Result(record)) => record
+                    .content
+                    .as_ref()
+                    .and_then(|content| content.stats.as_ref())
+                    .is_some_and(|stats| stats.added.is_some() || stats.removed.is_some()),
+                _ => false,
+            })
+    }
     fn validate_tool_history(&self) -> Result<()> {
+        if self.version < 5 && self.has_mutation_tool_stats() {
+            return Err(invalid(
+                "Mutation tool statistics require Rust snapshot version 5",
+            ));
+        }
         if self.version < 4 && self.has_retained_tool_content() {
             return Err(invalid(
                 "Retained tool content requires Rust snapshot version 4",
@@ -516,6 +542,7 @@ impl Session {
         })
     }
     fn validate_checkpoint(&self) -> Result<()> {
+        self.validate_compaction()?;
         self.validate_tool_history()?;
         self.validate_edits()?;
         let active = self.active.is_some();
@@ -558,6 +585,13 @@ impl Session {
     fn recover(&mut self) -> bool {
         if self.state != RunState::Running && self.edit.is_none() {
             return false;
+        }
+        if self
+            .compaction
+            .as_ref()
+            .is_some_and(|operation| operation.is_running())
+        {
+            return self.recover_compaction().is_ok();
         }
         if self.recover_tools() {
             return true;
@@ -693,7 +727,7 @@ impl SessionInspectionLease {
         if session.id != expected_session_id {
             return Err(invalid("The session file belongs to another chat"));
         }
-        if ![1, 2, 3, 4].contains(&session.version) {
+        if ![1, 2, 3, 4, 5].contains(&session.version) {
             return Err(invalid(
                 "Unsupported Rust session format. Swift journals are not imported automatically.",
             ));
@@ -971,7 +1005,7 @@ impl SessionStore {
         {
             return Err(invalid("The session file belongs to another chat"));
         }
-        if ![1, 2, 3, 4].contains(&session.version) {
+        if ![1, 2, 3, 4, 5].contains(&session.version) {
             return Err(invalid(
                 "Unsupported Rust session format. Swift journals are not imported automatically.",
             ));
@@ -1092,7 +1126,9 @@ impl SessionStore {
             .iter()
             .any(|message| message.tool_record.is_some())
         {
-            let required_version = if next.has_retained_tool_content() {
+            let required_version = if next.has_mutation_tool_stats() {
+                5
+            } else if next.has_retained_tool_content() {
                 4
             } else {
                 3
@@ -1320,6 +1356,7 @@ fn encode_snapshot(session: &Session) -> Result<Vec<u8>> {
 fn encode_snapshot_with_limit(session: &Session, maximum: usize) -> Result<Vec<u8>> {
     session.validate_tool_history()?;
     session.validate_edits()?;
+    session.validate_compaction()?;
     struct BoundedBytes {
         bytes: Vec<u8>,
         maximum: usize,

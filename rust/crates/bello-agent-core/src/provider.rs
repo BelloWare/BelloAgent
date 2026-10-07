@@ -413,10 +413,28 @@ impl ResponsesClient {
         turn_id: &str,
         tools: &[crate::tools::ToolDefinition],
         cancel: CancellationToken,
-        mut on_delta: impl FnMut(Delta) -> Result<()>,
+        on_delta: impl FnMut(Delta) -> Result<()>,
     ) -> Result<Reply> {
         let body = request_body_with_tools(profile, messages, instructions, session_id, tools)?;
-        let bytes = serialize_request(&body)?;
+        self.complete_prepared(
+            profile, credential, &body, session_id, turn_id, cancel, on_delta,
+        )
+        .await
+    }
+    /// Internal dispatch of an already counted, immutable compaction request.
+    /// Ordinary callers keep using the typed history builder above.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn complete_prepared(
+        &self,
+        profile: &Profile,
+        credential: &Credential,
+        body: &Value,
+        session_id: &str,
+        turn_id: &str,
+        cancel: CancellationToken,
+        mut on_delta: impl FnMut(Delta) -> Result<()>,
+    ) -> Result<Reply> {
+        let bytes = serialize_request(body)?;
         let mut request = self
             .client
             .post(profile.endpoint()?)

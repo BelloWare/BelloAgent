@@ -100,7 +100,7 @@ impl Controller {
             active.then_some(snapshot.active.as_ref()).flatten(),
         );
         let boundary = preview_messages(&snapshot, active);
-        let context_messages = boundary.iter().filter(|row| row.replay_eligible).count();
+        let context_messages = crate::compaction::active_context(boundary)?.len();
         let mut messages = Cow::Borrowed(boundary);
         let draft_included = !active && !draft.is_empty();
         if draft_included {
@@ -114,6 +114,7 @@ impl Controller {
                 usage: Value::Null,
                 model: Some(profile.model_id.clone()),
                 tool_record: None,
+                compaction: None,
             });
         }
         let body = crate::provider::request_body_with_tools(
@@ -208,6 +209,18 @@ impl Controller {
             ));
         }
         inner.store.require_certain()?;
+        if inner.compaction_pending
+            || inner
+                .store
+                .snapshot_ref()
+                .compaction
+                .as_ref()
+                .is_some_and(|operation| operation.is_running())
+        {
+            return Err(invalid(
+                "Compaction is preparing a checkpoint. Refresh after it settles to inspect the next request.",
+            ));
+        }
         // A completed request can commit before its outer worker publishes.
         // Read authoritative actor state without cloning retained text.
         if !self.configuration().is_some_and(|config| {
@@ -238,6 +251,18 @@ impl Controller {
             ));
         }
         inner.store.require_certain()?;
+        if inner.compaction_pending
+            || inner
+                .store
+                .snapshot_ref()
+                .compaction
+                .as_ref()
+                .is_some_and(|operation| operation.is_running())
+        {
+            return Err(invalid(
+                "Compaction is preparing a checkpoint. Refresh after it settles to inspect the next request.",
+            ));
+        }
         let config = self
             .configuration()
             .ok_or_else(|| invalid("No connection configured for a context preview"))?;

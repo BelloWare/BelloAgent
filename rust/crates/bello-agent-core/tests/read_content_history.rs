@@ -24,6 +24,7 @@ fn row(id: &str, role: &str, text: &str) -> Message {
         usage: Value::Null,
         model: None,
         tool_record: None,
+        compaction: None,
     }
 }
 fn history() -> Vec<Message> {
@@ -51,6 +52,8 @@ fn history() -> Vec<Message> {
             path: "/synthetic/never-reread-fixture.png".into(),
             line: None,
             last_line: None,
+            added: None,
+            removed: None,
         }),
     };
     let mut result = row("result", "toolResult", note);

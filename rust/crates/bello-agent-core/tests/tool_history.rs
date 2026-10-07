@@ -21,6 +21,7 @@ fn message(id: &str, role: &str, text: &str) -> Message {
         usage: Value::Null,
         model: None,
         tool_record: None,
+        compaction: None,
     }
 }
 fn assistant(id: &str, calls: &[&str]) -> Message {

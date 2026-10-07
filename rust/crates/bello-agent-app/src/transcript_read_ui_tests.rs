@@ -151,6 +151,8 @@ fn read_ui_content_only_changes_and_reopen_retain_text_without_image_decode(
             path: "/synthetic/resolved.png".into(),
             line: None,
             last_line: None,
+            added: None,
+            removed: None,
         }),
     );
     let Some(ToolRecord::Result(record)) = &mut rows[1].tool_record else {
@@ -264,6 +266,8 @@ fn read_ui_resolved_path_opens_viewer_stats_first_line_and_reuses_tab(cx: &mut T
             path: path.to_str().unwrap().into(),
             line: Some(7),
             last_line: Some(9),
+            added: None,
+            removed: None,
         });
     });
     let child = transcript(&root, cx);
@@ -402,6 +406,8 @@ fn read_ui_newer_result_before_repaint_rejects_stale_path(cx: &mut TestAppContex
             path: "/synthetic/new-file.txt".into(),
             line: Some(8),
             last_line: Some(8),
+            added: None,
+            removed: None,
         });
     });
     click(&mut visual, link, cx);

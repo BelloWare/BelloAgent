@@ -106,6 +106,7 @@ fn seed(path: &PathBuf, rows: usize, chars: usize) -> Result<Value, Failure> {
             usage: Value::Null,
             model: None,
             tool_record: None,
+            compaction: None,
         })
         .collect();
     let mut encoded = serde_json::to_vec(&s)?;

@@ -3,6 +3,7 @@ mod chat;
 mod chat_navigation;
 mod chat_organization;
 mod chat_tool_mode;
+mod compaction_actions;
 mod connection_settings_controller;
 mod connection_settings_view;
 mod context_inspector;
@@ -136,6 +137,7 @@ struct AgentView {
     archive_visibility_errors: BTreeMap<String, String>,
     cancelled_prompt_key: Option<String>,
     sidebar_menu: Option<sidebar_actions::SidebarMenu>,
+    compaction_menu: Option<compaction_actions::CompactionMenu>,
     #[cfg(not(target_os = "macos"))]
     root_focus: FocusHandle,
     #[cfg(not(target_os = "macos"))]
@@ -340,6 +342,7 @@ impl AgentView {
             archive_visibility_errors: BTreeMap::new(),
             cancelled_prompt_key: None,
             sidebar_menu: None,
+            compaction_menu: None,
             #[cfg(not(target_os = "macos"))]
             root_focus,
             #[cfg(not(target_os = "macos"))]
@@ -380,6 +383,7 @@ impl AgentView {
         self.cancel_queue_drag(window, cx);
         self.queue_geometry = None;
         self.sidebar_menu = None;
+        self.compaction_menu = None;
         let binding = workspace_lifetime::WindowBinding::new(window.window_handle().window_id());
         self.window_binding = Some(binding);
         self.organization_window = Some(window.window_handle());
@@ -797,6 +801,11 @@ impl AgentView {
         }
     }
     fn global_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.compaction_menu_key(event, cx) {
+            self.cancelled_prompt_key = Some(event.keystroke.key.clone());
+            cx.stop_propagation();
+            return;
+        }
         // Preserve a consumed menu/dialog press, even if the menu or file pane
         // closes or focus changes before a repeat. A fresh press owns its
         // normal behavior. Native macOS/Wayland report repeats via is_held;
@@ -2135,7 +2144,13 @@ impl AgentView {
                     })),
             )
             .child(self.icon_button("usage", "chart", 28.).opacity(0.45))
-            .child(self.icon_button("actions", "dots", 28.).opacity(0.45));
+            .child(
+                self.icon_button("actions", "dots", 28.)
+                    .debug_selector(|| "conversation-actions-open".into())
+                    .on_click(cx.listener(|view, event: &ClickEvent, _, cx| {
+                        view.open_compaction_menu(event.position(), cx)
+                    })),
+            );
         let compact = self.pane_width < 620.;
         let icons = self.pane_width < 480.;
         let model = self
@@ -2444,7 +2459,7 @@ impl AgentView {
                     )
                     .child(div().flex_1())
                     .when(self.session.state == RunState::Running, |d| {
-                        d.child("Working · Generating response…")
+                        d.child(compaction_actions::progress_label(&self.session))
                     })
                     .child(self.badge("Capture off".into(), "bug")),
             )
@@ -2956,6 +2971,9 @@ impl Render for AgentView {
                 .with_priority(10),
             );
             self.queue_detail = Some(detail);
+        }
+        if let Some(menu) = self.compaction_menu_element(cx) {
+            element = element.child(menu);
         }
         if let Some(menu) = self.sidebar_menu_element(cx) {
             element = element.child(menu);

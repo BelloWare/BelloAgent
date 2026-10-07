@@ -1,0 +1,30 @@
+{
+  "scope": "Actual cloud Linux CUA; synthetic session and numeric-loopback provider only",
+  "binary_sha256": "11de31b56bd93e0a36c40617faca0d19ed907fc6df378f1ef6ebeb96c4a9b1d1",
+  "source_manifest_sha256": "52f2e30b8c0fcd249c1b249852cb46fabe30bd5e51753c09a27ccf47343f5e9f",
+  "source_files": 146,
+  "source_manifest_differences": [],
+  "requests": 3,
+  "request_kinds": [
+    "manual-summary-completed",
+    "explicit-ordinary-turn",
+    "manual-summary-cancelled"
+  ],
+  "snapshots_version": 5,
+  "checkpoints": 1,
+  "retained_original_rows": 2,
+  "retained_partial_summary": true,
+  "queue_after_reopen": [
+    "queued while compacting"
+  ],
+  "draft_after_reopen": "unsent after stop",
+  "final_phase": "cancelled",
+  "queue_paused": true,
+  "provider_reported_usage": false,
+  "screenshots": {
+    "01-checkpoint-and-draft.jpg": "c1ae3e1e0f0a901fe23a9d2dfcd4781f9472ab187736b84c779f0597499ec51e",
+    "02-compacted-inspector.jpg": "bdbc3fc9692abf10672a716273417da27558f6fd08c1d0e58893fb19da450ef4",
+    "03-cancelled-queue-draft.jpg": "30b021616990f3394a771edc45c166a35f09e456142a83ca2e704bc545ee47bf",
+    "04-reopened-queue-draft.jpg": "ff1537bee464cc24cbb53f7759c63006b19858a85699141fd8db63897eeeed1d"
+  }
+}

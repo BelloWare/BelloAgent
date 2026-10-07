@@ -32,6 +32,8 @@ pub struct SyntheticChatOptions {
     pub home: PathBuf,
     pub capabilities: Vec<Capability>,
     pub instructions: Option<InstructionOptions>,
+    #[cfg(all(test, not(target_os = "macos")))]
+    pub(crate) synthetic_mutations: bool,
 }
 
 struct Generation {
@@ -135,6 +137,28 @@ impl SyntheticProjectRuntime {
         profile: Profile,
         options: SyntheticChatOptions,
     ) -> Result<Arc<Controller>> {
+        self.open_chat_with_mode(chat_id, profile, options, ChatToolMode::ReadOnly)
+    }
+
+    /// Explicit synthetic editing path. It never changes a chat's saved mode:
+    /// the existing one-way confirmed mode transition must already be complete.
+    /// Project trust and each later delivery/invocation are still rechecked.
+    pub fn open_editing_chat(
+        &self,
+        chat_id: &str,
+        profile: Profile,
+        options: SyntheticChatOptions,
+    ) -> Result<Arc<Controller>> {
+        self.open_chat_with_mode(chat_id, profile, options, ChatToolMode::Editing)
+    }
+
+    fn open_chat_with_mode(
+        &self,
+        chat_id: &str,
+        profile: Profile,
+        options: SyntheticChatOptions,
+        mode: ChatToolMode,
+    ) -> Result<Arc<Controller>> {
         self.generation.check()?;
         profile.validate()?;
         let endpoint = profile.endpoint()?;
@@ -155,9 +179,7 @@ impl SyntheticProjectRuntime {
         }
         let home = std::fs::canonicalize(&options.home)?;
         if options.capabilities.is_empty() {
-            return Err(invalid(
-                "An explicit read-only capability selection is required",
-            ));
+            return Err(invalid("An explicit capability selection is required"));
         }
         let roots: Vec<_> = self.binding.project.roots().map(PathBuf::from).collect();
         if options
@@ -173,6 +195,13 @@ impl SyntheticProjectRuntime {
             .binding
             .check_catalog(Some(chat_id))?
             .ok_or_else(|| invalid("The chat is no longer registered"))?;
+        if record.tool_mode != mode {
+            return Err(invalid(if mode == ChatToolMode::ReadOnly {
+                "Synthetic tools require an active explicitly read-only chat"
+            } else {
+                "Synthetic editing tools require an active explicitly editing chat"
+            }));
+        }
         let guard = Arc::new(ChatGuard {
             binding: self.binding.clone(),
             generation: self.generation.clone(),
@@ -180,12 +209,47 @@ impl SyntheticProjectRuntime {
             valid: AtomicBool::new(true),
         });
         guard.confirm()?;
-        let tools = TrustedReadOnlyTools::new_with_capabilities(
-            self.binding.project.path.clone(),
-            self.binding.project.paths.clone(),
-            home,
-            options.capabilities,
-        )?;
+        let tools = if mode == ChatToolMode::Editing {
+            let gate = self
+                .binding
+                .workspace
+                .lock()
+                .map_err(|_| invalid("Workspace is unavailable"))?
+                .editing_gate();
+            #[cfg(all(test, not(target_os = "macos")))]
+            if options.synthetic_mutations {
+                TrustedReadOnlyTools::synthetic_mutation_fixture(
+                    self.binding.project.path.clone(),
+                    self.binding.project.paths.clone(),
+                    home,
+                    options.capabilities,
+                    gate,
+                )?
+            } else {
+                TrustedReadOnlyTools::new_with_editing_capabilities(
+                    self.binding.project.path.clone(),
+                    self.binding.project.paths.clone(),
+                    home,
+                    options.capabilities,
+                    gate,
+                )?
+            }
+            #[cfg(not(all(test, not(target_os = "macos"))))]
+            TrustedReadOnlyTools::new_with_editing_capabilities(
+                self.binding.project.path.clone(),
+                self.binding.project.paths.clone(),
+                home,
+                options.capabilities,
+                gate,
+            )?
+        } else {
+            TrustedReadOnlyTools::new_with_capabilities(
+                self.binding.project.path.clone(),
+                self.binding.project.paths.clone(),
+                home,
+                options.capabilities,
+            )?
+        };
         // Check identity under the writer lock before any migration/recovery.
         // Missing saved checkpoints and locks must never be created here.
         let store = SessionStore::open_existing_with_id(&guard.record.snapshot, &guard.record.id)?;
@@ -229,9 +293,9 @@ impl Binding {
             .into_iter()
             .find(|record| record.id == chat_id)
             .ok_or_else(|| invalid("The chat is no longer registered"))?;
-        if record.tool_mode != ChatToolMode::ReadOnly || record.archived_at.is_some() {
+        if record.archived_at.is_some() {
             return Err(invalid(
-                "Synthetic tools require an active explicitly read-only chat",
+                "Synthetic tools require an active non-archived chat",
             ));
         }
         Ok(Some(record))

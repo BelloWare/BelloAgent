@@ -12,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 
 #[cfg(target_os = "macos")]
 #[path = "read/macos.rs"]
-mod macos;
+pub(in crate::tools) mod macos;
 
 pub(super) const FILE_BYTES: usize = 16 * 1024 * 1024;
 
@@ -81,7 +81,7 @@ pub(super) fn invoke_with_processor(
 }
 
 #[cfg(not(target_os = "macos"))]
-fn read_bounded(path: &Path) -> ToolResult<Vec<u8>> {
+pub(super) fn read_bounded(path: &Path) -> ToolResult<Vec<u8>> {
     let mut options = OpenOptions::new();
     options.read(true);
     // Rust's Unix OpenOptions sets CLOEXEC; NONBLOCK prevents FIFO open hangs.

@@ -244,6 +244,7 @@ fn payload(kind: &str, index: usize) -> Message {
         usage: Value::Null,
         model: None,
         tool_record: None,
+        compaction: None,
     }
 }
 

@@ -4,6 +4,8 @@
 use crate::{AgentView, Palette, layout, transcript_actions};
 use bello_agent_core::{Controller, Session};
 use bello_workbench_ui::{EditorAppearance, EditorView};
+#[path = "transcript_edit_presentation.rs"]
+mod edit_presentation;
 #[path = "transcript_read_presentation.rs"]
 mod read_presentation;
 #[path = "transcript_tool_presentation.rs"]
@@ -160,7 +162,26 @@ impl Presentation {
             // A read's retained result keeps its window state when Show earlier
             // replaces a standalone result with its owning call card. Ambiguous
             // result IDs remain snapshot-scoped like all other transcript keys.
-            let read_key = projected.result().map(|index| message_keys[&index].clone());
+            let read_key = if edit_presentation::edit_call(&input.session, projected).is_some() {
+                if let ProjectedRow::Result(index) = projected {
+                    let Some(bello_agent_core::tool_history::ToolRecord::Result(result)) =
+                        &input.session.messages[index].tool_record
+                    else {
+                        unreachable!("validated edit result");
+                    };
+                    // edit_call already proved this owner ID is unique. The
+                    // assistant can be outside this page's message_keys map.
+                    Some(RowKey::Tool {
+                        assistant: Box::new(RowKey::Message(result.assistant_id.clone())),
+                        call_id: result.call_id.clone(),
+                        occurrence: 0,
+                    })
+                } else {
+                    Some(key.clone())
+                }
+            } else {
+                projected.result().map(|index| message_keys[&index].clone())
+            };
             let read_expanded = read_key
                 .as_ref()
                 .is_some_and(|key| expanded_reads.contains(key));
@@ -225,7 +246,11 @@ fn tool_section_visible(
                 && row.expanded
                 && row.projected.is_some_and(|projected| match section {
                     "IN" => {
-                        matches!(projected, ProjectedRow::Call { .. })
+                        (matches!(projected, ProjectedRow::Call { .. })
+                            || edit_presentation::has_request(
+                                &presentation.input.session,
+                                projected,
+                            ))
                             && !(read_presentation::read_call(
                                 &presentation.input.session,
                                 projected,
@@ -237,7 +262,16 @@ fn tool_section_visible(
                                     )
                                 }))
                     }
-                    "OUT" => projected.result().is_some(),
+                    "OUT" => {
+                        projected.result().is_some()
+                            && !(edit_presentation::has_request(
+                                &presentation.input.session,
+                                projected,
+                            ) && tool_presentation::status(
+                                &presentation.input.session,
+                                projected,
+                            ) == tool_presentation::Status::Completed)
+                    }
                     _ => false,
                 })
         })
@@ -518,6 +552,10 @@ fn estimated_height(presentation: &Presentation, index: usize, width: Pixels) ->
     }
     if !message.reasoning.is_empty() {
         height += 6. + plain(&message.reasoning, 12., 18.);
+    }
+    if let Some(label) = crate::compaction_actions::row_label(message, &presentation.input.session)
+    {
+        height += 6. + plain(label, 11.5, 17.25);
     }
     if message.state == "interrupted" {
         height += 6. + 17.25;
@@ -801,6 +839,16 @@ impl TranscriptView {
                 row.key == key
                     && row.expanded
                     && row.projected.is_some_and(|projected| {
+                        if edit_presentation::edit_call(&self.presentation.input.session, projected)
+                            .is_some()
+                        {
+                            return self
+                                .tool_editors
+                                .borrow_mut()
+                                .edit_previews
+                                .get(&row.key, &self.presentation.input.session, projected, false)
+                                .is_some_and(|edit| edit.collapsible);
+                        }
                         let Some(call) = read_presentation::read_call(
                             &self.presentation.input.session,
                             projected,
@@ -860,6 +908,12 @@ impl TranscriptView {
             .find(|row| &row.key == key && row.expanded)
             .and_then(|row| {
                 read_presentation::file_link(&self.presentation.input.session, row.projected?)
+                    .or_else(|| {
+                        edit_presentation::file_link(
+                            &self.presentation.input.session,
+                            row.projected?,
+                        )
+                    })
             })
         else {
             return;
@@ -910,6 +964,26 @@ impl TranscriptView {
         } else {
             false
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn edit_cache_computations(&self) -> usize {
+        self.tool_editors.borrow().edit_previews.computations
+    }
+    #[cfg(test)]
+    pub(crate) fn edit_card_labels(&self) -> Vec<String> {
+        self.presentation
+            .rows
+            .iter()
+            .filter_map(|row| {
+                let projected = row.projected?;
+                self.tool_editors
+                    .borrow_mut()
+                    .edit_previews
+                    .get(&row.key, &self.presentation.input.session, projected, false)
+                    .map(|preview| preview.label.clone())
+            })
+            .collect()
     }
 
     #[cfg(test)]
@@ -1520,6 +1594,15 @@ fn render_row(
                             .rounded(px(14.))
                             .bg(rgb(p.user))
                     });
+                if let Some(label) = crate::compaction_actions::row_label(message, &input.session) {
+                    body = body.child(
+                        div()
+                            .text_size(px(11.5))
+                            .line_height(px(17.25))
+                            .text_color(rgb(p.secondary))
+                            .child(label.to_owned()),
+                    );
+                }
                 if !message.reasoning.is_empty() {
                     body = body.child(
                         div()
@@ -1624,6 +1707,7 @@ const TOOL_EDITOR_LIMIT: usize = 64;
 #[derive(Default)]
 struct ToolEditors {
     entries: HashMap<(RowKey, &'static str), ToolEditor>,
+    edit_previews: edit_presentation::EditCache,
     tick: u64,
 }
 struct ToolEditor {
@@ -1783,10 +1867,10 @@ fn render_tool_card(
                         .flex_col()
                         .gap(px(3.))
                         .child(
-                            div()
-                                .text_size(px(12.))
-                                .text_color(rgb(p.ink))
-                                .child(name.clone()),
+                            div().text_size(px(12.)).text_color(rgb(p.ink)).child(
+                                edit_presentation::title(session, projected)
+                                    .unwrap_or_else(|| name.clone()),
+                            ),
                         )
                         .child(
                             div()
@@ -1824,6 +1908,17 @@ fn render_tool_card(
     let shown_output = projected
         .result()
         .map(|index| tool_presentation::display_text(&session.messages[index]));
+    let edit_preview =
+        editors
+            .borrow_mut()
+            .edit_previews
+            .get(&row.key, session, projected, row.read_expanded);
+    if let Some(edit) = &edit_preview {
+        input = Some(tool_presentation::Preview {
+            text: edit.text(row.read_expanded).to_owned(),
+            truncated: false,
+        });
+    }
     let read_call = read_presentation::read_call(session, projected);
     let read_window = read_call.and_then(|call| {
         let text = shown_output.as_deref()?;
@@ -1832,26 +1927,30 @@ fn render_tool_card(
     if read_window.is_some() {
         input = None;
     }
-    let read_link = read_presentation::file_link(session, projected);
-    let output = shown_output.as_deref().map(|text| {
-        if let Some(read) = &read_window {
-            // Source's six-head/six-tail window, without the generic 8 KiB
-            // prefix. The selectable Editor remains a bounded 150 px scroller;
-            // Show more exposes every retained line, and raw Copy stays exact.
-            return tool_presentation::Preview {
-                text: read.numbered(row.read_expanded),
-                truncated: false,
-            };
-        }
-        tool_presentation::preview(if text.is_empty() {
-            bello_agent_core::tool_history::EMPTY_RESULT
-        } else {
-            text
-        })
-    });
+    let read_link = read_presentation::file_link(session, projected)
+        .or_else(|| edit_presentation::file_link(session, projected));
+    let output = shown_output
+        .as_deref()
+        .filter(|_| edit_preview.is_none() || status != tool_presentation::Status::Completed)
+        .map(|text| {
+            if let Some(read) = &read_window {
+                // Source's six-head/six-tail window, without the generic 8 KiB
+                // prefix. The selectable Editor remains a bounded 150 px scroller;
+                // Show more exposes every retained line, and raw Copy stays exact.
+                return tool_presentation::Preview {
+                    text: read.numbered(row.read_expanded),
+                    truncated: false,
+                };
+            }
+            tool_presentation::preview(if text.is_empty() {
+                bello_agent_core::tool_history::EMPTY_RESULT
+            } else {
+                text
+            })
+        });
     let truncated = input.as_ref().is_some_and(|preview| preview.truncated)
         || output.as_ref().is_some_and(|preview| preview.truncated);
-    if read_window.is_some() || read_link.is_some() {
+    if read_window.is_some() || read_link.is_some() || edit_preview.is_some() {
         let mut header = div()
             .w_full()
             .min_w_0()
@@ -1862,15 +1961,32 @@ fn render_tool_card(
             .flex()
             .items_center()
             .gap(px(8.));
+        if let Some(edit) = &edit_preview {
+            header = header.child(
+                div()
+                    .debug_selector(|| format!("{selector}-edit-label"))
+                    .text_size(px(11.5))
+                    .text_color(rgb(p.secondary))
+                    .child(edit.label.clone()),
+            );
+        }
         if let Some(link) = read_link {
+            let path_selector = format!(
+                "{selector}-{}-path",
+                if edit_preview.is_some() {
+                    "edit"
+                } else {
+                    "read"
+                }
+            );
             let child = child.clone();
             let key = row.key.clone();
             let chat_id = presentation.input.chat_id.clone();
             let controller = presentation.input.controller.clone();
             header = header.child(
                 div()
-                    .id(SharedString::from(format!("{selector}-read-path")))
-                    .debug_selector(|| format!("{selector}-read-path"))
+                    .id(SharedString::from(path_selector.clone()))
+                    .debug_selector(|| path_selector.clone())
                     .flex_1()
                     .min_w_0()
                     .text_size(px(11.5))
@@ -1989,6 +2105,47 @@ fn render_tool_card(
                     .text_size(px(11.5))
                     .text_color(rgb(p.secondary))
                     .child(note.to_owned()),
+            );
+        }
+    }
+    if let Some(edit) = edit_preview {
+        if edit.collapsible {
+            let child = child.clone();
+            let key = row.key.clone();
+            let chat_id = presentation.input.chat_id.clone();
+            let controller = presentation.input.controller.clone();
+            let label = if row.read_expanded {
+                "Show fewer lines".to_owned()
+            } else if edit.too_large {
+                "View full content".to_owned()
+            } else {
+                format!("Show {} more lines", edit.hidden)
+            };
+            card = card.child(
+                div().px(px(16.)).pb(px(8.)).child(
+                    button(
+                        p,
+                        SharedString::from(format!("{selector}-edit-disclosure")),
+                        label,
+                    )
+                    .debug_selector(|| format!("{selector}-edit-disclosure"))
+                    .on_click(move |_, _, cx| {
+                        let _ = child.update(cx, |view, cx| {
+                            view.toggle_read(key.clone(), &chat_id, &controller, cx)
+                        });
+                    }),
+                ),
+            );
+        }
+        if let Some(footer) = &edit.footer {
+            card = card.child(
+                div()
+                    .debug_selector(|| format!("{selector}-edit-counts"))
+                    .px(px(16.))
+                    .pb(px(8.))
+                    .text_size(px(11.5))
+                    .text_color(rgb(p.secondary))
+                    .child(footer.clone()),
             );
         }
     }

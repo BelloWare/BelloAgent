@@ -72,6 +72,8 @@ impl Fixture {
             home: self.home.clone(),
             capabilities: vec![Capability::Ls],
             instructions: None,
+            #[cfg(not(target_os = "macos"))]
+            synthetic_mutations: false,
         }
     }
     fn instructions(&self) -> InstructionOptions {
@@ -815,3 +817,6 @@ async fn source_retry_holds_instructions_and_reopen_resolves_current_fixture_byt
 #[cfg(target_os = "macos")]
 #[path = "read_synthetic_tests.rs"]
 mod read_tests;
+
+#[path = "edit_synthetic_tests.rs"]
+mod edit_tests;

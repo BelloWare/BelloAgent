@@ -1,7 +1,7 @@
 # Synthetic project runtime and instruction delivery
 
 This is an explicit `synthetic-authority` validation path. It joins saved-project
-identity, current memory-only authority, a saved ReadOnly chat, instruction
+identity, current memory-only authority, an explicitly saved chat mode, instruction
 resources and the real Controller/provider/tool loop. There is no app caller or
 UI switch. Production constructors, default authority and tool options are
 unchanged. Native Keychain/signing interaction and external provider access are
@@ -11,8 +11,9 @@ not part of this path.
 
 `SyntheticProjectRuntime::confirm` accepts a synthetic storage control, never an
 arbitrary native adapter. It requires the catalog's existing SavedProject UUID,
-original primary root, current authority envelope and trusted project. Opening a
-chat requires an explicitly saved ReadOnly record, exact journal identity,
+original primary root, current authority envelope and trusted project. The original `open_chat` requires an explicitly saved ReadOnly record; the separate
+`open_editing_chat` requires a saved Editing record without changing it. Both
+require exact journal identity,
 explicit fixture home/capabilities, and matching instruction roots. Archived,
 unbound, moved, untrusted or changed records are refused. The fixture host uses
 a fixed fake credential and rejects custom headers.
@@ -74,3 +75,16 @@ bound FIFO rejection and prove that a configured local proxy receives no
 synthetic request. Existing recovery, inspection and tool lifecycle regressions
 remain part of the affected check set. Exact macOS CI and production native
 interaction are distinct gates; no new desktop acceptance is claimed.
+
+
+## Explicit write/edit validation path
+
+The later write/edit checkpoint adds only `open_editing_chat` to this synthetic
+host. It shares one ephemeral workspace editing gate across controllers and fresh
+project confirmations, rechecks current trust/catalog after waiting, and keeps
+that gate owned by entered native workers even if their caller is dropped.
+Public read-only tool constructors still reject mutation capabilities. Paths
+remain resolution context, not a sandbox. Defaults and production composition are
+unchanged; Linux actual file mutations exist only in cfg(test) temporary adapters.
+See [write/edit contracts](native-edit-contract.md) for source limits, the connected
+2 MiB argument safety bound, v5 receipts, outcome/recovery and card limitations.
