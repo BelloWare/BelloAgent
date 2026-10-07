@@ -1,0 +1,1901 @@
+{
+  "before_commit": "de82d56d94099e0fb49434cf28ea0d34ee9f06f9",
+  "before_tree": "dca187b37a246d65631abc8ea80235c452867ac9",
+  "before_counts": {
+    "production": 23194,
+    "tests_and_test_support": 33993,
+    "benchmark_example": 1184
+  },
+  "after_commit": "7ca08d1176a23cd268ad891665c80ceb867c42bd",
+  "after_tree": "88c7d724c7fc830d0e43c19b9ce1ad28e8c51d13",
+  "delta": {
+    "production": 3305,
+    "tests_and_test_support": 3303,
+    "benchmark_example": 0
+  },
+  "after_counts": {
+    "production": 26499,
+    "tests_and_test_support": 37296,
+    "benchmark_example": 1184
+  },
+  "before_total": 58371,
+  "after_total": 64979,
+  "rust_file_count": 106,
+  "changed_rust_files": 28,
+  "files": [
+    {
+      "path": "rust/crates/bello-agent-app/src/chat_navigation.rs",
+      "before_blob": "48f53804afdc5512baf1d55ed61ff1deb48fcc95",
+      "after_blob": "9c8833319c3bd3a7bd2fde6658d1923734e668be",
+      "before": {
+        "nonblank": 947,
+        "counts": {
+          "production": 947,
+          "tests_and_test_support": 0,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": []
+      },
+      "after": {
+        "nonblank": 959,
+        "counts": {
+          "production": 959,
+          "tests_and_test_support": 0,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": []
+      },
+      "delta": {
+        "production": 12,
+        "tests_and_test_support": 0,
+        "benchmark_example": 0
+      }
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/chat_organization.rs",
+      "before_blob": "9fc2e057dbe7ceca5fa7e8d0046eeed6f2f9bc1e",
+      "after_blob": "05180debddd30d6714db6a90a67a02ba8307afa9",
+      "before": {
+        "nonblank": 606,
+        "counts": {
+          "production": 545,
+          "tests_and_test_support": 61,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": [
+          {
+            "start": 549,
+            "end": 606,
+            "reason": "test",
+            "start_text": "#[cfg(test)]",
+            "end_text": "}"
+          },
+          {
+            "start": 608,
+            "end": 610,
+            "reason": "test",
+            "start_text": "#[cfg(test)]",
+            "end_text": "mod tests;"
+          }
+        ]
+      },
+      "after": {
+        "nonblank": 610,
+        "counts": {
+          "production": 549,
+          "tests_and_test_support": 61,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": [
+          {
+            "start": 553,
+            "end": 610,
+            "reason": "test",
+            "start_text": "#[cfg(test)]",
+            "end_text": "}"
+          },
+          {
+            "start": 612,
+            "end": 614,
+            "reason": "test",
+            "start_text": "#[cfg(test)]",
+            "end_text": "mod tests;"
+          }
+        ]
+      },
+      "delta": {
+        "production": 4,
+        "tests_and_test_support": 0,
+        "benchmark_example": 0
+      }
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/chat_organization_tests.rs",
+      "before_blob": "4be3a0dbf66132098067e057d86d8d825b93b9dd",
+      "after_blob": "becdcf0e8ebb88c0abcea0765e010f7ca5a3caf6",
+      "before": {
+        "nonblank": 839,
+        "counts": {
+          "production": 0,
+          "tests_and_test_support": 839,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": [
+          {
+            "start": 1,
+            "end": 861,
+            "reason": "whole support file: cfg(test) or synthetic-only owner",
+            "start_text": "//! Controlled foreground/real local catalog checks. No provider or native IME",
+            "end_text": "}"
+          }
+        ]
+      },
+      "after": {
+        "nonblank": 839,
+        "counts": {
+          "production": 0,
+          "tests_and_test_support": 839,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": [
+          {
+            "start": 1,
+            "end": 861,
+            "reason": "whole support file: cfg(test) or synthetic-only owner",
+            "start_text": "//! Controlled foreground/real local catalog checks. No provider or native IME",
+            "end_text": "}"
+          }
+        ]
+      },
+      "delta": {
+        "production": 0,
+        "tests_and_test_support": 0,
+        "benchmark_example": 0
+      }
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/connection_settings_controller.rs",
+      "before_blob": null,
+      "after_blob": "eb0b2ad3f821eaf830d8b527afd1e3624c514037",
+      "before": {
+        "nonblank": 0,
+        "counts": {
+          "production": 0,
+          "tests_and_test_support": 0,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": []
+      },
+      "after": {
+        "nonblank": 1120,
+        "counts": {
+          "production": 943,
+          "tests_and_test_support": 177,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": [
+          {
+            "start": 4,
+            "end": 7,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "#[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "};"
+          },
+          {
+            "start": 27,
+            "end": 28,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "#[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "pub(crate) struct LaunchConnectionAuthority(pub SyntheticAuthorityControl);"
+          },
+          {
+            "start": 29,
+            "end": 30,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "#[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "impl gpui::Global for LaunchConnectionAuthority {}"
+          },
+          {
+            "start": 50,
+            "end": 73,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "    #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "    }"
+          },
+          {
+            "start": 96,
+            "end": 97,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "    #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "    control: Option<SyntheticAuthorityControl>,"
+          },
+          {
+            "start": 115,
+            "end": 118,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "        #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "            .map(|v| v.0.clone());"
+          },
+          {
+            "start": 119,
+            "end": 120,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "        #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "        let authority = Arc::new(control.as_ref().map(|c| c.authority()).unwrap_or_default());"
+          },
+          {
+            "start": 123,
+            "end": 124,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "        #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "        let synthetic = control.is_some();"
+          },
+          {
+            "start": 143,
+            "end": 144,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "            #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "            control,"
+          },
+          {
+            "start": 277,
+            "end": 285,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "        #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "        }"
+          },
+          {
+            "start": 518,
+            "end": 526,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "#[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "}"
+          },
+          {
+            "start": 528,
+            "end": 539,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "    #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "    }"
+          },
+          {
+            "start": 545,
+            "end": 644,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "        #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "        }"
+          },
+          {
+            "start": 1127,
+            "end": 1129,
+            "reason": "all (test , feature = \"synthetic-authority\")",
+            "start_text": "#[cfg(all(test, feature = \"synthetic-authority\"))]",
+            "end_text": "mod tests;"
+          }
+        ]
+      },
+      "delta": {
+        "production": 943,
+        "tests_and_test_support": 177,
+        "benchmark_example": 0
+      }
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/connection_settings_controller_tests.rs",
+      "before_blob": null,
+      "after_blob": "6ab88b66262878a30a2f90d3e5fce97bafd03365",
+      "before": {
+        "nonblank": 0,
+        "counts": {
+          "production": 0,
+          "tests_and_test_support": 0,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": []
+      },
+      "after": {
+        "nonblank": 1105,
+        "counts": {
+          "production": 0,
+          "tests_and_test_support": 1105,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": [
+          {
+            "start": 1,
+            "end": 1123,
+            "reason": "whole support file: cfg(test) or synthetic-only owner",
+            "start_text": "//! Synthetic Settings -> saved connection -> actual loopback dispatch. No native",
+            "end_text": "}"
+          }
+        ]
+      },
+      "delta": {
+        "production": 0,
+        "tests_and_test_support": 1105,
+        "benchmark_example": 0
+      }
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/connection_settings_view.rs",
+      "before_blob": null,
+      "after_blob": "01d9b1510f934073ef826424a5801af9f5347a7e",
+      "before": {
+        "nonblank": 0,
+        "counts": {
+          "production": 0,
+          "tests_and_test_support": 0,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": []
+      },
+      "after": {
+        "nonblank": 1434,
+        "counts": {
+          "production": 1431,
+          "tests_and_test_support": 3,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": [
+          {
+            "start": 1482,
+            "end": 1484,
+            "reason": "test",
+            "start_text": "#[cfg(test)]",
+            "end_text": "mod tests;"
+          }
+        ]
+      },
+      "delta": {
+        "production": 1431,
+        "tests_and_test_support": 3,
+        "benchmark_example": 0
+      }
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/connection_settings_view_tests.rs",
+      "before_blob": null,
+      "after_blob": "f3e7e76d48b992abfddfc8752c1d6e617ae89804",
+      "before": {
+        "nonblank": 0,
+        "counts": {
+          "production": 0,
+          "tests_and_test_support": 0,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": []
+      },
+      "after": {
+        "nonblank": 669,
+        "counts": {
+          "production": 0,
+          "tests_and_test_support": 669,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": [
+          {
+            "start": 1,
+            "end": 693,
+            "reason": "whole support file: cfg(test) or synthetic-only owner",
+            "start_text": "//! Isolated fake-platform view contracts. No vault, provider or native access.",
+            "end_text": "}"
+          }
+        ]
+      },
+      "delta": {
+        "production": 0,
+        "tests_and_test_support": 669,
+        "benchmark_example": 0
+      }
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/main.rs",
+      "before_blob": "27b476e1d47a2e5bf05f99a287602162bff24f25",
+      "after_blob": "afbef3333410ba0721f5bcad23ea958d89a38983",
+      "before": {
+        "nonblank": 3128,
+        "counts": {
+          "production": 3097,
+          "tests_and_test_support": 31,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": [
+          {
+            "start": 12,
+            "end": 13,
+            "reason": "feature = \"native-lifecycle-smoke\"",
+            "start_text": "#[cfg(feature = \"native-lifecycle-smoke\")]",
+            "end_text": "mod native_smoke;"
+          },
+          {
+            "start": 32,
+            "end": 34,
+            "reason": "test",
+            "start_text": "#[cfg(test)]",
+            "end_text": "mod transcript_benchmark;"
+          },
+          {
+            "start": 36,
+            "end": 37,
+            "reason": "test",
+            "start_text": "#[cfg(test)]",
+            "end_text": "mod transcript_view_tests;"
+          },
+          {
+            "start": 3019,
+            "end": 3020,
+            "reason": "feature = \"native-lifecycle-smoke\"",
+            "start_text": "    #[cfg(feature = \"native-lifecycle-smoke\")]",
+            "end_text": "    native_smoke::validate_launch()?;"
+          },
+          {
+            "start": 3026,
+            "end": 3027,
+            "reason": "all (feature = \"synthetic-authority\" , debug_assertions)",
+            "start_text": "    #[cfg(all(feature = \"synthetic-authority\", debug_assertions))]",
+            "end_text": "    let mut synthetic_authority = false;"
+          },
+          {
+            "start": 3038,
+            "end": 3039,
+            "reason": "all (feature = \"synthetic-authority\" , debug_assertions)",
+            "start_text": "            #[cfg(all(feature = \"synthetic-authority\", debug_assertions))]",
+            "end_text": "            \"--synthetic-project-authority\" => synthetic_authority = true,"
+          },
+          {
+            "start": 3044,
+            "end": 3047,
+            "reason": "all (feature = \"synthetic-authority\" , debug_assertions)",
+            "start_text": "                #[cfg(all(feature = \"synthetic-authority\", debug_assertions))]",
+            "end_text": "                );"
+          },
+          {
+            "start": 3091,
+            "end": 3102,
+            "reason": "all (feature = \"synthetic-authority\" , debug_assertions)",
+            "start_text": "            #[cfg(all(feature = \"synthetic-authority\", debug_assertions))]",
+            "end_text": "            }"
+          },
+          {
+            "start": 3131,
+            "end": 3132,
+            "reason": "feature = \"native-lifecycle-smoke\"",
+            "start_text": "            #[cfg(feature = \"native-lifecycle-smoke\")]",
+            "end_text": "            native_smoke::install(cx);"
+          }
+        ]
+      },
+      "after": {
+        "nonblank": 3251,
+        "counts": {
+          "production": 3215,
+          "tests_and_test_support": 36,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": [
+          {
+            "start": 14,
+            "end": 15,
+            "reason": "feature = \"native-lifecycle-smoke\"",
+            "start_text": "#[cfg(feature = \"native-lifecycle-smoke\")]",
+            "end_text": "mod native_smoke;"
+          },
+          {
+            "start": 34,
+            "end": 36,
+            "reason": "test",
+            "start_text": "#[cfg(test)]",
+            "end_text": "mod transcript_benchmark;"
+          },
+          {
+            "start": 38,
+            "end": 39,
+            "reason": "test",
+            "start_text": "#[cfg(test)]",
+            "end_text": "mod transcript_view_tests;"
+          },
+          {
+            "start": 3122,
+            "end": 3123,
+            "reason": "feature = \"native-lifecycle-smoke\"",
+            "start_text": "    #[cfg(feature = \"native-lifecycle-smoke\")]",
+            "end_text": "    native_smoke::validate_launch()?;"
+          },
+          {
+            "start": 3129,
+            "end": 3130,
+            "reason": "all (feature = \"synthetic-authority\" , debug_assertions)",
+            "start_text": "    #[cfg(all(feature = \"synthetic-authority\", debug_assertions))]",
+            "end_text": "    let mut synthetic_authority = false;"
+          },
+          {
+            "start": 3141,
+            "end": 3144,
+            "reason": "all (feature = \"synthetic-authority\" , debug_assertions)",
+            "start_text": "            #[cfg(all(feature = \"synthetic-authority\", debug_assertions))]",
+            "end_text": "            }"
+          },
+          {
+            "start": 3149,
+            "end": 3152,
+            "reason": "all (feature = \"synthetic-authority\" , debug_assertions)",
+            "start_text": "                #[cfg(all(feature = \"synthetic-authority\", debug_assertions))]",
+            "end_text": "                );"
+          },
+          {
+            "start": 3211,
+            "end": 3225,
+            "reason": "all (feature = \"synthetic-authority\" , debug_assertions)",
+            "start_text": "            #[cfg(all(feature = \"synthetic-authority\", debug_assertions))]",
+            "end_text": "            }"
+          },
+          {
+            "start": 3254,
+            "end": 3255,
+            "reason": "feature = \"native-lifecycle-smoke\"",
+            "start_text": "            #[cfg(feature = \"native-lifecycle-smoke\")]",
+            "end_text": "            native_smoke::install(cx);"
+          }
+        ]
+      },
+      "delta": {
+        "production": 118,
+        "tests_and_test_support": 5,
+        "benchmark_example": 0
+      }
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/project_manager_controller.rs",
+      "before_blob": "88ccf2ff0a1d4234b34b35f9be7a439ab7c77575",
+      "after_blob": "8c9921257992af7b52a518e70995f9118d896e71",
+      "before": {
+        "nonblank": 934,
+        "counts": {
+          "production": 931,
+          "tests_and_test_support": 3,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": [
+          {
+            "start": 955,
+            "end": 957,
+            "reason": "all (test , feature = \"synthetic-authority\")",
+            "start_text": "#[cfg(all(test, feature = \"synthetic-authority\"))]",
+            "end_text": "mod tests;"
+          }
+        ]
+      },
+      "after": {
+        "nonblank": 945,
+        "counts": {
+          "production": 942,
+          "tests_and_test_support": 3,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": [
+          {
+            "start": 966,
+            "end": 968,
+            "reason": "all (test , feature = \"synthetic-authority\")",
+            "start_text": "#[cfg(all(test, feature = \"synthetic-authority\"))]",
+            "end_text": "mod tests;"
+          }
+        ]
+      },
+      "delta": {
+        "production": 11,
+        "tests_and_test_support": 0,
+        "benchmark_example": 0
+      }
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/shutdown_barrier_tests.rs",
+      "before_blob": "2cb6835f8ae4b90dc902e7f3065a3d78d579bf06",
+      "after_blob": "034b812264a86506507a44fab7fb4a87ca57e596",
+      "before": {
+        "nonblank": 264,
+        "counts": {
+          "production": 0,
+          "tests_and_test_support": 264,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": [
+          {
+            "start": 1,
+            "end": 271,
+            "reason": "whole support file: cfg(test) or synthetic-only owner",
+            "start_text": "//! Save/stop fault tests use disposable stores and an injected stop boundary.",
+            "end_text": "}"
+          }
+        ]
+      },
+      "after": {
+        "nonblank": 265,
+        "counts": {
+          "production": 0,
+          "tests_and_test_support": 265,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": [
+          {
+            "start": 1,
+            "end": 272,
+            "reason": "whole support file: cfg(test) or synthetic-only owner",
+            "start_text": "//! Save/stop fault tests use disposable stores and an injected stop boundary.",
+            "end_text": "}"
+          }
+        ]
+      },
+      "delta": {
+        "production": 0,
+        "tests_and_test_support": 1,
+        "benchmark_example": 0
+      }
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/transcript_actions.rs",
+      "before_blob": "8d1dc50176085ad5f6469ac524dfa5de6f9b48eb",
+      "after_blob": "2b15a47b39cc5c54c8dc5c70c70bec494c68964c",
+      "before": {
+        "nonblank": 319,
+        "counts": {
+          "production": 132,
+          "tests_and_test_support": 187,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": [
+          {
+            "start": 137,
+            "end": 323,
+            "reason": "test",
+            "start_text": "#[cfg(test)]",
+            "end_text": "}"
+          }
+        ]
+      },
+      "after": {
+        "nonblank": 320,
+        "counts": {
+          "production": 132,
+          "tests_and_test_support": 188,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": [
+          {
+            "start": 137,
+            "end": 324,
+            "reason": "test",
+            "start_text": "#[cfg(test)]",
+            "end_text": "}"
+          }
+        ]
+      },
+      "delta": {
+        "production": 0,
+        "tests_and_test_support": 1,
+        "benchmark_example": 0
+      }
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/workspace_lifetime_tests.rs",
+      "before_blob": "0373a809add02996ef03bc1100e260025cdd64dd",
+      "after_blob": "4e9f4e2184b41bddcac9836965ad7feab2bc238c",
+      "before": {
+        "nonblank": 1817,
+        "counts": {
+          "production": 0,
+          "tests_and_test_support": 1817,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": [
+          {
+            "start": 1,
+            "end": 1867,
+            "reason": "whole support file: cfg(test) or synthetic-only owner",
+            "start_text": "//! Real GPUI entity/window tests with a fake platform. Direct window removal",
+            "end_text": "}"
+          }
+        ]
+      },
+      "after": {
+        "nonblank": 1819,
+        "counts": {
+          "production": 0,
+          "tests_and_test_support": 1819,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": [
+          {
+            "start": 1,
+            "end": 1869,
+            "reason": "whole support file: cfg(test) or synthetic-only owner",
+            "start_text": "//! Real GPUI entity/window tests with a fake platform. Direct window removal",
+            "end_text": "}"
+          }
+        ]
+      },
+      "delta": {
+        "production": 0,
+        "tests_and_test_support": 2,
+        "benchmark_example": 0
+      }
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/connection_vault.rs",
+      "before_blob": null,
+      "after_blob": "93bfe1510b6ee323414f3a426f21616e55c1d621",
+      "before": {
+        "nonblank": 0,
+        "counts": {
+          "production": 0,
+          "tests_and_test_support": 0,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": []
+      },
+      "after": {
+        "nonblank": 505,
+        "counts": {
+          "production": 487,
+          "tests_and_test_support": 18,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": [
+          {
+            "start": 146,
+            "end": 147,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "    #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "    entry: Fields,"
+          },
+          {
+            "start": 148,
+            "end": 149,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "    #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "    authority: ProjectAuthority,"
+          },
+          {
+            "start": 495,
+            "end": 496,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "            #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "            entry: current.entries[index].clone(),"
+          },
+          {
+            "start": 497,
+            "end": 498,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "            #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "            authority: self.clone(),"
+          },
+          {
+            "start": 503,
+            "end": 505,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "#[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "mod synthetic_runtime;"
+          },
+          {
+            "start": 506,
+            "end": 507,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "#[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "pub(crate) use synthetic_runtime::ConnectionLease;"
+          },
+          {
+            "start": 508,
+            "end": 509,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "#[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "pub use synthetic_runtime::SyntheticConnectionRuntime;"
+          },
+          {
+            "start": 511,
+            "end": 513,
+            "reason": "all (test , feature = \"synthetic-authority\")",
+            "start_text": "#[cfg(all(test, feature = \"synthetic-authority\"))]",
+            "end_text": "mod tests;"
+          }
+        ]
+      },
+      "delta": {
+        "production": 487,
+        "tests_and_test_support": 18,
+        "benchmark_example": 0
+      }
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/connection_vault_tests.rs",
+      "before_blob": null,
+      "after_blob": "86bcb9f7e0349a9579f91e137a197be8ce520f38",
+      "before": {
+        "nonblank": 0,
+        "counts": {
+          "production": 0,
+          "tests_and_test_support": 0,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": []
+      },
+      "after": {
+        "nonblank": 725,
+        "counts": {
+          "production": 0,
+          "tests_and_test_support": 725,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": [
+          {
+            "start": 1,
+            "end": 730,
+            "reason": "whole support file: cfg(test) or synthetic-only owner",
+            "start_text": "use super::*;",
+            "end_text": "}"
+          }
+        ]
+      },
+      "delta": {
+        "production": 0,
+        "tests_and_test_support": 725,
+        "benchmark_example": 0
+      }
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/context_preview.rs",
+      "before_blob": "d0077579934a26ed27b4652d24f99b84d4a00096",
+      "after_blob": "87cfcc09893eb167f9b573bcd9449382e3a67e74",
+      "before": {
+        "nonblank": 325,
+        "counts": {
+          "production": 316,
+          "tests_and_test_support": 9,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": [
+          {
+            "start": 84,
+            "end": 89,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "        #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "        }"
+          },
+          {
+            "start": 337,
+            "end": 339,
+            "reason": "test",
+            "start_text": "#[cfg(test)]",
+            "end_text": "mod tests;"
+          }
+        ]
+      },
+      "after": {
+        "nonblank": 333,
+        "counts": {
+          "production": 324,
+          "tests_and_test_support": 9,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": [
+          {
+            "start": 85,
+            "end": 90,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "        #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "        }"
+          },
+          {
+            "start": 345,
+            "end": 347,
+            "reason": "test",
+            "start_text": "#[cfg(test)]",
+            "end_text": "mod tests;"
+          }
+        ]
+      },
+      "delta": {
+        "production": 8,
+        "tests_and_test_support": 0,
+        "benchmark_example": 0
+      }
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/profile.rs",
+      "before_blob": "d683b8cfbee8bcf4e9e88577a3c1ca3857221fc6",
+      "after_blob": "995674b6454b14c06fc0abc3b96178c0d47a9366",
+      "before": {
+        "nonblank": 269,
+        "counts": {
+          "production": 223,
+          "tests_and_test_support": 46,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": [
+          {
+            "start": 227,
+            "end": 272,
+            "reason": "test",
+            "start_text": "#[cfg(test)]",
+            "end_text": "}"
+          }
+        ]
+      },
+      "after": {
+        "nonblank": 269,
+        "counts": {
+          "production": 223,
+          "tests_and_test_support": 46,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": [
+          {
+            "start": 227,
+            "end": 272,
+            "reason": "test",
+            "start_text": "#[cfg(test)]",
+            "end_text": "}"
+          }
+        ]
+      },
+      "delta": {
+        "production": 0,
+        "tests_and_test_support": 0,
+        "benchmark_example": 0
+      }
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/project_authority.rs",
+      "before_blob": "55c99508f182f898d92b3cbb1a583425d48e5e96",
+      "after_blob": "05bf93e9a9d47f98b4b9479ffb0d13937f1cdf92",
+      "before": {
+        "nonblank": 1176,
+        "counts": {
+          "production": 392,
+          "tests_and_test_support": 784,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": [
+          {
+            "start": 326,
+            "end": 335,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "    #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "    }"
+          },
+          {
+            "start": 336,
+            "end": 341,
+            "reason": "test",
+            "start_text": "    #[cfg(test)]",
+            "end_text": "    }"
+          },
+          {
+            "start": 420,
+            "end": 662,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "#[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "}"
+          },
+          {
+            "start": 664,
+            "end": 1202,
+            "reason": "test",
+            "start_text": "#[cfg(test)]",
+            "end_text": "}"
+          },
+          {
+            "start": 1034,
+            "end": 1201,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "    #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "    }"
+          }
+        ]
+      },
+      "after": {
+        "nonblank": 1182,
+        "counts": {
+          "production": 398,
+          "tests_and_test_support": 784,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": [
+          {
+            "start": 333,
+            "end": 342,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "    #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "    }"
+          },
+          {
+            "start": 343,
+            "end": 348,
+            "reason": "test",
+            "start_text": "    #[cfg(test)]",
+            "end_text": "    }"
+          },
+          {
+            "start": 427,
+            "end": 669,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "#[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "}"
+          },
+          {
+            "start": 671,
+            "end": 1209,
+            "reason": "test",
+            "start_text": "#[cfg(test)]",
+            "end_text": "}"
+          },
+          {
+            "start": 1041,
+            "end": 1208,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "    #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "    }"
+          }
+        ]
+      },
+      "delta": {
+        "production": 6,
+        "tests_and_test_support": 0,
+        "benchmark_example": 0
+      }
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/resource_runtime.rs",
+      "before_blob": "0feb31a7adce2c7e83f575d8067af0b688322629",
+      "after_blob": "b2aede06d056b02b35dcf190a36736b184952e3c",
+      "before": {
+        "nonblank": 502,
+        "counts": {
+          "production": 0,
+          "tests_and_test_support": 502,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": [
+          {
+            "start": 1,
+            "end": 523,
+            "reason": "whole support file: cfg(test) or synthetic-only owner",
+            "start_text": "//! Disposable, explicitly selected fixture resources. This module is compiled",
+            "end_text": "mod tests;"
+          }
+        ]
+      },
+      "after": {
+        "nonblank": 502,
+        "counts": {
+          "production": 0,
+          "tests_and_test_support": 502,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": [
+          {
+            "start": 1,
+            "end": 523,
+            "reason": "whole support file: cfg(test) or synthetic-only owner",
+            "start_text": "//! Disposable, explicitly selected fixture resources. This module is compiled",
+            "end_text": "mod tests;"
+          }
+        ]
+      },
+      "delta": {
+        "production": 0,
+        "tests_and_test_support": 0,
+        "benchmark_example": 0
+      }
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/runtime.rs",
+      "before_blob": "fce0c25b2cc0f476ebae6a83157e2fe714d91f89",
+      "after_blob": "e56dba49dd592a0c43829a2f354bb2d0254c3d5e",
+      "before": {
+        "nonblank": 1968,
+        "counts": {
+          "production": 625,
+          "tests_and_test_support": 1343,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": [
+          {
+            "start": 9,
+            "end": 11,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "#[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "mod resource_runtime;"
+          },
+          {
+            "start": 12,
+            "end": 13,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "#[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "pub use resource_runtime::{AppliedInstructionSnapshot, SyntheticResources, SyntheticRuntimeGuard};"
+          },
+          {
+            "start": 38,
+            "end": 39,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "    #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "    applied_instructions: Option<Arc<AppliedInstructionSnapshot>>,"
+          },
+          {
+            "start": 63,
+            "end": 64,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "    #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "    resources: Option<SyntheticResources>,"
+          },
+          {
+            "start": 121,
+            "end": 122,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "                #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "                applied_instructions: None,"
+          },
+          {
+            "start": 126,
+            "end": 127,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "            #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "            resources: None,"
+          },
+          {
+            "start": 334,
+            "end": 337,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "        #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "        }"
+          },
+          {
+            "start": 342,
+            "end": 345,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "        #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "        }"
+          },
+          {
+            "start": 558,
+            "end": 562,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "        #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "        }"
+          },
+          {
+            "start": 639,
+            "end": 642,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "        #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "        }"
+          },
+          {
+            "start": 646,
+            "end": 649,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "        #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "        }"
+          },
+          {
+            "start": 669,
+            "end": 2017,
+            "reason": "test",
+            "start_text": "#[cfg(test)]",
+            "end_text": "}"
+          }
+        ]
+      },
+      "after": {
+        "nonblank": 2237,
+        "counts": {
+          "production": 827,
+          "tests_and_test_support": 1410,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": [
+          {
+            "start": 9,
+            "end": 11,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "#[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "mod resource_runtime;"
+          },
+          {
+            "start": 12,
+            "end": 13,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "#[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "pub use resource_runtime::{AppliedInstructionSnapshot, SyntheticResources, SyntheticRuntimeGuard};"
+          },
+          {
+            "start": 41,
+            "end": 42,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "    #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "    applied_instructions: Option<Arc<AppliedInstructionSnapshot>>,"
+          },
+          {
+            "start": 55,
+            "end": 56,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "    #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "    connection: Option<Arc<crate::project_authority::connections::ConnectionLease>>,"
+          },
+          {
+            "start": 59,
+            "end": 70,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "    #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "    }"
+          },
+          {
+            "start": 72,
+            "end": 75,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "        #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "        }"
+          },
+          {
+            "start": 79,
+            "end": 82,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "        #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "        }"
+          },
+          {
+            "start": 87,
+            "end": 93,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "        #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "        }"
+          },
+          {
+            "start": 97,
+            "end": 100,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "        #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "        }"
+          },
+          {
+            "start": 113,
+            "end": 120,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "        #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "        }"
+          },
+          {
+            "start": 142,
+            "end": 143,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "    #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "    resources: Option<SyntheticResources>,"
+          },
+          {
+            "start": 165,
+            "end": 166,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "                #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "                connection: None,"
+          },
+          {
+            "start": 185,
+            "end": 190,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "            #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "            }"
+          },
+          {
+            "start": 193,
+            "end": 201,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "        #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "        };"
+          },
+          {
+            "start": 222,
+            "end": 223,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "                #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "                applied_instructions: None,"
+          },
+          {
+            "start": 228,
+            "end": 229,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "            #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "            resources: None,"
+          },
+          {
+            "start": 269,
+            "end": 274,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "        #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "        }"
+          },
+          {
+            "start": 517,
+            "end": 520,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "        #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "        }"
+          },
+          {
+            "start": 525,
+            "end": 528,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "        #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "        }"
+          },
+          {
+            "start": 745,
+            "end": 749,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "        #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "        }"
+          },
+          {
+            "start": 879,
+            "end": 882,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "        #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "        }"
+          },
+          {
+            "start": 912,
+            "end": 915,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "        #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "        }"
+          },
+          {
+            "start": 935,
+            "end": 2283,
+            "reason": "test",
+            "start_text": "#[cfg(test)]",
+            "end_text": "}"
+          },
+          {
+            "start": 2285,
+            "end": 2287,
+            "reason": "all (test , feature = \"synthetic-authority\")",
+            "start_text": "#[cfg(all(test, feature = \"synthetic-authority\"))]",
+            "end_text": "mod configuration_tests;"
+          }
+        ]
+      },
+      "delta": {
+        "production": 202,
+        "tests_and_test_support": 67,
+        "benchmark_example": 0
+      }
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/runtime_configuration_tests.rs",
+      "before_blob": null,
+      "after_blob": "04c1f2bd08b107e7744636a0166a76925228f6ae",
+      "before": {
+        "nonblank": 0,
+        "counts": {
+          "production": 0,
+          "tests_and_test_support": 0,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": []
+      },
+      "after": {
+        "nonblank": 231,
+        "counts": {
+          "production": 0,
+          "tests_and_test_support": 231,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": [
+          {
+            "start": 1,
+            "end": 235,
+            "reason": "whole support file: cfg(test) or synthetic-only owner",
+            "start_text": "//! Actor-boundary contracts in addition to public vault/loopback integration.",
+            "end_text": "}"
+          }
+        ]
+      },
+      "delta": {
+        "production": 0,
+        "tests_and_test_support": 231,
+        "benchmark_example": 0
+      }
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/synthetic_connection_runtime.rs",
+      "before_blob": null,
+      "after_blob": "066d7a531b3582b310be4e3bf11de5ee276b582e",
+      "before": {
+        "nonblank": 0,
+        "counts": {
+          "production": 0,
+          "tests_and_test_support": 0,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": []
+      },
+      "after": {
+        "nonblank": 115,
+        "counts": {
+          "production": 0,
+          "tests_and_test_support": 115,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": [
+          {
+            "start": 1,
+            "end": 117,
+            "reason": "whole support file: cfg(test) or synthetic-only owner",
+            "start_text": "//! Fixed-credential loopback-only saved connection composition; tools stay disabled.",
+            "end_text": "}"
+          }
+        ]
+      },
+      "delta": {
+        "production": 0,
+        "tests_and_test_support": 115,
+        "benchmark_example": 0
+      }
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/tool_runtime.rs",
+      "before_blob": "395ed44a73bc27dd0aba87382a1971b166ec6d73",
+      "after_blob": "5d88cd86949009f6b633def0d75b723f0b0dfffb",
+      "before": {
+        "nonblank": 1001,
+        "counts": {
+          "production": 536,
+          "tests_and_test_support": 465,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": [
+          {
+            "start": 402,
+            "end": 413,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "            #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "            }"
+          },
+          {
+            "start": 434,
+            "end": 442,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "        #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "        }"
+          },
+          {
+            "start": 448,
+            "end": 451,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "        #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "        }"
+          },
+          {
+            "start": 532,
+            "end": 568,
+            "reason": "test",
+            "start_text": "#[cfg(test)]",
+            "end_text": "}"
+          },
+          {
+            "start": 617,
+            "end": 1030,
+            "reason": "test",
+            "start_text": "#[cfg(test)]",
+            "end_text": "}"
+          }
+        ]
+      },
+      "after": {
+        "nonblank": 1005,
+        "counts": {
+          "production": 540,
+          "tests_and_test_support": 465,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": [
+          {
+            "start": 406,
+            "end": 417,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "            #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "            }"
+          },
+          {
+            "start": 438,
+            "end": 446,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "        #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "        }"
+          },
+          {
+            "start": 452,
+            "end": 455,
+            "reason": "feature = \"synthetic-authority\"",
+            "start_text": "        #[cfg(feature = \"synthetic-authority\")]",
+            "end_text": "        }"
+          },
+          {
+            "start": 536,
+            "end": 572,
+            "reason": "test",
+            "start_text": "#[cfg(test)]",
+            "end_text": "}"
+          },
+          {
+            "start": 621,
+            "end": 1034,
+            "reason": "test",
+            "start_text": "#[cfg(test)]",
+            "end_text": "}"
+          }
+        ]
+      },
+      "delta": {
+        "production": 4,
+        "tests_and_test_support": 0,
+        "benchmark_example": 0
+      }
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/workspace.rs",
+      "before_blob": "baabd93a3cae448815e28f09935584f01f18463f",
+      "after_blob": "ce5da6f964b1d6f5a2592a0203227918e7995262",
+      "before": {
+        "nonblank": 3205,
+        "counts": {
+          "production": 1317,
+          "tests_and_test_support": 1888,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": [
+          {
+            "start": 501,
+            "end": 502,
+            "reason": "test",
+            "start_text": "    #[cfg(test)]",
+            "end_text": "    fault: Fault,"
+          },
+          {
+            "start": 504,
+            "end": 511,
+            "reason": "test",
+            "start_text": "#[cfg(test)]",
+            "end_text": "}"
+          },
+          {
+            "start": 568,
+            "end": 569,
+            "reason": "test",
+            "start_text": "            #[cfg(test)]",
+            "end_text": "            fault: Fault::None,"
+          },
+          {
+            "start": 1267,
+            "end": 1270,
+            "reason": "test",
+            "start_text": "            #[cfg(test)]",
+            "end_text": "            }"
+          },
+          {
+            "start": 1272,
+            "end": 1277,
+            "reason": "test",
+            "start_text": "            #[cfg(test)]",
+            "end_text": "            }"
+          },
+          {
+            "start": 1342,
+            "end": 3206,
+            "reason": "test",
+            "start_text": "#[cfg(test)]",
+            "end_text": "}"
+          },
+          {
+            "start": 3208,
+            "end": 3210,
+            "reason": "test",
+            "start_text": "#[cfg(test)]",
+            "end_text": "mod identity_tests;"
+          }
+        ]
+      },
+      "after": {
+        "nonblank": 3293,
+        "counts": {
+          "production": 1396,
+          "tests_and_test_support": 1897,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": [
+          {
+            "start": 546,
+            "end": 547,
+            "reason": "test",
+            "start_text": "    #[cfg(test)]",
+            "end_text": "    fault: Fault,"
+          },
+          {
+            "start": 549,
+            "end": 556,
+            "reason": "test",
+            "start_text": "#[cfg(test)]",
+            "end_text": "}"
+          },
+          {
+            "start": 613,
+            "end": 614,
+            "reason": "test",
+            "start_text": "            #[cfg(test)]",
+            "end_text": "            fault: Fault::None,"
+          },
+          {
+            "start": 1346,
+            "end": 1349,
+            "reason": "test",
+            "start_text": "            #[cfg(test)]",
+            "end_text": "            }"
+          },
+          {
+            "start": 1351,
+            "end": 1356,
+            "reason": "test",
+            "start_text": "            #[cfg(test)]",
+            "end_text": "            }"
+          },
+          {
+            "start": 1421,
+            "end": 3291,
+            "reason": "test",
+            "start_text": "#[cfg(test)]",
+            "end_text": "}"
+          },
+          {
+            "start": 3293,
+            "end": 3295,
+            "reason": "test",
+            "start_text": "#[cfg(test)]",
+            "end_text": "mod identity_tests;"
+          },
+          {
+            "start": 3297,
+            "end": 3299,
+            "reason": "test",
+            "start_text": "#[cfg(test)]",
+            "end_text": "mod connection_tests;"
+          }
+        ]
+      },
+      "delta": {
+        "production": 79,
+        "tests_and_test_support": 9,
+        "benchmark_example": 0
+      }
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/workspace_connection_tests.rs",
+      "before_blob": null,
+      "after_blob": "645a6f3fe84a31fe1f6ea80fdb7306c949625664",
+      "before": {
+        "nonblank": 0,
+        "counts": {
+          "production": 0,
+          "tests_and_test_support": 0,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": []
+      },
+      "after": {
+        "nonblank": 155,
+        "counts": {
+          "production": 0,
+          "tests_and_test_support": 155,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": [
+          {
+            "start": 1,
+            "end": 161,
+            "reason": "whole support file: cfg(test) or synthetic-only owner",
+            "start_text": "use super::*;",
+            "end_text": "}"
+          }
+        ]
+      },
+      "delta": {
+        "production": 0,
+        "tests_and_test_support": 155,
+        "benchmark_example": 0
+      }
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/workspace_identity_tests.rs",
+      "before_blob": "c0fc12a8b3a1cc9d2a1c89f8f64bc59cfd6c950a",
+      "after_blob": "8f2aa972f77fa0cd85b499fd20ca8ca8c568041e",
+      "before": {
+        "nonblank": 554,
+        "counts": {
+          "production": 0,
+          "tests_and_test_support": 554,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": [
+          {
+            "start": 1,
+            "end": 568,
+            "reason": "whole support file: cfg(test) or synthetic-only owner",
+            "start_text": "//! File fixtures only. Source contract: MetadataStore.swift ChatRecord and",
+            "end_text": "}"
+          }
+        ]
+      },
+      "after": {
+        "nonblank": 559,
+        "counts": {
+          "production": 0,
+          "tests_and_test_support": 559,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": [
+          {
+            "start": 1,
+            "end": 573,
+            "reason": "whole support file: cfg(test) or synthetic-only owner",
+            "start_text": "//! File fixtures only. Source contract: MetadataStore.swift ChatRecord and",
+            "end_text": "}"
+          }
+        ]
+      },
+      "delta": {
+        "production": 0,
+        "tests_and_test_support": 5,
+        "benchmark_example": 0
+      }
+    },
+    {
+      "path": "rust/crates/bello-agent-core/tests/chat_workspace.rs",
+      "before_blob": "680b430d5ec915a86f1035eab746d4bd4886673e",
+      "after_blob": "d299a231c52d74f94471a71c6f1b1c507492d12a",
+      "before": {
+        "nonblank": 1061,
+        "counts": {
+          "production": 0,
+          "tests_and_test_support": 1061,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": [
+          {
+            "start": 1,
+            "end": 1084,
+            "reason": "whole support file: cfg(test) or synthetic-only owner",
+            "start_text": "//! End-to-end coverage of the Rust chat catalog and independently owned workers.",
+            "end_text": "}"
+          }
+        ]
+      },
+      "after": {
+        "nonblank": 1066,
+        "counts": {
+          "production": 0,
+          "tests_and_test_support": 1066,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": [
+          {
+            "start": 1,
+            "end": 1089,
+            "reason": "whole support file: cfg(test) or synthetic-only owner",
+            "start_text": "//! End-to-end coverage of the Rust chat catalog and independently owned workers.",
+            "end_text": "}"
+          }
+        ]
+      },
+      "delta": {
+        "production": 0,
+        "tests_and_test_support": 5,
+        "benchmark_example": 0
+      }
+    },
+    {
+      "path": "rust/crates/bello-agent-core/tests/queued_cancellation.rs",
+      "before_blob": "241239ed7f65bf0a01b641cf3ba0e1a55921320e",
+      "after_blob": "94f1d6814080ff0a74f472f4abed9b6d9da2a09f",
+      "before": {
+        "nonblank": 341,
+        "counts": {
+          "production": 0,
+          "tests_and_test_support": 341,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": [
+          {
+            "start": 1,
+            "end": 348,
+            "reason": "whole support file: cfg(test) or synthetic-only owner",
+            "start_text": "//! Durable catalog/actor cancellation protocol with no provider or GUI. Dropping",
+            "end_text": "}"
+          }
+        ]
+      },
+      "after": {
+        "nonblank": 342,
+        "counts": {
+          "production": 0,
+          "tests_and_test_support": 342,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": [
+          {
+            "start": 1,
+            "end": 349,
+            "reason": "whole support file: cfg(test) or synthetic-only owner",
+            "start_text": "//! Durable catalog/actor cancellation protocol with no provider or GUI. Dropping",
+            "end_text": "}"
+          }
+        ]
+      },
+      "delta": {
+        "production": 0,
+        "tests_and_test_support": 1,
+        "benchmark_example": 0
+      }
+    },
+    {
+      "path": "rust/crates/bello-agent-core/tests/sidebar_organization.rs",
+      "before_blob": "0745b88e08c4a8a2766fe0f7b1027eafebec8a74",
+      "after_blob": "204a0029d22b465e40a31b950e4f4e20560c356d",
+      "before": {
+        "nonblank": 229,
+        "counts": {
+          "production": 0,
+          "tests_and_test_support": 229,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": [
+          {
+            "start": 1,
+            "end": 230,
+            "reason": "whole support file: cfg(test) or synthetic-only owner",
+            "start_text": "use bello_agent_core::{",
+            "end_text": "}"
+          }
+        ]
+      },
+      "after": {
+        "nonblank": 238,
+        "counts": {
+          "production": 0,
+          "tests_and_test_support": 238,
+          "benchmark_example": 0
+        },
+        "reviewed_support_ranges": [
+          {
+            "start": 1,
+            "end": 239,
+            "reason": "whole support file: cfg(test) or synthetic-only owner",
+            "start_text": "use bello_agent_core::{",
+            "end_text": "}"
+          }
+        ]
+      },
+      "delta": {
+        "production": 0,
+        "tests_and_test_support": 9,
+        "benchmark_example": 0
+      }
+    }
+  ],
+  "method": "Immutable Git-object delta over audited parent counts, using explicit source-reviewed positive cfg spans; not a fresh whole-project category parser.",
+  "scope": "Tracked rust/**/*.rs only. Nonblank physical lines, including comments. Read WIP, dependencies, caches, documentation and scripts excluded.",
+  "classification_notes": [
+    "Positive cfg(test), cfg(feature=\"synthetic-authority\"), and all/any expressions that require only test/synthetic operation are support. Mixed production-capable conditions and negative synthetic fallbacks remain production.",
+    "Support starts at the positive cfg attribute. Comments before that attribute retain their preceding category. Entire externally owned test and synthetic-only modules include their leading comments as support.",
+    "Gated struct fields, struct-literal fields, match arms, local statements, expressions and module tails are included, not merely cfg(test) modules. Overlapping nested spans are counted once.",
+    "Native lifecycle probe spans are unchanged between these snapshots and have zero effect on this delta. Native/platform gates are not equated with test-only code.",
+    "Existing unmodified Rust files inherit the reviewed baseline. Both complete Git trees are independently recounted to verify the total. No completion percentage is inferred."
+  ]
+}
