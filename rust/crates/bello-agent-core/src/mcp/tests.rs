@@ -1321,6 +1321,116 @@ async fn status_never_blocks_ui_behind_held_durable_ledger_lock() {
     assert!(status.outcome_unknown);
     assert_eq!(status.unknown_id, expected);
 }
+
+async fn invoke_during_status_read(manager: &McpManager) -> McpResult<Performed> {
+    use std::task::Poll;
+
+    let mut invocation = Box::pin(invoke(manager, "ok"));
+    // Suspend another presentation reader while it owns the cached snapshot.
+    // The action must consult durable outcome state, not interpret contention
+    // with this harmless read as evidence of an earlier unknown invocation.
+    let first_poll = futures_util::future::poll_fn(|cx| {
+        Poll::Ready(
+            manager
+                .ledger
+                .during_status_read_for_test(|| invocation.as_mut().poll(cx)),
+        )
+    })
+    .await;
+    match first_poll {
+        Poll::Ready(result) => result,
+        Poll::Pending => timeout(DEADLINE, invocation).await.unwrap(),
+    }
+}
+
+#[tokio::test]
+async fn concurrent_status_reader_cannot_invent_an_unknown_invocation_outcome() {
+    let server = ServerFixture::start().await;
+    let fixture = Fixture::new("http://127.0.0.1:9", &server.url);
+    let manager = fixture.manager();
+    assert!(!manager.status().outcome_unknown);
+    let performed = invoke_during_status_read(&manager)
+        .await
+        .expect("an idle presentation reader must not reject an authorized invocation");
+    settle(performed).await;
+    assert_eq!(server.calls.load(Ordering::SeqCst), 1);
+    assert!(!manager.status().outcome_unknown);
+
+    assert!(invoke(&manager, "disconnect").await.is_err());
+    let unknown_id = manager.status().unknown_id.unwrap();
+    let rejected = invoke_during_status_read(&manager)
+        .await
+        .err()
+        .expect("a genuine unknown outcome must still block invocation");
+    assert_eq!(rejected.code, "mcp_outcome_unknown");
+    assert!(rejected.not_executed);
+    assert_eq!(server.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        manager.status().unknown_id.as_deref(),
+        Some(unknown_id.as_str())
+    );
+}
+
+#[tokio::test]
+async fn cancellation_during_authoritative_outcome_read_never_dispatches() {
+    use std::task::Poll;
+
+    let server = ServerFixture::start().await;
+    let fixture = Fixture::new("http://127.0.0.1:9", &server.url);
+    let manager = fixture.manager();
+    let (started, ready) = std::sync::mpsc::channel();
+    let (release, wait) = std::sync::mpsc::channel();
+    let ledger = manager.ledger.clone();
+    let writer = std::thread::spawn(move || ledger.hold_write_lock_for_test(started, wait));
+    ready.recv_timeout(Duration::from_secs(1)).unwrap();
+    let cancel = CancellationToken::new();
+    let parameters = json!({"action":"invoke","server":"fixture","tool":"echo","arguments":{}});
+    let mut invocation =
+        Box::pin(manager.perform(&parameters, false, cancel.clone(), || async { Ok(()) }));
+    let pending =
+        futures_util::future::poll_fn(|cx| Poll::Ready(invocation.as_mut().poll(cx).is_pending()))
+            .await;
+    cancel.cancel();
+    let cancelled = timeout(Duration::from_secs(1), invocation).await;
+    // Release the simulated fsync even if cancellation regresses, before
+    // asserting, so the test cannot strand the pool worker or writer lease.
+    release.send(()).unwrap();
+    writer.join().unwrap();
+    assert!(pending);
+    let error = cancelled
+        .expect("cancellation must not wait behind durable outcome I/O")
+        .err()
+        .expect("a cancelled outcome read must not authorize dispatch");
+    assert_eq!(error.code, "mcp_cancelled");
+    assert!(error.not_executed);
+    assert_eq!(server.calls.load(Ordering::SeqCst), 0);
+    assert!(!manager.status().outcome_unknown);
+}
+
+#[tokio::test]
+async fn unavailable_outcome_evidence_cannot_borrow_a_known_presentation() {
+    let server = ServerFixture::start().await;
+    let fixture = Fixture::new("http://127.0.0.1:9", &server.url);
+    let manager = fixture.manager();
+    let ledger = manager.ledger.clone();
+    assert!(
+        std::thread::spawn(move || ledger.poison_state_for_test())
+            .join()
+            .is_err()
+    );
+    // A cached known result is only presentation. Unavailable authoritative
+    // evidence must not grant an invocation or fabricate a new unknown marker.
+    assert!(!manager.status().outcome_unknown);
+    let error = invoke(&manager, "ok")
+        .await
+        .err()
+        .expect("unavailable outcome evidence must fail closed");
+    assert_eq!(error.code, "mcp_outcome_unavailable");
+    assert!(error.not_executed);
+    assert!(error.message.starts_with("Not executed:"));
+    assert_eq!(server.calls.load(Ordering::SeqCst), 0);
+    assert!(!manager.status().outcome_unknown);
+}
 #[tokio::test]
 async fn allowlist_absent_empty_and_explicit_list_are_distinct_and_null_is_rejected() {
     let server = ServerFixture::start().await;

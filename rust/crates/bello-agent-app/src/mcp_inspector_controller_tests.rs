@@ -25,6 +25,28 @@ fn argument_draft(arguments: String) -> McpInput {
     input.arguments = arguments;
     input
 }
+fn inspector_state(view: &AgentView) -> String {
+    format!(
+        "presentation={:?}; mode={:?}; configured={}; retired={}; loading={}; load_failed={}; chat_busy={}; mode_pending={}; mode_operations={:?}; mode_blocked={:?}; error={:?}; manager={:?}; configuration_matches={:?}",
+        view.mcp.presentation,
+        view.record.tool_mode,
+        view.controller.configured(),
+        view.controller.is_retired(),
+        view.loading,
+        view.load_failed,
+        view.busy,
+        view.mcp.mode_pending,
+        view.chat_mode_operations,
+        view.chat_mode_blocked,
+        view.error,
+        view.mcp.manager.as_ref().map(|manager| manager.status()),
+        view.mcp
+            .manager
+            .as_ref()
+            .zip(view.mcp.loaded.as_ref())
+            .map(|(manager, loaded)| manager.configuration_matches(loaded)),
+    )
+}
 #[test]
 fn general_configuration_rejects_secret_headers_stdio_and_oversize_without_echo() {
     for config in [
@@ -496,17 +518,49 @@ async fn prepare_gateway(
     act(window, McpIntent::Save, cx);
     act(window, McpIntent::Confirm, cx);
     wait_for(root, cx, |v| !v.mcp.busy());
+    cx.read(|cx| {
+        let view = root.read(cx);
+        assert!(
+            view.mcp.presentation.notice.contains("saved and applied"),
+            "Save: {}",
+            inspector_state(view)
+        );
+    });
     act(window, McpIntent::ListTools, cx);
     wait_for(root, cx, |v| !v.mcp.busy());
-    cx.read(|cx| assert_eq!(root.read(cx).mcp.presentation.tools.len(), 1));
+    cx.read(|cx| {
+        let view = root.read(cx);
+        assert_eq!(
+            view.mcp.presentation.tools.len(),
+            1,
+            "List tools: {}",
+            inspector_state(view)
+        );
+    });
     act(window, McpIntent::SelectTool("echo".into()), cx);
     act(window, McpIntent::Describe, cx);
     wait_for(root, cx, |v| !v.mcp.busy());
+    cx.read(|cx| {
+        let view = root.read(cx);
+        assert!(
+            view.mcp.presentation.notice.contains("Discovery completed"),
+            "Describe: {}",
+            inspector_state(view)
+        );
+    });
     assert_eq!(gateway.count(), 0);
     act(window, McpIntent::EnableEditing, cx);
     act(window, McpIntent::Confirm, cx);
     wait_for(root, cx, |v| v.chat_mode_operations.is_empty());
     window.update(cx, |v, _, cx| v.sync_mcp_status(cx)).unwrap();
+    cx.read(|cx| {
+        let view = root.read(cx);
+        assert!(
+            view.mcp.presentation.allows(&McpIntent::Invoke),
+            "Enable editing: {}",
+            inspector_state(view)
+        );
+    });
 }
 #[gpui::test]
 async fn saved_inspector_discovery_description_and_exactly_one_confirmed_invocation(
@@ -619,7 +673,14 @@ async fn reload_recovers_latest_durable_inspector_result_without_reexecution(
     act(window, McpIntent::Invoke, cx);
     act(window, McpIntent::Confirm, cx);
     wait_for(&root, cx, |v| !v.mcp.busy());
-    assert_eq!(gateway.count(), 1);
+    cx.read(|cx| {
+        assert_eq!(
+            gateway.count(),
+            1,
+            "Invoke: {}",
+            inspector_state(root.read(cx))
+        )
+    });
     root.update(cx, |view, cx| {
         view.mcp
             .view

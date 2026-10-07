@@ -156,6 +156,26 @@ impl Ledger {
                 pending: 1,
             })
     }
+    /// Operation admission must use actual outcome evidence. The conservative
+    /// presentation fallback above also represents cached-reader contention,
+    /// which is not evidence that an earlier invocation has an unknown result.
+    /// Call on the blocking pool: the state lock can cover durable ledger I/O.
+    pub fn has_unknown_outcome(&self) -> Result<bool> {
+        self.state
+            .lock()
+            .map(|state| state.unknown)
+            .map_err(|_| invalid("MCP outcome evidence is unavailable"))
+    }
+    #[cfg(all(test, feature = "synthetic-authority"))]
+    pub fn during_status_read_for_test<T>(&self, read: impl FnOnce() -> T) -> T {
+        let _status = self.cached_status.lock().unwrap();
+        read()
+    }
+    #[cfg(all(test, feature = "synthetic-authority"))]
+    pub fn poison_state_for_test(&self) {
+        let _state = self.state.lock().unwrap();
+        panic!("synthetic outcome-state poisoning");
+    }
     fn publish_status(&self, state: &State) {
         let status = Status {
             unknown: state.unknown,

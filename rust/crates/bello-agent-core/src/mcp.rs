@@ -445,6 +445,31 @@ impl McpManager {
             .clone();
         tokio::task::spawn_blocking(move ||loaded.confirm()).await.map_err(|_|McpError::config())?.map_err(|_|McpError::rejected("mcp_config","Saved MCP authority/configuration changed or is unavailable; review and apply current settings"))
     }
+    async fn require_known_outcome(
+        &self,
+        cancel: &CancellationToken,
+        unknown_message: &'static str,
+    ) -> McpResult<()> {
+        let ledger = self.ledger.clone();
+        let unavailable = || {
+            McpError::rejected(
+                "mcp_outcome_unavailable",
+                "Not executed: MCP outcome evidence is unavailable",
+            )
+        };
+        let read = tokio::task::spawn_blocking(move || ledger.has_unknown_outcome());
+        // Cancellation abandons only a read. The blocking worker retains its
+        // Ledger Arc (and physical writer lease) until that read actually ends.
+        let unknown = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err(McpError::cancelled(false)),
+            result = read => result.map_err(|_| unavailable())?.map_err(|_| unavailable())?,
+        };
+        if unknown {
+            return Err(McpError::rejected("mcp_outcome_unknown", unknown_message));
+        }
+        Ok(())
+    }
     async fn discovery_locked(&self, p: &Value, cancel: &CancellationToken) -> McpResult<Value> {
         let fields = p.as_object().ok_or_else(arguments)?;
         let mut servers = self.servers.lock().await;
@@ -573,12 +598,7 @@ impl McpManager {
         if serde_json::to_vec(p).map_err(|_| arguments())?.len() > 2 * 1024 * 1024 {
             return Err(arguments());
         }
-        if self.ledger.status().unknown {
-            return Err(McpError::rejected(
-                "mcp_outcome_unknown",
-                "A previous MCP invocation has an unknown outcome. Review its effects and acknowledge before requesting another invocation.",
-            ));
-        }
+        self.require_known_outcome(&cancel, "A previous MCP invocation has an unknown outcome. Review its effects and acknowledge before requesting another invocation.").await?;
         let _editing = lock(self.editing_gate.clone(), &cancel).await?;
         let _gate = lock(self.gate.clone(), &cancel).await?;
         admission().await.map_err(|_| {
@@ -588,12 +608,7 @@ impl McpManager {
             )
         })?;
         self.confirm().await?;
-        if self.ledger.status().unknown {
-            return Err(McpError::rejected(
-                "mcp_outcome_unknown",
-                "A previous MCP invocation has an unknown outcome. Review its effects and acknowledge before invoking.",
-            ));
-        }
+        self.require_known_outcome(&cancel, "A previous MCP invocation has an unknown outcome. Review its effects and acknowledge before invoking.").await?;
         let mut servers = self.servers.lock().await;
         let server = servers.get_mut(&name).ok_or_else(unknown_server)?;
         let catalog = server.tools(&cancel).await.map_err(|mut e| {
