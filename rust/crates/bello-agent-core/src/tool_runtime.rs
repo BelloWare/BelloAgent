@@ -28,6 +28,29 @@ pub struct RuntimeOptions {
     pub instructions: String,
     pub tools: Option<TrustedReadOnlyTools>,
 }
+impl RuntimeOptions {
+    pub(super) fn definitions(&self) -> Vec<crate::tools::ToolDefinition> {
+        self.tools
+            .as_ref()
+            .map(|tools| tools.native.definitions())
+            .unwrap_or_default()
+    }
+}
+
+/// Submission overrides apply only after delivery, including an explicit Retry.
+/// Preview and dispatch use this same profile selection.
+pub(super) fn effective_profile(base: &Profile, item: Option<&Submission>) -> Profile {
+    let mut profile = base.clone();
+    if let Some(item) = item {
+        if let Some(model) = &item.model {
+            profile.model_id = model.clone();
+        }
+        if let Some(effort) = &item.effort {
+            profile.thinking_level = effort.clone();
+        }
+    }
+    profile
+}
 
 /// Construct only after the host has obtained explicit project trust and chosen
 /// read-only tools. Roots resolve relative paths; absolute/parent/tilde/symlink
@@ -242,12 +265,7 @@ impl Controller {
         cancel: CancellationToken,
     ) {
         let config = self.config.as_ref().expect("configuration checked");
-        let definitions = self
-            .options
-            .tools
-            .as_ref()
-            .map(|tools| tools.native.definitions())
-            .unwrap_or_default();
+        let definitions = self.options.definitions();
         loop {
             if self.is_retired() {
                 cancel.cancel();
@@ -256,13 +274,7 @@ impl Controller {
                 .active_reply
                 .clone()
                 .expect("active reply assigned");
-            let mut profile = config.profile.clone();
-            if let Some(model) = &item.model {
-                profile.model_id = model.clone();
-            }
-            if let Some(effort) = &item.effort {
-                profile.thinking_level = effort.clone();
-            }
+            let profile = effective_profile(&config.profile, Some(&item));
             let callback_id = reply_id.clone();
             let callback_self = Arc::clone(self);
             let instructions = self.turn_instructions(&item);
@@ -306,9 +318,7 @@ impl Controller {
                                 &session.id,
                                 &definitions,
                             )?;
-                            if serde_json::to_vec(&body)?.len() > 32 * 1024 * 1024 {
-                                return Err(invalid("Serialized request exceeds 32 MiB"));
-                            }
+                            crate::provider::serialize_request(&body)?;
                             Ok(())
                         });
                         match attempt {

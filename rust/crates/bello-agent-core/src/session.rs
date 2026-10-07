@@ -1057,6 +1057,11 @@ impl SessionStore {
     pub fn snapshot(&self) -> Session {
         self.session.clone()
     }
+    /// Borrow authoritative in-memory actor state without cloning history.
+    /// Callers must hold the Controller's actor lock and check certainty.
+    pub(crate) fn snapshot_ref(&self) -> &Session {
+        &self.session
+    }
     pub fn transact<T>(&mut self, change: impl FnOnce(&mut Session) -> Result<T>) -> Result<T> {
         self.require_live_writer()?;
         if !self.is_persistent() {

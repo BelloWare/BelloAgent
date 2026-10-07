@@ -12,6 +12,10 @@ mod resource_runtime;
 #[cfg(feature = "synthetic-authority")]
 pub use resource_runtime::{AppliedInstructionSnapshot, SyntheticResources, SyntheticRuntimeGuard};
 
+#[path = "context_preview.rs"]
+mod context_preview;
+pub use context_preview::{ContextPreview, ContextPreviewMetadata, ContextPreviewMode};
+
 use crate::{
     Credential, Lane, Profile, QueueEditState, QueueEditStatus, ResponsesClient, Result, RunState,
     Session, SessionStore, Submission, invalid,

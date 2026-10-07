@@ -927,6 +927,7 @@ impl AgentView {
         }
         match outcome.result {
             Ok(()) => {
+                self.close_context_inspectors(cx);
                 self.close_ready = true;
                 cx.notify();
                 true

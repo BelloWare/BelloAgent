@@ -4,7 +4,7 @@ use crate::{
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, time::Duration};
+use std::{collections::BTreeMap, io::Write, time::Duration};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -92,6 +92,44 @@ pub fn request_body_with_tools(
         );
     }
     Ok(body)
+}
+
+pub(crate) const MAX_REQUEST_BYTES: usize = 32 * 1024 * 1024;
+
+/// Apply the same wire-size bound to dispatch and read-only context previews.
+/// Stop serialization at the limit rather than allocating an oversized buffer.
+pub(crate) fn serialize_request(body: &Value) -> Result<Vec<u8>> {
+    serialize_bounded(body, false)
+}
+
+pub(crate) fn serialize_bounded(body: &Value, pretty: bool) -> Result<Vec<u8>> {
+    #[derive(Default)]
+    struct BoundedBytes(Vec<u8>);
+    impl Write for BoundedBytes {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if bytes.len() > MAX_REQUEST_BYTES.saturating_sub(self.0.len()) {
+                return Err(std::io::Error::other("Serialized request exceeds 32 MiB"));
+            }
+            self.0.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut buffer = BoundedBytes::default();
+    let result = if pretty {
+        serde_json::to_writer_pretty(&mut buffer, body)
+    } else {
+        serde_json::to_writer(&mut buffer, body)
+    };
+    if let Err(error) = result {
+        if error.is_io() {
+            return Err(invalid("Serialized request exceeds 32 MiB"));
+        }
+        return Err(error.into());
+    }
+    Ok(buffer.0)
 }
 
 #[derive(Default)]
@@ -378,10 +416,7 @@ impl ResponsesClient {
         mut on_delta: impl FnMut(Delta) -> Result<()>,
     ) -> Result<Reply> {
         let body = request_body_with_tools(profile, messages, instructions, session_id, tools)?;
-        let bytes = serde_json::to_vec(&body)?;
-        if bytes.len() > 32 * 1024 * 1024 {
-            return Err(invalid("Serialized request exceeds 32 MiB"));
-        }
+        let bytes = serialize_request(&body)?;
         let mut request = self
             .client
             .post(profile.endpoint()?)

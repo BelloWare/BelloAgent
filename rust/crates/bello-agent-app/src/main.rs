@@ -3,6 +3,7 @@ mod chat;
 mod chat_navigation;
 mod chat_organization;
 mod chat_tool_mode;
+mod context_inspector;
 mod draft_status;
 mod file_tab;
 mod layout;
@@ -153,6 +154,7 @@ struct AgentView {
     next_file_id: u64,
     quick_open: Entity<QuickOpenView>,
     projects: project_manager_controller::ProjectManagerController,
+    inspector_windows: Vec<context_inspector::InspectorWindow>,
     chat_mode_operations: BTreeMap<String, uuid::Uuid>,
     chat_mode_blocked: std::collections::BTreeSet<String>,
     _quick_events: Option<Subscription>,
@@ -338,6 +340,7 @@ impl AgentView {
             next_file_id: 1,
             quick_open,
             projects,
+            inspector_windows: Vec::new(),
             chat_mode_operations: BTreeMap::new(),
             chat_mode_blocked: std::collections::BTreeSet::new(),
             _quick_events: None,
@@ -355,6 +358,7 @@ impl AgentView {
         view
     }
     fn bind_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_context_inspectors(cx);
         self.cancel_queue_drag(window, cx);
         self.queue_geometry = None;
         self.sidebar_menu = None;
@@ -1911,6 +1915,7 @@ impl AgentView {
     }
     fn conversation(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let p = self.palette;
+        let inspector_target = self.context_inspector_target();
         let transcript = if self.session.messages.is_empty() {
             // Do not retain a removed/cleared history behind the starter.
             self.transcript = None;
@@ -2352,7 +2357,15 @@ impl AgentView {
                     .flex_wrap()
                     .child(self.badge(tokens, "chart"))
                     .child(self.badge("Cost n/a".into(), "chart"))
-                    .child(self.badge("Context n/a".into(), "cpu"))
+                    .child(
+                        self.badge("Context n/a".into(), "cpu")
+                            .id("context-inspector-open")
+                            .debug_selector(|| "context-inspector-open".into())
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |view, _, window, cx| {
+                                view.open_context_inspector(&inspector_target, window, cx);
+                            })),
+                    )
                     .child(div().flex_1())
                     .when(self.session.state == RunState::Running, |d| {
                         d.child("Working · Generating response…")
@@ -2529,7 +2542,15 @@ impl AgentView {
             ("resources", "book"),
             ("background", "sparkles"),
         ] {
-            footer = footer.child(self.icon_button(id, icon, 28.).opacity(0.45));
+            let button = self.icon_button(id, icon, 28.);
+            footer = footer.child(if id == "inspector" {
+                let target = self.context_inspector_target();
+                button.on_click(cx.listener(move |view, _, window, cx| {
+                    view.open_context_inspector(&target, window, cx);
+                }))
+            } else {
+                button.opacity(0.45)
+            });
         }
         let archive_label = if self.effective_archive_visibility() {
             "Hide archived chats"

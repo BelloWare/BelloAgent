@@ -1930,3 +1930,50 @@ satisfy strict Clippy. Both CI workflows now run the new focused synthetic suite
 macOS execution for this checkpoint remains pending exact CI. The preceding
 f443882 identity/mode checkpoint passed both Linux and macOS CI, including its
 GPUI coordinator and native lifecycle checks.
+
+### Read-only request Context preview
+
+The Context footer and Session Inspector icon now open a bounded Next request
+reader in a separate, source-sized window. It reuses the actual provider request
+builder and effective profile, with no send, journal mutation, native authority
+access or resource discovery. Active previews exclude draft/queue and preserve
+the pre-tool-call boundary; idle previews include exact nonempty draft text.
+Paused/error inspection does not implicitly retry. Counts and occupancy are
+explicitly unavailable; configured budgets remain distinct from measured usage.
+
+The immutable exposed body fingerprints known credential literals, including
+Proxy-Authorization token suffixes. Semantic checks borrow authoritative actor
+state under its lock and distinguish stale input from temporary unavailability.
+Weak controller ownership prevents address reuse and does not retain a writer.
+Review corrected both credential-suffix handling and a publication-gap stale
+check before validation. The window preserves composer/Undo/IME, remains bound
+to its original chat, displays at most 64 KiB per UTF-8 page, and keeps completed
+snapshots labeled captured until manual Refresh/Close. Copy is fenced to that
+exact immutable document and owner generation.
+
+Eleven focused core tests and fifteen affected provider/tool regressions pass.
+The exact paging function/property test also passes in a standalone std-only
+harness; that is not a GPUI compile. Negative controls removing credential-suffix
+extraction or authoritative-state checking fail their new regressions and pass
+after exact source restoration. Core all-target strict Clippy and independent
+core/UI reviews pass. Twelve GPUI regressions are written, including actual
+footer clicks and out-of-order refresh completion, but await CI because local
+GUI prerequisites are unavailable. API signatures were checked against pinned
+GPUI 0.2.2 and the existing Box editor revision. No native visual/input acceptance
+or full Inspector/request archive parity is claimed. See `context-preview.md`.
+
+
+### Local feature integration boundary
+
+The synthetic-runtime and Context reader changes coexist without changing their
+production defaults. Context inspection explicitly refuses the synthetic
+resource constructor before authority checks or discovery, rather than claiming
+that lifetime-fixed instruction options describe its per-delivery snapshot. A
+focused integration test verifies the refusal, unchanged session/files and no
+additional authority confirmation. Existing default Context inspection and
+synthetic dispatch retain their prior behavior.
+
+Focused integration validation passed 40 synthetic-enabled preview/resource/host
+tests and 43 default preview/provider/tool/inspection regressions. Independent
+integration review found no remaining blocker. These local checks do not replace
+exact CI or the pending Inspector GUI execution.
