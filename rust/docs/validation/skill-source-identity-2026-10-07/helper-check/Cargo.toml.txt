@@ -1,0 +1,9 @@
+[package]
+name = "skill-source-binding-check"
+version = "0.0.0"
+edition = "2024"
+[lib]
+path = "lib.rs"
+[dependencies]
+objc2 = { version = "=0.6.4", default-features = false, features = ["std"] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSObject", "NSEnumerator", "NSError", "NSFileManager", "NSPathUtilities", "NSString", "NSURL", "NSValue", "NSRegularExpression", "NSRange", "NSTextCheckingResult", "NSFileHandle", "NSData", "block2"] }

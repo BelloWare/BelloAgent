@@ -9,9 +9,12 @@
         let input = try JSON.parse(data)
         var results: [JSON] = []
         for item in input["cases"].list {
-            let cwd = URL(fileURLWithPath: item["cwd"].text!)
+            // AgentSession receives source-canonical roots in production. A raw
+            // URL here concealed the Darwin root-spelling gap in old fixtures.
+            let cwd = canonical(item["cwd"].text!)
+            let roots = item["roots"].list.compactMap { $0.text.map { canonical($0) } }
             let home = URL(fileURLWithPath: item["home"].text!)
-            let resources = Resources(cwd: cwd, options: ["codexHome": JSON(home.appendingPathComponent("codex").path)], home: home)
+            let resources = Resources(cwd: cwd, roots: roots, options: ["codexHome": JSON(home.appendingPathComponent("codex").path)], home: home)
             let snapshot = try await resources.resolve()
             let tools = ["ls", "mcp:docs"]
             var selections = snapshot.skills.map { skill -> JSON in

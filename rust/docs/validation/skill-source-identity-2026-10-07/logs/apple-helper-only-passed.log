@@ -1,0 +1,5 @@
+     Locking 5 packages to highest Rust 1.99.0 compatible versions
+    Checking block2 v0.6.2
+    Checking objc2-foundation v0.3.2
+    Checking skill-source-binding-check v0.0.0 (/workspace/shared/agent-skill-path-binding-check)
+    Finished `dev` profile [unoptimized] target(s) in 1.52s

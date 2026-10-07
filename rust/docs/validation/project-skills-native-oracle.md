@@ -36,16 +36,24 @@ All resource files and both implementations' home/codex paths are disposable,
 explicit temporary fixtures. Resource fixtures are created under the repository's
 `rust/target/project-skills-native-fixtures`, outside Darwin's `/var` alias on CI.
 Foundation can strip `/private` from existing paths even after Rust canonicalizes
-them; this would also change skill IDs and exact expansions. The fixture placement
-preserves all exact assertions without normalizing IDs or text. A separately
-labeled `/var/tmp` characterization creates both spellings of the same disposable
-target, verifies Rust identity/expansion stability across aliases, and verifies
-that each implementation's reported ID hashes its reported path. Full-source and
-metadata hashes, body and policy must still match. It reports path-derived ID and
-expanded-text equality separately rather than asserting cross-language parity.
-The observed Foundation-versus-Rust spelling difference is a source-compatibility
-gap for path-derived identity and retained text. Its exact runner result remains
-unverified until the Apple test executes; run with `--nocapture` to retain it.
+them. Skill discovery now uses Foundation's source spelling for new descriptor
+IDs/paths, visited-parent base directories and source roots while retaining a
+separate canonical filesystem target for reads, race checks and deduplication.
+The `/var/tmp` matrix strictly compares all skill fields, IDs, recorded metadata
+and expanded bytes across Swift/Rust and both aliases. It includes leaf-file,
+directory and skill-root symlinks, plus multiple workspace roots. The driver
+passes source-canonical roots as production does; it no longer relies on raw URL
+construction to conceal a root-spelling difference. There is no normalization of
+skill output to obtain equality.
+
+Full resource instructions remain a separate known source-compatibility gap:
+Rust's existing instruction roots/chunk paths use filesystem canonical spelling.
+The non-alias metadata matrix retains its full instruction equality assertion;
+alias cases report the exact instruction strings/equality separately while gating
+all skill outputs. This change does not alter global instruction/authority path
+normalization or claim resource-prompt parity. Run with `--nocapture` to retain
+those diagnostics. Passing execution of the strengthened Apple gate is still
+required; Linux neither executes Foundation nor establishes this native result.
 Compiler scratch files still use the temporary directory. No process home or real
 workspace content is discovered.
 
@@ -61,6 +69,9 @@ unclosed frontmatter, mandatory policy, dependency and traversal vectors compare
 - Stable request selection policy and literal unselected slash text
 - Stale fresh selection rejection, body-only delivery acceptance with retained
   bytes, and metadata-change delivery revocation
+- Darwin legacy canonical-ID delivery acceptance without changing frozen bytes;
+  stale unsubmitted legacy-ID selections and duplicate old/new target selections
+  are rejected
 
 The same compiled oracle also compares sorted protected message IDs with Rust's
 `compaction::protected_input_ids`, the helper used by the real planner. Generated
@@ -99,12 +110,38 @@ filesystem containment. Rust's bounded reads also detect observable replacement,
 size and timestamp races; neither implementation supplies a multi-file filesystem
 transaction.
 
+Only queued delivery may look up an old canonical-path-derived ID. The private
+lookup comes from current discovery, requires the retained path to equal that
+exact canonical path and the ID to hash it, and requires one unambiguous current
+target. Two retained IDs cannot authorize one skill. Metadata, effective policy,
+dependency and controller scope checks remain in force. Fresh selection never
+uses this compatibility lookup: an old unsubmitted chip must be refreshed and
+explicitly reselected. No frozen body, historical path/baseDir/ID, recorded field,
+receipt, expanded text, Retry record or schema version is rewritten.
+
 `FrozenSkill.bodyHash` is a Rust-only persistence integrity field over the exact
 stripped body. It does not replace the source content or metadata hashes. Neither
 skill selection nor dependency presence grants tools or executes installation.
 
 ## Evidence status
 
-The harness is implemented. An actual passing macOS run must be recorded before
-claiming the Apple source gate passed. Native UI, VoiceOver, IME and production
-signing/Keychain/authority remain separate acceptance gates.
+The strengthened native harness is implemented but its actual macOS execution is
+still pending. Portable tests are not evidence that Swift and Foundation output
+match on Apple hardware.
+
+A Linux-hosted `aarch64-apple-darwin` metadata check compiled the exact new
+`project_resources/source_path.rs` unchanged against the installed Apple Rust
+standard library and cached official objc2 0.6.4 / objc2-foundation 0.3.2 bindings.
+The isolated checker supplied only a lightweight Result/error adapter. This
+establishes the helper's native method/type usage, not whole-core compilation,
+linking, filesystem behavior or native runtime parity.
+
+The attempted full-core offline Apple cross-check stopped before reaching the
+changed core code: ring's C build script invoked host `cc`, which rejects Darwin
+`-arch` and `-mmacosx-version-min` flags. No Mac SDK or cross-C toolchain was
+installed to work around it. The full core and strengthened Swift oracle still
+require the real Apple CI worker described above.
+
+Native UI, VoiceOver, IME and production signing/Keychain/authority remain separate
+acceptance gates. The full resource-instruction spelling gap also remains separate
+from this bounded skill identity correction.

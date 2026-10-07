@@ -3,13 +3,16 @@
 An incremental native implementation alongside the unchanged Swift application.
 This is **not feature parity** or a release replacement. The source-backed
 [parity ledger](docs/parity.md) separates implemented, partial, and unported work.
+Start with its [current readiness index](docs/parity.md#readiness-index-2026-10-07)
+for ordinary startup gates, explicit synthetic workflows and scoped evidence;
+older checkpoint records are not a current feature inventory.
 
 ## Build and test
 
 Rust 1.89+ (tested with 1.89.0 and 1.99.0 on Linux), Cargo, and GPUI Linux build
 dependencies are required. GPUI is pinned to 0.2.2; libc is pinned to 0.2.186 for its transitive
 xattr compatibility. Both shared workbench crates are pinned to BelloBox Git
-revision `ee0d27a89aa52524c29b2be5937716b5e799e748`. This includes atomic CRLF
+revision `393133cd19d134ffd93c3a86449d94a7b1040683`. This includes atomic CRLF
 deletion, composed-character navigation, selection collapse and guarded IME
 commit handling in the shared editor. Native IME/macOS interaction is not yet
 validated. A standalone checkout needs no
@@ -72,8 +75,10 @@ the source-backed comparison, exact durability contract, and backup guidance.
 - HTTPS is required except loopback HTTP. Redirects are not followed. Request,
   stream, line, event and JSON sizes are bounded. Error text redacts supplied
   credentials and custom header values.
-- Tools are not offered or executed in this slice. Unexpected function calls
-  stop visibly instead of inventing tool results or silently claiming success.
+- Ordinary startup offers no model tools. Explicit synthetic saved-project
+  workflows have platform-specific capabilities and trust/mode gates; see the
+  [readiness index](docs/parity.md#readiness-index-2026-10-07). Unoffered calls are
+  rejected visibly; unknown outcomes are retained without automatic reexecution.
 
 ## Multiple chats and durable drafts
 
@@ -84,9 +89,10 @@ flushes them and stops active runs. A failed save keeps the window and draft.
 relaunch restores its last saved chat. Use another anchor for a different project.
 See [the exact scope, recovery semantics and unported limits](docs/multichat-and-tools-checkpoint.md).
 
-The standalone ls tool module is fixture-tested groundwork only. Production model
-tools remain disabled. Latest multi-chat native interaction QA is blocked by the
-disconnected test desktop; Linux compile/test success is not visual verification.
+The explicit synthetic saved runtime now executes tools through the Controller;
+production model tools remain disabled. [Saved-runtime Linux GUI evidence](docs/validation/saved-runtime-app-2026-10-07/README.md)
+and the later tool records in the readiness index identify their exact tested
+scope and binary. The older multi-chat checkpoint is historical evidence.
 
 ## Measurement
 
@@ -98,9 +104,10 @@ against the Swift baseline on the same hardware.
 
 ## Platform status
 
-Linux is the current build/run target. The shared native UI is portable GPUI and
-macOS storage paths are cfg-selected, but macOS build, native vault, signing,
-accessibility, and platform interaction require validation on the owner's Mac.
+macOS Apple Silicon is the target; Linux is a development/validation platform.
+The [macOS CI recipe](../.github/workflows/rust-macos.yml) covers native builds and
+selected source-oracle/lifecycle checks. Exact-commit CI and native UI, vault,
+signing, accessibility and owner-Mac acceptance are separate gates.
 
 ## Existing UI contract and isolated visual QA
 
@@ -140,11 +147,12 @@ promote versions. Expanded text remains bounded, skill-bearing UserContent is
 limited to 32 MiB, legacy image-only content to 20 MiB, and the complete provider
 request to 32 MiB. Oversized combinations are refused without truncation.
 
-Ordinary native startup is still unavailable until its separate production
-signing, Keychain and authority gates are accepted. The disposable no-cost
+Ordinary saved-authority/tool startup remains gated on separate production
+signing, Keychain and authority acceptance. The disposable no-cost
 [GUI fixture recipe](docs/project-skills-gui-fixture.md) exercises this same saved
 runtime using generated project files and numeric-loopback synthetic authority.
 Home/Codex configuration discovery, leading-command parsing, implicit execution,
 and complete native token/accessibility parity remain outside this slice.
 See the [implemented checkpoint and observed GUI evidence](docs/validation/project-skills-2026-10-07.md)
-for tested paths, exact binary attribution and remaining Apple/publication gates.
+for tested paths and exact binary attribution, and the readiness index for
+remaining compatibility/acceptance gaps. Check CI against the exact commit.

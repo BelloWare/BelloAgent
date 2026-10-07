@@ -1,0 +1,31 @@
+{
+  "baseline_commit": "2ffbc323b9ad006683c2fef1eafa23f4990d8da5",
+  "baseline_tree": "529ba4b5b54031db5d40c63413f1d1f5df6e3c21",
+  "integration_stage": "/workspace/shared/agent-skill-path-integrated-2ffbc323",
+  "manifest_sha256": "0a9f8d4edac1b664b6d917727683f61cdb31da5d19fba05de43c9a026f889c31",
+  "four_focused_identity_tests_passed": true,
+  "default_unit_tests": 387,
+  "default_integration_tests": 125,
+  "default_total_tests": 512,
+  "strict_default_core_all_target_clippy": "passed",
+  "workspace_fmt": "passed",
+  "log": "/workspace/shared/agent-skill-path-integrated-default.log",
+  "log_sha256": "c369331ef12a0b49a3849748fe5b9b83fcf7a7b9d8c1a612d7575e16a00a9f05",
+  "production_and_test_files_identical_to_prior_freeze": true,
+  "prior_validation": "agent-skill-path-validation.json",
+  "prior_six_detecting_controls": "passed on exact same owned production source; receipt/controller code unchanged by this correction",
+  "native_execution": "pending real Apple CI; exact helper-only cross metadata passed earlier; full-core cross metadata blocked by ring host C toolchain",
+  "synthetic_authority_regressions": "not rerun locally on this integrated stage",
+  "publication": "not attempted; root owns publication after current Bash CI",
+  "preimage_proof": "agent-skill-path-integrated-preimage-proof.json",
+  "loc_audit": {
+    "directory": "/workspace/shared/agent-skill-path-integrated-loc-2026-10-07",
+    "production": 43642,
+    "support": 58512,
+    "benchmark": 1192,
+    "delta_production": 72,
+    "delta_support": 429,
+    "delta_benchmark": 0,
+    "tamper_controls_passed": 26
+  }
+}

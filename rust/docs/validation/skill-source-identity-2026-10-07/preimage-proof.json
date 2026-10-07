@@ -1,0 +1,59 @@
+{
+  "baseline_commit": "2ffbc323b9ad006683c2fef1eafa23f4990d8da5",
+  "baseline_tree": "529ba4b5b54031db5d40c63413f1d1f5df6e3c21",
+  "source_baseline": "c0df34001f512c2bc374329c13708afe9bfa0aaa",
+  "source_stage": "/workspace/shared/agent-skill-path-stage",
+  "integration_stage": "/workspace/shared/agent-skill-path-integrated-2ffbc323",
+  "files": [
+    {
+      "path": "rust/crates/bello-agent-core/src/project_resources.rs",
+      "unchanged_between_commits": true,
+      "preimage_sha256": "d202f28ce56b563b6fba4429a98b713746d7aaf0d1e0f2fc45796c6db3c0fcf4",
+      "applied_sha256": "85fe9d29a99c8bde938d8f55107ca315f7f758f040878752323d14ddd3d7e314",
+      "initial_frozen_apply_sha256": "85fe9d29a99c8bde938d8f55107ca315f7f758f040878752323d14ddd3d7e314",
+      "post_apply_doc_update": false
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/project_resources/source_path.rs",
+      "unchanged_between_commits": true,
+      "preimage_sha256": null,
+      "applied_sha256": "364fa86bdb3519e31e46213cf02b7ef45903969896c5081fe95eb48e55f4c53a",
+      "initial_frozen_apply_sha256": "364fa86bdb3519e31e46213cf02b7ef45903969896c5081fe95eb48e55f4c53a",
+      "post_apply_doc_update": false
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/project_resources/identity_tests.rs",
+      "unchanged_between_commits": true,
+      "preimage_sha256": null,
+      "applied_sha256": "c32fe076fa20808c6fa75e09b2b2d108f28ccf5e014f1688ed75243ace47862f",
+      "initial_frozen_apply_sha256": "c32fe076fa20808c6fa75e09b2b2d108f28ccf5e014f1688ed75243ace47862f",
+      "post_apply_doc_update": false
+    },
+    {
+      "path": "rust/crates/bello-agent-core/tests/project_skills_native.rs",
+      "unchanged_between_commits": true,
+      "preimage_sha256": "77179c390fe95a5970c862d52e3e2cbe4e59be67dbcd49c71f7990bf5e8d486b",
+      "applied_sha256": "8b96768e8d5845b5871322d1bcaed4c67debd1763dce07f92fa072ebc17f0608",
+      "initial_frozen_apply_sha256": "8b96768e8d5845b5871322d1bcaed4c67debd1763dce07f92fa072ebc17f0608",
+      "post_apply_doc_update": false
+    },
+    {
+      "path": "rust/crates/bello-agent-core/tests/fixtures/project_skills_oracle.swift",
+      "unchanged_between_commits": true,
+      "preimage_sha256": "6d3d265fe346804b35f7f17764fc7e3461919facafee6db33fc70ad9f16472c7",
+      "applied_sha256": "3bfccc477ee2fe4c0ccdf2c593952e52106cc89bc1e4ca4378620ca604edf9ed",
+      "initial_frozen_apply_sha256": "3bfccc477ee2fe4c0ccdf2c593952e52106cc89bc1e4ca4378620ca604edf9ed",
+      "post_apply_doc_update": false
+    },
+    {
+      "path": "rust/docs/validation/project-skills-native-oracle.md",
+      "unchanged_between_commits": true,
+      "preimage_sha256": "456a5478b0bcfee3f74e9655dd16d6e9e828212690184e66b7c78d726e4fbc84",
+      "applied_sha256": "9b04289c134316f8c899d86a0dcfc0fa064ff9f0762f1511f93f43230b0652ee",
+      "initial_frozen_apply_sha256": "3a7aa378f390423165cbb510dbfa44860037861a91ab92555d9aedef51854970",
+      "post_apply_doc_update": true
+    }
+  ],
+  "final_manifest": "agent-skill-path-integrated-manifest.json",
+  "final_manifest_sha256": "0a9f8d4edac1b664b6d917727683f61cdb31da5d19fba05de43c9a026f889c31"
+}

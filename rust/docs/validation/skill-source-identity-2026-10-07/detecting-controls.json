@@ -1,0 +1,62 @@
+[
+  {
+    "control": "legacy_lookup",
+    "test": "legacy_delivery_keeps_queued_bytes_and_receipts_while_fresh_selection_stays_strict",
+    "detected": true,
+    "returncode": 101,
+    "before_sha256": "85fe9d29a99c8bde938d8f55107ca315f7f758f040878752323d14ddd3d7e314",
+    "mutated_sha256": "7f6e829e7a2b1f999bb178587715bf9a4738f800bca197d3dfcee31b19a1541d",
+    "restored_sha256": "85fe9d29a99c8bde938d8f55107ca315f7f758f040878752323d14ddd3d7e314",
+    "log": "/workspace/shared/agent-skill-path-negative-legacy_lookup.log"
+  },
+  {
+    "control": "fresh_remap",
+    "test": "legacy_delivery_keeps_queued_bytes_and_receipts_while_fresh_selection_stays_strict",
+    "detected": true,
+    "returncode": 101,
+    "before_sha256": "85fe9d29a99c8bde938d8f55107ca315f7f758f040878752323d14ddd3d7e314",
+    "mutated_sha256": "a1b225eec4e70f8b7c8ace3de2799c499d75a4ac1a9726f801cc23ea4878039e",
+    "restored_sha256": "85fe9d29a99c8bde938d8f55107ca315f7f758f040878752323d14ddd3d7e314",
+    "log": "/workspace/shared/agent-skill-path-negative-fresh_remap.log"
+  },
+  {
+    "control": "unique_target",
+    "test": "legacy_delivery_requires_exact_canonical_path_and_unique_current_target",
+    "detected": true,
+    "returncode": 101,
+    "before_sha256": "85fe9d29a99c8bde938d8f55107ca315f7f758f040878752323d14ddd3d7e314",
+    "mutated_sha256": "7322912d6e55923b32829d092a3b1468131b9ff2a3a712d3adc3eca73a44b2f7",
+    "restored_sha256": "85fe9d29a99c8bde938d8f55107ca315f7f758f040878752323d14ddd3d7e314",
+    "log": "/workspace/shared/agent-skill-path-negative-unique_target.log"
+  },
+  {
+    "control": "metadata_revocation",
+    "test": "legacy_delivery_rechecks_metadata_policy_dependencies_deletion_and_filesystem_scope",
+    "detected": true,
+    "returncode": 101,
+    "before_sha256": "85fe9d29a99c8bde938d8f55107ca315f7f758f040878752323d14ddd3d7e314",
+    "mutated_sha256": "9b1154da3e24694f1e3fa676424971e17fa768eca37c2ef18182ae889d2f06b2",
+    "restored_sha256": "85fe9d29a99c8bde938d8f55107ca315f7f758f040878752323d14ddd3d7e314",
+    "log": "/workspace/shared/agent-skill-path-negative-metadata_revocation.log"
+  },
+  {
+    "control": "canonical_target",
+    "test": "source_spelling_must_resolve_to_the_scanned_target",
+    "detected": true,
+    "returncode": 101,
+    "before_sha256": "364fa86bdb3519e31e46213cf02b7ef45903969896c5081fe95eb48e55f4c53a",
+    "mutated_sha256": "7f4ed61e5be78d408989f4665f6b374c6d21c4d91a0eacaa5f50127ddd48ce49",
+    "restored_sha256": "364fa86bdb3519e31e46213cf02b7ef45903969896c5081fe95eb48e55f4c53a",
+    "log": "/workspace/shared/agent-skill-path-negative-canonical_target.log"
+  },
+  {
+    "control": "receipt_identity",
+    "test": "legacy_delivery_keeps_queued_bytes_and_receipts_while_fresh_selection_stays_strict",
+    "detected": true,
+    "returncode": 101,
+    "before_sha256": "7f68966c1df362c3e91573988c6a3e1df2d87329e6d49263f812c30319fd9410",
+    "mutated_sha256": "8c661719a8418a9cfb6cc51680038e5aaa0524f08e88245241fa3ab3702129b5",
+    "restored_sha256": "7f68966c1df362c3e91573988c6a3e1df2d87329e6d49263f812c30319fd9410",
+    "log": "/workspace/shared/agent-skill-path-negative-receipt_identity.log"
+  }
+]

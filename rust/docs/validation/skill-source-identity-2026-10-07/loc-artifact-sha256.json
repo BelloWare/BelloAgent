@@ -1,0 +1,19 @@
+{
+  "README.md": "3044e943715192553be0b0485fd845329fb5da947fc54c6468cb5f56aaddaf5a",
+  "frozen-six-file-manifest.json": "0a9f8d4edac1b664b6d917727683f61cdb31da5d19fba05de43c9a026f889c31",
+  "historical-audit-preservation.json": "d62f857b607bd82e5c82a6bf258a5eeab3eae3bf155244b6aa5ed120fdba320f",
+  "historical-c0-source-path-audit.json": "01dffb9f3a31066147f69b1e0747d9239c55f24e9a6140c41fae0bc3cd7cebca",
+  "historical-verify-bash-final.py": "a8a18ee7339b6865e8f5523afccd9e488494a072208da1211ceecacea75c62b4",
+  "immutable-prior-bash-ledger.json": "bd418b263e420f78df1cb9420fd928dbca5987e89cc5c0b670da9c3ce1e24427",
+  "immutable-prior-skills-ledger.json": "e530726af07bee1382e9b545076d15200e16b6f382d9380b028a944a6604f203",
+  "independent-count-check.json": "6fd42019b01987a05574e4ff5385a4dbe076d1f85445082cece54e2c7593c84b",
+  "loc-skill-source-path-delta.json": "43b94858efe53907d87d10501310a62e0ac3bd3eceaa6401c80785f47cb912e1",
+  "negative-controls.json": "f09eaf255f9b40b5b9e8f50e5c1b2cfdf73a2b05933b9edbc7b501d56a5359ab",
+  "per-file-counts.csv": "1ff5e4cc2ce46b763403d1003ee9c389a06dba6ed3770e56d43a1fbf51d38346",
+  "prior-skills-verification.json": "b38940df8bec2bdf287b10674cc71d5f7a2ab6bd250881a536df59b40cca4064",
+  "published-bash-baseline-verification.json": "3c5f51d46eb3092403017ce443f87c4c3f75cd1fbff62db06e19a1c9ee6b1437",
+  "test-loc-negative-controls.py": "f5edaf32dc406e64f221a1fd6061d179bafc9e9b4555e625d446835205b06d15",
+  "verification.json": "1531d3cf79095d77ca278cb903394b8b5a448724f5732547192877a293c4cfed",
+  "verify-immutable-prior-skills.py": "e244dc2bc2d881903992e952c28075290a7c9a543a6f5a0c8cf659cadb648e75",
+  "verify-skill-path-loc.py": "65fb477c78ee267dda2c297891dcd56b8506a3bd1759a9b78eeaa919167d424a"
+}

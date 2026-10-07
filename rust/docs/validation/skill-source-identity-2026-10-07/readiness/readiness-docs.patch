@@ -1,0 +1,209 @@
+--- a/rust/README.md
++++ b/rust/README.md
+@@ -3,13 +3,16 @@
+ An incremental native implementation alongside the unchanged Swift application.
+ This is **not feature parity** or a release replacement. The source-backed
+ [parity ledger](docs/parity.md) separates implemented, partial, and unported work.
++Start with its [current readiness index](docs/parity.md#readiness-index-2026-10-07)
++for ordinary startup gates, explicit synthetic workflows and scoped evidence;
++older checkpoint records are not a current feature inventory.
+ 
+ ## Build and test
+ 
+ Rust 1.89+ (tested with 1.89.0 and 1.99.0 on Linux), Cargo, and GPUI Linux build
+ dependencies are required. GPUI is pinned to 0.2.2; libc is pinned to 0.2.186 for its transitive
+ xattr compatibility. Both shared workbench crates are pinned to BelloBox Git
+-revision `ee0d27a89aa52524c29b2be5937716b5e799e748`. This includes atomic CRLF
++revision `393133cd19d134ffd93c3a86449d94a7b1040683`. This includes atomic CRLF
+ deletion, composed-character navigation, selection collapse and guarded IME
+ commit handling in the shared editor. Native IME/macOS interaction is not yet
+ validated. A standalone checkout needs no
+@@ -72,8 +75,10 @@
+ - HTTPS is required except loopback HTTP. Redirects are not followed. Request,
+   stream, line, event and JSON sizes are bounded. Error text redacts supplied
+   credentials and custom header values.
+-- Tools are not offered or executed in this slice. Unexpected function calls
+-  stop visibly instead of inventing tool results or silently claiming success.
++- Ordinary startup offers no model tools. Explicit synthetic saved-project
++  workflows have platform-specific capabilities and trust/mode gates; see the
++  [readiness index](docs/parity.md#readiness-index-2026-10-07). Unoffered calls are
++  rejected visibly; unknown outcomes are retained without automatic reexecution.
+ 
+ ## Multiple chats and durable drafts
+ 
+@@ -84,9 +89,10 @@
+ relaunch restores its last saved chat. Use another anchor for a different project.
+ See [the exact scope, recovery semantics and unported limits](docs/multichat-and-tools-checkpoint.md).
+ 
+-The standalone ls tool module is fixture-tested groundwork only. Production model
+-tools remain disabled. Latest multi-chat native interaction QA is blocked by the
+-disconnected test desktop; Linux compile/test success is not visual verification.
++The explicit synthetic saved runtime now executes tools through the Controller;
++production model tools remain disabled. [Saved-runtime Linux GUI evidence](docs/validation/saved-runtime-app-2026-10-07/README.md)
++and the later tool records in the readiness index identify their exact tested
++scope and binary. The older multi-chat checkpoint is historical evidence.
+ 
+ ## Measurement
+ 
+@@ -98,9 +104,10 @@
+ 
+ ## Platform status
+ 
+-Linux is the current build/run target. The shared native UI is portable GPUI and
+-macOS storage paths are cfg-selected, but macOS build, native vault, signing,
+-accessibility, and platform interaction require validation on the owner's Mac.
++macOS Apple Silicon is the target; Linux is a development/validation platform.
++The [macOS CI recipe](../.github/workflows/rust-macos.yml) covers native builds and
++selected source-oracle/lifecycle checks. Exact-commit CI and native UI, vault,
++signing, accessibility and owner-Mac acceptance are separate gates.
+ 
+ ## Existing UI contract and isolated visual QA
+ 
+@@ -140,11 +147,12 @@
+ limited to 32 MiB, legacy image-only content to 20 MiB, and the complete provider
+ request to 32 MiB. Oversized combinations are refused without truncation.
+ 
+-Ordinary native startup is still unavailable until its separate production
+-signing, Keychain and authority gates are accepted. The disposable no-cost
++Ordinary saved-authority/tool startup remains gated on separate production
++signing, Keychain and authority acceptance. The disposable no-cost
+ [GUI fixture recipe](docs/project-skills-gui-fixture.md) exercises this same saved
+ runtime using generated project files and numeric-loopback synthetic authority.
+ Home/Codex configuration discovery, leading-command parsing, implicit execution,
+ and complete native token/accessibility parity remain outside this slice.
+ See the [implemented checkpoint and observed GUI evidence](docs/validation/project-skills-2026-10-07.md)
+-for tested paths, exact binary attribution and remaining Apple/publication gates.
++for tested paths and exact binary attribution, and the readiness index for
++remaining compatibility/acceptance gaps. Check CI against the exact commit.
+--- a/rust/docs/parity.md
++++ b/rust/docs/parity.md
+@@ -9,7 +9,64 @@
+ below is deliberately unweighted: passing tests do not equal completed features.
+ A working Responses chat is materially smaller than the source application.
+ 
+-## Current audit: 2026-10-05
++## Readiness index (2026-10-07)
++
++Audited implementation base: `2ffbc323b9ad006683c2fef1eafa23f4990d8da5`.
++This index describes that source; linked validation records retain their own
++commit/binary attribution. It does not establish passing CI for a later commit.
++
++- **Ordinary startup:** explicit CLI profile/stdin chat remains available.
++  Production saved authority, vault and tool startup remain unavailable by
++  default. [Native authority](native-authority-contract.md) still requires
++  separate signing, Keychain and host-composition acceptance.
++- **Saved settings/project/chat:** [Connections](connection-settings.md) and
++  [saved-runtime integration](saved-runtime-app-integration.md) implement saved
++  route selection, model-route changes, project trust and recovery through the
++  normal factory with an explicitly enabled, memory-only synthetic vault.
++  [Actual Linux GUI evidence](validation/saved-runtime-app-2026-10-07/README.md)
++  uses fake credentials and numeric loopback. Model catalog discovery, onboarding
++  probes, full Settings and persistent production credentials remain missing.
++- **Tools:** the explicit synthetic app offers `ls` on Linux/macOS and `bash` in
++  Editing mode on Unix. macOS additionally offers `read`, `find`, `grep`, and
++  Editing-only `write`/`edit`; Linux does not substitute Foundation implementations.
++  See [Read](native-read-contract.md), [Find](native-find-contract.md),
++  [Grep](native-grep-contract.md), [Write/Edit](native-edit-contract.md), and
++  [Bash/live output](trusted-bash-workflow.md), including its
++  [Linux GUI/process evidence](validation/bash-workflow-2026-10-07.md).
++  Capabilities require saved authority/mode checks; roots are not a sandbox.
++  These bounded paths do not establish all source-tool or native UI parity;
++  interactive terminals/PTY sessions remain missing.
++- **MCP and skills:** [project Streamable HTTP MCP](project-mcp-workflow.md)
++  has Inspector/Controller integration and [Linux GUI evidence](validation/mcp-2026-10-07/README.md);
++  stdio, the optional GET channel and server-initiated capabilities (including
++  sampling/elicitation) remain unsupported.
++  [Project-only explicit-picker skills](validation/project-skills-2026-10-07.md)
++  retain frozen input through queue/replay, Context and task-aware compaction.
++  Home/Codex configuration discovery, leading-command selection and complete
++  native token UX remain outside the slice. The audited base still has the
++  [Darwin path-derived skill identity/text compatibility gap](validation/project-skills-native-oracle.md);
++  an unpublished correction is not accepted evidence.
++- **Attachments and context:** [picker images](picker-image-attachments.md),
++  [read-only Next request preview](context-preview.md) and
++  [manual compaction](manual-compaction.md) are implemented bounded workflows;
++  the later skills checkpoint extends Context/compaction to selected skills.
++  Preview is not HTTP capture. Full request archive/capture/comparison,
++  automatic compaction, exact token accounting, pricing and cost limits remain
++  missing. Each record separates portable, actual Linux GUI and native checks.
++
++Native macOS UI/IME/accessibility, signing, vault acceptance, full application
++lifecycle and distribution remain separate work. Check both CI workflows against
++the exact published SHA; Linux success or an Apple source oracle does not establish
++owner-Mac acceptance or full parity. The [migration handoff](MIGRATION-HANDOFF-2026-10-07.md)
++is a `df548008`-era snapshot: its branch/safety guidance still applies, while later
++workflow records supersede its feature and validation status.
++
++## Historical audit: 2026-10-05
++
++The following audit, inventory and chronological checkpoints preserve evidence
++at their stated revisions. Some inventory rows have later annotations; early
++“missing”, “unported”, pending checks and test counts are not current totals.
++Use the readiness index and later scoped records for subsequent implementation.
+ 
+ Remote `rust` was fetched at `5f2df967a09d68c0019b624b0f3d3eb2c8cb5d9b`.
+ Fetched `main` remains `435c4c8a37072a3ce10229195d4dc39a2a43d976`; its
+@@ -24,7 +81,7 @@
+ the check actually run. Historical “unported” entries below mean **missing**.
+ No whole product capability is desktop-validated by this audit.
+ 
+-Current local baseline: `cargo test --locked -p bello-agent-core` passes **77**
++Local baseline at this audit: `cargo test --locked -p bello-agent-core` passes **77**
+ tests (43 unit, 9 chat-workspace, 2 runtime, 18 tool-fixture, 5 transport).
+ `cargo clippy --locked -p bello-agent-core --all-targets -- -D warnings` and
+ `cargo fmt --all -- --check` pass with Rust 1.99.0. The tests use synthetic
+@@ -89,7 +146,7 @@
+ | Source-only LiteLLM Responses requests | Core/Providers.swift requestBody / complete; Core/ResponsesInput.swift | Implemented text subset. stream/store, correlation, cache key, output budget versus cap tested over loopback HTTP |
+ | Reasoning effort and model overrides | Core/Profile.swift overriding; Core/PiProviderRules.swift | Partial. Captured model/effort, default/off and explicit effort supported. Catalog-specific maps/routing contracts not ported |
+ | Incremental SSE framing | Core/Transport.swift SSEParser | Implemented with split UTF-8, BOM, LF/CR/CRLF, multiline and safety bounds; all byte-boundary tests |
+-| Stream text/refusal/reasoning/tool metadata | Core/Providers.swift ProviderAccumulator | Implemented decoder subset, indexed fallback and argument ordering tested. No tools executed |
++| Stream text/refusal/reasoning/tool metadata | Core/Providers.swift ProviderAccumulator | Implemented decoder subset, indexed fallback and argument ordering tested. Later opt-in Controller execution is indexed above; ordinary startup tools remain disabled |
+ | Terminal/JSON/errors | Core/Providers.swift result / complete | Implemented terminal requirement, JSON fallback, incomplete reasons, bare gateway failure, error redaction tested |
+ | Cancellation / partial reply / retry | Core/SessionRun.swift interruptedPartial; Core/SessionQueue.swift retryRun | Implemented vertical slice. Transport cancellation, partial replay exclusion, retry identity tested. Actor Stop→edit→Save→Retry→follow-up→reopen regression tested |
+ | Transient retries/backoff | Core/SessionRun.swift completeWithRetries | Unported. Explicit user Retry only; no hidden paid retries |
+@@ -100,11 +157,11 @@
+ | Queued follow-up promotion | Core/SessionQueue.swift steerQueued; App/Workspaces/QueuePanel.swift | Implemented pending follow-up → steering action, same identity/payload/choices and durable lane order. Active worker, edit-hold and persistence guards apply. Rust delivery remains at the current response boundary; production tool-batch parity is still missing. Validation recorded below |
+ | Queue presentation | App/Workspaces/QueuePanel.swift | Partial. Bounded/collapsible panel, truthful timing, stable lane grouping, full-text editing, and per-chat full-message/model-choice popover. Durable follow-up drag reorder and measured adaptive room budgeting are implemented below; source 52pt floor and wrapped-footer adaptation are explicit. Native macOS interaction validation remains pending |
+ | Images/attachments/image-only submissions | Core/PiImage.swift; App/Composer/Attachments.swift; Core/SessionQueue.swift validate | Project picker and ordered retained images implemented through normal saved runtime with synthetic acceptance; native production gates remain separate. See picker/images validation |
+-| Built-in tool definitions/execution | Core/Tools.swift; Core/SessionTools.swift; Core/SessionRun.swift | Production unported. Fixture-only ls module + bounded/cancellable executor now implemented; no tool definitions sent or executed by Controller, no fabricated result |
+-| MCP lifecycle/invocation | Core/MCP.swift; Core/HostService.swift mcp.* | Unported |
++| Built-in tool definitions/execution | Core/Tools.swift; Core/SessionTools.swift; Core/SessionRun.swift | Partial. Explicit synthetic saved-runtime Controller execution, durable results and replay are implemented for the platform-specific tools indexed above. Production authority/tool startup remains disabled |
++| MCP lifecycle/invocation | Core/MCP.swift; Core/HostService.swift mcp.* | Partial. Project Streamable HTTP configuration, Inspector and Controller invocation/recovery implemented; stdio and full source lifecycle parity remain outside the slice. See project-mcp-workflow.md |
+ | Skills and resource resolution | Core/Resources.swift; Core/HostService.swift resources.* | Project-only explicit picker, bounded metadata/discovery, literal arguments, frozen queue input and retained replay implemented. Home/config discovery, leading commands and full native token UX remain deferred |
+ | Project instructions and instruction precedence | Core/Resources.swift; Core/SessionRun.swift; Core/HostService.swift | Normal SavedRuntimeFactory composes project-only instructions/resources per delivery, retaining applied instructions for active turns and same-controller Retry. No home/config/credential discovery; ordinary production startup remains gated |
+-| Compaction / context preview | Core/SessionCompaction.swift; Core/CompactionPlanner.swift; Core/ContextPreview.swift | Unported; no claim that local context budgeting is complete |
++| Compaction / context preview | Core/SessionCompaction.swift; Core/CompactionPlanner.swift; Core/ContextPreview.swift | Partial. Read-only Next request preview and manual durable compaction implemented, with later task-aware skill protection. Automatic compaction and complete context budgeting remain missing; see current index |
+ | Historical message edits/versions | Core/SessionVersions.swift; Core/EditReplayPlan.swift; Core/MessageVersions.swift | Unported |
+ | Branch/fork/side conversations | Core/SessionBranching.swift; Core/SessionSide.swift; Core/SessionPersistence.swift | Unported |
+ | Multiple projects/topics/chat organization | App/Workspaces/WorkspaceModel.swift; WorkspaceTopics.swift; WorkspaceTabs.swift | Partial: independent chats in one explicitly selected project, existing New Chat/sidebar controls, draft/selection persistence and deferred creation. Projects manager, multiple roots, topics and organization remain unported |
+@@ -116,9 +173,9 @@
+ | Shared Git changes/history/diff | App/Git/; NEXT-RELEASE.md D1/D8 | Partial shared workbench reader. Source commit scopes, reword, blame parity not established |
+ | Shared file editor and Vim | App/Files/ | Uses shared Rust editor and per-file opt-in Vim subset (Ctrl/⌘AltV or file actions). Independent text drafts, save/external-conflict/dirty-close protections. New Vim feature, not full Vim compatibility; final native QA pending |
+ | Multiple terminals / PTY | App/Workspaces/TerminalPanel.swift; App/Terminal/ | Unported |
+-| Native vault / settings transaction | App/Storage/; App/Workspaces/ProfileSettings.swift; ConnectionSettingsController.swift | Unported. Explicit stdin-only in-memory credential entry point; no credential discovery or persistence |
+-| Model catalog / onboarding probe | App/Workspaces/ModelCatalog.swift; GatewayModelDiscovery.swift; Core/ConnectionProbe.swift | Unported. CLI profile supplies model and capacities |
+-| HTTP capture / retention / inspector | Core/TraceStore.swift; App/Inspector/; App/Storage/CaptureArchive/ | Unported. Only redacted errors and optional content-free CPU telemetry |
++| Native vault / settings transaction | App/Storage/; App/Workspaces/ProfileSettings.swift; ConnectionSettingsController.swift | Partial. Optional separate native vault adapter and synthetic Connections Save All/Cancel/route lifecycle implemented. Ordinary production vault/Settings composition and native credential acceptance remain gated |
++| Model catalog / onboarding probe | App/Workspaces/ModelCatalog.swift; GatewayModelDiscovery.swift; Core/ConnectionProbe.swift | Catalog discovery and onboarding probes remain missing. Explicit CLI model/capacities and synthetic saved model-route selection are implemented; not full model Settings parity |
++| HTTP capture / retention / inspector | Core/TraceStore.swift; App/Inspector/; App/Storage/CaptureArchive/ | Partial Inspector only: redacted read-only Next request preview implemented. HTTP capture/archive/retention/comparison remain missing; preview is not captured traffic |
+ | Usage / spend / cost limits / reports | Core/SessionCost.swift; App/Dashboard/; App/Workspaces/CostLimit.swift | Partial raw provider token display only. Billing rates, totals, budgets, dashboards unported |
+ | Webhooks / completion sounds / menu bar | App/Workspaces/WorkspaceWebhooks.swift; CompletionSound.swift; App/Dashboard/MenuBarMetrics.swift | Unported |
+ | Helper JSON protocol / process supervision | Core/HostService.swift; packages/swift-host/Sources/PiHost/Main.swift; App/Host/ | Unported. Rust in-process single-session actor, no Swift-compatible IPC claim |
+@@ -127,7 +184,7 @@
+ | macOS last-window close, Dock reopen and cancellable Quit | App/Application/ApplicationLifecycle.swift; WindowActivityGuard.swift; PiApp.swift | Partial prerequisite. App-owned entity retention and guarded window rebinding are implemented at `2048dac`; production Close still shuts down the workspace and quits after final close on every platform. Source last-close refusal, idle detach/Dock reopen and cancellable true Quit remain unwired. Linux QA and six headless lifecycle tests do not establish macOS lifecycle parity |
+ | Performance vs Swift | README.md prior validation; docs/validation/ | Measurement hooks implemented; same-hardware baseline and sustained latency comparison pending. CPU callback timing is not frame presentation |
+ 
+-## Latest incremental slice
++## Historical incremental slice: typed tool history
+ 
+ ### Non-executing typed tool-history foundation
+ 
+@@ -1281,7 +1338,7 @@
+ by cancellation. This is real single-press desktop evidence, not physical held-key,
+ macOS interaction, native IME or original Swift dialog parity validation.
+ 
+-## Next implementation priorities
++## Historical implementation priorities
+ 
+ ### macOS application lifetime prerequisite (source audit)
+ 

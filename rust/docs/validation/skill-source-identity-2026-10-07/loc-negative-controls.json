@@ -1,0 +1,142 @@
+{
+  "result": "passed",
+  "negative_controls": 26,
+  "controls": [
+    {
+      "name": "changed production source",
+      "result": "passed",
+      "rejected_with": "frozen candidate source hash/length differs: rust/crates/bello-agent-core/src/project_resources/source_path.rs"
+    },
+    {
+      "name": "changed test source",
+      "result": "passed",
+      "rejected_with": "frozen candidate source hash/length differs: rust/crates/bello-agent-core/src/project_resources/identity_tests.rs"
+    },
+    {
+      "name": "missing source",
+      "result": "passed",
+      "rejected_with": "candidate full changed-file set differs"
+    },
+    {
+      "name": "extra Rust file",
+      "result": "passed",
+      "rejected_with": "candidate full changed-file set differs"
+    },
+    {
+      "name": "non-Rust Swift oracle drift",
+      "result": "passed",
+      "rejected_with": "frozen candidate source hash/length differs: rust/crates/bello-agent-core/tests/fixtures/project_skills_oracle.swift"
+    },
+    {
+      "name": "non-Rust validation document drift",
+      "result": "passed",
+      "rejected_with": "frozen candidate source hash/length differs: rust/docs/validation/project-skills-native-oracle.md"
+    },
+    {
+      "name": "unrelated unchanged Rust drift",
+      "result": "passed",
+      "rejected_with": "candidate full changed-file set differs"
+    },
+    {
+      "name": "baseline source drift",
+      "result": "passed",
+      "rejected_with": "published-baseline Rust bridge differs"
+    },
+    {
+      "name": "immutable Skills ledger copy drift",
+      "result": "passed",
+      "rejected_with": "prior Skills ledger changed"
+    },
+    {
+      "name": "frozen manifest drift",
+      "result": "passed",
+      "rejected_with": "frozen six-file manifest hash differs"
+    },
+    {
+      "name": "immutable Bash ledger copy drift",
+      "result": "passed",
+      "rejected_with": "immutable historical Bash ledger hash differs"
+    },
+    {
+      "name": "historical Bash bridge preimage drift",
+      "result": "passed",
+      "rejected_with": "historical Bash after manifest differs"
+    },
+    {
+      "name": "historical source-path audit drift",
+      "result": "passed",
+      "rejected_with": "historical c0 source-path audit changed"
+    },
+    {
+      "name": "compaction inherited span tampering",
+      "result": "passed",
+      "rejected_with": "ledger content differs from independently recomputed evidence/classification"
+    },
+    {
+      "name": "wrong baseline tree",
+      "result": "passed",
+      "rejected_with": "baseline/tree identity differs"
+    },
+    {
+      "name": "blob passed as baseline",
+      "result": "passed",
+      "rejected_with": "Command '['git', '-C', '/workspace/scratch/8b6fda578834/BelloAgent', 'rev-parse', '1f50bcc0291a8f7670ec5bdb78f6eea671e51ba1^{tree}']' returned non-zero exit status 128."
+    },
+    {
+      "name": "total count tampering",
+      "result": "passed",
+      "rejected_with": "ledger content differs from independently recomputed evidence/classification"
+    },
+    {
+      "name": "baseline bridge delta tampering",
+      "result": "passed",
+      "rejected_with": "ledger content differs from independently recomputed evidence/classification"
+    },
+    {
+      "name": "source digest tampering",
+      "result": "passed",
+      "rejected_with": "ledger content differs from independently recomputed evidence/classification"
+    },
+    {
+      "name": "changed-span evidence tampering",
+      "result": "passed",
+      "rejected_with": "ledger content differs from independently recomputed evidence/classification"
+    },
+    {
+      "name": "preserved-span evidence tampering",
+      "result": "passed",
+      "rejected_with": "ledger content differs from independently recomputed evidence/classification"
+    },
+    {
+      "name": "classification provenance tampering",
+      "result": "passed",
+      "rejected_with": "ledger content differs from independently recomputed evidence/classification"
+    },
+    {
+      "name": "test gate extent tampering",
+      "result": "passed",
+      "rejected_with": "ledger content differs from independently recomputed evidence/classification"
+    },
+    {
+      "name": "false publication claim",
+      "result": "passed",
+      "rejected_with": "ledger content differs from independently recomputed evidence/classification"
+    },
+    {
+      "name": "self-consistent helper reclassification",
+      "result": "passed",
+      "rejected_with": "ledger content differs from independently recomputed evidence/classification"
+    },
+    {
+      "name": "equal-line reclassification",
+      "result": "passed",
+      "rejected_with": "unchanged nonblank line reclassified"
+    }
+  ],
+  "positive_controls": [
+    "baseline commit resolves to pinned tree",
+    "blank ignored; comment counted"
+  ],
+  "source_mutations": "in-memory only",
+  "source_and_git_untouched": true
+}

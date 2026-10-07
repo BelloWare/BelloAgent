@@ -1,0 +1,28 @@
+{
+  "result": "passed",
+  "baseline": "2ffbc323b9ad006683c2fef1eafa23f4990d8da5",
+  "candidate_manifest_sha256": "ed2135584530b8cca2ade657d3d9296502de2c45df07ce624c25ada70fef48d8",
+  "delta": {
+    "production": 72,
+    "tests_and_test_support": 429,
+    "benchmark_example": 0
+  },
+  "counts": {
+    "production": 43642,
+    "tests_and_test_support": 58512,
+    "benchmark_example": 1192
+  },
+  "total": 103346,
+  "rust_files": {
+    "before": 197,
+    "after": 199,
+    "changed": 4,
+    "unchanged": 195,
+    "new": 2
+  },
+  "preserved_nonblank_lines_verified": 988,
+  "prior_skills_ledger_unchanged": true,
+  "prior_bash_ledger_unchanged": true,
+  "historical_source_path_review_unchanged": true,
+  "publication_verified": false
+}

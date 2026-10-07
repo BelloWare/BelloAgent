@@ -1,0 +1,19 @@
+{
+  "base_commit": "2ffbc323b9ad006683c2fef1eafa23f4990d8da5",
+  "scope": "Documentation-only, original checkout unchanged; no builds or publication performed.",
+  "files": [
+    {
+      "path": "rust/README.md",
+      "before_sha256": "4dd88289ae1a92abe57f06c8ffbfe1cd19d5ca50a15554e7f9a13ed042e6822e",
+      "after_sha256": "239b318f59bab91d0ebd4de51fc60a37d567da6b097585e6788b9bc7d1620b03"
+    },
+    {
+      "path": "rust/docs/parity.md",
+      "before_sha256": "1a2223279bb443b10ba34c94e5855b96dd34107f0e9654bf35a0faba41b7b2a8",
+      "after_sha256": "878f0a3e5b5ed933c64278cb76fc66f7d5b623f0fef48cd804a87564758c768e"
+    }
+  ],
+  "local_link_targets_checked": 39,
+  "diff_added_lines": 88,
+  "diff_deleted_lines": 23
+}

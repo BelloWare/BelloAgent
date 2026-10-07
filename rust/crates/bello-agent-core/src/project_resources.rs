@@ -20,6 +20,10 @@ use std::{
 use tokio_util::sync::CancellationToken;
 use unicode_segmentation::UnicodeSegmentation;
 
+#[cfg(all(test, unix))]
+mod identity_tests;
+mod source_path;
+
 pub const MAX_DISCOVERY_NODES: usize = 5000;
 pub const MAX_CATALOG_SKILLS: usize = 512;
 pub const MAX_DISCOVERY_DEPTH: usize = 12;
@@ -126,7 +130,10 @@ impl ProjectResourceSource {
         let mut partial = false;
         for directory in directories {
             instructions::check_cancel(cancel)?;
-            let root = directory.join(".agents/skills");
+            // Swift appends to the source-canonical workspace ancestor before
+            // visiting the skill root. Do not resolve the appended root here:
+            // sourceRoot retains that spelling even if .agents/skills is a link.
+            let root = source_path::existing(&directory, &directory)?.join(".agents/skills");
             if let Err(error) = scanner.visit(&root, &root, 0) {
                 if matches!(error, Error::Cancelled) {
                     return Err(error);
@@ -153,6 +160,11 @@ impl ProjectResourceSource {
         // encoding includes sourceCharacters and omits empty optional arrays;
         // it is a local revision, not Swift's full-catalog revision encoding.
         let revision = skills::hash(&(prompt.clone() + &serde_json::to_string(&descriptors)?));
+        let canonical_paths = scanner
+            .loaded
+            .iter()
+            .map(|s| (s.descriptor.id.clone(), s.canonical_path.clone()))
+            .collect();
         let bodies = scanner
             .loaded
             .into_iter()
@@ -173,6 +185,7 @@ impl ProjectResourceSource {
             partial,
             included_bytes: instruction.included_bytes,
             bodies,
+            canonical_paths,
         })
     }
     /// Empty selection is intentionally a zero-I/O fast path, including cancelled
@@ -216,6 +229,9 @@ pub struct ProjectResourceSnapshot {
     pub partial: bool,
     pub included_bytes: usize,
     bodies: HashMap<String, String>,
+    // Live discovery only; never serialized into chips, frozen input or history.
+    // Old Rust IDs hashed these exact paths. New IDs hash the source spelling.
+    canonical_paths: HashMap<String, String>,
 }
 impl fmt::Debug for ProjectResourceSnapshot {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -244,10 +260,24 @@ impl ProjectResourceSnapshot {
     }
     pub fn validate_delivery(&self, frozen: &[FrozenSkill]) -> Result<()> {
         skills::validate_frozen_skills(frozen)?;
+        let mut targets = HashSet::new();
         for old in frozen {
-            let current = self.skills.iter().find(|s| s.id == old.id).ok_or_else(|| {
-                invalid("Queued skill authorization changed; refresh and resubmit")
-            })?;
+            let changed = || invalid("Queued skill authorization changed; refresh and resubmit");
+            // Only already-frozen delivery can use a legacy ID. Require both
+            // the old hash and its exact retained canonical path, never merely
+            // a filename, a newly resolved alias, or matching metadata/body.
+            let mut matches = self.skills.iter().filter(|s| {
+                s.id == old.id
+                    || self
+                        .canonical_paths
+                        .get(&s.id)
+                        .is_some_and(|path| *path == old.path && skills::hash(path) == old.id)
+            });
+            let current = matches.next().ok_or_else(changed)?;
+            let target = self.canonical_paths.get(&current.id).ok_or_else(changed)?;
+            if matches.next().is_some() || !targets.insert(target) {
+                return Err(changed());
+            }
             if current.metadata_hash != old.metadata_hash || !current.policy.usable() {
                 return Err(invalid(
                     "Queued skill authorization changed; refresh and resubmit",
@@ -333,6 +363,7 @@ impl fmt::Debug for SkillSourcePage {
 struct LoadedSkill {
     descriptor: SkillDescriptor,
     body: String,
+    canonical_path: String,
 }
 struct Scanner<'a> {
     cancel: &'a CancellationToken,
@@ -352,14 +383,15 @@ impl Scanner<'_> {
             return Err(invalid("Skill discovery limit reached"));
         }
         self.scanned += 1;
-        let path = match fs::canonicalize(path) {
+        let canonical = match fs::canonicalize(path) {
             Ok(path) => path,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             Err(error) => return Err(error.into()),
         };
-        if !self.visited.insert(path.clone()) {
+        if !self.visited.insert(canonical.clone()) {
             return Ok(());
         }
+        let path = source_path::existing(path, &canonical)?;
         let metadata = fs::metadata(&path)?;
         if !metadata.is_dir() {
             if path.extension().is_some_and(|ext| ext == "md") {
@@ -409,7 +441,11 @@ impl Scanner<'_> {
         if self.bytes > skills::MAX_SKILL_SOURCE_BYTES {
             return Err(invalid("Skill bodies exceed 2 MiB"));
         }
-        let path = canonical
+        let canonical_path = canonical
+            .to_str()
+            .ok_or_else(|| invalid("Skill path is not UTF-8"))?
+            .to_owned();
+        let path = source_path::existing(file, &canonical)?
             .to_str()
             .ok_or_else(|| invalid("Skill path is not UTF-8"))?
             .to_owned();
@@ -546,7 +582,11 @@ impl Scanner<'_> {
             dependencies,
             source_characters: body.encode_utf16().count(),
         };
-        self.loaded.push(LoadedSkill { descriptor, body });
+        self.loaded.push(LoadedSkill {
+            descriptor,
+            body,
+            canonical_path,
+        });
         Ok(())
     }
 }

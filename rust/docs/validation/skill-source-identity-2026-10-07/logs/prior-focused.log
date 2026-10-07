@@ -1,0 +1,40 @@
+Source stage: /workspace/shared/agent-skill-path-stage/rust
+     Removed 447 files, 913.7MiB total
+   Compiling bello-agent-core v0.1.0 (/workspace/shared/agent-skill-path-stage/rust/crates/bello-agent-core)
+    Finished `test` profile [unoptimized] target(s) in 15.63s
+     Running unittests src/lib.rs (/workspace/shared/agent-attachments-target/debug/deps/bello_agent_core-1254f91c54cf85d9)
+
+running 4 tests
+test project_resources::identity_tests::source_spelling_must_resolve_to_the_scanned_target ... ok
+test project_resources::identity_tests::legacy_delivery_requires_exact_canonical_path_and_unique_current_target ... ok
+test project_resources::identity_tests::legacy_delivery_rechecks_metadata_policy_dependencies_deletion_and_filesystem_scope ... ok
+test project_resources::identity_tests::legacy_delivery_keeps_queued_bytes_and_receipts_while_fresh_selection_stays_strict ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 360 filtered out; finished in 0.01s
+
+   Compiling bello-agent-core v0.1.0 (/workspace/shared/agent-skill-path-stage/rust/crates/bello-agent-core)
+    Finished `test` profile [unoptimized] target(s) in 8.09s
+     Running tests/project_skills.rs (/workspace/shared/agent-attachments-target/debug/deps/project_skills-07a253979239f2eb)
+
+running 18 tests
+test empty_freeze_does_not_scan_missing_roots_or_cancelled_work ... ok
+test content_revision_is_separate_from_scope_and_dependency_state ... ok
+test exact_raw_metadata_hash_crlf_and_frozen_expansion ... ok
+test body_change_rejects_fresh_selection_but_keeps_accepted_body_on_delivery ... ok
+test project_roots_and_ancestors_are_ordered_deduplicated_and_home_free ... ok
+test metadata_policy_revocation_and_dependency_presence_fail_closed ... ok
+test selected_repository_root_excludes_parent_skills ... ok
+test recovery_keeps_conflicting_variants_and_debug_is_redacted ... ok
+test sorted_duplicate_names_leaf_rule_plain_markdown_and_symlink_identity ... ok
+test malformed_frontmatter_and_metadata_are_inspectable_but_unselectable ... ok
+test source_preview_is_bounded_utf8_and_never_catalog_body_metadata ... ok
+test catalog_pages_are_revision_bound_and_partial_is_not_proof_of_removal ... ok
+test nonregular_sources_are_refused_without_blocking ... ok
+test swift_grapheme_description_count_instead_of_byte_or_scalar_count ... ok
+test metadata_bytes_and_dependency_count_boundaries ... ok
+test depth_and_count_boundaries_are_deterministic ... ok
+test visited_node_bound_counts_skill_root_and_empty_directories ... ok
+test full_file_aggregate_and_selection_argument_bounds ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.27s
+

@@ -1,0 +1,44 @@
+[
+  {
+    "path": "rust/crates/bello-agent-core/src/project_resources.rs",
+    "baseline_sha256": "d202f28ce56b563b6fba4429a98b713746d7aaf0d1e0f2fc45796c6db3c0fcf4",
+    "sha256": "85fe9d29a99c8bde938d8f55107ca315f7f758f040878752323d14ddd3d7e314",
+    "bytes": 25011,
+    "same_as_prior_freeze": true
+  },
+  {
+    "path": "rust/crates/bello-agent-core/src/project_resources/source_path.rs",
+    "baseline_sha256": null,
+    "sha256": "364fa86bdb3519e31e46213cf02b7ef45903969896c5081fe95eb48e55f4c53a",
+    "bytes": 1550,
+    "same_as_prior_freeze": true
+  },
+  {
+    "path": "rust/crates/bello-agent-core/src/project_resources/identity_tests.rs",
+    "baseline_sha256": null,
+    "sha256": "c32fe076fa20808c6fa75e09b2b2d108f28ccf5e014f1688ed75243ace47862f",
+    "bytes": 11424,
+    "same_as_prior_freeze": true
+  },
+  {
+    "path": "rust/crates/bello-agent-core/tests/project_skills_native.rs",
+    "baseline_sha256": "77179c390fe95a5970c862d52e3e2cbe4e59be67dbcd49c71f7990bf5e8d486b",
+    "sha256": "8b96768e8d5845b5871322d1bcaed4c67debd1763dce07f92fa072ebc17f0608",
+    "bytes": 24061,
+    "same_as_prior_freeze": true
+  },
+  {
+    "path": "rust/crates/bello-agent-core/tests/fixtures/project_skills_oracle.swift",
+    "baseline_sha256": "6d3d265fe346804b35f7f17764fc7e3461919facafee6db33fc70ad9f16472c7",
+    "sha256": "3bfccc477ee2fe4c0ccdf2c593952e52106cc89bc1e4ca4378620ca604edf9ed",
+    "bytes": 4642,
+    "same_as_prior_freeze": true
+  },
+  {
+    "path": "rust/docs/validation/project-skills-native-oracle.md",
+    "baseline_sha256": "456a5478b0bcfee3f74e9655dd16d6e9e828212690184e66b7c78d726e4fbc84",
+    "sha256": "9b04289c134316f8c899d86a0dcfc0fa064ff9f0762f1511f93f43230b0652ee",
+    "bytes": 8632,
+    "same_as_prior_freeze": false
+  }
+]

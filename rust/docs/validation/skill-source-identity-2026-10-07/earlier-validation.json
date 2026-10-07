@@ -1,0 +1,131 @@
+{
+  "baseline_commit": "c0df34001f512c2bc374329c13708afe9bfa0aaa",
+  "stage": "/workspace/shared/agent-skill-path-stage",
+  "manifest_sha256": "3be218e532475caf8b6b816b5acfa65e9540e9d51c14ad8d3c3237a84cf855bf",
+  "default_core": "passed",
+  "new_identity_tests": 4,
+  "project_skills_integration_tests": 18,
+  "strict_default_all_target_clippy": "passed",
+  "workspace_fmt": "passed",
+  "mutation_controls": [
+    {
+      "control": "legacy_lookup",
+      "test": "legacy_delivery_keeps_queued_bytes_and_receipts_while_fresh_selection_stays_strict",
+      "detected": true,
+      "returncode": 101,
+      "before_sha256": "85fe9d29a99c8bde938d8f55107ca315f7f758f040878752323d14ddd3d7e314",
+      "mutated_sha256": "7f6e829e7a2b1f999bb178587715bf9a4738f800bca197d3dfcee31b19a1541d",
+      "restored_sha256": "85fe9d29a99c8bde938d8f55107ca315f7f758f040878752323d14ddd3d7e314",
+      "log": "/workspace/shared/agent-skill-path-negative-legacy_lookup.log"
+    },
+    {
+      "control": "fresh_remap",
+      "test": "legacy_delivery_keeps_queued_bytes_and_receipts_while_fresh_selection_stays_strict",
+      "detected": true,
+      "returncode": 101,
+      "before_sha256": "85fe9d29a99c8bde938d8f55107ca315f7f758f040878752323d14ddd3d7e314",
+      "mutated_sha256": "a1b225eec4e70f8b7c8ace3de2799c499d75a4ac1a9726f801cc23ea4878039e",
+      "restored_sha256": "85fe9d29a99c8bde938d8f55107ca315f7f758f040878752323d14ddd3d7e314",
+      "log": "/workspace/shared/agent-skill-path-negative-fresh_remap.log"
+    },
+    {
+      "control": "unique_target",
+      "test": "legacy_delivery_requires_exact_canonical_path_and_unique_current_target",
+      "detected": true,
+      "returncode": 101,
+      "before_sha256": "85fe9d29a99c8bde938d8f55107ca315f7f758f040878752323d14ddd3d7e314",
+      "mutated_sha256": "7322912d6e55923b32829d092a3b1468131b9ff2a3a712d3adc3eca73a44b2f7",
+      "restored_sha256": "85fe9d29a99c8bde938d8f55107ca315f7f758f040878752323d14ddd3d7e314",
+      "log": "/workspace/shared/agent-skill-path-negative-unique_target.log"
+    },
+    {
+      "control": "metadata_revocation",
+      "test": "legacy_delivery_rechecks_metadata_policy_dependencies_deletion_and_filesystem_scope",
+      "detected": true,
+      "returncode": 101,
+      "before_sha256": "85fe9d29a99c8bde938d8f55107ca315f7f758f040878752323d14ddd3d7e314",
+      "mutated_sha256": "9b1154da3e24694f1e3fa676424971e17fa768eca37c2ef18182ae889d2f06b2",
+      "restored_sha256": "85fe9d29a99c8bde938d8f55107ca315f7f758f040878752323d14ddd3d7e314",
+      "log": "/workspace/shared/agent-skill-path-negative-metadata_revocation.log"
+    },
+    {
+      "control": "canonical_target",
+      "test": "source_spelling_must_resolve_to_the_scanned_target",
+      "detected": true,
+      "returncode": 101,
+      "before_sha256": "364fa86bdb3519e31e46213cf02b7ef45903969896c5081fe95eb48e55f4c53a",
+      "mutated_sha256": "7f4ed61e5be78d408989f4665f6b374c6d21c4d91a0eacaa5f50127ddd48ce49",
+      "restored_sha256": "364fa86bdb3519e31e46213cf02b7ef45903969896c5081fe95eb48e55f4c53a",
+      "log": "/workspace/shared/agent-skill-path-negative-canonical_target.log"
+    },
+    {
+      "control": "receipt_identity",
+      "test": "legacy_delivery_keeps_queued_bytes_and_receipts_while_fresh_selection_stays_strict",
+      "detected": true,
+      "returncode": 101,
+      "before_sha256": "7f68966c1df362c3e91573988c6a3e1df2d87329e6d49263f812c30319fd9410",
+      "mutated_sha256": "8c661719a8418a9cfb6cc51680038e5aaa0524f08e88245241fa3ab3702129b5",
+      "restored_sha256": "7f68966c1df362c3e91573988c6a3e1df2d87329e6d49263f812c30319fd9410",
+      "log": "/workspace/shared/agent-skill-path-negative-receipt_identity.log"
+    }
+  ],
+  "notes": [
+    "No production source changed after mutation controls. One final test-only cloned slice was replaced with slice::from_ref to satisfy Clippy; complete default suite reran successfully.",
+    "No schema, frozen/recorded value, receipt, historical expansion or Retry serialization changed.",
+    "Synthetic-authority controller scope and actual Controller Retry dispatch regressions are still pending for this exact stage.",
+    "Apple Foundation compilation and strengthened native Swift oracle remain pending; Linux compiles an empty native target.",
+    "Full resource-instruction alias spelling remains a separately reported gap. No global canonicalization changes.",
+    "No app, desktop, native credential, dependency manifest, workflow, original checkout or Bash stage changes."
+  ],
+  "logs": [
+    {
+      "name": "agent-skill-path-focused.log",
+      "sha256": "ef1c09443cd97d54f738228e48696156544b4f718a6fa88fb1e0ac33710a2e7b"
+    },
+    {
+      "name": "agent-skill-path-restored-default.log",
+      "sha256": "f4cfbe500418b0cf1a73a011d2e596333c6edccddfa6ac09dec8e353802021ea"
+    },
+    {
+      "name": "agent-skill-path-restored-default-final.log",
+      "sha256": "17435bd2eb4ad0a859bfe4d5c3bb768fab470c55d7d1cab663dc656a18c90afb"
+    },
+    {
+      "name": "agent-skill-path-negative-canonical_target.log",
+      "sha256": "528ead5c77adc3f3cbbd5507ae8ec00cbf21baf563486ebe4ccd546ca1210a49"
+    },
+    {
+      "name": "agent-skill-path-negative-fresh_remap.log",
+      "sha256": "fc433819c12c31baa972fd6feb7f762c3b9c8bb550f516f1dbdbb23138db4ced"
+    },
+    {
+      "name": "agent-skill-path-negative-legacy_lookup.log",
+      "sha256": "62d4c1501db1f1a689687a50a7f481141f1431356cfebc7f80f2e3a8e7fa4a09"
+    },
+    {
+      "name": "agent-skill-path-negative-metadata_revocation.log",
+      "sha256": "6ec480639ed6a652ac881700183392cce97555fc1f03197829f384e2d4a2231d"
+    },
+    {
+      "name": "agent-skill-path-negative-receipt_identity.log",
+      "sha256": "bcb3944cfa0268aa9545bd6f404404248997b7272071f8ed212680bd15f6a46c"
+    },
+    {
+      "name": "agent-skill-path-negative-unique_target.log",
+      "sha256": "8236ef927dedcab57e25b13b43eb7492a5837c1a6645416592e5da8a702bdf01"
+    },
+    {
+      "name": "agent-skill-path-apple-metadata.log",
+      "sha256": "c0a1557749e9b9f7e96d4bf229dfafadb6a02f273a9bacf104546df364c969ff"
+    },
+    {
+      "name": "agent-skill-path-binding-check.log",
+      "sha256": "adb7eafad95c1b120d9d0c141af440c0514bc4ff102a8b36c9f9ce6331c11b91"
+    }
+  ],
+  "default_unit_tests": 364,
+  "default_integration_tests": 125,
+  "default_total_tests": 489,
+  "apple_full_core_metadata": "blocked before changed code: ring build script uses host cc, which rejects Darwin flags",
+  "apple_exact_source_helper_metadata": "passed: exact source_path.rs with real cached objc2 bindings; lightweight Result/error shim only; not full core/native execution"
+}

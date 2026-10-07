@@ -149,7 +149,14 @@ fn body(
     }
 }
 fn rust_result(item: &Value) -> Value {
-    let source = source(Path::new(item["cwd"].as_str().unwrap()));
+    let mut source = source(Path::new(item["cwd"].as_str().unwrap()));
+    if let Some(roots) = item["roots"].as_array() {
+        source.scope.roots.extend(
+            roots
+                .iter()
+                .map(|root| fs::canonicalize(root.as_str().unwrap()).unwrap()),
+        );
+    }
     let snapshot = source.discover(&CancellationToken::new()).unwrap();
     let catalog=snapshot.skills.iter().map(|d|json!({"id":d.id,"name":d.name,"path":d.path,"baseDir":d.base_dir,"sourceRoot":d.source_root,"scope":d.scope,"description":d.description,"contentHash":d.content_hash,"metadataHash":d.metadata_hash,"policy":d.policy,"reasons":d.reasons,"dependencies":d.dependencies,"body":body(&snapshot,&d.id)})).collect::<Vec<_>>();
     let selections = snapshot
@@ -249,9 +256,9 @@ fn rust_compaction_result(item: &Value, frozen: &[skills::FrozenSkill]) -> Value
 }
 #[test]
 fn project_skill_catalog_hashes_policy_freeze_and_expansion_match_checked_in_swift() {
-    // Foundation strips Darwin's /private prefix even after Rust canonicalizes
-    // /var. Keep the main exact path-derived ID/expansion matrix outside that
-    // alias, then characterize both spellings separately below.
+    // The metadata matrix also checks exact resource instructions. The /var
+    // cases below independently gate every skill field and retained byte while
+    // reporting the still-separate resource-prompt spelling difference.
     let fixtures =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/project-skills-native-fixtures");
     fs::create_dir_all(&fixtures).unwrap();
@@ -311,6 +318,7 @@ fn project_skill_catalog_hashes_policy_freeze_and_expansion_match_checked_in_swi
         &skill("plain", "Plain file", "P"),
     );
     cases.push(json!({"case":"tree","cwd":cwd,"home":home}));
+    add_symlink_cases(&mut cases, &fixture_root, &home);
     let build = tempfile::tempdir().unwrap();
     let src = build.path().join("oracle.swift");
     let executable = build.path().join("project-skills-oracle");
@@ -328,13 +336,25 @@ fn project_skill_catalog_hashes_policy_freeze_and_expansion_match_checked_in_swi
     );
     put(
         &alias_cwd.join(".agents/skills/review/SKILL.md"),
-        &skill("review", "Alias characterization", "Alias body"),
+        &skill("review", "Alias parity", "Alias body"),
     );
     let alias_case = json!({"case":"darwin-alias","cwd":alias_cwd,"home":home});
     let mut other_alias = alias_case.clone();
     other_alias["cwd"] = json!(alias_spelling);
+    let mut alias_cases = vec![alias_case.clone(), other_alias.clone()];
+    add_symlink_cases(&mut alias_cases, &alias_cwd, &home);
+    let primary = alias_cwd.join("multi-primary");
+    let secondary = alias_cwd.join("multi-secondary");
+    for root in [&primary, &secondary] {
+        put(&root.join(".git"), "fixture boundary");
+        put(
+            &root.join(".agents/skills/review/SKILL.md"),
+            &skill("review", "Multiple roots", "Root body"),
+        );
+    }
+    alias_cases.push(json!({"case":"darwin-production-multiple-roots","cwd":primary,"roots":[secondary],"home":home}));
     let mut oracle_cases = cases.clone();
-    oracle_cases.extend([alias_case.clone(), other_alias.clone()]);
+    oracle_cases.extend(alias_cases.iter().cloned());
     fs::write(
         &input,
         serde_json::to_vec(&json!({"cases":oracle_cases,"compaction":compaction})).unwrap(),
@@ -366,9 +386,34 @@ fn project_skill_catalog_hashes_policy_freeze_and_expansion_match_checked_in_swi
             item["case"]
         );
     }
-    // This is characterization, not cross-language byte-parity acceptance.
-    // Both implementations must identify the same file and derive IDs from
-    // their own reported spelling. Rust must be invariant across both aliases.
+    // No ID/path/baseDir/sourceRoot/hash/body/expansion normalization. Only the
+    // unrelated full resource instructions are reported separately below.
+    for (offset, item) in alias_cases.iter().enumerate() {
+        let actual = rust_result(item);
+        let expected = &expected["skills"][cases.len() + offset];
+        let mut actual_selection = actual.clone();
+        let mut expected_selection = expected.clone();
+        actual_selection
+            .as_object_mut()
+            .unwrap()
+            .remove("instructions");
+        expected_selection
+            .as_object_mut()
+            .unwrap()
+            .remove("instructions");
+        assert_eq!(
+            actual_selection, expected_selection,
+            "strict Darwin skill source oracle {}",
+            item["case"]
+        );
+        eprintln!(
+            "Separate resource-instruction spelling (not a skill parity assertion): {}",
+            json!({
+                "case":item["case"],"equal":actual["instructions"]==expected["instructions"],
+                "rust":actual["instructions"],"swift":expected["instructions"]
+            })
+        );
+    }
     let alias_rust = rust_result(&alias_case);
     assert_eq!(alias_rust, rust_result(&other_alias));
     let alias_swift = &expected["skills"][cases.len()];
@@ -395,8 +440,49 @@ fn project_skill_catalog_hashes_policy_freeze_and_expansion_match_checked_in_swi
             alias_swift["skills"][0][field]
         );
     }
+    assert_eq!(alias_rust["skills"], alias_swift["skills"]);
+    assert_eq!(alias_rust["expanded"], alias_swift["expanded"]);
+    assert_eq!(alias_rust["recorded"], alias_swift["recorded"]);
+    let alias_source = source(&alias_cwd);
+    let snapshot = alias_source.discover(&CancellationToken::new()).unwrap();
+    let fresh = snapshot
+        .freeze(&[snapshot.skills[0].selection(ARGUMENTS.into())])
+        .unwrap();
+    let mut legacy = fresh.clone();
+    legacy[0].path = alias_cwd
+        .join(".agents/skills/review/SKILL.md")
+        .to_str()
+        .unwrap()
+        .into();
+    legacy[0].id = format!("{:x}", Sha256::digest(&legacy[0].path));
+    legacy[0].base_dir = alias_cwd
+        .join(".agents/skills/review")
+        .to_str()
+        .unwrap()
+        .into();
+    assert_ne!(fresh[0].id, legacy[0].id);
+    let legacy_bytes = serde_json::to_vec(&legacy).unwrap();
+    let legacy_expanded = skills::user_message_text(RAW, &legacy, "fixture-turn").unwrap();
+    assert!(
+        alias_source
+            .freeze(&[legacy[0].selection()], &CancellationToken::new())
+            .is_err()
+    );
+    alias_source
+        .validate_delivery(&legacy, &CancellationToken::new())
+        .unwrap();
+    assert_eq!(serde_json::to_vec(&legacy).unwrap(), legacy_bytes);
+    assert_eq!(
+        skills::user_message_text(RAW, &legacy, "fixture-turn").unwrap(),
+        legacy_expanded
+    );
+    assert!(
+        snapshot
+            .validate_delivery(&[legacy[0].clone(), fresh[0].clone()])
+            .is_err()
+    );
     eprintln!(
-        "Darwin alias characterization (not a parity gate): {}",
+        "Strict Darwin alias skill parity: {}",
         json!({"sameFilesystemTarget":true,"rustStableAcrossAliases":true,
             "rustPath":alias_rust["skills"][0]["path"],"swiftPath":alias_swift["skills"][0]["path"],
             "pathDerivedIDsEqual":alias_rust["skills"][0]["id"]==alias_swift["skills"][0]["id"],
@@ -416,5 +502,44 @@ fn project_skill_catalog_hashes_policy_freeze_and_expansion_match_checked_in_swi
             "compaction source oracle case {}",
             item["case"]
         );
+    }
+}
+
+fn add_symlink_cases(cases: &mut Vec<Value>, parent: &Path, home: &Path) {
+    use std::os::unix::fs::symlink;
+    for kind in ["leaf-link", "directory-link", "skill-root-link"] {
+        let cwd = parent.join(kind);
+        let external = parent.join(format!("{kind}-external"));
+        put(&cwd.join(".git"), "fixture boundary");
+        put(
+            &external.join("SKILL.md"),
+            &skill("review", "Symlink semantics", "Linked body"),
+        );
+        put(
+            &external.join("agents/openai.yaml"),
+            "policy:\n  allow_implicit_invocation: true\n",
+        );
+        let root = cwd.join(".agents/skills");
+        match kind {
+            "leaf-link" => {
+                let base = root.join("review");
+                // Leaf file links retain the visited parent for metadata and
+                // relative references; the canonical target's parent differs.
+                put(
+                    &base.join("agents/openai.yaml"),
+                    "dependencies:\n  tools:\n    - type: builtin\n      value: ls\n",
+                );
+                symlink(external.join("SKILL.md"), base.join("SKILL.md")).unwrap();
+            }
+            "directory-link" => {
+                fs::create_dir_all(&root).unwrap();
+                symlink(&external, root.join("review")).unwrap();
+            }
+            _ => {
+                fs::create_dir_all(root.parent().unwrap()).unwrap();
+                symlink(&external, &root).unwrap();
+            }
+        }
+        cases.push(json!({"case":kind,"cwd":cwd,"home":home}));
     }
 }

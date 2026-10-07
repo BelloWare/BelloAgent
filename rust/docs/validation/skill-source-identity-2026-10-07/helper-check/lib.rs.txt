@@ -1,0 +1,5 @@
+pub type Result<T> = std::result::Result<T, std::io::Error>;
+fn invalid(message: impl Into<String>) -> std::io::Error { std::io::Error::other(message.into()) }
+#[path = "/workspace/shared/agent-skill-path-stage/rust/crates/bello-agent-core/src/project_resources/source_path.rs"]
+mod source_path;
+pub fn typecheck(path: &std::path::Path, canonical: &std::path::Path) -> Result<std::path::PathBuf> { source_path::existing(path, canonical) }

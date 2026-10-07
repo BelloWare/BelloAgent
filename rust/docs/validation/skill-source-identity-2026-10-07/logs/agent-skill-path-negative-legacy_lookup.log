@@ -1,0 +1,20 @@
+     Removed 19 files, 71.4MiB total
+   Compiling bello-agent-core v0.1.0 (/workspace/shared/agent-skill-path-controls/rust/crates/bello-agent-core)
+    Finished `test` profile [unoptimized] target(s) in 15.32s
+     Running unittests src/lib.rs (/workspace/shared/agent-attachments-target/debug/deps/bello_agent_core-1254f91c54cf85d9)
+
+running 1 test
+
+thread 'project_resources::identity_tests::legacy_delivery_keeps_queued_bytes_and_receipts_while_fresh_selection_stays_strict' (63) panicked at crates/bello-agent-core/src/project_resources/identity_tests.rs:113:52:
+called `Result::unwrap()` on an `Err` value: Invalid("Queued skill authorization changed; refresh and resubmit")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test project_resources::identity_tests::legacy_delivery_keeps_queued_bytes_and_receipts_while_fresh_selection_stays_strict ... FAILED
+
+failures:
+
+failures:
+    project_resources::identity_tests::legacy_delivery_keeps_queued_bytes_and_receipts_while_fresh_selection_stays_strict
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 363 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p bello-agent-core --lib`

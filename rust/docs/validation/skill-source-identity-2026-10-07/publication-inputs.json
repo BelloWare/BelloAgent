@@ -1,0 +1,381 @@
+{
+  "baseline_commit": "2ffbc323b9ad006683c2fef1eafa23f4990d8da5",
+  "baseline_tree": "529ba4b5b54031db5d40c63413f1d1f5df6e3c21",
+  "schema": 1,
+  "files": [
+    {
+      "path": "rust/README.md",
+      "group": "readiness-documentation-only",
+      "before_sha256": "4dd88289ae1a92abe57f06c8ffbfe1cd19d5ca50a15554e7f9a13ed042e6822e",
+      "before_git_blob": "104692923fd58a9ccb2d8e18c047bf0d80a0137b",
+      "after_sha256": "239b318f59bab91d0ebd4de51fc60a37d567da6b097585e6788b9bc7d1620b03",
+      "after_git_blob": "8cea5742be3137028a604f78ca228e05b06a0e10",
+      "after_bytes": 9056,
+      "mode": "100644"
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/project_resources/identity_tests.rs",
+      "group": "frozen-six-file-correction",
+      "before_sha256": null,
+      "before_git_blob": null,
+      "after_sha256": "c32fe076fa20808c6fa75e09b2b2d108f28ccf5e014f1688ed75243ace47862f",
+      "after_git_blob": "329c44e5ab24e38c3525c168ce54eba6572eddd8",
+      "after_bytes": 11424,
+      "mode": "100644"
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/project_resources/source_path.rs",
+      "group": "frozen-six-file-correction",
+      "before_sha256": null,
+      "before_git_blob": null,
+      "after_sha256": "364fa86bdb3519e31e46213cf02b7ef45903969896c5081fe95eb48e55f4c53a",
+      "after_git_blob": "f9d759b0e7f0853b376a76e4096bfeb25a232dc5",
+      "after_bytes": 1550,
+      "mode": "100644"
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/project_resources.rs",
+      "group": "frozen-six-file-correction",
+      "before_sha256": "d202f28ce56b563b6fba4429a98b713746d7aaf0d1e0f2fc45796c6db3c0fcf4",
+      "before_git_blob": "1f50bcc0291a8f7670ec5bdb78f6eea671e51ba1",
+      "after_sha256": "85fe9d29a99c8bde938d8f55107ca315f7f758f040878752323d14ddd3d7e314",
+      "after_git_blob": "d79ae9f2f5ccf65a7db62ac220f03e66b72f60e3",
+      "after_bytes": 25011,
+      "mode": "100644"
+    },
+    {
+      "path": "rust/crates/bello-agent-core/tests/fixtures/project_skills_oracle.swift",
+      "group": "frozen-six-file-correction",
+      "before_sha256": "6d3d265fe346804b35f7f17764fc7e3461919facafee6db33fc70ad9f16472c7",
+      "before_git_blob": "56b441016116aade6a63abdecfec329970bfaf36",
+      "after_sha256": "3bfccc477ee2fe4c0ccdf2c593952e52106cc89bc1e4ca4378620ca604edf9ed",
+      "after_git_blob": "b6b106fd75449e0a8e0ddec696f1fb74c920b250",
+      "after_bytes": 4642,
+      "mode": "100644"
+    },
+    {
+      "path": "rust/crates/bello-agent-core/tests/project_skills_native.rs",
+      "group": "frozen-six-file-correction",
+      "before_sha256": "77179c390fe95a5970c862d52e3e2cbe4e59be67dbcd49c71f7990bf5e8d486b",
+      "before_git_blob": "3dfe0131c743e9f7d9b5052e4fdb74efa1911bed",
+      "after_sha256": "8b96768e8d5845b5871322d1bcaed4c67debd1763dce07f92fa072ebc17f0608",
+      "after_git_blob": "fc956b16373e6fe07a0fd13e92d8879afe29988f",
+      "after_bytes": 24061,
+      "mode": "100644"
+    },
+    {
+      "path": "rust/docs/parity.md",
+      "group": "readiness-documentation-only",
+      "before_sha256": "1a2223279bb443b10ba34c94e5855b96dd34107f0e9654bf35a0faba41b7b2a8",
+      "before_git_blob": "522934853495e9f3b912cdfb7e6bf3343220a19a",
+      "after_sha256": "878f0a3e5b5ed933c64278cb76fc66f7d5b623f0fef48cd804a87564758c768e",
+      "after_git_blob": "06fde46b25bccb66f98f20f079945e9fa9d7ec25",
+      "after_bytes": 161140,
+      "mode": "100644"
+    },
+    {
+      "path": "rust/docs/validation/project-skills-native-oracle.md",
+      "group": "frozen-six-file-correction",
+      "before_sha256": "456a5478b0bcfee3f74e9655dd16d6e9e828212690184e66b7c78d726e4fbc84",
+      "before_git_blob": "17ad5302fae2aa4f29d9c657dd73a4cb8807e55a",
+      "after_sha256": "9b04289c134316f8c899d86a0dcfc0fa064ff9f0762f1511f93f43230b0652ee",
+      "after_git_blob": "2f394e73354db3a08feaeddcc977e69c0c81c478",
+      "after_bytes": 8632,
+      "mode": "100644"
+    },
+    {
+      "path": "rust/docs/validation/skill-source-identity-2026-10-07/README.md",
+      "group": "publication-summary",
+      "before_sha256": null,
+      "before_git_blob": null,
+      "after_sha256": "22564bcda3d6596f2cfd9bfe0b2026d9c2ecc74cb6a2e6834b03e2b8e4131799",
+      "after_git_blob": "cd5648ce82ccc09bc86784b7e1cc65c1a77374f1",
+      "after_bytes": 6296,
+      "mode": "100644"
+    },
+    {
+      "path": "rust/docs/validation/skill-source-identity-2026-10-07/detecting-controls.json",
+      "group": "validation-evidence",
+      "before_sha256": null,
+      "before_git_blob": null,
+      "after_sha256": "523b4d794354905f6b6d82bb31df7ea162836220a6451638817e3f2c40126002",
+      "after_git_blob": "3b02e2836bdf700b0df58313c7c45113f444025f",
+      "after_bytes": 3155,
+      "mode": "100644"
+    },
+    {
+      "path": "rust/docs/validation/skill-source-identity-2026-10-07/earlier-validation.json",
+      "group": "validation-evidence",
+      "before_sha256": null,
+      "before_git_blob": null,
+      "after_sha256": "d5ed0e76443305d8236432936ffbb89e08b4a47678eeefdafa5004b26d434738",
+      "after_git_blob": "219298ca39fe9caa03a1e7229a1490bb214e1e83",
+      "after_bytes": 6595,
+      "mode": "100644"
+    },
+    {
+      "path": "rust/docs/validation/skill-source-identity-2026-10-07/helper-check/Cargo.lock.txt",
+      "group": "validation-evidence",
+      "before_sha256": null,
+      "before_git_blob": null,
+      "after_sha256": "bd374b7d839e20f981c8c8fe91613d876ed07d6e6df8c077b3e8521f00f4d183",
+      "after_git_blob": "c765ef3c289777caa4618615b8e1399511c31c82",
+      "after_bytes": 1306,
+      "mode": "100644"
+    },
+    {
+      "path": "rust/docs/validation/skill-source-identity-2026-10-07/helper-check/Cargo.toml.txt",
+      "group": "validation-evidence",
+      "before_sha256": null,
+      "before_git_blob": null,
+      "after_sha256": "926fe89f52b2cba2d992b97b1523ce02710e8b4825a78cb688d38bcc12ae88ab",
+      "after_git_blob": "8fe928ebd3f49e5fb12b138ba456cd35a8e9f76a",
+      "after_bytes": 511,
+      "mode": "100644"
+    },
+    {
+      "path": "rust/docs/validation/skill-source-identity-2026-10-07/helper-check/lib.rs.txt",
+      "group": "validation-evidence",
+      "before_sha256": null,
+      "before_git_blob": null,
+      "after_sha256": "c06136bfb14899f38b5d94b710ee1ea145d0934fb27ca2ec641f62652027485a",
+      "after_git_blob": "6d9263dada9163edd0e835e40b5653a82dc0890b",
+      "after_bytes": 439,
+      "mode": "100644"
+    },
+    {
+      "path": "rust/docs/validation/skill-source-identity-2026-10-07/integrated-validation.json",
+      "group": "validation-evidence",
+      "before_sha256": null,
+      "before_git_blob": null,
+      "after_sha256": "02ee88662efaaba90ae3f3d48ca10aa37251519d95dd4071c64f982f7b57084a",
+      "after_git_blob": "ff924ea3f8c0ac37cdd701539261f632110e13da",
+      "after_bytes": 1609,
+      "mode": "100644"
+    },
+    {
+      "path": "rust/docs/validation/skill-source-identity-2026-10-07/loc-artifact-sha256.json",
+      "group": "loc-evidence",
+      "before_sha256": null,
+      "before_git_blob": null,
+      "after_sha256": "4de36303aae64db21c0a2f900694cac8a0db9010d0ee52a484048e640265d3b2",
+      "after_git_blob": "cd5167e2f065a2494c3777018b51381b87a85981",
+      "after_bytes": 1740,
+      "mode": "100644"
+    },
+    {
+      "path": "rust/docs/validation/skill-source-identity-2026-10-07/loc-audit-README.md",
+      "group": "loc-evidence",
+      "before_sha256": null,
+      "before_git_blob": null,
+      "after_sha256": "3044e943715192553be0b0485fd845329fb5da947fc54c6468cb5f56aaddaf5a",
+      "after_git_blob": "32363fd3a9b9e5c01af3b19d967fbc5815fab503",
+      "after_bytes": 9545,
+      "mode": "100644"
+    },
+    {
+      "path": "rust/docs/validation/skill-source-identity-2026-10-07/loc-audit.tar.gz",
+      "group": "loc-evidence",
+      "before_sha256": null,
+      "before_git_blob": null,
+      "after_sha256": "77bbf47ee8c01e02296c98d7650b0b0617aa541e20d4b40ca96059e863a00428",
+      "after_git_blob": "3292bd010b197907bdec37076baf1a85f68d7d2a",
+      "after_bytes": 853039,
+      "mode": "100644"
+    },
+    {
+      "path": "rust/docs/validation/skill-source-identity-2026-10-07/loc-negative-controls.json",
+      "group": "loc-evidence",
+      "before_sha256": null,
+      "before_git_blob": null,
+      "after_sha256": "f09eaf255f9b40b5b9e8f50e5c1b2cfdf73a2b05933b9edbc7b501d56a5359ab",
+      "after_git_blob": "aee1e16fb1487bd15c451e873e1266aae92053f5",
+      "after_bytes": 4900,
+      "mode": "100644"
+    },
+    {
+      "path": "rust/docs/validation/skill-source-identity-2026-10-07/loc-report.json",
+      "group": "loc-evidence",
+      "before_sha256": null,
+      "before_git_blob": null,
+      "after_sha256": "43b94858efe53907d87d10501310a62e0ac3bd3eceaa6401c80785f47cb912e1",
+      "after_git_blob": "8073c14acf90a6bbeb2f62ccd9ad477f9273f95d",
+      "after_bytes": 1060492,
+      "mode": "100644"
+    },
+    {
+      "path": "rust/docs/validation/skill-source-identity-2026-10-07/loc-verification.json",
+      "group": "loc-evidence",
+      "before_sha256": null,
+      "before_git_blob": null,
+      "after_sha256": "1531d3cf79095d77ca278cb903394b8b5a448724f5732547192877a293c4cfed",
+      "after_git_blob": "8198afc35ec2582ffbf68b023b15607af1be2f45",
+      "after_bytes": 735,
+      "mode": "100644"
+    },
+    {
+      "path": "rust/docs/validation/skill-source-identity-2026-10-07/logs/agent-skill-path-negative-canonical_target.log",
+      "group": "validation-evidence",
+      "before_sha256": null,
+      "before_git_blob": null,
+      "after_sha256": "528ead5c77adc3f3cbbd5507ae8ec00cbf21baf563486ebe4ccd546ca1210a49",
+      "after_git_blob": "7fd2ee153565f67bcfaef2c5cb9ce383b2bf9e43",
+      "after_bytes": 1059,
+      "mode": "100644"
+    },
+    {
+      "path": "rust/docs/validation/skill-source-identity-2026-10-07/logs/agent-skill-path-negative-fresh_remap.log",
+      "group": "validation-evidence",
+      "before_sha256": null,
+      "before_git_blob": null,
+      "after_sha256": "fc433819c12c31baa972fd6feb7f762c3b9c8bb550f516f1dbdbb23138db4ced",
+      "after_git_blob": "1924f645794920bd1950aeb5b300a36d0258cb92",
+      "after_bytes": 1172,
+      "mode": "100644"
+    },
+    {
+      "path": "rust/docs/validation/skill-source-identity-2026-10-07/logs/agent-skill-path-negative-legacy_lookup.log",
+      "group": "validation-evidence",
+      "before_sha256": null,
+      "before_git_blob": null,
+      "after_sha256": "62d4c1501db1f1a689687a50a7f481141f1431356cfebc7f80f2e3a8e7fa4a09",
+      "after_git_blob": "33b714d85210644895b90d3068f8f4a9d69e5fb4",
+      "after_bytes": 1201,
+      "mode": "100644"
+    },
+    {
+      "path": "rust/docs/validation/skill-source-identity-2026-10-07/logs/agent-skill-path-negative-metadata_revocation.log",
+      "group": "validation-evidence",
+      "before_sha256": null,
+      "before_git_blob": null,
+      "after_sha256": "6ec480639ed6a652ac881700183392cce97555fc1f03197829f384e2d4a2231d",
+      "after_git_blob": "cde943dd5ea5bda5ee93bea6d555c09116776497",
+      "after_bytes": 1178,
+      "mode": "100644"
+    },
+    {
+      "path": "rust/docs/validation/skill-source-identity-2026-10-07/logs/agent-skill-path-negative-receipt_identity.log",
+      "group": "validation-evidence",
+      "before_sha256": null,
+      "before_git_blob": null,
+      "after_sha256": "bcb3944cfa0268aa9545bd6f404404248997b7272071f8ed212680bd15f6a46c",
+      "after_git_blob": "f744151c2ed22864fc6833ad77ee9c3109bddd71",
+      "after_bytes": 1168,
+      "mode": "100644"
+    },
+    {
+      "path": "rust/docs/validation/skill-source-identity-2026-10-07/logs/agent-skill-path-negative-unique_target.log",
+      "group": "validation-evidence",
+      "before_sha256": null,
+      "before_git_blob": null,
+      "after_sha256": "8236ef927dedcab57e25b13b43eb7492a5837c1a6645416592e5da8a702bdf01",
+      "after_git_blob": "1ed5448ee183b835a82adab452b9383398d8382f",
+      "after_bytes": 1133,
+      "mode": "100644"
+    },
+    {
+      "path": "rust/docs/validation/skill-source-identity-2026-10-07/logs/apple-full-core-blocked.log",
+      "group": "validation-evidence",
+      "before_sha256": null,
+      "before_git_blob": null,
+      "after_sha256": "c0a1557749e9b9f7e96d4bf229dfafadb6a02f273a9bacf104546df364c969ff",
+      "after_git_blob": "98aa9a7d987c9b5bce16a3dd76ed97766e0cd87e",
+      "after_bytes": 4210,
+      "mode": "100644"
+    },
+    {
+      "path": "rust/docs/validation/skill-source-identity-2026-10-07/logs/apple-helper-only-passed.log",
+      "group": "validation-evidence",
+      "before_sha256": null,
+      "before_git_blob": null,
+      "after_sha256": "adb7eafad95c1b120d9d0c141af440c0514bc4ff102a8b36c9f9ce6331c11b91",
+      "after_git_blob": "ac6a27cd71424006bc948b0ba003effcfd366194",
+      "after_bytes": 289,
+      "mode": "100644"
+    },
+    {
+      "path": "rust/docs/validation/skill-source-identity-2026-10-07/logs/combined-default.log",
+      "group": "validation-evidence",
+      "before_sha256": null,
+      "before_git_blob": null,
+      "after_sha256": "c369331ef12a0b49a3849748fe5b9b83fcf7a7b9d8c1a612d7575e16a00a9f05",
+      "after_git_blob": "b96b5d4468f560a662b19f74010fbadfbaec5d2c",
+      "after_bytes": 54501,
+      "mode": "100644"
+    },
+    {
+      "path": "rust/docs/validation/skill-source-identity-2026-10-07/logs/prior-default-final.log",
+      "group": "validation-evidence",
+      "before_sha256": null,
+      "before_git_blob": null,
+      "after_sha256": "17435bd2eb4ad0a859bfe4d5c3bb768fab470c55d7d1cab663dc656a18c90afb",
+      "after_git_blob": "e3ed70be71eb1fe2e49f4283887b2538dfe3c251",
+      "after_bytes": 50871,
+      "mode": "100644"
+    },
+    {
+      "path": "rust/docs/validation/skill-source-identity-2026-10-07/logs/prior-focused.log",
+      "group": "validation-evidence",
+      "before_sha256": null,
+      "before_git_blob": null,
+      "after_sha256": "ef1c09443cd97d54f738228e48696156544b4f718a6fa88fb1e0ac33710a2e7b",
+      "after_git_blob": "425757aa1a74aac23a3971d92abf4eeb2a200d46",
+      "after_bytes": 2674,
+      "mode": "100644"
+    },
+    {
+      "path": "rust/docs/validation/skill-source-identity-2026-10-07/preimage-proof.json",
+      "group": "validation-evidence",
+      "before_sha256": null,
+      "before_git_blob": null,
+      "after_sha256": "17c2a6115d62d23cf313e61cf2292d27ca644bb6fd477501df04dd6f424c011c",
+      "after_git_blob": "f1749a0939e57a50a1e0c6645612a6739d54b20a",
+      "after_bytes": 3153,
+      "mode": "100644"
+    },
+    {
+      "path": "rust/docs/validation/skill-source-identity-2026-10-07/readiness/SOURCE-JUSTIFICATION.md",
+      "group": "readiness-provenance",
+      "before_sha256": null,
+      "before_git_blob": null,
+      "after_sha256": "2885b2cdfd146b9f86a8dbb7bdd4f1169f7a53191bef778b885ab881cead5169",
+      "after_git_blob": "e014ede3ddd8e47a8fb76f30e638bf2bb9901998",
+      "after_bytes": 2544,
+      "mode": "100644"
+    },
+    {
+      "path": "rust/docs/validation/skill-source-identity-2026-10-07/readiness/readiness-docs.patch",
+      "group": "readiness-provenance",
+      "before_sha256": null,
+      "before_git_blob": null,
+      "after_sha256": "ddf6f98d2c9c543e530bcd40b2b07691662b2ceab29ce75a22b72d690c448c89",
+      "after_git_blob": "ab3f6144eefca50b90dc2c6897fba7156671c1cb",
+      "after_bytes": 19062,
+      "mode": "100644"
+    },
+    {
+      "path": "rust/docs/validation/skill-source-identity-2026-10-07/readiness/verification.json",
+      "group": "readiness-provenance",
+      "before_sha256": null,
+      "before_git_blob": null,
+      "after_sha256": "acd750447a3b5a56e3922e5758bc40a95d2014a6237abd9731e4aac35bc205e0",
+      "after_git_blob": "568d5b65c526a909df3b008c920bbede9165010e",
+      "after_bytes": 725,
+      "mode": "100644"
+    },
+    {
+      "path": "rust/docs/validation/skill-source-identity-2026-10-07/source-freeze.json",
+      "group": "validation-evidence",
+      "before_sha256": null,
+      "before_git_blob": null,
+      "after_sha256": "0a9f8d4edac1b664b6d917727683f61cdb31da5d19fba05de43c9a026f889c31",
+      "after_git_blob": "976361c3cb9961ca6e421366ff4777c124757fb9",
+      "after_bytes": 1751,
+      "mode": "100644"
+    }
+  ],
+  "separate_publication_records": [
+    "publication-inputs.json",
+    "rust/scripts/verify-skill-source-identity-final-2026-10-07.py"
+  ]
+}
