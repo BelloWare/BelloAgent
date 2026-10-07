@@ -2,19 +2,20 @@
 //! ConnectionSettingsController.swift. The owner retains drafts and serializes
 //! vault/runtime work. This view never reads credentials, saves, or sends requests.
 //!
-//! Memory limit: the pinned shared editor has no per-field byte-limit API. Each
-//! field therefore uses its 8 MiB editing cap and roughly 16 MiB Undo budget
-//! (at least one transaction is retained), rather than the vault's smaller
-//! key/header/model validation limits. Per-tab retained editors and event/form
-//! clones add memory; these figures are not a total Settings memory bound.
-//! Oversized drafts are preserved for correction, never silently truncated.
+//! Key/header replacement inputs use an isolated bounded, masked entity. Ordinary
+//! metadata retains the shared editor's 8 MiB cap and roughly 16 MiB Undo budget.
+//! Form/coordinator clones are additional memory; no whole-Settings memory bound
+//! or native secure keyboard/accessibility acceptance is claimed.
+#[path = "connection_secure_input.rs"]
+mod secure_input;
 use crate::theme::Palette;
 use bello_workbench_ui::{EditorAppearance, EditorEvent, EditorView};
 use gpui::{
-    App, Bounds, Context, Div, ElementId, Entity, EventEmitter, FocusHandle, Focusable, FontWeight,
-    IntoElement, KeyDownEvent, MouseButton, Pixels, Point, Render, ScrollHandle, Stateful,
-    Subscription, Window, canvas, div, prelude::*, px, rgb,
+    AnyElement, App, Bounds, Context, Div, ElementId, Entity, EventEmitter, FocusHandle, Focusable,
+    FontWeight, IntoElement, KeyDownEvent, MouseButton, Pixels, Point, Render, ScrollHandle,
+    Stateful, Subscription, Window, canvas, div, prelude::*, px, rgb,
 };
+use secure_input::{HEADER_BYTES, KEY_BYTES, SecureInput, SecureInputEvent};
 use std::{cell::Cell, collections::BTreeMap, fmt, rc::Rc};
 
 const FIXTURE_NOTICE: &str = "Fixture-only · In-memory connections. Use only numeric loopback URLs, the key synthetic-project-fixture-only, and header values synthetic-header-fixture-only. Do not enter real keys. Nothing is saved to Keychain.";
@@ -295,7 +296,33 @@ impl Field {
 struct FormEditors {
     last_presented: ConnectionFields,
     fields: BTreeMap<Field, Entity<EditorView>>,
+    secrets: BTreeMap<Field, Entity<SecureInput>>,
     _subscriptions: Vec<Subscription>,
+}
+
+impl FormEditors {
+    fn focus(&self, field: Field, cx: &App) -> Option<FocusHandle> {
+        self.fields
+            .get(&field)
+            .map(|input| input.read(cx).focus_handle(cx))
+            .or_else(|| {
+                self.secrets
+                    .get(&field)
+                    .map(|input| input.read(cx).focus_handle(cx))
+            })
+    }
+    fn empty(&self, field: Field, cx: &App) -> bool {
+        self.fields.get(&field).map_or_else(
+            || self.secrets[&field].read(cx).text().is_empty(),
+            |input| input.read(cx).text().is_empty(),
+        )
+    }
+    fn element(&self, field: Field) -> AnyElement {
+        match self.fields.get(&field) {
+            Some(input) => input.clone().into_any_element(),
+            None => self.secrets[&field].clone().into_any_element(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -436,6 +463,11 @@ impl ConnectionSettingsView {
                     editor.set_appearance(Self::appearance(palette, *field != Field::Name), cx)
                 });
             }
+            for editor in editors.secrets.values() {
+                editor.update(cx, |editor, cx| {
+                    editor.set_appearance(Self::appearance(palette, false), cx)
+                });
+            }
         }
         cx.notify();
     }
@@ -515,9 +547,43 @@ impl ConnectionSettingsView {
         if !self.editors.contains_key(&form.id) {
             let id = form.id.clone();
             let mut fields = BTreeMap::new();
+            let mut secrets = BTreeMap::new();
             let mut subscriptions = Vec::new();
             for field in Field::ALL {
                 let value = field.value(&form.fields).to_owned();
+                if matches!(field, Field::Key | Field::Headers) {
+                    let editor = cx.new(|cx| {
+                        let mut editor = SecureInput::new(
+                            if field == Field::Key {
+                                KEY_BYTES
+                            } else {
+                                HEADER_BYTES
+                            },
+                            Self::appearance(self.palette, false),
+                            cx,
+                        );
+                        editor.set_text(value, cx);
+                        editor.set_read_only(!self.open || !self.presentation.editable(), cx);
+                        editor
+                    });
+                    let id = id.clone();
+                    subscriptions.push(cx.subscribe(&editor, move |view, _, event, cx| {
+                        if view
+                            .presentation
+                            .active
+                            .as_ref()
+                            .is_none_or(|form| form.id != id)
+                        {
+                            return;
+                        }
+                        match event {
+                            SecureInputEvent::Changed => view.edited(cx),
+                            SecureInputEvent::Rejected => cx.notify(),
+                        }
+                    }));
+                    secrets.insert(field, editor);
+                    continue;
+                }
                 let editor = cx.new(|cx| {
                     let mut editor = EditorView::new(value, window, cx);
                     editor.set_compact(true, cx);
@@ -549,6 +615,7 @@ impl ConnectionSettingsView {
                 FormEditors {
                     last_presented: form.fields.clone(),
                     fields,
+                    secrets,
                     _subscriptions: subscriptions,
                 },
             );
@@ -558,6 +625,9 @@ impl ConnectionSettingsView {
     fn set_editors_read_only(&self, read_only: bool, cx: &mut Context<Self>) {
         for editors in self.editors.values() {
             for editor in editors.fields.values() {
+                editor.update(cx, |editor, cx| editor.set_read_only(read_only, cx));
+            }
+            for editor in editors.secrets.values() {
                 editor.update(cx, |editor, cx| editor.set_read_only(read_only, cx));
             }
         }
@@ -588,6 +658,21 @@ impl ConnectionSettingsView {
                     editor.set_read_only(!editable || active.is_none(), cx);
                 });
             }
+            for (field, editor) in &editors.secrets {
+                editor.update(cx, |editor, cx| {
+                    if let Some(form) = active {
+                        let value = field.value(&form.fields);
+                        if editor.text() != value
+                            && (replace_local
+                                || (!editor.has_marked_text()
+                                    && editor.text() == field.value(&editors.last_presented)))
+                        {
+                            editor.set_text(value.to_owned(), cx);
+                        }
+                    }
+                    editor.set_read_only(!editable || active.is_none(), cx);
+                });
+            }
             if let Some(form) = active {
                 editors.last_presented = form.fields.clone();
             }
@@ -600,6 +685,11 @@ impl ConnectionSettingsView {
         if let Some(editors) = self.editors.get(&form.id) {
             for (field, editor) in &editors.fields {
                 field.assign(&mut fields, editor.read(cx).text().to_owned());
+            }
+            for (field, editor) in &editors.secrets {
+                if let Some(value) = editor.read(cx).captured_text() {
+                    field.assign(&mut fields, value.to_owned());
+                }
             }
         }
         Some(fields)
@@ -615,6 +705,10 @@ impl ConnectionSettingsView {
                     .fields
                     .values()
                     .any(|editor| editor.read(cx).has_marked_text())
+                    || editors
+                        .secrets
+                        .values()
+                        .any(|editor| editor.read(cx).has_marked_text())
             })
     }
 
@@ -802,8 +896,8 @@ impl ConnectionSettingsView {
                     .active
                     .as_ref()
                     .and_then(|form| self.editors.get(&form.id))
-                    .and_then(|editors| editors.fields.get(&field))
-                    .is_none_or(|editor| editor.read(cx).focus_handle(cx) != control.focus),
+                    .and_then(|editors| editors.focus(field, cx))
+                    .is_none_or(|focus| focus != control.focus),
                 Control::Intent(_) => false,
             };
             control.focus.is_focused(window)
@@ -822,8 +916,7 @@ impl ConnectionSettingsView {
                         .active
                         .as_ref()
                         .and_then(|form| self.editors.get(&form.id))
-                        .and_then(|editors| editors.fields.get(&field))
-                        .map(|editor| editor.read(cx).focus_handle(cx)),
+                        .and_then(|editors| editors.focus(field, cx)),
                     _ => None,
                 };
                 if let Some(index) = previous.iter().position(|old| old.control == control) {
@@ -981,8 +1074,14 @@ impl ConnectionSettingsView {
             .active
             .as_ref()
             .expect("active settings form");
-        let editor = self.editors[&form.id].fields[&field].clone();
-        let focus_editor = editor.clone();
+        let editors = &self.editors[&form.id];
+        let editor = editors.element(field);
+        let empty = editors.empty(field, cx);
+        let focus_editor = editors.focus(field, cx).expect("field input focus");
+        let rejection = editors
+            .secrets
+            .get(&field)
+            .and_then(|input| input.read(cx).rejection());
         let enabled = self.control_enabled(&Control::Field(field));
         let control = self
             .controls
@@ -1022,7 +1121,17 @@ impl ConnectionSettingsView {
                             .text_size(px(10.5))
                             .text_color(rgb(p.secondary))
                             .child(detail),
-                    ),
+                    )
+                    .when_some(rejection, |label, message| {
+                        label.child(
+                            div()
+                                .id("settings-secret-rejection")
+                                .debug_selector(move || format!("{}-rejection", field.id()))
+                                .text_size(px(10.5))
+                                .text_color(rgb(p.danger))
+                                .child(message),
+                        )
+                    }),
             )
             .child(
                 div()
@@ -1040,7 +1149,7 @@ impl ConnectionSettingsView {
                     .when(!enabled, |field| field.opacity(0.5))
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(move |view, _, window, cx| {
+                        cx.listener(move |view, _, window, _cx| {
                             if view.token() == token
                                 && view
                                     .presentation
@@ -1049,12 +1158,12 @@ impl ConnectionSettingsView {
                                     .is_some_and(|form| form.id == id)
                                 && view.control_enabled(&Control::Field(field))
                             {
-                                focus_editor.read(cx).focus(window);
+                                focus_editor.focus(window);
                             }
                         }),
                     )
-                    .child(editor.clone())
-                    .when(editor.read(cx).text().is_empty(), |field| {
+                    .child(editor)
+                    .when(empty, |field| {
                         field.child(
                             div()
                                 .absolute()

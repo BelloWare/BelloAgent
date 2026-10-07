@@ -288,6 +288,7 @@ fn failed_and_possible_commit_saves_preserve_draft_and_baseline() {
         let directory = tempfile::tempdir().unwrap();
         let (storage, fake) = fixture(None);
         let authority = ProjectAuthority {
+            provenance: super::super::AuthorityProvenance::Production,
             storage: Some(storage),
         };
         let mut draft = authority.load().unwrap().edit();
@@ -355,6 +356,7 @@ fn update_that_mutates_before_authentication_failure_retains_uncertainty() {
     let directory = tempfile::tempdir().unwrap();
     let (storage, fake) = fixture(Some(EMPTY));
     let authority = ProjectAuthority {
+        provenance: super::super::AuthorityProvenance::Production,
         storage: Some(storage),
     };
     let mut draft = authority.load().unwrap().edit();

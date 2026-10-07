@@ -521,7 +521,9 @@ dependencies = [
  "serde_json",
  "tempfile",
  "unicode-normalization",
+ "unicode-segmentation",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]

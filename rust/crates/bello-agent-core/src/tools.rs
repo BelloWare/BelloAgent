@@ -272,7 +272,6 @@ impl NativeTools {
         Ok(tools)
     }
 
-    #[cfg(feature = "synthetic-authority")]
     pub(crate) fn with_editing_gate(mut self, gate: Arc<tokio::sync::Mutex<()>>) -> Self {
         self.editing_gate = gate;
         self

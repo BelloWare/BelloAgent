@@ -42,6 +42,7 @@ fn legacy(mut value: Value, version: u32) -> Value {
             chat.as_object_mut().unwrap().remove("tool_mode");
         }
         chat.as_object_mut().unwrap().remove("connection_id");
+        chat.as_object_mut().unwrap().remove("materialization");
         if version == 1 {
             chat.as_object_mut().unwrap().remove("sidebar_order");
             chat.as_object_mut().unwrap().remove("pinned_at");

@@ -32,6 +32,7 @@ pub(super) fn authority() -> AuthorityResult<ProjectAuthority> {
             storage: Some(std::sync::Arc::new(NativeStorage {
                 api: macos::SecurityApi,
             })),
+            provenance: super::AuthorityProvenance::Production,
         })
     }
     #[cfg(not(target_os = "macos"))]

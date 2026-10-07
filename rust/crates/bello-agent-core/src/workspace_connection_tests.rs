@@ -34,6 +34,7 @@ fn old_catalogs_do_not_invent_connections_or_rewrite_on_read() {
         for row in value["chats"].as_array_mut().unwrap() {
             let row = row.as_object_mut().unwrap();
             row.remove("connection_id");
+            row.remove("materialization");
             if version < 5 {
                 row.remove("tool_mode");
             }

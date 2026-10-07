@@ -64,7 +64,13 @@ impl ProjectManagerController {
         let (authority, synthetic) = cx
             .try_global::<LaunchProjectAuthority>()
             .map(|launch| (launch.authority.clone(), launch.synthetic))
-            .unwrap_or_else(|| (Arc::new(ProjectAuthority::new()), false));
+            .unwrap_or_else(|| {
+                #[cfg(feature = "synthetic-authority")]
+                if let Some(launch) = cx.try_global::<crate::connection_settings_controller::LaunchConnectionAuthority>() {
+                    return (Arc::new(launch.0.authority()), true);
+                }
+                (Arc::new(ProjectAuthority::new()), false)
+            });
         let presentation = ProjectManagerPresentation {
             revision: 1,
             primary,
@@ -670,6 +676,7 @@ impl AgentView {
             chat.loading = true;
         }
         let change = ChatModeChange {
+            runtime: self.runtime.clone(),
             workspace: self.workspace.clone(),
             primary: self.project.clone(),
             record,
@@ -832,6 +839,7 @@ impl AgentView {
             .cloned()
             .collect();
         let change = ProjectChange {
+            runtime: self.runtime.clone(),
             authority: self.projects.authority.clone(),
             workspace: self.workspace.clone(),
             baseline,
@@ -900,7 +908,7 @@ impl AgentView {
                 self.projects.presentation.stage = Stage::Current;
                 self.projects.presentation.availability = Availability::Ready;
                 self.projects.notice(
-                    "Project folders saved. Chat tools remain unavailable in this preview.",
+                    saved_project_notice(self.projects.presentation.synthetic),
                     false,
                 );
                 self.projects.admission_blocked = false;
@@ -960,6 +968,32 @@ impl AgentView {
                 });
             });
         });
+    }
+}
+
+fn saved_project_notice(synthetic: bool) -> &'static str {
+    if synthetic {
+        "Project folders saved. Fixture-only tools require a saved loopback connection. Nothing was sent; native production tools remain disabled."
+    } else {
+        "Project folders saved. Native production tools remain disabled. Nothing was sent."
+    }
+}
+
+#[cfg(test)]
+mod notice_tests {
+    #[::core::prelude::v1::test]
+    fn normal_project_notice_preserves_native_production_gate() {
+        let notice = super::saved_project_notice(false);
+        assert!(notice.contains("Native production tools remain disabled"));
+        assert!(!notice.contains("Fixture-only"));
+        assert!(notice.contains("Nothing was sent"));
+    }
+    #[::core::prelude::v1::test]
+    fn synthetic_project_notice_requires_explicit_fixture_connection() {
+        let notice = super::saved_project_notice(true);
+        assert!(notice.contains("Fixture-only tools require a saved loopback connection"));
+        assert!(notice.contains("native production tools remain disabled"));
+        assert!(notice.contains("Nothing was sent"));
     }
 }
 

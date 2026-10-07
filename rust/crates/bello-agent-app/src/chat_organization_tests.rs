@@ -55,11 +55,12 @@ fn second(
 ) -> String {
     let controller = Controller::new(SessionStore::pending(), None).unwrap();
     let id = controller.snapshot_shared().id.clone();
-    let record = ChatRecord::new(
+    let mut record = ChatRecord::new(
         id.clone(),
         title.into(),
         view.chat_directory.join(format!("{id}.json")),
     );
+    record.materialization = bello_agent_core::workspace::ChatMaterialization::Pending;
     let chat = ChatState::new(
         controller,
         record.clone(),
@@ -119,7 +120,7 @@ fn archive_fifo_waits_for_live_work_without_polling_and_preserves_every_intent(
         let state = view.workspace.lock().unwrap().snapshot();
         assert!(state.chats[0].pinned_at.is_none());
         assert!(state.chats[0].archived_at.is_none());
-        assert_eq!(state.version, 6);
+        assert_eq!(state.version, 7);
         assert_eq!(view.composer.read(cx).text(), "retained draft 日本語");
         assert!(!view.controller.is_persistent());
     });

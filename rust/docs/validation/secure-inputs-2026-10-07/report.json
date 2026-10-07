@@ -1,0 +1,85 @@
+{
+  "date_utc": "2026-10-07",
+  "platform": "Cloud Linux X11 / GPUI / software Vulkan; actual CUA mouse and keyboard interaction",
+  "binary_sha256": "0c1539f98bdd0692e71f9d69787d9e0604938bd9f55a9df94c96d23ac82079a6",
+  "production_source_manifest_sha256": "fe301dbd9621eb7d1ad0ad35ca55b9995a3f6d545ea70a9ec16fe42aaf7d75f7",
+  "secure_input_source_sha256": "4314eecbdd9c84ad29606f89034612dd7ffabf8ac1d77a6187e30b483fd9cb1c",
+  "only_fake_credentials": true,
+  "production_gates_changed": false,
+  "checks": {
+    "both_fields_masked": true,
+    "typed_key_masked": true,
+    "key_paste_masked": true,
+    "header_typing_masked": true,
+    "tab_and_shift_tab": true,
+    "mouse_selection_and_partial_delete": true,
+    "copy_cut_preserved_clipboard_sentinel": true,
+    "clear_without_undo_recovery": true,
+    "close_keep_editing_retained_masks": true,
+    "save_reopen_replacements_blank": true,
+    "cancel_reopen_replacements_blank": true,
+    "save_trust_select_no_requests": true,
+    "blank_replacements_preserved_key_and_header": true,
+    "header_empty_object_clear_kept_key": true,
+    "stale_authority_save_refused_without_send_and_draft_retained": true,
+    "explicit_reload_reentered_clear_success": true,
+    "own_idle_fixture_closed": true
+  },
+  "request_checks": [
+    {
+      "expected_fixture_key": true,
+      "expected_fixture_header": true,
+      "header_absent": false
+    },
+    {
+      "expected_fixture_key": true,
+      "expected_fixture_header": false,
+      "header_absent": true
+    }
+  ],
+  "app_log_bytes": 0,
+  "screenshots": {
+    "02-copy-cut-sentinel.jpg": {
+      "sha256": "4ef3178671f1496e8bf1c606232624ac2ca473c3653a39de43fe93c7def5942d",
+      "bytes": 94563
+    },
+    "03-mouse-selection.jpg": {
+      "sha256": "bf96ac869181f133a0805e8d928ecd548d0c86cc1c8193fd3d90148d75a41294",
+      "bytes": 93987
+    },
+    "04-selected-delete.jpg": {
+      "sha256": "d343c68a75ed90adc7c3b824ebe8d82357de4eceba14e23c8e96ecfe2d91564d",
+      "bytes": 93814
+    },
+    "05-clear-no-undo.jpg": {
+      "sha256": "3aad56aa79c203d3032b33486a790be179187377386bef403d4e013f17e19f7f",
+      "bytes": 94467
+    },
+    "06-both-secrets-masked.jpg": {
+      "sha256": "2f9477c22b93bede4b4b2a19a50774e24bc643c827cbcecd6b6b41dfe71581c7",
+      "bytes": 95515
+    },
+    "09-saved-reopen-blank.jpg": {
+      "sha256": "c3672f535fd0e05378fa2c10ce703185a1f807eae5ecabd1b338b385fa45cdb7",
+      "bytes": 93943
+    },
+    "14-stale-authority-refusal.jpg": {
+      "sha256": "a88e13140c9eba01dd6a765ec9626b97d796cbd985131eee77b6491dd2b6567c",
+      "bytes": 96204
+    },
+    "15-cleared-header-request.jpg": {
+      "sha256": "ae3630a466552ca2414a7080c92be61aa19e4f69a0085a88454f3bf0f9049c58",
+      "bytes": 56540
+    }
+  },
+  "not_established": [
+    "Native macOS secure keyboard / secure event input",
+    "Native IME / accessibility acceptance",
+    "Signing / Keychain / production vault startup",
+    "Complete memory erasure or protection against platform compromise"
+  ],
+  "observation": "Found an unrelated stale Projects success footer; app-runtime owner is correcting that label and will test the final binary. The full secure matrix remains attributed to the binary above.",
+  "full_run_report_sha256": "29746216be211ffeb0fd86034cf33b0e8c9141d90caab88c9561d8555f3712bb",
+  "full_run_capture_count": 15,
+  "curated_capture_count": 8
+}

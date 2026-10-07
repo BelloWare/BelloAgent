@@ -1,0 +1,3 @@
+{"model": "local-test-fixture", "tools": ["ls"], "tool_result": false, "request_kind": "ls", "fixture_authorization": true, "custom_header_present": false}
+{"model": "local-test-fixture", "tools": ["ls"], "tool_result": true, "request_kind": "answer", "fixture_authorization": true, "custom_header_present": false}
+{"model": "local-test-fixture", "tools": ["ls"], "tool_result": false, "request_kind": "answer", "fixture_authorization": true, "custom_header_present": false}

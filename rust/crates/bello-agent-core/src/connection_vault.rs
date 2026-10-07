@@ -60,7 +60,7 @@ impl LoadedConnections {
         let mut ids = HashSet::new();
         let mut profiles = Vec::with_capacity(entries.len());
         for entry in &entries {
-            let metadata = metadata(entry)?;
+            let metadata = metadata(authority, entry)?;
             if !ids.insert(metadata.profile.id.clone()) {
                 return Err(AuthorityError::Corrupt);
             }
@@ -144,9 +144,7 @@ pub struct ConnectionSave {
 /// Fresh exact membership evidence. No credential getters or Debug formatter.
 pub struct ConfirmedConnection {
     metadata: SavedConnection,
-    #[cfg(feature = "synthetic-authority")]
     entry: Fields,
-    #[cfg(feature = "synthetic-authority")]
     authority: ProjectAuthority,
 }
 impl ConfirmedConnection {
@@ -158,7 +156,7 @@ impl ConfirmedConnection {
 fn field<T: for<'de> serde::Deserialize<'de>>(fields: &Fields, name: &str) -> AuthorityResult<T> {
     parse(fields.0.get(name).ok_or(AuthorityError::Corrupt)?)
 }
-fn metadata(entry: &Fields) -> AuthorityResult<SavedConnection> {
+fn metadata(authority: &ProjectAuthority, entry: &Fields) -> AuthorityResult<SavedConnection> {
     let fields: Fields = field(entry, "profile")?;
     let id: String = field(&fields, "id")?;
     if id.is_empty() || id.len() > 128 || id.chars().any(char::is_control) {
@@ -219,7 +217,7 @@ fn metadata(entry: &Fields) -> AuthorityResult<SavedConnection> {
         && secrets(entry).is_ok_and(|(key, headers)| {
             let mut configured = profile.clone();
             configured.headers = headers;
-            validate_synthetic(&configured, &key).is_ok()
+            validate_connection(authority, &configured, &key).is_ok()
         });
     profile.headers.clear();
     // Invalid endpoint text can itself contain credentials/query tokens. Keep
@@ -260,6 +258,29 @@ fn same_route(left: &Profile, right: &Profile) -> bool {
         && left.base_url == right.base_url
         && left.model_id == right.model_id
 }
+fn validate_connection(
+    authority: &ProjectAuthority,
+    profile: &Profile,
+    key: &str,
+) -> AuthorityResult<()> {
+    profile
+        .validate()
+        .map_err(|_| AuthorityError::InvalidConnection)?;
+    if uuid::Uuid::parse_str(&profile.id).is_err()
+        || key.is_empty()
+        || key.len() > 16_384
+        || key.bytes().any(|b| b < 32 || b == 127)
+    {
+        return Err(AuthorityError::InvalidConnection);
+    }
+    match authority.provenance {
+        super::AuthorityProvenance::Unavailable => Err(AuthorityError::Unavailable),
+        super::AuthorityProvenance::Production => Ok(()),
+        #[cfg(feature = "synthetic-authority")]
+        super::AuthorityProvenance::Fixture => validate_synthetic(profile, key),
+    }
+}
+#[cfg(feature = "synthetic-authority")]
 fn validate_synthetic(profile: &Profile, key: &str) -> AuthorityResult<()> {
     profile
         .validate()
@@ -368,7 +389,7 @@ impl ProjectAuthority {
         let mut profile = draft.profile.clone();
         profile.provider_id = "litellm".into();
         profile.headers = headers;
-        validate_synthetic(&profile, &key)?;
+        validate_connection(self, &profile, &key)?;
         let forked =
             previous.is_some_and(|index| !same_route(&current.profiles[index].profile, &profile));
         if forked {
@@ -494,22 +515,113 @@ impl ProjectAuthority {
         }
         Ok(ConfirmedConnection {
             metadata,
-            #[cfg(feature = "synthetic-authority")]
             entry: current.entries[index].clone(),
-            #[cfg(feature = "synthetic-authority")]
             authority: self.clone(),
         })
     }
 }
 
+#[path = "saved_connection_runtime.rs"]
+mod saved_runtime;
+pub(crate) use saved_runtime::ConnectionLease;
+pub use saved_runtime::SavedConnectionRuntime;
 #[cfg(feature = "synthetic-authority")]
 #[path = "synthetic_connection_runtime.rs"]
 mod synthetic_runtime;
-#[cfg(feature = "synthetic-authority")]
-pub(crate) use synthetic_runtime::ConnectionLease;
 #[cfg(feature = "synthetic-authority")]
 pub use synthetic_runtime::SyntheticConnectionRuntime;
 
 #[cfg(all(test, feature = "synthetic-authority"))]
 #[path = "connection_vault_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod production_contract_tests {
+    use super::*;
+    use crate::project_authority::VaultStorage;
+    use std::sync::Mutex;
+    #[derive(Default)]
+    struct Storage(Mutex<Option<Vec<u8>>>, std::sync::atomic::AtomicUsize);
+    impl VaultStorage for Storage {
+        fn read(&self) -> AuthorityResult<Option<Vec<u8>>> {
+            self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(self.0.lock().unwrap().clone())
+        }
+        fn replace(&self, expected: Option<&[u8]>, replacement: &[u8]) -> AuthorityResult<()> {
+            let mut bytes = self.0.lock().unwrap();
+            if bytes.as_deref() != expected {
+                return Err(AuthorityError::Conflict);
+            }
+            *bytes = Some(replacement.to_vec());
+            Ok(())
+        }
+    }
+    fn draft() -> ConnectionDraft {
+        let profile=serde_json::from_value(serde_json::json!({"id":uuid::Uuid::new_v4().to_string(),"api":"openai-responses","providerId":"litellm","baseUrl":"https://gateway.example.test","modelId":"example-model","contextWindow":32000,"maxOutputTokens":4096})).unwrap();
+        let mut draft = ConnectionDraft::new(profile, "Production contract fixture".into());
+        draft.key_input = "test-only-ordinary-format-key".into();
+        draft.headers_input = r#"{"x-example":"test-only-ordinary-header"}"#.into();
+        draft
+    }
+    #[test]
+    fn production_contract_validates_ordinary_inputs_without_native_or_network_access() {
+        let authority = ProjectAuthority::with_test_storage(Arc::new(Storage::default()));
+        let mut draft = draft();
+        let saved = authority
+            .save_connection(&authority.load_connections().unwrap(), &draft)
+            .unwrap();
+        assert!(saved.profile.available);
+        let confirmed =
+            SavedConnectionRuntime::confirm(&authority, &saved.loaded, &saved.profile.profile.id)
+                .unwrap();
+        assert_eq!(
+            confirmed.metadata().profile.base_url,
+            "https://gateway.example.test"
+        );
+        assert!(confirmed.metadata().profile.headers.is_empty());
+        let mut edit = saved.loaded.edit(&saved.profile.profile.id).unwrap();
+        assert!(edit.key_input.is_empty());
+        assert!(edit.headers_input.is_empty());
+        edit.name = "Renamed".into();
+        edit.headers_input = "{}".into();
+        let changed = authority.save_connection(&saved.loaded, &edit).unwrap();
+        assert!(!changed.forked);
+        for key in ["", "test\nkey", "test\u{7f}key"] {
+            draft.profile.id = uuid::Uuid::new_v4().to_string();
+            draft.key_input = key.into();
+            assert!(authority.save_connection(&changed.loaded, &draft).is_err());
+        }
+        assert!(matches!(
+            ProjectAuthority::default().load(),
+            Err(AuthorityError::Unavailable)
+        ));
+    }
+    #[test]
+    fn current_project_membership_needs_one_read_and_unrelated_revision_does_not_revoke() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Arc::new(Storage::default());
+        let authority = ProjectAuthority::with_test_storage(storage.clone());
+        let mut edit = authority.load().unwrap().edit();
+        let project = edit
+            .trust_project(&uuid::Uuid::new_v4().to_string(), dir.path(), &[])
+            .unwrap();
+        authority.save(&mut edit).unwrap();
+        authority
+            .save_connection(&authority.load_connections().unwrap(), &draft())
+            .unwrap();
+        let reads = storage.1.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(authority.confirm_current_project_binding(&project).is_ok());
+        assert_eq!(
+            storage.1.load(std::sync::atomic::Ordering::SeqCst),
+            reads + 1
+        );
+        let mut raw: serde_json::Value =
+            serde_json::from_slice(storage.0.lock().unwrap().as_ref().unwrap()).unwrap();
+        raw["workspaces"][0]["futurePolicy"] = true.into();
+        *storage.0.lock().unwrap() = Some(serde_json::to_vec(&raw).unwrap());
+        assert!(matches!(
+            authority.confirm_current_project_binding(&project),
+            Err(AuthorityError::UnsupportedProject)
+        ));
+    }
+}

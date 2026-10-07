@@ -8,6 +8,7 @@ pub mod profile;
 pub mod project_authority;
 pub mod provider;
 pub mod runtime;
+pub mod saved_runtime;
 pub mod session;
 pub mod sse;
 mod stream_journal;

@@ -62,6 +62,7 @@ impl AgentView {
 
     pub(crate) fn resume_queued(&mut self, chat_id: &str, cx: &mut Context<Self>) {
         if self.record.id != chat_id
+            || (self.record.connection_id.is_some() && !self.controller.configured())
             || self.actor_mutation_blocked(chat_id)
             || self.shutting_down
             || self.busy

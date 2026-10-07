@@ -184,6 +184,7 @@ impl Controller {
                 return Err(crate::Error::Cancelled);
             }
             configuration.confirm_for_request().await?;
+            self.confirm_runtime_authority(cancel.clone()).await?;
             {
                 let mut inner = self
                     .inner
@@ -226,6 +227,7 @@ impl Controller {
                 &definitions,
             )?;
             configuration.confirm_for_request().await?;
+            self.confirm_runtime_authority(cancel.clone()).await?;
             let mut inner = self
                 .inner
                 .lock()

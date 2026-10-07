@@ -16,6 +16,7 @@ fn fixture() -> (tempfile::TempDir, ShutdownPlan) {
     let controller = Controller::new(SessionStore::pending(), None).unwrap();
     let snapshot = controller.snapshot();
     let record = ChatRecord {
+        materialization: bello_agent_core::workspace::ChatMaterialization::Pending,
         sidebar_order: None,
         pinned_at: None,
         archived_at: None,

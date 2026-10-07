@@ -92,9 +92,8 @@ impl TrustedReadOnlyTools {
                 .map_err(|error| invalid(error.to_string()))?,
         })
     }
-    /// Crate-private synthetic composition after a saved Editing mode and
-    /// current project trust have been checked. No default/production caller.
-    #[cfg(feature = "synthetic-authority")]
+    /// Crate-private factory composition after a saved Editing mode and
+    /// current project trust have been checked. No default native caller.
     pub(crate) fn new_with_editing_capabilities(
         cwd: PathBuf,
         additional_roots: Vec<PathBuf>,
@@ -548,6 +547,12 @@ impl Controller {
     }
 
     async fn confirm_turn_resources(&self, cancel: CancellationToken) -> Result<()> {
+        if self.authority.is_some()
+            && let Some(configuration) = self.configuration()
+        {
+            configuration.confirm_for_request().await?;
+        }
+        self.confirm_runtime_authority(cancel.clone()).await?;
         #[cfg(feature = "synthetic-authority")]
         if self.resources.is_some() {
             return self.confirm_resources_async(cancel).await;

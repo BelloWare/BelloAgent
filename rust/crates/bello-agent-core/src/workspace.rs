@@ -12,7 +12,7 @@ use uuid::Uuid;
 const MAX_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CHATS: usize = 512;
 const MAX_DRAFT_BYTES: usize = 262_144;
-const CURRENT_VERSION: u32 = 6;
+const CURRENT_VERSION: u32 = 7;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct QueuedDraft {
@@ -121,12 +121,22 @@ pub enum ChatToolMode {
     #[serde(rename = "read-only")]
     ReadOnly,
 }
+/// Durable provenance, never inferred from a missing checkpoint. The first
+/// submission receipt changes Pending before any checkpoint creation occurs.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ChatMaterialization {
+    Pending,
+    CheckpointRequired,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ChatRecord {
     pub id: String,
     pub title: String,
     pub snapshot: PathBuf,
+    pub materialization: ChatMaterialization,
     pub tool_mode: ChatToolMode,
     /// Explicit saved connection identity; None keeps the legacy CLI-only route.
     #[serde(deserialize_with = "present_connection_id")]
@@ -144,6 +154,7 @@ impl ChatRecord {
             id,
             title,
             snapshot,
+            materialization: ChatMaterialization::CheckpointRequired,
             tool_mode: ChatToolMode::Editing,
             connection_id: None,
             sidebar_order: Some(organization_timestamp()),
@@ -343,6 +354,22 @@ impl<'de> Deserialize<'de> for WorkspaceSnapshot {
             #[serde(default)]
             archived_at: Option<u64>,
         }
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct V6Chat {
+            id: String,
+            title: String,
+            snapshot: PathBuf,
+            tool_mode: ChatToolMode,
+            #[serde(deserialize_with = "present_connection_id")]
+            connection_id: Option<String>,
+            #[serde(default)]
+            sidebar_order: Option<u64>,
+            #[serde(default)]
+            pinned_at: Option<u64>,
+            #[serde(default)]
+            archived_at: Option<u64>,
+        }
         let record = Record::deserialize(deserializer)?;
         if !(1..=CURRENT_VERSION).contains(&record.version)
             || (record.version < 5 && record.project_id.is_some())
@@ -355,13 +382,26 @@ impl<'de> Deserialize<'de> for WorkspaceSnapshot {
             .chats
             .into_iter()
             .map(|raw| {
-                if record.version >= 6 {
+                if record.version >= 7 {
                     serde_json::from_str(raw.get())
+                } else if record.version == 6 {
+                    serde_json::from_str::<V6Chat>(raw.get()).map(|chat| ChatRecord {
+                        id: chat.id,
+                        title: chat.title,
+                        snapshot: chat.snapshot,
+                        materialization: ChatMaterialization::CheckpointRequired,
+                        tool_mode: chat.tool_mode,
+                        connection_id: chat.connection_id,
+                        sidebar_order: chat.sidebar_order,
+                        pinned_at: chat.pinned_at,
+                        archived_at: chat.archived_at,
+                    })
                 } else if record.version == 5 {
                     serde_json::from_str::<V5Chat>(raw.get()).map(|chat| ChatRecord {
                         id: chat.id,
                         title: chat.title,
                         snapshot: chat.snapshot,
+                        materialization: ChatMaterialization::CheckpointRequired,
                         tool_mode: chat.tool_mode,
                         connection_id: None,
                         sidebar_order: chat.sidebar_order,
@@ -373,6 +413,7 @@ impl<'de> Deserialize<'de> for WorkspaceSnapshot {
                         id: chat.id,
                         title: chat.title,
                         snapshot: chat.snapshot,
+                        materialization: ChatMaterialization::CheckpointRequired,
                         tool_mode: ChatToolMode::Editing,
                         connection_id: None,
                         sidebar_order: chat.sidebar_order,
@@ -539,9 +580,8 @@ impl WorkspaceSnapshot {
 /// Single writer, atomic small-file transactions. Revision receipts reject stale
 /// debounce work independently of wall-clock changes and task cancellation.
 pub struct WorkspaceStore {
-    // One in-memory source editing gate per live catalog owner. Every synthetic
-    // project confirmation and chat shares it; it is never durable authority.
-    #[cfg(feature = "synthetic-authority")]
+    // One in-memory source editing gate per live catalog owner. Every saved
+    // factory confirmation and chat shares it; it is never durable authority.
     editing_gate: std::sync::Arc<tokio::sync::Mutex<()>>,
     path: PathBuf,
     _lock: File,
@@ -610,7 +650,6 @@ impl WorkspaceStore {
             WorkspaceSnapshot::new(project)
         };
         Ok(Self {
-            #[cfg(feature = "synthetic-authority")]
             editing_gate: std::sync::Arc::new(tokio::sync::Mutex::new(())),
             path,
             _lock: lock,
@@ -620,7 +659,6 @@ impl WorkspaceStore {
             fault: Fault::None,
         })
     }
-    #[cfg(feature = "synthetic-authority")]
     pub(crate) fn editing_gate(&self) -> std::sync::Arc<tokio::sync::Mutex<()>> {
         self.editing_gate.clone()
     }
@@ -1147,6 +1185,12 @@ impl WorkspaceStore {
         self.transact(|state| {
             if let Some(existing) = state.intents.get(&intent.id) {
                 return if existing == &intent {
+                    let chat = state
+                        .chats
+                        .iter_mut()
+                        .find(|chat| chat.id == intent.chat_id)
+                        .ok_or_else(|| invalid("Submission has no saved chat"))?;
+                    chat.materialization = ChatMaterialization::CheckpointRequired;
                     Ok(())
                 } else {
                     Err(invalid(
@@ -1175,6 +1219,12 @@ impl WorkspaceStore {
                     .ok_or_else(|| invalid("Draft revision overflow"))?;
                 draft.text.clear();
             }
+            let chat = state
+                .chats
+                .iter_mut()
+                .find(|chat| chat.id == intent.chat_id)
+                .ok_or_else(|| invalid("Submission has no saved chat"))?;
+            chat.materialization = ChatMaterialization::CheckpointRequired;
             state.intents.insert(intent.id.clone(), intent);
             Ok(())
         })
@@ -1438,6 +1488,7 @@ mod tests {
         if version < 6 {
             for chat in value["chats"].as_array_mut().unwrap() {
                 chat.as_object_mut().unwrap().remove("connection_id");
+                chat.as_object_mut().unwrap().remove("materialization");
             }
         }
         if version < 5 {
@@ -1455,6 +1506,7 @@ mod tests {
         let chat = ChatRecord {
             tool_mode: ChatToolMode::Editing,
             connection_id: None,
+            materialization: ChatMaterialization::CheckpointRequired,
             sidebar_order: None,
             pinned_at: None,
             archived_at: None,
@@ -3308,3 +3360,145 @@ mod identity_tests;
 #[cfg(test)]
 #[path = "workspace_connection_tests.rs"]
 mod connection_tests;
+
+#[cfg(test)]
+mod materialization_tests {
+    use super::*;
+    fn fixture() -> (
+        tempfile::TempDir,
+        WorkspaceStore,
+        ChatRecord,
+        SubmissionIntent,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = WorkspaceStore::open(dir.path().join("catalog.json"), dir.path()).unwrap();
+        let id = Uuid::new_v4().to_string();
+        let mut record =
+            ChatRecord::new(id.clone(), "Pending".into(), store.chat_path(&id).unwrap());
+        record.materialization = ChatMaterialization::Pending;
+        let draft = DraftRecord {
+            revision: 1,
+            text: "exact retained text".into(),
+            queued_edit: None,
+        };
+        store.register(record.clone(), draft.clone()).unwrap();
+        let intent = SubmissionIntent {
+            id: Uuid::new_v4().to_string(),
+            chat_id: id,
+            text: draft.text,
+            lane: Lane::FollowUp,
+            draft_revision: 1,
+        };
+        (dir, store, record, intent)
+    }
+    #[test]
+    fn first_receipt_and_checkpoint_requirement_share_before_and_after_rename_failure() {
+        for (fault, committed) in [(Fault::BeforeRename, false), (Fault::AfterRename, true)] {
+            let (dir, mut store, record, intent) = fixture();
+            let before = fs::read(&store.path).unwrap();
+            store.fault = fault;
+            assert!(store.begin_submission(intent.clone()).is_err());
+            assert_eq!(store.is_uncertain(), committed);
+            // Uncertain memory is fenced rather than adopting observed disk bytes.
+            assert_eq!(
+                store.snapshot().chats[0].materialization,
+                ChatMaterialization::Pending
+            );
+            assert_eq!(
+                store.snapshot().drafts[&record.id].text,
+                "exact retained text"
+            );
+            if !committed {
+                assert_eq!(fs::read(&store.path).unwrap(), before);
+            }
+            let path = store.path.clone();
+            drop(store);
+            let reopened = WorkspaceStore::open(&path, dir.path()).unwrap();
+            assert_eq!(
+                reopened.snapshot().chats[0].materialization,
+                if committed {
+                    ChatMaterialization::CheckpointRequired
+                } else {
+                    ChatMaterialization::Pending
+                }
+            );
+            assert_eq!(
+                reopened.snapshot().intents.contains_key(&intent.id),
+                committed
+            );
+            assert!(!record.snapshot.exists());
+            assert!(!record.snapshot.with_extension("lock").exists());
+        }
+    }
+    #[test]
+    fn stale_draft_organization_and_register_never_regress_materialization() {
+        let (_dir, mut store, record, intent) = fixture();
+        store.begin_submission(intent.clone()).unwrap();
+        store
+            .register(record.clone(), DraftRecord::default())
+            .unwrap();
+        store
+            .save_submitting_draft(
+                record.clone(),
+                DraftRecord {
+                    revision: 8,
+                    text: "newer".into(),
+                    queued_edit: None,
+                },
+                intent,
+            )
+            .unwrap();
+        store
+            .set_pinned(record.clone(), DraftRecord::default(), true, 10)
+            .unwrap();
+        store
+            .set_archived(record.clone(), DraftRecord::default(), true, 11)
+            .unwrap();
+        assert_eq!(
+            store.snapshot().chats[0].materialization,
+            ChatMaterialization::CheckpointRequired
+        );
+    }
+    #[test]
+    fn v7_requires_explicit_valid_provenance_and_v6_reads_preserve_bytes() {
+        let (dir, store, _record, _intent) = fixture();
+        let path = store.path.clone();
+        let value = serde_json::to_value(store.snapshot()).unwrap();
+        drop(store);
+        for marker in [
+            None,
+            Some(serde_json::json!("future")),
+            Some(serde_json::Value::Null),
+        ] {
+            let mut invalid = value.clone();
+            match marker {
+                Some(marker) => invalid["chats"][0]["materialization"] = marker,
+                None => {
+                    invalid["chats"][0]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("materialization");
+                }
+            }
+            let bytes = serde_json::to_vec(&invalid).unwrap();
+            fs::write(&path, &bytes).unwrap();
+            assert!(WorkspaceStore::open(&path, dir.path()).is_err());
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+        }
+        let mut old = value;
+        old["version"] = 6.into();
+        old["chats"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("materialization");
+        let bytes = format!(" \n{}\n", serde_json::to_string_pretty(&old).unwrap()).into_bytes();
+        fs::write(&path, &bytes).unwrap();
+        let reopened = WorkspaceStore::open(&path, dir.path()).unwrap();
+        assert_eq!(reopened.snapshot().version, 6);
+        assert_eq!(
+            reopened.snapshot().chats[0].materialization,
+            ChatMaterialization::CheckpointRequired
+        );
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+    }
+}

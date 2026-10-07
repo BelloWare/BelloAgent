@@ -154,19 +154,16 @@ impl AgentView {
             self.error = Some("This development workspace supports up to 512 chats".into());
             return;
         }
-        let store = SessionStore::pending();
-        let id = store.snapshot().id;
-        let mut record = ChatRecord::new(
-            id.clone(),
-            "New chat".into(),
-            self.chat_directory.join(format!("{id}.json")),
-        );
-        record.connection_id = self.connections.choice.clone();
-        let config = self
-            .connections
-            .config_for(&record, self.legacy_configuration.clone());
-        match config.and_then(|config| Controller::with_configuration(store, config)) {
-            Ok(controller) => {
+        if self.connections.uncertain {
+            self.error = Some("An unconfirmed connection save blocks new chats.".into());
+            cx.notify();
+            return;
+        }
+        match self.runtime.new_chat(
+            self.connections.choice.as_deref(),
+            bello_agent_core::workspace::ChatToolMode::Editing,
+        ) {
+            Ok((record, controller)) => {
                 let chat = ChatState::new(
                     controller,
                     record.clone(),
@@ -276,16 +273,7 @@ impl AgentView {
             return;
         };
         let draft = self.unloaded_drafts.get(id).cloned().unwrap_or_default();
-        let (config, connection_error) = match self
-            .connections
-            .config_for(&record, self.legacy_configuration.clone())
-        {
-            Ok(config) => (config, None),
-            Err(error) => (None, Some(error.to_string())),
-        };
-        let placeholder = match SessionStore::pending_with_id(id)
-            .and_then(|store| Controller::with_configuration(store, config.clone()))
-        {
+        let placeholder = match crate::saved_runtime_adapter::AppRuntime::placeholder(&record) {
             Ok(controller) => controller,
             Err(error) => {
                 self.error = Some(error.to_string());
@@ -293,7 +281,7 @@ impl AgentView {
             }
         };
         self.unloaded_drafts.remove(id);
-        let mut chat = ChatState::new(
+        let chat = ChatState::new(
             placeholder,
             record.clone(),
             chat::RestoredDraft {
@@ -305,7 +293,6 @@ impl AgentView {
             window,
             cx,
         );
-        chat.error = connection_error;
         self.install_chat(chat, window, cx);
         self.load_chat(id, cx);
     }
@@ -317,6 +304,7 @@ impl AgentView {
         {
             return;
         }
+        let runtime = self.runtime.clone();
         let Some(chat) = self.chat_mut(id) else {
             return;
         };
@@ -329,66 +317,39 @@ impl AgentView {
         chat.load_failed = false;
         chat.error = None;
         let record = chat.record.clone();
-        let config = chat.controller.configuration();
-        let source = Arc::downgrade(&chat.controller);
+        let previous = chat.controller.clone();
+        let source = Arc::downgrade(&previous);
         let id = id.to_owned();
         let project = self.project.clone();
         let task = cx.background_executor().spawn(async move {
-            let store = if record.snapshot.exists() {
-                SessionStore::open(&record.snapshot)?
-            } else {
-                SessionStore::pending_with_id(&record.id)?
-            };
-            if store.snapshot().id != record.id {
-                return Err(bello_agent_core::Error::Invalid(
-                    "This snapshot belongs to another chat".into(),
-                ));
+            // Join before opening any same-path writer, including a failed load.
+            previous.retire_and_wait().await?;
+            match runtime.open_registered(&record) {
+                Ok(controller) => Ok((controller, None)),
+                Err(error) => runtime
+                    .disconnected(&record, Some(&previous))
+                    .map(|controller| (controller, Some(format!("Chat is disconnected: {error}")))),
             }
-            Controller::with_configuration(store, config)
         });
         cx.spawn(async move |view, cx| {
             let loaded = task.await;
             let success = loaded.is_ok();
             let _ = view.update(cx, |view, cx| {
-                if view.project != project || view
-                    .chat_ref(&id)
-                    .is_none_or(|chat| chat.controller.is_retired() || chat.load_generation != generation || !source.ptr_eq(&Arc::downgrade(&chat.controller)))
+                if view.project != project
+                    || view.chat_ref(&id).is_none_or(|chat| {
+                        chat.load_generation != generation
+                            || !source.ptr_eq(&Arc::downgrade(&chat.controller))
+                    })
                 {
                     return;
                 }
                 if let Some(chat) = view.chat_mut(&id) {
                     chat.loading = false;
                     match loaded {
-                        Ok(controller) => {
-                            let outgoing = chat.controller.clone();
-                            // This production path replaces a pending loader. A
-                            // future same-path runtime replacement must retire
-                            // and join BEFORE opening its new SessionStore.
-                            if let Err(error) = outgoing.retire() {
-                                chat.load_failed = true;
-                                chat.error = Some(format!("Previous chat runtime could not be retired: {error}"));
-                                cx.notify();
-                                return;
-                            }
-                            let replacement = Arc::downgrade(&controller);
-                            let retired_id = id.clone();
-                            let retirement = cx.background_executor().spawn(async move {
-                                outgoing.retire_and_wait().await.map_err(|error| error.to_string())
-                            });
-                            cx.spawn(async move |view, cx| {
-                                if let Err(error) = retirement.await {
-                                    let _ = view.update(cx, |view, cx| {
-                                        if let Some(chat) = view.chat_mut(&retired_id)
-                                            && replacement.ptr_eq(&Arc::downgrade(&chat.controller))
-                                        {
-                                            chat.error = Some(format!("Previous chat runtime could not finish retiring: {error}"));
-                                            cx.notify();
-                                        }
-                                    });
-                                }
-                            }).detach();
+                        Ok((controller, notice)) => {
                             chat.replace_controller(controller, cx);
-                        },
+                            chat.error = notice;
+                        }
                         Err(error) => {
                             chat.load_failed = true;
                             chat.error = Some(format!("Chat could not be opened: {error}"));
@@ -414,6 +375,7 @@ impl AgentView {
     }
     pub(super) fn submit_chat(&mut self, lane: Lane, cx: &mut Context<Self>) {
         if self.actor_mutation_blocked(&self.record.id)
+            || (self.record.connection_id.is_some() && !self.controller.configured())
             || self.busy
             || self.loading
             || self.load_failed
@@ -515,9 +477,14 @@ impl AgentView {
             let (accepted, registered, uncertain, error, catalog_uncertain) = task.await;
             let _ = view.update(cx, move |view, cx| {
                 view.observe_catalog_uncertainty(catalog_uncertain, cx);
+                let latest = view.workspace.lock().ok().and_then(|store| store.snapshot().chats.into_iter().find(|record| record.id == id));
+                if let Some(record) = &latest && let Some(row) = view.records.iter_mut().find(|record| record.id == id) {
+                    row.materialization = record.materialization;
+                }
                 let mut restore = None;
                 let mut revision_exhausted = false;
                 if let Some(chat) = view.chat_mut(&id) {
+                    if let Some(record) = &latest { chat.record.materialization = record.materialization; }
                     chat.busy = !accepted;
                     chat.inflight_submission = None;
                     chat.error = error;
@@ -746,7 +713,6 @@ impl AgentView {
         if self.actor_mutation_blocked(&self.record.id)
             || self.busy
             || self.loading
-            || self.load_failed
             || self.shutting_down
             || self.edit_recovery.blocked
             || self.has_pending_cancel(&self.record.id)

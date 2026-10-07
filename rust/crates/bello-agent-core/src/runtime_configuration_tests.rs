@@ -233,3 +233,76 @@ fn delayed_older_configuration_cannot_replace_newer_applied_or_pending_save() {
         assert_eq!(controller.profile().unwrap().thinking_level, "high");
     }
 }
+
+#[test]
+fn capability_badge_is_nonblocking_and_rejects_empty_fatal_uncertain_and_legacy_state() {
+    struct Current;
+    impl RuntimeAuthorityGuard for Current {
+        fn check(&self) -> Result<()> {
+            Ok(())
+        }
+        fn confirm(&self) -> Result<()> {
+            panic!("A presentation query must not confirm authority")
+        }
+    }
+    fn promptly_false<G>(controller: &Arc<Controller>, guard: G) {
+        let copy = controller.clone();
+        let (sent, received) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let _ = sent.send(copy.has_available_tool_definitions());
+        });
+        let result = received.recv_timeout(Duration::from_secs(1));
+        drop(guard);
+        worker.join().unwrap();
+        assert!(!result.unwrap());
+    }
+    let (dir, _control, _runtime, mut actor) = fixture();
+    let options = RuntimeOptions {
+        instructions: String::new(),
+        tools: Some(
+            TrustedReadOnlyTools::new(dir.path().to_owned(), vec![], dir.path().to_owned())
+                .unwrap(),
+        ),
+    };
+    assert!(!actor.has_available_tool_definitions());
+    {
+        let actor = Arc::get_mut(&mut actor).unwrap();
+        actor.authority = Some(Arc::new(Current));
+        actor.options = options.clone();
+    }
+    assert!(actor.has_available_tool_definitions());
+    promptly_false(&actor, actor.inner.lock().unwrap());
+    promptly_false(&actor, actor.config.write().unwrap());
+    actor.inner.lock().unwrap().fatal = Some("unavailable".into());
+    assert!(!actor.has_available_tool_definitions());
+    actor.inner.lock().unwrap().fatal = None;
+    Arc::get_mut(&mut actor).unwrap().options.tools = None;
+    assert!(!actor.has_available_tool_definitions());
+    Arc::get_mut(&mut actor).unwrap().options = options.clone();
+    let legacy = Controller::new_with_options(
+        SessionStore::pending(),
+        Some((
+            actor.profile().unwrap(),
+            Credential::new("ordinary-test-key".into()).unwrap(),
+        )),
+        options,
+    )
+    .unwrap();
+    assert!(!legacy.has_available_tool_definitions());
+    {
+        let mut inner = actor.inner.lock().unwrap();
+        inner.store.fault = crate::session::WriteFault::AfterRename;
+        assert!(
+            inner
+                .store
+                .transact(|session| {
+                    session.queue_paused = true;
+                    Ok(())
+                })
+                .is_err()
+        );
+    }
+    assert!(!actor.has_available_tool_definitions());
+    actor.retire().unwrap();
+    assert!(!actor.has_available_tool_definitions());
+}

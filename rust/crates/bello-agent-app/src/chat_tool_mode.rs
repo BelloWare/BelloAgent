@@ -2,7 +2,7 @@
 //! This is a lifecycle/metadata boundary, not a tool grant or a UI workflow.
 use crate::project_host::Replacement;
 use bello_agent_core::{
-    Controller, Error, Result, SessionStore,
+    Controller, Error, Result,
     session::SessionInspectionLease,
     workspace::{ChatRecord, ChatToolMode, WorkspaceStore},
 };
@@ -14,6 +14,7 @@ use std::{
 
 pub(crate) struct ChatModeChange {
     pub workspace: Arc<Mutex<WorkspaceStore>>,
+    pub runtime: crate::saved_runtime_adapter::AppRuntime,
     pub primary: PathBuf,
     pub record: ChatRecord,
     pub controller: Option<Arc<Controller>>,
@@ -76,6 +77,7 @@ impl ChatModeChange {
             .find(|chat| {
                 chat.id == self.record.id
                     && chat.snapshot == self.record.snapshot
+                    && chat.connection_id == self.record.connection_id
                     && chat.tool_mode == ChatToolMode::ReadOnly
             })
             .ok_or_else(|| {
@@ -83,16 +85,11 @@ impl ChatModeChange {
             })
     }
 
-    fn reopen(&self) -> Result<Option<Replacement>> {
+    fn reopen(&self, record: &ChatRecord) -> Result<Option<Replacement>> {
         let Some(previous) = &self.controller else {
             return Ok(None);
         };
-        let store = SessionStore::open(&self.record.snapshot)?;
-        if store.snapshot().id != self.record.id {
-            return Err(Error::Invalid("The reopened chat identity changed.".into()));
-        }
-        // Mode metadata must not activate tools in this preview.
-        let controller = Controller::with_configuration(store, previous.configuration())?;
+        let controller = self.runtime.reopen(record, previous)?;
         Ok(Some(Replacement {
             id: self.record.id.clone(),
             previous: previous.clone(),
@@ -107,6 +104,11 @@ impl ChatModeChange {
     ) -> std::result::Result<ChangedChatMode, ChatModeFailure> {
         if self.record.tool_mode != ChatToolMode::ReadOnly {
             return Err(ChatModeFailure::before_close("This chat is not read-only."));
+        }
+        if let Some(id) = self.record.connection_id.as_deref() {
+            self.runtime
+                .preflight(id)
+                .map_err(ChatModeFailure::before_close)?;
         }
         {
             let store = self
@@ -177,7 +179,7 @@ impl ChatModeChange {
                 if uncertain {
                     return Err(ChatModeFailure::fenced(error, true));
                 }
-                let recovery = self.reopen().map_err(|reopen| ChatModeFailure::fenced(
+                let recovery = self.reopen(&self.record).map_err(|reopen| ChatModeFailure::fenced(
                     format!("The chat mode was not saved: {error}. Its read-only session could not reopen: {reopen}"), false,
                 ))?;
                 return Err(ChatModeFailure {
@@ -188,7 +190,7 @@ impl ChatModeChange {
                 });
             }
         };
-        let replacement = self.reopen().map_err(|error| {
+        let replacement = self.reopen(&record).map_err(|error| {
             ChatModeFailure::fenced(
                 format!("The chat mode was saved, but its session could not reopen: {error}"),
                 false,

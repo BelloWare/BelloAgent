@@ -27,6 +27,7 @@ mod queue_edit_controls;
 mod queue_geometry;
 mod queue_presentation;
 mod quick_open;
+mod saved_runtime_adapter;
 mod shutdown_barrier;
 mod sidebar_actions;
 mod stop_shortcut;
@@ -142,6 +143,7 @@ struct AgentView {
     root_focus: FocusHandle,
     #[cfg(not(target_os = "macos"))]
     sidebar_popup_focus: FocusHandle,
+    #[cfg(test)]
     chat_directory: PathBuf,
     unloaded_drafts: BTreeMap<String, DraftRecord>,
     recoveries: BTreeMap<String, SubmissionIntent>,
@@ -159,7 +161,9 @@ struct AgentView {
     quick_open: Entity<QuickOpenView>,
     projects: project_manager_controller::ProjectManagerController,
     connections: connection_settings_controller::ConnectionSettingsController,
+    #[cfg(all(test, feature = "synthetic-authority"))]
     legacy_configuration: Option<Arc<bello_agent_core::runtime::Configuration>>,
+    runtime: saved_runtime_adapter::AppRuntime,
     inspector_windows: Vec<context_inspector::InspectorWindow>,
     chat_mode_operations: BTreeMap<String, uuid::Uuid>,
     chat_mode_blocked: std::collections::BTreeSet<String>,
@@ -197,6 +201,7 @@ impl AgentView {
         } = launch;
         let palette = current_palette(window);
         let state = workspace.lock().expect("workspace lock").snapshot();
+        #[cfg(test)]
         let chat_directory = workspace
             .lock()
             .expect("workspace lock")
@@ -211,11 +216,14 @@ impl AgentView {
         for (index, record) in records.iter_mut().enumerate() {
             record.sidebar_order.get_or_insert(index as u64 + 1);
         }
-        let record = records
+        let mut record = records
             .iter()
             .find(|item| item.id == record.id)
             .cloned()
             .unwrap_or(record);
+        if pending && controller.is_never_materialized() {
+            record.materialization = bello_agent_core::workspace::ChatMaterialization::Pending;
+        }
         if !records.iter().any(|item| item.id == record.id) {
             records.insert(0, record.clone());
         }
@@ -234,7 +242,7 @@ impl AgentView {
                 }
             });
         let cancel_receipt = state.queued_cancellations.get(&record.id).cloned();
-        let chat = ChatState::new(
+        let mut chat = ChatState::new(
             controller,
             record,
             chat::RestoredDraft {
@@ -246,6 +254,18 @@ impl AgentView {
             window,
             cx,
         );
+        if chat.record.connection_id.is_some() && !chat.controller.configured() {
+            chat.error = Some("This saved connection or trusted project is unavailable. History and drafts are retained; choose a saved connection after confirming the project.".into());
+            chat.load_failed = !chat.controller.is_persistent();
+        }
+        if !pending
+            && !chat.controller.is_persistent()
+            && chat.record.materialization
+                == bello_agent_core::workspace::ChatMaterialization::CheckpointRequired
+        {
+            chat.load_failed = true;
+            chat.error = Some("The saved checkpoint is unavailable. Recover any retained submission into the draft below; no empty session will replace the missing history.".into());
+        }
         let filter = cx.new(|cx| {
             let mut view = EditorView::new(String::new(), window, cx);
             let mut style = Self::composer_style(palette);
@@ -273,6 +293,15 @@ impl AgentView {
             project_manager_controller::ProjectManagerController::new(project.clone(), palette, cx);
         let connections =
             connection_settings_controller::ConnectionSettingsController::new(palette, cx);
+        let runtime = saved_runtime_adapter::AppRuntime::new(
+            connections.authority().as_ref().clone(),
+            workspace.clone(),
+            saved_runtime_adapter::AppRuntime::options(
+                project.clone(),
+                connections.presentation.synthetic,
+            ),
+            legacy_configuration.clone(),
+        );
         let icon = Arc::new(Image::from_bytes(
             ImageFormat::Png,
             include_bytes!("../../../../assets/branding/bello-agent-icon-128.png").to_vec(),
@@ -318,6 +347,7 @@ impl AgentView {
             chat,
             inactive: BTreeMap::new(),
             records,
+            #[cfg(test)]
             chat_directory,
             unloaded_drafts: state.drafts,
             recoveries: state.intents,
@@ -360,7 +390,9 @@ impl AgentView {
             quick_open,
             projects,
             connections,
+            #[cfg(all(test, feature = "synthetic-authority"))]
             legacy_configuration,
+            runtime,
             inspector_windows: Vec::new(),
             chat_mode_operations: BTreeMap::new(),
             chat_mode_blocked: std::collections::BTreeSet::new(),
@@ -1294,7 +1326,8 @@ impl AgentView {
         if self.session.pending.is_empty() {
             return div();
         }
-        let resume_enabled = !self.actor_mutation_blocked(&self.record.id)
+        let resume_enabled = self.controller.configured()
+            && !self.actor_mutation_blocked(&self.record.id)
             && self.session.edit.is_none()
             && self.queue_operation.is_none()
             && !self.busy
@@ -1885,7 +1918,16 @@ impl AgentView {
                                 "cpu",
                             ),
                         )
-                        .child(self.badge("Tools unavailable".into(), "pencil")),
+                        .child(
+                            self.badge(
+                                saved_runtime_adapter::tool_runtime_label(
+                                    &self.controller,
+                                    self.connections.presentation.synthetic,
+                                )
+                                .into(),
+                                "pencil",
+                            ),
+                        ),
                 )
                 .child(
                     div()
@@ -2116,7 +2158,8 @@ impl AgentView {
             bar = bar.child(
                 self.button("retry", "Retry")
                     .opacity(
-                        if self.edit_recovery.blocked
+                        if !self.controller.configured()
+                            || self.edit_recovery.blocked
                             || self.actor_mutation_blocked(&self.record.id)
                         {
                             0.45
@@ -2125,6 +2168,9 @@ impl AgentView {
                         },
                     )
                     .on_click(cx.listener(|v, _, _, cx| {
+                        if !v.controller.configured() {
+                            return;
+                        }
                         v.command(
                             cx,
                             None,
@@ -2238,7 +2284,9 @@ impl AgentView {
         bar = bar
             .child(model_pill)
             .child(effort_pill.child(self.icon("down", 9.)));
-        let can_send = !self.actor_mutation_blocked(&self.record.id)
+        let can_send = self.controller.configured()
+            && !self.load_failed
+            && !self.actor_mutation_blocked(&self.record.id)
             && !self.busy
             && !self.edit_recovery.blocked
             && !self.loading
@@ -3102,14 +3150,7 @@ fn open_startup_chat(
         })
         .cloned();
     if let Some(record) = selected {
-        let store = if record.snapshot.exists() {
-            SessionStore::open(&record.snapshot)?
-        } else {
-            SessionStore::pending_with_id(&record.id)?
-        };
-        if store.snapshot().id != record.id {
-            return Err("Catalog and session identity disagree".into());
-        }
+        let store = SessionStore::pending_with_id(&record.id)?;
         Ok((store, record, false))
     } else if !state.chats.is_empty() {
         // All saved chats are archived: never reopen the original anchor as a
@@ -3117,7 +3158,8 @@ fn open_startup_chat(
         let store = SessionStore::pending();
         let snapshot = store.snapshot();
         let path = workspace.chat_path(&snapshot.id)?;
-        let record = ChatRecord::new(snapshot.id, snapshot.title, path);
+        let mut record = ChatRecord::new(snapshot.id, snapshot.title, path);
+        record.materialization = bello_agent_core::workspace::ChatMaterialization::Pending;
         Ok((store, record, true))
     } else {
         let existing = session.exists();
@@ -3127,7 +3169,10 @@ fn open_startup_chat(
             SessionStore::pending()
         };
         let snapshot = store.snapshot();
-        let record = ChatRecord::new(snapshot.id, snapshot.title, session.to_owned());
+        let mut record = ChatRecord::new(snapshot.id, snapshot.title, session.to_owned());
+        if !existing {
+            record.materialization = bello_agent_core::workspace::ChatMaterialization::Pending;
+        }
         if existing {
             workspace.register(record.clone(), DraftRecord::default())?;
         }
@@ -3166,7 +3211,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
                 #[cfg(all(feature = "synthetic-authority", debug_assertions))]
                 println!(
-                    "  --synthetic-project-authority  debug QA only; in-memory trust and fixture Connections, never native storage or tools\n  --synthetic-connections  same isolated fixture; fixed fake key and numeric loopback only"
+                    "  --synthetic-project-authority  debug QA only; in-memory trust and fixture Connections/tools, never native storage\n  --synthetic-connections  same isolated fixture; fixed fake key and numeric loopback only"
                 );
                 return Ok(());
             }
@@ -3207,14 +3252,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // it has no journal, provider worker or network side effects.
     let legacy_configuration =
         Controller::new(SessionStore::pending(), configuration)?.configuration();
-    let controller = Controller::with_configuration(
-        store,
-        if record.connection_id.is_none() {
-            legacy_configuration.clone()
-        } else {
-            None
-        },
-    )?;
+    #[cfg(all(feature = "synthetic-authority", debug_assertions))]
+    let synthetic = if synthetic_authority {
+        Some(bello_agent_core::project_authority::ProjectAuthority::with_synthetic_bytes(None)?)
+    } else {
+        None
+    };
+    #[cfg(all(feature = "synthetic-authority", debug_assertions))]
+    let authority = synthetic
+        .as_ref()
+        .map(|(authority, _)| authority.clone())
+        .unwrap_or_default();
+    #[cfg(not(all(feature = "synthetic-authority", debug_assertions)))]
+    let authority = bello_agent_core::project_authority::ProjectAuthority::new();
+    #[cfg(all(feature = "synthetic-authority", debug_assertions))]
+    let fixture = synthetic.is_some();
+    #[cfg(not(all(feature = "synthetic-authority", debug_assertions)))]
+    let fixture = false;
+    let runtime = saved_runtime_adapter::AppRuntime::new(
+        authority.clone(),
+        workspace.clone(),
+        saved_runtime_adapter::AppRuntime::options(project.clone(), fixture),
+        legacy_configuration.clone(),
+    );
+    let controller = if pending {
+        Controller::with_configuration(store, legacy_configuration.clone())?
+    } else {
+        drop(store);
+        match runtime.open_registered(&record) {
+            Ok(controller) => controller,
+            Err(error) => {
+                eprintln!("Saved chat is unavailable: {error}");
+                runtime
+                    .disconnected(&record, None)
+                    .or_else(|_| saved_runtime_adapter::AppRuntime::placeholder(&record))?
+            }
+        }
+    };
     perf(
         "startup_initialized",
         START.get().unwrap().elapsed().as_micros(),
@@ -3227,20 +3301,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 legacy_configuration,
             ));
             #[cfg(all(feature = "synthetic-authority", debug_assertions))]
-            if synthetic_authority {
-                let (authority, control) =
-                    bello_agent_core::project_authority::ProjectAuthority::with_synthetic_bytes(
-                        None,
-                    )
-                    .expect("empty in-memory project fixture");
+            if let Some((_, control)) = synthetic {
                 cx.set_global(connection_settings_controller::LaunchConnectionAuthority(
                     control,
                 ));
-                cx.set_global(project_manager_controller::LaunchProjectAuthority {
-                    authority: Arc::new(authority),
-                    synthetic: true,
-                });
             }
+            cx.set_global(project_manager_controller::LaunchProjectAuthority {
+                authority: Arc::new(authority),
+                synthetic: fixture,
+            });
             workspace_lifetime::WorkspaceLifetime::launch(
                 LaunchState {
                     controller,

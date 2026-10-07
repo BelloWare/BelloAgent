@@ -309,7 +309,7 @@ fn per_tab_editors_survive_switches_without_revealing_saved_keys(cx: &mut TestAp
     });
     let (window, root, _) = fixture(cx, p.clone());
     let original =
-        cx.read(|cx| root.read(cx).panel.read(cx).editors["one"].fields[&Field::Key].entity_id());
+        cx.read(|cx| root.read(cx).panel.read(cx).editors["one"].secrets[&Field::Key].entity_id());
     p.revision = 2;
     p.active.as_mut().unwrap().id = "two".into();
     p.active.as_mut().unwrap().fields.name = "Second".into();
@@ -322,16 +322,22 @@ fn per_tab_editors_survive_switches_without_revealing_saved_keys(cx: &mut TestAp
         .update(cx, |host, window, cx| {
             host.panel.update(cx, |panel, cx| {
                 panel.ensure_editors(window, cx);
-                assert_eq!(panel.editors["two"].fields[&Field::Key].read(cx).text(), "");
+                assert_eq!(
+                    panel.editors["two"].secrets[&Field::Key].read(cx).text(),
+                    ""
+                );
                 p.revision = 3;
                 p.active.as_mut().unwrap().id = "one".into();
                 p.active.as_mut().unwrap().fields.name = "Restored coordinator draft".into();
                 panel.set_presentation(p.clone(), cx);
                 assert_eq!(
-                    panel.editors["one"].fields[&Field::Key].entity_id(),
+                    panel.editors["one"].secrets[&Field::Key].entity_id(),
                     original
                 );
-                assert_eq!(panel.editors["one"].fields[&Field::Key].read(cx).text(), "");
+                assert_eq!(
+                    panel.editors["one"].secrets[&Field::Key].read(cx).text(),
+                    ""
+                );
                 assert_eq!(
                     panel.editors["one"].fields[&Field::Name].read(cx).text(),
                     "Restored coordinator draft"
@@ -690,4 +696,242 @@ fn history_only_api_shows_conversion_unavailable_without_an_action(cx: &mut Test
     assert!(visual.debug_bounds("settings-history-only-api").is_some());
     assert!(visual.debug_bounds("settings-use-responses").is_none());
     assert!(events.borrow().is_empty());
+}
+
+#[gpui::test]
+fn key_and_header_inputs_are_secure_and_final_action_captures_exact_replacements(
+    cx: &mut TestAppContext,
+) {
+    let (window, _, events) = fixture(cx, ready());
+    window
+        .update(cx, |host, _, cx| {
+            host.panel.update(cx, |panel, cx| {
+                let editors = &panel.editors["one"];
+                assert!(!editors.fields.contains_key(&Field::Key));
+                assert!(!editors.fields.contains_key(&Field::Headers));
+                let key = editors.secrets[&Field::Key].clone();
+                let headers = editors.secrets[&Field::Headers].clone();
+                key.update(cx, |input, cx| {
+                    input.set_text("synthetic-project-fixture-only".into(), cx);
+                });
+                headers.update(cx, |input, cx| {
+                    input.set_text("{\"X-Fake\":\"synthetic-header-fixture-only\"}".into(), cx);
+                });
+                panel.dispatch(panel.token(), ConnectionSettingsIntent::SaveAll, cx);
+            });
+        })
+        .unwrap();
+    cx.run_until_parked();
+    let collected = events.borrow();
+    let fields = collected
+        .iter()
+        .find_map(|event| match event {
+            ConnectionSettingsEvent::Intent {
+                fields,
+                intent: ConnectionSettingsIntent::SaveAll,
+                ..
+            } => fields.as_deref(),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(fields.key, "synthetic-project-fixture-only");
+    assert_eq!(
+        fields.headers,
+        "{\"X-Fake\":\"synthetic-header-fixture-only\"}"
+    );
+    assert!(!format!("{collected:?}").contains("synthetic-project-fixture-only"));
+    assert!(!format!("{collected:?}").contains("synthetic-header-fixture-only"));
+}
+
+#[gpui::test]
+fn secure_composition_blocks_save_close_and_tab_until_platform_commit(cx: &mut TestAppContext) {
+    let (window, _, events) = fixture(cx, ready());
+    for field in [Field::Key, Field::Headers] {
+        window
+            .update(cx, |host, window, cx| {
+                host.panel.update(cx, |panel, cx| {
+                    let input = panel.editors["one"].secrets[&field].clone();
+                    input.update(cx, |input, cx| {
+                        input.replace_and_mark_text_in_range(
+                            None,
+                            "fake-日",
+                            Some(5..6),
+                            window,
+                            cx,
+                        )
+                    });
+                    assert!(panel.composing(cx));
+                    panel.dispatch(panel.token(), ConnectionSettingsIntent::SaveAll, cx);
+                    panel.request_close(cx);
+                    panel.dispatch(panel.token(), ConnectionSettingsIntent::New, cx);
+                    assert!(panel.pending_revision.is_none());
+                    input.update(cx, |input, cx| {
+                        input.replace_text_in_range(None, "fake-確定", window, cx)
+                    });
+                    assert!(!panel.composing(cx));
+                    assert_eq!(
+                        field.value(&panel.captured_fields(cx).unwrap()),
+                        "fake-確定"
+                    );
+                });
+            })
+            .unwrap();
+    }
+    cx.run_until_parked();
+    assert!(events.borrow().iter().all(|event| matches!(
+        event,
+        ConnectionSettingsEvent::Intent {
+            intent: ConnectionSettingsIntent::Edited,
+            ..
+        }
+    )));
+}
+
+#[gpui::test]
+fn secure_delayed_ack_and_busy_state_preserve_newer_input(cx: &mut TestAppContext) {
+    let (window, _, _) = fixture(cx, ready());
+    window
+        .update(cx, |host, window, cx| {
+            host.panel.update(cx, |panel, cx| {
+                let input = panel.editors["one"].secrets[&Field::Key].clone();
+                input.update(cx, |input, cx| {
+                    input.set_text("fake-first".into(), cx);
+                });
+                panel.edited(cx);
+                input.update(cx, |input, cx| {
+                    input.set_text("fake-newer".into(), cx);
+                });
+                let mut acknowledgment = ready();
+                acknowledgment.revision = 2;
+                acknowledgment.active.as_mut().unwrap().fields.key = "fake-first".into();
+                panel.set_presentation(acknowledgment.clone(), cx);
+                assert_eq!(input.read(cx).text(), "fake-newer");
+                acknowledgment.revision = 3;
+                acknowledgment.saving = true;
+                acknowledgment.availability = ConnectionSettingsAvailability::Busy("Saving".into());
+                panel.set_presentation(acknowledgment, cx);
+                input.update(cx, |input, cx| {
+                    input.replace_text_in_range(None, "should-not-insert", window, cx)
+                });
+                assert_eq!(panel.captured_fields(cx).unwrap().key, "fake-newer");
+            });
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+fn oversized_paste_retains_input_and_presents_content_free_error(cx: &mut TestAppContext) {
+    let (window, _, _) = fixture(cx, ready());
+    window
+        .update(cx, |host, window, cx| {
+            host.panel.update(cx, |panel, cx| {
+                let input = panel.editors["one"].secrets[&Field::Key].clone();
+                input.update(cx, |input, cx| {
+                    input.set_text("fake-retained".into(), cx);
+                    input.replace_text_in_range(
+                        None,
+                        &"x".repeat(super::secure_input::KEY_BYTES),
+                        window,
+                        cx,
+                    );
+                });
+                assert_eq!(panel.captured_fields(cx).unwrap().key, "fake-retained");
+            });
+        })
+        .unwrap();
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    assert!(visual.debug_bounds("settings-api-key-rejection").is_some());
+}
+
+#[gpui::test]
+fn out_of_contract_presentation_is_not_silently_captured_as_deletion(cx: &mut TestAppContext) {
+    let mut p = ready();
+    p.active.as_mut().unwrap().fields.key = "x".repeat(super::secure_input::KEY_BYTES + 1);
+    let (window, _, events) = fixture(cx, p);
+    window
+        .update(cx, |host, window, cx| {
+            host.panel.update(cx, |panel, cx| {
+                assert_eq!(
+                    panel.captured_fields(cx).unwrap().key.len(),
+                    super::secure_input::KEY_BYTES + 1
+                );
+                panel.edited(cx);
+                let input = panel.editors["one"].secrets[&Field::Key].clone();
+                input.update(cx, |input, cx| {
+                    input.replace_text_in_range(None, "fake-correction", window, cx)
+                });
+                assert_eq!(panel.captured_fields(cx).unwrap().key, "fake-correction");
+            });
+        })
+        .unwrap();
+    cx.run_until_parked();
+    assert!(events.borrow().iter().all(|event| match event {
+        ConnectionSettingsEvent::Intent {
+            fields: Some(fields),
+            ..
+        } => fields.key == "fake-correction",
+        _ => false,
+    }));
+}
+
+#[gpui::test]
+fn delayed_secure_ack_does_not_replace_composition_that_matches_old_baseline(
+    cx: &mut TestAppContext,
+) {
+    let mut p = ready();
+    p.active.as_mut().unwrap().fields.key = "fake-base".into();
+    let (window, _, _) = fixture(cx, p.clone());
+    window
+        .update(cx, |host, window, cx| {
+            host.panel.update(cx, |panel, cx| {
+                let input = panel.editors["one"].secrets[&Field::Key].clone();
+                input.update(cx, |input, cx| {
+                    input.set_text("fake-first".into(), cx);
+                });
+                panel.edited(cx);
+                input.update(cx, |input, cx| {
+                    input.replace_and_mark_text_in_range(Some(0..10), "fake-base", None, window, cx)
+                });
+                p.revision = 2;
+                p.active.as_mut().unwrap().fields.key = "fake-first".into();
+                panel.set_presentation(p.clone(), cx);
+                assert_eq!(input.read(cx).text(), "fake-base");
+                assert!(input.read(cx).has_marked_text());
+            });
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+fn tab_traversal_uses_secure_entity_focus_without_changing_replacements(cx: &mut TestAppContext) {
+    let (window, _, _) = fixture(cx, ready());
+    window
+        .update(cx, |host, window, cx| {
+            host.panel.update(cx, |panel, cx| {
+                let key_input = panel.editors["one"].secrets[&Field::Key].clone();
+                let headers = panel.editors["one"].secrets[&Field::Headers].clone();
+                key_input.update(cx, |input, cx| {
+                    input.set_text("fake-key".into(), cx);
+                });
+                key_input.read(cx).focus_handle(cx).focus(window);
+                assert!(panel.key(&key("tab", Modifiers::none()), window, cx));
+                assert!(headers.read(cx).focus_handle(cx).is_focused(window));
+                assert!(panel.key(
+                    &key(
+                        "tab",
+                        Modifiers {
+                            shift: true,
+                            ..Modifiers::none()
+                        }
+                    ),
+                    window,
+                    cx
+                ));
+                assert!(key_input.read(cx).focus_handle(cx).is_focused(window));
+                assert_eq!(panel.captured_fields(cx).unwrap().key, "fake-key");
+                assert!(panel.captured_fields(cx).unwrap().headers.is_empty());
+            });
+        })
+        .unwrap();
 }

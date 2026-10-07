@@ -17,8 +17,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-fn fixture(
+fn fixture_with_trust(
     cx: &mut TestAppContext,
+    trusted: bool,
 ) -> (
     tempfile::TempDir,
     SyntheticAuthorityControl,
@@ -27,7 +28,7 @@ fn fixture(
 ) {
     let dir = tempfile::tempdir().unwrap();
     let project = std::fs::canonicalize(dir.path()).unwrap();
-    let (_, control) = ProjectAuthority::with_synthetic_bytes(None).unwrap();
+    let (authority, control) = ProjectAuthority::with_synthetic_bytes(None).unwrap();
     cx.update(|cx| cx.set_global(LaunchConnectionAuthority(control.clone())));
     let store = SessionStore::pending();
     let snapshot = store.snapshot();
@@ -36,11 +37,25 @@ fn fixture(
         "Connection fixture".into(),
         project.join("session.json"),
     );
+    let mut workspace = WorkspaceStore::open(project.join("workspace.json"), &project).unwrap();
+    if trusted {
+        let baseline = authority.load().unwrap();
+        let mut project_draft = baseline.edit();
+        let trusted = project_draft
+            .trust_project(&uuid::Uuid::new_v4().to_string(), &project, &[])
+            .unwrap();
+        let saved_project = authority.save(&mut project_draft).unwrap();
+        workspace
+            .bind_project_identity(
+                authority
+                    .confirm_project_binding(&saved_project, &trusted)
+                    .unwrap(),
+            )
+            .unwrap();
+    }
     let launch = LaunchState {
         controller: Controller::new(store, None).unwrap(),
-        workspace: Arc::new(Mutex::new(
-            WorkspaceStore::open(project.join("workspace.json"), &project).unwrap(),
-        )),
+        workspace: Arc::new(Mutex::new(workspace)),
         project,
         record,
         draft: DraftRecord {
@@ -57,6 +72,17 @@ fn fixture(
     cx.run_until_parked();
     (dir, control, window, root)
 }
+fn fixture(
+    cx: &mut TestAppContext,
+) -> (
+    tempfile::TempDir,
+    SyntheticAuthorityControl,
+    WindowHandle<AgentView>,
+    Entity<AgentView>,
+) {
+    fixture_with_trust(cx, true)
+}
+
 fn act(window: WindowHandle<AgentView>, intent: Intent, cx: &mut TestAppContext) {
     window
         .update(cx, |view, window, cx| {
@@ -205,14 +231,17 @@ fn settings_save_select_and_real_composer_send_use_selected_fixture(cx: &mut Tes
     assert_eq!(body["model"], "selected-fixture-alias");
     assert!(body.to_string().contains("keep composer 日本語"));
     assert!(
-        body.get("tools")
-            .is_none_or(|v| v.as_array().is_some_and(Vec::is_empty))
+        body["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["name"] == "ls")
     );
     worker.join().unwrap();
     wait(cx, |cx| {
         cx.read(|cx| root.read(cx).session.state != bello_agent_core::RunState::Running)
     });
-    assert!(dir.path().join("session.json").exists());
+    assert!(cx.read(|cx| root.read(cx).record.snapshot.exists()));
 }
 
 #[gpui::test]
@@ -334,6 +363,13 @@ fn delete_replaces_pending_chat_with_disconnected_controller_and_preserves_compo
         let view = root.read(cx);
         assert!(old.is_retired());
         assert!(!view.controller.configured());
+        assert_eq!(
+            crate::saved_runtime_adapter::tool_runtime_label(
+                &view.controller,
+                view.connections.presentation.synthetic
+            ),
+            "Tools unavailable"
+        );
         assert_ne!(Arc::as_ptr(&old), Arc::as_ptr(&view.controller));
         assert_eq!(view.composer.entity_id(), editor);
         assert_eq!(view.composer.read(cx).text(), "keep composer 日本語");
@@ -458,11 +494,12 @@ fn unloaded_legacy_chat_stays_disconnected_after_another_chat_selects_a_saved_co
     let legacy_id = uuid::Uuid::new_v4().to_string();
     window
         .update(cx, |view, window, cx| {
-            let record = ChatRecord::new(
+            let mut record = ChatRecord::new(
                 legacy_id.clone(),
                 "Unloaded legacy chat".into(),
                 view.chat_directory.join(format!("{legacy_id}.json")),
             );
+            record.materialization = bello_agent_core::workspace::ChatMaterialization::Pending;
             let draft = DraftRecord {
                 text: "Legacy draft stays disconnected 日本語".into(),
                 ..Default::default()
@@ -596,7 +633,7 @@ fn post_catalog_switch_open_failure_adopts_new_binding_and_never_revives_old_rou
     });
     // A registered, never-sent chat has no journal. A directory in its place
     // causes a real reopen failure after the catalog selection was committed.
-    std::fs::create_dir(&path).unwrap();
+    std::fs::create_dir_all(&path).unwrap();
     root.update(cx, |view, cx| view.select_connection(&second, cx));
     cx.run_until_parked();
     cx.read(|cx| {
@@ -1131,4 +1168,333 @@ fn manual_model_change_clears_inherited_image_capability_but_name_edit_keeps_it(
     form.fields.model = "unknown-other-model".into();
     assert!(!form.capture().unwrap().profile.supports_images());
     assert!(form.draft.profile.supports_images());
+}
+
+#[gpui::test]
+fn saved_settings_require_trust_then_open_the_same_pending_chat_without_sending(
+    cx: &mut TestAppContext,
+) {
+    use crate::project_manager_view::ProjectManagerIntent;
+    let (_directory, _control, window, root) = fixture_with_trust(cx, false);
+    let saved = save_fixture(window, &root, cx);
+    let (original, id, editor) = cx.read(|cx| {
+        let view = root.read(cx);
+        (
+            view.controller.clone(),
+            view.record.id.clone(),
+            view.composer.entity_id(),
+        )
+    });
+    root.update(cx, |view, cx| view.select_connection(&saved, cx));
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let view = root.read(cx);
+        assert!(
+            !original.is_retired(),
+            "untrusted preflight cannot strand the original actor"
+        );
+        assert!(view.record.connection_id.is_none());
+        assert!(view.error.as_ref().unwrap().contains("Trust"));
+        assert!(!view.record.snapshot.exists());
+    });
+    window
+        .update(cx, |view, window, cx| view.open_projects(window, cx))
+        .unwrap();
+    cx.run_until_parked();
+    for intent in [
+        ProjectManagerIntent::BeginCreate,
+        ProjectManagerIntent::ConfirmTrust,
+    ] {
+        window
+            .update(cx, |view, window, cx| {
+                view.project_intent(view.projects.presentation.revision, intent, window, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+    }
+    window
+        .update(cx, |view, window, cx| {
+            assert!(view.projects.presentation.trusted);
+            let notice = &view.projects.presentation.notice.as_ref().unwrap().text;
+            assert!(notice.contains("Fixture-only tools require a saved loopback connection"));
+            assert!(notice.contains("native production tools remain disabled"));
+            view.projects
+                .view
+                .update(cx, |view, cx| view.close(true, window, cx));
+        })
+        .unwrap();
+    cx.run_until_parked();
+    root.update(cx, |view, cx| view.select_connection(&saved, cx));
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let view = root.read(cx);
+        assert_eq!(view.record.id, id);
+        assert_eq!(view.composer.entity_id(), editor);
+        assert_eq!(view.composer.read(cx).text(), "keep composer 日本語");
+        assert!(view.controller.configured());
+        assert_eq!(view.record.connection_id.as_deref(), Some(saved.as_str()));
+        assert_eq!(
+            crate::saved_runtime_adapter::tool_runtime_label(
+                &view.controller,
+                view.connections.presentation.synthetic
+            ),
+            "Fixture tool runtime"
+        );
+        assert!(view.controller.is_never_materialized());
+        assert!(!view.record.snapshot.exists());
+        assert!(view.session.messages.is_empty());
+        assert!(view.workspace.lock().unwrap().snapshot().chats.is_empty());
+    });
+}
+
+#[gpui::test]
+fn checkpoint_required_missing_on_navigation_keeps_draft_and_inert_placeholder(
+    cx: &mut TestAppContext,
+) {
+    let (_directory, _control, window, root) = fixture(cx);
+    let saved = save_fixture(window, &root, cx);
+    let id = uuid::Uuid::new_v4().to_string();
+    window
+        .update(cx, |view, window, cx| {
+            let mut record = ChatRecord::new(
+                id.clone(),
+                "Missing checkpoint".into(),
+                view.chat_directory.join(format!("{id}.json")),
+            );
+            record.connection_id = Some(saved.clone());
+            let draft = DraftRecord {
+                text: "never replace lost checkpoint".into(),
+                ..Default::default()
+            };
+            view.workspace
+                .lock()
+                .unwrap()
+                .register(record.clone(), draft.clone())
+                .unwrap();
+            view.records.push(record);
+            view.unloaded_drafts.insert(id.clone(), draft);
+            view.select_chat(&id, window, cx);
+            assert!(
+                !view.controller.configured(),
+                "loader must be inert before background validation"
+            );
+        })
+        .unwrap();
+    cx.run_until_parked();
+    root.update(cx, |view, cx| {
+        assert!(view.load_failed);
+        assert!(!view.controller.configured());
+        assert_eq!(
+            view.composer.read(cx).text(),
+            "never replace lost checkpoint"
+        );
+        view.submit(Lane::FollowUp, cx);
+        assert!(!view.record.snapshot.exists());
+        assert!(!view.record.snapshot.with_extension("lock").exists());
+        assert_eq!(
+            view.composer.read(cx).text(),
+            "never replace lost checkpoint"
+        );
+        assert!(view.session.messages.is_empty());
+    });
+}
+
+#[gpui::test]
+fn first_send_crash_before_checkpoint_can_recover_complete_receipt_without_opening_empty_history(
+    cx: &mut TestAppContext,
+) {
+    use bello_agent_core::workspace::SubmissionIntent;
+    let (_directory, _control, window, root) = fixture(cx);
+    let saved = save_fixture(window, &root, cx);
+    let id = uuid::Uuid::new_v4().to_string();
+    let full = format!("{}日本語 last retained words", "retained input ".repeat(80));
+    let intent = SubmissionIntent {
+        id: uuid::Uuid::new_v4().to_string(),
+        chat_id: id.clone(),
+        text: full.clone(),
+        lane: Lane::FollowUp,
+        draft_revision: 0,
+    };
+    window
+        .update(cx, |view, window, cx| {
+            let mut record = ChatRecord::new(
+                id.clone(),
+                "Interrupted first send".into(),
+                view.chat_directory.join(format!("{id}.json")),
+            );
+            record.materialization = bello_agent_core::workspace::ChatMaterialization::Pending;
+            record.connection_id = Some(saved);
+            {
+                let mut workspace = view.workspace.lock().unwrap();
+                workspace
+                    .register(record.clone(), DraftRecord::default())
+                    .unwrap();
+                workspace.begin_submission(intent.clone()).unwrap();
+                record = workspace
+                    .snapshot()
+                    .chats
+                    .into_iter()
+                    .find(|row| row.id == id)
+                    .unwrap();
+            }
+            view.records.push(record);
+            view.recoveries.insert(intent.id.clone(), intent.clone());
+            view.select_chat(&id, window, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    root.update(cx, |view, cx| {
+        assert!(view.load_failed);
+        view.resolve_intent(&intent.id, true, cx);
+    });
+    cx.run_until_parked();
+    root.update(cx, |view, cx| {
+        assert_eq!(view.composer.read(cx).text(), full);
+        assert!(!view.recoveries.contains_key(&intent.id));
+        assert_eq!(
+            view.workspace.lock().unwrap().snapshot().drafts[&id].text,
+            full
+        );
+        assert!(view.load_failed);
+        assert!(!view.record.snapshot.exists());
+        assert!(!view.record.snapshot.with_extension("lock").exists());
+        assert!(!view.controller.configured());
+        view.submit(Lane::FollowUp, cx);
+        assert_eq!(view.composer.read(cx).text(), full);
+        assert!(!view.record.snapshot.exists());
+    });
+}
+
+#[gpui::test]
+async fn retired_materialized_actor_cannot_authorize_forged_pending_recreation(
+    cx: &mut TestAppContext,
+) {
+    let (_directory, _control, window, root) = fixture(cx);
+    let saved = save_fixture(window, &root, cx);
+    let (runtime, previous, mut forged) = root.update(cx, |view, _| {
+        // Explicit disposable legacy fixture history, before selecting a route.
+        view.controller.materialize(&view.record.snapshot).unwrap();
+        (
+            view.runtime.clone(),
+            view.controller.clone(),
+            view.record.clone(),
+        )
+    });
+    previous.retire_and_wait().await.unwrap();
+    assert!(!previous.is_persistent(), "the writer lock was released");
+    assert!(
+        !previous.is_never_materialized(),
+        "immutable checkpoint provenance survived"
+    );
+    std::fs::remove_file(&forged.snapshot).unwrap();
+    forged.materialization = bello_agent_core::workspace::ChatMaterialization::Pending;
+    assert!(runtime.disconnected(&forged, Some(&previous)).is_err());
+    forged.connection_id = Some(saved);
+    assert!(runtime.reopen(&forged, &previous).is_err());
+    assert!(!forged.snapshot.exists());
+}
+
+#[gpui::test]
+fn composer_saved_factory_executes_actual_ls_and_replays_durable_result(cx: &mut TestAppContext) {
+    let (directory, _control, window, root) = fixture(cx);
+    std::fs::write(
+        directory.path().join("factory-tool-proof.txt"),
+        "fixture file",
+    )
+    .unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let (tx, rx) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        for index in 0..2 {
+            let deadline = Instant::now() + Duration::from_secs(6);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < deadline, "bounded ls continuation");
+                        std::thread::sleep(Duration::from_millis(3));
+                    }
+                    Err(error) => panic!("{error}"),
+                }
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut bytes = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            let body = loop {
+                let n = stream.read(&mut buffer).unwrap();
+                assert!(n > 0);
+                bytes.extend_from_slice(&buffer[..n]);
+                if let Some(at) = bytes.windows(4).position(|value| value == b"\r\n\r\n") {
+                    let size: usize = String::from_utf8_lossy(&bytes[..at])
+                        .lines()
+                        .find_map(|line| {
+                            line.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .map(|v| v.trim().parse().unwrap())
+                        })
+                        .unwrap();
+                    if bytes.len() >= at + 4 + size {
+                        break serde_json::from_slice::<serde_json::Value>(
+                            &bytes[at + 4..at + 4 + size],
+                        )
+                        .unwrap();
+                    }
+                }
+            };
+            tx.send(body).unwrap();
+            let output = if index == 0 {
+                serde_json::json!([{"type":"function_call","id":"fixture-call","call_id":"fixture-ls","name":"ls","arguments":"{\"path\":\".\"}"}])
+            } else {
+                serde_json::json!([{"type":"message","content":[{"type":"output_text","text":"actual ls continuation complete"}]}])
+            };
+            let event = format!(
+                "data: {}\n\n",
+                serde_json::json!({"type":"response.completed","response":{"status":"completed","output":output}})
+            );
+            write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",event.len(),event).unwrap();
+        }
+    });
+    edit(&root, cx, |fields| fields.base_url = endpoint);
+    let saved = save_fixture(window, &root, cx);
+    root.update(cx, |view, cx| view.select_connection(&saved, cx));
+    cx.run_until_parked();
+    assert!(rx.try_recv().is_err(), "saving/selecting does not send");
+    root.update(cx, |view, cx| view.submit(Lane::FollowUp, cx));
+    wait(cx, |cx| {
+        cx.read(|cx| {
+            root.read(cx)
+                .session
+                .messages
+                .iter()
+                .any(|message| message.text == "actual ls continuation complete")
+        })
+    });
+    worker.join().unwrap();
+    let first = rx.recv().unwrap();
+    let second = rx.recv().unwrap();
+    assert!(
+        first["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["name"] == "ls")
+    );
+    assert!(
+        second["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["type"] == "function_call_output"
+                && item.to_string().contains("factory-tool-proof.txt"))
+    );
+    cx.read(|cx| {
+        let view = root.read(cx);
+        assert!(view.controller.is_persistent());
+        assert!(view.session.messages.iter().any(|message| matches!(&message.tool_record, Some(bello_agent_core::tool_history::ToolRecord::Result(result)) if result.outcome == bello_agent_core::tool_history::ToolOutcome::Completed)));
+        assert_eq!(view.workspace.lock().unwrap().snapshot().chats[0].materialization, bello_agent_core::workspace::ChatMaterialization::CheckpointRequired);
+    });
 }

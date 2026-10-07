@@ -867,6 +867,9 @@ impl SessionStore {
             .expect("persistent session parent")
             .join("tool-output")
     }
+    pub(crate) fn is_never_materialized(&self) -> bool {
+        self.path.as_os_str().is_empty() && !self.uncertain
+    }
     pub fn is_persistent(&self) -> bool {
         self._lock.is_some()
     }
@@ -904,12 +907,11 @@ impl SessionStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         Self::open_seeded(path.as_ref(), None)
     }
-    /// Fixture composition must not create a missing saved chat or recover a
+    /// Authority-aware composition must not create a missing saved chat or recover a
     /// different chat before checking its identity. Both checkpoint and lock
     /// must already exist; validate the ID under the same writer lock used by
     /// normal recovery, before migration, journal replay or checkpoint writes.
-    #[cfg(feature = "synthetic-authority")]
-    pub(crate) fn open_existing_with_id(path: &Path, expected_id: &str) -> Result<Self> {
+    pub fn open_existing_with_id(path: &Path, expected_id: &str) -> Result<Self> {
         Uuid::parse_str(expected_id).map_err(|_| invalid("Invalid saved chat identity"))?;
         if !path.is_absolute() {
             return Err(invalid("A saved chat requires an absolute checkpoint path"));

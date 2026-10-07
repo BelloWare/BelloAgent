@@ -32,6 +32,7 @@ fn fixture(retain_rewrite: bool) -> Fixture {
     let chat = ChatRecord {
         tool_mode: Default::default(),
         connection_id: None,
+        materialization: bello_agent_core::workspace::ChatMaterialization::CheckpointRequired,
         id: session.snapshot().id,
         title: "Durable Cancel fixture".into(),
         snapshot: session_path,

@@ -498,7 +498,6 @@ async fn changed_configuration_rejects_candidate_and_retains_pending_input() {
     let configuration = Arc::new(Configuration {
         profile: updated,
         credential: Credential::new("synthetic-compaction-key".into()).unwrap(),
-        #[cfg(feature = "synthetic-authority")]
         connection: None,
     });
     assert!(!actor.configure(configuration).unwrap());

@@ -32,6 +32,7 @@ fn fixture(
             WorkspaceStore::open(project.join("session.workspace.json"), &project).unwrap(),
         )),
         record: ChatRecord {
+            materialization: bello_agent_core::workspace::ChatMaterialization::Pending,
             sidebar_order: None,
             pinned_at: None,
             archived_at: None,
@@ -636,6 +637,7 @@ fn add_navigation_records(window: WindowHandle<AgentView>, cx: &mut TestAppConte
             ] {
                 let id = uuid::Uuid::new_v4().to_string();
                 let record = ChatRecord {
+                    materialization: bello_agent_core::workspace::ChatMaterialization::Pending,
                     id: id.clone(),
                     title: title.into(),
                     snapshot: view.project.join(format!("{id}.json")),

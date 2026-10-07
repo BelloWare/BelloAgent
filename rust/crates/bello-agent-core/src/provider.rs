@@ -364,7 +364,6 @@ impl ResponsesClient {
     /// Loopback fixtures must not inherit an HTTP proxy from the process. The
     /// synthetic Controller separately validates a numeric loopback endpoint;
     /// redirects stay disabled just as in the ordinary client.
-    #[cfg(feature = "synthetic-authority")]
     pub(crate) fn new_synthetic_fixture() -> Result<Self> {
         Ok(Self {
             client: reqwest::Client::builder()

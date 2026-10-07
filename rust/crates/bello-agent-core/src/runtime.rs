@@ -53,15 +53,22 @@ struct AdmissionConfirmation {
 }
 type WorkerJoin = Shared<BoxFuture<'static, std::result::Result<(), String>>>;
 
+/// The actor-safe half is an atomic witness only. Full confirmation may read
+/// vault/catalog/files, so callers must run it outside all actor/catalog locks.
+pub trait RuntimeAuthorityGuard: Send + Sync {
+    fn check(&self) -> Result<()>;
+    fn confirm(&self) -> Result<()>;
+    fn confirm_materialization(&self, _path: &std::path::Path) -> Result<()> {
+        Err(invalid("This authority cannot create a checkpoint"))
+    }
+}
 pub struct Configuration {
     profile: Profile,
     credential: Credential,
-    #[cfg(feature = "synthetic-authority")]
     connection: Option<Arc<crate::project_authority::connections::ConnectionLease>>,
 }
 impl Configuration {
-    #[cfg(feature = "synthetic-authority")]
-    pub(crate) fn synthetic_connection(
+    pub(crate) fn saved_connection(
         profile: Profile,
         credential: Credential,
         connection: Arc<crate::project_authority::connections::ConnectionLease>,
@@ -73,22 +80,18 @@ impl Configuration {
         }
     }
     fn check(&self) -> Result<()> {
-        #[cfg(feature = "synthetic-authority")]
         if let Some(connection) = &self.connection {
             connection.check()?;
         }
         Ok(())
     }
     fn confirm(&self, exact: bool) -> Result<()> {
-        #[cfg(feature = "synthetic-authority")]
         if let Some(connection) = &self.connection {
             return connection.confirm(exact);
         }
-        let _ = exact;
         Ok(())
     }
     async fn confirm_for_request(self: &Arc<Self>) -> Result<()> {
-        #[cfg(feature = "synthetic-authority")]
         if self.connection.is_some() {
             let configuration = self.clone();
             return tokio::task::spawn_blocking(move || configuration.confirm(false))
@@ -98,14 +101,7 @@ impl Configuration {
         self.check()
     }
     fn has_saved_connection(&self) -> bool {
-        #[cfg(feature = "synthetic-authority")]
-        {
-            self.connection.is_some()
-        }
-        #[cfg(not(feature = "synthetic-authority"))]
-        {
-            false
-        }
+        self.connection.is_some()
     }
     fn same_route(&self, other: &Self) -> bool {
         self.profile.id == other.profile.id
@@ -114,16 +110,11 @@ impl Configuration {
             && self.profile.model_id == other.profile.model_id
     }
     fn compatible_authority(&self, other: &Self) -> bool {
-        #[cfg(feature = "synthetic-authority")]
-        {
-            match (&self.connection, &other.connection) {
-                (Some(left), Some(right)) => return left.same_authority(right),
-                (None, None) => {}
-                _ => return false,
-            }
+        match (&self.connection, &other.connection) {
+            (Some(left), Some(right)) => left.same_authority(right),
+            (None, None) => true,
+            _ => false,
         }
-        let _ = other;
-        true
     }
 }
 /// One provider worker per conversation. UI commands and response completion
@@ -144,6 +135,7 @@ pub struct Controller {
     config: RwLock<Option<Arc<Configuration>>>,
     pending_settings: AtomicBool,
     options: RuntimeOptions,
+    authority: Option<Arc<dyn RuntimeAuthorityGuard>>,
     #[cfg(feature = "synthetic-authority")]
     resources: Option<SyntheticResources>,
     client: ResponsesClient,
@@ -167,7 +159,6 @@ impl Controller {
             Arc::new(Configuration {
                 profile,
                 credential,
-                #[cfg(feature = "synthetic-authority")]
                 connection: None,
             })
         });
@@ -184,22 +175,33 @@ impl Controller {
         configuration: Option<Arc<Configuration>>,
         options: RuntimeOptions,
     ) -> Result<Arc<Self>> {
+        Self::with_authority(store, configuration, options, None)
+    }
+    pub(crate) fn with_authority(
+        store: SessionStore,
+        configuration: Option<Arc<Configuration>>,
+        options: RuntimeOptions,
+        authority: Option<Arc<dyn RuntimeAuthorityGuard>>,
+    ) -> Result<Arc<Self>> {
+        if let Some(guard) = &authority {
+            guard.confirm()?;
+        }
         if let Some(configuration) = &configuration {
             configuration.profile.validate()?;
             configuration.confirm(true)?;
-            #[cfg(feature = "synthetic-authority")]
-            if configuration.connection.is_some() && options.tools.is_some() {
+            if configuration.connection.is_some() && options.tools.is_some() && authority.is_none()
+            {
                 return Err(invalid(
-                    "Saved synthetic connections do not enable model tools",
+                    "Saved connections require the trusted project runtime factory for tools",
                 ));
             }
         }
         let client = ResponsesClient::new()?;
-        #[cfg(feature = "synthetic-authority")]
-        let client = if configuration
-            .as_ref()
-            .is_some_and(|c| c.connection.is_some())
-        {
+        let client = if configuration.as_ref().is_some_and(|c| {
+            c.connection
+                .as_ref()
+                .is_some_and(|lease| lease.is_fixture())
+        }) {
             ResponsesClient::new_synthetic_fixture()?
         } else {
             client
@@ -232,6 +234,7 @@ impl Controller {
             config: RwLock::new(configuration),
             pending_settings: AtomicBool::new(false),
             options,
+            authority,
             #[cfg(feature = "synthetic-authority")]
             resources: None,
             client,
@@ -243,12 +246,24 @@ impl Controller {
     pub fn configuration(&self) -> Option<Arc<Configuration>> {
         self.config.read().ok()?.clone()
     }
+    /// Pending provenance survives retirement; releasing a writer lock cannot
+    /// turn a previously materialized actor back into an unsaved placeholder.
+    pub fn is_never_materialized(&self) -> bool {
+        self.inner
+            .lock()
+            .is_ok_and(|inner| inner.store.is_never_materialized())
+    }
     pub fn is_persistent(&self) -> bool {
         self.inner
             .lock()
             .is_ok_and(|inner| inner.store.is_persistent())
     }
     pub fn materialize(&self, path: &std::path::Path) -> Result<()> {
+        if !self.is_persistent()
+            && let Some(authority) = &self.authority
+        {
+            authority.confirm_materialization(path)?;
+        }
         let confirmed = self.confirm_resources()?;
         let mut inner = self
             .inner
@@ -261,6 +276,33 @@ impl Controller {
     }
     pub fn configured(&self) -> bool {
         self.configuration().is_some()
+    }
+    /// Presentation-only view of the applied factory runtime. This never reads
+    /// vault/catalog/files or grants admission. Contended state is unavailable;
+    /// external changes become known through the normal full-confirmation path.
+    pub fn has_available_tool_definitions(&self) -> bool {
+        if self.authority.is_none()
+            || self.is_retired()
+            || self.admission_suspension.load(Ordering::Acquire) != 0
+            || self.check_resources().is_err()
+        {
+            return false;
+        }
+        let Ok(inner) = self.inner.try_lock() else {
+            return false;
+        };
+        if inner.fatal.is_some() || inner.store.require_certain().is_err() {
+            return false;
+        }
+        let Ok(configuration) = self.config.try_read() else {
+            return false;
+        };
+        configuration.as_ref().is_some_and(|configuration| {
+            configuration.has_saved_connection() && configuration.check().is_ok()
+        }) && !self.options.definitions().is_empty()
+            && !self.is_retired()
+            && self.admission_suspension.load(Ordering::Acquire) == 0
+            && self.check_resources().is_ok()
     }
     pub fn profile(&self) -> Option<Profile> {
         let mut profile = self.configuration()?.profile.clone();
@@ -324,6 +366,10 @@ impl Controller {
         self.publish(&inner);
         Ok(true)
     }
+    #[cfg(all(test, feature = "synthetic-authority"))]
+    pub(crate) fn test_has_active_worker(&self) -> bool {
+        self.worker_active.load(Ordering::Acquire)
+    }
     pub fn revision(&self) -> u64 {
         self.published_revision.load(Ordering::Acquire)
     }
@@ -381,6 +427,11 @@ impl Controller {
             return Err(invalid(error.clone()));
         }
         inner.store.require_certain()?;
+        if self.authority.is_some() && !inner.store.is_persistent() {
+            return Err(invalid(
+                "Materialize this saved chat with its durable submission receipt before sending",
+            ));
+        }
         let config = self.configuration().ok_or_else(|| invalid("No connection configured. Launch with --profile and --credential-stdin; no credentials are discovered automatically."))?;
         item.model = Some(config.profile.model_id.clone());
         item.effort = Some(config.profile.thinking_level.clone());
@@ -790,14 +841,19 @@ impl Controller {
             }
             // Fresh membership before dequeue, outside the actor. Accepted
             // queued text remains pending if the saved connection disappeared.
-            let confirmation = self
-                .configuration()
-                .expect("configuration checked")
-                .confirm_for_request()
-                .await;
+            let confirmation = async {
+                self.configuration()
+                    .expect("configuration checked")
+                    .confirm_for_request()
+                    .await?;
+                self.confirm_runtime_authority(CancellationToken::new())
+                    .await
+            }
+            .await;
             let prepared = {
                 let mut inner = self.inner.lock().expect("session mutex poisoned");
                 let stopped = self.is_retired()
+                    || self.check_resources().is_err()
                     || self
                         .configuration()
                         .is_some_and(|config| config.check().is_err())
@@ -900,6 +956,9 @@ impl Controller {
                 active_epoch: saved_active.then(|| inner.worker_epoch.clone()),
             }
         };
+        if let Some(authority) = &self.authority {
+            authority.confirm()?;
+        }
         #[cfg(feature = "synthetic-authority")]
         if let Some(resources) = &self.resources {
             resources.guard.confirm()?;
@@ -932,7 +991,22 @@ impl Controller {
         }
         Ok(())
     }
+    async fn confirm_runtime_authority(&self, cancel: CancellationToken) -> Result<()> {
+        let Some(authority) = &self.authority else {
+            return Ok(());
+        };
+        let authority = authority.clone();
+        crate::tools::BlockingWorkExecutor::shared()
+            .run(cancel, move |_| Ok(authority.confirm()))
+            .await
+            .map_err(|error| invalid(error.to_string()))??;
+        self.check_resources()
+    }
+
     fn check_resources(&self) -> Result<()> {
+        if let Some(authority) = &self.authority {
+            authority.check()?;
+        }
         #[cfg(feature = "synthetic-authority")]
         if let Some(resources) = &self.resources {
             return resources.guard.check();

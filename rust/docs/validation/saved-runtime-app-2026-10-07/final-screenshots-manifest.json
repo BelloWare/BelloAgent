@@ -1,0 +1,30 @@
+{
+  "capture": "Original CUA native-window JPEG bytes, unmodified. 1180x812 client area.",
+  "binary_sha256": "c4d42b1756269f1335a743d790b09959d6168fea569bd41ceef42855500f9223",
+  "screenshots": {
+    "11-final-inert-startup.jpg": {
+      "sha256": "ead2dac604f3d6dc8382d5dbe9908d35b17f11b8b2751fbf11cd089e554524c9",
+      "bytes": 55602
+    },
+    "12-final-projects-notice.jpg": {
+      "sha256": "eaa25eba04a3a37c35738edd17737def559b2bd8d1e7715d022944e0090eda1c",
+      "bytes": 80950
+    },
+    "13-final-capability-backed-badge.jpg": {
+      "sha256": "9a28d7bbcdd11fcfe91e0f0e93d6651caca67caccd4424d8f10d767797c82a10",
+      "bytes": 55988
+    },
+    "14-final-real-ls.jpg": {
+      "sha256": "d759328d405e17305af4ede26d7775a48a648ef757f17fd394d7a21283e14dd2",
+      "bytes": 51775
+    },
+    "15-final-project-reopen.jpg": {
+      "sha256": "4cd9c963bf0abc2433d973c69da694bec7ed7e25a35db7395cfd94ea3cd6ed1c",
+      "bytes": 82921
+    },
+    "16-final-explicit-send-after-reopen.jpg": {
+      "sha256": "417d8db1fe5a72d19a036c54b47f0cc4ea303eb9197b0d49a40a494908ca53c3",
+      "bytes": 58571
+    }
+  }
+}

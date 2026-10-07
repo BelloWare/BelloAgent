@@ -43,7 +43,8 @@ impl AgentView {
     }
     pub(crate) fn compact_current(&mut self, cx: &mut Context<Self>) {
         let id = self.record.id.clone();
-        if self.shutting_down
+        if !self.controller.configured()
+            || self.shutting_down
             || self.loading
             || self.load_failed
             || self.busy
@@ -141,9 +142,20 @@ impl AgentView {
                                     .rounded(px(4.))
                                     .text_size(px(13.))
                                     .text_color(rgb(p.ink))
-                                    .cursor_pointer()
-                                    .hover(|style| style.bg(p.accent_soft()))
-                                    .child("Compact Now")
+                                    .opacity(if menu.controller.configured() {
+                                        1.
+                                    } else {
+                                        0.4
+                                    })
+                                    .when(menu.controller.configured(), |item| {
+                                        item.cursor_pointer()
+                                            .hover(|style| style.bg(p.accent_soft()))
+                                    })
+                                    .child(if menu.controller.configured() {
+                                        "Compact Now"
+                                    } else {
+                                        "Compact Now · connection unavailable"
+                                    })
                                     .on_click(
                                         cx.listener(|view, _, _, cx| view.compact_from_menu(cx)),
                                     ),

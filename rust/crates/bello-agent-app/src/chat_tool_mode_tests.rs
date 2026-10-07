@@ -1,5 +1,5 @@
 use super::*;
-use bello_agent_core::workspace::DraftRecord;
+use bello_agent_core::{SessionStore, project_authority::ProjectAuthority, workspace::DraftRecord};
 use std::{
     future::pending,
     pin::pin,
@@ -51,10 +51,18 @@ fn fixture() -> (tempfile::TempDir, ChatModeChange) {
         )
         .unwrap();
     let controller = Controller::new(session, None).unwrap();
+    let workspace = Arc::new(Mutex::new(workspace));
+    let runtime = crate::saved_runtime_adapter::AppRuntime::new(
+        ProjectAuthority::new(),
+        workspace.clone(),
+        crate::saved_runtime_adapter::AppRuntime::options(primary.clone(), false),
+        None,
+    );
     (
         directory,
         ChatModeChange {
-            workspace: Arc::new(Mutex::new(workspace)),
+            workspace,
+            runtime,
             primary,
             record,
             controller: Some(controller),

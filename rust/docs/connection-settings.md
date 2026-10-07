@@ -57,11 +57,13 @@ and `Sessions.swift` / `SessionRun.swift`.
 
 ## Catalog, authority and lifecycle invariants
 
-Catalog v6 stores an explicit nullable `connection_id` for every row. Valid saved
-IDs are UUIDs. v1–5 read without byte rewriting or invented connection identity;
-actual writes promote to v6. v5 retains its strict required tool mode. Old versions
-cannot smuggle the new field, malformed/future metadata fails before confirmation,
-and stale draft/sidebar writes cannot overwrite the newer connection binding.
+Catalog v7 retains the explicit nullable `connection_id` introduced by v6 and
+adds required Pending/CheckpointRequired materialization provenance. Valid saved
+IDs are UUIDs. v1–6 read without byte rewriting; actual writes promote to v7. v5
+retains its strict required tool mode, and old schemas cannot smuggle newer fields.
+Stale draft/sidebar writes preserve newer connection and checkpoint bindings. See
+[saved runtime and recovery contracts](saved-runtime-factory.md) for ambiguous
+legacy missing checkpoints and the first-receipt-before-materialization ordering.
 
 Connections patch the existing authority envelope, preserving unrelated project,
 preference, profile and opaque raw fields. Same-revision different bytes conflict.
@@ -70,20 +72,25 @@ silently advances them or retries. Unsupported records remain retained and
 unavailable. Public profile metadata has no key/header values or credential-bearing
 URL; draft/event Debug output redacts typed secret fields and URL.
 
-Synthetic connection confirmation is read outside actor locks; opaque configuration
+Saved connection confirmation is read outside actor locks; opaque configuration
 identity and worker epoch are then rechecked inside admission. This closes delayed
 active-to-idle and out-of-order configure races. The active worker owns one frozen
 configuration across its request/tool continuation boundary. Existing immutable
 synthetic resource constructors cannot be reconfigured with ordinary CLI credentials.
-Strict project-runtime confirmation remains unchanged. Settings connections do not
-activate tools or the synthetic resource runtime.
+The shared saved-runtime factory now composes a saved connection with freshly
+confirmed project/catalog authority and explicit capabilities. Saving or selecting
+alone still sends nothing. The debug fixture launch can run those capabilities
+through the same factory; native startup remains gated. The separate synthetic
+dynamic-resource constructor is unchanged.
 
 ## Explicit gaps and bounded differences
 
 This preview excludes other Settings sections, model catalog discovery, mini models,
 advanced routing/reasoning controls, imported/legacy Messages conversion, connection
 probe chats, multi-project/sides/background connection switching, native secure
-fields, signing and production vault composition.
+keyboard/IME/accessibility acceptance, signing and production vault composition.
+Key and header replacement entry is now masked by an isolated GPUI control; see
+[secure input contracts](secure-connection-inputs.md).
 
 To avoid overlapping writer/open ownership, this slice refuses save/delete while
 an affected chat is loading/materializing or finishing an edit/catalog operation;
@@ -97,13 +104,18 @@ non-idle session. Rust shows its retained paused queue in a disconnected viewer
 instead of hiding it. The confirmation/result explains inspection/removal before
 choosing another connection. Nothing implicitly resumes or replays queued input.
 
-The pinned shared editor limits editable text to 8 MiB per field and roughly
-16 MiB Undo history per editor; it exposes no per-field byte-limit setter. Core
-save limits are much smaller (for example 16 KiB key, 256 KiB header JSON and
-2 MiB vault), but editable draft memory is bounded coarsely, not to those source
-field limits. Active-field cloning and retained per-tab editors are additional
-memory. No total-memory bound or performance-parity claim is made. Oversized
-input remains available for correction rather than being silently truncated.
+Key and header replacement inputs have atomic 16 KiB / 256 KiB byte caps and no
+Undo history. They never pass replacement text to shaping, platform surrounding-text
+retrieval, Debug, Copy or Cut; only masks are rendered or returned. Paste keeps exact
+bytes and over-limit input is rejected with a generic message. Select All + Delete
+clears the replacement; a blank replacement still preserves saved credentials.
+The input-owned buffers and local paste strings are zeroized on replacement/drop.
+This is not complete memory erasure: coordinator forms/events and platform clipboard
+copies are outside that buffer's lifetime. No real credentials may be entered.
+
+Other fields still use the pinned shared editor's 8 MiB text / roughly 16 MiB Undo
+caps. Retained per-tab entities, coordinator forms and event clones add memory. No
+whole-Settings memory bound or performance-parity claim is made.
 
 ## Validation
 

@@ -487,15 +487,30 @@ fn busy_fatal_uncertain_and_replaced_sessions_fail_without_mutation() {
     let preview = controller.prepare_context("").unwrap();
     {
         let mut inner = controller.inner.lock().unwrap();
-        assert!(
-            controller
-                .prepare_context("")
-                .unwrap_err()
-                .to_string()
-                .contains("changing")
-        );
-        assert!(controller.context_preview_current(&preview).is_err());
-        assert!(!controller.context_preview_is_current(&preview));
+        let other = controller.clone();
+        let captured = preview.clone();
+        let (sent, received) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result = (
+                other.prepare_context(""),
+                other.context_preview_current(&captured),
+                other.context_preview_is_current(&captured),
+            );
+            let _ = sent.send(result);
+        });
+        let result = received.recv_timeout(std::time::Duration::from_secs(1));
+        if result.is_err() {
+            // Release the intentional lock before joining: a regression fails
+            // with a deadline instead of hanging the entire suite forever.
+            drop(inner);
+            worker.join().unwrap();
+            panic!("Context inspection blocked on a busy actor");
+        }
+        let (prepared, current, is_current) = result.unwrap();
+        worker.join().unwrap();
+        assert!(prepared.unwrap_err().to_string().contains("changing"));
+        assert!(current.is_err());
+        assert!(!is_current);
         inner.fatal = Some(format!("unsafe error {CREDENTIAL}"));
     }
     let failure = controller.prepare_context("").unwrap_err().to_string();
@@ -791,4 +806,50 @@ fn synthetic_resource_runtime_cannot_report_lifetime_literal_as_current_context(
         serde_json::to_value(controller.snapshot()).unwrap(),
         snapshot
     );
+}
+
+#[cfg(feature = "synthetic-authority")]
+#[test]
+fn active_preview_confirmation_cannot_cross_worker_epoch_or_settlement() {
+    use crate::project_authority::{
+        ProjectAuthority,
+        connections::{ConnectionDraft, SYNTHETIC_KEY, SavedConnectionRuntime},
+    };
+    for settled in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let (authority, control) = ProjectAuthority::with_synthetic_bytes(None).unwrap();
+        let mut profile = fixture_profile();
+        profile.id = uuid::Uuid::new_v4().to_string();
+        profile.base_url = "http://127.0.0.1:9".into();
+        profile.headers.clear();
+        let mut draft = ConnectionDraft::new(profile, "Preview fixture".into());
+        draft.key_input = SYNTHETIC_KEY.into();
+        let saved = authority
+            .save_connection(&authority.load_connections().unwrap(), &draft)
+            .unwrap();
+        let runtime =
+            SavedConnectionRuntime::confirm(&authority, &saved.loaded, &saved.profile.profile.id)
+                .unwrap();
+        let actor = Controller::with_configuration(
+            SessionStore::open(directory.path().join("session.json")).unwrap(),
+            Some(runtime.configuration()),
+        )
+        .unwrap();
+        actor.inner.lock().unwrap().worker_running = true;
+        let gate = control.pause_next_read().unwrap();
+        let copy = actor.clone();
+        let worker = std::thread::spawn(move || copy.prepare_context(""));
+        assert!(gate.wait_until_started(std::time::Duration::from_secs(1)));
+        let mut change = saved.loaded.edit(&saved.profile.profile.id).unwrap();
+        change.profile.output_cap = Some(77);
+        authority.save_connection(&saved.loaded, &change).unwrap();
+        {
+            let mut inner = actor.inner.lock().unwrap();
+            inner.worker_running = !settled;
+            inner.worker_epoch = Arc::new(());
+        }
+        gate.release();
+        assert!(worker.join().unwrap().is_err());
+        actor.inner.lock().unwrap().worker_running = false;
+    }
 }

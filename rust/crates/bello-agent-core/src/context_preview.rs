@@ -69,6 +69,13 @@ impl std::fmt::Debug for ContextPreview {
     }
 }
 
+struct PreviewState {
+    snapshot: Session,
+    active: bool,
+    configuration: Arc<super::Configuration>,
+    active_epoch: Option<Arc<()>>,
+}
+
 impl Controller {
     /// Builds exactly the provider request body from a certain in-memory
     /// snapshot. Instructions and definitions are the Controller's already
@@ -94,7 +101,23 @@ impl Controller {
                 "Draft exceeds the supported 256 KiB submission limit",
             ));
         }
-        let (snapshot, active, config) = self.preview_state()?;
+        // Preserve Inspector's nonblocking actor contract. Capture with try_lock
+        // first, release it, then perform full authority I/O. The final semantic
+        // currentness check still rejects configuration/input changes meanwhile.
+        let PreviewState {
+            snapshot,
+            active,
+            configuration: config,
+            active_epoch,
+        } = self.preview_state()?;
+        let confirmed = super::AdmissionConfirmation {
+            configuration: Some(config.clone()),
+            active_epoch,
+        };
+        if let Some(authority) = &self.authority {
+            authority.confirm()?;
+        }
+        config.confirm(!active)?;
         let profile = effective_profile(
             &config.profile,
             active.then_some(snapshot.active.as_ref()).flatten(),
@@ -174,6 +197,12 @@ impl Controller {
         // Match the source's final input-change guard. Rust builds outside the
         // actor lock, so recheck delivered inputs after serialization; partial
         // streaming and undelivered queue edits remain harmless.
+        {
+            let inner = self.inner.try_lock().map_err(|_| {
+                invalid("The conversation is changing. Refresh the context preview.")
+            })?;
+            self.require_confirmed_admission(&inner, &confirmed)?;
+        }
         if !self.context_preview_current(&preview)? {
             return Err(invalid(
                 "The conversation changed. Refresh the context preview.",
@@ -199,6 +228,7 @@ impl Controller {
         if !std::ptr::eq(preview.owner.as_ptr(), self) || self.is_retired() {
             return Ok(false);
         }
+        self.check_resources()?;
         let inner = self
             .inner
             .try_lock()
@@ -235,7 +265,8 @@ impl Controller {
         )
     }
 
-    fn preview_state(&self) -> Result<(Session, bool, Arc<super::Configuration>)> {
+    fn preview_state(&self) -> Result<PreviewState> {
+        self.check_resources()?;
         let inner = self
             .inner
             .try_lock()
@@ -267,7 +298,13 @@ impl Controller {
             .configuration()
             .ok_or_else(|| invalid("No connection configured for a context preview"))?;
         config.check()?;
-        Ok((inner.store.snapshot(), inner.worker_running, config))
+        Ok(PreviewState {
+            snapshot: inner.store.snapshot(),
+            active: inner.worker_running,
+            active_epoch: (inner.worker_running && config.has_saved_connection())
+                .then(|| inner.worker_epoch.clone()),
+            configuration: config,
+        })
     }
 }
 

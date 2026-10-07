@@ -281,6 +281,8 @@ mod tests {
                 WorkspaceStore::open(project.join("session.workspace.json"), &project).unwrap(),
             )),
             record: ChatRecord {
+                materialization:
+                    bello_agent_core::workspace::ChatMaterialization::CheckpointRequired,
                 sidebar_order: None,
                 pinned_at: None,
                 archived_at: None,

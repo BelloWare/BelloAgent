@@ -1,7 +1,7 @@
 use super::*;
 use bello_agent_core::{
-    Lane, RunState, Submission, project_authority::synthetic::SyntheticAuthorityControl,
-    workspace::DraftRecord,
+    Lane, RunState, SessionStore, Submission,
+    project_authority::synthetic::SyntheticAuthorityControl, workspace::DraftRecord,
 };
 use std::{
     future::Future,
@@ -52,9 +52,17 @@ fn fixture() -> (tempfile::TempDir, ProjectChange, SyntheticAuthorityControl) {
         .register(record.clone(), DraftRecord::default())
         .unwrap();
     let controller = Controller::new(store, None).unwrap();
+    let workspace = Arc::new(Mutex::new(workspace));
+    let runtime = crate::saved_runtime_adapter::AppRuntime::new(
+        authority.clone(),
+        workspace.clone(),
+        crate::saved_runtime_adapter::AppRuntime::options(primary.clone(), false),
+        None,
+    );
     let plan = ProjectChange {
+        runtime,
         authority: Arc::new(authority),
-        workspace: Arc::new(Mutex::new(workspace)),
+        workspace,
         baseline,
         primary,
         extras: vec![extra],
@@ -257,8 +265,10 @@ fn project_change_replaces_loaded_pending_chat_without_materializing_it() {
     let controller = Controller::new(SessionStore::pending(), None).unwrap();
     let id = controller.snapshot().id;
     let path = plan.primary.join("never-materialized.json");
+    let mut record = ChatRecord::new(id.clone(), "pending draft".into(), path.clone());
+    record.materialization = ChatMaterialization::Pending;
     plan.loaded = vec![LoadedChat {
-        record: ChatRecord::new(id.clone(), "pending draft".into(), path.clone()),
+        record,
         controller: controller.clone(),
     }];
     let changed = run(plan.apply()).unwrap_or_else(|e| panic!("{}", e.message));

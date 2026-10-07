@@ -24,6 +24,8 @@ serde_json.workspace = true
 serde.workspace = true
 uuid.workspace = true
 unicode-normalization = "0.1"
+unicode-segmentation = "=1.13.3"
+zeroize = "1"
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }

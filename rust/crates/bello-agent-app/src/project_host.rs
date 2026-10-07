@@ -2,11 +2,11 @@
 //! The host blocks app intents before scheduling this work. Actor suspensions
 //! and inspection leases close direct-call/external-writer races before saving.
 use bello_agent_core::{
-    Controller, SessionStore,
+    Controller,
     project_authority::{AuthorityError, LoadedProjects, ProjectAuthority, SavedProject},
     runtime::IdleAdmissionGuard,
     session::SessionInspectionLease,
-    workspace::{ChatRecord, WorkspaceSnapshot, WorkspaceStore},
+    workspace::{ChatMaterialization, ChatRecord, WorkspaceSnapshot, WorkspaceStore},
 };
 use std::{
     path::{Path, PathBuf},
@@ -24,6 +24,7 @@ pub(crate) struct Replacement {
 }
 pub(crate) struct ProjectChange {
     pub authority: Arc<ProjectAuthority>,
+    pub runtime: crate::saved_runtime_adapter::AppRuntime,
     pub workspace: Arc<Mutex<WorkspaceStore>>,
     pub baseline: LoadedProjects,
     pub primary: PathBuf,
@@ -143,7 +144,6 @@ impl ProjectChange {
         });
         self.unloaded
             .sort_by(|a, b| a.snapshot.cmp(&b.snapshot).then(a.id.cmp(&b.id)));
-        let mut persistent = Vec::with_capacity(self.loaded.len());
         let mut guards: Vec<IdleAdmissionGuard> = Vec::with_capacity(self.loaded.len());
         for chat in &self.loaded {
             if chat.controller.snapshot_shared().id != chat.record.id {
@@ -155,11 +155,16 @@ impl ProjectChange {
                 .controller
                 .suspend_idle_admission()
                 .map_err(ProjectChangeFailure::before_write)?;
-            persistent.push(guard.is_persistent());
             guards.push(guard);
         }
         let mut leases = Vec::with_capacity(self.unloaded.len());
         for chat in &self.unloaded {
+            if chat.materialization == ChatMaterialization::Pending {
+                return Err(ProjectChangeFailure::before_write(format!(
+                    "Open the unsent chat “{}” before changing this project’s folders; its draft has no checkpoint yet.",
+                    chat.title
+                )));
+            }
             let lease =
                 SessionInspectionLease::acquire(&chat.snapshot, &chat.id).map_err(|error| {
                     ProjectChangeFailure::before_write(format!(
@@ -237,27 +242,12 @@ impl ProjectChange {
             ));
         }
         let mut replacements = Vec::with_capacity(self.loaded.len());
-        for (chat, persistent) in self.loaded.into_iter().zip(persistent) {
-            // Opening the same path occurs only after every old worker joined.
-            let store = if persistent {
-                SessionStore::open(&chat.record.snapshot)
-            } else {
-                SessionStore::pending_with_id(&chat.record.id)
-            }
-            .map_err(|error| {
-                ProjectChangeFailure::after_write(
-                    format!("Project folders were saved; chat could not reopen: {error}"),
-                    false,
-                )
-            })?;
-            if store.snapshot().id != chat.record.id {
-                return Err(ProjectChangeFailure::after_write(
-                    "Project folders were saved; reopened chat identity disagrees.",
-                    false,
-                ));
-            }
-            // This slice never enables tools, including in synthetic authority QA.
-            let controller = Controller::with_configuration(store, chat.controller.configuration())
+        for chat in self.loaded {
+            // Factory authority/catalog checks precede the exact expected-ID
+            // open, and every previous worker has already joined.
+            let controller = self
+                .runtime
+                .reopen(&chat.record, &chat.controller)
                 .map_err(|error| {
                     ProjectChangeFailure::after_write(
                         format!("Project folders were saved; chat could not reopen: {error}"),

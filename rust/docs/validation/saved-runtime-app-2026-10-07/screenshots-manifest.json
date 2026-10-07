@@ -1,0 +1,46 @@
+{
+  "capture": "Original CUA native-window JPEG bytes, unmodified. 1180x812 client area.",
+  "binary_sha256": "b4c8274fab1fc25c23cc8e17e13dfc28c6762ad86823dfa1dccbe2340a89213d",
+  "screenshots": {
+    "01-trusted-fixture-notice.jpg": {
+      "sha256": "630062a15782ab2928118a32ced54d6892e97f66826e6103cfa3573bc318a46c",
+      "bytes": 80559
+    },
+    "02-real-ls-and-continuation.jpg": {
+      "sha256": "94d91754c952974f788dd9929761ec30472b20841fffa2035ac5801637cceeef",
+      "bytes": 51909
+    },
+    "03-actual-context-inspector.jpg": {
+      "sha256": "9cc711ed68ce5826252dc14f6e5188ea7294be86d736a78c4c50e93325bc083c",
+      "bytes": 70061
+    },
+    "04-route-fork-no-send.jpg": {
+      "sha256": "d6a831573e563ef7d92bee1f0915f010cae4997e4535016cbe3f772cbeead345",
+      "bytes": 105153
+    },
+    "05-explicit-switch-retains-history.jpg": {
+      "sha256": "079b54019f2d37194d184be59ddefacfa2ba5c46d535826e1cc42c4ee1a130a4",
+      "bytes": 61934
+    },
+    "06-stop-preserves-partial-and-queue.jpg": {
+      "sha256": "4bf1233d58030d6de1c9e8ceecfde9e3beb1bde7d03611cefda8a6480c879064",
+      "bytes": 68541
+    },
+    "07-deleted-route-inert-history.jpg": {
+      "sha256": "b68ba7a2b1710336698efe89d264ace048317b7ae5c85a8c94e557a1f775bdb5",
+      "bytes": 74535
+    },
+    "08-disconnected-context-unavailable.jpg": {
+      "sha256": "e76321595791cc0051d23c26445764ebdf98cfd10e7db2298e6430bc929327cb",
+      "bytes": 40822
+    },
+    "09-explicit-recovery-with-draft.jpg": {
+      "sha256": "a405fed560afab790ff61405224a72bd93f062acf0105e4271d908e662ee2944",
+      "bytes": 68161
+    },
+    "10-independent-pending-draft.jpg": {
+      "sha256": "c19807d201d77df264bc59c4051583291bb818cc58f81d5fe081681a327de110",
+      "bytes": 57023
+    }
+  }
+}

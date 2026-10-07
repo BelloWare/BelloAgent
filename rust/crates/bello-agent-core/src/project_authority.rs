@@ -48,7 +48,9 @@ pub enum AuthorityError {
     Conflict,
     #[error("Project roots or identifiers are invalid.")]
     InvalidProject,
-    #[error("The connection is invalid or unsupported. Use explicit synthetic fixture settings.")]
+    #[error(
+        "The connection is invalid or unsupported. Use an explicit supported Responses connection."
+    )]
     InvalidConnection,
     #[error("This saved connection is unavailable for new requests.")]
     UnsupportedConnection,
@@ -310,9 +312,21 @@ trait VaultStorage: Send + Sync {
     fn read(&self) -> AuthorityResult<Option<Vec<u8>>>;
     fn replace(&self, expected: Option<&[u8]>, replacement: &[u8]) -> AuthorityResult<()>;
 }
+/// Provenance is installed only by the explicit storage constructors, never
+/// inferred from a profile, endpoint, feature flag, or caller-supplied credential.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum AuthorityProvenance {
+    #[default]
+    Unavailable,
+    #[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+    Production,
+    #[cfg(feature = "synthetic-authority")]
+    Fixture,
+}
 #[derive(Clone, Default)]
 pub struct ProjectAuthority {
     storage: Option<Arc<dyn VaultStorage>>,
+    provenance: AuthorityProvenance,
 }
 impl ProjectAuthority {
     pub fn new() -> Self {
@@ -337,6 +351,7 @@ impl ProjectAuthority {
         let control = synthetic::SyntheticAuthorityControl::new(bytes)?;
         let authority = Self {
             storage: Some(control.storage.clone()),
+            provenance: AuthorityProvenance::Fixture,
         };
         Ok((authority, control))
     }
@@ -344,6 +359,7 @@ impl ProjectAuthority {
     fn with_test_storage(storage: Arc<dyn VaultStorage>) -> Self {
         Self {
             storage: Some(storage),
+            provenance: AuthorityProvenance::Production,
         }
     }
     fn storage(&self) -> AuthorityResult<&dyn VaultStorage> {
@@ -386,6 +402,12 @@ impl ProjectAuthority {
         if current.previous != expected.previous {
             return Err(AuthorityError::Conflict);
         }
+        Self::project_membership(&current, project)
+    }
+    fn project_membership(
+        current: &LoadedProjects,
+        project: &SavedProject,
+    ) -> AuthorityResult<SavedProject> {
         let index = current
             .projects
             .iter()
@@ -402,6 +424,22 @@ impl ProjectAuthority {
             return Err(AuthorityError::InvalidProject);
         }
         Ok(project.clone())
+    }
+    /// Runtime continuation needs current exact project membership, not a CAS
+    /// against an unrelated connection save. This performs one fresh vault read
+    /// and retains full known/unknown policy and root validation.
+    pub fn confirm_current_project_binding(
+        &self,
+        project: &SavedProject,
+    ) -> AuthorityResult<ConfirmedProjectBinding> {
+        let current = self.load()?;
+        let project = Self::project_membership(&current, project)?;
+        if fs::canonicalize(&project.path).map_err(|_| AuthorityError::InvalidProject)?
+            != project.path
+        {
+            return Err(AuthorityError::InvalidProject);
+        }
+        Ok(ConfirmedProjectBinding { project })
     }
 
     /// Confirm saved authority before taking a workspace catalog lock. The
@@ -596,6 +634,7 @@ pub mod synthetic {
         pub fn authority(&self) -> ProjectAuthority {
             ProjectAuthority {
                 storage: Some(self.storage.clone()),
+                provenance: AuthorityProvenance::Fixture,
             }
         }
         pub(super) fn new(bytes: Option<Vec<u8>>) -> AuthorityResult<Self> {

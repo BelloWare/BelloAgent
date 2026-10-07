@@ -80,6 +80,8 @@ fn prepare_read_only_chat(window: WindowHandle<AgentView>, cx: &mut TestAppConte
                 .update(cx, |view, cx| view.close(true, window, cx));
             view.projects_dismissed(window, cx);
             view.controller.materialize(&view.record.snapshot).unwrap();
+            view.record.materialization =
+                bello_agent_core::workspace::ChatMaterialization::CheckpointRequired;
             view.pending = false;
             view.record.tool_mode = ChatToolMode::ReadOnly;
             let record = view.record.clone();
@@ -841,11 +843,12 @@ async fn completed_save_preserves_both_chat_drafts_after_newer_selection(cx: &mu
             let first_composer = view.composer.clone();
             let second = Controller::new(SessionStore::pending(), None).unwrap();
             let second_id = second.snapshot_shared().id.clone();
-            let record = ChatRecord::new(
+            let mut record = ChatRecord::new(
                 second_id.clone(),
                 "Second".into(),
                 view.project.join("second.json"),
             );
+            record.materialization = bello_agent_core::workspace::ChatMaterialization::Pending;
             let chat = crate::ChatState::new(
                 second.clone(),
                 record.clone(),

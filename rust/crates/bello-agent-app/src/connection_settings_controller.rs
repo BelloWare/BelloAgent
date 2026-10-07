@@ -2,11 +2,9 @@
 //! publication; no save implicitly sends a provider request.
 use crate::{AgentView, Palette, connection_settings_view::*};
 #[cfg(feature = "synthetic-authority")]
-use bello_agent_core::project_authority::{
-    connections::SyntheticConnectionRuntime, synthetic::SyntheticAuthorityControl,
-};
+use bello_agent_core::project_authority::synthetic::SyntheticAuthorityControl;
 use bello_agent_core::{
-    Controller, Profile, SessionStore,
+    Controller, Profile,
     project_authority::{
         AuthorityError, ProjectAuthority,
         connections::{ConnectionDraft, LoadedConnections, SavedConnection},
@@ -118,9 +116,17 @@ impl ConnectionSettingsController {
             .try_global::<LaunchConnectionAuthority>()
             .map(|v| v.0.clone());
         #[cfg(feature = "synthetic-authority")]
-        let authority = Arc::new(control.as_ref().map(|c| c.authority()).unwrap_or_default());
+        let authority = cx
+            .try_global::<crate::project_manager_controller::LaunchProjectAuthority>()
+            .map(|launch| launch.authority.clone())
+            .unwrap_or_else(|| {
+                Arc::new(control.as_ref().map(|c| c.authority()).unwrap_or_default())
+            });
         #[cfg(not(feature = "synthetic-authority"))]
-        let authority = Arc::new(ProjectAuthority::new());
+        let authority = cx
+            .try_global::<crate::project_manager_controller::LaunchProjectAuthority>()
+            .map(|launch| launch.authority.clone())
+            .unwrap_or_else(|| Arc::new(ProjectAuthority::new()));
         #[cfg(feature = "synthetic-authority")]
         let synthetic = control.is_some();
         #[cfg(not(feature = "synthetic-authority"))]
@@ -262,32 +268,8 @@ impl ConnectionSettingsController {
             })
             .unwrap_or_default()
     }
-    pub fn config_for(
-        &self,
-        record: &ChatRecord,
-        legacy: Option<Arc<bello_agent_core::runtime::Configuration>>,
-    ) -> bello_agent_core::Result<Option<Arc<bello_agent_core::runtime::Configuration>>> {
-        let Some(id) = record.connection_id.as_deref() else {
-            return Ok(legacy);
-        };
-        if self.uncertain {
-            return Err(bello_agent_core::Error::Invalid(
-                "This chat's connection is blocked by an unconfirmed change".into(),
-            ));
-        }
-        #[cfg(feature = "synthetic-authority")]
-        if let Some(control) = &self.control {
-            let loaded = self
-                .authority
-                .load_connections()
-                .map_err(|e| bello_agent_core::Error::Invalid(e.to_string()))?;
-            return SyntheticConnectionRuntime::confirm(control, &loaded, id)
-                .map(|r| Some(r.configuration()));
-        }
-        let _ = id;
-        Err(bello_agent_core::Error::Invalid(
-            "This saved connection is unavailable. Native configuration is not enabled".into(),
-        ))
+    pub(crate) fn authority(&self) -> &Arc<ProjectAuthority> {
+        &self.authority
     }
 }
 
@@ -551,7 +533,7 @@ impl AgentView {
             {
                 return;
             }
-            let (Some(mut loaded), Some(control), Some(current)) = (
+            let (Some(mut loaded), Some(_control), Some(current)) = (
                 self.connections.loaded.clone(),
                 self.connections.control.clone(),
                 self.connections.active.clone(),
@@ -608,7 +590,7 @@ impl AgentView {
                         Ok(saved)=>{
                             let new_id=saved.profile.profile.id.clone();
                             if !saved.forked {
-                                match SyntheticConnectionRuntime::confirm(&control,&saved.loaded,&new_id){
+                                match bello_agent_core::project_authority::connections::SavedConnectionRuntime::confirm(&authority,&saved.loaded,&new_id){
                                     Ok(runtime)=>{for(profile,controller)in &controllers{if profile==&new_id{match controller.configure(runtime.configuration()){Ok(true)=>{},Ok(false)=>result.runtime_notices.push("A running turn keeps its original settings; the next run uses the saved settings.".into()),Err(_)=>result.runtime_notices.push("Settings were saved, but a chat could not apply them. That chat remains unavailable until explicitly recovered.".into())}}}},
                                     Err(_)=>result.runtime_notices.push("Settings were saved, but current connection confirmation failed. No replacement request was started.".into()),
                                 }
@@ -723,6 +705,7 @@ impl AgentView {
         self.connections.publish(cx);
         let authority = self.connections.authority.clone();
         let removed = id.clone();
+        let runtime = self.runtime.clone();
         let task = cx.background_executor().spawn(async move {
             for (_, controller, _) in &affected {
                 controller
@@ -748,24 +731,8 @@ impl AgentView {
             };
             let mut replacements = Vec::new();
             let mut failed = Vec::new();
-            for (record, previous, persistent) in affected {
-                let store = if record.snapshot.exists() {
-                    SessionStore::open(&record.snapshot)
-                } else if !persistent {
-                    SessionStore::pending_with_id(&record.id)
-                } else {
-                    Err(bello_agent_core::Error::Invalid(
-                        "Persistent chat snapshot is missing".into(),
-                    ))
-                };
-                match store.and_then(|store| {
-                    if store.snapshot().id != record.id {
-                        return Err(bello_agent_core::Error::Invalid(
-                            "Chat identity changed".into(),
-                        ));
-                    }
-                    Controller::new(store, None)
-                }) {
+            for (record, previous, _) in affected {
+                match runtime.disconnected(&record, Some(&previous)) {
                     Ok(controller) => replacements.push((record.id, previous, controller)),
                     Err(_) => failed.push(record.id),
                 }
@@ -871,15 +838,28 @@ impl AgentView {
         }
         let mut target = self.record.clone();
         target.connection_id = Some(id.into());
-        let config = match self.connections.config_for(&target, None) {
-            Ok(Some(c)) => c,
-            Ok(None) => return,
-            Err(e) => {
-                self.error = Some(e.to_string());
-                cx.notify();
-                return;
+        if let Err(error) = self.runtime.preflight(id) {
+            self.error = Some(error.to_string());
+            cx.notify();
+            return;
+        }
+        if self.pending && !self.controller.is_persistent() {
+            // An unsent legacy anchor has no journal to move. Saved runtimes
+            // mint only the workspace-derived path before first registration.
+            match self
+                .workspace
+                .lock()
+                .map_err(|_| "Workspace is unavailable".to_owned())
+                .and_then(|store| store.chat_path(&target.id).map_err(|e| e.to_string()))
+            {
+                Ok(path) => target.snapshot = path,
+                Err(error) => {
+                    self.error = Some(error);
+                    cx.notify();
+                    return;
+                }
             }
-        };
+        }
         let controller = self.controller.clone();
         let guard = if controller.is_retired() {
             None
@@ -905,7 +885,7 @@ impl AgentView {
         let old = self.record.clone();
         let chat_id = old.id.clone();
         let pending = self.pending;
-        let persistent = controller.is_persistent();
+        let runtime = self.runtime.clone();
         let catalog = self.workspace.clone();
         let project = self.project.clone();
         let previous = Arc::downgrade(&controller);
@@ -962,26 +942,8 @@ impl AgentView {
             };
             // Metadata is now authoritative, even if opening the new runtime
             // fails. Returning it prevents a retry from reviving the old route.
-            let store = if record.snapshot.exists() {
-                SessionStore::open(&record.snapshot)
-            } else if !persistent {
-                SessionStore::pending_with_id(&record.id)
-            } else {
-                return Err((
-                    "The persistent chat snapshot is missing".into(),
-                    false,
-                    Some(record),
-                ));
-            }
-            .map_err(|e| (e.to_string(), false, Some(record.clone())))?;
-            if store.snapshot().id != record.id {
-                return Err((
-                    "The chat snapshot identity changed".into(),
-                    false,
-                    Some(record),
-                ));
-            }
-            let replacement = Controller::with_configuration(store, Some(config))
+            let replacement = runtime
+                .reopen(&record, &controller)
                 .map_err(|e| (e.to_string(), false, Some(record.clone())))?;
             Ok(ConnectionSwitchResult {
                 record,
@@ -998,14 +960,14 @@ impl AgentView {
             if !valid{return;}
             match result{
                 Ok(changed)=>{
-                    if let Some(record)=view.records.iter_mut().find(|r|r.id==chat_id){record.connection_id=changed.record.connection_id.clone();}
-                    if let Some(chat)=view.chat_mut(&chat_id){chat.record.connection_id=changed.record.connection_id;chat.replace_controller(changed.controller,cx);chat.error=Some("Next turn uses the selected saved connection. Tools remain unavailable.".into());}
+                    if let Some(record)=view.records.iter_mut().find(|r|r.id==chat_id){*record=changed.record.clone();}
+                    if let Some(chat)=view.chat_mut(&chat_id){chat.record=changed.record;chat.loading=false;chat.load_failed=false;chat.replace_controller(changed.controller,cx);chat.error=Some("Next turn uses the selected saved connection and confirmed project settings.".into());}
                     view.connections.blocked.remove(&chat_id);
                 },
                 Err((message,uncertain,record))=>{
                     if !uncertain && let Some(record)=record {
-                        if let Some(row)=view.records.iter_mut().find(|r|r.id==chat_id){row.connection_id=record.connection_id.clone();}
-                        if let Some(chat)=view.chat_mut(&chat_id){chat.record.connection_id=record.connection_id;}
+                        if let Some(row)=view.records.iter_mut().find(|r|r.id==chat_id){*row=record.clone();}
+                        if let Some(chat)=view.chat_mut(&chat_id){chat.record=record;}
                     }
                     if let Some(chat)=view.chat_mut(&chat_id){chat.error=Some(format!("Connection change did not complete: {message}. Drafts are retained; the old runtime remains stopped."));}
                 }

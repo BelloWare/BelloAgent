@@ -712,7 +712,7 @@ impl Render for ProjectManagerView {
             div()
                 .text_size(px(11.5))
                 .text_color(rgb(p.secondary))
-                .child(TOOLS_NOTICE),
+                .child(if presentation.synthetic { "Fixture-only tools require a saved loopback connection and confirmed project trust. Trusting or selecting never sends a request. Native production tools remain disabled." } else { TOOLS_NOTICE }),
         );
         if draft {
             body = body.child(
