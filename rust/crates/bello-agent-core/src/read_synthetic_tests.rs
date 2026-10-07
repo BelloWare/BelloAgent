@@ -69,7 +69,10 @@ async fn trusted_project_read_text_persists_stats_and_replays_after_source_remov
     assert_eq!(record.outcome, ToolOutcome::Completed);
     let stats = record.content.as_ref().unwrap().stats.as_ref().unwrap();
     assert_eq!((stats.line, stats.last_line), (Some(2), Some(3)));
-    assert_eq!(std::path::Path::new(&stats.path), &path);
+    assert_eq!(
+        std::fs::canonicalize(&stats.path).unwrap(),
+        path.canonicalize().unwrap()
+    );
     assert_eq!(state.version, 4);
     controller.retire_and_wait().await.unwrap();
     std::fs::remove_file(&path).unwrap();

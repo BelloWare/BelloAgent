@@ -45,3 +45,26 @@ The correction changes only native test support: +42 nonblank lines. Production
 remains 28,194; tests/support become 40,153; benchmark/example stays 1,184, for 69,531
 total nonblank Rust lines. The original read ledger remains pinned to 21e7481.
 Test blob before: `930179ce59768b175f1b72a7d73e0597dbb4c0cb`. Test blob after: `0563ac2244c746afb93fc6df07744369735f94ae`.
+
+## Second native run: filesystem identity assertion
+
+Correction checkpoint `73c8cd9bcfaa9b9c75c9fe0360bf35c503b8f660`, tree
+`cc4acf8e46699bc9acbd9708d440d4750c8f8517`, passed
+[Linux 37582044133](https://github.com/BelloWare/BelloAgent/actions/runs/37582044133).
+[macOS 37582044194](https://github.com/BelloWare/BelloAgent/actions/runs/37582044194),
+job 112663699951, passed native compile/link and the complete pure domain/filesystem
+step, including the valid oversized PNG fixture. The later synthetic runtime
+batch failed with 16 passed and one failure: the text-read fixture compared
+Foundation's `/var/folders/...` result with Rust's `/private/var/folders/...` spelling.
+The native image runtime fixture passed; later native UI steps remained skipped.
+
+The text-read fixture now canonicalizes both existing filesystem paths before
+comparison, matching the native read path test's established identity assertion.
+It still checks exact text, line stats, snapshot version and persisted replay after
+the source is deleted. This changes no production path output or normalization,
+and does not loosen any Swift image oracle. Actual macOS execution of this
+correction remains pending on its exact published commit.
+
+This assertion adds three nonblank test-support lines: production 28,194;
+tests/support 40,156; benchmark/example 1,184; total 69,534. Concurrent unpublished
+write/edit and compaction work is excluded.
