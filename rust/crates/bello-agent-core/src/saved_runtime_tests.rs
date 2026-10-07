@@ -683,3 +683,134 @@ async fn capability_badge_uses_factory_definitions_and_known_revocation_without_
     actor.retire_and_wait().await.unwrap();
     assert!(!actor.has_available_tool_definitions());
 }
+
+#[tokio::test]
+async fn completed_saved_runtime_tail_late_stop_or_retirement_preserves_checkpoint_and_explicit_pause()
+ {
+    use crate::runtime::worker_tail_test_gate as tail;
+    for retire in [true, false] {
+        for paused in [false, true] {
+            let (listener, url) = listener().await;
+            let f = Fixture::new(&url);
+            let (record, actor) = f.registered();
+            let item = f.prepare(&record, &actor, "Complete this turn");
+            let (entered, release) = tail::hold(&actor);
+            actor.submit_identified(item).unwrap();
+            Request::accept(&listener).await.complete("Complete").await;
+            timeout(DEADLINE, entered).await.unwrap().unwrap();
+            assert_eq!(actor.snapshot_shared().state, crate::RunState::Idle);
+            assert!(actor.snapshot_shared().active.is_none());
+            if paused {
+                tail::set_intentional_pause(&actor);
+            }
+            let bytes = std::fs::read(&record.snapshot).unwrap();
+            let before = actor.snapshot_shared();
+            if retire {
+                actor.retire().unwrap();
+            } else {
+                actor.stop().unwrap();
+            }
+            release.send(()).unwrap();
+            tail::wait_done(&actor).await;
+            if retire {
+                actor.retire_and_wait().await.unwrap();
+            }
+            let after = actor.snapshot_shared();
+            assert_eq!(
+                after.state,
+                crate::RunState::Idle,
+                "late completion-tail cancellation must not invent a stopped run"
+            );
+            assert_eq!(after.queue_paused, paused);
+            assert_eq!(after.error, before.error);
+            assert_eq!(after.revision, before.revision);
+            assert_eq!(
+                std::fs::read(&record.snapshot).unwrap(),
+                bytes,
+                "completed tail settlement performs no checkpoint write"
+            );
+            let next = if retire {
+                f.factory.open_registered(&f.current(&record.id)).unwrap()
+            } else {
+                actor.clone()
+            };
+            next.submit("Explicit next request".into(), Lane::FollowUp)
+                .unwrap();
+            if paused {
+                assert!(!next.test_has_active_worker());
+                next.resume().unwrap();
+            }
+            let request = Request::accept(&listener).await;
+            assert!(request.body.to_string().contains("Explicit next request"));
+            request.complete("Done").await;
+            tail::wait_done(&next).await;
+            next.retire_and_wait().await.unwrap();
+        }
+    }
+}
+
+#[tokio::test]
+async fn saved_runtime_tail_stop_or_retirement_keeps_accepted_pending_work_paused_until_resume() {
+    use crate::runtime::worker_tail_test_gate as tail;
+    for retire in [true, false] {
+        for held in [false, true] {
+            let (listener, url) = listener().await;
+            let f = Fixture::new(&url);
+            let (record, actor) = f.registered();
+            let item = f.prepare(&record, &actor, "Complete first");
+            let (entered, release) = tail::hold(&actor);
+            actor.submit_identified(item).unwrap();
+            Request::accept(&listener).await.complete("Complete").await;
+            timeout(DEADLINE, entered).await.unwrap().unwrap();
+            actor
+                .submit("Accepted while tail waits".into(), Lane::FollowUp)
+                .unwrap();
+            if held {
+                let turn = actor.snapshot_shared().pending[0].id.clone();
+                assert_eq!(
+                    actor.begin_edit(&turn, "held-tail-edit").unwrap(),
+                    "Accepted while tail waits"
+                );
+            }
+            if retire {
+                actor.retire().unwrap();
+            } else {
+                actor.stop().unwrap();
+            }
+            release.send(()).unwrap();
+            tail::wait_done(&actor).await;
+            if retire {
+                actor.retire_and_wait().await.unwrap();
+            }
+            let state = actor.snapshot_shared();
+            assert_eq!(state.state, crate::RunState::Paused);
+            assert!(state.queue_paused);
+            assert_eq!(state.edit.is_some(), held);
+            assert_eq!(state.pending.len(), 1);
+            assert_eq!(state.pending[0].text, "Accepted while tail waits");
+            let next = if retire {
+                f.factory.open_registered(&f.current(&record.id)).unwrap()
+            } else {
+                actor.clone()
+            };
+            assert!(!next.test_has_active_worker());
+            if held {
+                next.resolve_edit("held-tail-edit", "saved", Some("Accepted while tail waits"))
+                    .unwrap();
+                assert!(next.snapshot_shared().queue_paused);
+                assert!(!next.test_has_active_worker());
+            }
+            next.resume().unwrap();
+            let request = Request::accept(&listener).await;
+            assert!(
+                request
+                    .body
+                    .to_string()
+                    .contains("Accepted while tail waits")
+            );
+            request.complete("Done").await;
+            tail::wait_done(&next).await;
+            next.retire_and_wait().await.unwrap();
+        }
+    }
+}

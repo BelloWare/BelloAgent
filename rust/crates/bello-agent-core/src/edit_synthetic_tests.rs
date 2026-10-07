@@ -55,7 +55,7 @@ async fn saved_editing_mode_orders_same_file_mutations_and_replays_without_reexe
     controller
         .submit("Change only the temporary fixture".into(), Lane::FollowUp)
         .unwrap();
-    let first = Request::accept(&listener).await;
+    let first = Request::accept_case(&listener, "initial", Some(&controller)).await;
     assert_eq!(
         first.body["tools"]
             .as_array()
@@ -87,7 +87,8 @@ async fn saved_editing_mode_orders_same_file_mutations_and_replays_without_reexe
         ],
     )
     .await;
-    let continuation = Request::accept(&listener).await;
+    let continuation =
+        Request::accept_case(&listener, "tool continuation", Some(&controller)).await;
     assert_eq!(
         std::fs::read_to_string(fixture.root.join("nested/file")).unwrap(),
         "three\n"
@@ -128,7 +129,7 @@ async fn saved_editing_mode_orders_same_file_mutations_and_replays_without_reexe
     reopened
         .submit("Continue from durable results".into(), Lane::FollowUp)
         .unwrap();
-    let replay = Request::accept(&listener).await;
+    let replay = Request::accept_case(&listener, "reopened replay", Some(&reopened)).await;
     assert_eq!(outputs(&replay.body), kept.iter().collect::<Vec<_>>());
     assert_eq!(
         std::fs::read_to_string(fixture.root.join("nested/file")).unwrap(),

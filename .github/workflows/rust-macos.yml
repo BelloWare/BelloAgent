@@ -49,6 +49,7 @@ jobs:
           cargo test --locked -p bello-agent-core --lib --features synthetic-authority project_authority::
           cargo test --locked -p bello-agent-core --lib --features synthetic-authority workspace::identity_tests
           cargo test --locked -p bello-agent-core --lib --features synthetic-authority runtime::resource_runtime::tests
+          cargo test --locked -p bello-agent-core --lib --features synthetic-authority saved_runtime::tests
           cargo test --locked -p bello-agent-core --lib --features synthetic-authority synthetic_project_runtime::tests
           cargo test --locked -p bello-agent-core --lib --features synthetic-authority project_authority::connections::
           cargo test --locked -p bello-agent-core --lib --features synthetic-authority runtime::configuration_tests

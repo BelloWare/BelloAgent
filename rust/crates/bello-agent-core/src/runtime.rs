@@ -413,6 +413,27 @@ impl Controller {
             self.publish(inner);
         }
     }
+    /// A published completed reply can outlive its worker by one queue-scan
+    /// iteration. Late Stop/retirement must not create a durable pause for that
+    /// empty tail. Keep any intentional pause/error and all transcript bytes;
+    /// unfinished or accepted queued work still takes the cancellation path.
+    fn settle_empty_completed_tail(&self, inner: &mut Inner) -> bool {
+        let session = inner.store.snapshot_ref();
+        if session.state != RunState::Idle
+            || !session.pending.is_empty()
+            || session.active.is_some()
+            || session.active_reply.is_some()
+            || session.edit.is_some()
+            || session.retry.is_some()
+        {
+            return false;
+        }
+        self.worker_finished(inner);
+        self.stop_requested.store(false, Ordering::Release);
+        self.publish(inner);
+        true
+    }
+
     pub fn submit(self: &Arc<Self>, text: String, lane: Lane) -> Result<()> {
         self.submit_identified(Submission::new(text, lane))
     }
@@ -825,14 +846,18 @@ impl Controller {
         loop {
             // An already completed run needs no further vault read. Settle
             // under the actor so a simultaneous submission cannot be stranded.
-            if first.is_none() && !self.is_retired() && !self.stop_requested.load(Ordering::Acquire)
-            {
+            if first.is_none() {
                 let mut inner = self.inner.lock().expect("session mutex poisoned");
+                if self.settle_empty_completed_tail(&mut inner) {
+                    return;
+                }
                 let session = inner.store.snapshot_ref();
-                if session.pending.is_empty()
-                    || session.queue_paused
-                    || session.edit.is_some()
-                    || session.state == RunState::Running
+                if !self.is_retired()
+                    && !self.stop_requested.load(Ordering::Acquire)
+                    && (session.pending.is_empty()
+                        || session.queue_paused
+                        || session.edit.is_some()
+                        || session.state == RunState::Running)
                 {
                     self.worker_finished(&mut inner);
                     self.publish(&inner);
@@ -922,19 +947,23 @@ impl Controller {
                 return;
             };
             self.run_turn(item, snapshot, cancel).await;
-            let mut inner = self.inner.lock().expect("session mutex poisoned");
-            if inner.fatal.is_some() {
-                self.worker_finished(&mut inner);
+            {
+                let mut inner = self.inner.lock().expect("session mutex poisoned");
+                if inner.fatal.is_some() {
+                    self.worker_finished(&mut inner);
+                    self.publish(&inner);
+                    return;
+                }
+                inner.cancel = None;
                 self.publish(&inner);
-                return;
+                if self.is_retired() || inner.store.snapshot().state != RunState::Idle {
+                    self.worker_finished(&mut inner);
+                    self.stop_requested.store(false, Ordering::Release);
+                    return;
+                }
             }
-            inner.cancel = None;
-            self.publish(&inner);
-            if self.is_retired() || inner.store.snapshot().state != RunState::Idle {
-                self.worker_finished(&mut inner);
-                self.stop_requested.store(false, Ordering::Release);
-                return;
-            }
+            #[cfg(all(test, feature = "synthetic-authority"))]
+            worker_tail_test_gate::pause(&self).await;
         }
     }
 
@@ -2383,3 +2412,7 @@ mod edit_status_tests {
 #[cfg(all(test, feature = "synthetic-authority"))]
 #[path = "runtime_configuration_tests.rs"]
 mod configuration_tests;
+
+#[cfg(all(test, feature = "synthetic-authority"))]
+#[path = "worker_tail_test_gate.rs"]
+pub(crate) mod worker_tail_test_gate;

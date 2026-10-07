@@ -123,14 +123,26 @@ struct Request {
 }
 impl Request {
     async fn accept(listener: &TcpListener) -> Self {
-        timeout(DEADLINE, async {
+        Self::accept_case(listener, "unlabelled", None).await
+    }
+    async fn accept_case(
+        listener: &TcpListener,
+        phase: &str,
+        controller: Option<&Controller>,
+    ) -> Self {
+        let mut transport_phase = "socket accept";
+        let mut received_bytes = 0;
+        let mut content_length = None;
+        let result = timeout(DEADLINE, async {
             let (mut socket, _) = listener.accept().await.unwrap();
+            transport_phase = "request headers";
             let mut raw = Vec::new();
             loop {
                 let mut bytes = [0; 4096];
                 let count = socket.read(&mut bytes).await.unwrap();
                 assert_ne!(count, 0, "request ended early");
                 raw.extend_from_slice(&bytes[..count]);
+                received_bytes = raw.len();
                 assert!(raw.len() < 1024 * 1024);
                 if let Some(end) = raw.windows(4).position(|part| part == b"\r\n\r\n") {
                     let headers = String::from_utf8_lossy(&raw[..end]).to_lowercase();
@@ -140,6 +152,8 @@ impl Request {
                         .unwrap()
                         .parse()
                         .unwrap();
+                    content_length = Some(length);
+                    transport_phase = "request body";
                     if raw.len() >= end + 4 + length {
                         let body = serde_json::from_slice(&raw[end + 4..end + 4 + length]).unwrap();
                         return Self { body, socket };
@@ -147,8 +161,20 @@ impl Request {
                 }
             }
         })
-        .await
-        .expect("loopback request timed out")
+        .await;
+        result.unwrap_or_else(|_| {
+            // Published snapshots and the atomic worker witness never wait on
+            // the actor/file-worker mutex that a failing test may have blocked.
+            let state = controller.map(|controller| {
+                let snapshot = controller.snapshot_shared();
+                let outcomes: Vec<_> = snapshot.messages.iter().filter_map(|message| match &message.tool_record {
+                    Some(ToolRecord::Result(result)) => Some(result.outcome), _ => None,
+                }).collect();
+                format!("state={:?}, error={:?}, worker={}, active={}, retry={}, pending={}, queue_paused={}, messages={}, tool_outcomes={outcomes:?}",
+                    snapshot.state, snapshot.error, controller.test_has_active_worker(), snapshot.active.is_some(), snapshot.retry.is_some(), snapshot.pending.len(), snapshot.queue_paused, snapshot.messages.len())
+            });
+            panic!("loopback request timed out: phase={phase}, transport={transport_phase}, received_bytes={received_bytes}, content_length={content_length:?}, controller={state:?}");
+        })
     }
     async fn respond(mut self, body: Value) {
         let body = body.to_string();

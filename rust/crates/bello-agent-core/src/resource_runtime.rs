@@ -310,6 +310,9 @@ impl Controller {
         loop {
             let captured = {
                 let mut inner = self.inner.lock().expect("session mutex poisoned");
+                if retry.is_none() && self.settle_empty_completed_tail(&mut inner) {
+                    return;
+                }
                 if self.is_retired() || self.stop_requested.load(Ordering::Acquire) {
                     self.resource_failure(&mut inner, Error::Cancelled);
                     return;
@@ -423,17 +426,21 @@ impl Controller {
             };
             retry = None;
             self.run_turn(item, session, cancel).await;
-            let mut inner = self.inner.lock().expect("session mutex poisoned");
-            inner.cancel = None;
-            self.publish(&inner);
-            if inner.fatal.is_some()
-                || self.is_retired()
-                || inner.store.snapshot().state != RunState::Idle
             {
-                self.worker_finished(&mut inner);
-                self.stop_requested.store(false, Ordering::Release);
-                return;
+                let mut inner = self.inner.lock().expect("session mutex poisoned");
+                inner.cancel = None;
+                self.publish(&inner);
+                if inner.fatal.is_some()
+                    || self.is_retired()
+                    || inner.store.snapshot().state != RunState::Idle
+                {
+                    self.worker_finished(&mut inner);
+                    self.stop_requested.store(false, Ordering::Release);
+                    return;
+                }
             }
+            #[cfg(test)]
+            super::worker_tail_test_gate::pause(&self).await;
         }
     }
 
