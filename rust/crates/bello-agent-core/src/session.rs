@@ -450,7 +450,16 @@ impl Session {
                 _ => false,
             })
     }
+    fn has_failed_tool_content(&self) -> bool {
+        self.messages.iter().any(|message| matches!(&message.tool_record,
+            Some(crate::tool_history::ToolRecord::Result(record)) if record.content.is_some() && record.outcome == crate::tool_history::ToolOutcome::Failed))
+    }
     fn validate_tool_history(&self) -> Result<()> {
+        if self.version < 6 && self.has_failed_tool_content() {
+            return Err(invalid(
+                "Retained failed MCP content requires Rust snapshot version 6",
+            ));
+        }
         if self.version < 5 && self.has_mutation_tool_stats() {
             return Err(invalid(
                 "Mutation tool statistics require Rust snapshot version 5",
@@ -727,7 +736,7 @@ impl SessionInspectionLease {
         if session.id != expected_session_id {
             return Err(invalid("The session file belongs to another chat"));
         }
-        if ![1, 2, 3, 4, 5].contains(&session.version) {
+        if ![1, 2, 3, 4, 5, 6].contains(&session.version) {
             return Err(invalid(
                 "Unsupported Rust session format. Swift journals are not imported automatically.",
             ));
@@ -1007,7 +1016,7 @@ impl SessionStore {
         {
             return Err(invalid("The session file belongs to another chat"));
         }
-        if ![1, 2, 3, 4, 5].contains(&session.version) {
+        if ![1, 2, 3, 4, 5, 6].contains(&session.version) {
             return Err(invalid(
                 "Unsupported Rust session format. Swift journals are not imported automatically.",
             ));
@@ -1128,7 +1137,9 @@ impl SessionStore {
             .iter()
             .any(|message| message.tool_record.is_some())
         {
-            let required_version = if next.has_mutation_tool_stats() {
+            let required_version = if next.has_failed_tool_content() {
+                6
+            } else if next.has_mutation_tool_stats() {
                 5
             } else if next.has_retained_tool_content() {
                 4

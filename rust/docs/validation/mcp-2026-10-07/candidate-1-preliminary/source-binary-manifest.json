@@ -1,0 +1,12 @@
+{
+  "baseline_commit": "c58800cd9bf40f5acc22b8a3f94cae128f76c806",
+  "source_digest": "12b1815a74b8761cdcc7ac8ee47a7c615e8897d0b40b81cd5cd5218c4cd1e6f3",
+  "binary": "/workspace/scratch/8b6fda578834/agent-mcp-qa/bello-agent-mcp-candidate-1",
+  "binary_bytes": 125727672,
+  "binary_sha256": "60cba6c3500feab0d36b340b289b3d538f8b6bdf1001b2f03cb3dc2fff64bf5c",
+  "core_rlib": "/workspace/scratch/8b6fda578834/agent-mcp-ui-target/debug/deps/libbello_agent_core-dce8590519cd7cdd.rlib",
+  "build_command": "cargo build --offline --locked -p bello-agent-app --features synthetic-authority --message-format=json",
+  "production_native_storage_enabled": false,
+  "gateway_sha256": "8d7afcf9bca6fabb160e1e870c31e074bd1fc39478f3ac81f13fb033d7956666",
+  "launch_sha256": "8d81330a7f665405155fbec0ddde72607612547302e339b3ce931ed91181dac9"
+}

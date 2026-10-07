@@ -583,6 +583,8 @@ pub struct WorkspaceStore {
     // One in-memory source editing gate per live catalog owner. Every saved
     // factory confirmation and chat shares it; it is never durable authority.
     editing_gate: std::sync::Arc<tokio::sync::Mutex<()>>,
+    pub(crate) mcp_manager: Option<std::sync::Arc<crate::mcp::McpManager>>,
+    pub(crate) mcp_creation_gate: std::sync::Arc<std::sync::Mutex<()>>,
     path: PathBuf,
     _lock: File,
     state: WorkspaceSnapshot,
@@ -651,6 +653,8 @@ impl WorkspaceStore {
         };
         Ok(Self {
             editing_gate: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            mcp_manager: None,
+            mcp_creation_gate: std::sync::Arc::new(std::sync::Mutex::new(())),
             path,
             _lock: lock,
             state,
@@ -661,6 +665,10 @@ impl WorkspaceStore {
     }
     pub(crate) fn editing_gate(&self) -> std::sync::Arc<tokio::sync::Mutex<()>> {
         self.editing_gate.clone()
+    }
+
+    pub(crate) fn state_directory(&self) -> PathBuf {
+        self.path.parent().expect("workspace directory").to_owned()
     }
 
     pub fn snapshot(&self) -> WorkspaceSnapshot {

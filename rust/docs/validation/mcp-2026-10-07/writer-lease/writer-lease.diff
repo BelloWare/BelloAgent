@@ -1,0 +1,593 @@
+--- before/rust/crates/bello-agent-core/src/mcp/outcome.rs
++++ after/rust/crates/bello-agent-core/src/mcp/outcome.rs
+@@ -30,8 +30,48 @@
+     unknown: bool,
+     live: HashSet<String>,
+ }
++// Lock the stable sidecar, not the atomically replaced evidence inode. Every
++// Ledger Arc (including a late Ticket or blocking receipt worker) owns this
++// guard. Different workspace catalogs cannot share the outcome writer merely
++// because their own catalog locks differ.
++struct WriterLease(File);
++impl WriterLease {
++    fn acquire(path: &Path) -> Result<Self> {
++        if let Ok(metadata) = fs::symlink_metadata(path)
++            && !metadata.is_file()
++        {
++            return Err(invalid("MCP outcome writer lock is not a regular file"));
++        }
++        let mut options = OpenOptions::new();
++        options.read(true).write(true).create(true).truncate(false);
++        #[cfg(unix)]
++        {
++            use std::os::unix::fs::OpenOptionsExt;
++            options.mode(0o600);
++        }
++        nonblocking_nofollow(&mut options);
++        let file = options
++            .open(path)
++            .map_err(|_| invalid("MCP outcome writer lock could not be opened"))?;
++        if !file.metadata()?.is_file() {
++            return Err(invalid("MCP outcome writer lock is not a regular file"));
++        }
++        file.try_lock().map_err(|_| {
++            invalid("MCP outcome evidence is already open elsewhere; close the other project owner before retrying")
++        })?;
++        Ok(Self(file))
++    }
++}
++impl Drop for WriterLease {
++    fn drop(&mut self) {
++        // Explicit unlock also releases inherited/duplicated descriptors. Never
++        // unlink this path: replacing its inode would admit a second writer.
++        let _ = self.0.unlock();
++    }
++}
+ pub(super) struct Ledger {
+     path: PathBuf,
++    _writer: WriterLease,
+     state: Mutex<State>,
+     cached_status: Mutex<Status>,
+     project: String,
+@@ -51,7 +91,10 @@
+         if uuid::Uuid::parse_str(project).is_err() || !directory.is_dir() {
+             return Err(invalid("Invalid MCP project outcome location"));
+         }
+-        let path = directory.join(format!("mcp-outcomes-{project}.json"));
++        // Resolve parent aliases before deriving the stable lock identity. The
++        // evidence leaf itself must be regular/non-symlink, checked on read.
++        let path = fs::canonicalize(directory)?.join(format!("mcp-outcomes-{project}.json"));
++        let writer = WriterLease::acquire(&path.with_extension("lock"))?;
+         let record = match read_bounded(&path, MAX_MARKER)? {
+             None => Record {
+                 version: 1,
+@@ -88,6 +131,7 @@
+         };
+         Ok(Arc::new(Self {
+             path,
++            _writer: writer,
+             cached_status: Mutex::new(cached_status),
+             project: project.into(),
+             state: Mutex::new(State {
+@@ -334,6 +378,30 @@
+ pub(super) fn read_bounded(path: &Path, limit: usize) -> Result<Option<Vec<u8>>> {
+     let mut options = OpenOptions::new();
+     options.read(true);
++    nonblocking_nofollow(&mut options);
++    let file = match options.open(path) {
++        Ok(file) => file,
++        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
++        Err(_) => {
++            return Err(invalid(
++                "MCP outcome evidence could not be opened; it was preserved",
++            ));
++        }
++    };
++    let metadata = file.metadata()?;
++    if !metadata.is_file() || metadata.len() > limit as u64 {
++        return Err(invalid(
++            "MCP outcome evidence is not a bounded regular file",
++        ));
++    }
++    let mut bytes = vec![];
++    file.take(limit as u64 + 1).read_to_end(&mut bytes)?;
++    if bytes.len() > limit {
++        return Err(invalid("MCP outcome evidence exceeds its limit"));
++    }
++    Ok(Some(bytes))
++}
++fn nonblocking_nofollow(options: &mut OpenOptions) {
+     #[cfg(any(target_os = "linux", target_os = "macos"))]
+     {
+         use std::os::unix::fs::OpenOptionsExt;
+@@ -343,25 +411,181 @@
+         let flags = 0x4 | 0x100;
+         options.custom_flags(flags);
+     }
+-    let file = match options.open(path) {
+-        Ok(file) => file,
+-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+-        Err(_) => {
+-            return Err(invalid(
+-                "MCP outcome evidence could not be opened; it was preserved",
+-            ));
+-        }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use std::{
++        process::{Command, Stdio},
++        time::{Duration, Instant},
+     };
+-    let metadata = file.metadata()?;
+-    if !metadata.is_file() || metadata.len() > limit as u64 {
+-        return Err(invalid(
+-            "MCP outcome evidence is not a bounded regular file",
+-        ));
+-    }
+-    let mut bytes = vec![];
+-    file.take(limit as u64 + 1).read_to_end(&mut bytes)?;
+-    if bytes.len() > limit {
+-        return Err(invalid("MCP outcome evidence exceeds its limit"));
+-    }
+-    Ok(Some(bytes))
+-}
++
++    fn paths(directory: &Path, project: &str) -> (PathBuf, PathBuf) {
++        let marker = directory.join(format!("mcp-outcomes-{project}.json"));
++        let lock = marker.with_extension("lock");
++        (marker, lock)
++    }
++
++    #[test]
++    fn writer_exclusion_precedes_marker_read_and_preserves_evidence() {
++        let directory = tempfile::tempdir().unwrap();
++        let project = uuid::Uuid::new_v4().to_string();
++        let (marker, lock) = paths(directory.path(), &project);
++        let lease = WriterLease::acquire(&lock).unwrap();
++        fs::write(&marker, b"unrelated invalid saved evidence").unwrap();
++        let before = fs::read(&marker).unwrap();
++        let error = Ledger::open(directory.path(), &project).err().unwrap();
++        assert!(error.to_string().contains("already open elsewhere"));
++        assert_eq!(fs::read(&marker).unwrap(), before);
++        drop(lease);
++        let error = Ledger::open(directory.path(), &project).err().unwrap();
++        assert!(error.to_string().contains("saved bytes were preserved"));
++        assert_eq!(fs::read(&marker).unwrap(), before);
++        // Even an invalid-ledger error must release its acquired writer lease.
++        drop(WriterLease::acquire(&lock).unwrap());
++    }
++
++    #[test]
++    fn writer_lock_remains_stable_and_explicitly_unlocks() {
++        let directory = tempfile::tempdir().unwrap();
++        let project = uuid::Uuid::new_v4().to_string();
++        let (_, lock) = paths(directory.path(), &project);
++        let ledger = Ledger::open(directory.path(), &project).unwrap();
++        assert!(!ledger.path.exists());
++        let duplicate = ledger._writer.0.try_clone().unwrap();
++        #[cfg(unix)]
++        let identity = {
++            use std::os::unix::fs::{MetadataExt, PermissionsExt};
++            let metadata = fs::metadata(&lock).unwrap();
++            assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
++            (metadata.dev(), metadata.ino())
++        };
++        drop(ledger);
++        assert!(lock.is_file());
++        let reopened = Ledger::open(directory.path(), &project).unwrap();
++        #[cfg(unix)]
++        {
++            use std::os::unix::fs::MetadataExt;
++            let metadata = fs::metadata(&lock).unwrap();
++            assert_eq!((metadata.dev(), metadata.ino()), identity);
++        }
++        drop(reopened);
++        drop(duplicate);
++    }
++
++    #[test]
++    #[cfg(unix)]
++    fn canonical_parent_alias_and_unsafe_lock_leaves_cannot_admit_writers() {
++        use std::os::unix::fs::symlink;
++        let directory = tempfile::tempdir().unwrap();
++        let real = directory.path().join("real");
++        fs::create_dir(&real).unwrap();
++        let alias = directory.path().join("alias");
++        symlink(&real, &alias).unwrap();
++        let project = uuid::Uuid::new_v4().to_string();
++        let (_, lock) = paths(&real, &project);
++        let ledger = Ledger::open(&real, &project).unwrap();
++        assert!(Ledger::open(&alias, &project).is_err());
++        drop(ledger);
++        fs::remove_file(&lock).unwrap();
++        let target = directory.path().join("preserved");
++        fs::write(&target, b"unchanged").unwrap();
++        symlink(&target, &lock).unwrap();
++        assert!(Ledger::open(&real, &project).is_err());
++        assert_eq!(fs::read(&target).unwrap(), b"unchanged");
++        fs::remove_file(&lock).unwrap();
++        fs::create_dir(&lock).unwrap();
++        assert!(Ledger::open(&real, &project).is_err());
++        fs::remove_dir(&lock).unwrap();
++        assert!(
++            Command::new("mkfifo")
++                .arg(&lock)
++                .status()
++                .unwrap()
++                .success()
++        );
++        external_probe(&real, &project, "unsafe");
++    }
++
++    // Invoked by external_probe; ordinary test runs deliberately do no work.
++    #[test]
++    fn outcome_writer_subprocess_probe() {
++        let Some(directory) = std::env::var_os("BELLO_MCP_WRITER_DIRECTORY") else {
++            return;
++        };
++        let directory = PathBuf::from(directory);
++        let project = std::env::var("BELLO_MCP_WRITER_PROJECT").unwrap();
++        let expected = std::env::var("BELLO_MCP_WRITER_EXPECTED").unwrap();
++        let (marker, _) = paths(&directory, &project);
++        let before = fs::read(&marker).ok();
++        let result = Ledger::open(&directory, &project);
++        match expected.as_str() {
++            "blocked" => assert!(
++                result
++                    .err()
++                    .unwrap()
++                    .to_string()
++                    .contains("already open elsewhere")
++            ),
++            "unsafe" => assert!(result.err().unwrap().to_string().contains("regular file")),
++            "unknown" => assert!(result.unwrap().status().unknown),
++            _ => panic!("unexpected probe mode"),
++        }
++        assert_eq!(fs::read(&marker).ok(), before);
++    }
++
++    fn external_probe(directory: &Path, project: &str, expected: &str) {
++        let mut child = Command::new(std::env::current_exe().unwrap())
++            .args([
++                "--exact",
++                "mcp::outcome::tests::outcome_writer_subprocess_probe",
++                "--nocapture",
++            ])
++            .env("BELLO_MCP_WRITER_DIRECTORY", directory)
++            .env("BELLO_MCP_WRITER_PROJECT", project)
++            .env("BELLO_MCP_WRITER_EXPECTED", expected)
++            .stdin(Stdio::null())
++            .stdout(Stdio::piped())
++            .stderr(Stdio::piped())
++            .spawn()
++            .unwrap();
++        let deadline = Instant::now() + Duration::from_secs(10);
++        loop {
++            if child.try_wait().unwrap().is_some() {
++                break;
++            }
++            if Instant::now() >= deadline {
++                let _ = child.kill();
++                let output = child.wait_with_output().unwrap();
++                panic!(
++                    "outcome writer probe blocked: {}{}",
++                    String::from_utf8_lossy(&output.stdout),
++                    String::from_utf8_lossy(&output.stderr)
++                );
++            }
++            std::thread::sleep(Duration::from_millis(10));
++        }
++        let output = child.wait_with_output().unwrap();
++        assert!(
++            output.status.success(),
++            "{}{}",
++            String::from_utf8_lossy(&output.stdout),
++            String::from_utf8_lossy(&output.stderr)
++        );
++        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
++    }
++
++    #[test]
++    fn outcome_writer_excludes_subprocess_until_last_ticket_drops() {
++        let directory = tempfile::tempdir().unwrap();
++        let project = uuid::Uuid::new_v4().to_string();
++        let ledger = Ledger::open(directory.path(), &project).unwrap();
++        let ticket = ledger.begin("fixture", "echo").unwrap();
++        external_probe(directory.path(), &project, "blocked");
++        drop(ledger);
++        external_probe(directory.path(), &project, "blocked");
++        drop(ticket);
++        external_probe(directory.path(), &project, "unknown");
++    }
++}
+--- before/rust/crates/bello-agent-core/src/mcp.rs
++++ after/rust/crates/bello-agent-core/src/mcp.rs
+@@ -275,6 +275,30 @@
+             runtime,
+         }))
+     }
++    // Only the same WorkspaceStore's cached manager may transfer this lease.
++    // Root re-trust invalidates the old exact authority, but late tickets still
++    // share the ledger and operation gate until physical settlement completes.
++    pub(crate) fn rebind(&self, loaded: LoadedMcp) -> Result<Arc<Self>> {
++        if self.project.id != loaded.project.id
++            || self.project.path != loaded.project.path
++            || !self
++                .configuration
++                .read()
++                .is_ok_and(|current| current.same_store(&loaded))
++        {
++            return Err(invalid("MCP workspace authority changed"));
++        }
++        loaded.confirm().map_err(|e| invalid(e.to_string()))?;
++        Ok(Arc::new(Self {
++            project: loaded.project.clone(),
++            servers: Mutex::new(server_map(&loaded)),
++            configuration: RwLock::new(loaded),
++            gate: self.gate.clone(),
++            editing_gate: self.editing_gate.clone(),
++            ledger: self.ledger.clone(),
++            runtime: self.runtime.clone(),
++        }))
++    }
+     pub fn project_id(&self) -> &str {
+         &self.project.id
+     }
+@@ -356,8 +380,8 @@
+         self.spawn(cancel, async move {
+             let _gate = lock(manager.gate.clone(), &token).await?;
+             manager.confirm().await?;
+-            let path = manager.ledger.receipt_path();
+-            let bytes = tokio::task::spawn_blocking(move || outcome::read_bounded(&path, crate::tool_content::MAX_CONTENT_BYTES + 4096))
++            let ledger = manager.ledger.clone();
++            let bytes = tokio::task::spawn_blocking(move || outcome::read_bounded(&ledger.receipt_path(), crate::tool_content::MAX_CONTENT_BYTES + 4096))
+                 .await.map_err(|_| invalid("MCP retained result reader failed"))??;
+             let Some(bytes) = bytes else { return Ok(None); };
+             #[derive(serde::Deserialize)]
+--- before/rust/crates/bello-agent-core/src/mcp/tests.rs
++++ after/rust/crates/bello-agent-core/src/mcp/tests.rs
+@@ -85,6 +85,29 @@
+     }
+     fn manager(&self) -> Arc<McpManager> {
+         self.factory.mcp_manager().unwrap()
++    }
++    fn into_directory(self) -> tempfile::TempDir {
++        self._dir
++    }
++    fn second_catalog_factory(&self) -> SavedRuntimeFactory {
++        let directory = self.workspace.lock().unwrap().state_directory();
++        let mut workspace = WorkspaceStore::open(
++            directory.join("alternate.workspace.json"),
++            &self.project.path,
++        )
++        .unwrap();
++        workspace
++            .bind_project_identity(
++                self.authority
++                    .confirm_project_binding(&self.authority.load().unwrap(), &self.project)
++                    .unwrap(),
++            )
++            .unwrap();
++        SavedRuntimeFactory::new(
++            self.authority.clone(),
++            Arc::new(StdMutex::new(workspace)),
++            self.factory.options_for_mcp_test(),
++        )
+     }
+     fn chat(&self, mode: ChatToolMode) -> (ChatRecord, Arc<Controller>) {
+         let (record, actor) = self.factory.new_chat(&self.connection, mode).unwrap();
+@@ -380,6 +403,11 @@
+             let workspace = f.workspace.lock().unwrap();
+             (workspace.state_directory(), workspace.editing_gate())
+         };
++        // A restart cannot acquire the outcome writer while any prior owner
++        // remains live, even when the workspace catalog itself is different.
++        assert!(McpManager::new(loaded.clone(), &directory, gate.clone()).is_err());
++        let _directory_owner = f.into_directory();
++        drop(manager);
+         let reopened = McpManager::new(loaded, &directory, gate).unwrap();
+         assert!(reopened.status().outcome_unknown);
+         assert_eq!(status.unknown_id, reopened.status().unknown_id);
+@@ -1191,8 +1219,12 @@
+         let workspace = f.workspace.lock().unwrap();
+         (workspace.state_directory(), workspace.editing_gate())
+     };
+-    let reopened =
+-        McpManager::new(f.authority.load_mcp(&f.project).unwrap(), &directory, gate).unwrap();
++    let loaded = f.authority.load_mcp(&f.project).unwrap();
++    actor.retire_and_wait().await.unwrap();
++    drop(actor);
++    let _directory_owner = f.into_directory();
++    drop(manager);
++    let reopened = McpManager::new(loaded, &directory, gate).unwrap();
+     assert_eq!(
+         reopened
+             .latest_result(CancellationToken::new())
+@@ -1203,7 +1235,6 @@
+     );
+     assert_eq!(reopened.status().unknown_id, unknown);
+     assert_eq!(server.calls.load(Ordering::SeqCst), 2);
+-    actor.retire_and_wait().await.unwrap();
+ }
+ #[tokio::test]
+ async fn inspector_receipt_and_marker_settlement_crash_cuts_are_distinct() {
+@@ -1249,9 +1280,12 @@
+                 let workspace = f.workspace.lock().unwrap();
+                 (workspace.state_directory(), workspace.editing_gate())
+             };
+-            let reopened =
+-                McpManager::new(f.authority.load_mcp(&f.project).unwrap(), &directory, gate)
+-                    .unwrap();
++            let loaded = f.authority.load_mcp(&f.project).unwrap();
++            actor.retire_and_wait().await.unwrap();
++            drop(actor);
++            let _directory_owner = f.into_directory();
++            drop(manager);
++            let reopened = McpManager::new(loaded, &directory, gate).unwrap();
+             // Only a positively durable canonical receipt permits a possibly
+             // committed empty housekeeping ledger to recover as settled-known.
+             assert_eq!(
+@@ -1259,7 +1293,6 @@
+                 receipt_failure || fault == 1
+             );
+             assert_eq!(server.calls.load(Ordering::SeqCst), 1);
+-            actor.retire_and_wait().await.unwrap();
+         }
+     }
+ }
+@@ -1330,3 +1363,152 @@
+     }
+     assert_eq!(server.calls.load(Ordering::SeqCst), 0);
+ }
++
++#[test]
++fn concurrent_first_factories_reuse_one_workspace_manager() {
++    let f = Fixture::new("http://127.0.0.1:9", "http://127.0.0.1:9/mcp");
++    let start = Arc::new(std::sync::Barrier::new(9));
++    let workers: Vec<_> = (0..8)
++        .map(|_| {
++            let factory = SavedRuntimeFactory::new(
++                f.authority.clone(),
++                f.workspace.clone(),
++                f.factory.options_for_mcp_test(),
++            );
++            let start = start.clone();
++            std::thread::spawn(move || {
++                start.wait();
++                factory.mcp_manager().unwrap()
++            })
++        })
++        .collect();
++    start.wait();
++    let managers: Vec<_> = workers
++        .into_iter()
++        .map(|worker| worker.join().unwrap())
++        .collect();
++    for manager in &managers {
++        assert!(Arc::ptr_eq(manager, &managers[0]));
++    }
++    assert!(Arc::ptr_eq(&f.manager(), &managers[0]));
++}
++
++#[tokio::test]
++async fn distinct_catalogs_share_one_outcome_writer_until_last_ticket_drops() {
++    let server = ServerFixture::start().await;
++    let f = Fixture::new("http://127.0.0.1:9", &server.url);
++    let manager = f.manager();
++    // Both independent catalog locks succeed. Their project outcome file is
++    // nevertheless the same, so only one manager can own it.
++    let second = f.second_catalog_factory();
++    let performed = invoke(&manager, "").await.unwrap();
++    let marker = f
++        .workspace
++        .lock()
++        .unwrap()
++        .state_directory()
++        .join(format!("mcp-outcomes-{}.json", f.project.id));
++    let before = std::fs::read(&marker).unwrap();
++    let requests = server.requests.lock().unwrap().len();
++    for _ in 0..2 {
++        let error = second
++            .mcp_manager()
++            .err()
++            .expect("different catalog must be excluded");
++        assert!(error.to_string().contains("already open elsewhere"));
++        assert_eq!(std::fs::read(&marker).unwrap(), before);
++    }
++    let _directory_owner = f.into_directory();
++    // A bare public manager remains the writer after its factory/workspace drop.
++    assert!(second.mcp_manager().is_err());
++    assert_eq!(manager.status().pending_results, 1);
++    drop(manager);
++    // A late result ticket retains writer ownership even without a manager.
++    assert!(second.mcp_manager().is_err());
++    assert_eq!(std::fs::read(&marker).unwrap(), before);
++    drop(performed);
++    let recovered = second.mcp_manager().unwrap();
++    assert!(recovered.status().outcome_unknown);
++    assert!(invoke(&recovered, "").await.err().unwrap().not_executed);
++    assert_eq!(server.requests.lock().unwrap().len(), requests);
++    assert_eq!(server.calls.load(Ordering::SeqCst), 1);
++    assert_eq!(std::fs::read(&marker).unwrap(), before);
++    let unknown = recovered.status().unknown_id.unwrap();
++    recovered.acknowledge_unknown(&unknown, true).unwrap();
++    assert!(!recovered.status().outcome_unknown);
++}
++
++#[tokio::test]
++async fn late_ticket_settlement_holds_outcome_writer_after_workspace_drop() {
++    let server = ServerFixture::start().await;
++    let f = Fixture::new("http://127.0.0.1:9", &server.url);
++    let manager = f.manager();
++    let second = f.second_catalog_factory();
++    let performed = invoke(&manager, "").await.unwrap();
++    let _directory_owner = f.into_directory();
++    drop(manager);
++    assert!(second.mcp_manager().is_err());
++    // Move the last owner across the same blocking-worker boundary used by
++    // real checkpoint settlement; no factory/workspace Arc keeps it alive.
++    let (started, ready) = std::sync::mpsc::channel();
++    let (release, wait) = std::sync::mpsc::channel();
++    let (finished, done) = std::sync::mpsc::channel();
++    let worker = tokio::task::spawn_blocking(move || {
++        started.send(()).unwrap();
++        wait.recv_timeout(DEADLINE).unwrap();
++        finished.send(performed.ticket.unwrap().settle()).unwrap();
++    });
++    ready.recv_timeout(DEADLINE).unwrap();
++    drop(worker); // Cancellation/dropping the waiter does not stop physical I/O.
++    let excluded = second.mcp_manager().is_err();
++    release.send(()).unwrap();
++    done.recv_timeout(DEADLINE).unwrap().unwrap();
++    assert!(excluded);
++    let recovered = second.mcp_manager().unwrap();
++    assert!(!recovered.status().outcome_unknown);
++    assert_eq!(recovered.status().pending_results, 0);
++    assert_eq!(server.calls.load(Ordering::SeqCst), 1);
++}
++#[tokio::test]
++async fn same_workspace_root_retrust_rebinds_without_losing_lease_or_quarantine() {
++    let server = ServerFixture::start().await;
++    let f = Fixture::new("http://127.0.0.1:9", &server.url);
++    let previous = f.manager();
++    previous
++        .list_tools("fixture", CancellationToken::new())
++        .await
++        .unwrap();
++    drop(previous.ledger.begin("fixture", "echo").unwrap());
++    let unknown = previous.status().unknown_id.unwrap();
++    let extra = f._dir.path().join("extra-root");
++    std::fs::create_dir(&extra).unwrap();
++    let mut draft = f.authority.load().unwrap().edit();
++    let project = draft
++        .trust_project(&f.project.id, &f.project.path, &[extra])
++        .unwrap();
++    f.authority.save(&mut draft).unwrap();
++    let held = previous.gate.clone().lock_owned().await;
++    let rebound = f.manager();
++    assert!(!Arc::ptr_eq(&previous, &rebound));
++    assert!(Arc::ptr_eq(&previous.ledger, &rebound.ledger));
++    assert!(Arc::ptr_eq(&previous.gate, &rebound.gate));
++    assert!(Arc::ptr_eq(&previous.editing_gate, &rebound.editing_gate));
++    assert!(rebound.matches_project(&project));
++    assert!(rebound.status().busy);
++    assert_eq!(
++        rebound.status().unknown_id.as_deref(),
++        Some(unknown.as_str())
++    );
++    drop(held);
++    assert!(previous.acknowledge_unknown(&unknown, true).is_err());
++    assert!(previous.confirm().await.is_err());
++    assert!(invoke(&rebound, "ok").await.is_err());
++    assert_eq!(server.calls.load(Ordering::SeqCst), 0);
++    rebound.acknowledge_unknown(&unknown, true).unwrap();
++    settle(invoke(&rebound, "ok").await.unwrap()).await;
++    assert_eq!(server.calls.load(Ordering::SeqCst), 1);
++    // The rebound manager initializes fresh transport/catalog state, while the
++    // old authority cannot dispatch even though an external Arc still exists.
++    assert_eq!(server.starts.load(Ordering::SeqCst), 2);
++    assert!(Arc::ptr_eq(&rebound, &f.manager()));
++}

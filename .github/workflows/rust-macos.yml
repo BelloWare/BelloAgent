@@ -51,12 +51,14 @@ jobs:
           cargo test --locked -p bello-agent-core --lib --features synthetic-authority runtime::resource_runtime::tests
           cargo test --locked -p bello-agent-core --lib --features synthetic-authority saved_runtime::tests
           cargo test --locked -p bello-agent-core --lib --features synthetic-authority synthetic_project_runtime::tests
+          cargo test --locked -p bello-agent-core --lib --features synthetic-authority mcp::tests
           cargo test --locked -p bello-agent-core --lib --features synthetic-authority project_authority::connections::
           cargo test --locked -p bello-agent-core --lib --features synthetic-authority runtime::configuration_tests
           cargo test --locked -p bello-agent-core --lib --features native-authority project_authority::native
           cargo check --locked -p bello-agent-app --all-targets --features synthetic-authority
           cargo test --locked -p bello-agent-app --features synthetic-authority project_host::
           cargo test --locked -p bello-agent-app chat_tool_mode::
+          cargo test --locked -p bello-agent-app --features synthetic-authority mcp_inspector
       - name: Synthetic native file tools through fake-platform transcript
         # Temporary files and loopback provider only; GPUI uses its test platform.
         # No native window, input automation, TCC, vault, or user data is accessed.

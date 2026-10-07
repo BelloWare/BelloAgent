@@ -7,7 +7,7 @@
 //! Form/coordinator clones are additional memory; no whole-Settings memory bound
 //! or native secure keyboard/accessibility acceptance is claimed.
 #[path = "connection_secure_input.rs"]
-mod secure_input;
+pub(crate) mod secure_input;
 use crate::theme::Palette;
 use bello_workbench_ui::{EditorAppearance, EditorEvent, EditorView};
 use gpui::{

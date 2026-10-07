@@ -266,7 +266,13 @@ pub fn validate(messages: &[Message]) -> Result<()> {
                 last_result = Some(index);
                 if let Some(content) = &record.content {
                     content.validate()?;
-                    if content.text() != message.text || record.outcome != ToolOutcome::Completed {
+                    if content.text() != message.text
+                        || !(record.outcome == ToolOutcome::Completed
+                            || (record.outcome == ToolOutcome::Failed
+                                && assistant.calls[index].name == "mcp"
+                                && record.is_error
+                                && content.stats.is_none()))
+                    {
                         return Err(invalid(
                             "Retained tool content disagrees with result text or outcome",
                         ));

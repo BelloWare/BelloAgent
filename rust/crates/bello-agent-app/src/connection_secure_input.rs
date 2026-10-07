@@ -13,18 +13,18 @@ use std::{fmt, ops::Range, rc::Rc};
 use unicode_segmentation::UnicodeSegmentation;
 use zeroize::Zeroizing;
 
-pub(super) const KEY_BYTES: usize = 16_384;
-pub(super) const HEADER_BYTES: usize = 262_144;
+pub(crate) const KEY_BYTES: usize = 16_384;
+pub(crate) const HEADER_BYTES: usize = 262_144;
 const MASK: &str = "•";
 const MAX_VISIBLE_MASKS: usize = 512;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum SecureInputEvent {
+pub(crate) enum SecureInputEvent {
     Changed,
     Rejected,
 }
 
-pub(super) struct SecureInput {
+pub(crate) struct SecureInput {
     content: Zeroizing<String>,
     limit: usize,
     boundaries: Rc<[usize]>,
@@ -63,7 +63,7 @@ impl Focusable for SecureInput {
 }
 
 impl SecureInput {
-    pub(super) fn new(limit: usize, appearance: EditorAppearance, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(limit: usize, appearance: EditorAppearance, cx: &mut Context<Self>) -> Self {
         Self {
             content: Zeroizing::new(String::new()),
             limit,
@@ -81,32 +81,32 @@ impl SecureInput {
         }
     }
     /// The coordinator alone captures replacement bytes. Never render this value.
-    pub(super) fn text(&self) -> &str {
+    pub(crate) fn text(&self) -> &str {
         &self.content
     }
     // An out-of-contract presentation remains coordinator-owned until an actual
     // accepted edit replaces it. Never capture an empty stand-in as a deletion.
-    pub(super) fn captured_text(&self) -> Option<&str> {
+    pub(crate) fn captured_text(&self) -> Option<&str> {
         (!self.rejected_presentation).then_some(self.text())
     }
-    pub(super) fn has_marked_text(&self) -> bool {
+    pub(crate) fn has_marked_text(&self) -> bool {
         self.marked.is_some()
     }
-    pub(super) fn rejection(&self) -> Option<&'static str> {
+    pub(crate) fn rejection(&self) -> Option<&'static str> {
         self.rejection
     }
-    pub(super) fn set_appearance(&mut self, appearance: EditorAppearance, cx: &mut Context<Self>) {
+    pub(crate) fn set_appearance(&mut self, appearance: EditorAppearance, cx: &mut Context<Self>) {
         self.appearance = appearance;
         cx.notify();
     }
-    pub(super) fn set_read_only(&mut self, value: bool, cx: &mut Context<Self>) {
+    pub(crate) fn set_read_only(&mut self, value: bool, cx: &mut Context<Self>) {
         if self.read_only != value {
             self.read_only = value;
             self.dragging = false;
             cx.notify();
         }
     }
-    pub(super) fn set_text(&mut self, value: String, cx: &mut Context<Self>) -> bool {
+    pub(crate) fn set_text(&mut self, value: String, cx: &mut Context<Self>) -> bool {
         let value = Zeroizing::new(value);
         if value.len() > self.limit {
             self.rejected_presentation = true;

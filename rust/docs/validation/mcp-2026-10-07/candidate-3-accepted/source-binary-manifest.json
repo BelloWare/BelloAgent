@@ -1,0 +1,22 @@
+{
+  "baseline_commit": "50da4e9969a75182461dd24619bbad083155d4cb",
+  "source_digest": "64ff67beddd5fae983601834ff110c8aff330fe756a0b19ae2a383c4f2c33ea7",
+  "binary": "/workspace/scratch/8b6fda578834/agent-mcp-accepted-qa/bello-agent-mcp-candidate-3",
+  "binary_bytes": 125729808,
+  "binary_sha256": "06dd2ebdddfc51dc0dcab9a6d474ae16984c4e573c709d995b9c05892919c262",
+  "core_rlib": "/workspace/scratch/8b6fda578834/agent-mcp-ui-target/debug/deps/libbello_agent_core-dce8590519cd7cdd.rlib",
+  "build_command": "cargo build --offline --locked -p bello-agent-app --features synthetic-authority --message-format=json",
+  "gateway_sha256": "1adbd75f2239b5303b811bb8cbb15a199ad6357631874c56334df6dd653f0006",
+  "native_production_enabled": false,
+  "corrected_scope": [
+    "Explicit allowedTools:null rejected",
+    "Only Inspector-owned operations offer Cancel",
+    "Completed-chat late retirement preserves idle readiness"
+  ],
+  "tests": "501 passed, 0 failed, 3 ignored (synthetic); 408 passed, 0 failed, 1 ignored (default); 44 focused MCP tests included; strict Clippy default and synthetic; formatting passed",
+  "launch_sha256": "ae2629a441ca37341311026c54f1996b18ec7bcd629a174f21d190e04a088d7d",
+  "accepted_at": "2026-10-07T10:11:50Z",
+  "acceptance_scope": "Actual Linux cloud CUA, ordinary fresh saved-ID runtime and separate genuine saved ReadOnly fixture; numeric-loopback and fixed fake credentials only",
+  "published_repair_baseline": "33c79e21ca336a98483ca77adf7435aa885bf5d3",
+  "baseline_note": "Build began from 50da4e9 plus uncommitted reviewed MCP and retirement-repair source. The repair was subsequently published separately; the exact 172 build inputs match the before/after manifests."
+}

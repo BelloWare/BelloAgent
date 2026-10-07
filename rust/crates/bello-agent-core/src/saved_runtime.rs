@@ -50,6 +50,81 @@ impl SavedRuntimeFactory {
             synthetic_mutations: false,
         }
     }
+    /// The workspace owner holds exactly one manager for its current saved
+    /// project. Multiple factory instances/clones and chats reuse that manager.
+    pub fn mcp_manager(&self) -> Result<Arc<crate::mcp::McpManager>> {
+        let binding = ProjectBinding::confirm(self.authority.clone(), self.workspace.clone())?;
+        self.project_mcp(&binding)
+    }
+    fn project_mcp(&self, binding: &ProjectBinding) -> Result<Arc<crate::mcp::McpManager>> {
+        // Serialize construction outside the catalog mutex: opening the stable
+        // outcome-file lease must not race another factory for this workspace.
+        let creation = self
+            .workspace
+            .lock()
+            .map_err(|_| invalid("Workspace is unavailable"))?
+            .mcp_creation_gate
+            .clone();
+        let _creation = creation
+            .lock()
+            .map_err(|_| invalid("MCP manager construction is unavailable"))?;
+        let loaded = self
+            .authority
+            .load_mcp(&binding.project)
+            .map_err(|e| invalid(e.to_string()))?;
+        let (directory, gate, previous) = {
+            let catalog = self
+                .workspace
+                .lock()
+                .map_err(|_| invalid("Workspace is unavailable"))?;
+            if let Some(manager) = &catalog.mcp_manager
+                && manager.matches_project(&binding.project)
+            {
+                if !manager.matches_authority(&loaded) {
+                    return Err(invalid("MCP workspace authority changed"));
+                }
+                return Ok(manager.clone());
+            }
+            (
+                catalog.state_directory(),
+                catalog.editing_gate(),
+                catalog.mcp_manager.clone(),
+            )
+        };
+        let manager = match previous {
+            Some(previous) if previous.project_id() == binding.project.id => {
+                previous.rebind(loaded.clone())?
+            }
+            _ => crate::mcp::McpManager::new(loaded.clone(), &directory, gate)?,
+        };
+        let mut catalog = self
+            .workspace
+            .lock()
+            .map_err(|_| invalid("Workspace is unavailable"))?;
+        let state = catalog.snapshot();
+        if catalog.is_uncertain()
+            || state.project_id.as_deref() != Some(binding.project.id.as_str())
+            || state.project != binding.project.path
+        {
+            return Err(invalid(
+                "MCP workspace identity changed during construction",
+            ));
+        }
+        if let Some(existing) = &catalog.mcp_manager
+            && existing.matches_project(&binding.project)
+        {
+            if !existing.matches_authority(&loaded) {
+                return Err(invalid("MCP workspace authority changed"));
+            }
+            return Ok(existing.clone());
+        }
+        catalog.mcp_manager = Some(manager.clone());
+        Ok(manager)
+    }
+    #[cfg(all(test, feature = "synthetic-authority"))]
+    pub(crate) fn options_for_mcp_test(&self) -> SavedChatOptions {
+        self.options.clone()
+    }
     pub fn configuration_for(&self, id: &str) -> Result<Arc<Configuration>> {
         let loaded = self
             .authority
@@ -191,6 +266,10 @@ impl SavedRuntimeFactory {
                 )?
             }
         };
+        let tools = tools.with_mcp(
+            self.project_mcp(&guard.binding)?,
+            record.tool_mode == ChatToolMode::ReadOnly,
+        );
         // Permission errors/symlinks/FIFOs are not absence. Existing-only opening
         // checks identity under its existing writer lock before recovery writes.
         let store = match std::fs::symlink_metadata(&record.snapshot) {

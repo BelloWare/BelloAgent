@@ -1,0 +1,13 @@
+   Compiling bello-agent-core v0.1.0 (/workspace/scratch/8b6fda578834/BelloAgent/rust/crates/bello-agent-core)
+    Finished `test` profile [unoptimized] target(s) in 12.43s
+     Running unittests src/lib.rs (/workspace/scratch/8b6fda578834/agent-mcp-staging/rust/target/debug/deps/bello_agent_core-1254f91c54cf85d9)
+
+running 5 tests
+test mcp::outcome::tests::outcome_writer_subprocess_probe ... ok
+test mcp::outcome::tests::writer_lock_remains_stable_and_explicitly_unlocks ... ok
+test mcp::outcome::tests::writer_exclusion_precedes_marker_read_and_preserves_evidence ... ok
+test mcp::outcome::tests::canonical_parent_alias_and_unsafe_lock_leaves_cannot_admit_writers ... ok
+test mcp::outcome::tests::outcome_writer_excludes_subprocess_until_last_ticket_drops ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 308 filtered out; finished in 0.03s
+

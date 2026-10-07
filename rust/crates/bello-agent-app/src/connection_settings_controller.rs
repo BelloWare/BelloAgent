@@ -319,7 +319,9 @@ impl AgentView {
         ));
     }
     pub(crate) fn open_connections(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.shutting_down
+        if self.mcp.open
+            || self.mcp.busy()
+            || self.shutting_down
             || self.close_dialog
             || self.projects.view.read(cx).is_open()
             || !self.connections.switches.is_empty()

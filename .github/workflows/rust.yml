@@ -42,11 +42,13 @@ jobs:
           cargo test --locked -p bello-agent-core --lib --features synthetic-authority runtime::resource_runtime::tests
           cargo test --locked -p bello-agent-core --lib --features synthetic-authority saved_runtime::tests
           cargo test --locked -p bello-agent-core --lib --features synthetic-authority synthetic_project_runtime::tests
+          cargo test --locked -p bello-agent-core --lib --features synthetic-authority mcp::tests
           cargo test --locked -p bello-agent-core --lib --features synthetic-authority project_authority::connections::
           cargo test --locked -p bello-agent-core --lib --features synthetic-authority runtime::configuration_tests
           cargo test --locked -p bello-agent-core --lib --features native-authority project_authority::native
           cargo test --locked -p bello-agent-app --features synthetic-authority project_
           cargo test --locked -p bello-agent-app --features synthetic-authority connection_
+          cargo test --locked -p bello-agent-app --features synthetic-authority mcp_inspector
       - name: Lints
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Build native applications

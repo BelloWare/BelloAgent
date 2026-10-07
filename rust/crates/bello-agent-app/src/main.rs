@@ -10,6 +10,9 @@ mod context_inspector;
 mod draft_status;
 mod file_tab;
 mod layout;
+mod mcp_inspector_controller;
+mod mcp_inspector_host;
+mod mcp_inspector_view;
 #[cfg(any(target_os = "macos", test))]
 mod native_menu;
 #[cfg(feature = "native-lifecycle-smoke")]
@@ -161,6 +164,7 @@ struct AgentView {
     quick_open: Entity<QuickOpenView>,
     projects: project_manager_controller::ProjectManagerController,
     connections: connection_settings_controller::ConnectionSettingsController,
+    mcp: mcp_inspector_controller::McpInspectorController,
     #[cfg(all(test, feature = "synthetic-authority"))]
     legacy_configuration: Option<Arc<bello_agent_core::runtime::Configuration>>,
     runtime: saved_runtime_adapter::AppRuntime,
@@ -293,6 +297,12 @@ impl AgentView {
             project_manager_controller::ProjectManagerController::new(project.clone(), palette, cx);
         let connections =
             connection_settings_controller::ConnectionSettingsController::new(palette, cx);
+        let mcp = mcp_inspector_controller::McpInspectorController::new(
+            palette,
+            connections.authority().clone(),
+            connections.presentation.synthetic,
+            cx,
+        );
         let runtime = saved_runtime_adapter::AppRuntime::new(
             connections.authority().as_ref().clone(),
             workspace.clone(),
@@ -390,6 +400,7 @@ impl AgentView {
             quick_open,
             projects,
             connections,
+            mcp,
             #[cfg(all(test, feature = "synthetic-authority"))]
             legacy_configuration,
             runtime,
@@ -421,6 +432,7 @@ impl AgentView {
         self.organization_window = Some(window.window_handle());
         self.bind_projects(window, cx);
         self.bind_connections(window, cx);
+        self.bind_mcp(window, cx);
         let weak = cx.weak_entity();
         window.on_window_should_close(cx, move |window, cx| {
             weak.update(cx, |view, cx| view.request_close_for(binding, window, cx))
@@ -689,6 +701,18 @@ impl AgentView {
         );
     }
     fn request_close(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.mcp.busy() {
+            self.error = Some("Wait for the MCP operation to settle before closing.".into());
+            cx.notify();
+            return false;
+        }
+        if self.mcp.open || self.mcp.view.read(cx).dirty(cx) {
+            if !self.mcp.open {
+                self.open_mcp(window, cx);
+            }
+            self.request_mcp_close(cx);
+            return false;
+        }
         if self.connections.operation.is_some() || !self.connections.switches.is_empty() {
             self.error = Some("Wait for connection changes to finish before closing.".into());
             cx.notify();
@@ -833,6 +857,19 @@ impl AgentView {
         }
     }
     fn global_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.mcp.open {
+            if self
+                .mcp
+                .view
+                .update(cx, |view, cx| view.key(event, window, cx))
+            {
+                if matches!(event.keystroke.key.as_str(), "enter" | "escape" | "space") {
+                    self.cancelled_prompt_key = Some(event.keystroke.key.clone());
+                }
+                cx.stop_propagation();
+            }
+            return;
+        }
         if self.compaction_menu_key(event, cx) {
             self.cancelled_prompt_key = Some(event.keystroke.key.clone());
             cx.stop_propagation();
@@ -2709,10 +2746,16 @@ impl AgentView {
                     view.set_archive_visibility(!view.effective_archive_visibility(), cx)
                 })),
         );
-        footer = footer.child(div().flex_1()).child(
-            self.icon_button("settings", "gear", 28.)
-                .on_click(cx.listener(|v, _, window, cx| v.open_connections(window, cx))),
-        );
+        footer = footer
+            .child(div().flex_1())
+            .child(
+                self.button("mcp-inspector", "MCP")
+                    .on_click(cx.listener(|view, _, window, cx| view.open_mcp(window, cx))),
+            )
+            .child(
+                self.icon_button("settings", "gear", 28.)
+                    .on_click(cx.listener(|v, _, window, cx| v.open_connections(window, cx))),
+            );
         div()
             .w(px(self.layout.sidebar))
             .flex_shrink_0()
@@ -2830,6 +2873,9 @@ impl Render for AgentView {
             self.connections
                 .view
                 .update(cx, |view, cx| view.set_palette(palette, cx));
+            self.mcp
+                .view
+                .update(cx, |view, cx| view.set_palette(palette, cx));
             for entry in &self.files {
                 entry
                     .view
@@ -2843,6 +2889,7 @@ impl Render for AgentView {
         } else {
             (width - self.layout.sidebar - 1.).max(0.)
         };
+        self.sync_mcp_status(cx);
         let sidebar = self.sidebar(cx);
         let conversation = self.conversation(window, cx);
         let mut content = div()
@@ -3093,6 +3140,27 @@ impl Render for AgentView {
                                 (f32::from(window.viewport_size().height) - 48.).clamp(300., 820.)
                             ))
                             .child(self.connections.view.clone()),
+                    ),
+            );
+        }
+        if self.mcp.view.read(cx).is_open() {
+            element = element.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .occlude()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(rgba(0x00000044))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(
+                        div()
+                            .w(px((width - 32.).clamp(700., 1120.)))
+                            .h(px(
+                                (f32::from(window.viewport_size().height) - 32.).clamp(420., 840.)
+                            ))
+                            .child(self.mcp.view.clone()),
                     ),
             );
         }

@@ -1,0 +1,6 @@
+rust/crates/bello-agent-core/src/mcp.rs: OK
+rust/crates/bello-agent-core/src/mcp/outcome.rs: OK
+rust/crates/bello-agent-core/src/mcp/tests.rs: OK
+rust/crates/bello-agent-core/src/saved_runtime.rs: OK
+rust/crates/bello-agent-core/src/workspace.rs: OK
+rust/crates/bello-agent-core/src/mcp_vault.rs: OK

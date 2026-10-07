@@ -1,0 +1,96 @@
+{
+  "project_id": "5c168441-0a88-47ba-ac80-ac00a5bb7f6e",
+  "gateway_rows": 9,
+  "invocations": {
+    "echo": 2
+  },
+  "chats": [
+    {
+      "id": "829bb301-3d31-4de3-90bb-c46602983f75",
+      "title": "hello candidate four",
+      "tool_mode": "editing",
+      "connection_id": "f71e226b-c464-4b22-b767-1e2998da362d",
+      "state": "idle",
+      "queue_paused": false,
+      "pending_count": 0,
+      "messages": [
+        {
+          "role": "user",
+          "text": "hello candidate four",
+          "state": "complete",
+          "model": "local-test-fixture"
+        },
+        {
+          "role": "assistant",
+          "text": "Saved connection ready. No paid provider contacted.",
+          "state": "completed",
+          "model": "local-test-fixture"
+        },
+        {
+          "role": "user",
+          "text": "mcp fixture invoke",
+          "state": "complete",
+          "model": "local-test-fixture"
+        },
+        {
+          "role": "assistant",
+          "text": "",
+          "state": "completed",
+          "model": "local-test-fixture"
+        },
+        {
+          "role": "toolResult",
+          "text": "MCP loopback fixture result: one invocation completed.",
+          "state": "completed",
+          "model": "local-test-fixture"
+        },
+        {
+          "role": "assistant",
+          "text": "Saved runtime continued after the actual MCP tool result. No tool was replayed.",
+          "state": "completed",
+          "model": "local-test-fixture"
+        },
+        {
+          "role": "user",
+          "text": "after reopen fixture",
+          "state": "complete",
+          "model": "second-fixture"
+        },
+        {
+          "role": "assistant",
+          "text": "Saved connection ready. No paid provider contacted.",
+          "state": "completed",
+          "model": "second-fixture"
+        }
+      ]
+    }
+  ],
+  "final_outcome_ledger": {
+    "version": 1,
+    "project": "5c168441-0a88-47ba-ac80-ac00a5bb7f6e",
+    "pending": {}
+  },
+  "latest_result_receipt": {
+    "version": 1,
+    "project": "5c168441-0a88-47ba-ac80-ac00a5bb7f6e",
+    "invocation": "a353f353-ef68-4eb9-b1bb-b27b9b1b1cf3",
+    "server": "fixture",
+    "tool": "echo",
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "MCP loopback fixture result: one invocation completed."
+        }
+      ],
+      "isError": false
+    }
+  },
+  "app_log_bytes": 0,
+  "prior_process_reopen": {
+    "saved_chat": "7a10ba76-50d2-4071-aadc-1545ffacc4ae",
+    "history_unchanged": true,
+    "gateway_requests": 0,
+    "authority_recovery": "Refused: memory-only vault no longer contained bound project UUID. No catalog/authority seeding or identity bypass."
+  }
+}

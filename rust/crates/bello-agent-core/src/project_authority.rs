@@ -25,6 +25,9 @@ const MAX_PROJECTS: usize = 1000;
 #[path = "connection_vault.rs"]
 pub mod connections;
 
+#[path = "mcp_vault.rs"]
+pub mod mcp;
+
 #[cfg(feature = "native-authority")]
 mod native;
 
@@ -52,6 +55,16 @@ pub enum AuthorityError {
         "The connection is invalid or unsupported. Use an explicit supported Responses connection."
     )]
     InvalidConnection,
+    #[error(
+        "Invalid MCP configuration. Use bounded HTTP server JSON and separate secure header replacements."
+    )]
+    InvalidMcp,
+    #[error("Only Streamable HTTP MCP is supported; stdio is not implemented.")]
+    UnsupportedMcp,
+    #[error(
+        "The MCP endpoint changed. Explicitly replace or clear its saved headers before saving."
+    )]
+    McpSecretDestination,
     #[error("This saved connection is unavailable for new requests.")]
     UnsupportedConnection,
     #[error("The project is not currently saved and trusted.")]

@@ -3,6 +3,8 @@ mod compaction_runtime;
 
 #[path = "runtime_admission.rs"]
 mod admission;
+#[path = "mcp_inspector_runtime.rs"]
+mod mcp_inspector_runtime;
 pub use admission::IdleAdmissionGuard;
 
 #[path = "tool_runtime.rs"]
@@ -144,6 +146,18 @@ pub struct Controller {
     worker_joins: Mutex<Vec<(tokio::task::Id, WorkerJoin)>>,
 }
 impl Controller {
+    #[cfg(all(test, feature = "synthetic-authority"))]
+    pub(crate) fn mcp_checkpoint_fault_for_test(&self, fault: u8) {
+        self.inner.lock().unwrap().store.fault = match fault {
+            1 => crate::session::WriteFault::BeforeRename,
+            2 => crate::session::WriteFault::AfterRename,
+            _ => crate::session::WriteFault::None,
+        };
+    }
+    #[cfg(all(test, feature = "synthetic-authority"))]
+    pub(crate) fn mcp_definitions_for_test(&self) -> Vec<crate::tools::ToolDefinition> {
+        self.options.definitions()
+    }
     pub fn new(
         store: SessionStore,
         configuration: Option<(Profile, Credential)>,
@@ -1044,7 +1058,7 @@ impl Controller {
     }
 }
 
-fn shared_runtime() -> Result<&'static tokio::runtime::Runtime> {
+pub(crate) fn shared_runtime() -> Result<&'static tokio::runtime::Runtime> {
     static RUNTIME: OnceLock<std::result::Result<tokio::runtime::Runtime, String>> =
         OnceLock::new();
     RUNTIME

@@ -1,0 +1,8 @@
+{
+  "verified_at": "2026-10-07T10:13:37.504589+00:00",
+  "source_digest": "64ff67beddd5fae983601834ff110c8aff330fe756a0b19ae2a383c4f2c33ea7",
+  "file_count": 172,
+  "changed_build_inputs": [],
+  "binary_sha256": "06dd2ebdddfc51dc0dcab9a6d474ae16984c4e573c709d995b9c05892919c262",
+  "read_only_launch_sha256": "f8e3a653c87580e84de8d65755cf3d78630b0f364e676ae7758ef82f64b88dd6"
+}

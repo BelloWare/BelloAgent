@@ -4,6 +4,7 @@ pub mod compaction;
 #[path = "compaction_session.rs"]
 mod compaction_session;
 pub mod instructions;
+pub mod mcp;
 pub mod profile;
 pub mod project_authority;
 pub mod provider;

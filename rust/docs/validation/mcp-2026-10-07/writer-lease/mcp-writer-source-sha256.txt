@@ -1,0 +1,6 @@
+e26d1a616ea4aec472ca9d47a9852e313d1af507224574da5c369083a6cb0ef0  rust/crates/bello-agent-core/src/mcp.rs
+4e5c6425bff21d2b4ff0dae10d1fb4028c6ed4277cc1022d82dc0fdd0c6caefe  rust/crates/bello-agent-core/src/mcp/outcome.rs
+002a9c71d2a7bed4e1b8597ba2d21bb50c09bec2a0d5d7a1c93d482cd052107e  rust/crates/bello-agent-core/src/mcp/tests.rs
+a15c1a016e98435ec07f01d7f40964dcad86b20e6f1cd875b707c30fef8260ba  rust/crates/bello-agent-core/src/saved_runtime.rs
+c250d7fa83e454cba9b3bebe968605c640fae10daaeb5a98206d73d82675b597  rust/crates/bello-agent-core/src/workspace.rs
+8ddacde6bf77b81d476ebd6c10a858ecbc5a217551ac1782544c2fe7a2435a91  rust/crates/bello-agent-core/src/mcp_vault.rs

@@ -1,0 +1,30 @@
+{
+  "candidate": 4,
+  "baseline_commit": "33c79e21ca336a98483ca77adf7435aa885bf5d3",
+  "source_digest": "5651aedc79af217f3c4d0d47e13c8f98625e5d6084cd9aba21c2671ea70ac87c",
+  "source_file_count": 172,
+  "binary": "/workspace/scratch/8b6fda578834/agent-mcp-candidate4-qa/bello-agent-mcp-candidate-4",
+  "binary_bytes": 125750432,
+  "binary_sha256": "3b482b903851c68695e771dc16b43642e5e1b21636c5579981991012d206c7aa",
+  "gateway_sha256": "1adbd75f2239b5303b811bb8cbb15a199ad6357631874c56334df6dd653f0006",
+  "build_command": "cargo build --offline --locked -p bello-agent-app --features synthetic-authority --message-format=json",
+  "native_production_enabled": false,
+  "scope": "Core writer-lease correction: actual fresh synthetic setup, discovery, confirmed Inspector invoke, model MCP invocation/continuation, joined route retirement/reopen, next prompt; prior process restart history preserved but authority unavailable as expected for memory-only vault.",
+  "accepted_at": "2026-10-07T10:52:53Z",
+  "tests": {
+    "app_synthetic": {
+      "passed": 501,
+      "failed": 0,
+      "ignored": 3
+    },
+    "app_default": {
+      "passed": 408,
+      "failed": 0,
+      "ignored": 1
+    },
+    "focused_mcp_included": 44,
+    "strict_clippy_default_and_synthetic": "passed",
+    "workspace_format": "passed"
+  },
+  "launch_sha256": "4bab069bfb6a9ef8a2a636f696605c726c0f18e6244b88965710a14a27f5b88d"
+}

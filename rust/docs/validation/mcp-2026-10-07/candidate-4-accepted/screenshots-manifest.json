@@ -1,0 +1,43 @@
+{
+  "candidate": "candidate-4-accepted",
+  "binary_sha256": "3b482b903851c68695e771dc16b43642e5e1b21636c5579981991012d206c7aa",
+  "capture": "Original CUA image bytes, no crop, edit, or re-encoding.",
+  "screenshots": [
+    {
+      "path": "01-saved-chat-reopened.jpg",
+      "label": "saved chat reopened",
+      "bytes": 94605,
+      "sha256": "a7feb0c62761af52beb0c2999ed23f457d0b12b9ade57d4b8f424306aad0d228"
+    },
+    {
+      "path": "02-memory-only-authority-fails-closed.jpg",
+      "label": "memory only authority fails closed",
+      "bytes": 126128,
+      "sha256": "d2c461b90d4f49262d2336f5179aeb98056bd1cdb118da5a68c8ab53f5dc6a21"
+    },
+    {
+      "path": "03-discovery-no-invocation.jpg",
+      "label": "discovery no invocation",
+      "bytes": 134019,
+      "sha256": "8d828bef80b99c0573ea25d2728cc98d0ccf92944ec4128f1e23ae796a3836d7"
+    },
+    {
+      "path": "04-inspector-result-settled.jpg",
+      "label": "inspector result settled",
+      "bytes": 135377,
+      "sha256": "b7066b3e98bbefda8604de9518b5c5295d06f361d279919430080d06a6d8fc72"
+    },
+    {
+      "path": "05-model-mcp-continuation.jpg",
+      "label": "model mcp continuation",
+      "bytes": 97210,
+      "sha256": "d26790e39181660f13ba728fe6bf7df43d74450e40b9ae0b0261e7f84f330aec"
+    },
+    {
+      "path": "06-retired-reopened-new-prompt.jpg",
+      "label": "retired reopened new prompt",
+      "bytes": 100648,
+      "sha256": "1f055e1c33e830ed54aa7283234ba7f95d70ba7f3167908d5e51113d1a988f75"
+    }
+  ]
+}

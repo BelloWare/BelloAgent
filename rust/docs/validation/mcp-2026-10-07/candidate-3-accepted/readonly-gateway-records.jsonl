@@ -1,0 +1,6 @@
+{"kind": "provider", "request_kind": "answer", "offers_mcp": true, "tool_result": false, "fixture_model": "local-test-fixture", "fixture_authorization": true}
+{"kind": "mcp", "method": "initialize", "tool": null, "fixture_header": false}
+{"kind": "mcp", "method": "notifications/initialized", "tool": null, "fixture_header": false}
+{"kind": "mcp", "method": "tools/list", "tool": null, "fixture_header": false}
+{"kind": "mcp", "method": "tools/call", "tool": "echo", "fixture_header": false}
+{"kind": "provider", "request_kind": "answer", "offers_mcp": true, "tool_result": false, "fixture_model": "local-test-fixture", "fixture_authorization": true}

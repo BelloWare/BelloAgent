@@ -2104,3 +2104,47 @@ full request inspection and native macOS menu/IME/accessibility acceptance remai
 During compaction Inspector explicitly waits for settlement rather than showing an
 ordinary request as the summary. No production vault/trust/tool gate changed.
 See `manual-compaction.md` for exact invariants and remaining boundaries.
+
+### Project-scoped Streamable HTTP MCP (2026-10-07)
+
+The saved project factory now supplies one shared project manager to all chats.
+The GPUI MCP Inspector exposes header-free configuration plus the existing masked
+header replacement input, explicit trust/save, bounded list/describe, confirmed
+one-shot invocation, retained latest result and exact unknown acknowledgment.
+Ordinary Editing defaults and existing saved modes are preserved; genuine
+ReadOnly chats expose the existing source one-way Enable Editing transaction.
+Save uses project idle guards, unloaded idle leases, a manager reservation and
+vault-save-before-apply ordering. stdio is explicitly unsupported.
+
+The real Controller advertises one `mcp` wrapper and runs its actions through the
+same project authority and editing gate. Bounded JSON/chunked-SSE transport,
+initialize/session/protocol headers, allowlists, catalog cache/list changes and
+one source-proven unprocessed-session-expiry retry are integrated. Generic retry,
+proxy inheritance, redirects and server-initiated capabilities are disabled.
+Source `isError`, text, structured content, image retention and short unsupported
+payload descriptors flow through durable results, provider continuation and
+reopen. Snapshot v6 narrowly permits Failed MCP content, while rejecting Unknown,
+foreign-owner and mismatched-content histories.
+
+The project outcome ledger remains until canonical result persistence succeeds,
+a conservative extension beyond Swift's HTTP-success marker clearing. Dropped
+callers, cancellation, disconnection, result/checkpoint uncertainty and restart
+cannot silently authorize replay. Inspector results have one bounded canonical
+receipt, without duplicating chat payloads. Reading retained bytes never clears
+quarantine; acknowledgment compares the exact unresolved-marker fingerprint.
+A stable canonical-outcome-file OS lease also excludes conflicting alternate
+catalog writers and remains held by late tickets/physical settlement. Same-owner
+root re-trust shares the lease and gates without losing unknown evidence.
+
+Final integrated Linux verification passed **450 all-feature core unit + 107
+integration tests**, **313 default core unit + 107 integration tests**, and
+**501 synthetic / 408 default app tests** (3 / 1 intentional ignores), including
+33 focused MCP core and 44 Inspector/host/GPUI tests. Strict core/app all-target
+Clippy and formatting passed in the covered configurations. Independent review
+caught hidden library retry, stale-config reload, missing Inspector result reopen,
+and foreground fsync-lock contention; corrections and bounded negative controls
+were verified against frozen source. Actual immutable cloud computer-use evidence
+and exact published CI are recorded separately before completion is claimed.
+No production/native vault, signing, real-credential or native macOS UI gate was
+opened. See [the workflow contract](project-mcp-workflow.md) and
+[Inspector scope](mcp-project-inspector.md).

@@ -1,0 +1,50 @@
+#![allow(dead_code)]
+use std::{fs::{self, File, OpenOptions}, path::Path};
+type Result<T> = std::io::Result<T>;
+fn invalid(message: impl Into<String>) -> std::io::Error { std::io::Error::other(message.into()) }
+struct WriterLease(File);
+impl WriterLease {
+    fn acquire(path: &Path) -> Result<Self> {
+        if let Ok(metadata) = fs::symlink_metadata(path)
+            && !metadata.is_file()
+        {
+            return Err(invalid("MCP outcome writer lock is not a regular file"));
+        }
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create(true).truncate(false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        nonblocking_nofollow(&mut options);
+        let file = options
+            .open(path)
+            .map_err(|_| invalid("MCP outcome writer lock could not be opened"))?;
+        if !file.metadata()?.is_file() {
+            return Err(invalid("MCP outcome writer lock is not a regular file"));
+        }
+        file.try_lock().map_err(|_| {
+            invalid("MCP outcome evidence is already open elsewhere; close the other project owner before retrying")
+        })?;
+        Ok(Self(file))
+    }
+}
+impl Drop for WriterLease {
+    fn drop(&mut self) {
+        // Explicit unlock also releases inherited/duplicated descriptors. Never
+        // unlink this path: replacing its inode would admit a second writer.
+        let _ = self.0.unlock();
+    }
+}
+fn nonblocking_nofollow(options: &mut OpenOptions) {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        #[cfg(target_os = "linux")]
+        let flags = 0x800 | 0x20000;
+        #[cfg(target_os = "macos")]
+        let flags = 0x4 | 0x100;
+        options.custom_flags(flags);
+    }
+}

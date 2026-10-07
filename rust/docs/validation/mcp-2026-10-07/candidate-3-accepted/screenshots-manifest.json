@@ -1,0 +1,115 @@
+{
+  "candidate": "candidate-3-accepted",
+  "binary_sha256": "06dd2ebdddfc51dc0dcab9a6d474ae16984c4e573c709d995b9c05892919c262",
+  "capture": "Original CUA image bytes, no crop, edit, or re-encoding.",
+  "screenshots": [
+    {
+      "path": "01-null-allowlist-rejected.jpg",
+      "label": "null allowlist rejected",
+      "bytes": 120380,
+      "sha256": "29a42d529c3dcd872e5671861feed66f11d0b6b2bff8ea10219f188cf5d04f20"
+    },
+    {
+      "path": "02-saved-header-free-config.jpg",
+      "label": "saved header free config",
+      "bytes": 122457,
+      "sha256": "189324987e87f7ae72fd95229c4ec390af3ea377a635f6cdfa58e9d5b381de21"
+    },
+    {
+      "path": "03-described-schema-no-invoke.jpg",
+      "label": "described schema no invoke",
+      "bytes": 139041,
+      "sha256": "8892b3826279a0eab1487a92c7d95d9085d240c7e9ae458f7c7acc072e4cd7b9"
+    },
+    {
+      "path": "04-one-shot-confirmation.jpg",
+      "label": "one shot confirmation",
+      "bytes": 153093,
+      "sha256": "89a3e12b82d1f754c188ed497f92b5ddfba220af47e91b02acef1ef9ddd719f9"
+    },
+    {
+      "path": "05-exactly-one-result.jpg",
+      "label": "exactly one result",
+      "bytes": 138311,
+      "sha256": "a0893aa9fded5281045c77ec06b5a24562f3dcfc01b20a15448d466d3c280005"
+    },
+    {
+      "path": "06-durable-result-reload.jpg",
+      "label": "durable result reload",
+      "bytes": 133559,
+      "sha256": "43794b2000854b04596029b2144816ddef9dae951a786429e1776b12f12048e4"
+    },
+    {
+      "path": "07-model-mcp-continuation.jpg",
+      "label": "model mcp continuation",
+      "bytes": 96296,
+      "sha256": "a2bf1112fce2fe7d493cf10b5ea126c68794938258162c6ea5a2dec07d473d3b"
+    },
+    {
+      "path": "08-retired-reopened-new-prompt.jpg",
+      "label": "retired reopened new prompt",
+      "bytes": 100092,
+      "sha256": "3bfb334b7dba874de753ef662b2b46e6bf1efa1d85c72d3e5e64072a6d241f50"
+    },
+    {
+      "path": "09-unknown-quarantine.jpg",
+      "label": "unknown quarantine",
+      "bytes": 151496,
+      "sha256": "6073c53c8ac753279add2014a8f6f9f0b9d818a86f3ace318aa5f5c1ddd95552"
+    },
+    {
+      "path": "10-project-wide-unknown.jpg",
+      "label": "project wide unknown",
+      "bytes": 149816,
+      "sha256": "2853278813bbdb82b27fb884e1144beb9c9545a0e3b1859b8afebc610bca022e"
+    },
+    {
+      "path": "11-acknowledgment-confirmation.jpg",
+      "label": "acknowledgment confirmation",
+      "bytes": 157296,
+      "sha256": "f8310d927749a227344378d6abe6cce4831f81dd53dfbe84e2a2c680f2027714"
+    },
+    {
+      "path": "12-local-cancel-unknown.jpg",
+      "label": "local cancel unknown",
+      "bytes": 151048,
+      "sha256": "6727ff321b588da2e17d839e07882f5b47ea7804d83dcdfabf235bdd10b0497a"
+    },
+    {
+      "path": "13-retained-original-draft.jpg",
+      "label": "retained original draft",
+      "bytes": 101549,
+      "sha256": "e9501210bb738c0a6c0de3c4903317810f6c88b04b0cfa61810e3bc3d8759891"
+    },
+    {
+      "path": "14-readonly-discovery-invoke-disabled.jpg",
+      "label": "readonly discovery invoke disabled",
+      "bytes": 138833,
+      "sha256": "fa7696266cb63e44974f173379dddb9e4fb38c6905d48d93a2741c44f3c27007"
+    },
+    {
+      "path": "15-enable-editing-confirmation.jpg",
+      "label": "enable editing confirmation",
+      "bytes": 150298,
+      "sha256": "09604df34f9f964531eb3e24de7c43f38a5fc62e3391db345e42a84e054f2f46"
+    },
+    {
+      "path": "16-editing-one-shot-result.jpg",
+      "label": "editing one shot result",
+      "bytes": 134999,
+      "sha256": "c2daef20e0ecdb56a4450cdb9a3268739d573acb5140480fb96f2c343d23350e"
+    },
+    {
+      "path": "17-mode-preserved-draft-history.jpg",
+      "label": "mode preserved draft history",
+      "bytes": 79702,
+      "sha256": "c8e243f29a3e12526e6380bee3b8246db7bbd5afb8e9c942b72124a2b800c626"
+    },
+    {
+      "path": "18-mode-reopened-new-prompt.jpg",
+      "label": "mode reopened new prompt",
+      "bytes": 83706,
+      "sha256": "79aa27dd0cf5d48e45cb32e670d2cbaa3db5a1f3ec6fbac81394afb4a8d89987"
+    }
+  ]
+}

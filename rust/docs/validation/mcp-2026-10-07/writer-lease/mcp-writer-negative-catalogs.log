@@ -1,0 +1,21 @@
+    Finished `test` profile [unoptimized] target(s) in 0.13s
+     Running unittests src/lib.rs (/workspace/scratch/8b6fda578834/agent-mcp-staging/rust/target/debug/deps/bello_agent_core-4b871c0f4d9050f4)
+
+running 1 test
+test mcp::tests::distinct_catalogs_share_one_outcome_writer_until_last_ticket_drops ... FAILED
+
+failures:
+
+---- mcp::tests::distinct_catalogs_share_one_outcome_writer_until_last_ticket_drops stdout ----
+
+thread 'mcp::tests::distinct_catalogs_share_one_outcome_writer_until_last_ticket_drops' (67) panicked at crates/bello-agent-core/src/mcp/tests.rs:1417:14:
+different catalog must be excluded
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    mcp::tests::distinct_catalogs_share_one_outcome_writer_until_last_ticket_drops
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 449 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p bello-agent-core --lib`

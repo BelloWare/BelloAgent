@@ -148,3 +148,34 @@ V5 also stores optional ordered compaction checkpoint references and current plu
 terminal operation receipts while retaining the full chronological transcript
 and partial attempts; replay reconstructs summary, retained and newer messages.
 V1–4 read behavior is unchanged. See [manual compaction](manual-compaction.md).
+
+## Project MCP results and snapshot v6
+
+Project-scoped Streamable HTTP MCP uses the same separate authority vault for
+explicit server configuration and headers. General configuration editors never
+receive saved headers. Model-driven results use the existing private canonical
+session checkpoint and full-output files; Inspector one-shot results use one
+bounded latest-result receipt per project. These result files are plaintext
+private conversation/tool data, not encrypted vault data. Known configured header
+values are redacted before result exposure/retention, without claiming to discover
+arbitrary sensitive remote content.
+
+A separate bounded ledger stores unresolved invocation UUIDs and server/tool
+names, without URLs, arguments or credentials. It is written and synchronized
+before dispatch and cleared per invocation only after canonical result durability.
+A stable private lock sidecar independently excludes conflicting writers to the
+canonical outcome-file location, including alternate catalogs in the same
+directory. The lease remains held by outstanding tickets and physical settlement
+workers after their workspace/caller drops; the sidecar is never unlinked.
+Unknown evidence survives failed/uncertain result checkpoints and project restart;
+reading a latest receipt does not clear it. Exact explicit acknowledgment permits
+a new invocation without reexecuting the old one. See
+[project MCP durability](project-mcp-workflow.md#durable-outcome-safety-difference-from-swift)
+for the deliberate safety extension and distinct housekeeping-clear failure case.
+
+Snapshot v6 adds one narrow retained-content case: an explicit Failed result with
+is_error=true owned by its matching `mcp` call. Unknown or mispaired content remains
+invalid. Retained content cannot forge native path/line statistics in that case.
+Older v1–5 read behavior is preserved, and invalid v5 Failed-content bytes are
+rejected unchanged. Historical tool calls and Inspector receipts never replay an
+MCP invocation merely because they were opened.

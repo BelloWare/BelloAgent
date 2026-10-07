@@ -1,0 +1,16 @@
+{
+  "after": "WORKTREE",
+  "source_manifest_sha256": "4615f74a232134b3bcce77980b5ffaa8ca1f4d9c7109ea6ba0f0bd914ef3b3a9",
+  "delta": {
+    "production": 4497,
+    "tests_and_test_support": 3243,
+    "benchmark_example": 0
+  },
+  "counts": {
+    "production": 37090,
+    "tests_and_test_support": 49741,
+    "benchmark_example": 1186
+  },
+  "total": 88017,
+  "rust_files": 164
+}

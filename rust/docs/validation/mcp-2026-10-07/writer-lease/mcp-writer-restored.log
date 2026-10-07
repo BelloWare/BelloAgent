@@ -1,0 +1,47 @@
+   Compiling bello-agent-core v0.1.0 (/workspace/scratch/8b6fda578834/BelloAgent/rust/crates/bello-agent-core)
+    Finished `test` profile [unoptimized] target(s) in 17.00s
+     Running unittests src/lib.rs (/workspace/scratch/8b6fda578834/agent-mcp-staging/rust/target/debug/deps/bello_agent_core-4b871c0f4d9050f4)
+
+running 33 tests
+test mcp::outcome::tests::outcome_writer_subprocess_probe ... ok
+test mcp::outcome::tests::writer_lock_remains_stable_and_explicitly_unlocks ... ok
+test mcp::outcome::tests::writer_exclusion_precedes_marker_read_and_preserves_evidence ... ok
+
+running 1 test
+test mcp::tests::concurrent_first_factories_reuse_one_workspace_manager ... ok
+test mcp::tests::distinct_catalogs_share_one_outcome_writer_until_last_ticket_drops ... ok
+test mcp::tests::explicit_content_normalization_never_dumps_unsupported_payloads ... ok
+test mcp::tests::proxy_child ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 449 filtered out; finished in 0.01s
+
+test mcp::outcome::tests::canonical_parent_alias_and_unsafe_lock_leaves_cannot_admit_writers ... ok
+test mcp::tests::abandoned_inspector_waiter_still_joins_and_releases_guard_without_dispatch ... ok
+test mcp::tests::dropped_success_receipt_and_marker_faults_survive_restart ... ok
+test mcp::tests::catalog_schema_cursor_duplicate_and_page_types_fail_closed ... ok
+test mcp::tests::allowlist_absent_empty_and_explicit_list_are_distinct_and_null_is_rejected ... ok
+test mcp::tests::invoke_wait_cancel_and_postgate_authority_recheck_are_not_dispatched ... ok
+test mcp::tests::inspector_requires_current_editing_and_retains_one_canonical_receipt ... ok
+test mcp::outcome::tests::outcome_writer_excludes_subprocess_until_last_ticket_drops ... ok
+test mcp::tests::actual_controller_wrapper_failed_images_structured_replay_and_reopen ... ok
+test mcp::tests::proxy_child ... ok
+test mcp::tests::late_ticket_settlement_holds_outcome_writer_after_workspace_drop ... ok
+test mcp::tests::inspector_stop_and_retirement_join_dispatched_unknown_but_waiting_is_not_executed ... ok
+test mcp::tests::read_only_unknown_tool_and_invalid_actions_send_no_invocations ... ok
+test mcp::tests::latest_inspector_result_reopens_without_clearing_later_unknown_evidence ... ok
+test mcp::tests::same_workspace_root_retrust_rebinds_without_losing_lease_or_quarantine ... ok
+test mcp::tests::configured_proxy_environment_is_ignored_in_disposable_child ... ok
+test mcp::tests::saved_config_apply_is_reserved_exact_and_secret_echo_is_redacted ... ok
+test mcp::tests::status_never_blocks_ui_behind_held_durable_ledger_lock ... ok
+test mcp::tests::shared_factory_manager_catalog_wrapper_and_explicit_receipts ... ok
+test mcp::tests::vault_config_validation_preservation_destination_and_cas ... ok
+test mcp::tests::multiple_mcp_calls_in_one_controller_batch_settle_only_their_receipts ... ok
+test mcp::tests::sse_notifications_expiry_and_known_rejection_never_quarantine ... ok
+test mcp::tests::redirect_is_not_followed_and_unknown_cannot_be_cleared_by_config_removal ... ok
+test mcp::tests::second_chat_cancelled_behind_first_invocation_never_dispatches_or_quarantines ... ok
+test mcp::tests::marker_is_not_cleared_when_controller_result_checkpoint_fails ... ok
+test mcp::tests::inspector_receipt_and_marker_settlement_crash_cuts_are_distinct ... ok
+test mcp::tests::interrupted_and_malformed_results_quarantine_without_retry_until_exact_ack ... ok
+
+test result: ok. 33 passed; 0 failed; 0 ignored; 0 measured; 417 filtered out; finished in 1.08s
+

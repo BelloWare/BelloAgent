@@ -70,6 +70,9 @@ impl AppRuntime {
             instructions: String::new(),
         }
     }
+    pub fn mcp_manager(&self) -> Result<Arc<bello_agent_core::mcp::McpManager>> {
+        self.saved.mcp_manager()
+    }
     pub fn preflight(&self, id: &str) -> Result<()> {
         self.saved.preflight(id)
     }

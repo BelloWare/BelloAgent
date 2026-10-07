@@ -33,10 +33,15 @@ pub struct RuntimeOptions {
 }
 impl RuntimeOptions {
     pub(super) fn definitions(&self) -> Vec<crate::tools::ToolDefinition> {
-        self.tools
+        let mut definitions = self
+            .tools
             .as_ref()
             .map(|tools| tools.native.definitions())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        if self.tools.as_ref().is_some_and(|tools| tools.mcp.is_some()) {
+            definitions.push(crate::mcp::definition());
+        }
+        definitions
     }
 }
 
@@ -65,8 +70,26 @@ pub(super) fn effective_profile(base: &Profile, item: Option<&Submission>) -> Pr
 #[derive(Clone)]
 pub struct TrustedReadOnlyTools {
     native: NativeTools,
+    pub(super) mcp: Option<McpTools>,
+}
+#[derive(Clone)]
+pub(super) struct McpTools {
+    pub manager: Arc<crate::mcp::McpManager>,
+    pub read_only: bool,
 }
 impl TrustedReadOnlyTools {
+    pub(crate) fn with_mcp(
+        mut self,
+        manager: Arc<crate::mcp::McpManager>,
+        read_only: bool,
+    ) -> Self {
+        self.mcp = Some(McpTools { manager, read_only });
+        self
+    }
+    fn editing_call(&self, call: &ToolCall) -> bool {
+        self.native.editing_call(call)
+            || (self.mcp.is_some() && call.name == "mcp" && call.arguments["action"] == "invoke")
+    }
     pub fn new(cwd: PathBuf, additional_roots: Vec<PathBuf>, home: PathBuf) -> Result<Self> {
         Self::new_with_capabilities(cwd, additional_roots, home, [Capability::Ls])
     }
@@ -88,6 +111,7 @@ impl TrustedReadOnlyTools {
             ));
         }
         Ok(Self {
+            mcp: None,
             native: NativeTools::new(cwd, additional_roots, home, capabilities)
                 .map_err(|error| invalid(error.to_string()))?,
         })
@@ -102,6 +126,7 @@ impl TrustedReadOnlyTools {
         gate: Arc<tokio::sync::Mutex<()>>,
     ) -> Result<Self> {
         Ok(Self {
+            mcp: None,
             native: NativeTools::new(cwd, additional_roots, home, capabilities)
                 .map_err(|error| invalid(error.to_string()))?
                 .with_editing_gate(gate),
@@ -117,6 +142,7 @@ impl TrustedReadOnlyTools {
         gate: Arc<tokio::sync::Mutex<()>>,
     ) -> Result<Self> {
         Ok(Self {
+            mcp: None,
             native: NativeTools::synthetic_mutation_fixture(cwd, roots, home, capabilities)
                 .map_err(|error| invalid(error.to_string()))?
                 .with_editing_gate(gate),
@@ -449,6 +475,16 @@ impl Controller {
                 let token = cancel.clone();
                 let directory = &output_directory;
                 async move {
+                    if call.name == "mcp"
+                        && let Some(mcp) = &tools.mcp
+                    {
+                        let (result, receipt) =
+                            run_mcp_call(mcp, call, directory, token.clone(), budget, || async {
+                                self.confirm_turn_resources(token.clone()).await
+                            })
+                            .await;
+                        return (index, result, receipt);
+                    }
                     let result = run_call_with_admission(
                         &tools.native,
                         call,
@@ -457,9 +493,6 @@ impl Controller {
                         budget,
                         async {
                             let confirmation = if tools.native.editing_call(call) {
-                                // A queued mutation can outlive a trust/mode
-                                // change. Reconfirm after the workspace gate,
-                                // outside actor/catalog locks, before invocation.
                                 self.confirm_turn_resources(token.clone()).await
                             } else {
                                 self.check_resources()
@@ -474,7 +507,7 @@ impl Controller {
                         },
                     )
                     .await;
-                    (index, result)
+                    (index, result, None)
                 }
             };
             let (mut completed, edited) = tokio::join!(
@@ -483,7 +516,7 @@ impl Controller {
                         calls
                             .iter()
                             .enumerate()
-                            .filter(|(_, call)| !tools.native.editing_call(call))
+                            .filter(|(_, call)| !tools.editing_call(call))
                             .map(|(index, _)| execute(index)),
                     )
                     .await
@@ -491,7 +524,7 @@ impl Controller {
                 async {
                     let mut rows = Vec::new();
                     for (index, call) in calls.iter().enumerate() {
-                        if tools.native.editing_call(call) {
+                        if tools.editing_call(call) {
                             rows.push(execute(index).await);
                         }
                     }
@@ -499,8 +532,15 @@ impl Controller {
                 }
             );
             completed.extend(edited);
-            completed.sort_by_key(|(index, _)| *index);
-            let results = completed.into_iter().map(|(_, result)| result).collect();
+            completed.sort_by_key(|(index, _, _)| *index);
+            let mut receipts = Vec::new();
+            let results = completed
+                .into_iter()
+                .map(|(_, result, receipt)| {
+                    receipts.extend(receipt);
+                    result
+                })
+                .collect();
             #[cfg(feature = "synthetic-authority")]
             if self.resources.is_some() {
                 let Some((next_item, next_snapshot)) = self
@@ -509,25 +549,39 @@ impl Controller {
                 else {
                     return;
                 };
+                if let Err(error) = settle_mcp_receipts(receipts).await {
+                    let mut inner = self.inner.lock().expect("session mutex poisoned");
+                    inner.fatal = Some(error.to_string());
+                    self.publish(&inner);
+                    return;
+                }
                 item = next_item;
                 snapshot = next_snapshot;
                 continue;
             }
-            let mut inner = self.inner.lock().expect("session mutex poisoned");
-            let stopped = self.is_retired() || cancel.is_cancelled();
-            if let Err(error) = inner
-                .store
-                .transact(|session| session.settle_tools(&reply_id, results, stopped))
             {
+                let mut inner = self.inner.lock().expect("session mutex poisoned");
+                let stopped = self.is_retired() || cancel.is_cancelled();
+                if let Err(error) = inner
+                    .store
+                    .transact(|session| session.settle_tools(&reply_id, results, stopped))
+                {
+                    inner.fatal = Some(error.to_string());
+                    self.publish(&inner);
+                    return;
+                }
+                self.publish(&inner);
+                snapshot = inner.store.snapshot();
+            }
+            if let Err(error) = settle_mcp_receipts(receipts).await {
+                let mut inner = self.inner.lock().expect("session mutex poisoned");
                 inner.fatal = Some(error.to_string());
                 self.publish(&inner);
                 return;
             }
-            self.publish(&inner);
-            if stopped {
+            if snapshot.state != RunState::Running {
                 return;
             }
-            snapshot = inner.store.snapshot();
             item = snapshot.active.clone().expect("continuation assigned");
         }
     }
@@ -560,6 +614,118 @@ impl Controller {
         let _ = cancel;
         Ok(())
     }
+}
+
+async fn settle_mcp_receipts(receipts: Vec<crate::mcp::Ticket>) -> Result<()> {
+    if receipts.is_empty() {
+        return Ok(());
+    }
+    tokio::task::spawn_blocking(move || {
+        for receipt in receipts {
+            receipt.settle()?;
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|_| invalid("MCP result receipt worker failed; project remains quarantined"))?
+}
+async fn run_mcp_call<F, Fut>(
+    tools: &McpTools,
+    call: &ToolCall,
+    directory: &Path,
+    cancel: CancellationToken,
+    budget: Arc<BatchContentBudget>,
+    admission: F,
+) -> (ToolResultRow, Option<crate::mcp::Ticket>)
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Result<()>>,
+{
+    let performed = match tools
+        .manager
+        .perform(&call.arguments, tools.read_only, cancel.clone(), admission)
+        .await
+    {
+        Ok(result) => result,
+        Err(error) => {
+            let outcome = if error.not_executed {
+                ToolOutcome::NotExecuted
+            } else if call.arguments["action"] == "invoke" {
+                ToolOutcome::Unknown
+            } else {
+                ToolOutcome::Failed
+            };
+            return (ToolResultRow::error(error.message, outcome), None);
+        }
+    };
+    let mut content = performed.normalized.content;
+    let mut text = content.text();
+    if text.len() > 65_536 {
+        let path = directory.to_owned();
+        let whole = text;
+        match BlockingWorkExecutor::shared()
+            .run(cancel.clone(), move |_| retain_output(&path, &whole))
+            .await
+        {
+            Ok(preview) => {
+                text = preview.clone();
+                let mut blocks = vec![crate::tool_content::ContentBlock::Text { text: preview }];
+                blocks.extend(
+                    content
+                        .blocks
+                        .iter()
+                        .filter(|b| matches!(b, crate::tool_content::ContentBlock::Image { .. }))
+                        .cloned(),
+                );
+                content = Arc::new(crate::tool_content::ToolContent {
+                    blocks,
+                    stats: None,
+                });
+            }
+            Err(_) => {
+                return (
+                    ToolResultRow::error(
+                        "MCP result could not be retained; inspect effects before retrying. No automatic replay.",
+                        if performed.ticket.is_some() {
+                            ToolOutcome::Unknown
+                        } else {
+                            ToolOutcome::Failed
+                        },
+                    ),
+                    None,
+                );
+            }
+        }
+    }
+    let charged = content
+        .encoded_len()
+        .ok()
+        .and_then(|n| n.checked_add(text.len()));
+    if charged.is_none_or(|n| !budget.reserve(n)) {
+        return (
+            ToolResultRow::error(
+                "MCP result exceeds the batch retention limit; inspect effects before retrying. No automatic replay.",
+                if performed.ticket.is_some() {
+                    ToolOutcome::Unknown
+                } else {
+                    ToolOutcome::Failed
+                },
+            ),
+            None,
+        );
+    }
+    (
+        ToolResultRow {
+            text,
+            content: Some(content),
+            outcome: if performed.normalized.is_error {
+                ToolOutcome::Failed
+            } else {
+                ToolOutcome::Completed
+            },
+        },
+        performed.ticket,
+    )
 }
 
 const MAX_BATCH_CONTENT_BYTES: usize = 32 * 1024 * 1024;

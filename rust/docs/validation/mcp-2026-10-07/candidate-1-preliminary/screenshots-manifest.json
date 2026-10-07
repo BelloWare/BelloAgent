@@ -1,0 +1,37 @@
+[
+  {
+    "file": "01-connections.jpg",
+    "label": "Fresh unconfigured app before Settings became visible",
+    "sha256": "517d90752e366863ad5f1e3f90c8cf5f84954e6c4a2f9d39f2f742bd57de6838",
+    "bytes": 55221,
+    "source": "Original CUA image result bytes; no editing, crop, or overlays"
+  },
+  {
+    "file": "02-masked-connection.jpg",
+    "label": "Loopback route and masked fixed fake API key",
+    "sha256": "0cfbbb0e07e15770d59ec2f7b0abb8d6860155f5f8f4b2f706cae3b5e97ee9c6",
+    "bytes": 126850,
+    "source": "Original CUA image result bytes; no editing, crop, or overlays"
+  },
+  {
+    "file": "03-project-trusted.jpg",
+    "label": "Explicit saved project trust and no request side effect",
+    "sha256": "96d308c161ae76c00cce5ae0e29a0abc541a1bb0d3fc295f1448c1ef0ebb6350",
+    "bytes": 110936,
+    "source": "Original CUA image result bytes; no editing, crop, or overlays"
+  },
+  {
+    "file": "04-mcp-trust-masked.jpg",
+    "label": "MCP trust question with header-free configuration and masked replacement",
+    "sha256": "cc8b79d553b31027a72d35640b9b58b436f56a2a7d7cc9635889501fb683af55",
+    "bytes": 148322,
+    "source": "Original CUA image result bytes; no editing, crop, or overlays"
+  },
+  {
+    "file": "05-draft-reopened.jpg",
+    "label": "Same unsaved configuration and masked input retained after close/reopen",
+    "sha256": "bf92d78f6c54145e4e846d6833e5457cb14d7e14779d0f575db5bca271e586d8",
+    "bytes": 121548,
+    "source": "Original CUA image result bytes; no editing, crop, or overlays"
+  }
+]

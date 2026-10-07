@@ -180,7 +180,7 @@ fn encoded_length(value: &impl Serialize, maximum: usize) -> Option<usize> {
 
 // Validate without allocating decoded bytes. Standard padded base64 only,
 // including zero unused bits; no whitespace, URL alphabet or noncanonical tails.
-fn canonical_base64(data: &str) -> bool {
+pub(crate) fn canonical_base64(data: &str) -> bool {
     let bytes = data.as_bytes();
     if bytes.is_empty() || !bytes.len().is_multiple_of(4) {
         return false;

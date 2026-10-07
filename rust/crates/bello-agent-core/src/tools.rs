@@ -23,6 +23,7 @@
 mod edit;
 mod find;
 mod grep;
+pub(crate) mod mcp_images;
 mod read;
 mod read_image;
 mod read_image_sniff;

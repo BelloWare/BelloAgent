@@ -1,0 +1,198 @@
+{
+  "ordinary": {
+    "project_id": "e748248a-6095-46c9-9d5f-b373d79a7ba2",
+    "gateway_rows": 12,
+    "invocations": {
+      "echo": 2,
+      "uncertain": 1,
+      "slow": 1
+    },
+    "chats": [
+      {
+        "id": "959373e0-11df-4ccc-b671-58c4668b22c4",
+        "title": "hello fixture",
+        "tool_mode": "editing",
+        "connection_id": "28b2ebd7-36d5-42a2-9d28-40db1ff19615",
+        "state": "idle",
+        "queue_paused": false,
+        "pending_count": 0,
+        "messages": [
+          {
+            "role": "user",
+            "text": "hello fixture",
+            "state": "complete",
+            "model": "local-test-fixture"
+          },
+          {
+            "role": "assistant",
+            "text": "Saved connection ready. No paid provider contacted.",
+            "state": "completed",
+            "model": "local-test-fixture"
+          },
+          {
+            "role": "user",
+            "text": "mcp fixture invoke",
+            "state": "complete",
+            "model": "local-test-fixture"
+          },
+          {
+            "role": "assistant",
+            "text": "",
+            "state": "completed",
+            "model": "local-test-fixture"
+          },
+          {
+            "role": "toolResult",
+            "text": "MCP loopback fixture result: one invocation completed.",
+            "state": "completed",
+            "model": "local-test-fixture"
+          },
+          {
+            "role": "assistant",
+            "text": "Saved runtime continued after the actual MCP tool result. No tool was replayed.",
+            "state": "completed",
+            "model": "local-test-fixture"
+          },
+          {
+            "role": "user",
+            "text": "after reopen fixture",
+            "state": "complete",
+            "model": "second-fixture"
+          },
+          {
+            "role": "assistant",
+            "text": "Saved connection ready. No paid provider contacted.",
+            "state": "completed",
+            "model": "second-fixture"
+          }
+        ],
+        "retained_draft": "retained draft"
+      },
+      {
+        "id": "c6fb67ff-1981-465f-a358-37f2e639e03b",
+        "title": "hello second fixture",
+        "tool_mode": "editing",
+        "connection_id": "28b2ebd7-36d5-42a2-9d28-40db1ff19615",
+        "state": "idle",
+        "queue_paused": false,
+        "pending_count": 0,
+        "messages": [
+          {
+            "role": "user",
+            "text": "hello second fixture",
+            "state": "complete",
+            "model": "second-fixture"
+          },
+          {
+            "role": "assistant",
+            "text": "Saved connection ready. No paid provider contacted.",
+            "state": "completed",
+            "model": "second-fixture"
+          }
+        ],
+        "retained_draft": ""
+      }
+    ],
+    "final_outcome_ledger": {
+      "version": 1,
+      "project": "e748248a-6095-46c9-9d5f-b373d79a7ba2",
+      "pending": {
+        "f9b8748f-3cf1-4266-92d8-fa4cf59fa71e": {
+          "server": "fixture",
+          "tool": "slow"
+        }
+      }
+    },
+    "latest_result_receipt": {
+      "version": 1,
+      "project": "e748248a-6095-46c9-9d5f-b373d79a7ba2",
+      "invocation": "d3e57f22-5cbe-4e2f-ac9e-fef1d3aa08ab",
+      "server": "fixture",
+      "tool": "echo",
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "MCP loopback fixture result: one invocation completed."
+          }
+        ],
+        "isError": false
+      }
+    },
+    "app_log_bytes": 0
+  },
+  "readonly": {
+    "project_id": "926e3a16-d113-443a-8c36-c614ef63137b",
+    "gateway_rows": 6,
+    "invocations": {
+      "echo": 1
+    },
+    "chats": [
+      {
+        "id": "7a10ba76-50d2-4071-aadc-1545ffacc4ae",
+        "title": "hello readonly",
+        "tool_mode": "editing",
+        "connection_id": "3f340c5d-266a-4c56-99b1-6f1ddc39f592",
+        "state": "idle",
+        "queue_paused": false,
+        "pending_count": 0,
+        "messages": [
+          {
+            "role": "user",
+            "text": "hello readonly",
+            "state": "complete",
+            "model": "local-test-fixture"
+          },
+          {
+            "role": "assistant",
+            "text": "Saved connection ready. No paid provider contacted.",
+            "state": "completed",
+            "model": "local-test-fixture"
+          },
+          {
+            "role": "user",
+            "text": "preserved mode draft",
+            "state": "complete",
+            "model": "local-test-fixture"
+          },
+          {
+            "role": "assistant",
+            "text": "Saved connection ready. No paid provider contacted.",
+            "state": "completed",
+            "model": "local-test-fixture"
+          }
+        ],
+        "retained_draft": ""
+      }
+    ],
+    "final_outcome_ledger": {
+      "version": 1,
+      "project": "926e3a16-d113-443a-8c36-c614ef63137b",
+      "pending": {}
+    },
+    "latest_result_receipt": {
+      "version": 1,
+      "project": "926e3a16-d113-443a-8c36-c614ef63137b",
+      "invocation": "eda61cb8-baaf-4861-ac36-9165e948c237",
+      "server": "fixture",
+      "tool": "echo",
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "MCP loopback fixture result: one invocation completed."
+          }
+        ],
+        "isError": false
+      }
+    },
+    "app_log_bytes": 0
+  },
+  "observed_transition_checks": {
+    "ordinary_ack_cancel": "Exact uncertain marker persisted; 11 gateway rows unchanged.",
+    "ordinary_ack_confirm": "Exact uncertain marker removed; 11 gateway rows unchanged.",
+    "local_cancel": "One slow call dispatched; UI reported MCP invocation interrupted; unresolved slow marker deliberately retained.",
+    "readonly_cancel": "Same chat 7a10ba76-50d2-4071-aadc-1545ffacc4ae remained read-only; preserved mode draft remained.",
+    "readonly_confirm": "Same chat changed to editing; draft unchanged; no gateway call until separate Invoke confirmation."
+  }
+}

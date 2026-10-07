@@ -1,0 +1,37 @@
+   Compiling bello-agent-core v0.1.0 (/workspace/scratch/8b6fda578834/mcp-writer-negative/rust/crates/bello-agent-core)
+    Finished `test` profile [unoptimized] target(s) in 17.57s
+     Running unittests src/lib.rs (/workspace/scratch/8b6fda578834/agent-mcp-staging/rust/target/debug/deps/bello_agent_core-4b871c0f4d9050f4)
+
+running 1 test
+test mcp::outcome::tests::outcome_writer_excludes_subprocess_until_last_ticket_drops ... FAILED
+
+failures:
+
+---- mcp::outcome::tests::outcome_writer_excludes_subprocess_until_last_ticket_drops stdout ----
+
+thread 'mcp::outcome::tests::outcome_writer_excludes_subprocess_until_last_ticket_drops' (52) panicked at crates/bello-agent-core/src/mcp/outcome.rs:568:9:
+
+running 1 test
+test mcp::outcome::tests::outcome_writer_subprocess_probe ... FAILED
+
+failures:
+
+failures:
+    mcp::outcome::tests::outcome_writer_subprocess_probe
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 449 filtered out; finished in 0.00s
+
+
+thread 'mcp::outcome::tests::outcome_writer_subprocess_probe' (54) panicked at crates/bello-agent-core/src/mcp/outcome.rs:525:22:
+called `Option::unwrap()` on a `None` value
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    mcp::outcome::tests::outcome_writer_excludes_subprocess_until_last_ticket_drops
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 449 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p bello-agent-core --lib`
