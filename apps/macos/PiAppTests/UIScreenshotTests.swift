@@ -622,7 +622,8 @@ final class UIScreenshotTests: XCTestCase {
 
     /// 27 · The sidebar's own states at the smallest window (920×600): a
     /// chat the reader marked unread, with the unread dot and bold title a
-    /// new reply gives it. The mark is taken off again afterwards.
+    /// new reply gives it. The mark is taken off again afterwards. 28 · the
+    /// wash of recently opened chats.
     @MainActor private func captureSidebarStateScenes(model: WorkspaceModel, window: NSWindow, gallery: URL,
                                                       appearances: [(String, NSAppearance.Name)], markedID: String) async throws {
         let size = window.contentView?.frame.size ?? NSSize(width: 1440, height: 900)
@@ -636,6 +637,28 @@ final class UIScreenshotTests: XCTestCase {
             try capture(window, to: gallery.appendingPathComponent("27-sidebar-marked-unread-\(name).png"))
         }
         model.markSessionRead(markedID)
+
+        // 28 · Recently opened chats: the open chat has the accent wash, the
+        // four opened before it fainter washes, older ones plain. One of them
+        // is unread, to check the dot and bold title read over a wash.
+        let marked = try XCTUnwrap(model.record(markedID))
+        var opened: [String] = []
+        for title in ["Ledger rounding", "Webhook retries", "Spike: jittered backoff", "Refund edge cases"] {
+            let chat = ChatRecord(id: UUID().uuidString, workspaceID: marked.workspaceID, title: title, path: nil, profileID: marked.profileID)
+            model.chats.append(chat); try await model.store?.put(chat, kind: "chat", id: chat.id)
+            opened.append(chat.id)
+        }
+        let open = try XCTUnwrap(model.selectedID)
+        for id in opened + [markedID, open] { await model.select(id); try await settle(0.2) }
+        XCTAssertEqual(model.recencyRank(markedID), 1, "28 needs the ladder")
+        model.markSessionUnread(opened[2])
+        let pageSize = model.sidebarPageSizes[marked.workspaceID]
+        model.sidebarPageSizes[marked.workspaceID] = 10   // every row of the ladder on screen
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(1.0)
+            try capture(window, to: gallery.appendingPathComponent("28-sidebar-recently-opened-\(name).png"))
+        }
+        model.markSessionRead(opened[2]); model.sidebarPageSizes[marked.workspaceID] = pageSize
         window.setContentSize(size); window.center(); try await settle(0.8)
     }
 

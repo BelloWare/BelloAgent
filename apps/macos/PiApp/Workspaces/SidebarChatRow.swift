@@ -32,6 +32,9 @@ struct SidebarChatRowState: Equatable {
     /// display does not know its own state: after a restart, before the
     /// chat is opened (`WorkspaceRunHolds.swift`).
     var heldRun: String?
+    /// The chat's place by order of opening, 0 for the open one, while the
+    /// sidebar washes it (`WorkspaceRecency.swift`).
+    var recency: Int?
     /// Identity of the loaded page, when the chat has one. A row swaps between
     /// retained billing and a live session only when this changes; the live
     /// session's own figures are observed by the row underneath.
@@ -59,6 +62,7 @@ struct SidebarSideRowState: Equatable {
     var liveIdentity: ObjectIdentifier?
     var available: CGFloat = .infinity
     var indent: CGFloat = 0
+    var recency: Int?
 }
 
 /// One listed chat and, when it is open, the side conversation under it.
@@ -156,6 +160,7 @@ extension WorkspaceModel {
                 unreadFailure: unreadFailure(sessionID: chat.id),
                 markedUnreadOnly: markedUnreadOnly(sessionID: chat.id),
                 heldRun: chat.isArchived || chat.isUtilityChat ? nil : runHolds[chat.id]?.presented,
+                recency: recencyRank(chat.id),
                 liveIdentity: displays[chat.id].map(ObjectIdentifier.init),
                 hasSide: entry.hasChildren || side?.kept == false,
                 expanded: !folded.contains(chat.id),
@@ -172,7 +177,8 @@ extension WorkspaceModel {
                     unreadCount: unreadOutputCount(sessionID: side.id),
                     liveIdentity: displays[side.id].map(ObjectIdentifier.init),
                     available: ChatRowMetrics.availableWidth(sidebar: sidebarWidth, indent: indent + 14, depth: entry.depth),
-                    indent: indent + CGFloat(14 + min(entry.depth, 3) * 14))
+                    indent: indent + CGFloat(14 + min(entry.depth, 3) * 14),
+                    recency: recencyRank(side.id))
             }
             rows.append(row)
         }

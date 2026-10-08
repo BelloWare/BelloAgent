@@ -35,6 +35,8 @@ struct RememberedSelection: Codable, Sendable, Equatable {
     var showArchivedChats: Bool?
     /// True when the sides panel was pinned open at the window's right edge.
     var sidesPanelPinned: Bool?
+    /// Chats by order of opening, the open one first (`WorkspaceRecency.swift`).
+    var recentChats: [String]?
     var revision: Int64 = 0
 
     /// The same chat, project, sides and focus, whenever each was written.
@@ -55,6 +57,10 @@ struct RememberedSelection: Codable, Sendable, Equatable {
         value.shownSides = shownSides.map { sides in
             Dictionary(uniqueKeysWithValues: sides.filter { usable($0.key) != nil && usable($0.value) != nil }
                 .sorted { $0.key < $1.key }.prefix(Self.maximumShownSides).map { ($0.key, $0.value) })
+        }
+        var seen: Set<String> = []
+        value.recentChats = recentChats.map { ids in
+            Array(ids.compactMap(usable).filter { seen.insert($0).inserted }.prefix(WorkspaceModel.recentlyOpenedLimit))
         }
         return value
     }
@@ -118,6 +124,7 @@ extension WorkspaceModel {
         value.backgroundRequestsOpen = page == .background ? true : nil
         value.showArchivedChats = showArchivedSessions ? true : nil
         value.sidesPanelPinned = sidesPanelPinned ? true : nil
+        value.recentChats = recentChatsToRemember
         return value
     }
 
@@ -225,6 +232,7 @@ extension WorkspaceModel {
     /// chat the reader opens from the first painted row brings its side back.
     func adoptRememberedSelection(_ remembered: RememberedSelection?) {
         selectionMemory.remembered = remembered
+        adoptRecentChats(remembered?.recentChats)
         if remembered?.showArchivedChats == true { showArchivedSessions = true }
         if remembered?.sidesPanelPinned == true { sidesPanelPinned = true }
         selectionMemory.savedRevision = remembered?.revision ?? 0
@@ -282,7 +290,9 @@ extension WorkspaceModel {
             revealForLaunch(highlighted)
         }
         launchFocus = target.id
-        await select(target.id, revealInSidebar: false)
+        // Reopened for its side: the side is the most recent, as it was.
+        if remembered?.sideFocused == true, side != nil { await passingThrough(target.id) { await select(target.id, revealInSidebar: false) } }
+        else { await select(target.id, revealInSidebar: false) }
         if launchFocus == target.id { launchFocus = nil }
         if selectedID == target.id, selectionRevision == revision + 1 { reopenReport() }
         // The reader may have opened something else while the page loaded.

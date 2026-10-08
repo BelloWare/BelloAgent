@@ -75,6 +75,7 @@ import Combine
         self.chat = chat; self.state = state; self.projectID = projectID
         row.selected = state.selected
         row.marked = state.marked
+        row.recencyTint = PiKit.SelectableRow.recencyTint(rank: state.recency)
         row.showsPointer = !state.draggable
         watchSource()
         refreshBody()
@@ -255,6 +256,7 @@ import Combine
         SidebarChatRowView.builds &+= 1
         state = new
         row.selected = new.selected
+        row.recencyTint = PiKit.SelectableRow.recencyTint(rank: new.recency)
         if let display = new.liveIdentity == nil ? nil : model.displays[new.id] {
             sourceWatch = display.objectWillChange.merge(with: display.footer.objectWillChange)
                 .sink { [weak self] _ in MainActor.assumeIsolated { self?.scheduleBody() } }

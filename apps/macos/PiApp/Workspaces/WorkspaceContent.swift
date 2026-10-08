@@ -106,7 +106,10 @@ extension WorkspaceModel {
         // select changes selectedID synchronously before its first await, which
         // advances the revision once. Any additional navigation supersedes us.
         let revision = messageNavigationRevision + (changingSelection ? 1 : 0)
-        if changingSelection { await select(parentID) }
+        // Reaching a side through its chat: the side is what is opened.
+        if changingSelection {
+            if parentID != sessionID { await passingThrough(parentID) { await select(parentID) } } else { await select(parentID) }
+        }
         guard !Task.isCancelled, revision == messageNavigationRevision, selectedID == parentID,
               !changingSelection || page == .chats, record(sessionID) != nil,
               (side(sessionID)?.parentID ?? sessionID) == parentID,

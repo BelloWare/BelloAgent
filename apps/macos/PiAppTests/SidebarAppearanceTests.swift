@@ -232,6 +232,21 @@ final class SidebarAppearanceTests: XCTestCase {
             totals.tokens = GatewayTokenTotals(total: 54_321, samples: 4)
             model.chatAccounting.publish(totals, sessionID: "long")
         }
+        // 0.1.122: the reader's own unread mark, a hold from before a
+        // restart, the wash of a recently opened chat, and activity moving a row.
+        try changes("a chat was marked unread") {
+            model.unreadStates["long"] = SessionReadState(id: "long", observedAssistantCount: 0, latestAssistantID: nil, markedUnread: true)
+        }
+        try changes("a chat came back paused") { model.runHolds["long"] = RunHoldRecord(id: "long", state: "paused") }
+        // The wash is a layer fill, which this capture does not draw: its row is asked.
+        model.noteOpened("long"); model.noteOpened("unread"); _ = try frame()
+        func rowView(_ id: String, in view: NSView) -> SidebarChatRowView? {
+            if let row = view as? SidebarChatRowView, row.chat.id == id { return row }
+            return view.subviews.lazy.compactMap { rowView(id, in: $0) }.first
+        }
+        XCTAssertEqual(rowView("long", in: hosted)?.row.recencyTint, PiKit.SelectableRow.recencyTint(rank: 1),
+                       "the chat opened before the open one keeps a fainter wash")
+        try changes("a chat had activity") { model.noteChatActivity("running") }
         // The group headers are compared on their own values too, so every
         // one of these has to reach them.
         try changes("a topic was renamed") { model.topics[0].title = "Renamed while the sidebar is up" }

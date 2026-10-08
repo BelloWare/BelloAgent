@@ -76,7 +76,12 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     var organizationWrite: (([String], ChatOrganizationChange) async throws -> ChatOrganizationBatch)?
     @Published var focusedSessionID: String? {
         didSet {
+            // A focus a navigation gives a parent on its way to a side is
+            // passed over once, even when the parent already had it.
+            let passedOver = focusedSessionID.map { recencyPassing.remove($0) != nil } ?? false
             guard focusedSessionID != oldValue else { return }
+            // Recorded before the selection is written: it is written with it.
+            if let id = focusedSessionID, !passedOver { noteOpened(id) }
             organizationNavigationRevision &+= 1; cancelAutomaticContext(); noteSelectionChanged()
             // The reader came to this chat: a Mark as Unread on it is done
             // with. Not the chat a launch reopens by itself.
@@ -90,6 +95,10 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// the last quit (`reopenRememberedSelection`): that one focus is not the
     /// reader opening it. Taken by the focus it is for.
     var launchFocus: String?
+    /// Owned by `WorkspaceRecency.swift`: chats by order of opening, the
+    /// open one first, and those focused only on the way to a side.
+    @Published var recentlyOpened: [String] = []
+    var recencyPassing: Set<String> = []
     /// Mark as Unread waits for the saved read states (`restoreReadStates`);
     /// chats the reader opens before then have their mark cleared once read.
     var readStatesRestored = false

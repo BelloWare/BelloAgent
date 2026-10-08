@@ -79,6 +79,7 @@ extension WorkspaceModel {
     func discardPendingChat(_ id: String) {
         guard pendingChatIDs.remove(id) != nil else { return }
         chats.removeAll { $0.id == id }; displays.removeValue(forKey: id); opened.remove(id)
+        forgetOpened(id)
         if selectedID == id { selectedID = nil; selected = nil }
         if focusedSessionID == id { focusedSessionID = nil }
     }
@@ -206,6 +207,7 @@ extension WorkspaceModel {
             for intent in try await store.list(CommandIntent.self, kind: "pending:\(item.id)") { try await store.remove(kind: "pending:\(item.id)", id: intent.id) }
             pendingIntentsChanged(item.id)
             chats.removeAll { $0.id == item.id }; displays.removeValue(forKey: item.id)
+            forgetOpened(item.id)
             if selectedID == item.id { selectedID = nil; selected = nil }
             if focusedSessionID == item.id { focusedSessionID = nil }
             do { try await removeDeletedCapturePreference(sessionID: item.id) }

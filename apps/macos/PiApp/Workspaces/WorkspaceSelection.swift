@@ -250,7 +250,7 @@ extension WorkspaceModel {
             return
         }
         if revealInSidebar { quietSidebarReveal = [] }
-        if selectedID != info.parentID { await select(info.parentID, revealInSidebar: revealInSidebar, focusesComposer: false) }
+        if selectedID != info.parentID { await passingThrough(info.parentID) { await select(info.parentID, revealInSidebar: revealInSidebar, focusesComposer: false) } }
         guard selectedID == info.parentID, side(id) != nil else { return }
         page = .chats; focusedSessionID = id
         if revealInSidebar, let child = record(id) { revealProjectChat(child) }
