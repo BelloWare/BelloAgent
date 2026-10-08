@@ -131,19 +131,25 @@ final class TranscriptFindTests: XCTestCase {
         func changes() -> HostedTab? { chat.model.tabs.tab(kind: ChangesTab.kind, key: "project") }
 
         // No project to show changes of: ⇧⌘G does nothing, and never opens a
-        // find bar that is not there.
-        XCTAssertFalse(press(), "Changes and History is unavailable, and Find Previous with no find bar")
-        XCTAssertNil(pane.findBar)
+        // find bar that is not there. (The menu takes the keys of a disabled
+        // item it holds, so whether something "took" them says nothing.)
+        _ = press()
+        XCTAssertNil(changes(), "Changes and History is unavailable")
+        XCTAssertNil(pane.findBar, "and Find Previous with no find bar opens none")
 
         // No find bar: Changes and History.
         chat.model.workspaces = [WorkspaceRecord(id: "project", path: chat.root.path, trusted: true)]
+        // With a project the chat gets its composer, which takes the keyboard
+        // a run-loop turn after it is built, as when a chat opens; that is
+        // let happen first, so it cannot land on top of the find field later.
+        try await eventually("The chat's composer never took the keyboard") { chat.draw(); return window.firstResponder is ComposerTextView }
         XCTAssertTrue(press(), "Something takes ⇧⌘G")
         let tab = try XCTUnwrap(changes(), "⇧⌘G opens Changes and History while no find bar is open")
         XCTAssertNil(pane.findBar, "and does not open the find bar")
         chat.model.tabs.close(tab)
         XCTAssertNil(changes())
 
-        // The bar open, on the first of eleven matches: back to the last.
+        // The bar open, on the match nearest the reader: back one.
         chat.model.findInFocusedConversation(.show, in: window)
         try await eventually("⌘F never showed the find bar") { chat.draw(); return pane.findBar != nil }
         let bar = try XCTUnwrap(pane.findBar)
@@ -151,12 +157,14 @@ final class TranscriptFindTests: XCTestCase {
         bar.field.text = query; bar.field.onChange?(query)
         try await eventually("The search never finished", timeout: .seconds(20)) { chat.draw(); return !pane.find.searching && pane.find.matches.count == 11 }
         try await eventually("The first match was never shown", timeout: .seconds(20)) { chat.draw(); return focusShown(chat, query: query) }
-        XCTAssertEqual(bar.count.line.text, "1 of 11")
+        let start = try XCTUnwrap(pane.find.current)
+        XCTAssertEqual(bar.count.line.text, "\(start + 1) of 11")
+        let back = (start + 10) % 11, backID = pane.find.matches[back].messageID
         XCTAssertTrue(press())
-        try await eventually("⇧⌘G never stepped back to the last match", timeout: .seconds(20)) {
-            chat.draw(); return pane.find.current == 10 && chat.document?.highlights.focus?.messageID == "a19b" && focusShown(chat, query: query)
+        try await eventually("⇧⌘G never stepped back a match", timeout: .seconds(20)) {
+            chat.draw(); return pane.find.current == back && chat.document?.highlights.focus?.messageID == backID && focusShown(chat, query: query)
         }
-        XCTAssertEqual(bar.count.line.text, "11 of 11")
+        XCTAssertEqual(bar.count.line.text, "\(back + 1) of 11")
         XCTAssertNil(changes(), "⇧⌘G with the find bar open does not open Changes and History")
         XCTAssertTrue((window.firstResponder as? NSView)?.isDescendant(of: bar) == true, "The keyboard stays in the find field")
 
@@ -165,7 +173,7 @@ final class TranscriptFindTests: XCTestCase {
         chat.model.page = .report
         XCTAssertTrue(press())
         XCTAssertNotNil(changes(), "⇧⌘G over the report opens Changes and History")
-        XCTAssertEqual(pane.find.current, 10, "and does not step through a find bar nobody sees")
+        XCTAssertEqual(pane.find.current, back, "and does not step through a find bar nobody sees")
         chat.model.tabs.close(try XCTUnwrap(changes()))
         chat.model.page = .chats
 
@@ -176,6 +184,31 @@ final class TranscriptFindTests: XCTestCase {
         XCTAssertNotNil(changes(), "⇧⌘G opens Changes and History again once the bar is closed")
         XCTAssertNil(pane.findBar)
         withExtendedLifetime(menus) {}
+    }
+
+    /// A short chat opens at its last question and holds it there while the
+    /// rows above measure. That hold is not a landing still under way: a
+    /// match near the end of the chat is brought into view, and stepping
+    /// back from it lands too.
+    @MainActor func testAMatchNearTheEndOfAShortChatIsShown() async throws {
+        let chat = try await chat(turns: 20)
+        let pane = try pane(chat)
+        let page = try XCTUnwrap(chat.page)
+        try await eventually("A chat that has opened is not still landing") { chat.draw(); return !page.landingPending }
+        chat.model.findInFocusedConversation(.show, in: chat.window)
+        try await eventually("⌘F never showed the find bar") { chat.draw(); return pane.findBar != nil }
+        let bar = try XCTUnwrap(pane.findBar)
+        let query = "everything for question 1"
+        bar.field.text = query; bar.field.onChange?(query)
+        try await eventually("The search never finished", timeout: .seconds(20)) { chat.draw(); return !pane.find.searching && pane.find.matches.count == 11 }
+        let first = try XCTUnwrap(pane.find.current)
+        try await eventually("The match nearest the reader was never shown", timeout: .seconds(10)) { chat.draw(); return focusShown(chat, query: query) }
+        XCTAssertFalse(chat.document?.focusPending ?? true)
+        pane.find.step(-1)
+        let back = pane.find.matches[(first + pane.find.matches.count - 1) % pane.find.matches.count].messageID
+        try await eventually("Stepping back never showed the previous match", timeout: .seconds(10)) {
+            chat.draw(); return chat.document?.highlights.focus?.messageID == back && focusShown(chat, query: query)
+        }
     }
 
     @MainActor func testEscapeClosesTheBarAndClearsTheMarks() async throws {
