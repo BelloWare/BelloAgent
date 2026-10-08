@@ -1,5 +1,6 @@
 import XCTest
 import AppKit
+import SQLite3
 @testable import PiApp
 
 /// A journal written the way the helper writes one: a session header, the
@@ -166,10 +167,10 @@ final class SidebarSearchIndexTests: XCTestCase {
         await index.close()
     }
 
-    /// A tool's input and output are found; an output opens at the reply
-    /// whose card shows it — the latest that made that call, as call ids are
-    /// reused. Reasoning is never indexed.
-    func testToolTextIsFoundAndOpensAtItsCallButReasoningIsNot() async throws {
+    /// A tool's input and output are found; an output opens at its own
+    /// result row (as call ids are reused, the record says which call's),
+    /// which the transcript draws in its call's card. Reasoning is never indexed.
+    func testToolTextIsFoundAndOpensAtItsResultButReasoningIsNot() async throws {
         let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
         let journal = try SearchJournal(root.appendingPathComponent("tools.jsonl"))
         try journal.message("u1", role: "user", "Read the config")
@@ -184,7 +185,7 @@ final class SidebarSearchIndexTests: XCTestCase {
         _ = await index.reconcile([ChatSearchSource(id: "tools", path: journal.url.path)])
         let output = try await query.search("8443 listener")
         XCTAssertEqual(output["tools"]?.kind, .toolOutput)
-        XCTAssertEqual(output["tools"]?.messageID, "a2", "A tool's output opens at the reply that made that call")
+        XCTAssertEqual(output["tools"]?.messageID, "r2", "A tool's output opens at its own result")
         let input = try await query.search("a1-loadbalancer")
         XCTAssertEqual(input["tools"]?.kind, .toolInput)
         XCTAssertEqual(input["tools"]?.messageID, "a1")
@@ -277,6 +278,85 @@ final class SidebarSearchIndexTests: XCTestCase {
         let reopened = ChatSearchIndex(url: index.url, indexDirectory: root)
         let left = await reopened.documentCount(chat: "old2")
         XCTAssertEqual(left, 0, "Its rows went before the index closed")
+        await reopened.close()
+    }
+
+    /// A deleted chat's text leaves the index's files, the write-ahead log
+    /// included, while the index stays open — also when a reader held an
+    /// older snapshot as the rows were deleted, once it lets go.
+    func testADeletedChatsTextLeavesTheFilesEvenPastAReadersSnapshot() async throws {
+        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
+        let secret = "quetzalcoatl-sapphire-ledger"
+        let gone = try SearchJournal(root.appendingPathComponent("gone.jsonl"), id: "gone")
+        try gone.turns(40, prefix: "g") { ("question \($0) about the \(secret)", "answer \($0) mentions the \(secret) again") }
+        let kept = try SearchJournal(root.appendingPathComponent("kept.jsonl"), id: "kept")
+        try kept.message("k", role: "user", "words that stay")
+        let (index, query) = index(root)
+        let sources = [ChatSearchSource(id: "gone", path: gone.url.path), ChatSearchSource(id: "kept", path: kept.url.path)]
+        func holds(_ text: String) -> [String] {
+            let needle = Data(text.utf8)
+            return ["", "-wal"].filter { suffix in
+                (try? Data(contentsOf: URL(fileURLWithPath: index.url.path + suffix)))?.range(of: needle) != nil
+            }
+        }
+        // Without a reader.
+        _ = await index.reconcile(sources)
+        let found = try await query.search(secret)
+        XCTAssertNotNil(found["gone"])
+        XCTAssertFalse(holds(secret).isEmpty, "Indexed, the text is in the files")
+        await index.forget(["gone"])
+        try await eventually("The deleted text stayed in \(holds(secret))", timeout: .seconds(10)) { holds(secret).isEmpty }
+        let none = try await query.search(secret)
+        XCTAssertTrue(none.isEmpty)
+
+        // A reader holding a snapshot while the rows are deleted.
+        let again = ChatSearchSource(id: "gone-again", path: gone.url.path)
+        _ = await index.reconcile([again, sources[1]])
+        XCTAssertFalse(holds(secret).isEmpty)
+        var reader: OpaquePointer?
+        XCTAssertEqual(sqlite3_open_v2(index.url.path, &reader, SQLITE_OPEN_READWRITE, nil), SQLITE_OK)
+        defer { sqlite3_close_v2(reader) }
+        XCTAssertEqual(sqlite3_exec(reader, "BEGIN; SELECT count(*) FROM content;", nil, nil, nil), SQLITE_OK)
+        await index.forget(["gone-again"])
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(sqlite3_exec(reader, "COMMIT", nil, nil, nil), SQLITE_OK)
+        try await eventually("The deleted text stayed in \(holds(secret)) after the reader let go", timeout: .seconds(10)) { holds(secret).isEmpty }
+        let left = try await query.search("words that stay")
+        XCTAssertNotNil(left["kept"], "The rest of the index is untouched")
+        await index.close()
+    }
+
+    /// An index opened over a log still holding a deleted chat's pages — the
+    /// deletion committed, the app gone before the log was emptied — empties it.
+    func testOpeningTheIndexEmptiesALogLeftHoldingDeletedText() async throws {
+        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
+        let secret = "obsidian-heron-manifest"
+        let gone = try SearchJournal(root.appendingPathComponent("gone.jsonl"), id: "gone")
+        try gone.turns(40, prefix: "g") { ("question \($0) about the \(secret)", "answer \($0) on the \(secret)") }
+        let kept = try SearchJournal(root.appendingPathComponent("kept.jsonl"), id: "kept")
+        try kept.message("k", role: "user", "words that stay")
+        let (first, _) = index(root)
+        let keptSource = ChatSearchSource(id: "kept", path: kept.url.path)
+        _ = await first.documentCount()
+        // Another connection (the app's query, mid-read) holds a snapshot
+        // from before the chat was indexed, so the log keeps the indexed
+        // pages through the pass and the index's closing. The deletion is
+        // then committed by a writer that never empties the log, as an app
+        // that crashed after committing it would leave it.
+        var other: OpaquePointer?
+        XCTAssertEqual(sqlite3_open_v2(first.url.path, &other, SQLITE_OPEN_READWRITE, nil), SQLITE_OK)
+        defer { sqlite3_close_v2(other) }
+        XCTAssertEqual(sqlite3_exec(other, "BEGIN; SELECT count(*) FROM content;", nil, nil, nil), SQLITE_OK)
+        _ = await first.reconcile([ChatSearchSource(id: "gone", path: gone.url.path), keptSource])
+        await first.close()
+        XCTAssertEqual(sqlite3_exec(other, "COMMIT; PRAGMA secure_delete=ON; BEGIN IMMEDIATE; DELETE FROM content WHERE chat='gone'; DELETE FROM chats WHERE chat='gone'; COMMIT;", nil, nil, nil), SQLITE_OK)
+        func holds(_ text: String) -> [String] {
+            ["", "-wal"].filter { (try? Data(contentsOf: URL(fileURLWithPath: first.url.path + $0)))?.range(of: Data(text.utf8)) != nil }
+        }
+        XCTAssertTrue(holds(secret).contains("-wal"), "The log still holds the deleted text")
+        let reopened = ChatSearchIndex(url: first.url, indexDirectory: root)
+        _ = await reopened.reconcile([keptSource])
+        try await eventually("The deleted text stayed in \(holds(secret)) after the index reopened", timeout: .seconds(10)) { holds(secret).isEmpty }
         await reopened.close()
     }
 

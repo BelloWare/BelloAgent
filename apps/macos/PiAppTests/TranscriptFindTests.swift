@@ -110,6 +110,74 @@ final class TranscriptFindTests: XCTestCase {
         try await eventually("The match in the read card's middle was never shown", timeout: .seconds(20)) { chat.draw(); return focusShown(chat, query: query) }
     }
 
+    /// ⇧⌘G is both Changes and History's and Find Previous's: with the
+    /// focused chat's find bar closed it opens Changes and History, and while
+    /// the bar is open it steps back through the matches. Offered as AppKit
+    /// offers a key equivalent: the key window's views, then the real menus.
+    @MainActor func testShiftCommandGIsFindPreviousOnlyWhileTheBarIsOpen() async throws {
+        let chat = try await chat(turns: 20)
+        let pane = try pane(chat)
+        let previous = NSApp.mainMenu; defer { NSApp.mainMenu = previous }
+        let window = chat.window
+        let menus = ApplicationMenus(model: chat.model, updates: UpdateController(), workspaceWindow: { window }, revealWorkspace: {}, showSettings: {})
+        menus.install()
+        NSApp.unhide(nil); NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil); window.makeKey()
+        try await eventually("The chat's window never took the keyboard") { NSApp.keyWindow === window }
+        let key = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.command, .shift], timestamp: 0,
+                                                 windowNumber: window.windowNumber, context: nil, characters: "G",
+                                                 charactersIgnoringModifiers: "g", isARepeat: false, keyCode: 5))
+        func press() -> Bool { window.performKeyEquivalent(with: key) || (NSApp.mainMenu?.performKeyEquivalent(with: key) ?? false) }
+        func changes() -> HostedTab? { chat.model.tabs.tab(kind: ChangesTab.kind, key: "project") }
+
+        // No project to show changes of: ⇧⌘G does nothing, and never opens a
+        // find bar that is not there.
+        XCTAssertFalse(press(), "Changes and History is unavailable, and Find Previous with no find bar")
+        XCTAssertNil(pane.findBar)
+
+        // No find bar: Changes and History.
+        chat.model.workspaces = [WorkspaceRecord(id: "project", path: chat.root.path, trusted: true)]
+        XCTAssertTrue(press(), "Something takes ⇧⌘G")
+        let tab = try XCTUnwrap(changes(), "⇧⌘G opens Changes and History while no find bar is open")
+        XCTAssertNil(pane.findBar, "and does not open the find bar")
+        chat.model.tabs.close(tab)
+        XCTAssertNil(changes())
+
+        // The bar open, on the first of eleven matches: back to the last.
+        chat.model.findInFocusedConversation(.show, in: window)
+        try await eventually("⌘F never showed the find bar") { chat.draw(); return pane.findBar != nil }
+        let bar = try XCTUnwrap(pane.findBar)
+        let query = "everything for question 1"
+        bar.field.text = query; bar.field.onChange?(query)
+        try await eventually("The search never finished", timeout: .seconds(20)) { chat.draw(); return !pane.find.searching && pane.find.matches.count == 11 }
+        try await eventually("The first match was never shown", timeout: .seconds(20)) { chat.draw(); return focusShown(chat, query: query) }
+        XCTAssertEqual(bar.count.line.text, "1 of 11")
+        XCTAssertTrue(press())
+        try await eventually("⇧⌘G never stepped back to the last match", timeout: .seconds(20)) {
+            chat.draw(); return pane.find.current == 10 && chat.document?.highlights.focus?.messageID == "a19b" && focusShown(chat, query: query)
+        }
+        XCTAssertEqual(bar.count.line.text, "11 of 11")
+        XCTAssertNil(changes(), "⇧⌘G with the find bar open does not open Changes and History")
+        XCTAssertTrue((window.firstResponder as? NSView)?.isDescendant(of: bar) == true, "The keyboard stays in the find field")
+
+        // The report over the chats, the bar still open beneath it: the keys
+        // are Changes and History's, and the hidden matches stay where they were.
+        chat.model.page = .report
+        XCTAssertTrue(press())
+        XCTAssertNotNil(changes(), "⇧⌘G over the report opens Changes and History")
+        XCTAssertEqual(pane.find.current, 10, "and does not step through a find bar nobody sees")
+        chat.model.tabs.close(try XCTUnwrap(changes()))
+        chat.model.page = .chats
+
+        // Closed again: Changes and History once more.
+        try XCTUnwrap(bar.field.onCancel)()
+        XCTAssertNil(pane.findBar)
+        XCTAssertTrue(press())
+        XCTAssertNotNil(changes(), "⇧⌘G opens Changes and History again once the bar is closed")
+        XCTAssertNil(pane.findBar)
+        withExtendedLifetime(menus) {}
+    }
+
     @MainActor func testEscapeClosesTheBarAndClearsTheMarks() async throws {
         let chat = try await chat(turns: 20)
         let pane = try pane(chat)

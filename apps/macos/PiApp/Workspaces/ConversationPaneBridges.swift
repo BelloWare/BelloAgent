@@ -19,6 +19,11 @@ extension NativeTranscriptPane {
             return try await model.searchConversation(id, query: query, start: start)
         }
         find.reveal = { [weak model] id, messageID in await model?.revealInTranscript(sessionID: id, messageID: messageID, fromFind: true) ?? false }
+        isFocusedConversation = { [weak model, weak self] in
+            // Not while the report or a sheet covers the chats.
+            guard let model, model.conversationCommandsEnabled, let id = self?.session?.id else { return false }
+            return (model.focusedSessionID ?? model.selectedID) == id
+        }
         onViewportReady = { [weak model] in model?.historyViewportReady($0, generation: $1) }
         var environment = TranscriptRowEnvironment(view: self)
         environment.isEnabled = enabled; environment.forks = canFork; environment.opensFiles = true

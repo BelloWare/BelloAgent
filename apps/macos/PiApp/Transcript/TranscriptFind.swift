@@ -7,6 +7,12 @@ struct TranscriptFindCommand: Equatable {
     var serial: Int
 }
 
+/// The pane whose find bar a chat's find commands go to.
+@MainActor protocol TranscriptFindHost: AnyObject {
+    /// Whether the find bar is open, in a window.
+    var findIsOpen: Bool { get }
+}
+
 /// ⌘F in an open chat: a field over the top right of the transcript, the
 /// number of matches and where the reader is among them, the way to the
 /// previous and next match, and a way to close it. Return goes to the next

@@ -71,6 +71,11 @@ extension WorkspaceModel {
         revealSerial += 1
         view.findCommand = TranscriptFindCommand(kind: kind, serial: revealSerial)
     }
+    /// Whether the focused chat's find bar is open: Find Previous (⇧⌘G) is
+    /// only offered then; otherwise the keys open Changes and History.
+    var focusedFindIsOpen: Bool {
+        (focusedSessionID ?? selectedID).flatMap { displays[$0] }?.findHost?.findIsOpen == true
+    }
     /// ⌘.: stops the focused chat, unless the keys are in text a tab holds.
     func stopFocused(in window: NSWindow? = NSApp.keyWindow) {
         guard !Self.typingInATab(in: window) else { return }
