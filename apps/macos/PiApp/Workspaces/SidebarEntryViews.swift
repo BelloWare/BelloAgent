@@ -142,7 +142,7 @@ import Combine
         if display?.runStateKnown != true, let held = state.heldRun { stats.updateActivity(state: held, loading: false, activity: [:]) }
         return ChatRowBodyView.Content(stats: stats, title: chat.title, subtitle: state.subtitle, symbol: symbol(chat), selected: state.selected,
                                        unreadCount: state.unreadCount, unreadFailure: state.unreadFailure,
-                                       markedUnreadOnly: state.markedUnreadOnly, hasSide: state.hasSide,
+                                       markedUnreadOnly: state.markedUnreadOnly, hasDraft: state.hasDraft, hasSide: state.hasSide,
                                        expanded: state.expanded, pinned: chat.isPinned, archived: chat.isArchived,
                                        archivable: !chat.isUtilityChat, available: state.available)
     }

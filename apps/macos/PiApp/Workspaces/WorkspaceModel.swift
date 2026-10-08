@@ -98,6 +98,11 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// Owned by `WorkspaceRecency.swift`: chats by order of opening, the
     /// open one first, and those focused only on the way to a side.
     @Published var recentlyOpened: [String] = []
+    /// Owned by `WorkspaceDraftMarks.swift`: chats whose saved draft holds
+    /// unsent work, and the store's write each was last decided by.
+    @Published var draftChatIDs: Set<String> = []
+    var draftMarkSequences: [String: Int] = [:]
+    var draftMarksRestoredAt = 0
     var recencyPassing: Set<String> = []
     /// Mark as Unread waits for the saved read states (`restoreReadStates`);
     /// chats the reader opens before then have their mark cleared once read.
@@ -445,6 +450,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
         liveExporter = TraceArchive(root: FileManager.default.temporaryDirectory.appendingPathComponent("BelloAgent-Export-" + UUID().uuidString))
         store = MetadataStore(url: root.appendingPathComponent("desktop.sqlite"))
         report.attach(self)
+        observeDraftWrites()
         TranscriptKeptRows.policy = self
         FileTab.resolveProject = { [weak self] id in self?.fileProjectState(id) ?? .removed }
         ChangesTab.resolveProject = { [weak self] id in self?.changesProject(id) }

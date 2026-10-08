@@ -275,6 +275,8 @@ struct ChatRowStats: Equatable {
         var unreadCount = 0
         var unreadFailure = false
         var markedUnreadOnly = false
+        /// The pencil: the chat's composer holds something unsent.
+        var hasDraft = false
         var hasSide = false
         var expanded = true
         var pinned = false
@@ -288,6 +290,7 @@ struct ChatRowStats: Equatable {
             let run = RunState(rawValue: stats.state)
             if run.holdsQueue { words.append(run == .interrupted ? "paused, run interrupted" : "paused") }
             if unreadCount > 0 { words.append("unread") } else if unreadFailure { words.append("run failed") }
+            if hasDraft { words.append("has a draft") }
             return words.joined(separator: ", ")
         }
         var help: String {
@@ -304,6 +307,8 @@ struct ChatRowStats: Equatable {
     private var spinner: PiSpinnerView?
     private let title = PiKit.TextLine()
     private let pin = PiKit.SymbolView(PiKit.Symbol("pin.fill", size: 9), color: .piInkTertiary)
+    /// Something unsent waits in the chat's composer.
+    let draftMark = PiKit.SymbolView(PiKit.Symbol("pencil", size: 10, weight: .semibold), color: .piInkSecondary)
     private let dot = UnreadDotView()
     private let archiveButton = PiKit.IconButton(symbol: "archivebox", label: "Archive chat", size: 18)
     private let confirm = PiKit.Button("Archive", style: .primary, compact: true)
@@ -319,10 +324,12 @@ struct ChatRowStats: Equatable {
 
     override init(frame: NSRect) {
         controls = ShellStack(.horizontal, spacing: 4, [.view(archiveButton), .view(confirm), .view(keep), .view(chevron)])
-        row1 = ShellStack(.horizontal, spacing: 4, [.view(title, .flexible), .view(pin), .spacer(4), .view(dot), .view(controls)])
+        row1 = ShellStack(.horizontal, spacing: 4, [.view(title, .flexible), .view(draftMark), .view(pin), .spacer(4), .view(dot), .view(controls)])
         super.init(frame: frame)
         title.truncation = .end; subtitle.truncation = .end
         pin.setAccessibilityElement(true); pin.setAccessibilityRole(.image); pin.setAccessibilityLabel("Pinned chat")
+        draftMark.setAccessibilityElement(true); draftMark.setAccessibilityRole(.image); draftMark.setAccessibilityLabel("Has a draft")
+        draftMark.toolTip = "Unsent draft"; draftMark.isHidden = true
         for view in [icon, row1, metrics, subtitle] as [NSView] { addSubview(view) }
         archiveButton.onPress = { [weak self] in
             guard let self, let content = self.content else { return }
@@ -367,6 +374,7 @@ struct ChatRowStats: Equatable {
         }
         title.line = titleLine
         pin.isHidden = !new.pinned
+        draftMark.isHidden = !new.hasDraft
         let showsDot = new.unreadCount > 0 || new.unreadFailure
         dot.failure = new.unreadFailure && new.unreadCount == 0
         dot.marked = new.markedUnreadOnly

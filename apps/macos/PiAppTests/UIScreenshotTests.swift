@@ -658,6 +658,20 @@ final class UIScreenshotTests: XCTestCase {
             NSApp.appearance = NSAppearance(named: appearance); try await settle(1.0)
             try capture(window, to: gallery.appendingPathComponent("28-sidebar-recently-opened-\(name).png"))
         }
+        // 29 · Every 0.1.122 row state together, to check they read side by
+        // side: drafts (the pencil) on two washed rows, an
+        // unread one, and one paused before a restart.
+        for id in [opened[3], markedID] { try await model.store?.put(DraftRecord(id: id, text: "Unsent: check the rounding rule"), kind: "draft", id: id) }
+        model.runHolds[opened[0]] = RunHoldRecord(id: opened[0], state: "paused")
+        let drafted = Date().addingTimeInterval(5)
+        while Date() < drafted, !(model.showsDraftMark(opened[3]) && model.showsDraftMark(markedID)) { try await settle(0.1) }
+        XCTAssertTrue(model.showsDraftMark(opened[3]), "29 needs a draft marker")
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(1.0)
+            try capture(window, to: gallery.appendingPathComponent("29-sidebar-row-states-\(name).png"))
+        }
+        for id in [opened[3], markedID] { try await model.store?.put(DraftRecord(id: id, text: ""), kind: "draft", id: id) }
+        model.runHolds[opened[0]] = nil
         model.markSessionRead(opened[2]); model.sidebarPageSizes[marked.workspaceID] = pageSize
         window.setContentSize(size); window.center(); try await settle(0.8)
     }

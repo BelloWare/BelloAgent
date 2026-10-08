@@ -247,6 +247,9 @@ final class SidebarAppearanceTests: XCTestCase {
         XCTAssertEqual(rowView("long", in: hosted)?.row.recencyTint, PiKit.SelectableRow.recencyTint(rank: 1),
                        "the chat opened before the open one keeps a fainter wash")
         try changes("a chat had activity") { model.noteChatActivity("running") }
+        // The pencil is a layer-drawn symbol, which this capture does not draw either.
+        model.draftChatIDs.insert("long"); _ = try frame()
+        XCTAssertEqual(rowView("long", in: hosted)?.body.draftMark.isHidden, false, "a chat's kept draft shows its pencil")
         // The group headers are compared on their own values too, so every
         // one of these has to reach them.
         try changes("a topic was renamed") { model.topics[0].title = "Renamed while the sidebar is up" }

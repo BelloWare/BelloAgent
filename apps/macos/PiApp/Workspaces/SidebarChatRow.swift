@@ -35,6 +35,8 @@ struct SidebarChatRowState: Equatable {
     /// The chat's place by order of opening, 0 for the open one, while the
     /// sidebar washes it (`WorkspaceRecency.swift`).
     var recency: Int?
+    /// The chat's saved draft holds something unsent (`WorkspaceDraftMarks.swift`).
+    var hasDraft = false
     /// Identity of the loaded page, when the chat has one. A row swaps between
     /// retained billing and a live session only when this changes; the live
     /// session's own figures are observed by the row underneath.
@@ -161,6 +163,7 @@ extension WorkspaceModel {
                 markedUnreadOnly: markedUnreadOnly(sessionID: chat.id),
                 heldRun: chat.isArchived || chat.isUtilityChat ? nil : runHolds[chat.id]?.presented,
                 recency: recencyRank(chat.id),
+                hasDraft: showsDraftMark(chat.id),
                 liveIdentity: displays[chat.id].map(ObjectIdentifier.init),
                 hasSide: entry.hasChildren || side?.kept == false,
                 expanded: !folded.contains(chat.id),

@@ -47,7 +47,38 @@ private final class MetadataDatabase {
 
 // Native is SQLite's only writer. JSON documents are small desktop metadata;
 // authoritative conversation messages and raw capture bodies never enter this database.
+/// Told of every committed draft write (`MetadataStore`): the chat, whether
+/// its draft now holds unsent work, and the write's place in the order of
+/// writes. The sidebar's draft marker follows these (`WorkspaceDraftMarks.swift`).
+final class DraftWriteEvents: @unchecked Sendable {
+    private let lock = NSLock()
+    private var handler: (@Sendable (String, Bool, Int) -> Void)?
+    func observe(_ handler: @escaping @Sendable (String, Bool, Int) -> Void) { lock.lock(); self.handler = handler; lock.unlock() }
+    func send(_ id: String, _ holdsDraft: Bool, _ sequence: Int) {
+        lock.lock(); let handler = handler; lock.unlock()
+        handler?(id, holdsDraft, sequence)
+    }
+}
+
 actor MetadataStore {
+    nonisolated let draftWrites = DraftWriteEvents()
+    /// Draft writes so far, and those of a transaction not yet committed.
+    private var draftSequence = 0
+    private var transactionDrafts: [(String, Bool)]?
+    private func noteDraftWrite(_ id: String, _ holdsDraft: Bool) {
+        if transactionDrafts != nil { transactionDrafts?.append((id, holdsDraft)); return }
+        draftSequence += 1; draftWrites.send(id, holdsDraft, draftSequence)
+    }
+    private func flushTransactionDrafts() {
+        let drafts = transactionDrafts ?? []; transactionDrafts = nil
+        for (id, holds) in drafts { noteDraftWrite(id, holds) }
+    }
+    /// Which chats' saved drafts hold unsent work, as of the write numbered
+    /// `sequence`: launch's starting point for the draft markers.
+    func draftMarks() throws -> (ids: Set<String>, sequence: Int) {
+        let drafts = try list(DraftRecord.self, kind: "draft")
+        return (Set(drafts.filter(\.holdsUnsentDraft).map(\.id)), draftSequence)
+    }
     private let url: URL
     private var connection: MetadataDatabase?
     private var attempted = false
@@ -128,6 +159,7 @@ actor MetadataStore {
         sqlite3_bind_int64(statement, 4, savedRevision)
         guard sqlite3_step(statement) == SQLITE_DONE else { throw StoreError.unavailable }
         guard sqlite3_changes(database) == 1 else { throw StoreError.staleRevision }
+        if kind == "draft", let draft = value as? DraftRecord { noteDraftWrite(id, draft.holdsUnsentDraft) }
         if kind.hasPrefix("receipt:") { try prune(kind: kind, keeping: 128) }
     }
     /// Freeze the previous sidebar order once when upgrading older records.
@@ -355,11 +387,14 @@ actor MetadataStore {
     private func transaction<T>(_ operation: () throws -> T) throws -> T {
         let database = try ready()
         guard sqlite3_exec(database, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { throw StoreError.unavailable }
+        // Draft writes are told once they are committed, and not at all if rolled back.
+        transactionDrafts = []
         do {
             let result = try operation()
             guard sqlite3_exec(database, "COMMIT", nil, nil, nil) == SQLITE_OK else { throw StoreError.unavailable }
+            flushTransactionDrafts()
             return result
-        } catch { sqlite3_exec(database, "ROLLBACK", nil, nil, nil); throw error }
+        } catch { transactionDrafts = nil; sqlite3_exec(database, "ROLLBACK", nil, nil, nil); throw error }
     }
 
     /// Just enough of every chat to decide membership: id, project, group and
@@ -453,6 +488,7 @@ actor MetadataStore {
         let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
         sqlite3_bind_text(statement, 1, kind, -1, transient); sqlite3_bind_text(statement, 2, id, -1, transient)
         guard sqlite3_step(statement) == SQLITE_DONE else { throw StoreError.unavailable }
+        if kind == "draft" { noteDraftWrite(id, false) }
     }
     func close() { attempted = true; connection?.close(); connection = nil }
     func removeAll(kind: String) throws { try prune(kind: kind, keeping: 0) }
@@ -492,6 +528,7 @@ actor MetadataStore {
     @discardableResult func commitKeptSide(_ proposed: ChatRecord, draft: DraftRecord) throws -> ChatRecord {
         let database = try ready()
         guard sqlite3_exec(database, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { throw StoreError.unavailable }
+        transactionDrafts = []  // told once committed (`transaction`)
         do {
             var chat = proposed
             if let existing = try get(ChatRecord.self, kind: "chat", id: chat.id) {
@@ -508,19 +545,22 @@ actor MetadataStore {
             try put(chat, kind: "chat", id: chat.id); try put(draft, kind: "draft", id: chat.id); try remove(kind: "side-keep", id: chat.id)
             guard let saved = try get(ChatRecord.self, kind: "chat", id: chat.id) else { throw StoreError.invalidRecord }
             guard sqlite3_exec(database, "COMMIT", nil, nil, nil) == SQLITE_OK else { throw StoreError.unavailable }
+            flushTransactionDrafts()
             return saved
-        } catch { sqlite3_exec(database, "ROLLBACK", nil, nil, nil); throw error }
+        } catch { transactionDrafts = nil; sqlite3_exec(database, "ROLLBACK", nil, nil, nil); throw error }
     }
     /// A handoff must never reappear as an empty chat after a partial write.
     func commitPortableHandoff(_ chat: ChatRecord, draft: DraftRecord, provenance: WireValue?) throws {
         let database = try ready()
         guard sqlite3_exec(database, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { throw StoreError.unavailable }
+        transactionDrafts = []  // told once committed (`transaction`)
         do {
             try put(chat, kind: "chat", id: chat.id)
             try put(draft, kind: "draft", id: chat.id)
             if let provenance { try put(provenance, kind: "handoff", id: chat.id) }
             guard sqlite3_exec(database, "COMMIT", nil, nil, nil) == SQLITE_OK else { throw StoreError.unavailable }
-        } catch { sqlite3_exec(database, "ROLLBACK", nil, nil, nil); throw error }
+            flushTransactionDrafts()
+        } catch { transactionDrafts = nil; sqlite3_exec(database, "ROLLBACK", nil, nil, nil); throw error }
     }
     /// Current and future chat choices commit together. A storage failure must
     /// not leave the picker and next-chat defaults disagreeing after restart.
@@ -744,6 +784,15 @@ struct DraftRecord: Codable, Sendable {
     /// typed so far, which a reopen reconciles with the helper's hold. The
     /// record's own text, images and skills are the draft set aside for it.
     var queuedEdit: QueuedEditDraft?
+    /// Unsent work the sidebar marks (a draft marker): text, an image or a
+    /// skill in the composer, the draft an edit of an earlier message set
+    /// aside, or a queued message being rewritten (not merely opened).
+    var holdsUnsentDraft: Bool {
+        if !isBlank { return true }
+        if edit != nil, !displaced.isBlank { return true }
+        if let queued = queuedEdit, queued.beginOnly != true, !queued.isOriginal(queued.rewrite) { return true }
+        return false
+    }
     /// Nothing typed: no text but spaces, no image, no skill.
     var isBlank: Bool { text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (attachments ?? []).isEmpty && (skills ?? []).isEmpty }
     /// `other` added to this draft: its text after this one's, a blank line
