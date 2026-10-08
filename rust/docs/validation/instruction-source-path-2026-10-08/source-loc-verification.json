@@ -1,0 +1,18 @@
+{
+  "result": "passed",
+  "baseline": "8914fd798e30750a0bd07c209d36138397b9ec4a",
+  "delta": {
+    "production": 21,
+    "tests_and_test_support": 674,
+    "benchmark_example": 0
+  },
+  "counts_with_this_patch_only": {
+    "production": 43663,
+    "tests_and_test_support": 59186,
+    "benchmark_example": 1192
+  },
+  "strict_owned_rust_tree": true,
+  "prior_sealed_evidence_unchanged": true,
+  "native_acceptance": false,
+  "publication_verified": false
+}

@@ -1,0 +1,52 @@
+{
+  "controls": [
+    {
+      "name": "modified-production-source",
+      "detected": true,
+      "error": "Afterimage changed: rust/crates/bello-agent-core/src/instructions.rs"
+    },
+    {
+      "name": "missing-source",
+      "detected": true,
+      "error": "Missing/nonregular source: rust/crates/bello-agent-core/src/instructions.rs"
+    },
+    {
+      "name": "reclassified-manifest",
+      "detected": true,
+      "error": "Manifest bytes differ from the frozen review"
+    },
+    {
+      "name": "rewritten-prior-sealed-evidence",
+      "detected": true,
+      "error": "Prior evidence was rewritten: rust/docs/validation/skill-source-identity-2026-10-07/README.md"
+    },
+    {
+      "name": "unexpected-rust-source",
+      "detected": true,
+      "error": "Unexpected/missing Rust source"
+    },
+    {
+      "name": "unrelated-rust-drift",
+      "detected": true,
+      "error": "Unrelated Rust source changed: rust/crates/bello-agent-core/src/profile.rs"
+    }
+  ],
+  "restored_positive": {
+    "result": "passed",
+    "baseline": "8914fd798e30750a0bd07c209d36138397b9ec4a",
+    "delta": {
+      "production": 21,
+      "tests_and_test_support": 674,
+      "benchmark_example": 0
+    },
+    "counts_with_this_patch_only": {
+      "production": 43663,
+      "tests_and_test_support": 59186,
+      "benchmark_example": 1192
+    },
+    "strict_owned_rust_tree": true,
+    "prior_sealed_evidence_unchanged": true,
+    "native_acceptance": false,
+    "publication_verified": false
+  }
+}

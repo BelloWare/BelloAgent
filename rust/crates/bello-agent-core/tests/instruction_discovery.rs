@@ -165,7 +165,7 @@ fn instructions_symlinks_are_resolution_context_not_a_sandbox() {
     let s = discover(&o).unwrap();
     assert_eq!(s.roots.len(), 1);
     assert_eq!(
-        s.sources[0].path,
+        fs::canonicalize(&s.sources[0].path).unwrap(),
         fs::canonicalize(root.join("outside")).unwrap()
     );
     assert!(s.instructions.ends_with("OUTSIDE"));
@@ -224,4 +224,93 @@ fn instructions_foundation_blank_override_skips_zero_width_space_but_not_bom() {
         discover(&o).unwrap().sources[0].text.as_deref(),
         Some("\u{feff}")
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn instruction_locator_and_resolved_provenance_are_distinct_and_literal_body_is_untouched() {
+    use std::os::unix::fs::symlink;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let mut o = options(root);
+    let body = "literal /private/var/AGENTS.md 🦀";
+    put(&root.join("external/target.md"), body);
+    symlink(
+        root.join("external/target.md"),
+        root.join("project/AGENTS.override.md"),
+    )
+    .unwrap();
+    put(
+        &root.join("project/AGENTS.md"),
+        "ignored by override precedence",
+    );
+    symlink(root.join("project"), root.join("workspace-alias")).unwrap();
+    o.roots.push(root.join("workspace-alias"));
+    o.additional_paths = vec![
+        root.join("project/AGENTS.override.md"),
+        root.join("missing/optional.md"),
+    ];
+    let snapshot = discover(&o).unwrap();
+    assert_eq!(
+        snapshot.roots,
+        vec![fs::canonicalize(root.join("project")).unwrap()]
+    );
+    assert_eq!(snapshot.prompt_roots.len(), 1);
+    let locator = snapshot.prompt_roots[0].join("AGENTS.override.md");
+    let target = &snapshot.sources[0].path;
+    assert_ne!(&locator, target);
+    assert_eq!(
+        fs::canonicalize(target).unwrap(),
+        fs::canonicalize(root.join("external/target.md")).unwrap()
+    );
+    assert_eq!(snapshot.sources[1].path, *target);
+    assert_eq!(snapshot.sources[0].text.as_deref(), Some(body));
+    assert_eq!(
+        snapshot.instructions,
+        format!(
+            "Instructions from {}:\n{body}\n\nAdditional approved instructions from {}:\n{body}",
+            locator.display(),
+            target.display()
+        )
+    );
+    assert!(snapshot.diagnostics.is_empty());
+    o.limit = 1;
+    let truncated = discover(&o).unwrap();
+    assert_eq!(
+        truncated.instructions,
+        format!("Instructions from {}:\nl", locator.display())
+    );
+    assert_eq!(
+        truncated.diagnostics,
+        [format!(
+            "Instruction budget reached at {}",
+            locator.display()
+        )]
+    );
+    assert_eq!(truncated.sources[0].path, *target);
+    assert_eq!(truncated.sources[0].text.as_deref(), Some("l"));
+    o.limit = 0;
+    let zero = discover(&o).unwrap();
+    assert!(zero.instructions.is_empty());
+    assert_eq!(zero.diagnostics, truncated.diagnostics);
+    assert_eq!(zero.sources[0].hash, snapshot.sources[0].hash);
+    assert_eq!(zero.sources[0].included_bytes, 0);
+    assert_eq!(zero.sources[1].included_bytes, 0);
+}
+
+#[test]
+fn instruction_missing_optional_paths_and_cancellation_remain_optional_and_bounded() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut o = options(dir.path());
+    o.additional_paths = vec![dir.path().join("missing/extra.md")];
+    let snapshot = discover(&o).unwrap();
+    assert!(snapshot.sources.is_empty());
+    assert!(snapshot.instructions.is_empty());
+    assert_eq!(snapshot.roots.len(), 1);
+    let cancelled = tokio_util::sync::CancellationToken::new();
+    cancelled.cancel();
+    assert!(matches!(
+        bello_agent_core::instructions::discover_project(&o.roots, o.limit, &cancelled),
+        Err(bello_agent_core::Error::Cancelled)
+    ));
 }

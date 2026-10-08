@@ -4,6 +4,7 @@
 use bello_agent_core::{
     Message,
     compaction::protected_input_ids,
+    instructions::{self, InstructionOptions, InstructionSource},
     project_resources::{ProjectResourceSource, ResourceScope},
     skills::{self, DependencySnapshot},
     tool_content::ContentBlock,
@@ -13,7 +14,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     fs,
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     thread,
     time::{Duration, Instant},
@@ -157,14 +158,21 @@ fn rust_result(item: &Value) -> Value {
                 .map(|root| fs::canonicalize(root.as_str().unwrap()).unwrap()),
         );
     }
+    if let Some(limit) = item["instructionLimit"].as_u64() {
+        source = source.with_instruction_limit(limit as usize).unwrap();
+    }
     let snapshot = source.discover(&CancellationToken::new()).unwrap();
+    // The prompt/source spelling must not replace canonical authority roots.
+    for root in &snapshot.roots {
+        assert_eq!(root, &fs::canonicalize(root).unwrap());
+    }
     let catalog=snapshot.skills.iter().map(|d|json!({"id":d.id,"name":d.name,"path":d.path,"baseDir":d.base_dir,"sourceRoot":d.source_root,"scope":d.scope,"description":d.description,"contentHash":d.content_hash,"metadataHash":d.metadata_hash,"policy":d.policy,"reasons":d.reasons,"dependencies":d.dependencies,"body":body(&snapshot,&d.id)})).collect::<Vec<_>>();
     let selections = snapshot
         .skills
         .iter()
         .map(|d| d.selection(ARGUMENTS.into()))
         .collect::<Vec<_>>();
-    let mut result = json!({"case":item["case"],"skills":catalog,"instructions":snapshot.instructions,"unselected":skills::user_message_text("/review",&[],"next-turn").unwrap()});
+    let mut result = json!({"case":item["case"],"skills":catalog,"prompt":snapshot.prompt,"instructions":snapshot.instructions,"sources":source_metadata(&snapshot.sources),"diagnostics":snapshot.diagnostics,"includedBytes":snapshot.included_bytes,"unselected":skills::user_message_text("/review",&[],"next-turn").unwrap()});
     match source.freeze(&selections, &CancellationToken::new()) {
         Ok(frozen) => {
             result["freezeAccepted"] = json!(true);
@@ -256,9 +264,9 @@ fn rust_compaction_result(item: &Value, frozen: &[skills::FrozenSkill]) -> Value
 }
 #[test]
 fn project_skill_catalog_hashes_policy_freeze_and_expansion_match_checked_in_swift() {
-    // The metadata matrix also checks exact resource instructions. The /var
-    // cases below independently gate every skill field and retained byte while
-    // reporting the still-separate resource-prompt spelling difference.
+    // Exact source results, including /var and /private/var presentation paths,
+    // instruction headers, source metadata, diagnostics and retained skill bytes.
+    // Nothing is removed or path-normalized before comparison.
     let fixtures =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/project-skills-native-fixtures");
     fs::create_dir_all(&fixtures).unwrap();
@@ -335,6 +343,10 @@ fn project_skill_catalog_hashes_policy_freeze_and_expansion_match_checked_in_swi
         "disposable alias repository boundary",
     );
     put(
+        &alias_cwd.join("AGENTS.md"),
+        "Alias instructions keep literal /private/example and /var/example text.",
+    );
+    put(
         &alias_cwd.join(".agents/skills/review/SKILL.md"),
         &skill("review", "Alias parity", "Alias body"),
     );
@@ -348,16 +360,33 @@ fn project_skill_catalog_hashes_policy_freeze_and_expansion_match_checked_in_swi
     for root in [&primary, &secondary] {
         put(&root.join(".git"), "fixture boundary");
         put(
+            &root.join("AGENTS.md"),
+            "Root instructions /private/body stays literal. 🙂汉字🙂",
+        );
+        put(
             &root.join(".agents/skills/review/SKILL.md"),
             &skill("review", "Multiple roots", "Root body"),
         );
     }
-    alias_cases.push(json!({"case":"darwin-production-multiple-roots","cwd":primary,"roots":[secondary],"home":home}));
+    put(
+        &secondary.join(".agents/skills/implicit/SKILL.md"),
+        "---\nname: implicit\ndescription: 'Implicit /private/reference'\n---\nImplicit body",
+    );
+    alias_cases.push(json!({"case":"darwin-production-multiple-roots","cwd":primary,"roots":[secondary, darwin_alias(&primary), darwin_alias(&secondary)],"home":home,"instructionLimit":64}));
+    add_nested_instruction_cases(&mut alias_cases, &alias_cwd, &home);
+    let mut zero_alias = alias_case.clone();
+    zero_alias["case"] = json!("darwin-zero-budget-full-prompt");
+    zero_alias["instructionLimit"] = json!(0);
+    alias_cases.push(zero_alias);
+    let instruction_cases = instruction_cases(&alias_cwd, &home);
     let mut oracle_cases = cases.clone();
     oracle_cases.extend(alias_cases.iter().cloned());
     fs::write(
         &input,
-        serde_json::to_vec(&json!({"cases":oracle_cases,"compaction":compaction})).unwrap(),
+        serde_json::to_vec(
+            &json!({"cases":oracle_cases,"compaction":compaction,"instructions":instruction_cases}),
+        )
+        .unwrap(),
     )
     .unwrap();
     bounded(
@@ -386,32 +415,23 @@ fn project_skill_catalog_hashes_policy_freeze_and_expansion_match_checked_in_swi
             item["case"]
         );
     }
-    // No ID/path/baseDir/sourceRoot/hash/body/expansion normalization. Only the
-    // unrelated full resource instructions are reported separately below.
     for (offset, item) in alias_cases.iter().enumerate() {
         let actual = rust_result(item);
-        let expected = &expected["skills"][cases.len() + offset];
-        let mut actual_selection = actual.clone();
-        let mut expected_selection = expected.clone();
-        actual_selection
-            .as_object_mut()
-            .unwrap()
-            .remove("instructions");
-        expected_selection
-            .as_object_mut()
-            .unwrap()
-            .remove("instructions");
+        assert_project_fixture_coverage(item, &actual);
         assert_eq!(
-            actual_selection, expected_selection,
-            "strict Darwin skill source oracle {}",
+            actual,
+            expected["skills"][cases.len() + offset],
+            "strict Darwin resource/skill source oracle {}",
             item["case"]
         );
-        eprintln!(
-            "Separate resource-instruction spelling (not a skill parity assertion): {}",
-            json!({
-                "case":item["case"],"equal":actual["instructions"]==expected["instructions"],
-                "rust":actual["instructions"],"swift":expected["instructions"]
-            })
+    }
+    for (index, item) in instruction_cases.iter().enumerate() {
+        let actual = rust_instruction_result(item);
+        assert_instruction_fixture_coverage(item, &actual);
+        assert_eq!(
+            actual, expected["instructions"][index],
+            "strict Darwin instruction source oracle {}",
+            item["case"]
         );
     }
     let alias_rust = rust_result(&alias_case);
@@ -511,6 +531,28 @@ fn add_symlink_cases(cases: &mut Vec<Value>, parent: &Path, home: &Path) {
         let cwd = parent.join(kind);
         let external = parent.join(format!("{kind}-external"));
         put(&cwd.join(".git"), "fixture boundary");
+        if kind == "leaf-link" {
+            put(
+                &external.join("linked-instructions.txt"),
+                "Linked instruction body: /private/literal must not be rewritten.",
+            );
+            symlink(
+                external.join("linked-instructions.txt"),
+                cwd.join("AGENTS.md"),
+            )
+            .unwrap();
+        } else {
+            put(
+                &cwd.join("AGENTS.md"),
+                "Ordinary instructions /private/literal.",
+            );
+            if kind == "directory-link" {
+                put(
+                    &cwd.join("AGENTS.override.md"),
+                    "Override instructions /private/literal.",
+                );
+            }
+        }
         put(
             &external.join("SKILL.md"),
             &skill("review", "Symlink semantics", "Linked body"),
@@ -541,5 +583,334 @@ fn add_symlink_cases(cases: &mut Vec<Value>, parent: &Path, home: &Path) {
             }
         }
         cases.push(json!({"case":kind,"cwd":cwd,"home":home}));
+    }
+}
+
+// Marshal the typed Rust fields into Resources.swift's source JSON schema.
+// This only names fields/omits fields Swift does not expose for approved extras;
+// no path, instruction, diagnostic, hash or body is transformed.
+fn source_metadata(sources: &[InstructionSource]) -> Vec<Value> {
+    sources
+        .iter()
+        .map(|source| {
+            assert_eq!(source.truncated, source.included_bytes < source.bytes);
+            let mut value = json!({
+                "path":source.path, "scope":source.scope, "hash":source.hash,
+                "bytes":source.bytes, "includedBytes":source.included_bytes, "state":source.state
+            });
+            if source.scope == "approved additional" {
+                assert!(source.reason.is_none() && source.text.is_none());
+            } else {
+                value["truncated"] = json!(source.truncated);
+                value["reason"] = json!(source.reason.as_ref().unwrap());
+                value["text"] = json!(source.text.as_ref().unwrap());
+            }
+            value
+        })
+        .collect()
+}
+
+fn darwin_alias(path: &Path) -> PathBuf {
+    let canonical = fs::canonicalize(path).unwrap();
+    let alias = Path::new("/").join(canonical.strip_prefix("/private").unwrap());
+    assert_ne!(alias, canonical);
+    assert_eq!(fs::canonicalize(&alias).unwrap(), canonical);
+    alias
+}
+
+fn add_nested_instruction_cases(cases: &mut Vec<Value>, parent: &Path, home: &Path) {
+    use std::os::unix::fs::symlink;
+    let repository = parent.join("shared-instructions");
+    let primary = repository.join("nested/primary");
+    let secondary = repository.join("nested/secondary");
+    put(
+        &repository.join(".git"),
+        "shared ancestor repository boundary",
+    );
+    put(&repository.join("AGENTS.md"), "Shared root /private/body.");
+    put(
+        &repository.join("nested/AGENTS.md"),
+        "Shared ancestor /private/body.",
+    );
+    put(&primary.join("AGENTS.md"), "MUST NOT WIN OVER OVERRIDE");
+    put(
+        &primary.join("AGENTS.override.md"),
+        "Primary override 🙂汉字.",
+    );
+    let target = parent.join("outside-repository/leaf-body.txt");
+    put(&target, "Secondary leaf target /private/unchanged.");
+    fs::create_dir_all(&secondary).unwrap();
+    symlink(&target, secondary.join("AGENTS.md")).unwrap();
+    put(
+        &repository.join(".agents/skills/implicit/SKILL.md"),
+        "---\nname: implicit\ndescription: 'Shared implicit /private/literal'\n---\nOne shared skill",
+    );
+    let roots = vec![
+        secondary.clone(),
+        darwin_alias(&primary),
+        darwin_alias(&secondary),
+    ];
+    cases.push(json!({"case":"darwin-shared-ancestors-and-root-aliases","cwd":primary,"roots":roots,"home":home}));
+    cases.push(json!({"case":"darwin-shared-ancestors-truncated","cwd":darwin_alias(&primary),"roots":roots,"home":home,"instructionLimit":60}));
+}
+
+fn rust_instruction_result(item: &Value) -> Value {
+    let paths = |field: &str| {
+        item[field]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| PathBuf::from(value.as_str().unwrap()))
+            .collect::<Vec<_>>()
+    };
+    let options = InstructionOptions {
+        roots: paths("roots"),
+        codex_home: PathBuf::from(item["codexHome"].as_str().unwrap()),
+        limit: item["limit"].as_u64().unwrap() as usize,
+        fallback_names: item["fallbackNames"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap().to_owned())
+            .collect(),
+        additional_paths: paths("additionalPaths"),
+    };
+    let snapshot = instructions::discover(&options).unwrap();
+    let mut canonical_roots = Vec::new();
+    for root in &options.roots {
+        let root = fs::canonicalize(root).unwrap();
+        if !canonical_roots.contains(&root) {
+            canonical_roots.push(root);
+        }
+    }
+    assert_eq!(snapshot.roots, canonical_roots);
+    for (display, canonical) in snapshot.prompt_roots.iter().zip(&snapshot.roots) {
+        assert_eq!(&fs::canonicalize(display).unwrap(), canonical);
+    }
+    assert_eq!(snapshot.prompt_roots.len(), snapshot.roots.len());
+    json!({
+        "case":item["case"], "instructions":snapshot.instructions,
+        "promptRoots":snapshot.prompt_roots, "sources":source_metadata(&snapshot.sources),
+        "diagnostics":snapshot.diagnostics, "includedBytes":snapshot.included_bytes,
+        "limit":snapshot.limit
+    })
+}
+
+fn instruction_cases(parent: &Path, home: &Path) -> Vec<Value> {
+    use std::os::unix::fs::symlink;
+    let base = parent.join("instruction-only");
+    let project = base.join("project");
+    let global = base.join("global-target");
+    let global_alias = base.join("global-alias");
+    let target = base.join("outside/global-body.txt");
+    let extra = base.join("outside/additional-body.txt");
+    let extra_alias = base.join("additional-alias.md");
+    put(
+        &project.join(".git"),
+        "instruction-only repository boundary",
+    );
+    put(&project.join("AGENTS.override.md"), "  \n\t");
+    put(
+        &project.join("AGENTS.md"),
+        "Project /private/literal remains unchanged.",
+    );
+    put(
+        &target,
+        "Global /private/literal remains unchanged. 🙂汉字🙂",
+    );
+    put(
+        &extra,
+        "Additional /private/literal remains unchanged. 🙂汉字🙂",
+    );
+    put(&base.join("empty.md"), "");
+    put(&base.join("whitespace.md"), " \n\t");
+    fs::create_dir_all(&global).unwrap();
+    symlink(&target, global.join("AGENTS.md")).unwrap();
+    symlink(&global, &global_alias).unwrap();
+    symlink(&extra, &extra_alias).unwrap();
+    let additional = vec![
+        extra_alias.clone(),
+        base.join("missing.md"),
+        base.join("empty.md"),
+        base.join("whitespace.md"),
+    ];
+    let mut cases = Vec::new();
+    let before_additional =
+        fs::read(&target).unwrap().len() + fs::read(project.join("AGENTS.md")).unwrap().len();
+    for limit in [32768, 45, 0, before_additional + 5] {
+        cases.push(json!({
+            "case":format!("global-and-additional-leaf-symlinks-{limit}"),
+            "roots":[project,darwin_alias(&project)], "codexHome":global_alias,
+            "additionalPaths":additional, "fallbackNames":[], "limit":limit,"home":home
+        }));
+    }
+    let global_override = base.join("global-override");
+    put(
+        &global_override.join("AGENTS.md"),
+        "GLOBAL ORDINARY MUST NOT WIN",
+    );
+    symlink(&target, global_override.join("AGENTS.override.md")).unwrap();
+    cases.push(json!({"case":"global-override-leaf-precedence","roots":[project],"codexHome":global_override,"additionalPaths":[],"fallbackNames":[],"limit":32768,"home":home}));
+    let fallback_project = base.join("fallback-project");
+    put(&fallback_project.join(".git"), "fallback fixture");
+    put(
+        &fallback_project.join("AGENTS.override.md"),
+        "\u{200b}\u{0085}\u{2028}\u{3000}",
+    );
+    put(&fallback_project.join("AGENTS.md"), " \n\t");
+    put(
+        &fallback_project.join("FALLBACK.md"),
+        "Fallback /private/body",
+    );
+    let fallback_global = base.join("fallback-global");
+    put(
+        &fallback_global.join("FALLBACK.md"),
+        "GLOBAL FALLBACK MUST NOT LOAD",
+    );
+    cases.push(json!({"case":"empty-ordinary-and-global-fallback-exclusion","roots":[fallback_project],"codexHome":fallback_global,"additionalPaths":[],"fallbackNames":["FALLBACK.md"],"limit":32768,"home":home}));
+    // Missing optional paths below an existing directory symlink must not change
+    // the canonical access/dedup rules or manufacture a source/diagnostic.
+    cases.push(json!({"case":"missing-optional-through-directory-link","roots":[project],"codexHome":global_alias.join("missing/codex"),"additionalPaths":[global_alias.join("missing/extra.md"),base.join("empty.md")],"fallbackNames":[],"limit":32768,"home":home}));
+    let unicode_project = base.join("unicode-project");
+    put(&unicode_project.join(".git"), "unicode fixture");
+    put(
+        &unicode_project.join("AGENTS.md"),
+        "🙂汉字🙂 /private/literal",
+    );
+    for limit in [0, 1, 3, 4, 5, 7, 8, 10, 11, 14, 32768] {
+        cases.push(json!({"case":format!("unicode-budget-{limit}"),"roots":[unicode_project],"codexHome":base.join("missing-codex"),"additionalPaths":[],"fallbackNames":[],"limit":limit,"home":home}));
+    }
+    cases
+}
+
+fn assert_project_fixture_coverage(item: &Value, result: &Value) {
+    let sources = result["sources"].as_array().unwrap();
+    let prompt = result["prompt"].as_str().unwrap();
+    match item["case"].as_str().unwrap() {
+        "leaf-link" => {
+            assert_eq!(sources.len(), 1);
+            assert!(
+                sources[0]["path"]
+                    .as_str()
+                    .unwrap()
+                    .ends_with("/linked-instructions.txt")
+            );
+            assert!(prompt.contains("/leaf-link/AGENTS.md:\nLinked instruction body"));
+            assert!(!prompt.contains("/linked-instructions.txt:\n"));
+            assert!(prompt.contains("/private/literal must not be rewritten."));
+        }
+        "directory-link" => {
+            assert_eq!(sources.len(), 1);
+            assert!(
+                sources[0]["path"]
+                    .as_str()
+                    .unwrap()
+                    .ends_with("/AGENTS.override.md")
+            );
+            assert!(prompt.contains("Override instructions /private/literal."));
+            assert!(!prompt.contains("Ordinary instructions"));
+        }
+        "darwin-production-multiple-roots" => {
+            assert_eq!(sources.len(), 2);
+            assert!(prompt.contains("The workspace has 2 roots;"));
+            assert!(prompt.contains("Implicit /private/reference"));
+            assert!(!result["diagnostics"].as_array().unwrap().is_empty());
+        }
+        "darwin-shared-ancestors-and-root-aliases" | "darwin-shared-ancestors-truncated" => {
+            assert_eq!(sources.len(), 4);
+            assert!(prompt.contains("The workspace has 2 roots;"));
+            assert_eq!(result["skills"].as_array().unwrap().len(), 1);
+            assert!(prompt.contains("Shared implicit /private/literal"));
+            assert!(!prompt.contains("MUST NOT WIN OVER OVERRIDE"));
+            if item["instructionLimit"].is_null() {
+                assert!(prompt.contains("/nested/secondary/AGENTS.md:\nSecondary leaf target"));
+                assert!(!prompt.contains("/outside-repository/leaf-body.txt:\n"));
+                assert!(prompt.contains("Secondary leaf target /private/unchanged."));
+            } else {
+                assert!(!result["diagnostics"].as_array().unwrap().is_empty());
+            }
+        }
+        "darwin-zero-budget-full-prompt" => {
+            assert_eq!(sources.len(), 1);
+            assert_eq!(result["includedBytes"], 0);
+            assert_eq!(result["diagnostics"].as_array().unwrap().len(), 1);
+            assert!(!prompt.contains("Instructions from "));
+            assert!(prompt.contains("You are a coding assistant in "));
+        }
+        _ => assert!(!sources.is_empty()),
+    }
+}
+
+fn assert_instruction_fixture_coverage(item: &Value, result: &Value) {
+    let sources = result["sources"].as_array().unwrap();
+    let instructions = result["instructions"].as_str().unwrap();
+    let diagnostics = result["diagnostics"].as_array().unwrap();
+    let name = item["case"].as_str().unwrap();
+    if name.starts_with("global-and-additional-leaf-symlinks-") {
+        assert_eq!(sources.len(), 5);
+        assert_eq!(result["promptRoots"].as_array().unwrap().len(), 1);
+        assert_eq!(sources[0]["scope"], "global");
+        assert!(
+            sources[0]["path"]
+                .as_str()
+                .unwrap()
+                .ends_with("/outside/global-body.txt")
+        );
+        assert_eq!(sources[2]["scope"], "approved additional");
+        assert!(
+            sources[2]["path"]
+                .as_str()
+                .unwrap()
+                .ends_with("/outside/additional-body.txt")
+        );
+        assert_eq!(sources[3]["bytes"], 0);
+        assert_eq!(sources[3]["state"], "included");
+        if item["limit"] == 32768 {
+            assert!(diagnostics.is_empty());
+            assert!(instructions.contains("/global-target/AGENTS.md:\nGlobal /private/literal"));
+            assert!(!instructions.contains("/outside/global-body.txt:\n"));
+            assert!(
+                instructions.contains("/outside/additional-body.txt:\nAdditional /private/literal")
+            );
+            assert!(!instructions.contains("/additional-alias.md:\n"));
+        } else if item["limit"] == 0 {
+            assert_eq!(instructions, "");
+            assert_eq!(diagnostics.len(), 2);
+        } else if item["limit"] != 45 {
+            assert!(diagnostics.is_empty());
+            assert_eq!(sources[2]["includedBytes"], 5);
+            assert_eq!(sources[2]["state"], "truncated");
+            assert!(instructions.ends_with("/outside/additional-body.txt:\nAddit"));
+        }
+    } else if name == "global-override-leaf-precedence" {
+        assert_eq!(sources.len(), 2);
+        assert!(
+            instructions.contains("/global-override/AGENTS.override.md:\nGlobal /private/literal")
+        );
+        assert!(!instructions.contains("GLOBAL ORDINARY MUST NOT WIN"));
+    } else if name == "empty-ordinary-and-global-fallback-exclusion" {
+        assert_eq!(sources.len(), 1);
+        assert!(
+            sources[0]["path"]
+                .as_str()
+                .unwrap()
+                .ends_with("/FALLBACK.md")
+        );
+        assert!(instructions.ends_with("Fallback /private/body"));
+        assert!(!instructions.contains("GLOBAL FALLBACK MUST NOT LOAD"));
+    } else if name == "missing-optional-through-directory-link" {
+        assert_eq!(sources.len(), 2);
+        assert_eq!(sources[1]["scope"], "approved additional");
+        assert_eq!(sources[1]["bytes"], 0);
+        assert!(diagnostics.is_empty());
+    } else {
+        assert!(name.starts_with("unicode-budget-"));
+        assert_eq!(sources.len(), 1);
+        if item["limit"] == 32768 {
+            assert!(instructions.ends_with("🙂汉字🙂 /private/literal"));
+            assert!(diagnostics.is_empty());
+        } else {
+            assert_eq!(diagnostics.len(), 1);
+        }
     }
 }

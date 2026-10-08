@@ -1,4 +1,4 @@
-//! Skill presentation/ID spelling, separate from canonical filesystem identity.
+//! Resource presentation and skill ID spelling, separate from canonical filesystem identity.
 //! No path rewriting or global instruction/authority canonicalization changes.
 use crate::{Result, invalid};
 use std::{
@@ -10,7 +10,7 @@ use std::{
 /// resolvingSymlinksInPath. Darwin Foundation may retain /var where realpath
 /// returns /private/var. Verify the spelling names the same existing target as
 /// the bounded reader/scanner; only owned Rust paths leave the autorelease pool.
-pub(super) fn existing(path: &Path, canonical: &Path) -> Result<PathBuf> {
+pub(crate) fn existing(path: &Path, canonical: &Path) -> Result<PathBuf> {
     #[cfg(target_os = "macos")]
     let source = {
         use objc2::rc::autoreleasepool;

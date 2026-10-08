@@ -1,0 +1,25 @@
+{
+  "default-core": {
+    "unit_passed": 388,
+    "integration_passed": 127,
+    "failed": 0,
+    "ignored": 0,
+    "native_oracle_executed": false,
+    "log_sha256": "0d068cbf55fbd8d39c0cf25b5099f5a8f9c6b67317327bc945d5109f49279d1c"
+  },
+  "all-features-core": {
+    "unit_passed": 542,
+    "integration_passed": 127,
+    "failed": 0,
+    "ignored": 0,
+    "native_oracle_executed": false,
+    "log_sha256": "38d6f34cf50d6a059c37cad1169413e4d57fe524cbc5648082bf8727ea642ad8"
+  },
+  "clippy_default": "passed, --all-targets -- -D warnings",
+  "clippy_all_features": "passed, --all-targets --all-features -- -D warnings",
+  "workspace_fmt": "passed",
+  "behavior_controls_detected": 6,
+  "source_hashes_unchanged": true,
+  "native_gate": "Exact macOS commit CI with checked-in Swift oracle remains required. Linux compiles the native test as zero tests.",
+  "root_publication_pending": true
+}

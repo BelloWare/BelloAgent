@@ -1,0 +1,36 @@
+
+running 1 test
+test project_resources::identity_tests::source_spelling_must_resolve_to_the_scanned_target ... FAILED
+
+failures:
+
+failures:
+    project_resources::identity_tests::source_spelling_must_resolve_to_the_scanned_target
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 387 filtered out; finished in 0.00s
+
+   Compiling bello-agent-core v0.1.0 (/workspace/shared/agent-instruction-path-controls/rust/crates/bello-agent-core)
+warning: unused import: `fs`
+ --> crates/bello-agent-core/src/project_resources/source_path.rs:5:5
+  |
+5 |     fs,
+  |     ^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `path`
+  --> crates/bello-agent-core/src/project_resources/source_path.rs:13:24
+   |
+13 | pub(crate) fn existing(path: &Path, canonical: &Path) -> Result<PathBuf> {
+   |                        ^^^^ help: if this is intentional, prefix it with an underscore: `_path`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `bello-agent-core` (lib test) generated 2 warnings (run `cargo fix --lib -p bello-agent-core --tests` to apply 2 suggestions)
+    Finished `test` profile [unoptimized] target(s) in 14.97s
+     Running unittests src/lib.rs (/workspace/shared/agent-instruction-path-target/debug/deps/bello_agent_core-2478aebd36540863)
+
+thread 'project_resources::identity_tests::source_spelling_must_resolve_to_the_scanned_target' (344) panicked at crates/bello-agent-core/src/project_resources/identity_tests.rs:307:5:
+assertion failed: source_path::existing(&f.alias, &f.file).is_err()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+error: test failed, to rerun pass `-p bello-agent-core --lib`

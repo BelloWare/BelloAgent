@@ -22,7 +22,9 @@ use unicode_segmentation::UnicodeSegmentation;
 
 #[cfg(all(test, unix))]
 mod identity_tests;
-mod source_path;
+#[cfg(test)]
+mod presentation_tests;
+pub(crate) mod source_path;
 
 pub const MAX_DISCOVERY_NODES: usize = 5000;
 pub const MAX_CATALOG_SKILLS: usize = 512;
@@ -594,13 +596,13 @@ fn resource_prompt(
     instruction: &instructions::InstructionSnapshot,
     skills: &[SkillDescriptor],
 ) -> String {
-    let cwd = instruction.roots[0].display();
-    let root_list = if instruction.roots.len() > 1 {
+    let cwd = instruction.prompt_roots[0].display();
+    let root_list = if instruction.prompt_roots.len() > 1 {
         format!(
             " The workspace has {} roots; relative paths resolve against the primary root {cwd}. All roots:\n{}\n",
-            instruction.roots.len(),
+            instruction.prompt_roots.len(),
             instruction
-                .roots
+                .prompt_roots
                 .iter()
                 .map(|r| format!("- {}", r.display()))
                 .collect::<Vec<_>>()

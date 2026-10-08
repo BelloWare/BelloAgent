@@ -1,0 +1,166 @@
+[
+  {
+    "control": "omit_prompt_map",
+    "command": [
+      "cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "-p",
+      "bello-agent-core",
+      "--lib",
+      "project_resources::presentation_tests::instruction_prompt_uses_captured_spelling_without_rewriting_body_or_skill_text",
+      "--",
+      "--exact",
+      "--nocapture"
+    ],
+    "test": "project_resources::presentation_tests::instruction_prompt_uses_captured_spelling_without_rewriting_body_or_skill_text",
+    "status": 101,
+    "detected_by_test_failure": true,
+    "source": {
+      "rust/crates/bello-agent-core/src/project_resources.rs": {
+        "before": "160fdbcb89469c65b3151ca3731e62fd87ef29d29f07bdb6724ce8208137f0d0",
+        "mutated": "4efbe5e8c7056ae492f016ee3fa41b45f011d91e0cb2949b283c9cef704ad5e0"
+      },
+      "rust/crates/bello-agent-core/src/resource_runtime.rs": {
+        "before": "364cbbb93b2fcd72e70307704821498e07ab3b7223eec19df4a949a74920df91",
+        "mutated": "9c65319af7efe6fc195e205a02f28f23d14d11d677fe6f8a3b7d81f6872d8268"
+      }
+    },
+    "elapsed_seconds": 17.029
+  },
+  {
+    "control": "resolve_locator_leaf",
+    "command": [
+      "cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "-p",
+      "bello-agent-core",
+      "--test",
+      "instruction_discovery",
+      "instruction_locator_and_resolved_provenance_are_distinct_and_literal_body_is_untouched",
+      "--",
+      "--exact",
+      "--nocapture"
+    ],
+    "test": "instruction_locator_and_resolved_provenance_are_distinct_and_literal_body_is_untouched",
+    "status": 101,
+    "detected_by_test_failure": true,
+    "source": {
+      "rust/crates/bello-agent-core/src/instructions.rs": {
+        "before": "87aa457ab082b62e5d2ca8d7b7a27edbb7cdcf24b820ae38fcbb315c82aeddc0",
+        "mutated": "072535de397648286fe970443f7dd851cda9943c38f0717591c1ed424b971cbe"
+      }
+    },
+    "elapsed_seconds": 7.808
+  },
+  {
+    "control": "remove_target_check",
+    "command": [
+      "cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "-p",
+      "bello-agent-core",
+      "--lib",
+      "project_resources::identity_tests::source_spelling_must_resolve_to_the_scanned_target",
+      "--",
+      "--exact",
+      "--nocapture"
+    ],
+    "test": "project_resources::identity_tests::source_spelling_must_resolve_to_the_scanned_target",
+    "status": 101,
+    "detected_by_test_failure": true,
+    "source": {
+      "rust/crates/bello-agent-core/src/project_resources/source_path.rs": {
+        "before": "ebd5a312dfa9a7d4beab8b37536d41672104fb1f5f0648fe9bead2b2f58ebe2b",
+        "mutated": "9113a088a94046e513b9354a12ff088bb4acf95300c5ad5a50e9f15b23f33304"
+      }
+    },
+    "elapsed_seconds": 15.016
+  },
+  {
+    "control": "rewrite_instruction_body",
+    "command": [
+      "cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "-p",
+      "bello-agent-core",
+      "--test",
+      "instruction_discovery",
+      "instruction_locator_and_resolved_provenance_are_distinct_and_literal_body_is_untouched",
+      "--",
+      "--exact",
+      "--nocapture"
+    ],
+    "test": "instruction_locator_and_resolved_provenance_are_distinct_and_literal_body_is_untouched",
+    "status": 101,
+    "detected_by_test_failure": true,
+    "source": {
+      "rust/crates/bello-agent-core/src/instructions.rs": {
+        "before": "87aa457ab082b62e5d2ca8d7b7a27edbb7cdcf24b820ae38fcbb315c82aeddc0",
+        "mutated": "fbca7291fa0bf8c042988b7c885938c0f4a7eb4035f0e8fbf8032d067ad16b9d"
+      }
+    },
+    "elapsed_seconds": 7.634
+  },
+  {
+    "control": "refresh_instruction_retry",
+    "command": [
+      "cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "-p",
+      "bello-agent-core",
+      "--all-features",
+      "--lib",
+      "runtime::resource_runtime::tests::synthetic_instruction_locator_retarget_retains_active_and_retry_bytes_until_new_delivery",
+      "--",
+      "--exact",
+      "--nocapture"
+    ],
+    "test": "runtime::resource_runtime::tests::synthetic_instruction_locator_retarget_retains_active_and_retry_bytes_until_new_delivery",
+    "status": 101,
+    "detected_by_test_failure": true,
+    "source": {
+      "rust/crates/bello-agent-core/src/resource_runtime.rs": {
+        "before": "364cbbb93b2fcd72e70307704821498e07ab3b7223eec19df4a949a74920df91",
+        "mutated": "0c8a6a8fd2bf06629595b417f7c6680968ac350becd00393c7a649e35e1b47d9"
+      }
+    },
+    "elapsed_seconds": 24.009
+  },
+  {
+    "control": "refresh_project_retry",
+    "command": [
+      "cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "-p",
+      "bello-agent-core",
+      "--all-features",
+      "--lib",
+      "saved_runtime::tests::skills::delivered_retry_and_reopen_never_reread_removed_skill_bodies",
+      "--",
+      "--exact",
+      "--nocapture"
+    ],
+    "test": "saved_runtime::tests::skills::delivered_retry_and_reopen_never_reread_removed_skill_bodies",
+    "status": 101,
+    "detected_by_test_failure": true,
+    "source": {
+      "rust/crates/bello-agent-core/src/project_input_runtime.rs": {
+        "before": "127d354ed6144544a7be92f6baf233dd15e833538a3bc2124b38e3c89b727266",
+        "mutated": "899a875e4b4294301c6bde6f19602585f47fb1530be32bd4e88ed2453672f886"
+      }
+    },
+    "elapsed_seconds": 24.037
+  }
+]

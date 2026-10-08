@@ -1,0 +1,12 @@
+{
+  "rust/crates/bello-agent-core/src/instructions.rs": "87aa457ab082b62e5d2ca8d7b7a27edbb7cdcf24b820ae38fcbb315c82aeddc0",
+  "rust/crates/bello-agent-core/src/project_resources.rs": "160fdbcb89469c65b3151ca3731e62fd87ef29d29f07bdb6724ce8208137f0d0",
+  "rust/crates/bello-agent-core/src/project_resources/source_path.rs": "ebd5a312dfa9a7d4beab8b37536d41672104fb1f5f0648fe9bead2b2f58ebe2b",
+  "rust/crates/bello-agent-core/src/project_resources/presentation_tests.rs": "b01a67d7784227cd042dc2410a47d0bdeb7104d61ab515d630b45d1dffe6ed20",
+  "rust/crates/bello-agent-core/src/resource_runtime.rs": "364cbbb93b2fcd72e70307704821498e07ab3b7223eec19df4a949a74920df91",
+  "rust/crates/bello-agent-core/src/resource_runtime_tests.rs": "5fe51da98ce540e82487feb3dc98cd671f5491ef14ebd3b944935b073af36668",
+  "rust/crates/bello-agent-core/src/saved_runtime_skill_tests.rs": "6940cbcc35e76ef6bd737773d24142fc90e83e3b60506e22ce573e572ce8f880",
+  "rust/crates/bello-agent-core/tests/instruction_discovery.rs": "fc81c93a264a13224b32ed8cddef9091647b32551892f1fc7a8c7279de59738c",
+  "rust/crates/bello-agent-core/tests/project_skills_native.rs": "6bef47ce2fd85531085bc19df37b45af99b82fede6cec029de7b8f945345e285",
+  "rust/crates/bello-agent-core/tests/fixtures/project_skills_oracle.swift": "1ab3edeedeee5f3054676ae8367b0ec278411ebaa4df19c9ea9efc433f115963"
+}

@@ -1,0 +1,43 @@
+   Compiling bello-agent-core v0.1.0 (/workspace/shared/agent-instruction-path-stage/rust/crates/bello-agent-core)
+    Finished `test` profile [unoptimized] target(s) in 8.83s
+     Running tests/instruction_discovery.rs (/workspace/shared/agent-instruction-path-target/debug/deps/instruction_discovery-5eacf0e3f0e56840)
+
+running 11 tests
+test instructions_additional_paths_preserve_source_metadata_and_empty_files ... ok
+test instruction_missing_optional_paths_and_cancellation_remain_optional_and_bounded ... ok
+test instructions_budget_utf8_diagnostics_and_source_identity ... ok
+test instruction_locator_and_resolved_provenance_are_distinct_and_literal_body_is_untouched ... ok
+test instructions_preview_matches_swift_replacement_character_trimming ... ok
+test instructions_blank_override_and_global_fallback_exclusion ... ok
+test instructions_precedence_repository_chains_and_shared_ancestors ... ok
+test instructions_symlinks_are_resolution_context_not_a_sandbox ... ok
+test instructions_foundation_blank_override_skips_zero_width_space_but_not_bom ... ok
+test instructions_invalid_oversized_and_nonregular_files_fail_closed ... ok
+test instructions_fifo_and_device_rejected_without_reading ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/project_skills.rs (/workspace/shared/agent-instruction-path-target/debug/deps/project_skills-d5f878b53da71fa2)
+
+running 18 tests
+test empty_freeze_does_not_scan_missing_roots_or_cancelled_work ... ok
+test content_revision_is_separate_from_scope_and_dependency_state ... ok
+test exact_raw_metadata_hash_crlf_and_frozen_expansion ... ok
+test metadata_policy_revocation_and_dependency_presence_fail_closed ... ok
+test body_change_rejects_fresh_selection_but_keeps_accepted_body_on_delivery ... ok
+test recovery_keeps_conflicting_variants_and_debug_is_redacted ... ok
+test selected_repository_root_excludes_parent_skills ... ok
+test project_roots_and_ancestors_are_ordered_deduplicated_and_home_free ... ok
+test malformed_frontmatter_and_metadata_are_inspectable_but_unselectable ... ok
+test nonregular_sources_are_refused_without_blocking ... ok
+test sorted_duplicate_names_leaf_rule_plain_markdown_and_symlink_identity ... ok
+test source_preview_is_bounded_utf8_and_never_catalog_body_metadata ... ok
+test catalog_pages_are_revision_bound_and_partial_is_not_proof_of_removal ... ok
+test swift_grapheme_description_count_instead_of_byte_or_scalar_count ... ok
+test metadata_bytes_and_dependency_count_boundaries ... ok
+test depth_and_count_boundaries_are_deterministic ... ok
+test visited_node_bound_counts_skill_root_and_empty_directories ... ok
+test full_file_aggregate_and_selection_argument_bounds ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.26s
+

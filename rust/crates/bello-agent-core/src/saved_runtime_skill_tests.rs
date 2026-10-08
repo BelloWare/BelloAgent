@@ -206,23 +206,48 @@ async fn delivered_retry_and_reopen_never_reread_removed_skill_bodies() {
         .unwrap();
     let request = Request::accept(&listener).await;
     let retained = user_inputs(&request.body)[0]["content"].clone();
+    let retained_prompt = request.body["input"][0].clone();
+    assert_eq!(
+        retained_prompt["content"],
+        format!("Explicit fixture instructions\n\n{}", catalog.instructions)
+    );
+    assert_eq!(catalog.roots, vec![f.root.clone()]);
+    std::fs::remove_file(path).unwrap();
+    std::fs::write(f.root.join("AGENTS.md"), "NEW INSTRUCTION").unwrap();
+    let active_preview: Value = serde_json::from_str(
+        actor
+            .prepare_context_with_inputs("", &[], &[])
+            .await
+            .unwrap()
+            .request_json(),
+    )
+    .unwrap();
+    assert_eq!(active_preview["input"][0], retained_prompt);
     actor.stop().unwrap();
     drop(request);
     settled(&actor).await;
-    std::fs::remove_file(path).unwrap();
-    std::fs::write(f.root.join("AGENTS.md"), "NEW INSTRUCTION").unwrap();
     actor.retry().unwrap();
     let retry = Request::accept(&listener).await;
     assert_eq!(user_inputs(&retry.body)[0]["content"], retained);
+    assert_eq!(retry.body["input"][0], retained_prompt);
     assert!(retry.body.to_string().contains("OLD INSTRUCTION"));
     actor.stop().unwrap();
     drop(retry);
     settled(&actor).await;
     actor.retire_and_wait().await.unwrap();
     let reopened = f.factory.open_registered(&f.current(&record.id)).unwrap();
+    let fresh_catalog = reopened.discover_project_skills().await.unwrap();
     reopened.retry().unwrap();
     let retry = Request::accept(&listener).await;
     assert_eq!(user_inputs(&retry.body)[0]["content"], retained);
+    assert_eq!(
+        retry.body["input"][0]["content"],
+        format!(
+            "Explicit fixture instructions\n\n{}",
+            fresh_catalog.instructions
+        )
+    );
+    assert_ne!(retry.body["input"][0], retained_prompt);
     assert!(retry.body.to_string().contains("NEW INSTRUCTION"));
     retry.complete("retry complete").await;
     settled(&reopened).await;
@@ -235,6 +260,27 @@ async fn delivered_retry_and_reopen_never_reread_removed_skill_bodies() {
             .count(),
         1
     );
+    std::fs::write(
+        f.root.join("AGENTS.md"),
+        "NEXT INSTRUCTION /private/literal",
+    )
+    .unwrap();
+    let next_catalog = reopened.discover_project_skills().await.unwrap();
+    reopened
+        .submit("next /private/input".into(), Lane::FollowUp)
+        .unwrap();
+    let next = Request::accept(&listener).await;
+    assert_eq!(
+        next.body["input"][0]["content"],
+        format!(
+            "Explicit fixture instructions\n\n{}",
+            next_catalog.instructions
+        )
+    );
+    assert_eq!(user_inputs(&next.body)[0]["content"], retained);
+    assert_ne!(next_catalog.revision, fresh_catalog.revision);
+    next.complete("next complete").await;
+    settled(&reopened).await;
     reopened.retire_and_wait().await.unwrap();
 }
 

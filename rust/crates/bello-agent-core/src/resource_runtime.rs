@@ -65,13 +65,13 @@ pub struct AppliedInstructionSnapshot {
 const SELECTION_POLICY: &str = "Only the latest user message's own explicit skill selection authorizes an explicit-only skill: that message lists it as \"Current explicit selection IDs: …\" after its skill blocks, and a message without that line selects none. Skills selected in earlier user messages are historical context, not a new authorization.";
 
 fn resource_prompt(snapshot: &InstructionSnapshot) -> String {
-    let cwd = snapshot.roots[0].display();
-    let roots = if snapshot.roots.len() > 1 {
+    let cwd = snapshot.prompt_roots[0].display();
+    let roots = if snapshot.prompt_roots.len() > 1 {
         format!(
             " The workspace has {} roots; relative paths resolve against the primary root {cwd}. All roots:\n{}\n",
-            snapshot.roots.len(),
+            snapshot.prompt_roots.len(),
             snapshot
-                .roots
+                .prompt_roots
                 .iter()
                 .map(|root| format!("- {}", root.display()))
                 .collect::<Vec<_>>()

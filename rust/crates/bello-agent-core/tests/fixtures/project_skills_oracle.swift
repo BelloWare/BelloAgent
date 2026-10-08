@@ -14,13 +14,17 @@
             let cwd = canonical(item["cwd"].text!)
             let roots = item["roots"].list.compactMap { $0.text.map { canonical($0) } }
             let home = URL(fileURLWithPath: item["home"].text!)
-            let resources = Resources(cwd: cwd, roots: roots, options: ["codexHome": JSON(home.appendingPathComponent("codex").path)], home: home)
+            var options: JSON = ["codexHome": JSON(home.appendingPathComponent("codex").path)]
+            if !item["instructionLimit"].isNull { options["maxInstructionBytes"] = item["instructionLimit"] }
+            let resources = Resources(cwd: cwd, roots: roots, options: options, home: home)
             let snapshot = try await resources.resolve()
             let tools = ["ls", "mcp:docs"]
             var selections = snapshot.skills.map { skill -> JSON in
                 var s = skill; s["intent"] = "picker"; s["arguments"] = "literal \"args\"\n/never-a-command"; return s
             }
-            var result: JSON = ["case": item["case"], "skills": .array(snapshot.skills), "instructions": JSON(AgentSession.requestInstructions(snapshot.prompt))]
+            var result: JSON = ["case": item["case"], "skills": .array(snapshot.skills), "instructions": JSON(AgentSession.requestInstructions(snapshot.prompt)),
+                "prompt": JSON(snapshot.prompt), "sources": .array(snapshot.sources),
+                "diagnostics": .array(snapshot.diagnostics.map { JSON($0) }), "includedBytes": JSON(snapshot.includedBytes)]
             do {
                 let frozen = try await resources.freeze(selections, text: "Raw /review stays literal", tools: tools)
                 result["freezeAccepted"] = true
@@ -56,7 +60,25 @@
             let source = try CompactionPlanner.source(context: messages, taskRoot: item["taskRoot"].text)
             compaction.append(["case": item["case"], "protectedIDs": .array(source.protectedIDs.sorted().map { JSON($0) })])
         }
-        let output: JSON = ["skills": .array(results), "compaction": .array(compaction)]
+        var instructions: [JSON] = []
+        for item in input["instructions"].list {
+            let roots = item["roots"].list.map { canonical($0.text!) }
+            let options: JSON = ["codexHome": item["codexHome"], "maxInstructionBytes": item["limit"],
+                "piInstructionPaths": item["additionalPaths"], "fallbackNames": item["fallbackNames"]]
+            let resources = Resources(cwd: roots[0], roots: Array(roots.dropFirst()), options: options,
+                home: URL(fileURLWithPath: item["home"].text!))
+            let snapshot = try await resources.resolve()
+            guard snapshot.skills.isEmpty else { fatalError("instruction-only fixture unexpectedly has skills") }
+            // Resources exposes the complete prompt. Select its verbatim instruction
+            // section; do not rebuild headers, replace aliases, or normalize bytes.
+            let start = snapshot.prompt.range(of: "Never claim an action succeeded without its tool result.\n")!
+            let end = snapshot.prompt.range(of: "\nAvailable implicit skills (load full SKILL.md with read when relevant):\n", options: .backwards)!
+            instructions.append(["case": item["case"], "instructions": JSON(String(snapshot.prompt[start.upperBound..<end.lowerBound])),
+                "promptRoots": .array(snapshot.roots.map { JSON($0) }), "sources": .array(snapshot.sources),
+                "diagnostics": .array(snapshot.diagnostics.map { JSON($0) }), "includedBytes": JSON(snapshot.includedBytes),
+                "limit": JSON(snapshot.limit)])
+        }
+        let output: JSON = ["skills": .array(results), "compaction": .array(compaction), "instructions": .array(instructions)]
         FileHandle.standardOutput.write(try output.data())
     }
 }

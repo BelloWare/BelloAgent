@@ -4,7 +4,7 @@
 //! Codex settings or skills and grants no trust. Production remains disconnected.
 //! Saved runtimes use the explicit project-only entry point. Legacy synthetic
 //! fixtures may supply a separate home explicitly; it is never inferred.
-use crate::{Error, Result, invalid};
+use crate::{Error, Result, invalid, project_resources::source_path};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -49,6 +49,9 @@ pub struct InstructionSource {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InstructionSnapshot {
     pub roots: Vec<PathBuf>,
+    /// Source-compatible spelling captured at discovery, for prompt text only.
+    /// Access, deduplication and authority continue to use canonical `roots`.
+    pub prompt_roots: Vec<PathBuf>,
     pub repository_root: PathBuf,
     pub codex_home: PathBuf,
     pub limit: usize,
@@ -112,7 +115,15 @@ fn discover_with(
         .map(|p| canonical_path(p))
         .collect::<Result<Vec<_>>>()?;
     let (roots, directories) = project_directories(root_paths, cancel)?;
+    let prompt_roots = roots
+        .iter()
+        .map(|root| {
+            check_cancel(cancel)?;
+            source_path::existing(root, root)
+        })
+        .collect::<Result<Vec<_>>>()?;
     let mut snapshot = InstructionSnapshot {
+        prompt_roots,
         repository_root: directories[0].clone(),
         roots,
         codex_home: codex_home.clone().unwrap_or_default(),
@@ -139,12 +150,17 @@ fn discover_with(
             if text.chars().all(source_whitespace) {
                 continue;
             }
+            // Swift appends the locator filename to the resolved directory for
+            // headers/diagnostics, but separately resolves the leaf for metadata.
+            // Capture presentation after the bounded read, checking its target.
+            let locator = source_path::existing(directory, directory)?.join(name);
+            let source = source_path::existing(&locator, &canonical)?;
             let included = preview(&text, limit.saturating_sub(snapshot.included_bytes));
             let count = included.len();
             snapshot.included_bytes += count;
             let truncated = count < text.len();
             snapshot.sources.push(InstructionSource {
-                path: canonical,
+                path: source,
                 scope: if global { "global" } else { "project" }.into(),
                 hash: hash(&text),
                 bytes: text.len(),
@@ -155,29 +171,34 @@ fn discover_with(
                 text: Some(included.clone()),
             });
             if count > 0 {
-                chunks.push(format!("Instructions from {}:\n{included}", path.display()));
+                chunks.push(format!(
+                    "Instructions from {}:\n{included}",
+                    locator.display()
+                ));
             }
             if truncated {
-                snapshot
-                    .diagnostics
-                    .push(format!("Instruction budget reached at {}", path.display()));
+                snapshot.diagnostics.push(format!(
+                    "Instruction budget reached at {}",
+                    locator.display()
+                ));
             }
             break;
         }
     }
     for path in &additional_paths {
         if let Some((text, canonical)) = read_resource_file(path, FILE_LIMIT, cancel)? {
+            let source = source_path::existing(path, &canonical)?;
             let included = preview(&text, limit.saturating_sub(snapshot.included_bytes));
             snapshot.included_bytes += included.len();
             if !included.is_empty() {
                 chunks.push(format!(
                     "Additional approved instructions from {}:\n{included}",
-                    path.display()
+                    source.display()
                 ));
             }
             let truncated = included.len() < text.len();
             snapshot.sources.push(InstructionSource {
-                path: canonical,
+                path: source,
                 scope: "approved additional".into(),
                 hash: hash(&text),
                 bytes: text.len(),

@@ -1,0 +1,21 @@
+
+running 1 test
+test instruction_locator_and_resolved_provenance_are_distinct_and_literal_body_is_untouched ... FAILED
+
+failures:
+
+failures:
+    instruction_locator_and_resolved_provenance_are_distinct_and_literal_body_is_untouched
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.00s
+
+   Compiling bello-agent-core v0.1.0 (/workspace/shared/agent-instruction-path-controls/rust/crates/bello-agent-core)
+    Finished `test` profile [unoptimized] target(s) in 7.77s
+     Running tests/instruction_discovery.rs (/workspace/shared/agent-instruction-path-target/debug/deps/instruction_discovery-5eacf0e3f0e56840)
+
+thread 'instruction_locator_and_resolved_provenance_are_distinct_and_literal_body_is_untouched' (296) panicked at crates/bello-agent-core/tests/instruction_discovery.rs:268:5:
+assertion `left == right` failed
+  left: "Instructions from /tmp/.tmpVHaB0l/external/target.md:\nliteral /private/var/AGENTS.md 🦀\n\nAdditional approved instructions from /tmp/.tmpVHaB0l/external/target.md:\nliteral /private/var/AGENTS.md 🦀"
+ right: "Instructions from /tmp/.tmpVHaB0l/project/AGENTS.override.md:\nliteral /private/var/AGENTS.md 🦀\n\nAdditional approved instructions from /tmp/.tmpVHaB0l/external/target.md:\nliteral /private/var/AGENTS.md 🦀"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+error: test failed, to rerun pass `-p bello-agent-core --test instruction_discovery`
