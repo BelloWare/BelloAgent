@@ -125,6 +125,7 @@ final class DraftMarkTests: XCTestCase {
         let (first, view) = try await model(root: root)
         view.draft = "Unsent"; first.draftChanged(view)
         try await first.flushDrafts()
+        try await first.store?.put(DraftRecord(id: "o", text: "Other unsent"), kind: "draft", id: "o")
         first.shutdown(); try await first.traces.close(); await first.store?.close()
 
         let second = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
@@ -132,8 +133,12 @@ final class DraftMarkTests: XCTestCase {
         _ = await second.prepareStore()
         second.chats = [ChatRecord(id: "c", workspaceID: "w", title: "Refund edge cases", path: nil, profileID: "p"),
                         ChatRecord(id: "o", workspaceID: "w", title: "Other", path: nil, profileID: "p")]
+        var publications = 0
+        let watch = second.$draftChatIDs.dropFirst().sink { _ in publications += 1 }
         await second.restoreDraftMarks()
-        XCTAssertTrue(second.showsDraftMark("c")); XCTAssertFalse(second.showsDraftMark("o"))
+        watch.cancel()
+        XCTAssertEqual(publications, 1, "launch's reading is one change to the sidebar, however many chats it marks")
+        XCTAssertTrue(second.showsDraftMark("c")); XCTAssertTrue(second.showsDraftMark("o"))
         // A chat whose draft was saved but which is not listed yet (a side
         // being kept) is marked once it is.
         second.draftChatIDs = []; second.chats.removeAll { $0.id == "c" }

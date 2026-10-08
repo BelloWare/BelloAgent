@@ -1,4 +1,5 @@
 import XCTest
+import Combine
 @testable import PiApp
 
 /// Paused after a restart (0.1.122): a chat whose run was stopped, cut off,
@@ -149,7 +150,11 @@ final class RunHoldTests: XCTestCase {
         try await first.store?.put(RunHoldRecord(id: "done", state: "active"), kind: RunHoldRecord.kind, id: "done")
         await first.restoreRunHolds()
         XCTAssertEqual(first.heldRunState("done"), "paused", "the saved hold shows at once")
+        var publications = 0
+        let watch = first.$runHolds.dropFirst().sink { _ in publications += 1 }
         await first.runHoldVerification?.value
+        watch.cancel()
+        XCTAssertEqual(publications, 1, "the journals' answers are one change to the sidebar")
         XCTAssertEqual(first.heldRunState("paused"), "paused", "found in its journal on the first launch")
         XCTAssertEqual(first.heldRunState("cut"), "interrupted")
         XCTAssertNil(first.heldRunState("done"), "the journal says the run finished")
@@ -216,6 +221,21 @@ final class RunHoldTests: XCTestCase {
         let saved = try await first.store?.get(RunHoldRecord.self, kind: RunHoldRecord.kind, id: "p")
         XCTAssertEqual(saved?.state, "paused")
         await close(first)
+    }
+
+    /// A paused chat that is archived, then restored, comes back to the
+    /// menu bar as waiting, though nothing else about it changed.
+    @MainActor func testARestoredArchivedPausedChatReturnsToTheMenuBar() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("run-hold-archive-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = try await model(root: root)
+        var chat = ChatRecord(id: "c", workspaceID: "w", title: "C", path: nil, profileID: "p"); chat.archivedAt = Date()
+        model.chats = [chat]
+        model.runHolds = ["c": RunHoldRecord(id: "c", state: "paused")]
+        XCTAssertNil(model.menuBarActivity().rows.first { $0.id == "c" }, "archived: not listed")
+        model.chats[0].archivedAt = nil
+        XCTAssertEqual(model.menuBarActivity().rows.first { $0.id == "c" }?.phase, "paused", "restored: waiting again")
+        await close(model)
     }
 
     @MainActor func testArchivedAndUtilityChatsShowNoHold() async throws {

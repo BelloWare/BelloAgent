@@ -64,13 +64,20 @@ extension WorkspaceModel {
         if isActivity, !quietActivity.contains(sessionID) { noteChatActivity(sessionID) }
     }
 
-    func setRunHold(_ sessionID: String, _ state: String?) {
-        let next = state.map { RunHoldRecord(id: sessionID, state: $0) }
-        guard runHolds[sessionID] != next else { return }
-        if let next { runHolds[sessionID] = next } else { runHolds.removeValue(forKey: sessionID) }
+    func setRunHold(_ sessionID: String, _ state: String?) { setRunHolds([(sessionID, state)]) }
+    /// Several holds at once: one change to the sidebar, a write for each that changed.
+    func setRunHolds(_ changes: [(String, String?)]) {
+        var next = runHolds, changed: [String] = []
+        for (id, state) in changes {
+            let hold = state.map { RunHoldRecord(id: id, state: $0) }
+            guard next[id] != hold else { continue }
+            if let hold { next[id] = hold } else { next.removeValue(forKey: id) }
+            changed.append(id)
+        }
+        guard !changed.isEmpty else { return }
+        runHolds = next
         guard store != nil else { return }
-        dirtyRunHolds.insert(sessionID)
-        scheduleRunHoldWrite(sessionID)
+        for id in changed { dirtyRunHolds.insert(id); scheduleRunHoldWrite(id) }
     }
 
     private func scheduleRunHoldWrite(_ id: String) {
@@ -114,7 +121,9 @@ extension WorkspaceModel {
         guard let store else { return }
         let known = Dictionary(chats.filter { !$0.isUtilityChat }.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let saved = (try? await store.list(RunHoldRecord.self, kind: RunHoldRecord.kind)) ?? []
-        for hold in saved where known[hold.id] != nil && runHolds[hold.id] == nil && displays[hold.id]?.runStateKnown != true { runHolds[hold.id] = hold }
+        var shown = runHolds
+        for hold in saved where known[hold.id] != nil && shown[hold.id] == nil && displays[hold.id]?.runStateKnown != true { shown[hold.id] = hold }
+        if shown != runHolds { runHolds = shown }   // one change to the sidebar
         for hold in saved where known[hold.id] == nil { try? await store.remove(kind: RunHoldRecord.kind, id: hold.id) }
         let bootstrapped = (try? await store.get(Int64.self, kind: RunHoldRecord.bootstrapKind, id: RunHoldRecord.bootstrapID)) != nil
         let candidates = (bootstrapped ? saved.map(\.id) : Array(known.keys))
@@ -129,13 +138,15 @@ extension WorkspaceModel {
                 }
             }.value
             guard let self, !self.isShutDown else { return }
+            var changes: [(String, String?)] = []
             for (id, hold) in read where self.record(id) != nil && self.displays[id]?.runStateKnown != true {
                 switch hold {
-                case .held(let state): self.setRunHold(id, state)
-                case .clear: self.setRunHold(id, nil)
+                case .held(let state): changes.append((id, state))
+                case .clear: changes.append((id, nil))
                 case .unknown: break  // a saved hold stays; nothing is made up
                 }
             }
+            self.setRunHolds(changes)
             // The first launch's reading is done once every journal has said;
             // one that could not be read is tried again next launch.
             // and only once the holds it found are saved: else a chat paused

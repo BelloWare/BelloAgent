@@ -84,9 +84,11 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
             if let id = focusedSessionID, !passedOver { noteOpened(id) }
             organizationNavigationRevision &+= 1; cancelAutomaticContext(); noteSelectionChanged()
             // The reader came to this chat: a Mark as Unread on it is done
-            // with. Not the chat a launch reopens by itself.
+            // with. Not the chat a launch reopens by itself, nor a parent
+            // passed through on the way to its side.
             if let id = focusedSessionID {
                 if launchFocus == id { launchFocus = nil }
+                else if passedOver { }
                 else if readStatesRestored { clearManualUnread(sessionID: id) } else { openedBeforeReadStates.insert(id) }
             }
         }
@@ -284,7 +286,10 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     var menuBarActivityChanges: AnyPublisher<Void, Never> { activityChanged.eraseToAnyPublisher() }
     func noteActivityChanged(_ id: String? = nil) {
         if let id { menuBarProjection.dirty.insert(id) }
-        else { menuBarProjection.dirty.formUnion(displays.keys); menuBarProjection.dirty.formUnion(unreadStates.keys); menuBarProjection.dirty.formUnion(menuBarProjection.rows.keys) }
+        else {
+            menuBarProjection.dirty.formUnion(displays.keys); menuBarProjection.dirty.formUnion(unreadStates.keys)
+            menuBarProjection.dirty.formUnion(runHolds.keys); menuBarProjection.dirty.formUnion(menuBarProjection.rows.keys)
+        }
         activityChanged.send()
         // Read only the affected committed phase, never text or the chat array.
         if let id, let view = displays[id], let item = record(id) {

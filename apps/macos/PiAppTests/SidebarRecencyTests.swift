@@ -104,3 +104,33 @@ final class SidebarRecencyTests: XCTestCase {
         XCTAssertEqual(row.row.recencyTint, 0)
     }
 }
+
+/// Every 0.1.122 row state on one row, under a filter: paused, unread,
+/// a draft and the recency wash all reach the row, in that spoken order.
+final class SidebarRowStatesTogetherTests: XCTestCase {
+    @MainActor func testOneRowCarriesEveryStateUnderAFilter() async throws {
+        let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("row-states-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        registerWorkspaceFixtureTeardown(model, root: root)
+        let project = WorkspaceRecord(id: "project", path: root.path, trusted: true)
+        model.workspaces = [project]
+        model.chats = [ChatRecord(id: "r", workspaceID: "project", title: "Refund edge cases", path: nil, profileID: "p", sidebarOrder: 2),
+                       ChatRecord(id: "o", workspaceID: "project", title: "Other", path: nil, profileID: "p", sidebarOrder: 1)]
+        try await model.restoreReadStates()
+        model.focusedSessionID = "r"; model.focusedSessionID = "o"
+        model.markSessionUnread("r")
+        model.runHolds["r"] = RunHoldRecord(id: "r", state: "paused")
+        model.draftChatIDs = ["r"]
+        let contents = model.sidebarGroupContents(in: project, topicID: nil, archived: false, filter: "refund", showEmpty: true,
+                                                  sidebarWidth: 300, namesConnection: false)
+        let row = try XCTUnwrap(contents.rows.first { $0.id == "r" })
+        XCTAssertEqual(contents.rows.map(\.id), ["r"], "the filter lists the matching chat")
+        XCTAssertEqual(row.state.heldRun, "paused"); XCTAssertEqual(row.state.unreadCount, 1)
+        XCTAssertTrue(row.state.hasDraft); XCTAssertEqual(row.state.recency, 1)
+        let content = SidebarChatRowView.content(model: model, chat: row.chat, state: row.state, display: nil, retained: nil)
+        XCTAssertEqual(content.accessibilityLabel, "Refund edge cases, paused, unread, has a draft")
+        model.sidebarFilter = "refund"; model.page = .chats
+        XCTAssertEqual(model.sidebarChatOrder, ["r"], "the keyboard steps through what the filter lists")
+    }
+}

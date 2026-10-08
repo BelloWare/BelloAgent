@@ -33,9 +33,12 @@ extension WorkspaceModel {
         draftMarksRestoredAt = sequence
         // Every chat the reading names too: one committed just now may be
         // listed a moment later (`showsDraftMark` decides what shows).
+        // One change to the sidebar for the whole reading.
+        var next = draftChatIDs
         for id in Set(chats.map(\.id)).union(draftChatIDs).union(ids) where (draftMarkSequences[id] ?? 0) <= sequence {
-            setDraftMark(id, ids.contains(id))
+            if ids.contains(id) { next.insert(id) } else { next.remove(id) }
         }
+        if next != draftChatIDs { draftChatIDs = next }
     }
     /// Whether a chat's row shows the draft marker.
     func showsDraftMark(_ id: String) -> Bool {

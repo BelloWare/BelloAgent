@@ -560,6 +560,18 @@ final class SessionMarkUnreadTests: SessionReadStateTestCase {
         try await close(second, root: root)
     }
 
+    /// Opening a side passes through its chat: that is not opening the
+    /// chat, so a mark the reader put on it stays.
+    @MainActor func testOpeningASideKeepsItsChatsMark() async throws {
+        let (model, root) = try await twoChats()
+        model.markSessionUnread("other")
+        await model.passingThrough("other") { model.focusedSessionID = "other" }
+        XCTAssertEqual(model.unreadStates["other"]?.markedUnread, true)
+        model.focusedSessionID = "chat"; model.focusedSessionID = "other"
+        XCTAssertNil(model.unreadStates["other"]?.markedUnread, "coming to the chat itself does clear it")
+        try await close(model, root: root)
+    }
+
     @MainActor func testOnlyLaunchsOwnFocusIsExemptWhileItReopens() async throws {
         let (model, root) = try await twoChats()
         model.focusedSessionID = "other"
