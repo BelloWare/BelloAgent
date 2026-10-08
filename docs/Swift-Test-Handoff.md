@@ -1301,6 +1301,13 @@ Editing), `26b-terminals-*` (three terminals, one named), `26c-` and
 Every question is answered Cancel or Keep Editing. The full gallery renders them
 after the table window.
 
+`PI_APP_UI_GALLERY_SEARCH_ONLY=1` (with `TEST_RUNNER_` beside it) gives the
+second chat a turn of its own, then renders only the sidebar's search inside
+chats at the 920×600 window: `14d-sidebar-search-*` ("retry" listing both
+chats, each with the snippet of its newest matching message under its row)
+and `14e-sidebar-search-opened-*` (a snippet pressed: its chat open at that
+message). The full gallery renders them after the archive scene.
+
 `PI_APP_UI_GALLERY_COST_ONLY=1` (with `TEST_RUNNER_` beside it) renders only the
 cost-limit scenes after the first turn: `18-cost-limit-*` (the stop notice; the
 limited chat's Session Inspector Overview, with its spend against the limit and

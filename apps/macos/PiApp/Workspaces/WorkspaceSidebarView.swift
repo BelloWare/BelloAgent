@@ -16,7 +16,7 @@ import Combine
     private let title = PiKit.TextLine(PiKit.Line("Projects", font: PiKit.Font.micro, color: .piInkTertiary, tracking: 0.5, uppercased: true))
     let newChat = PiKit.IconButton(symbol: "square.and.pencil", label: "New Chat (⌘N)", tone: .accent, size: 24, filled: true)
     let manage = PiKit.IconButton(symbol: "folder.badge.plus", label: "Add or manage projects", size: 24)
-    let filterField = PiKit.TextField(placeholder: "Filter chats and topics", icon: "magnifyingglass")
+    let filterField = PiKit.TextField(placeholder: "Search chats and messages", icon: "magnifyingglass")
     private let filterKeys = SidebarFilterDelegate()
     let selectionBar: SidebarSelectionBarView
     let scroll = NSScrollView()
@@ -72,7 +72,8 @@ import Combine
         filterField.field.delegate = filterKeys
         filterKeys.changed = { [weak self] in self?.filterChanged($0) }
         filterKeys.escape = { [weak self] in self?.escapeFromFilter() }
-        filterField.field.setAccessibilityLabel("Filter chats and topics by title")
+        filterKeys.submit = { [weak self] in self?.model.openFirstSidebarResult() }
+        filterField.field.setAccessibilityLabel("Search chats and topics by title and chats by their messages")
         filterField.field.setAccessibilityIdentifier("sidebarFilter")
 
         scroll.drawsBackground = false
@@ -120,6 +121,9 @@ import Combine
         for view in [title, newChat, manage, filterField, selectionBar, scroll, empty, hairline,
                      report, inspector, resources, background, archive, settings] as [NSView] { addSubview(view) }
         model.sidebarFilter = filter
+        // Content matches arrive after the titles: the list takes them in.
+        model.sidebarSearch.changed = { [weak self] in self?.refresh(animated: false) }
+        model.sidebarSearch.activate()
         observer = ShellObserver { [weak self] in self?.refresh(animated: nil) }
         observer.observe(model)
         // A change waiting for its turn is also applied by the next layout
@@ -245,6 +249,7 @@ import Combine
 
     private func filterChanged(_ value: String) {
         filter = value
+        model.sidebarSearch.setQuery(value)
         model.sidebarFilter = value
         refresh(animated: false)
     }
@@ -369,11 +374,18 @@ import Combine
 @MainActor final class SidebarFilterDelegate: NSObject, NSTextFieldDelegate {
     var changed: ((String) -> Void)?
     var escape: (() -> Void)?
+    /// Return: open the first chat the filter lists, at its match.
+    var submit: (() -> Void)?
     func controlTextDidChange(_ notification: Notification) {
         guard let field = notification.object as? NSTextField else { return }
         changed?(field.stringValue)
     }
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        // Return confirms what an input method is composing before it opens anything.
+        if selector == #selector(NSResponder.insertNewline(_:)), !textView.hasMarkedText(), let submit,
+           !control.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            submit(); return true
+        }
         guard selector == #selector(NSResponder.cancelOperation(_:)) else { return false }
         escape?(); return true
     }

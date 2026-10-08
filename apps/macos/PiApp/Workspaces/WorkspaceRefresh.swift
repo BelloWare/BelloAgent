@@ -46,6 +46,7 @@ struct TaskPresentationDecoder: Sendable {
 
 extension WorkspaceModel {
     func refresh(_ id: String) {
+        sidebarSearchStorage?.journalChanged()
         guard let item = record(id), let host = hosts[item.workspaceID], opened.contains(id) else { return }
         // Written only when new: every write runs `displays`' observers, which
         // scan every display, and this runs on every event of every chat.

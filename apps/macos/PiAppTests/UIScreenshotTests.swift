@@ -242,6 +242,20 @@ final class UIScreenshotTests: XCTestCase {
                                                       stateRoot: folder.appendingPathComponent("app-state"))
             return
         }
+        // Only the sidebar's search inside chats, once a second chat has a turn of its own.
+        if testEnvironment("PI_APP_UI_GALLERY_SEARCH_ONLY") == "1" {
+            await model.select(second.id)
+            let other = try XCTUnwrap(model.displays[second.id])
+            other.draft = "How does cache accounting treat a retry that is served from the cache?"
+            model.send(sessionID: second.id)
+            try await waitIdle(other, model: model, minimumMessages: 2)
+            await model.select(main.id); try await settle(1.0)
+            try await captureSearchScene(model: model, window: window, gallery: gallery, appearances: appearances, minimumMatches: 2)
+            XCTAssertNil(model.error, model.error ?? "")
+            for host in model.hosts.values { try await host.shutdownAndWait() }
+            try await model.traces.close()
+            return
+        }
         if testEnvironment("PI_APP_UI_GALLERY_WEBHOOK_ONLY") == "1" {
             try await captureWebhookScenes(model: model, window: window, gallery: gallery, appearances: appearances, chatID: main.id)
             XCTAssertNil(model.error, model.error ?? "")
@@ -586,6 +600,8 @@ final class UIScreenshotTests: XCTestCase {
         try await settle(0.8)
         try await captureArchiveScene(model: model, window: window, gallery: gallery, appearances: appearances, workspaceID: workspaceID,
                                       profileID: try XCTUnwrap(model.record(mainID)?.profileID), topicID: topic?.id)
+        try await captureSearchScene(model: model, window: window, gallery: gallery, appearances: appearances, minimumMatches: 1)
+        await model.select(mainID); try await settle(0.8)
         try await captureSidebarStateScenes(model: model, window: window, gallery: gallery, appearances: appearances, markedID: secondID)
 
         // 15 · The error strip over a chat: a gateway failure with a long body.
@@ -697,6 +713,39 @@ final class UIScreenshotTests: XCTestCase {
             try capture(window, to: gallery.appendingPathComponent("14c-sidebar-archive-\(name).png"))
         }
         model.setArchivedChatsShown(false); try await settle(0.8)
+    }
+
+    /// 14d · The sidebar's search inside chats, at the 920×600 window:
+    /// "retry" lists each chat whose messages say it (the main chat's title
+    /// says it too), with the snippet of its newest match under its row, the
+    /// match in accent. 14e · a snippet pressed: the chat opens at that
+    /// message. The field is cleared and the window put back afterwards.
+    @MainActor private func captureSearchScene(model: WorkspaceModel, window: NSWindow, gallery: URL,
+                                               appearances: [(String, NSAppearance.Name)], minimumMatches: Int, query: String = "retry") async throws {
+        let sidebar = try XCTUnwrap(window.contentView.flatMap { descendants(WorkspaceSidebarView.self, in: $0).first }, "The sidebar")
+        let size = window.contentView?.frame.size ?? NSSize(width: 1440, height: 900)
+        window.setContentSize(NSSize(width: 920, height: 600)); window.center(); try await settle(0.8)
+        await model.sidebarSearch.reconcileNow()
+        sidebar.setFilter(query)
+        let deadline = Date().addingTimeInterval(15)
+        while Date() < deadline, model.sidebarContentMatches.count < minimumMatches { try await settle(0.2) }
+        XCTAssertGreaterThanOrEqual(model.sidebarContentMatches.count, minimumMatches, "Chats whose messages say \(query)")
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(1.0)
+            try capture(window, to: gallery.appendingPathComponent("14d-sidebar-search-\(name).png"))
+        }
+        // The snippet of a chat other than the open one, else the open one's.
+        let snippets = descendants(SidebarSearchSnippetView.self, in: sidebar)
+        if let snippet = snippets.first(where: { $0.state.chatID != model.selectedID }) ?? snippets.first {
+            snippet.press.performClick(nil)
+            try await settle(2.0)
+            for (name, appearance) in appearances {
+                NSApp.appearance = NSAppearance(named: appearance); try await settle(1.0)
+                try capture(window, to: gallery.appendingPathComponent("14e-sidebar-search-opened-\(name).png"))
+            }
+        } else { XCTFail("No snippet to open") }
+        sidebar.setFilter("")
+        window.setContentSize(size); window.center(); try await settle(0.8)
     }
 
     /// 22 · The sides panel at the window's right edge, over the chat with
