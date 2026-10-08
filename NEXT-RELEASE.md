@@ -1,6 +1,6 @@
 # Next release
 
-**0.1.121 (build 125)** removes every editing-tool lock (owner, 2026-10-08); record `docs/validation/Bello-Agent-0.1.121-2026-10-08.md`. Nothing is planned beyond it yet.
+**Released 2026-10-08:** 0.1.121 (build 125, tag `v0.1.121`) removes every editing-tool lock (owner, 2026-10-08); record `docs/validation/Bello-Agent-0.1.121-2026-10-08.md`. Nothing is planned beyond it yet.
 
 ---
 

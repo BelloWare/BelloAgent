@@ -45,7 +45,18 @@ The canonical Bello Agent feed is `https://belloware.com/assets/bello_agent.appc
 The legacy `pi_app.appcast.xml` feed remains byte-identical so existing Pi App
 installations receive the same update.
 
-**Bello Agent 0.1.120/build 124 is publicly released** at
+**Bello Agent 0.1.121/build 125 is publicly released** at
+[belloware.com](https://belloware.com/bello-agent.html), with source at
+[Git tag v0.1.121](https://github.com/BelloWare/BelloAgent/tree/v0.1.121) and website commit
+`d27e877`. The signed/notarized DMG is **12,651,553 bytes (12.07 MiB)**;
+SHA-256 `e5487a68111a055e37c3e4a7ed4b618976c3cc71441795151cbf13d3006a40b1`. The public product page,
+identical update feeds and downloaded hash/Ed25519 verification passed at
+**2026-10-08 10:26:57 UTC**. It removes every editing-tool lock at the owner's request: chats and
+one reply's edits, writes, commands and MCP calls run together. A helper-only release: the helper
+suite (619), wire scripts and the affected app classes (70) passed; the full gate and hour soak were
+not rerun. See the [0.1.121 validation record](validation/Bello-Agent-0.1.121-2026-10-08.md).
+
+**Bello Agent 0.1.120/build 124 is a historical verified release** at
 [belloware.com](https://belloware.com/bello-agent.html), with source at
 [Git tag v0.1.120](https://github.com/BelloWare/BelloAgent/tree/v0.1.120)
 (release commit `f8a3a79a`) and website commit `cdc3698`. The signed/notarized
