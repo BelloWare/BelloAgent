@@ -254,19 +254,21 @@ import Combine
         let resumeWidth: CGFloat? = resume.isHidden ? nil : resume.intrinsicContentSize.width
         let hintShown = !hint.isHidden
         let count = 3 + (hintShown ? 1 : 0) + (resumeWidth == nil ? 0 : 1)
-        var room = width - collapseWidth - (resumeWidth ?? 0) - Self.spacing * CGFloat(count - 1)
-        // Least flexible first: the hint, the status, then the spacer.
+        // The spacer keeps only its minimum until the words have theirs: an
+        // equal share for it wrapped "Paused · 1" mid-word in a narrow pane.
+        var room = width - collapseWidth - (resumeWidth ?? 0) - Self.spacing * CGFloat(count - 1) - Self.spacerMinimum
+        // Least flexible first: the hint, then the status; the spacer takes what is left.
         var flexible: [(key: String, ideal: CGFloat)] = [("status", status.naturalWidth)]
         if hintShown { flexible.append(("hint", hint.naturalWidth)) }
         flexible.sort { $0.ideal < $1.ideal }
         var given: [String: CGFloat] = [:]
-        var remaining = flexible.count + 1
+        var remaining = flexible.count
         for child in flexible {
             let share = max(0, room) / CGFloat(remaining)
             let taken = min(child.ideal, share)
             given[child.key] = taken; room -= taken; remaining -= 1
         }
-        let spacer = max(Self.spacerMinimum, room)
+        let spacer = Self.spacerMinimum + max(0, room)
         return (collapseWidth, given["status"] ?? 0, hintShown ? given["hint"] : nil, spacer, resumeWidth)
     }
     func height(forWidth width: CGFloat) -> CGFloat {
