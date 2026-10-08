@@ -1,0 +1,11 @@
+{
+  "base_commit": "ea2e2ed970cacd13d90e40eed5d1aaa3a565bd1a",
+  "source_manifest_sha256": "1b9f00fc123b7e268a43cefbd7f06ae892432ce4e8d4382119b590b0dc86d945",
+  "binary": "/workspace/shared/agent-topics-evidence/bello-agent-topics",
+  "binary_sha256": "d6c9e4083fedaeb26e0ec3474fd69e3fb410d26d1fa9f7ed3fce54ff05c2c74d",
+  "features": [
+    "synthetic-authority"
+  ],
+  "profile": "debug",
+  "source_postimages_verified": 21
+}

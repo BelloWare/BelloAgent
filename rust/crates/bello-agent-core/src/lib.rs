@@ -4,6 +4,7 @@ pub mod attachments;
 pub mod compaction;
 #[path = "compaction_session.rs"]
 mod compaction_session;
+pub mod context_recovery;
 pub mod instructions;
 pub mod mcp;
 pub mod model_catalog;
@@ -11,6 +12,7 @@ pub mod profile;
 pub mod project_authority;
 pub mod project_resources;
 pub mod provider;
+pub mod provider_failure;
 pub mod runtime;
 pub mod saved_runtime;
 pub mod session;
@@ -43,6 +45,8 @@ pub enum Error {
     QueueOrder,
     #[error("{0}")]
     Provider(String),
+    #[error("{0}")]
+    ProviderFailure(Box<crate::provider_failure::Failure>),
     #[error("The response stream ended before a terminal response event")]
     IncompleteStream,
     #[error("Stopped")]

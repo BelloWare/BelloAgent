@@ -2533,7 +2533,9 @@ impl AgentView {
             .iter()
             .filter(|m| !m.usage.is_null())
             .collect();
-        let tokens = if reported.is_empty() {
+        let tokens = if let Some(label) = compaction_actions::recovery_usage_label(&self.session) {
+            label
+        } else if reported.is_empty() {
             "Tokens n/a".into()
         } else {
             format!(
@@ -2608,7 +2610,12 @@ impl AgentView {
                     .text_size(px(11.5))
                     .text_color(rgb(p.secondary))
                     .flex_wrap()
-                    .child(self.badge(tokens, "chart"))
+                    .child(
+                        self.badge(tokens, "chart")
+                            .min_w_0()
+                            .max_w_full()
+                            .debug_selector(|| "composer-reported-tokens".into()),
+                    )
                     .child(self.badge("Cost n/a".into(), "chart"))
                     .child(
                         self.badge(

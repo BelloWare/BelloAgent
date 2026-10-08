@@ -1,0 +1,22 @@
+   Compiling bello-agent-app v0.1.0 (/workspace/shared/agent-context-recovery/rust/crates/bello-agent-app)
+    Finished `test` profile [unoptimized] target(s) in 20.43s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running unittests src/main.rs (/workspace/shared/build-recovery/target/debug/deps/bello_agent-a54be717f3dcc926)
+
+running 13 tests
+test compaction_actions::recovery_tests::context_recovery_feedback_distinguishes_every_phase_without_disclosing_provider_text ... ok
+test compaction_actions::recovery_tests::context_recovery_feedback_never_claims_original_context_after_adoption ... ok
+test compaction_actions::recovery_tests::context_recovery_feedback_publishes_real_transcript_rows_and_preserves_composer ... ok
+test compaction_actions::recovery_tests::context_recovery_feedback_rejects_stale_controller_publications ... ok
+test compaction_actions::recovery_tests::context_recovery_usage_is_observed_sparse_and_never_double_counted ... ok
+test compaction_actions::recovery_tests::context_recovery_usage_missing_explicit_retry_remains_partial ... ok
+test compaction_actions::recovery_tests::context_recovery_usage_narrow_footer_preserves_reading_composer_selection_and_scroll ... ok
+test compaction_actions::tests::actions_menu_open_dismiss_and_rejection_preserve_draft_and_never_materialize ... ok
+test compaction_actions::tests::archive_and_shutdown_fences_reject_compaction_action ... ok
+test compaction_actions::tests::delayed_menu_choice_cannot_retarget_after_navigation_identity_changes ... ok
+test compaction_actions::tests::labels_distinguish_compaction_from_normal_generation ... ok
+test compaction_actions::tests::menu_dismiss_keeps_marked_text_and_undo_editor_entity ... ok
+test compaction_actions::tests::older_compaction_receipt_displays_its_exact_retained_failure ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 609 filtered out; finished in 0.80s

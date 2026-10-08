@@ -1,0 +1,27 @@
+{
+  "base": "a73f56acdf5847e7a9e34c1cb2aceeb051df0db3",
+  "files": {
+    "rust/crates/bello-agent-app/src/chat_navigation.rs": "e5b8bbe45d8b6623736af13ecf7280d206ed10c4bc49301fd1f909d573b7400e",
+    "rust/crates/bello-agent-app/src/chat_organization_tests.rs": "b6d907bea3818c657b8b9eb3d08b34242e697bd5c33c0b91f8cee947944392a8",
+    "rust/crates/bello-agent-app/src/connection_settings_controller.rs": "03aadc4aba03cbd469d078f0b99062f0d3af843258c0949b2c767e9cc7080f67",
+    "rust/crates/bello-agent-app/src/main.rs": "9d043ef01c026c217a7b385cf6be8c8a4080b4387a2511a70046fe75022b3682",
+    "rust/crates/bello-agent-app/src/mcp_inspector_controller.rs": "37b1dcebfe82988f204fed532433e029b60e74af47e35ab39e8609c843a8091a",
+    "rust/crates/bello-agent-app/src/project_manager_controller.rs": "e2f592aa878ce396cfebcaea2ba3f918421ca76dd1af2a049f12167fd0905cde",
+    "rust/crates/bello-agent-app/src/shutdown_barrier_tests.rs": "541fafdbbbcc4d8f7329afb233d9d82473eb34ec7450ffeb39217e0bc2fa665d",
+    "rust/crates/bello-agent-app/src/sidebar_actions.rs": "a3f3be46c3f67db1e93082772c5b2fd2217eae76c0045cf19e404cd513a1e908",
+    "rust/crates/bello-agent-app/src/topics.rs": "51ce7d366e6531645b432a1050cedae31d5ce705e6f0483e09b905f50db26478",
+    "rust/crates/bello-agent-app/src/topics_tests.rs": "23062810fc443533831e2c8cc98bfb60e9f1727c1458602dd022d7df5e387eca",
+    "rust/crates/bello-agent-app/src/topics_view.rs": "4a438fb782be4eb8cc158526e7b0dd6a4861a2a229599ec68e482a601c711993",
+    "rust/crates/bello-agent-app/src/transcript_actions.rs": "23ce6571941ea77c0bd3639e89516c7caa3932f6edeaf47aac096f8a3ba0738c",
+    "rust/crates/bello-agent-app/src/workspace_lifetime_tests.rs": "ab4a679d67a0b81fd4197e703a29f38aef8f064285c1e391fda3d94f93a41838",
+    "rust/crates/bello-agent-core/src/workspace.rs": "f8734e8a6a6a2aaf9508cdf8641ba2cf97bd54b70fb24f73c7a180f4a0b8789c",
+    "rust/crates/bello-agent-core/src/workspace_attachment_tests.rs": "68ab646d3ce3210105bfe440dd5377640ed0de14bb1954ca2369650dcb18539e",
+    "rust/crates/bello-agent-core/src/workspace_topics.rs": "fedad1fc3cac93d3d96cae5df1fe95e4b676414ec886f2713cedde8aea6c8a49",
+    "rust/crates/bello-agent-core/src/workspace_topics_tests.rs": "2d020ca3714bbea0a1ca276462553c0696195f22148b0eab2fca34687b455ef2",
+    "rust/crates/bello-agent-core/tests/chat_workspace.rs": "d1104faa8830880aeec1fa99e744db60317cfc7e1e8c9a00a6b3bf4bc05e1e2c",
+    "rust/crates/bello-agent-core/tests/queued_cancellation.rs": "f25cd38923c6c1721a926dfa3e96aebe3c4cb982c5410ca7bc825a6432ffdeff",
+    "rust/crates/bello-agent-core/tests/sidebar_organization.rs": "f03cc968443375ef363b561ca006e625ead2e9e1f08d80b252fc0dc3ccf952be",
+    "rust/docs/project-topics.md": "ddd62033e66cd56a0cc747f1e651e48e76f66a8c19fe0ebbb93873b9cb7991ab"
+  },
+  "patch_sha256": "d0bdca53e69d4e4da85e49e1aa8fa01ecf77ed758ff47947efd6dce55f801a0e"
+}

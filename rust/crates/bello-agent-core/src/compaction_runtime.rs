@@ -233,29 +233,14 @@ impl Controller {
                 })?;
                 self.publish(&inner);
             }
-            let reply = self
-                .client
-                .complete_prepared(
-                    &prepared.profile,
-                    &configuration.credential,
-                    &prepared.request,
-                    &session_id,
-                    &format!("compaction:{operation_id}"),
-                    cancel.clone(),
-                    |delta| self.stream_delta(&reply_id, delta),
-                )
-                .await?;
-            observed_reply = Some(reply.clone());
-            let summary_id = Uuid::new_v4().to_string();
-            let candidate = compaction::validate_candidate(
-                &prepared,
-                summary_id,
-                &reply,
-                &configuration.profile,
-                &instructions,
-                &session_id,
-                &definitions,
-            )?;
+            let (candidate, observation) = self.summarize_prepared(
+                &configuration, &prepared, &configuration.profile, &instructions,
+                &session_id, &definitions, &format!("compaction:{operation_id}"),
+                cancel.clone(), |delta| self.stream_delta(&reply_id, delta),
+            ).await;
+            observed_reply = observation;
+            let candidate = candidate?;
+            let reply = observed_reply.as_ref().expect("validated summary has terminal reply");
             configuration.confirm_for_request().await?;
             self.confirm_runtime_authority(cancel.clone()).await?;
             if let Ok(Some(original)) = &resources {
@@ -294,7 +279,7 @@ impl Controller {
             }
             inner
                 .store
-                .transact(|session| session.adopt_compaction(&operation_id, candidate, &reply))?;
+                .transact(|session| session.adopt_compaction(&operation_id, candidate, reply))?;
             self.publish(&inner);
             Ok::<(), crate::Error>(())
         }
@@ -323,6 +308,51 @@ impl Controller {
         self.publish(&inner);
         if !self.is_retired() && !stopped && inner.fatal.is_none() {
             self.launch(&mut inner, None);
+        }
+    }
+
+    /// Shared single-request summary primitive. It never changes actor lifecycle,
+    /// worker handles, cancellation ownership, queue state or durable checkpoints.
+    /// Return the actual terminal observation even if candidate validation fails.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn summarize_prepared(
+        &self,
+        configuration: &Configuration,
+        prepared: &compaction::Prepared,
+        profile: &Profile,
+        instructions: &str,
+        session_id: &str,
+        definitions: &[crate::tools::ToolDefinition],
+        attempt_id: &str,
+        cancel: CancellationToken,
+        on_delta: impl FnMut(crate::Delta) -> Result<()>,
+    ) -> (Result<crate::Message>, Option<crate::Reply>) {
+        match self
+            .client
+            .complete_prepared(
+                &prepared.profile,
+                &configuration.credential,
+                &prepared.request,
+                session_id,
+                attempt_id,
+                cancel,
+                on_delta,
+            )
+            .await
+        {
+            Ok(reply) => {
+                let candidate = compaction::validate_candidate(
+                    prepared,
+                    Uuid::new_v4().to_string(),
+                    &reply,
+                    profile,
+                    instructions,
+                    session_id,
+                    definitions,
+                );
+                (candidate, Some(reply))
+            }
+            Err(error) => (Err(error), None),
         }
     }
 

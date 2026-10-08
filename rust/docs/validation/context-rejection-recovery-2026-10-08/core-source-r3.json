@@ -1,0 +1,65 @@
+{
+  "base": "3a566ae58ee334c3b317a47ce099306c0d6535b5",
+  "files": [
+    {
+      "path": "rust/crates/bello-agent-core/src/compaction.rs",
+      "bytes": 31572,
+      "sha256": "578dbe6b86c67c02ec09dc9af7991cde3ad57d8a06bd74afa53e5a825003ecf4"
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/compaction_runtime.rs",
+      "bytes": 16626,
+      "sha256": "c66c298cd6fb1113cc88d47dd748aff4b29a39631212d7aed26ffa7a34fe9b5c"
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/context_recovery.rs",
+      "bytes": 53970,
+      "sha256": "e0a5a0db269ab5149fea3921af6ffded490f048b93477ee923ce0d07170b7067"
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/context_recovery_mcp_tests.rs",
+      "bytes": 18273,
+      "sha256": "35bd8df3ec7f921b1a4f758f85c2cb3252686fdc2dd61a30ac5c258aef639c7d"
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/context_recovery_runtime.rs",
+      "bytes": 18074,
+      "sha256": "a99967dd0315caeb103ea86a1023e1dbd7fb45e2cf95e02c3351be7154f28d3b"
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/context_recovery_runtime_tests.rs",
+      "bytes": 25458,
+      "sha256": "e157034b63fafd49ef681995314ee3f2bf2f07ac43e03a5fef263e43e041ad42"
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/lib.rs",
+      "bytes": 1924,
+      "sha256": "c01f3b5ab378ea77d3494919be0c53f928be9dfb8c2297dc1de15576cc960159"
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/provider.rs",
+      "bytes": 36632,
+      "sha256": "c8b0d120a6ec25e960a373d3718b1f271de25cadf38caad81d13ba7e4d682dda"
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/provider_failure.rs",
+      "bytes": 16162,
+      "sha256": "7222f34e39b3b2bca0e0f4833e30df90eef9981e7820f17574124b7be2854b2c"
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/runtime.rs",
+      "bytes": 104015,
+      "sha256": "c20516459f4ff5cb9ed7d30170a25b8d574f907f9266bd966a4cf8aa44d12a7e"
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/session.rs",
+      "bytes": 124469,
+      "sha256": "38a20b3a21dfa9a7f13ca4951e24ece49c0d7f3d75524d8053375c7ed0e31edd"
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/tool_runtime.rs",
+      "bytes": 69941,
+      "sha256": "ec0a5cd1ca56a56dffeebd18acab0a45ac00c20ec34ac40ee95f1a22639bff18"
+    }
+  ]
+}

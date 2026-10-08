@@ -475,7 +475,7 @@ impl Controller {
                 self.confirm_turn_resources(cancel.clone()).await
             }
             .await;
-            let response = match ready {
+            let mut response = match ready {
                 Err(error) => Err(error),
                 Ok(()) => {
                     self.client
@@ -493,6 +493,39 @@ impl Controller {
                         .await
                 }
             };
+            let observed_failure = match &response {
+                Err(Error::ProviderFailure(failure)) => Some(failure.clone()),
+                _ => None,
+            };
+            if let Err(Error::ProviderFailure(failure)) = &response {
+                match self
+                    .recover_context_rejection(
+                        &config,
+                        &item,
+                        &snapshot,
+                        &profile,
+                        &instructions,
+                        &definitions,
+                        failure,
+                        cancel.clone(),
+                    )
+                    .await
+                {
+                    Ok(Some(next)) => {
+                        item = next
+                            .active
+                            .clone()
+                            .expect("recovery retains active submission");
+                        snapshot = next;
+                        continue;
+                    }
+                    Ok(None) => {}
+                    Err(error) => response = Err(error),
+                }
+            }
+            #[cfg(test)]
+            self.pause_input_commit_for_test("recovery-model-response")
+                .await;
             let prepared = {
                 let mut inner = self.inner.lock().expect("session mutex poisoned");
                 // Stop wins a terminal response already in flight.
@@ -504,6 +537,7 @@ impl Controller {
                 match response {
                     Ok(reply) if !reply.calls.is_empty() && self.options.tools.is_some() => {
                         let attempt = inner.store.transact(|session| {
+                            session.finish_context_recovery(&reply_id, true)?;
                             session.begin_tools(&reply_id, &reply, &profile)?;
                             // Fail closed before any filesystem invocation if existing
                             // opaque history cannot be replayed or the request is too big.
@@ -536,6 +570,7 @@ impl Controller {
                                         row.reasoning = reply.reasoning.clone();
                                         row.usage = reply.usage.clone();
                                     }
+                                    session.finish_context_recovery(&reply_id, false)?;
                                     session.finish(&reply_id, Err(error))
                                 }) {
                                     inner.fatal = Some(error.to_string());
@@ -545,10 +580,38 @@ impl Controller {
                         }
                     }
                     response => {
-                        if let Err(error) = inner
-                            .store
-                            .transact(|session| session.finish(&reply_id, response))
-                        {
+                        if let Err(error) = inner.store.transact(|session| {
+                            if let Some(failure) = &observed_failure {
+                                if let Some(row) =
+                                    session.messages.iter_mut().find(|row| row.id == reply_id)
+                                {
+                                    row.usage = crate::provider_failure::merge_usage(
+                                        (!row.usage.is_null()).then(|| row.usage.clone()),
+                                        failure.reported_usage.clone(),
+                                    )
+                                    .unwrap_or(serde_json::Value::Null);
+                                }
+                                session.record_recovery_retry_failure(
+                                    &reply_id,
+                                    &Error::ProviderFailure(failure.clone()),
+                                )?;
+                            }
+                            if let Err(error) = &response {
+                                session.record_recovery_retry_failure(&reply_id, error)?;
+                            }
+                            session.finish_context_recovery(
+                                &reply_id,
+                                response.as_ref().is_ok_and(|reply| {
+                                    reply.calls.is_empty()
+                                        && reply.status == "completed"
+                                        && !reply.text.trim().is_empty()
+                                }),
+                            )?;
+                            if matches!(&response, Err(Error::Cancelled)) {
+                                session.cancel_context_recovery_retry(&reply_id)?;
+                            }
+                            session.finish(&reply_id, response)
+                        }) {
                             inner.fatal = Some(error.to_string());
                         }
                         None

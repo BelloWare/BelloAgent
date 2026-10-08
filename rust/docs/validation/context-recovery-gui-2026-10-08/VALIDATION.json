@@ -1,0 +1,50 @@
+{
+  "result": "PASS actual cloud Linux interactive happy-path recovery",
+  "binary_sha256": "e32ab153e116f4ce97f8783c38c367975ca65f0f1bbf1b761e264e2558bcd83e",
+  "requests": 4,
+  "explicit_sends": 2,
+  "automatic_summary_requests": 1,
+  "automatic_retry_requests": 1,
+  "terminal_phase": "completed",
+  "state": "idle",
+  "reported_input_tokens": 281,
+  "reported_output_tokens": 12030,
+  "output_is_partial": true,
+  "cost": "n/a",
+  "request_body_file_bytes": [
+    3701,
+    56287,
+    58135,
+    4030
+  ],
+  "receipt": {
+    "id": "921fa947-443d-4bc2-8082-fe35d3df57d3",
+    "turn_id": "1047e1de-8f36-49a2-a77d-d75dd49f1e8c",
+    "failed_reply_id": "2e54bada-b7fa-4363-80fa-c1ea81a71e77",
+    "progress_id": "d554f046-0348-4a4f-86d6-92795aead40d",
+    "retry_reply_id": "a74ae732-7831-47a4-b29a-fc03d6d091ae",
+    "retry_turn_id": "1047e1de-8f36-49a2-a77d-d75dd49f1e8c",
+    "resolved_reply_id": "a74ae732-7831-47a4-b29a-fc03d6d091ae",
+    "request_fingerprint": "6c469ed551a0be38f43e56f51256e928617ba6e23e325beadd12eff0302a92c2",
+    "failure": {
+      "category": "inputContextExceeded",
+      "status": 200,
+      "message": "Synthetic provider rejection: input exceeds the context window",
+      "attemptId": "6d64dd47-bd26-465c-8244-487c1a02226e",
+      "reportedUsage": {
+        "input_tokens": 111
+      }
+    },
+    "phase": "completed",
+    "summary_id": "90ab7e13-79e8-40ff-a0e5-f021b0899b07",
+    "summary_failure": null,
+    "summary_attempts": 1,
+    "retry_attempts": 1
+  },
+  "limitations": [
+    "Synthetic loopback, software-rendered Linux only",
+    "No native macOS or paid provider acceptance",
+    "No Stop scenario or full-process reopen validation",
+    "Retrying intermediate state not captured; completion and physical fourth request captured"
+  ]
+}

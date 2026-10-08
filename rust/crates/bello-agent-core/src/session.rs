@@ -148,6 +148,12 @@ pub struct Session {
     pub compaction: Option<crate::compaction::Operation>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub compaction_history: Vec<crate::compaction::Operation>,
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "crate::context_recovery::deserialize_receipts"
+    )]
+    pub context_recoveries: Vec<crate::context_recovery::Receipt>,
 }
 impl Session {
     pub fn new() -> Self {
@@ -172,6 +178,7 @@ impl Session {
             revision: 0,
             compaction: None,
             compaction_history: Vec::new(),
+            context_recoveries: Vec::new(),
         }
     }
     pub fn submit(&mut self, item: Submission) -> Result<()> {
@@ -689,6 +696,7 @@ impl Session {
     }
     fn validate_checkpoint(&self) -> Result<()> {
         self.validate_compaction()?;
+        self.validate_context_recoveries()?;
         self.validate_tool_history()?;
         self.validate_edits()?;
         let active = self.active.is_some();
@@ -704,6 +712,7 @@ impl Session {
                 message.id == reply_id
                     && message.role == "assistant"
                     && ((!message.replay_eligible && message.state == "streaming")
+                        || self.is_context_rejected_active(reply_id)
                         || self.active_tool_calls().is_some())
             }) {
                 return Err(invalid("Running checkpoint has an invalid streaming reply"));
@@ -729,6 +738,7 @@ impl Session {
         Ok(())
     }
     fn recover(&mut self) -> bool {
+        self.interrupt_context_recoveries();
         if self.state != RunState::Running && self.edit.is_none() {
             return false;
         }
@@ -964,11 +974,11 @@ impl SessionInspectionLease {
             return Err(invalid("Session exceeds 256 MiB safety limit"));
         }
         verify_inspection_file(&path, &file, &before)?;
-        let mut session: Session = crate::skill_schema::parse_snapshot(&bytes)?;
+        let mut session: Session = crate::context_recovery::parse_snapshot(&bytes)?;
         if session.id != expected_session_id {
             return Err(invalid("The session file belongs to another chat"));
         }
-        if ![1, 2, 3, 4, 5, 6, 7, 8, 9].contains(&session.version) {
+        if ![1, 2, 3, 4, 5, 6, 7, 8, 9, 10].contains(&session.version) {
             return Err(invalid(
                 "Unsupported Rust session format. Swift journals are not imported automatically.",
             ));
@@ -1231,13 +1241,13 @@ impl SessionStore {
                 return Err(invalid("Session exceeds 256 MiB safety limit"));
             }
             verify_inspection_file(&path, file, before)?;
-            crate::skill_schema::parse_snapshot(&bytes)?
+            crate::context_recovery::parse_snapshot(&bytes)?
         } else if exists {
             let metadata = fs::metadata(&path)?;
             if metadata.len() > 256 * 1024 * 1024 {
                 return Err(invalid("Session exceeds 256 MiB safety limit"));
             }
-            crate::skill_schema::parse_snapshot(&fs::read(&path)?)?
+            crate::context_recovery::parse_snapshot(&fs::read(&path)?)?
         } else {
             initial.clone().unwrap_or_default()
         };
@@ -1248,7 +1258,7 @@ impl SessionStore {
         {
             return Err(invalid("The session file belongs to another chat"));
         }
-        if ![1, 2, 3, 4, 5, 6, 7, 8, 9].contains(&session.version) {
+        if ![1, 2, 3, 4, 5, 6, 7, 8, 9, 10].contains(&session.version) {
             return Err(invalid(
                 "Unsupported Rust session format. Swift journals are not imported automatically.",
             ));
@@ -1364,6 +1374,9 @@ impl SessionStore {
         }
         let mut next = self.session.clone();
         let result = change(&mut next)?;
+        if !next.context_recoveries.is_empty() {
+            next.version = next.version.max(10);
+        }
         if next.has_tool_timing() {
             next.version = next.version.max(9);
         }
@@ -1611,6 +1624,7 @@ fn encode_snapshot_with_limit(session: &Session, maximum: usize) -> Result<Vec<u
     session.validate_tool_history()?;
     session.validate_edits()?;
     session.validate_compaction()?;
+    session.validate_context_recoveries()?;
     struct BoundedBytes {
         bytes: Vec<u8>,
         maximum: usize,

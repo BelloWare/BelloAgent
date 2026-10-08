@@ -138,15 +138,22 @@ pub struct Accumulator {
     items: BTreeMap<usize, Value>,
     arguments: BTreeMap<usize, String>,
     thinking: BTreeMap<usize, String>,
+    reported_usage: Option<Value>,
 }
 impl Accumulator {
     pub fn consume(&mut self, value: Value) -> Result<Vec<Delta>> {
         let kind = value["type"].as_str().unwrap_or("");
+        if kind.starts_with("response.")
+            || kind == "error"
+            || (kind.is_empty() && !value["error"].is_null())
+        {
+            self.observe_usage(&value);
+        }
         if kind == "error"
             || kind == "response.failed"
             || kind.is_empty() && !value["error"].is_null()
         {
-            return Err(provider_failure(&value));
+            return Err(self.rejection_with_usage(&value));
         }
         let mut out = Vec::new();
         match kind {
@@ -231,11 +238,33 @@ impl Accumulator {
         Ok(out)
     }
     pub fn accept_json(&mut self, value: Value) -> Result<()> {
+        if value["status"] == "failed"
+            || !value["error"].is_null()
+            || matches!(value["type"].as_str(), Some("error" | "response.failed"))
+        {
+            return Err(self.rejection_with_usage(&value));
+        }
         if !matches!(value["status"].as_str(), Some("completed" | "incomplete")) {
-            return Err(provider_failure(&value));
+            return Err(Error::Provider(
+                "Provider reported an unsuccessful response".into(),
+            ));
         }
         self.root = Some(value);
         Ok(())
+    }
+    fn observe_usage(&mut self, value: &Value) {
+        for usage in [&value["usage"], &value["response"]["usage"]] {
+            crate::provider_failure::merge_reported_usage(&mut self.reported_usage, usage);
+        }
+    }
+    fn rejection_with_usage(&mut self, value: &Value) -> Error {
+        let mut failure = crate::provider_failure::Failure::rejection(value, None);
+        self.reported_usage = crate::provider_failure::merge_usage(
+            self.reported_usage.take(),
+            failure.reported_usage.take(),
+        );
+        failure.reported_usage = self.reported_usage.clone();
+        Error::ProviderFailure(Box::new(failure))
     }
     pub fn is_terminal(&self) -> bool {
         self.root.is_some()
@@ -330,20 +359,45 @@ impl Accumulator {
 fn string(v: &Value) -> String {
     v.as_str().unwrap_or("").into()
 }
-fn provider_failure(value: &Value) -> Error {
-    let detail = if !value["response"]["error"].is_null() {
-        &value["response"]["error"]
-    } else {
-        &value["error"]
-    };
-    Error::Provider(
-        detail["message"]
-            .as_str()
-            .or(detail.as_str())
-            .or(value["message"].as_str())
-            .unwrap_or("Provider reported an unsuccessful response")
-            .into(),
-    )
+/// Preserve typed evidence while redacting all externally reported strings.
+fn safe_failure(
+    error: Error,
+    profile: &Profile,
+    credential: &Credential,
+    status: u16,
+    attempt_id: &str,
+) -> Error {
+    match error {
+        Error::ProviderFailure(mut failure) => {
+            failure.message = profile.safe_error(credential, &failure.message);
+            failure.status = failure.status.or(Some(status));
+            failure.attempt_id = Some(attempt_id.to_owned());
+            fn redact(value: &mut Value, profile: &Profile, credential: &Credential) {
+                match value {
+                    Value::String(text) => *text = profile.safe_error(credential, text),
+                    Value::Array(values) => values
+                        .iter_mut()
+                        .for_each(|v| redact(v, profile, credential)),
+                    Value::Object(values) => {
+                        *values = std::mem::take(values)
+                            .into_iter()
+                            .map(|(key, mut value)| {
+                                redact(&mut value, profile, credential);
+                                (profile.safe_error(credential, &key), value)
+                            })
+                            .collect();
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(usage) = &mut failure.reported_usage {
+                redact(usage, profile, credential);
+            }
+            Error::ProviderFailure(failure)
+        }
+        Error::Provider(message) => Error::Provider(profile.safe_error(credential, &message)),
+        other => other,
+    }
 }
 
 #[derive(Clone)]
@@ -434,6 +488,8 @@ impl ResponsesClient {
         mut on_delta: impl FnMut(Delta) -> Result<()>,
     ) -> Result<Reply> {
         let bytes = serialize_request(body)?;
+        // A retry is a separate physical invocation, even within one turn.
+        let attempt_id = uuid::Uuid::new_v4().to_string();
         let mut request = self
             .client
             .post(profile.endpoint()?)
@@ -494,40 +550,57 @@ impl ResponsesClient {
                 }
                 let value: Value = serde_json::from_str(&event.data)
                     .map_err(|_| invalid("Provider emitted invalid SSE JSON"))?;
-                let deltas = acc
-                    .consume(value)
-                    .map_err(|e| Error::Provider(profile.safe_error(credential, &e.to_string())))?;
+                if matches!(event.event.as_str(), "error" | "response.failed") {
+                    return Err(safe_failure(
+                        acc.rejection_with_usage(&value),
+                        profile,
+                        credential,
+                        status.as_u16(),
+                        &attempt_id,
+                    ));
+                }
+                let deltas = acc.consume(value).map_err(|e| {
+                    safe_failure(e, profile, credential, status.as_u16(), &attempt_id)
+                })?;
                 for delta in deltas {
                     on_delta(delta)?;
                 }
             }
         }
         if !status.is_success() {
-            return Err(Error::Provider(profile.safe_error(
+            let value = serde_json::from_slice::<Value>(&raw)
+                .unwrap_or_else(|_| json!({"message":String::from_utf8_lossy(&raw)}));
+            let mut failure =
+                crate::provider_failure::Failure::rejection(&value, Some(status.as_u16()));
+            failure.message = format!("HTTP {}: {}", status.as_u16(), failure.message);
+            return Err(safe_failure(
+                Error::ProviderFailure(Box::new(failure)),
+                profile,
                 credential,
-                &format!(
-                    "HTTP {}: {}",
-                    status.as_u16(),
-                    String::from_utf8_lossy(&raw)
-                ),
-            )));
+                status.as_u16(),
+                &attempt_id,
+            ));
         }
         if json_body {
             let value = serde_json::from_slice(&raw)
                 .map_err(|_| invalid("Provider emitted invalid JSON"))?;
             acc.accept_json(value)
-                .map_err(|e| Error::Provider(profile.safe_error(credential, &e.to_string())))?;
+                .map_err(|e| safe_failure(e, profile, credential, status.as_u16(), &attempt_id))?;
         }
-        acc.finish().map_err(|e| match e {
-            Error::Provider(_) => Error::Provider(profile.safe_error(credential, &e.to_string())),
-            _ => e,
-        })
+        acc.finish()
+            .map_err(|e| safe_failure(e, profile, credential, status.as_u16(), &attempt_id))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn fixture_profile() -> Profile {
+        serde_json::from_value(json!({"id":"test","api":"openai-responses",
+            "providerId":"litellm","modelId":"fixture","baseUrl":"http://127.0.0.1:3333",
+            "contextWindow":32000,"maxOutputTokens":4096}))
+        .unwrap()
+    }
     #[test]
     fn terminal_required_and_incomplete_reason_checked() {
         assert!(matches!(
@@ -604,6 +677,224 @@ mod tests {
             Accumulator::default()
                 .consume(json!({"error":{"message":"gateway overloaded"}}))
                 .is_err()
+        );
+    }
+    #[test]
+    fn output_and_local_errors_never_gain_context_classification() {
+        let mut acc = Accumulator::default();
+        assert!(
+            acc.consume(json!({"type":"response.output_text.delta","delta":"prompt is too long"}))
+                .is_ok()
+        );
+        assert!(
+            acc.consume(
+                json!({"type":"response.output_item.done","output_index":0,"item":{
+            "type":"message","content":[{"text":"context_length_exceeded"}]}})
+            )
+            .is_ok()
+        );
+        assert!(matches!(
+            acc.accept_json(json!({"status":"unexpected","message":"prompt is too long"})),
+            Err(Error::Provider(_))
+        ));
+        let profile = fixture_profile();
+        let credential = Credential::new("fixture-secret".into()).unwrap();
+        assert!(matches!(
+            safe_failure(
+                Error::Provider("Transport: prompt is too long".into()),
+                &profile,
+                &credential,
+                200,
+                "test"
+            ),
+            Error::Provider(_)
+        ));
+    }
+
+    async fn rejected_fixture(
+        status: u16,
+        content_type: &str,
+        body: String,
+    ) -> crate::provider_failure::Failure {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut profile = fixture_profile();
+        profile.base_url = format!("http://{}", listener.local_addr().unwrap());
+        profile
+            .headers
+            .insert("x-fixture-secret".into(), "header-secret".into());
+        // Classification must happen before this matching header value is redacted.
+        profile
+            .headers
+            .insert("x-context-marker".into(), "context_length_exceeded".into());
+        let response = format!(
+            "HTTP/1.1 {status} Fixture\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0_u8; 4096];
+            loop {
+                let n = socket.read(&mut chunk).await.unwrap();
+                assert!(n > 0);
+                request.extend_from_slice(&chunk[..n]);
+                if let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let head = String::from_utf8_lossy(&request[..end]);
+                    let length: usize = head
+                        .lines()
+                        .find_map(|line| {
+                            let (key, value) = line.split_once(':')?;
+                            key.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse().unwrap())
+                        })
+                        .unwrap_or(0);
+                    if request.len() >= end + 4 + length {
+                        break;
+                    }
+                }
+            }
+            socket.write_all(response.as_bytes()).await.unwrap();
+        });
+        let client = ResponsesClient::new_synthetic_fixture().unwrap();
+        let error = tokio::time::timeout(
+            Duration::from_secs(5),
+            client.complete_prepared(
+                &profile,
+                &Credential::new("credential-secret".into()).unwrap(),
+                &json!({}),
+                "session",
+                "same-turn",
+                CancellationToken::new(),
+                |_| Ok(()),
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        server.await.unwrap();
+        match error {
+            Error::ProviderFailure(failure) => *failure,
+            other => panic!("Lost failure envelope: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn http_json_and_sse_preserve_typed_redacted_evidence() {
+        use crate::provider_failure::Category;
+        let error =
+            json!({"code":"context_length_exceeded","message":"credential-secret header-secret"});
+        let usage =
+            json!({"input_tokens":77,"detail":"credential-secret","header-secret":"header-secret"});
+        let cases = [
+            (
+                400,
+                "application/json",
+                json!({"error":error,"usage":usage}).to_string(),
+            ),
+            (
+                200,
+                "application/json",
+                json!({"status":"failed","error":error,"usage":usage}).to_string(),
+            ),
+            (
+                200,
+                "text/event-stream",
+                format!(
+                    "data: {}\n\n",
+                    json!({"type":"response.failed","response":{"error":error,"usage":usage}})
+                ),
+            ),
+            (
+                200,
+                "text/event-stream",
+                format!(
+                    "event: error\ndata: {}\n\n",
+                    json!({"code":"context_length_exceeded","message":"credential-secret header-secret","usage":usage})
+                ),
+            ),
+        ];
+        let mut attempts = std::collections::BTreeSet::new();
+        for (status, content_type, body) in cases {
+            let failure = rejected_fixture(status, content_type, body).await;
+            assert_eq!(failure.category, Category::InputContextExceeded);
+            assert_eq!(failure.status, Some(status));
+            assert!(failure.message.contains("[REDACTED]"));
+            assert_eq!(failure.reported_usage.as_ref().unwrap()["input_tokens"], 77);
+            let serialized = serde_json::to_string(&failure).unwrap();
+            assert!(!serialized.contains("credential-secret"));
+            assert!(!serialized.contains("header-secret"));
+            assert!(uuid::Uuid::parse_str(failure.attempt_id.as_ref().unwrap()).is_ok());
+            assert!(attempts.insert(failure.attempt_id.unwrap()));
+        }
+    }
+
+    #[tokio::test]
+    async fn wire_non_context_vetoes_and_unknown_usage_survive_all_paths() {
+        use crate::provider_failure::Category;
+        for (status, code, expected) in [
+            (401, "context_length_exceeded", Category::Authentication),
+            (429, "context_length_exceeded", Category::RateLimited),
+            (
+                413,
+                "context_length_exceeded",
+                Category::RequestBodyTooLarge,
+            ),
+            (
+                400,
+                "invalid_max_output_tokens",
+                Category::OutputLimitInvalid,
+            ),
+        ] {
+            let error = json!({"code":code,"message":"prompt is too long"});
+            let failure = rejected_fixture(
+                status,
+                "application/json",
+                json!({"error":error}).to_string(),
+            )
+            .await;
+            assert_eq!(failure.category, expected);
+            assert_eq!(failure.reported_usage, None);
+        }
+        for content_type in ["application/json", "text/event-stream"] {
+            let value = json!({"status":"failed","type":"response.failed","code":"context_length_exceeded",
+                "error":{"type":"rate_limit_error","message":"prompt is too long"}});
+            let body = if content_type == "application/json" {
+                value.to_string()
+            } else {
+                format!("data: {value}\n\n")
+            };
+            let failure = rejected_fixture(200, content_type, body).await;
+            assert_eq!(failure.category, Category::RateLimited);
+            assert_eq!(failure.reported_usage, None);
+        }
+    }
+    #[tokio::test]
+    async fn earlier_stream_usage_survives_sparse_failure_and_conflicts_stay_unknown() {
+        use crate::provider_failure::Category;
+        for event in ["data:", "event: error\ndata:"] {
+            let prior = json!({"type":"response.created","response":{"usage":{"input_tokens":100,"output_tokens":4}}});
+            let failed = json!({"type":"response.failed","response":{"error":{"code":"context_length_exceeded"},"usage":{}}});
+            let body = format!("data: {prior}\n\n{event} {failed}\n\n");
+            let failure = rejected_fixture(200, "text/event-stream", body).await;
+            assert_eq!(failure.category, Category::InputContextExceeded);
+            assert_eq!(
+                failure.reported_usage,
+                Some(json!({"input_tokens":100,"output_tokens":4}))
+            );
+        }
+        let mut acc = Accumulator::default();
+        acc.consume(
+            json!({"type":"response.created","usage":{"input_tokens":100,"output_tokens":4}}),
+        )
+        .unwrap();
+        let error = acc.consume(json!({"type":"response.failed","response":{"error":{"code":"context_length_exceeded"},"usage":{"input_tokens":101}}})).unwrap_err();
+        let Error::ProviderFailure(failure) = error else {
+            panic!("expected typed rejection")
+        };
+        assert_eq!(
+            failure.reported_usage,
+            Some(json!({"input_tokens":null,"output_tokens":4}))
         );
     }
 }

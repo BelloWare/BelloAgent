@@ -444,6 +444,56 @@ pub(crate) fn prepare_checked(
     definitions: &[crate::tools::ToolDefinition],
     operation_id: &str,
     requested_focus: Option<&str>,
+    check_cancelled: impl FnMut() -> Result<()>,
+) -> Result<Prepared> {
+    prepare_mode_checked(
+        messages,
+        profile,
+        instructions,
+        session_id,
+        definitions,
+        operation_id,
+        requested_focus,
+        false,
+        check_cancelled,
+    )
+}
+
+/// Recovery uses the same intact-history safety gate, with Swift's smaller
+/// retained-tail target. It never truncates source to make a summary fit.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prepare_recovery_checked(
+    messages: &[Message],
+    profile: &Profile,
+    instructions: &str,
+    session_id: &str,
+    definitions: &[crate::tools::ToolDefinition],
+    operation_id: &str,
+    check_cancelled: impl FnMut() -> Result<()>,
+) -> Result<Prepared> {
+    prepare_mode_checked(
+        messages,
+        profile,
+        instructions,
+        session_id,
+        definitions,
+        operation_id,
+        None,
+        true,
+        check_cancelled,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_mode_checked(
+    messages: &[Message],
+    profile: &Profile,
+    instructions: &str,
+    session_id: &str,
+    definitions: &[crate::tools::ToolDefinition],
+    operation_id: &str,
+    requested_focus: Option<&str>,
+    recovering: bool,
     mut check_cancelled: impl FnMut() -> Result<()>,
 ) -> Result<Prepared> {
     check_cancelled()?;
@@ -529,6 +579,11 @@ pub(crate) fn prepare_checked(
     let protected = protected_input_ids(messages)?;
     let keep_recent =
         20_000.min((profile.context_window - 16_384.min(profile.context_window / 2)) / 2) as u64;
+    let keep_recent = if recovering {
+        keep_recent.min(active.iter().map(|row| message_tokens(row)).sum::<u64>() / 2)
+    } else {
+        keep_recent
+    };
     let mut used = 0u64;
     let mut cut = 0;
     'walk: for index in (0..body.len()).rev() {

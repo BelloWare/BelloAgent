@@ -10,7 +10,7 @@ use gpui::{
     px,
 };
 use std::sync::{Arc, Mutex};
-fn fixture(
+pub(super) fn fixture(
     cx: &mut TestAppContext,
 ) -> (
     tempfile::TempDir,

@@ -1,0 +1,4 @@
+46c81ab16f2406365e69148b16367460738a6ece42260686546f742ddec02b74  rust/crates/bello-agent-app/src/compaction_actions.rs
+3e22bc5b96bf513ab79bcdade1ad9bea233c2f22bb58bda7e5014e1f3d2e54a4  rust/crates/bello-agent-app/src/compaction_actions_tests.rs
+fa02ad1dbae05e29b429fe09c74f720772e6594ae6d67f7797f28e377f6d0f1f  rust/crates/bello-agent-app/src/context_recovery_feedback_tests.rs
+2c04930f59441144f743fce334efe7420aceddbec31e22953b5ca22ac71071cb  rust/crates/bello-agent-app/src/main.rs

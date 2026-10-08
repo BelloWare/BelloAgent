@@ -1,0 +1,13 @@
+{
+  "id": "9e7c4be5-4c2a-404e-9dcd-a1d0150a5a04",
+  "api": "openai-responses",
+  "providerId": "litellm",
+  "modelId": "synthetic-context-recovery",
+  "baseUrl": "http://127.0.0.1:47941",
+  "contextWindow": 65536,
+  "maxOutputTokens": 16384,
+  "input": [
+    "text",
+    "image"
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "baseline": "3a566ae58ee334c3b317a47ce099306c0d6535b5",
+  "core_manifest_sha256": "619eccd739fc010350d9b138e75128fba37ad1e2237a9639052534e8e6de54e8",
+  "app_manifest_sha256": "e451143d03c3015fccdf221bbc703893af4770ee8c638fbbc339e6c7b98c397f",
+  "core_default": {
+    "unit_passed": 480,
+    "integration_passed": 127,
+    "failed": 0
+  },
+  "core_all_features": {
+    "unit_passed": 665,
+    "integration_passed": 127,
+    "failed": 0
+  },
+  "app_all_features": {
+    "passed": 619,
+    "failed": 0,
+    "ignored_existing_native": 3
+  },
+  "app_focused": {
+    "passed": 13,
+    "failed": 0
+  },
+  "core_clippy_default": "passed",
+  "core_clippy_all_features": "passed",
+  "app_clippy_all_features": "passed",
+  "fmt": "passed",
+  "app_build": "passed",
+  "binary_sha256": "e32ab153e116f4ce97f8783c38c367975ca65f0f1bbf1b761e264e2558bcd83e",
+  "production_rust_loc": 49366,
+  "support_rust_loc": 68888,
+  "benchmark_rust_loc": 1192,
+  "shared_workbench_counted_under": "BelloBox only",
+  "loc_ledger_sha256": "3daea990d3a3e751ad2d341a7fea7f618a6c7a8422684191cd5f423154b3a892",
+  "scope": "Local synthetic loopback and GPUI tests; interactive GUI and native acceptance are separate."
+}

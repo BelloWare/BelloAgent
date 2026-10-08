@@ -1,7 +1,7 @@
 //! ConversationPane.swift's implemented Compact Now action. Opening/dismissing
 //! this menu never changes the composer, starts a model request or retargets a chat.
 use crate::{AgentView, workspace_lifetime::WindowBinding};
-use bello_agent_core::{Controller, compaction::Phase};
+use bello_agent_core::{Controller, RunState, compaction::Phase, context_recovery};
 use gpui::{prelude::*, *};
 use std::{path::PathBuf, sync::Arc};
 
@@ -169,6 +169,22 @@ impl AgentView {
 }
 
 pub(crate) fn progress_label(session: &bello_agent_core::Session) -> &'static str {
+    // Only the current active operation may replace ordinary generation status.
+    // Retained terminal receipts continue to label their own transcript rows.
+    if session.state == RunState::Running
+        && let Some(receipt) = session.context_recoveries.iter().rev().find(|receipt| {
+            receipt.is_running()
+                && session.active_reply.as_deref()
+                    == Some(
+                        receipt
+                            .retry_reply_id
+                            .as_deref()
+                            .unwrap_or(&receipt.failed_reply_id),
+                    )
+        })
+    {
+        return recovery_label(receipt);
+    }
     match session
         .compaction
         .as_ref()
@@ -184,6 +200,26 @@ pub(crate) fn row_label<'a>(
     message: &bello_agent_core::Message,
     session: &'a bello_agent_core::Session,
 ) -> Option<&'a str> {
+    if let Some(receipt) = session.context_recoveries.iter().rev().find(|receipt| {
+        receipt.failed_reply_id == message.id
+            || receipt.progress_id == message.id
+            || receipt.retry_reply_id.as_deref() == Some(message.id.as_str())
+    }) {
+        if receipt.failed_reply_id == message.id {
+            // Provider text is evidence, not a safe display string. Never expose
+            // raw messages, request fingerprints, endpoints or attempt metadata.
+            return Some(match receipt.failure.category {
+                bello_agent_core::provider_failure::Category::InputPlusOutputContextExceeded => {
+                    "Context rejected · Input plus output exceeded context; failed attempt retained"
+                }
+                _ => "Context rejected · Input exceeded context; failed attempt retained",
+            });
+        }
+        if receipt.progress_id == message.id {
+            return Some(recovery_label(receipt));
+        }
+        return Some("Retried after compaction");
+    }
     if message.compaction.is_some() {
         return Some("Compaction · Checkpoint durably adopted");
     }
@@ -217,3 +253,136 @@ pub(crate) fn row_label<'a>(
 #[cfg(test)]
 #[path = "compaction_actions_tests.rs"]
 mod tests;
+
+// These labels are deliberately source-safe constants. Raw provider errors can
+// include secrets or copied request content even in a reopened receipt.
+fn recovery_label(receipt: &context_recovery::Receipt) -> &'static str {
+    use context_recovery::Phase;
+    match receipt.phase {
+        Phase::Preparing => "Context rejected · Preparing summary…",
+        Phase::Summarizing => "Context rejected · Summarizing…",
+        Phase::RetryReady => "Context rejected · Summary adopted; preparing retry…",
+        Phase::Retrying => "Retrying after compaction…",
+        Phase::Completed => "Context recovery · Retry completed; summary response retained",
+        Phase::Failed if receipt.summary_id.is_some() && receipt.retry_reply_id.is_none() => {
+            "Context rejected · Recovery failed after compaction; checkpoint retained"
+        }
+        Phase::Failed if receipt.summary_id.is_some() => {
+            "Context rejected · Retry failed after compaction; checkpoint retained"
+        }
+        Phase::Failed if receipt.summary_attempts > 0 => {
+            "Context rejected · Summary failed; original context retained"
+        }
+        Phase::Failed => "Context rejected · Preparation failed; original context retained",
+        Phase::Cancelled if receipt.summary_id.is_some() => {
+            "Context recovery · Stopped after compaction; checkpoint retained"
+        }
+        Phase::Cancelled => "Context recovery · Stopped; original context retained",
+        Phase::Interrupted if receipt.summary_id.is_some() => {
+            "Context recovery · Interrupted after compaction; checkpoint retained"
+        }
+        Phase::Interrupted => "Context recovery · Interrupted; original context retained",
+    }
+}
+
+#[cfg(test)]
+#[path = "context_recovery_feedback_tests.rs"]
+mod recovery_tests;
+
+/// Recovery observations are projected onto their owned transcript rows by core.
+/// Receipts identify missing attempts, but their forensic usage is never added.
+/// A missing/conflicting dimension is not an inferred zero.
+pub(crate) fn recovery_usage_label(session: &bello_agent_core::Session) -> Option<String> {
+    if session.context_recoveries.is_empty() {
+        return None;
+    }
+    let mut attempted = std::collections::BTreeSet::new();
+    for receipt in &session.context_recoveries {
+        attempted.insert(receipt.failed_reply_id.as_str());
+        if receipt.summary_attempts > 0 {
+            attempted.insert(receipt.progress_id.as_str());
+        }
+        if receipt.retry_attempts > 0
+            && let Some(id) = &receipt.retry_reply_id
+        {
+            attempted.insert(id.as_str());
+        }
+    }
+    // Explicit Retry creates assistant IDs without reopening automatic recovery.
+    let recovery_turns: std::collections::BTreeSet<_> = session
+        .context_recoveries
+        .iter()
+        .flat_map(|receipt| {
+            std::iter::once(receipt.turn_id.as_str()).chain(receipt.retry_turn_id.as_deref())
+        })
+        .collect();
+    let progress_rows: std::collections::BTreeSet<_> = session
+        .context_recoveries
+        .iter()
+        .map(|receipt| receipt.progress_id.as_str())
+        .collect();
+    let mut recovery_turn = false;
+    for row in &session.messages {
+        if row.role == "user" {
+            recovery_turn = recovery_turns.contains(row.id.as_str());
+        }
+        if recovery_turn
+            && row.role == "assistant"
+            && row.compaction.is_none()
+            && !progress_rows.contains(row.id.as_str())
+        {
+            attempted.insert(row.id.as_str());
+        }
+    }
+    for receipt in &session.context_recoveries {
+        if let Some(id) = &receipt.resolved_reply_id {
+            attempted.insert(id.as_str());
+        }
+    }
+    fn dimension(
+        session: &bello_agent_core::Session,
+        attempted: &std::collections::BTreeSet<&str>,
+        key: &str,
+    ) -> String {
+        let mut sum = 0u64;
+        let mut observed = false;
+        let mut partial = false;
+        let mut overflow = false;
+        let mut missing = attempted.clone();
+        for row in &session.messages {
+            missing.remove(row.id.as_str());
+            // Checkpoints copy context, not a second physical summary request.
+            if row.compaction.is_some() || !["assistant", "toolResult"].contains(&row.role.as_str())
+            {
+                continue;
+            }
+            if !attempted.contains(row.id.as_str()) && row.usage.is_null() {
+                continue;
+            }
+            match row.usage[key].as_u64() {
+                Some(value) => {
+                    observed = true;
+                    if let Some(total) = sum.checked_add(value) {
+                        sum = total;
+                    } else {
+                        overflow = true;
+                    }
+                }
+                None => partial = true,
+            }
+        }
+        partial |= !missing.is_empty();
+        if overflow || !observed {
+            "unknown".into()
+        } else if partial {
+            format!("{sum} (partial)")
+        } else {
+            sum.to_string()
+        }
+    }
+    Some(format!(
+        "Reported tokens · {} in · {} out",
+        dimension(session, &attempted, "input_tokens"),
+        dimension(session, &attempted, "output_tokens")
+    ))
+}

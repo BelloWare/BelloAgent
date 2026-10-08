@@ -1,0 +1,29 @@
+{
+  "source_base": "ea2e2ed970cacd13d90e40eed5d1aaa3a565bd1a",
+  "binary_sha256": "d6c9e4083fedaeb26e0ec3474fd69e3fb410d26d1fa9f7ed3fce54ff05c2c74d",
+  "provider_request_count": 0,
+  "app_exit": 0,
+  "same_chat_ids_after_topic_delete": true,
+  "chat_count": 2,
+  "all_chats_top_level": true,
+  "topics_empty": true,
+  "exact_drafts_preserved_by_delete": true,
+  "draft_contents_preserved_after_shutdown": true,
+  "draft_revision_changes_on_shutdown": {
+    "866cf90b-a55f-4294-8731-63c40ed2726f": [
+      19,
+      20
+    ],
+    "b37d5c0e-b9b1-47af-b3aa-afb5fc2fc10b": [
+      1,
+      2
+    ]
+  },
+  "state_files": [
+    "session.workspace.json",
+    "session.workspace.workspace.lock"
+  ],
+  "full_process_reopen_attempted": false,
+  "retired_controller_reopen_verified": false,
+  "sheet_reopen_and_chat_switch_verified": true
+}

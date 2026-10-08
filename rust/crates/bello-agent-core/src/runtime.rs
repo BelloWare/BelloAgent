@@ -1,3 +1,10 @@
+#[cfg(all(test, feature = "synthetic-authority"))]
+#[path = "context_recovery_mcp_tests.rs"]
+mod context_recovery_mcp_tests;
+
+#[path = "context_recovery_runtime.rs"]
+mod context_recovery_runtime;
+
 #[path = "live_tool_runtime.rs"]
 mod live_tool_runtime;
 

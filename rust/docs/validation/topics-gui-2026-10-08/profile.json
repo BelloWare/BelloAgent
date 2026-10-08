@@ -1,0 +1,13 @@
+{
+  "api": "openai-responses",
+  "baseUrl": "http://127.0.0.1:47931",
+  "contextWindow": 32000,
+  "id": "e86eb75f-2125-4604-80a7-5afd48daa989",
+  "input": [
+    "text",
+    "image"
+  ],
+  "maxOutputTokens": 4096,
+  "modelId": "topics-zero-send-fixture",
+  "providerId": "litellm"
+}
