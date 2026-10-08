@@ -1,0 +1,1299 @@
+   Compiling bello-agent-core v0.1.0 (/workspace/shared/catalog-app-focused/rust/crates/bello-agent-core)
+   Compiling bello-agent-app v0.1.0 (/workspace/shared/catalog-app-focused/rust/crates/bello-agent-app)
+warning: unused imports: `ProjectAuthority` and `connections::SYNTHETIC_KEY`
+   --> crates/bello-agent-app/src/attachment_fixture.rs:110:47
+    |
+110 |     use bello_agent_core::project_authority::{ProjectAuthority, connections::SYNTHETIC_KEY};
+    |                                               ^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `super::CatalogOutcome`
+ --> crates/bello-agent-app/src/chat_organization_tests.rs:3:5
+  |
+3 | use super::CatalogOutcome;
+  |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `Lane`
+ --> crates/bello-agent-app/src/chat_organization_tests.rs:8:17
+  |
+8 |     Controller, Lane, SessionStore,
+  |                 ^^^^
+
+warning: unused imports: `EntityInputHandler` and `VisualTestContext`
+  --> crates/bello-agent-app/src/chat_organization_tests.rs:12:12
+   |
+12 | use gpui::{EntityInputHandler, TestAppContext, VisualTestContext};
+   |            ^^^^^^^^^^^^^^^^^^                  ^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `AtomicBool` and `Ordering`
+  --> crates/bello-agent-app/src/chat_organization_tests.rs:15:14
+   |
+15 |     atomic::{AtomicBool, Ordering},
+   |              ^^^^^^^^^^  ^^^^^^^^
+
+warning: unused import: `future::pending`
+ --> crates/bello-agent-app/src/chat_tool_mode_tests.rs:4:5
+  |
+4 |     future::pending,
+  |     ^^^^^^^^^^^^^^^
+
+warning: unused imports: `progress_label` and `row_label`
+ --> crates/bello-agent-app/src/compaction_actions_tests.rs:1:13
+  |
+1 | use super::{progress_label, row_label};
+  |             ^^^^^^^^^^^^^^  ^^^^^^^^^
+
+warning: unused imports: `Operation` and `Phase`
+ --> crates/bello-agent-app/src/compaction_actions_tests.rs:5:18
+  |
+5 |     compaction::{Operation, Phase},
+  |                  ^^^^^^^^^  ^^^^^
+
+warning: unused imports: `EntityInputHandler`, `Modifiers`, `VisualTestContext`, `point`, and `px`
+  --> crates/bello-agent-app/src/compaction_actions_tests.rs:9:13
+   |
+ 9 |     Entity, EntityInputHandler, Modifiers, TestAppContext, VisualTestContext, WindowHandle, point,
+   |             ^^^^^^^^^^^^^^^^^^  ^^^^^^^^^                  ^^^^^^^^^^^^^^^^^                ^^^^^
+10 |     px,
+   |     ^^
+
+warning: unused imports: `PickerOperation` and `input_label`
+ --> crates/bello-agent-app/src/composer_attachments_tests.rs:1:13
+  |
+1 | use super::{PickerOperation, input_label};
+  |             ^^^^^^^^^^^^^^^  ^^^^^^^^^^^
+
+warning: unused imports: `Lane` and `SubmissionIntent`
+ --> crates/bello-agent-app/src/composer_attachments_tests.rs:4:29
+  |
+4 |     Controller, Credential, Lane, Profile, SessionStore, Submission,
+  |                             ^^^^
+5 |     attachments::AttachmentRecord,
+6 |     workspace::{ChatRecord, DraftRecord, SubmissionIntent, WorkspaceStore},
+  |                                          ^^^^^^^^^^^^^^^^
+
+warning: unused imports: `input_label`, `restore_chips`, and `validate_fresh`
+ --> crates/bello-agent-app/src/composer_skills_tests.rs:1:13
+  |
+1 | use super::{input_label, restore_chips, validate_fresh};
+  |             ^^^^^^^^^^^  ^^^^^^^^^^^^^  ^^^^^^^^^^^^^^
+
+warning: unused imports: `CatalogState` and `SkillTarget`
+  --> crates/bello-agent-app/src/composer_skills_tests.rs:93:37
+   |
+93 |         project_skills_controller::{CatalogState, SkillTarget},
+   |                                     ^^^^^^^^^^^^  ^^^^^^^^^^^
+
+warning: unused imports: `Controller` and `Lane`
+  --> crates/bello-agent-app/src/composer_skills_tests.rs:96:9
+   |
+96 |         Controller, Lane, Profile, SessionStore,
+   |         ^^^^^^^^^^  ^^^^
+
+warning: unused imports: `Focusable`, `px`, and `size`
+   --> crates/bello-agent-app/src/composer_skills_tests.rs:103:24
+    |
+103 |     use gpui::{Entity, Focusable, TestAppContext, VisualTestContext, WindowHandle, px, size};
+    |                        ^^^^^^^^^                                                   ^^  ^^^^
+
+warning: unused imports: `COUNT_UNAVAILABLE`, `Control`, `MINIMUM_SIZE`, `PAGE_BYTES`, `PreparedDocument`, `page_ranges`, and `summary`
+ --> crates/bello-agent-app/src/context_inspector_tests.rs:4:5
+  |
+4 |     COUNT_UNAVAILABLE, ContextInspector, Control, MINIMUM_SIZE, PAGE_BYTES, PreparedDocument,
+  |     ^^^^^^^^^^^^^^^^^                    ^^^^^^^  ^^^^^^^^^^^^  ^^^^^^^^^^  ^^^^^^^^^^^^^^^^
+5 |     page_ranges, summary,
+  |     ^^^^^^^^^^^  ^^^^^^^
+
+warning: unused import: `shutdown_barrier::ShutdownOutcome`
+ --> crates/bello-agent-app/src/context_inspector_tests.rs:7:37
+  |
+7 | use crate::{AgentView, LaunchState, shutdown_barrier::ShutdownOutcome};
+  |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `ClipboardItem`, `EntityInputHandler`, `Focusable`, `Modifiers`, `VisualTestContext`, `px`, and `size`
+  --> crates/bello-agent-app/src/context_inspector_tests.rs:13:5
+   |
+13 |     ClipboardItem, Entity, EntityInputHandler, Focusable, Modifiers, TestAppContext,
+   |     ^^^^^^^^^^^^^          ^^^^^^^^^^^^^^^^^^  ^^^^^^^^^  ^^^^^^^^^
+14 |     VisualTestContext, WindowHandle, px, size,
+   |     ^^^^^^^^^^^^^^^^^                ^^  ^^^^
+
+warning: unused import: `super::DraftSaveStatus`
+  --> crates/bello-agent-app/src/draft_status.rs:70:9
+   |
+70 |     use super::DraftSaveStatus;
+   |         ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `CloseIntent` and `Lifecycle`
+   --> crates/bello-agent-app/src/file_tab.rs:495:17
+    |
+495 |     use super::{CloseIntent, Lifecycle};
+    |                 ^^^^^^^^^^^  ^^^^^^^^^
+
+warning: unused import: `super::*`
+   --> crates/bello-agent-app/src/layout.rs:108:9
+    |
+108 |     use super::*;
+    |         ^^^^^^^^
+
+warning: unused import: `AuthorityError`
+ --> crates/bello-agent-app/src/mcp_inspector_controller_tests.rs:6:9
+  |
+6 |         AuthorityError,
+  |         ^^^^^^^^^^^^^^
+
+warning: unused imports: `Lane` and `Submission`
+ --> crates/bello-agent-app/src/mcp_inspector_host_tests.rs:3:17
+  |
+3 |     Controller, Lane, SessionStore, Submission,
+  |                 ^^^^                ^^^^^^^^^^
+
+warning: unused import: `time::Duration`
+  --> crates/bello-agent-app/src/mcp_inspector_host_tests.rs:10:5
+   |
+10 |     time::Duration,
+   |     ^^^^^^^^^^^^^^
+
+warning: unused imports: `HEADER_BYTES`, `McpInput`, `McpIntent`, `McpToken`, and `PAGE_BYTES`
+ --> crates/bello-agent-app/src/mcp_inspector_view_tests.rs:2:5
+  |
+2 |     HEADER_BYTES, McpEvent, McpInput, McpInspectorView, McpIntent, McpPresentation, McpToken,
+  |     ^^^^^^^^^^^^            ^^^^^^^^                    ^^^^^^^^^                   ^^^^^^^^
+3 |     PAGE_BYTES, Palette,
+  |     ^^^^^^^^^^
+
+warning: unused imports: `KeyDownEvent`, `Keystroke`, and `Modifiers`
+ --> crates/bello-agent-app/src/mcp_inspector_view_tests.rs:6:47
+  |
+6 |     AppContext, Context, Entity, IntoElement, KeyDownEvent, Keystroke, Modifiers, Render,
+  |                                               ^^^^^^^^^^^^  ^^^^^^^^^  ^^^^^^^^^
+
+warning: unused import: `std::collections::BTreeMap`
+  --> crates/bello-agent-app/src/mcp_inspector_view_tests.rs:10:5
+   |
+10 | use std::collections::BTreeMap;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `Lane`, `RunState`, and `Submission`
+ --> crates/bello-agent-app/src/project_host_tests.rs:3:5
+  |
+3 |     Lane, RunState, SessionStore, Submission,
+  |     ^^^^  ^^^^^^^^                ^^^^^^^^^^
+
+warning: unused import: `time::Duration`
+  --> crates/bello-agent-app/src/project_host_tests.rs:10:5
+   |
+10 |     time::Duration,
+   |     ^^^^^^^^^^^^^^
+
+warning: unused imports: `ProjectFolderTarget` and `Stage`
+ --> crates/bello-agent-app/src/project_manager_controller_tests.rs:4:59
+  |
+4 | use super::{Availability, Intent, LaunchProjectAuthority, ProjectFolderTarget, Stage};
+  |                                                           ^^^^^^^^^^^^^^^^^^^  ^^^^^
+
+warning: unused imports: `ChangedProject` and `Replacement`
+ --> crates/bello-agent-app/src/project_manager_controller_tests.rs:7:20
+  |
+7 |     project_host::{ChangedProject, Replacement},
+  |                    ^^^^^^^^^^^^^^  ^^^^^^^^^^^
+
+warning: unused import: `RunState`
+  --> crates/bello-agent-app/src/project_manager_controller_tests.rs:10:17
+   |
+10 |     Controller, RunState, SessionStore,
+   |                 ^^^^^^^^
+
+warning: unused imports: `Keystroke` and `Modifiers`
+ --> crates/bello-agent-app/src/project_manager_view_tests.rs:4:13
+  |
+4 |     Entity, Keystroke, Modifiers, Subscription, TestAppContext, VisualTestContext,
+  |             ^^^^^^^^^  ^^^^^^^^^
+
+warning: unused imports: `EntityInputHandler`, `Focusable`, and `VisualTestContext`
+ --> crates/bello-agent-app/src/queue_actions_tests.rs:9:13
+  |
+9 |     Entity, EntityInputHandler, Focusable, TestAppContext, VisualTestContext, WindowHandle,
+  |             ^^^^^^^^^^^^^^^^^^  ^^^^^^^^^                  ^^^^^^^^^^^^^^^^^
+
+warning: unused import: `queue_edit_controls::QueueEditRowState`
+ --> crates/bello-agent-app/src/queue_begin_tests.rs:3:26
+  |
+3 | use crate::{LaunchState, queue_edit_controls::QueueEditRowState};
+  |                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `QueuedCancelState`
+ --> crates/bello-agent-app/src/queue_begin_tests.rs:6:42
+  |
+6 |     workspace::{ChatRecord, DraftRecord, QueuedCancelState, WorkspaceStore},
+  |                                          ^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `EntityInputHandler` and `Focusable`
+ --> crates/bello-agent-app/src/queue_begin_tests.rs:8:20
+  |
+8 | use gpui::{Entity, EntityInputHandler, Focusable, TestAppContext};
+  |                    ^^^^^^^^^^^^^^^^^^  ^^^^^^^^^
+
+warning: unused imports: `DetailKey`, `GONE_TEXT`, `MAX_TEXT_HEIGHT`, `WIDTH`, and `content`
+   --> crates/bello-agent-app/src/queue_detail.rs:240:17
+    |
+240 |     use super::{DetailKey, GONE_TEXT, MAX_TEXT_HEIGHT, WIDTH, content};
+    |                 ^^^^^^^^^  ^^^^^^^^^  ^^^^^^^^^^^^^^^  ^^^^^  ^^^^^^^
+
+warning: unused imports: `Lane`, `Session`, and `Submission`
+   --> crates/bello-agent-app/src/queue_detail.rs:241:28
+    |
+241 |     use bello_agent_core::{Lane, Session, Submission};
+    |                            ^^^^  ^^^^^^^  ^^^^^^^^^^
+
+warning: unused imports: `edge_step` and `reordered`
+   --> crates/bello-agent-app/src/queue_drag.rs:301:17
+    |
+301 |     use super::{edge_step, reordered};
+    |                 ^^^^^^^^^  ^^^^^^^^^
+
+warning: unused import: `Focusable`
+ --> crates/bello-agent-app/src/queue_drag_tests.rs:8:13
+  |
+8 |     Entity, Focusable, Modifiers, MouseButton, Pixels, Point, TestAppContext, VisualTestContext,
+  |             ^^^^^^^^^
+
+warning: unused imports: `EntityInputHandler` and `Focusable`
+ --> crates/bello-agent-app/src/queue_edit_tests.rs:8:20
+  |
+8 | use gpui::{Entity, EntityInputHandler, Focusable, TestAppContext, WindowHandle};
+  |                    ^^^^^^^^^^^^^^^^^^  ^^^^^^^^^
+
+warning: unused import: `super::*`
+   --> crates/bello-agent-app/src/queue_edit_controls.rs:609:9
+    |
+609 |     use super::*;
+    |         ^^^^^^^^
+
+warning: unused import: `gpui::TestAppContext`
+   --> crates/bello-agent-app/src/queue_edit_controls.rs:610:9
+    |
+610 |     use gpui::TestAppContext;
+    |         ^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `SubmissionIntent`
+ --> crates/bello-agent-app/src/queue_geometry_tests.rs:6:42
+  |
+6 |     workspace::{ChatRecord, DraftRecord, SubmissionIntent, WorkspaceStore},
+  |                                          ^^^^^^^^^^^^^^^^
+
+warning: unused imports: `Focusable`, `point`, and `size`
+ --> crates/bello-agent-app/src/queue_geometry_tests.rs:8:20
+  |
+8 | use gpui::{Entity, Focusable, TestAppContext, VisualTestContext, WindowHandle, point, px, size};
+  |                    ^^^^^^^^^                                                   ^^^^^      ^^^^
+
+warning: unused import: `super::*`
+   --> crates/bello-agent-app/src/queue_presentation.rs:151:9
+    |
+151 |     use super::*;
+    |         ^^^^^^^^
+
+warning: unused import: `super::RequestOrder`
+   --> crates/bello-agent-app/src/quick_open.rs:524:9
+    |
+524 |     use super::RequestOrder;
+    |         ^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `Lane`, `QueuedDraft`, and `SubmissionIntent`
+ --> crates/bello-agent-app/src/shutdown_barrier_tests.rs:4:17
+  |
+4 |     Controller, Lane, SessionStore,
+  |                 ^^^^
+5 |     workspace::{ChatRecord, DraftRecord, QueuedDraft, SubmissionIntent, WorkspaceStore},
+  |                                          ^^^^^^^^^^^  ^^^^^^^^^^^^^^^^
+
+warning: unused import: `gpui::TestAppContext`
+ --> crates/bello-agent-app/src/shutdown_barrier_tests.rs:7:5
+  |
+7 | use gpui::TestAppContext;
+  |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `AtomicUsize` and `Ordering`
+  --> crates/bello-agent-app/src/shutdown_barrier_tests.rs:10:14
+   |
+10 |     atomic::{AtomicUsize, Ordering},
+   |              ^^^^^^^^^^^  ^^^^^^^^
+
+warning: unused imports: `EntityInputHandler` and `Focusable`
+ --> crates/bello-agent-app/src/sidebar_actions_tests.rs:8:35
+  |
+8 | use gpui::{ClipboardItem, Entity, EntityInputHandler, Focusable, TestAppContext, WindowHandle};
+  |                                   ^^^^^^^^^^^^^^^^^^  ^^^^^^^^^
+
+warning: unused imports: `Modifiers` and `VisualTestContext`
+  --> crates/bello-agent-app/src/sidebar_actions_tests.rs:10:12
+   |
+10 | use gpui::{Modifiers, VisualTestContext, point, px};
+   |            ^^^^^^^^^  ^^^^^^^^^^^^^^^^^
+
+warning: unused import: `super::*`
+  --> crates/bello-agent-app/src/theme.rs:71:9
+   |
+71 |     use super::*;
+   |         ^^^^^^^^
+
+warning: unused imports: `MessageKey` and `copy_text`
+   --> crates/bello-agent-app/src/transcript_actions.rs:139:17
+    |
+139 |     use super::{MessageKey, copy_text};
+    |                 ^^^^^^^^^^  ^^^^^^^^^
+
+warning: unused import: `Session`
+   --> crates/bello-agent-app/src/transcript_actions.rs:140:37
+    |
+140 |     use bello_agent_core::{Message, Session};
+    |                                     ^^^^^^^
+
+warning: unused import: `serde_json::json`
+   --> crates/bello-agent-app/src/transcript_edit_presentation.rs:344:9
+    |
+344 |     use serde_json::json;
+    |         ^^^^^^^^^^^^^^^^
+
+warning: unused import: `serde_json::json`
+   --> crates/bello-agent-app/src/transcript_read_presentation.rs:175:9
+    |
+175 |     use serde_json::json;
+    |         ^^^^^^^^^^^^^^^^
+
+warning: unused imports: `Palette` and `transcript_actions::MessageKey`
+ --> crates/bello-agent-app/src/transcript_view_tests.rs:5:29
+  |
+5 |     AgentView, LaunchState, Palette,
+  |                             ^^^^^^^
+6 |     transcript_actions::MessageKey,
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `ClipboardItem`, `EntityInputHandler`, `ScrollDelta`, and `WindowAppearance`
+  --> crates/bello-agent-app/src/transcript_view_tests.rs:14:22
+   |
+14 |     AnyView, Bounds, ClipboardItem, Entity, EntityInputHandler, Focusable, ListOffset, ListState,
+   |                      ^^^^^^^^^^^^^          ^^^^^^^^^^^^^^^^^^
+15 |     Modifiers, MouseButton, Pixels, Point, ScrollDelta, ScrollWheelEvent, StyleRefinement,
+   |                                            ^^^^^^^^^^^
+16 |     TestAppContext, VisualTestContext, Window, WindowAppearance, WindowHandle, div, point,
+   |                                                ^^^^^^^^^^^^^^^^
+
+warning: unused import: `ToolOutcome`
+ --> crates/bello-agent-app/src/transcript_read_ui_tests.rs:5:20
+  |
+5 |     tool_history::{ToolOutcome, ToolRecord},
+  |                    ^^^^^^^^^^^
+
+warning: unused imports: `FileTabEvent` and `QuickOpenEvent`
+ --> crates/bello-agent-app/src/workspace_lifetime_tests.rs:4:24
+  |
+4 | use crate::{AgentView, FileTabEvent, LaunchState, QuickOpenEvent};
+  |                        ^^^^^^^^^^^^               ^^^^^^^^^^^^^^
+
+warning: unused import: `gpui::Focusable`
+  --> crates/bello-agent-app/src/workspace_lifetime_tests.rs:10:5
+   |
+10 | use gpui::Focusable;
+   |     ^^^^^^^^^^^^^^^
+
+warning: unused imports: `AtomicUsize` and `Ordering`
+  --> crates/bello-agent-app/src/workspace_lifetime_tests.rs:14:14
+   |
+14 |     atomic::{AtomicUsize, Ordering},
+   |              ^^^^^^^^^^^  ^^^^^^^^
+
+warning: function `profile` is never used
+   --> crates/bello-agent-app/src/attachment_fixture.rs:111:8
+    |
+111 |     fn profile() -> serde_json::Value {
+    |        ^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `parse` is never used
+   --> crates/bello-agent-app/src/attachment_fixture.rs:118:8
+    |
+118 |     fn parse(
+    |        ^^^^^
+
+warning: methods `test_seed_pin` and `test_finish_pin` are never used
+   --> crates/bello-agent-app/src/chat_organization.rs:555:19
+    |
+554 | impl AgentView {
+    | -------------- methods in this implementation
+555 |     pub(crate) fn test_seed_pin(&mut self, id: &str, token: uuid::Uuid, cx: &mut Context<Self>) {
+    |                   ^^^^^^^^^^^^^
+...
+581 |     pub(crate) fn test_finish_pin(
+    |                   ^^^^^^^^^^^^^^^
+
+warning: function `fixture` is never used
+  --> crates/bello-agent-app/src/chat_organization_tests.rs:18:4
+   |
+18 | fn fixture(
+   |    ^^^^^^^
+
+warning: function `id` is never used
+  --> crates/bello-agent-app/src/chat_organization_tests.rs:49:4
+   |
+49 | fn id(view: &Entity<AgentView>, cx: &TestAppContext) -> String {
+   |    ^^
+
+warning: function `second` is never used
+  --> crates/bello-agent-app/src/chat_organization_tests.rs:52:4
+   |
+52 | fn second(
+   |    ^^^^^^
+
+warning: struct `TestWake` is never constructed
+ --> crates/bello-agent-app/src/chat_tool_mode_tests.rs:9:8
+  |
+9 | struct TestWake(std::thread::Thread);
+  |        ^^^^^^^^
+
+warning: function `run` is never used
+  --> crates/bello-agent-app/src/chat_tool_mode_tests.rs:18:4
+   |
+18 | fn run<F: Future>(future: F) -> F::Output {
+   |    ^^^
+
+warning: function `fixture` is never used
+  --> crates/bello-agent-app/src/chat_tool_mode_tests.rs:29:4
+   |
+29 | fn fixture() -> (tempfile::TempDir, ChatModeChange) {
+   |    ^^^^^^^
+
+warning: function `fixture` is never used
+  --> crates/bello-agent-app/src/compaction_actions_tests.rs:13:4
+   |
+13 | fn fixture(
+   |    ^^^^^^^
+
+warning: function `image` is never used
+  --> crates/bello-agent-app/src/composer_attachments_tests.rs:11:4
+   |
+11 | fn image(name: &str) -> AttachmentRecord {
+   |    ^^^^^
+
+warning: function `controller` is never used
+  --> crates/bello-agent-app/src/composer_attachments_tests.rs:20:4
+   |
+20 | fn controller(store: SessionStore, images: bool) -> Arc<Controller> {
+   |    ^^^^^^^^^^
+
+warning: function `fixture` is never used
+  --> crates/bello-agent-app/src/composer_attachments_tests.rs:37:4
+   |
+37 | fn fixture(
+   |    ^^^^^^^
+
+warning: function `wait_idle` is never used
+  --> crates/bello-agent-app/src/composer_attachments_tests.rs:85:4
+   |
+85 | fn wait_idle(root: &Entity<AgentView>, cx: &mut TestAppContext) {
+   |    ^^^^^^^^^
+
+warning: function `chip` is never used
+ --> crates/bello-agent-app/src/composer_skills_tests.rs:4:4
+  |
+4 | fn chip(index: usize, arguments: &str) -> SkillChip {
+  |    ^^^^
+
+warning: function `wait_for` is never used
+   --> crates/bello-agent-app/src/composer_skills_tests.rs:106:8
+    |
+106 |     fn wait_for(
+    |        ^^^^^^^^
+
+warning: function `fixture` is never used
+   --> crates/bello-agent-app/src/composer_skills_tests.rs:124:19
+    |
+124 |     pub(crate) fn fixture(
+    |                   ^^^^^^^
+
+warning: function `select` is never used
+   --> crates/bello-agent-app/src/composer_skills_tests.rs:212:19
+    |
+212 |     pub(crate) fn select(
+    |                   ^^^^^^
+
+warning: function `close` is never used
+   --> crates/bello-agent-app/src/composer_skills_tests.rs:226:19
+    |
+226 |     pub(crate) fn close(window: WindowHandle<AgentView>, cx: &mut TestAppContext) {
+    |                   ^^^^^
+
+warning: function `click` is never used
+   --> crates/bello-agent-app/src/composer_skills_tests.rs:234:8
+    |
+234 |     fn click(visual: &mut VisualTestContext, selector: &'static str, cx: &mut TestAppContext) {
+    |        ^^^^^
+
+warning: function `configured` is never used
+  --> crates/bello-agent-app/src/context_inspector_tests.rs:18:4
+   |
+18 | fn configured(store: SessionStore) -> Arc<Controller> {
+   |    ^^^^^^^^^^
+
+warning: function `fixture` is never used
+  --> crates/bello-agent-app/src/context_inspector_tests.rs:35:4
+   |
+35 | fn fixture(
+   |    ^^^^^^^
+
+warning: function `open` is never used
+  --> crates/bello-agent-app/src/context_inspector_tests.rs:79:4
+   |
+79 | fn open(
+   |    ^^^^
+
+warning: function `wait_skill_preview` is never used
+   --> crates/bello-agent-app/src/context_inspector_tests.rs:709:4
+    |
+709 | fn wait_skill_preview(inspector: &Entity<ContextInspector>, cx: &mut TestAppContext) {
+    |    ^^^^^^^^^^^^^^^^^^
+
+warning: function `notice` is never used
+  --> crates/bello-agent-app/src/draft_status.rs:72:8
+   |
+72 |     fn notice(error: &str) -> Option<String> {
+   |        ^^^^^^
+
+warning: method `editor_for_test` is never used
+   --> crates/bello-agent-app/src/file_tab.rs:146:19
+    |
+ 72 | impl FileTabView {
+    | ---------------- method in this implementation
+...
+146 |     pub(crate) fn editor_for_test(&self) -> Entity<EditorView> {
+    |                   ^^^^^^^^^^^^^^^
+
+warning: function `configuration` is never used
+  --> crates/bello-agent-app/src/mcp_inspector_controller_tests.rs:14:4
+   |
+14 | fn configuration() -> String {
+   |    ^^^^^^^^^^^^^
+
+warning: function `config_draft` is never used
+  --> crates/bello-agent-app/src/mcp_inspector_controller_tests.rs:18:4
+   |
+18 | fn config_draft(configuration: String) -> McpInput {
+   |    ^^^^^^^^^^^^
+
+warning: function `argument_draft` is never used
+  --> crates/bello-agent-app/src/mcp_inspector_controller_tests.rs:23:4
+   |
+23 | fn argument_draft(arguments: String) -> McpInput {
+   |    ^^^^^^^^^^^^^^
+
+warning: function `inspector_state` is never used
+  --> crates/bello-agent-app/src/mcp_inspector_controller_tests.rs:28:4
+   |
+28 | fn inspector_state(view: &AgentView) -> String {
+   |    ^^^^^^^^^^^^^^^
+
+warning: function `wait_for` is never used
+  --> crates/bello-agent-app/src/mcp_inspector_controller_tests.rs:73:4
+   |
+73 | fn wait_for(
+   |    ^^^^^^^^
+
+warning: function `fixture` is never used
+  --> crates/bello-agent-app/src/mcp_inspector_controller_tests.rs:91:10
+   |
+91 | async fn fixture(
+   |          ^^^^^^^
+
+warning: function `act` is never used
+   --> crates/bello-agent-app/src/mcp_inspector_controller_tests.rs:176:4
+    |
+176 | fn act(window: WindowHandle<AgentView>, intent: McpIntent, cx: &mut TestAppContext) {
+    |    ^^^
+
+warning: function `edit` is never used
+   --> crates/bello-agent-app/src/mcp_inspector_controller_tests.rs:186:4
+    |
+186 | fn edit(root: &Entity<AgentView>, text: String, cx: &mut TestAppContext) {
+    |    ^^^^
+
+warning: struct `Gateway` is never constructed
+   --> crates/bello-agent-app/src/mcp_inspector_controller_tests.rs:397:8
+    |
+397 | struct Gateway {
+    |        ^^^^^^^
+
+warning: function `configure_gateway_stream` is never used
+   --> crates/bello-agent-app/src/mcp_inspector_controller_tests.rs:403:4
+    |
+403 | fn configure_gateway_stream(stream: &std::net::TcpStream) {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated items `new`, `with_mode`, and `count` are never used
+   --> crates/bello-agent-app/src/mcp_inspector_controller_tests.rs:440:8
+    |
+439 | impl Gateway {
+    | ------------ associated items in this implementation
+440 |     fn new(disconnect_call: bool) -> Self {
+    |        ^^^
+...
+443 |     fn with_mode(mode: u8) -> Self {
+    |        ^^^^^^^^^
+...
+545 |     fn count(&self) -> usize {
+    |        ^^^^^
+
+warning: function `prepare_gateway` is never used
+   --> crates/bello-agent-app/src/mcp_inspector_controller_tests.rs:557:10
+    |
+557 | async fn prepare_gateway(
+    |          ^^^^^^^^^^^^^^^
+
+warning: struct `TestWake` is never constructed
+  --> crates/bello-agent-app/src/mcp_inspector_host_tests.rs:12:8
+   |
+12 | struct TestWake(std::thread::Thread);
+   |        ^^^^^^^^
+
+warning: function `run` is never used
+  --> crates/bello-agent-app/src/mcp_inspector_host_tests.rs:21:4
+   |
+21 | fn run<F: Future>(future: F) -> F::Output {
+   |    ^^^
+
+warning: function `fixture` is never used
+  --> crates/bello-agent-app/src/mcp_inspector_host_tests.rs:32:4
+   |
+32 | fn fixture() -> (
+   |    ^^^^^^^
+
+warning: methods `replace_configuration_draft`, `output_text`, and `focus_intent` are never used
+   --> crates/bello-agent-app/src/mcp_inspector_view.rs:331:12
+    |
+202 | impl McpInspectorView {
+    | --------------------- methods in this implementation
+...
+331 |     pub fn replace_configuration_draft(&mut self, text: String, cx: &mut Context<Self>) {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+449 |     pub fn output_text(&self) -> &str {
+    |            ^^^^^^^^^^^
+...
+453 |     pub fn focus_intent(&self, intent: &McpIntent, window: &mut Window) {
+    |            ^^^^^^^^^^^^
+
+warning: function `ready` is never used
+  --> crates/bello-agent-app/src/mcp_inspector_view_tests.rs:12:4
+   |
+12 | fn ready() -> McpPresentation {
+   |    ^^^^^
+
+warning: struct `Host` is never constructed
+  --> crates/bello-agent-app/src/mcp_inspector_view_tests.rs:93:8
+   |
+93 | struct Host {
+   |        ^^^^
+
+warning: function `fixture` is never used
+   --> crates/bello-agent-app/src/mcp_inspector_view_tests.rs:103:4
+    |
+103 | fn fixture(
+    |    ^^^^^^^
+
+warning: struct `MenuCommand` is never constructed
+  --> crates/bello-agent-app/src/native_menu.rs:10:8
+   |
+10 | struct MenuCommand {
+   |        ^^^^^^^^^^^
+
+warning: function `pin_command` is never used
+  --> crates/bello-agent-app/src/native_menu.rs:16:4
+   |
+16 | fn pin_command(pinned: bool) -> MenuCommand {
+   |    ^^^^^^^^^^^
+
+warning: function `archive_command` is never used
+  --> crates/bello-agent-app/src/native_menu.rs:32:4
+   |
+32 | fn archive_command(archived: bool) -> MenuCommand {
+   |    ^^^^^^^^^^^^^^^
+
+warning: function `copy_id_command` is never used
+  --> crates/bello-agent-app/src/native_menu.rs:48:4
+   |
+48 | fn copy_id_command() -> MenuCommand {
+   |    ^^^^^^^^^^^^^^^
+
+warning: function `selected_action` is never used
+  --> crates/bello-agent-app/src/native_menu.rs:56:4
+   |
+56 | fn selected_action(selected: u8, pinned: bool) -> Option<SidebarAction> {
+   |    ^^^^^^^^^^^^^^^
+
+warning: function `finish_if_open` is never used
+  --> crates/bello-agent-app/src/native_menu.rs:65:4
+   |
+65 | fn finish_if_open(
+   |    ^^^^^^^^^^^^^^
+
+warning: struct `Tracking` is never constructed
+  --> crates/bello-agent-app/src/native_menu.rs:81:8
+   |
+81 | struct Tracking;
+   |        ^^^^^^^^
+
+warning: associated function `begin` is never used
+  --> crates/bello-agent-app/src/native_menu.rs:83:8
+   |
+82 | impl Tracking {
+   | ------------- associated function in this implementation
+83 |     fn begin() -> Option<Self> {
+   |        ^^^^^
+
+warning: function `anchor_in_view` is never used
+   --> crates/bello-agent-app/src/native_menu.rs:101:4
+    |
+101 | fn anchor_in_view(
+    |    ^^^^^^^^^^^^^^
+
+warning: struct `ViewCategory` is never constructed
+   --> crates/bello-agent-app/src/native_menu.rs:128:8
+    |
+128 | struct ViewCategory {
+    |        ^^^^^^^^^^^^
+
+warning: function `gpui_child_index` is never used
+   --> crates/bello-agent-app/src/native_menu.rs:137:4
+    |
+137 | fn gpui_child_index(content_attached: bool, children: &[ViewCategory]) -> Option<usize> {
+    |    ^^^^^^^^^^^^^^^^
+
+warning: struct `DropCount` is never constructed
+   --> crates/bello-agent-app/src/native_menu.rs:572:12
+    |
+572 |     struct DropCount(Rc<Cell<usize>>);
+    |            ^^^^^^^^^
+
+warning: function `attached_gpui_view` is never used
+   --> crates/bello-agent-app/src/native_menu.rs:623:8
+    |
+623 |     fn attached_gpui_view() -> ViewCategory {
+    |        ^^^^^^^^^^^^^^^^^^
+
+warning: struct `TestWake` is never constructed
+  --> crates/bello-agent-app/src/project_host_tests.rs:13:8
+   |
+13 | struct TestWake(std::thread::Thread);
+   |        ^^^^^^^^
+
+warning: function `run` is never used
+  --> crates/bello-agent-app/src/project_host_tests.rs:22:4
+   |
+22 | fn run<F: Future>(future: F) -> F::Output {
+   |    ^^^
+
+warning: function `fixture` is never used
+  --> crates/bello-agent-app/src/project_host_tests.rs:34:4
+   |
+34 | fn fixture() -> (tempfile::TempDir, ProjectChange, SyntheticAuthorityControl) {
+   |    ^^^^^^^
+
+warning: function `fixture` is never used
+  --> crates/bello-agent-app/src/project_manager_controller_tests.rs:21:4
+   |
+21 | fn fixture(
+   |    ^^^^^^^
+
+warning: function `intent` is never used
+  --> crates/bello-agent-app/src/project_manager_controller_tests.rs:73:4
+   |
+73 | fn intent(view: &mut AgentView, action: Intent, window: &mut Window, cx: &mut Context<AgentView>) {
+   |    ^^^^^^
+
+warning: function `prepare_read_only_chat` is never used
+  --> crates/bello-agent-app/src/project_manager_controller_tests.rs:77:4
+   |
+77 | fn prepare_read_only_chat(window: WindowHandle<AgentView>, cx: &mut TestAppContext) -> String {
+   |    ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `retiring_tool_focus_case` is never used
+   --> crates/bello-agent-app/src/project_manager_controller_tests.rs:676:10
+    |
+676 | async fn retiring_tool_focus_case(cx: &mut TestAppContext, dismiss_early: bool, newer_file: bool) {
+    |          ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `interrupted_reload_case` is never used
+   --> crates/bello-agent-app/src/project_manager_controller_tests.rs:936:4
+    |
+936 | fn interrupted_reload_case(cx: &mut TestAppContext, blocked: bool, rebind: bool) {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `history_fixture` is never used
+    --> crates/bello-agent-app/src/project_manager_controller_tests.rs:1096:4
+     |
+1096 | fn history_fixture(
+     |    ^^^^^^^^^^^^^^^
+
+warning: function `create_history_project` is never used
+    --> crates/bello-agent-app/src/project_manager_controller_tests.rs:1154:10
+     |
+1154 | async fn create_history_project(
+     |          ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `copy_all` is never used
+    --> crates/bello-agent-app/src/project_manager_controller_tests.rs:1183:4
+     |
+1183 | fn copy_all(window: WindowHandle<AgentView>, cx: &mut TestAppContext) -> Option<String> {
+     |    ^^^^^^^^
+
+warning: function `ready` is never used
+ --> crates/bello-agent-app/src/project_manager_view_tests.rs:9:4
+  |
+9 | fn ready() -> ProjectManagerPresentation {
+  |    ^^^^^
+
+warning: struct `TestHost` is never constructed
+   --> crates/bello-agent-app/src/project_manager_view_tests.rs:112:8
+    |
+112 | struct TestHost {
+    |        ^^^^^^^^
+
+warning: function `fixture` is never used
+   --> crates/bello-agent-app/src/project_manager_view_tests.rs:133:4
+    |
+133 | fn fixture(
+    |    ^^^^^^^
+
+warning: function `focused_control` is never used
+   --> crates/bello-agent-app/src/project_manager_view_tests.rs:387:4
+    |
+387 | fn focused_control(
+    |    ^^^^^^^^^^^^^^^
+
+warning: function `fixture` is never used
+  --> crates/bello-agent-app/src/queue_actions_tests.rs:13:4
+   |
+13 | fn fixture(
+   |    ^^^^^^^
+
+warning: function `fixture` is never used
+  --> crates/bello-agent-app/src/queue_begin_tests.rs:11:4
+   |
+11 | fn fixture(
+   |    ^^^^^^^
+
+warning: function `fixture` is never used
+  --> crates/bello-agent-app/src/queue_cancel_tests.rs:11:4
+   |
+11 | fn fixture(
+   |    ^^^^^^^
+
+warning: function `archive_deferred_cancel_close_round_trip` is never used
+    --> crates/bello-agent-app/src/queue_cancel_tests.rs:1155:4
+     |
+1155 | fn archive_deferred_cancel_close_round_trip(cx: &mut TestAppContext, inactive: bool) {
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `fixture` is never used
+  --> crates/bello-agent-app/src/queue_drag_tests.rs:13:4
+   |
+13 | fn fixture(
+   |    ^^^^^^^
+
+warning: function `row_point` is never used
+  --> crates/bello-agent-app/src/queue_drag_tests.rs:68:4
+   |
+68 | fn row_point(
+   |    ^^^^^^^^^
+
+warning: function `begin` is never used
+  --> crates/bello-agent-app/src/queue_drag_tests.rs:83:4
+   |
+83 | fn begin(visual: &mut VisualTestContext, start: Point<Pixels>) {
+   |    ^^^^^
+
+warning: function `order` is never used
+  --> crates/bello-agent-app/src/queue_drag_tests.rs:92:4
+   |
+92 | fn order(root: &Entity<AgentView>, cx: &TestAppContext) -> Vec<String> {
+   |    ^^^^^
+
+warning: function `fixture` is never used
+  --> crates/bello-agent-app/src/queue_edit_tests.rs:11:4
+   |
+11 | fn fixture(
+   |    ^^^^^^^
+
+warning: function `fixture` is never used
+  --> crates/bello-agent-app/src/queue_geometry_tests.rs:11:4
+   |
+11 | fn fixture(
+   |    ^^^^^^^
+
+warning: function `assert_measured` is never used
+  --> crates/bello-agent-app/src/queue_geometry_tests.rs:61:4
+   |
+61 | fn assert_measured(
+   |    ^^^^^^^^^^^^^^^
+
+warning: function `fixture` is never used
+  --> crates/bello-agent-app/src/shutdown_barrier_tests.rs:13:4
+   |
+13 | fn fixture() -> (tempfile::TempDir, ShutdownPlan) {
+   |    ^^^^^^^
+
+warning: function `block_external` is never used
+   --> crates/bello-agent-app/src/shutdown_barrier_tests.rs:265:4
+    |
+265 | fn block_external<T>(future: impl std::future::Future<Output = T>) -> T {
+    |    ^^^^^^^^^^^^^^
+
+warning: function `fixture` is never used
+  --> crates/bello-agent-app/src/sidebar_actions_tests.rs:13:4
+   |
+13 | fn fixture(
+   |    ^^^^^^^
+
+warning: function `clipboard` is never used
+  --> crates/bello-agent-app/src/sidebar_actions_tests.rs:44:4
+   |
+44 | fn clipboard(cx: &TestAppContext) -> String {
+   |    ^^^^^^^^^
+
+warning: function `sentinel` is never used
+  --> crates/bello-agent-app/src/sidebar_actions_tests.rs:47:4
+   |
+47 | fn sentinel(cx: &mut TestAppContext) {
+   |    ^^^^^^^^
+
+warning: function `install_menu` is never used
+  --> crates/bello-agent-app/src/sidebar_actions_tests.rs:50:4
+   |
+50 | fn install_menu(view: &mut AgentView, id: &str) -> uuid::Uuid {
+   |    ^^^^^^^^^^^^
+
+warning: function `message` is never used
+   --> crates/bello-agent-app/src/transcript_actions.rs:141:8
+    |
+141 |     fn message(id: &str, role: &str, text: &str) -> Message {
+    |        ^^^^^^^
+
+warning: multiple methods are never used
+    --> crates/bello-agent-app/src/transcript_view.rs:969:19
+     |
+ 709 | impl TranscriptView {
+     | ------------------- methods in this implementation
+...
+ 969 |     pub(crate) fn edit_cache_computations(&self) -> usize {
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 973 |     pub(crate) fn edit_card_labels(&self) -> Vec<String> {
+     |                   ^^^^^^^^^^^^^^^^
+...
+ 989 |     pub(crate) fn tool_height_invalidation_count(&self) -> usize {
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 994 |     pub(crate) fn retained_tool_editor_count(&self) -> usize {
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1023 |     pub(crate) fn override_navigation_estimate(&self, height: Pixels) {
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1027 |     pub(crate) fn has_pending_navigation(&self) -> bool {
+     |                   ^^^^^^^^^^^^^^^^^^^^^^
+...
+1031 |     pub(crate) fn target_preflight_counts(&self) -> Vec<usize> {
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^
+...
+1035 |     pub(crate) fn render_count(&self) -> usize {
+     |                   ^^^^^^^^^^^^
+...
+1039 |     pub(crate) fn list_state(&self) -> ListState {
+     |                   ^^^^^^^^^^
+...
+1043 |     pub(crate) fn buffer_margin(&self) -> Pixels {
+     |                   ^^^^^^^^^^^^^
+...
+1047 |     pub(crate) fn materialized_indexes(&self) -> Vec<usize> {
+     |                   ^^^^^^^^^^^^^^^^^^^^
+...
+1051 |     pub(crate) fn painted_indexes(&self) -> Vec<usize> {
+     |                   ^^^^^^^^^^^^^^^
+...
+1055 |     pub(crate) fn materialized_texts(&self) -> Vec<(usize, String)> {
+     |                   ^^^^^^^^^^^^^^^^^^
+...
+1059 |     pub(crate) fn logical_row_ids(&self) -> Vec<String> {
+     |                   ^^^^^^^^^^^^^^^
+
+warning: function `call` is never used
+   --> crates/bello-agent-app/src/transcript_edit_presentation.rs:345:8
+    |
+345 |     fn call(name: &str, args: serde_json::Value) -> ToolCall {
+    |        ^^^^
+
+warning: function `fixture` is never used
+   --> crates/bello-agent-app/src/transcript_read_presentation.rs:178:8
+    |
+178 |     fn fixture(arguments: Value, text: &str, stats: Option<ReadStats>) -> Session {
+    |        ^^^^^^^
+
+warning: function `stats` is never used
+   --> crates/bello-agent-app/src/transcript_read_presentation.rs:230:8
+    |
+230 |     fn stats() -> ReadStats {
+    |        ^^^^^
+
+warning: function `message` is never used
+   --> crates/bello-agent-app/src/transcript_tool_presentation.rs:364:19
+    |
+364 |     pub(super) fn message(id: &str) -> Message {
+    |                   ^^^^^^^
+
+warning: function `assistant` is never used
+   --> crates/bello-agent-app/src/transcript_tool_presentation.rs:380:8
+    |
+380 |     fn assistant(id: &str) -> Message {
+    |        ^^^^^^^^^
+
+warning: function `result` is never used
+   --> crates/bello-agent-app/src/transcript_tool_presentation.rs:400:8
+    |
+400 |     fn result(id: &str, owner: &str, outcome: ToolOutcome) -> Message {
+    |        ^^^^^^
+
+warning: function `message` is never used
+  --> crates/bello-agent-app/src/transcript_view_tests.rs:21:4
+   |
+21 | fn message(id: &str, role: &str, text: &str) -> Message {
+   |    ^^^^^^^
+
+warning: function `messages` is never used
+  --> crates/bello-agent-app/src/transcript_view_tests.rs:38:4
+   |
+38 | fn messages(count: usize) -> Vec<Message> {
+   |    ^^^^^^^^
+
+warning: function `renders` is never used
+   --> crates/bello-agent-app/src/transcript_view_tests.rs:128:4
+    |
+128 | fn renders(child: &Entity<TranscriptView>, cx: &TestAppContext) -> usize {
+    |    ^^^^^^^
+
+warning: function `scroll` is never used
+   --> crates/bello-agent-app/src/transcript_view_tests.rs:132:4
+    |
+132 | fn scroll(child: &Entity<TranscriptView>, cx: &TestAppContext) -> ListState {
+    |    ^^^^^^
+
+warning: function `row_ids` is never used
+   --> crates/bello-agent-app/src/transcript_view_tests.rs:138:4
+    |
+138 | fn row_ids(child: &Entity<TranscriptView>, cx: &TestAppContext) -> Vec<String> {
+    |    ^^^^^^^
+
+warning: function `materialized` is never used
+   --> crates/bello-agent-app/src/transcript_view_tests.rs:142:4
+    |
+142 | fn materialized(child: &Entity<TranscriptView>, cx: &TestAppContext) -> Vec<usize> {
+    |    ^^^^^^^^^^^^
+
+warning: function `anchor` is never used
+   --> crates/bello-agent-app/src/transcript_view_tests.rs:146:4
+    |
+146 | fn anchor(child: &Entity<TranscriptView>, cx: &TestAppContext) -> (String, Pixels) {
+    |    ^^^^^^
+
+warning: function `jump_to` is never used
+   --> crates/bello-agent-app/src/transcript_view_tests.rs:154:4
+    |
+154 | fn jump_to(child: &Entity<TranscriptView>, index: usize, offset: f32, cx: &mut TestAppContext) {
+    |    ^^^^^^^
+
+warning: function `reveal_all` is never used
+   --> crates/bello-agent-app/src/transcript_view_tests.rs:163:4
+    |
+163 | fn reveal_all(root: &Entity<AgentView>, cx: &mut TestAppContext) {
+    |    ^^^^^^^^^^
+
+warning: function `current_row_bounds` is never used
+   --> crates/bello-agent-app/src/transcript_view_tests.rs:171:4
+    |
+171 | fn current_row_bounds(
+    |    ^^^^^^^^^^^^^^^^^^
+
+warning: function `snapshot_change` is never used
+   --> crates/bello-agent-app/src/transcript_view_tests.rs:199:4
+    |
+199 | fn snapshot_change(
+    |    ^^^^^^^^^^^^^^^
+
+warning: function `input` is never used
+   --> crates/bello-agent-app/src/transcript_view_tests.rs:218:4
+    |
+218 | fn input(root: &Entity<AgentView>, cx: &TestAppContext) -> TranscriptInput {
+    |    ^^^^^
+
+warning: struct `TranscriptHost` is never constructed
+   --> crates/bello-agent-app/src/transcript_view_tests.rs:236:8
+    |
+236 | struct TranscriptHost(Entity<TranscriptView>);
+    |        ^^^^^^^^^^^^^^
+
+warning: struct `WheelInputHost` is never constructed
+   --> crates/bello-agent-app/src/transcript_view_tests.rs:248:8
+    |
+248 | struct WheelInputHost {
+    |        ^^^^^^^^^^^^^^
+
+warning: function `host` is never used
+   --> crates/bello-agent-app/src/transcript_view_tests.rs:286:4
+    |
+286 | fn host(
+    |    ^^^^
+
+warning: function `first_child_target` is never used
+   --> crates/bello-agent-app/src/transcript_view_tests.rs:302:4
+    |
+302 | fn first_child_target(child: &Entity<TranscriptView>, cx: &TestAppContext) -> Point<Pixels> {
+    |    ^^^^^^^^^^^^^^^^^^
+
+warning: function `click_first_copy` is never used
+   --> crates/bello-agent-app/src/transcript_view_tests.rs:314:4
+    |
+314 | fn click_first_copy(
+    |    ^^^^^^^^^^^^^^^^
+
+warning: function `retained_tool_rows` is never used
+    --> crates/bello-agent-app/src/transcript_view_tests.rs:2043:4
+     |
+2043 | fn retained_tool_rows(count: usize, output: &str) -> Vec<Message> {
+     |    ^^^^^^^^^^^^^^^^^^
+
+warning: function `retained_tool_detail_restore_case` is never used
+    --> crates/bello-agent-app/src/transcript_view_tests.rs:2379:4
+     |
+2379 | fn retained_tool_detail_restore_case(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `read_rows` is never used
+ --> crates/bello-agent-app/src/transcript_read_ui_tests.rs:9:4
+  |
+9 | fn read_rows(text: &str, arguments: serde_json::Value, stats: Option<ReadStats>) -> Vec<Message> {
+  |    ^^^^^^^^^
+
+warning: function `click` is never used
+  --> crates/bello-agent-app/src/transcript_read_ui_tests.rs:48:4
+   |
+48 | fn click(visual: &mut VisualTestContext, selector: &'static str, cx: &mut TestAppContext) {
+   |    ^^^^^
+
+warning: function `edit_rows` is never used
+ --> crates/bello-agent-app/src/transcript_edit_ui_tests.rs:8:4
+  |
+8 | fn edit_rows(
+  |    ^^^^^^^^^
+
+warning: function `click` is never used
+  --> crates/bello-agent-app/src/transcript_edit_ui_tests.rs:62:4
+   |
+62 | fn click(visual: &mut VisualTestContext, selector: &'static str, cx: &mut TestAppContext) {
+   |    ^^^^^
+
+warning: function `stats` is never used
+  --> crates/bello-agent-app/src/transcript_edit_ui_tests.rs:67:4
+   |
+67 | fn stats(path: &str) -> ReadStats {
+   |    ^^^^^
+
+warning: function `fixture` is never used
+  --> crates/bello-agent-app/src/workspace_lifetime_tests.rs:17:4
+   |
+17 | fn fixture(
+   |    ^^^^^^^
+
+warning: function `detach` is never used
+  --> crates/bello-agent-app/src/workspace_lifetime_tests.rs:56:4
+   |
+56 | fn detach(window: WindowHandle<AgentView>, cx: &mut TestAppContext) {
+   |    ^^^^^^
+
+warning: function `navigation_key` is never used
+   --> crates/bello-agent-app/src/workspace_lifetime_tests.rs:636:4
+    |
+636 | fn navigation_key(forward: bool) -> &'static str {
+    |    ^^^^^^^^^^^^^^
+
+warning: function `add_navigation_records` is never used
+   --> crates/bello-agent-app/src/workspace_lifetime_tests.rs:645:4
+    |
+645 | fn add_navigation_records(window: WindowHandle<AgentView>, cx: &mut TestAppContext) -> Vec<String> {
+    |    ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `stop_key` is never used
+    --> crates/bello-agent-app/src/workspace_lifetime_tests.rs:1123:4
+     |
+1123 | fn stop_key() -> &'static str {
+     |    ^^^^^^^^
+
+warning: struct `ShortcutRun` is never constructed
+    --> crates/bello-agent-app/src/workspace_lifetime_tests.rs:1133:8
+     |
+1133 | struct ShortcutRun {
+     |        ^^^^^^^^^^^
+
+warning: function `shortcut_run` is never used
+    --> crates/bello-agent-app/src/workspace_lifetime_tests.rs:1145:4
+     |
+1145 | fn shortcut_run(window: WindowHandle<AgentView>, cx: &mut TestAppContext) -> ShortcutRun {
+     |    ^^^^^^^^^^^^
+
+warning: function `shortcut_run_with_partial` is never used
+    --> crates/bello-agent-app/src/workspace_lifetime_tests.rs:1148:4
+     |
+1148 | fn shortcut_run_with_partial(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `assert_shortcut_unconsumed` is never used
+    --> crates/bello-agent-app/src/workspace_lifetime_tests.rs:1258:4
+     |
+1258 | fn assert_shortcut_unconsumed(root: &Entity<AgentView>, run: &ShortcutRun, cx: &TestAppContext) {
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `await_shortcut_stop` is never used
+    --> crates/bello-agent-app/src/workspace_lifetime_tests.rs:1269:4
+     |
+1269 | fn await_shortcut_stop(run: &ShortcutRun) {
+     |    ^^^^^^^^^^^^^^^^^^^
+
+warning: function `changes_key` is never used
+    --> crates/bello-agent-app/src/workspace_lifetime_tests.rs:1564:4
+     |
+1564 | fn changes_key() -> &'static str {
+     |    ^^^^^^^^^^^
+
+warning: function `sidebar_menu_repeat_fixture` is never used
+    --> crates/bello-agent-app/src/workspace_lifetime_tests.rs:1718:4
+     |
+1718 | fn sidebar_menu_repeat_fixture(copy: bool, cx: &mut TestAppContext) {
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `seed_pin` is never used
+    --> crates/bello-agent-app/src/workspace_lifetime_tests.rs:1824:4
+     |
+1824 | fn seed_pin(view: &mut AgentView, id: &str, token: uuid::Uuid, cx: &mut gpui::Context<AgentView>) {
+     |    ^^^^^^^^
+
+warning: function `finish_pin` is never used
+    --> crates/bello-agent-app/src/workspace_lifetime_tests.rs:1827:4
+     |
+1827 | fn finish_pin(
+     |    ^^^^^^^^^^
+
+warning: `bello-agent-app` (bin "bello-agent" test) generated 200 warnings (run `cargo fix --bin "bello-agent" -p bello-agent-app --tests` to apply 64 suggestions)
+error: could not compile `bello-agent-app` (bin "bello-agent" test); 200 warnings emitted
+
+Caused by:
+  process didn't exit successfully: `/workspace/scratch/8b6fda578834/build-environment/rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name bello_agent --edition=2024 crates/bello-agent-app/src/main.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no --test --cfg 'feature="default"' --cfg 'feature="synthetic-authority"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "native-lifecycle-smoke", "synthetic-authority"))' -C metadata=8c97edf556d6b1f3 -C extra-filename=-6f28f194e8d57135 --out-dir /workspace/scratch/8b6fda578834/BelloAgent/rust/target/debug/deps -C strip=debuginfo -L dependency=/workspace/scratch/8b6fda578834/BelloAgent/rust/target/debug/deps --extern bello_agent_core=/workspace/scratch/8b6fda578834/BelloAgent/rust/target/debug/deps/libbello_agent_core-5f942196f9c6894e.rlib --extern bello_workbench=/workspace/scratch/8b6fda578834/BelloAgent/rust/target/debug/deps/libbello_workbench-c4cc4115a0bdf126.rlib --extern bello_workbench_ui=/workspace/scratch/8b6fda578834/BelloAgent/rust/target/debug/deps/libbello_workbench_ui-14677b857e5e088d.rlib --extern gpui=/workspace/scratch/8b6fda578834/BelloAgent/rust/target/debug/deps/libgpui-6ce20282c0fe8975.rlib --extern libc=/workspace/scratch/8b6fda578834/BelloAgent/rust/target/debug/deps/liblibc-935c8ee8c95c1038.rlib --extern serde=/workspace/scratch/8b6fda578834/BelloAgent/rust/target/debug/deps/libserde-35d87acde1fd2ee8.rlib --extern serde_json=/workspace/scratch/8b6fda578834/BelloAgent/rust/target/debug/deps/libserde_json-8a8e99bbe0664f09.rlib --extern tempfile=/workspace/scratch/8b6fda578834/BelloAgent/rust/target/debug/deps/libtempfile-f14420a78b93804d.rlib --extern unicode_normalization=/workspace/scratch/8b6fda578834/BelloAgent/rust/target/debug/deps/libunicode_normalization-bf55ebe226ba8d4a.rlib --extern unicode_segmentation=/workspace/scratch/8b6fda578834/BelloAgent/rust/target/debug/deps/libunicode_segmentation-b0c40f093bb3669b.rlib --extern uuid=/workspace/scratch/8b6fda578834/BelloAgent/rust/target/debug/deps/libuuid-1074545510e370de.rlib --extern zeroize=/workspace/scratch/8b6fda578834/BelloAgent/rust/target/debug/deps/libzeroize-bb8b669424003f28.rlib -L native=/workspace/scratch/8b6fda578834/BelloAgent/rust/target/debug/build/ring-e34e9e060b6cae5c/out -L native=/workspace/scratch/8b6fda578834/BelloAgent/rust/target/debug/build/libgit2-sys-a61b554ab8a8ce31/out/build -L native=/workspace/scratch/8b6fda578834/BelloAgent/rust/target/debug/build/psm-be8261b7ba554e6a/out -L native=/workspace/scratch/8b6fda578834/build-environment/sysroot/usr/lib/x86_64-linux-gnu` (signal: 9, SIGKILL: kill)

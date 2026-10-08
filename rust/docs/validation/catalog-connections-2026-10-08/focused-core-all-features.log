@@ -1,0 +1,447 @@
+   Compiling bello-agent-core v0.1.0 (/workspace/shared/catalog-native-core-focused/rust/crates/bello-agent-core)
+warning: function `prepare` is never used
+   --> crates/bello-agent-core/src/compaction.rs:417:15
+    |
+417 | pub(crate) fn prepare(
+    |               ^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: methods `during_status_read_for_test`, `poison_state_for_test`, `hold_write_lock_for_test`, `set_receipt_fault`, and `set_fault` are never used
+   --> crates/bello-agent-core/src/mcp/outcome.rs:170:12
+    |
+ 89 | impl Ledger {
+    | ----------- methods in this implementation
+...
+170 |     pub fn during_status_read_for_test<T>(&self, read: impl FnOnce() -> T) -> T {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+175 |     pub fn poison_state_for_test(&self) {
+    |            ^^^^^^^^^^^^^^^^^^^^^
+...
+188 |     pub fn hold_write_lock_for_test(
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+303 |     pub fn set_receipt_fault(&self, value: u8) {
+    |            ^^^^^^^^^^^^^^^^^
+...
+312 |     pub fn set_fault(&self, value: u8) {
+    |            ^^^^^^^^^
+
+warning: struct `FileLock` is never constructed
+  --> crates/bello-agent-core/src/project_authority/native_lock.rs:13:19
+   |
+13 | pub(super) struct FileLock(File);
+   |                   ^^^^^^^^
+
+warning: associated function `acquire` is never used
+  --> crates/bello-agent-core/src/project_authority/native_lock.rs:16:19
+   |
+15 | impl FileLock {
+   | ------------- associated function in this implementation
+16 |     pub(super) fn acquire(path: &Path) -> AuthorityResult<Self> {
+   |                   ^^^^^^^
+
+warning: methods `mcp_checkpoint_fault_for_test`, `mcp_definitions_for_test`, and `test_has_active_worker` are never used
+   --> crates/bello-agent-core/src/runtime.rs:172:19
+    |
+170 | impl Controller {
+    | --------------- methods in this implementation
+171 |     #[cfg(all(test, feature = "synthetic-authority"))]
+172 |     pub(crate) fn mcp_checkpoint_fault_for_test(&self, fault: u8) {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+180 |     pub(crate) fn mcp_definitions_for_test(&self) -> Vec<crate::tools::ToolDefinition> {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+421 |     pub(crate) fn test_has_active_worker(&self) -> bool {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `set_input_commit_gate_for_test` and `set_resource_barrier_for_test` are never used
+  --> crates/bello-agent-core/src/project_input_runtime.rs:34:19
+   |
+32 | impl Controller {
+   | --------------- methods in this implementation
+33 |     #[cfg(all(test, feature = "synthetic-authority"))]
+34 |     pub(crate) fn set_input_commit_gate_for_test(&self, phase: &str) -> Arc<InputCommitGate> {
+   |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+55 |     pub(crate) fn set_resource_barrier_for_test(
+   |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `run_call` is never used
+   --> crates/bello-agent-core/src/tool_runtime.rs:896:10
+    |
+896 | async fn run_call(
+    |          ^^^^^^^^
+
+warning: function `run_call_with_budget` is never used
+   --> crates/bello-agent-core/src/tool_runtime.rs:913:10
+    |
+913 | async fn run_call_with_budget(
+    |          ^^^^^^^^^^^^^^^^^^^^
+
+warning: function `hold` is never used
+  --> crates/bello-agent-core/src/worker_tail_test_gate.rs:14:15
+   |
+14 | pub(crate) fn hold(controller: &Controller) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+   |               ^^^^
+
+warning: function `set_intentional_pause` is never used
+  --> crates/bello-agent-core/src/worker_tail_test_gate.rs:36:15
+   |
+36 | pub(crate) fn set_intentional_pause(controller: &Controller) {
+   |               ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `wait_done` is never used
+  --> crates/bello-agent-core/src/worker_tail_test_gate.rs:47:21
+   |
+47 | pub(crate) async fn wait_done(controller: &Controller) {
+   |                     ^^^^^^^^^
+
+warning: method `options_for_mcp_test` is never used
+   --> crates/bello-agent-core/src/saved_runtime.rs:156:19
+    |
+ 40 | impl SavedRuntimeFactory {
+    | ------------------------ method in this implementation
+...
+156 |     pub(crate) fn options_for_mcp_test(&self) -> SavedChatOptions {
+    |                   ^^^^^^^^^^^^^^^^^^^^
+
+warning: variants `BeforeRename`, `AfterRename`, and `StreamMetadata` are never constructed
+   --> crates/bello-agent-core/src/session.rs:876:5
+    |
+873 | pub(crate) enum WriteFault {
+    |                 ---------- variants in this enum
+...
+876 |     BeforeRename,
+    |     ^^^^^^^^^^^^
+877 |     AfterRename,
+    |     ^^^^^^^^^^^
+878 |     StreamMetadata,
+    |     ^^^^^^^^^^^^^^
+    |
+    = note: `WriteFault` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+warning: methods `with_pending_shell_cleanup`, `before_read`, and `after_mutation` are never used
+   --> crates/bello-agent-core/src/tools.rs:333:19
+    |
+216 | impl NativeTools {
+    | ---------------- methods in this implementation
+...
+333 |     pub(crate) fn with_pending_shell_cleanup(
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+357 |     pub(crate) fn before_read(mut self, callback: Arc<dyn Fn() + Send + Sync>) -> Self {
+    |                   ^^^^^^^^^^^
+...
+363 |     pub(crate) fn after_mutation(mut self, callback: Arc<dyn Fn() + Send + Sync>) -> Self {
+    |                   ^^^^^^^^^^^^^^
+
+warning: constant `CANDIDATE_LIMIT` is never used
+  --> crates/bello-agent-core/src/tools/find.rs:45:32
+   |
+45 |     pub(in crate::tools) const CANDIDATE_LIMIT: usize = 20_000;
+   |                                ^^^^^^^^^^^^^^^
+
+warning: constant `OUTPUT_BYTES` is never used
+  --> crates/bello-agent-core/src/tools/find.rs:46:32
+   |
+46 |     pub(in crate::tools) const OUTPUT_BYTES: usize = 32_768;
+   |                                ^^^^^^^^^^^^
+
+warning: constant `LIMITED_FOOTER` is never used
+  --> crates/bello-agent-core/src/tools/find.rs:47:32
+   |
+47 |     pub(in crate::tools) const LIMITED_FOOTER: &str = "\n[Search limited; narrow the path/pattern. Large/binary files and .git/node_...
+   |                                ^^^^^^^^^^^^^^
+
+warning: constant `COMPLETE_FOOTER` is never used
+  --> crates/bello-agent-core/src/tools/find.rs:48:32
+   |
+48 |     pub(in crate::tools) const COMPLETE_FOOTER: &str =
+   |                                ^^^^^^^^^^^^^^^
+
+warning: struct `Candidate` is never constructed
+  --> crates/bello-agent-core/src/tools/find.rs:55:33
+   |
+55 |     pub(in crate::tools) struct Candidate<Resource = ()> {
+   |                                 ^^^^^^^^^
+
+warning: enum `ScanControl` is never used
+  --> crates/bello-agent-core/src/tools/find.rs:65:31
+   |
+65 |     pub(in crate::tools) enum ScanControl {
+   |                               ^^^^^^^^^^^
+
+warning: trait `Scanner` is never used
+  --> crates/bello-agent-core/src/tools/find.rs:75:32
+   |
+75 |     pub(in crate::tools) trait Scanner {
+   |                                ^^^^^^^
+
+warning: struct `Scanned` is never constructed
+  --> crates/bello-agent-core/src/tools/find.rs:86:33
+   |
+86 |     pub(in crate::tools) struct Scanned<Resource> {
+   |                                 ^^^^^^^
+
+warning: function `collect_candidates` is never used
+  --> crates/bello-agent-core/src/tools/find.rs:94:29
+   |
+94 |     pub(in crate::tools) fn collect_candidates<S: Scanner>(
+   |                             ^^^^^^^^^^^^^^^^^^
+
+warning: function `sort_candidates` is never used
+   --> crates/bello-agent-core/src/tools/find.rs:133:29
+    |
+133 |     pub(in crate::tools) fn sort_candidates<Resource>(candidates: &mut [Candidate<Resource>]) {
+    |                             ^^^^^^^^^^^^^^^
+
+warning: function `execute` is never used
+   --> crates/bello-agent-core/src/tools/find.rs:139:19
+    |
+139 |     pub(super) fn execute(
+    |                   ^^^^^^^
+
+warning: function `search_result` is never used
+   --> crates/bello-agent-core/src/tools/find.rs:167:29
+    |
+167 |     pub(in crate::tools) fn search_result(
+    |                             ^^^^^^^^^^^^^
+
+warning: function `relative_path` is never used
+   --> crates/bello-agent-core/src/tools/find.rs:183:29
+    |
+183 |     pub(in crate::tools) fn relative_path<'a, Resource>(
+    |                             ^^^^^^^^^^^^^
+
+warning: function `swift_has_prefix` is never used
+   --> crates/bello-agent-core/src/tools/find.rs:209:8
+    |
+209 |     fn swift_has_prefix(text: &str, prefix: &str) -> bool {
+    |        ^^^^^^^^^^^^^^^^
+
+warning: function `preview` is never used
+   --> crates/bello-agent-core/src/tools/find.rs:216:29
+    |
+216 |     pub(in crate::tools) fn preview(text: &str, bytes: usize) -> String {
+    |                             ^^^^^^^
+
+warning: function `glob_matches` is never used
+   --> crates/bello-agent-core/src/tools/find.rs:228:8
+    |
+228 |     fn glob_matches(pattern: &str, name: &str) -> bool {
+    |        ^^^^^^^^^^^^
+
+warning: function `fnmatch` is never used
+   --> crates/bello-agent-core/src/tools/find.rs:225:12
+    |
+225 |         fn fnmatch(pattern: *const c_char, name: *const c_char, flags: c_int) -> c_int;
+    |            ^^^^^^^
+
+warning: constant `LINE_BYTES` is never used
+  --> crates/bello-agent-core/src/tools/grep.rs:43:11
+   |
+43 |     const LINE_BYTES: usize = 1000;
+   |           ^^^^^^^^^^
+
+warning: struct `Options` is never constructed
+  --> crates/bello-agent-core/src/tools/grep.rs:45:33
+   |
+45 |     pub(in crate::tools) struct Options<'a> {
+   |                                 ^^^^^^^
+
+warning: enum `ReadResult` is never used
+  --> crates/bello-agent-core/src/tools/grep.rs:52:31
+   |
+52 |     pub(in crate::tools) enum ReadResult {
+   |                               ^^^^^^^^^^
+
+warning: trait `Reader` is never used
+  --> crates/bello-agent-core/src/tools/grep.rs:62:32
+   |
+62 |     pub(in crate::tools) trait Reader<Resource> {
+   |                                ^^^^^^
+
+warning: trait `RegexFactory` is never used
+  --> crates/bello-agent-core/src/tools/grep.rs:66:32
+   |
+66 |     pub(in crate::tools) trait RegexFactory {
+   |                                ^^^^^^^^^^^^
+
+warning: trait `Matcher` is never used
+  --> crates/bello-agent-core/src/tools/grep.rs:77:32
+   |
+77 |     pub(in crate::tools) trait Matcher {
+   |                                ^^^^^^^
+
+warning: function `execute` is never used
+  --> crates/bello-agent-core/src/tools/grep.rs:83:29
+   |
+83 |     pub(in crate::tools) fn execute<S: Scanner>(
+   |                             ^^^^^^^
+
+warning: variants `Image` and `Omitted` are never constructed
+  --> crates/bello-agent-core/src/tools/read.rs:23:5
+   |
+22 | pub(super) enum ImageResult {
+   |                 ----------- variants in this enum
+23 |     Image {
+   |     ^^^^^
+...
+28 |     Omitted(String),
+   |     ^^^^^^^
+
+warning: constant `MAX_AXIS` is never used
+  --> crates/bello-agent-core/src/tools/read_image.rs:42:22
+   |
+42 |     pub(super) const MAX_AXIS: usize = 2000;
+   |                      ^^^^^^^^
+
+warning: constant `MAX_BYTES` is never used
+  --> crates/bello-agent-core/src/tools/read_image.rs:43:22
+   |
+43 |     pub(super) const MAX_BYTES: usize = 4_718_592;
+   |                      ^^^^^^^^^
+
+warning: constant `MAX_DECODED_PIXELS` is never used
+  --> crates/bello-agent-core/src/tools/read_image.rs:44:22
+   |
+44 |     pub(super) const MAX_DECODED_PIXELS: usize = 16 * 1024 * 1024;
+   |                      ^^^^^^^^^^^^^^^^^^
+
+warning: constant `QUALITIES` is never used
+  --> crates/bello-agent-core/src/tools/read_image.rs:45:22
+   |
+45 |     pub(super) const QUALITIES: [u8; 5] = [80, 85, 70, 55, 40];
+   |                      ^^^^^^^^^
+
+warning: constant `RESIZE_FAILURE` is never used
+  --> crates/bello-agent-core/src/tools/read_image.rs:46:22
+   |
+46 |     pub(super) const RESIZE_FAILURE: &str =
+   |                      ^^^^^^^^^^^^^^
+
+warning: constant `CONVERSION_FAILURE` is never used
+  --> crates/bello-agent-core/src/tools/read_image.rs:48:22
+   |
+48 |     pub(super) const CONVERSION_FAILURE: &str =
+   |                      ^^^^^^^^^^^^^^^^^^
+
+warning: function `fits` is never used
+  --> crates/bello-agent-core/src/tools/read_image.rs:51:19
+   |
+51 |     pub(super) fn fits(byte_count: usize, byte_limit: usize) -> bool {
+   |                   ^^^^
+
+warning: function `checked_size` is never used
+  --> crates/bello-agent-core/src/tools/read_image.rs:59:19
+   |
+59 |     pub(super) fn checked_size(width: i64, height: i64) -> Option<(usize, usize)> {
+   |                   ^^^^^^^^^^^^
+
+warning: function `target_size` is never used
+  --> crates/bello-agent-core/src/tools/read_image.rs:66:19
+   |
+66 |     pub(super) fn target_size(mut width: usize, mut height: usize) -> (usize, usize) {
+   |                   ^^^^^^^^^^^
+
+warning: function `next_size` is never used
+  --> crates/bello-agent-core/src/tools/read_image.rs:80:19
+   |
+80 |     pub(super) fn next_size(width: usize, height: usize) -> Option<(usize, usize)> {
+   |                   ^^^^^^^^^
+
+warning: function `resize_hint` is never used
+  --> crates/bello-agent-core/src/tools/read_image.rs:87:19
+   |
+87 |     pub(super) fn resize_hint(original: (usize, usize), displayed: (usize, usize)) -> String {
+   |                   ^^^^^^^^^^^
+
+warning: function `viewer_read` is never used
+  --> crates/bello-agent-core/src/tools/read_text.rs:93:4
+   |
+93 | fn viewer_read(
+   |    ^^^^^^^^^^^
+
+warning: variants `BeforeRename` and `AfterRename` are never constructed
+   --> crates/bello-agent-core/src/workspace.rs:676:5
+    |
+673 | enum Fault {
+    |      ----- variants in this enum
+...
+676 |     BeforeRename,
+    |     ^^^^^^^^^^^^
+677 |     AfterRename,
+    |     ^^^^^^^^^^^
+    |
+    = note: `Fault` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+warning: `bello-agent-core` (lib test) generated 52 warnings
+    Finished `test` profile [unoptimized] target(s) in 9.34s
+     Running unittests src/lib.rs (/workspace/scratch/8b6fda578834/BelloAgent/rust/target/debug/deps/bello_agent_core-4b871c0f4d9050f4)
+
+running 59 tests
+test model_catalog::tests::applying_never_grants_inputs_or_increases_budget_and_resets_incompatible_effort ... ok
+test model_catalog::tests::blocking_load_works_without_a_tokio_reactor ... ok
+test model_catalog::tests::bundled_is_the_single_checked_in_six_row_catalog ... ok
+test model_catalog::tests::cancellation_before_request_and_during_stream_closes_owned_transfer ... ok
+test model_catalog::tests::catalog_client_ignores_process_proxy_in_bounded_subprocess ... ok
+test model_catalog::tests::declared_and_streamed_oversized_bodies_fail_without_fallback ... ok
+test model_catalog::tests::dropping_or_aborting_load_closes_transfer_without_cancelling_token ... ok
+test model_catalog::tests::fixture_transport_get_headers_are_minimal_and_anonymous_or_synthetic_only ... ok
+test model_catalog::tests::idle_and_total_deadlines_are_separate_and_fixed_by_default ... ok
+test model_catalog::tests::parser_bounds_bytes_rows_trimmed_unique_ids_and_utf8_text ... ok
+test model_catalog::tests::reasoning_absence_empty_and_known_inputs_are_distinct_and_stable ... ok
+test model_catalog::tests::redirect_is_not_followed_and_http_errors_do_not_echo_body_or_url ... ok
+test model_catalog::tests::strict_boolean_integral_and_array_metadata_fail_closed_without_echo ... ok
+test model_catalog::tests::url_validation_and_origin_use_scheme_host_effective_port_only ... ok
+test model_catalog::tests::versions_aliases_and_stable_explicit_order_match_swift ... ok
+test project_authority::connections::catalog_tests::bundled_draft_needs_no_key_or_profile_validation_and_saved_prepare_exact_cas ... ok
+test project_authority::connections::catalog_tests::catalog_url_is_known_redacted_metadata_and_never_a_runtime_profile_field ... ok
+test project_authority::connections::catalog_tests::fixture_external_is_anonymous_same_origin_resolves_only_key_and_inherited_source ... ok
+test project_authority::connections::catalog_tests::invalid_saved_catalog_is_opaque_unavailable_and_unknown_raw_values_survive ... ok
+test project_authority::connections::catalog_tests::own_catalog_edit_detaches_and_model_forks_inherit_only_compatible_lineage ... ok
+test project_authority::connections::catalog_tests::production_remote_preparation_stays_closed_even_for_loopback_and_without_key_reads ... ok
+test project_authority::connections::catalog_tests::self_missing_chained_cyclic_nonresponses_and_duplicate_links_are_rejected ... ok
+test project_authority::connections::catalog_tests::source_links_are_flat_and_only_touch_catalog_metadata ... ok
+test project_authority::connections::production_contract_tests::current_project_membership_needs_one_read_and_unrelated_revision_does_not_revoke ... ok
+test project_authority::connections::production_contract_tests::production_contract_validates_ordinary_inputs_without_native_or_network_access ... ok
+test project_authority::connections::tests::active_worker_keeps_original_configuration_until_settled_then_next_run_uses_saved ... ok
+test project_authority::connections::tests::default_authority_stays_unavailable_and_deletion_preserves_unrelated_envelope ... ok
+test project_authority::connections::tests::delete_revocation_can_stop_join_active_worker_and_reject_stale_arcs ... ok
+test project_authority::connections::tests::denied_conflict_and_possible_commit_keep_exact_draft_and_baseline ... ok
+test project_authority::connections::tests::distinct_backend_identical_bytes_and_same_revision_changed_bytes_conflict ... ok
+test project_authority::connections::tests::duplicate_stored_headers_and_secret_bearing_invalid_urls_are_unavailable_without_echo ... ok
+test project_authority::connections::tests::every_ascii_control_key_and_header_is_rejected_and_headers_are_bounded ... ok
+test project_authority::connections::tests::explicit_image_input_metadata_survives_vault_save_reload_and_name_edit ... ok
+test project_authority::connections::tests::idle_configuration_refresh_invalidates_preview_and_route_or_authority_rebind_is_rejected ... ok
+test project_authority::connections::tests::project_and_connection_writes_share_cas_and_preserve_opaque_raw_values ... ok
+test project_authority::connections::tests::route_edits_fork_but_budget_reasoning_and_name_keep_identity ... ok
+test project_authority::connections::tests::save_metadata_preserves_blank_secrets_and_empty_object_clears_headers ... ok
+test project_authority::connections::tests::saved_connection_client_ignores_process_proxy_in_bounded_subprocess ... ok
+test project_authority::connections::tests::saved_connection_client_never_follows_redirect_to_another_listener ... ok
+test project_authority::connections::tests::sequential_tabs_report_partial_via_individual_results_and_preserve_remaining_edits ... ok
+test project_authority::connections::tests::successful_empty_queue_settlement_needs_no_additional_vault_read ... ok
+test project_authority::connections::tests::synthetic_inputs_cannot_accept_real_keys_headers_nonloopback_or_header_bypass ... ok
+test project_authority::connections::tests::unsupported_profile_and_opaque_future_fields_are_retained_unavailable ... ok
+test project_authority::native::tests::absent_items_add_once_and_existing_items_update_once_without_fallback ... ok
+test project_authority::native::tests::connection_only_native_denied_corrupt_and_unconfirmed_state_never_falls_back ... ok
+test project_authority::native::tests::connection_only_native_storage_keeps_normal_credentials_and_authority_without_tools ... ok
+test project_authority::native::tests::denied_corrupt_and_oversized_reads_never_become_missing_items ... ok
+test project_authority::native::tests::every_failed_update_and_nonduplicate_add_is_unconfirmed ... ok
+test project_authority::native::tests::every_read_and_replace_checks_identity_before_side_effects ... ok
+test project_authority::native::tests::failed_and_possible_commit_saves_preserve_draft_and_baseline ... ok
+test project_authority::native::tests::fixed_native_identity_matches_reviewed_packaging ... ok
+test project_authority::native::tests::lock_and_second_identity_failures_stop_before_read_or_write ... ok
+test project_authority::native::tests::native_feature_never_changes_default_composition ... ok
+test project_authority::native::tests::size_limit_is_checked_before_lock_or_mutation_and_accepts_exact_bound ... ok
+test project_authority::native::tests::source_cas_compares_whole_bytes_after_acquiring_lock ... ok
+test project_authority::native::tests::update_that_mutates_before_authentication_failure_retains_uncertainty ... ok
+test runtime::tool_runtime::model_id_override_does_not_inherit_another_models_image_capability ... ok
+test runtime::tool_runtime::native_tool_failure_uses_source_generic_text_and_failed_outcome ... ok
+test tool_content::mutation_stats_pair_and_larger_edited_viewer_bounds_are_strict ... ok
+
+test result: ok. 59 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.59s
+

@@ -1,0 +1,7 @@
+{
+  "file": "/workspace/shared/catalog-native-app-focused/rust/crates/bello-agent-app/src/connection_settings_controller.rs",
+  "before_sha256": "7d266bab174a335e729242d5d7f42e4c146757fb747ca552a4887d6ee4e4f958",
+  "after_sha256": "ab153a5a7f1189d360b4a02e6433cb95252cbd43fe0b07af6393c57550e56d7f",
+  "old": ".is_some_and(|owner| discarded.is_none_or(|discarded| discarded == owner))",
+  "new": ".is_some_and(|owner| false && discarded.is_none_or(|discarded| discarded == owner))"
+}

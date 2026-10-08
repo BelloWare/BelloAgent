@@ -6,6 +6,7 @@ pub mod compaction;
 mod compaction_session;
 pub mod instructions;
 pub mod mcp;
+pub mod model_catalog;
 pub mod profile;
 pub mod project_authority;
 pub mod project_resources;

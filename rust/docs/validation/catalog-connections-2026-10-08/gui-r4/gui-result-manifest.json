@@ -1,0 +1,50 @@
+{
+  "binary_sha256": "dc9ded02d04c2a1e7bae42d9a921237b2cffb89233585066a7ac47d5929020b7",
+  "source_revision": "review-r4",
+  "mode": "--synthetic-connections",
+  "appearance": "light",
+  "client_size": [
+    920,
+    600
+  ],
+  "results": {
+    "choose_stages_metadata_and_success_notice": true,
+    "cancel_reopen_discards_metadata_and_success_notice": true,
+    "keep_editing_retains_metadata_and_success_notice": true,
+    "confirmed_discard_reopen_clears_metadata_and_success_notice": true,
+    "catalog_gets": 0,
+    "provider_posts": 0,
+    "saved_connections": 0,
+    "app_log_bytes": 0,
+    "exit_code": 0,
+    "fixture_processes_cleaned_up": true
+  },
+  "screenshots": [
+    {
+      "file": "01-selection-notice.png",
+      "sha256": "47826bcb62aca9d7641eba5a8831c32291051d5cc00df31a7dda084b882daeaa",
+      "bytes": 264870
+    },
+    {
+      "file": "02-cancel-clean-reopen.png",
+      "sha256": "5a17ca265e47595654f8b625465e434f27787463fa9c3337004c659f9474ee3b",
+      "bytes": 260163
+    },
+    {
+      "file": "03-close-confirmation.png",
+      "sha256": "3bd58c1738b50ee2dd27b67eef7be3f3265fa544ca7a88e11c10e49a51d788f7",
+      "bytes": 268078
+    },
+    {
+      "file": "04-keep-editing-preserves.png",
+      "sha256": "fd22be886c954b29accff1b6a3d403e7d9ed22fd2b6005a65f094b2826f3f400",
+      "bytes": 264801
+    },
+    {
+      "file": "05-confirmed-discard-clean.png",
+      "sha256": "5a17ca265e47595654f8b625465e434f27787463fa9c3337004c659f9474ee3b",
+      "bytes": 260163
+    }
+  ],
+  "scope": "Actual final-binary narrow repair recheck. Earlier r2 broad catalog workflow GUI and final r4 deterministic tests remain separate evidence."
+}

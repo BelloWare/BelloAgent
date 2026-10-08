@@ -1,0 +1,32 @@
+[
+  {
+    "name": "negative-discard-clear",
+    "exit_code": 101,
+    "log_sha256": "3f579f854b04ef38c4dc39e25e13349b6d084707442079a8d8c7164936178c7c",
+    "tail": [
+      "",
+      "",
+      "failures:",
+      "    connection_settings_controller::tests::catalog_workflow::catalog_discard_reopen_removes_selected_metadata_and_success_notice",
+      "",
+      "test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 91 filtered out; finished in 1.47s",
+      "",
+      "error: test failed, to rerun pass `-p bello-agent-app --bin bello-agent`"
+    ]
+  },
+  {
+    "name": "negative-notice-owner-reset",
+    "exit_code": 101,
+    "log_sha256": "d9e4f4b6fe2177dcb4fa984596641a9170c41a9024fef17670b586440469be8b",
+    "tail": [
+      "",
+      "failures:",
+      "    connection_settings_controller::tests::non_error_recovery_notice_survives_discard_reopen",
+      "    connection_settings_controller::tests::save_errors_survive_discard_reopen_and_uncertainty_still_blocks_admission",
+      "",
+      "test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 91 filtered out; finished in 1.08s",
+      "",
+      "error: test failed, to rerun pass `-p bello-agent-app --bin bello-agent`"
+    ]
+  }
+]

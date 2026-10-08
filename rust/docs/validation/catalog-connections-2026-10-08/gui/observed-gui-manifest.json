@@ -1,0 +1,227 @@
+{
+  "binary_sha256": "f8da05de2ca697e11e4aa0f33c6bbb0d8db800b15c88c7138717c396b631205a",
+  "launch_mode": "--synthetic-connections",
+  "source_revision": "review-r2",
+  "screenshots": [
+    {
+      "file": "01-light-start.png",
+      "bytes": 55467,
+      "sha256": "6ede49bdddc482125393df89c6d0bd1245ed7e2af538374d58242de174631f3e"
+    },
+    {
+      "file": "02-project-created.png",
+      "bytes": 80725,
+      "sha256": "27d454e7e1fd69480064380f9e6b96cdf87aa0d76eafdca7a1aac6031765b112"
+    },
+    {
+      "file": "03-bundled-catalog.png",
+      "bytes": 99764,
+      "sha256": "ce0aae65b61a6bf1c5060e980b61bc64b5b656657f3e9fccdc19c1e433db98de"
+    },
+    {
+      "file": "04-bundled-choice-staged.png",
+      "bytes": 100855,
+      "sha256": "03c69f686ed871117097953e9f75fb142489c87b2a22b461a77097ce74470014"
+    },
+    {
+      "file": "05-custom-fixture-inputs.png",
+      "bytes": 96702,
+      "sha256": "89cb6a7218d530d7da644771ec19488c87d848366ff34f0e1e4199a6028444d8"
+    },
+    {
+      "file": "06-custom-long-list.png",
+      "bytes": 101959,
+      "sha256": "44375879bbd93a5227aaf13cba2c71f59296e4e873abc45bb24e03b0ebbffad9"
+    },
+    {
+      "file": "07-search-entry-169.png",
+      "bytes": 97020,
+      "sha256": "1a5a890471945c7ecefad47fa0697991b74a25b1b4107610ad3cbdd3ce8a9abf"
+    },
+    {
+      "file": "08-selected-169-budget-ceiling.png",
+      "bytes": 97039,
+      "sha256": "4ec1c4ebe9f237672020483385cbfefd9dec822f4dbd09d8f018b5a664698666"
+    },
+    {
+      "file": "09-first-save.png",
+      "bytes": 55467,
+      "sha256": "6ede49bdddc482125393df89c6d0bd1245ed7e2af538374d58242de174631f3e"
+    },
+    {
+      "file": "10-explicit-send-model169.png",
+      "bytes": 61697,
+      "sha256": "3e6a672a732dd5e24d8a62d90c32b6c78340e81d0074aae83d93f398e1cc3c99"
+    },
+    {
+      "file": "11-completed-model169.png",
+      "bytes": 49120,
+      "sha256": "b08d3cfeee3c40c91cc6e9c30ba48497aa982e70ea07ff70885e4a8200cc0694"
+    },
+    {
+      "file": "12-fork-budget1024.png",
+      "bytes": 126611,
+      "sha256": "76bd357cc7bdaa2d48035d21ee2337815c18d06a9e032d339d853da0d6988961"
+    },
+    {
+      "file": "13-fork-save-old-chat.png",
+      "bytes": 126255,
+      "sha256": "a7e58c8ae0df6dbdbd0784899f8c4e984ea1cdb9910e22d04a3aa464e69f83e4"
+    },
+    {
+      "file": "14-fork-saved-old-route.png",
+      "bytes": 131506,
+      "sha256": "49e2683c30bc358dd9b7c1a0fd25b80d8a42f9042c805f14021f499570905bd0"
+    },
+    {
+      "file": "15-old-chat-preserved.png",
+      "bytes": 81320,
+      "sha256": "41077fc0a5fb0c705b4c8153bbb4631b5fc7736b6704ed767607c0fd56121dad"
+    },
+    {
+      "file": "16-new-chat-new-route.png",
+      "bytes": 89609,
+      "sha256": "ea6f2d64a6cb77d128de1b92170e854e4726810dd9b4ddf0691c9d8e96152c68"
+    },
+    {
+      "file": "17-completed-new-chat.png",
+      "bytes": 83131,
+      "sha256": "5efdff0d093b0471882feaa3303cbd80e369668d5bb52e135e7a2d6b422c3d4d"
+    },
+    {
+      "file": "18-failed-refresh-retains.png",
+      "bytes": 134964,
+      "sha256": "9ce3fe9b0b3c46ca528e8e68c81d1df10285ca637385655483722f98e24e3a8d"
+    },
+    {
+      "file": "19-failed-refresh-confirmed.png",
+      "bytes": 137440,
+      "sha256": "06a2d518c2e6081da0465f28c7766bd29ae18e63e737f6a75c774127716ad28f"
+    },
+    {
+      "file": "20-paging-keyboard.png",
+      "bytes": 139189,
+      "sha256": "022fc8f0ad61edc652d25e2825395321ef452f8fab57ee4468f7094c73510f50"
+    },
+    {
+      "file": "21-page-three.png",
+      "bytes": 141327,
+      "sha256": "0df35b34eb376986e9d47b375ec1f39392bdccdac2376fd75112cec915f7d202"
+    },
+    {
+      "file": "22-external-origin.png",
+      "bytes": 137240,
+      "sha256": "2e9f43929d1c05150415e49371643acdca0a5ff3d42b4f95438994a5b15daf5e"
+    },
+    {
+      "file": "23-key-change-clears.png",
+      "bytes": 133080,
+      "sha256": "b7bec9ab72b683339a540cca114b695039c48b0133331e720b6d7313394106f0"
+    },
+    {
+      "file": "24-cancel-clean-reopen.png",
+      "bytes": 137887,
+      "sha256": "d5093b6c0cfc4d93d75398d92520397799c47a44ebdaeecb099db9a1b3937d21"
+    },
+    {
+      "file": "25-stall-resize.png",
+      "bytes": 141651,
+      "sha256": "4546ffb73cd72f4666e6c2dc48be5f8d3527263c07b701eda69d0ca43b04062a"
+    },
+    {
+      "file": "26-redirect-no-fallback.png",
+      "bytes": 134731,
+      "sha256": "52d84ef1e82f6b7dfb0a30066364c0b6c23d575afc9e87a6820ba2bbe430333a"
+    },
+    {
+      "file": "27-malformed-manual-available.png",
+      "bytes": 142537,
+      "sha256": "4db09d041a85f7be3729d6cc9d705e7882ad7166eb3ec5d31491dda2b543bd64"
+    },
+    {
+      "file": "28-manual-clears-ceiling.png",
+      "bytes": 131118,
+      "sha256": "e419e422df3aab970da8862a3fe5daf5965008b8dcde7b066f4671dc8ac50f61"
+    },
+    {
+      "file": "29-manual-ceiling-reset-confirmed.png",
+      "bytes": 139274,
+      "sha256": "79ca3a6e93aff06474d62b5ebdb09628f87c342e79be779153e0a087a666f986"
+    },
+    {
+      "file": "30-delayed-tab-switch.png",
+      "bytes": 139394,
+      "sha256": "bcaeb78594265202fffa1fbd74f8c68f8c2ada4113577dc0950fb1c2b87b75f2"
+    },
+    {
+      "file": "31-light-exit.png",
+      "bytes": 348086,
+      "sha256": "1aa9ebd314a542dfb341eaf3bd6329a7d5f1644a1d247cbc24edec77ad0e9af6"
+    },
+    {
+      "file": "32-dark920-settings.png",
+      "bytes": 255906,
+      "sha256": "f69ea55d50354f93a64ccbf347aa1f3da57ac8411b0f4d4d7c3f30f1fa489f42"
+    },
+    {
+      "file": "33-dark920-search169.png",
+      "bytes": 256383,
+      "sha256": "bbc260109e577572db9d600aef29603526c3a010b6541a518b1faca72c790960"
+    },
+    {
+      "file": "34-dark920-selected-limits.png",
+      "bytes": 256450,
+      "sha256": "2746982ed4d81f101c02e8759cde4802ccac3bad8dd60ba5bd2686914845062c"
+    },
+    {
+      "file": "35-dark920-cancel-notice-defect.png",
+      "bytes": 259352,
+      "sha256": "6298cc4d7008cc18185cd0f9c93c0912f294f5d4f3d0ea0a6f821e41e1b95bb9"
+    },
+    {
+      "file": "36-dark-exit-process-clear.png",
+      "bytes": 342593,
+      "sha256": "a164085154d0381ce661150bf5c99452812e51c4a94a02fb4ac88dddd5584f1d"
+    }
+  ],
+  "receipts": {
+    "light": {
+      "same": {
+        "get": 4,
+        "post": 2,
+        "cancelled": 0
+      },
+      "external": {
+        "get": 4,
+        "post": 0,
+        "cancelled": 0
+      }
+    },
+    "dark": {
+      "same": {
+        "get": 0,
+        "post": 0,
+        "cancelled": 0
+      },
+      "external": {
+        "get": 1,
+        "post": 0,
+        "cancelled": 0
+      }
+    }
+  },
+  "light_client_size": [
+    1180,
+    812
+  ],
+  "dark_client_size": [
+    920,
+    600
+  ],
+  "limitations": [
+    "Delayed GET and tab switch observed, but timing overlap/cancellation not established",
+    "External-vault-revision, failed Save/Delete admission and window rebind races covered by deterministic tests, not actual GUI",
+    "Intermediate screenshot filenames are not pass assertions; confirmed later screenshots and observations take precedence",
+    "Post-notice-repair binary/GUI pending"
+  ]
+}

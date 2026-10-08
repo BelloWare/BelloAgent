@@ -60,6 +60,33 @@ and `Sessions.swift` / `SessionRun.swift`.
   explicit reselection of a still-saved connection. Unknown write/teardown outcomes
   remain blocked; Reload alone does not claim recovery.
 
+## Catalog-assisted setup
+
+In Fixture mode, the Connections form now has an optional custom catalog URL and an explicit
+Choose model action. Blank uses the existing checked-in Bello catalog, embedded
+from `catalogs/bello-agent.models.json`; a custom catalog replaces it completely.
+Native manual forms, storage labels and async route/new-chat fences remain unchanged;
+this catalog slice adds no Native-mode preparation or catalog controls.
+Neither path falls back to a provider `/models` endpoint. Remote catalog access
+remains a numeric-loopback, fake-credential fixture, behind the existing startup
+and authority gates. This does not enable production networking or credentials.
+
+Search spans names, aliases and descriptions. Results use bounded 40-row pages;
+deprecated entries appear only when already selected. An unlisted alias remains
+editable directly. Choose stages optional context capacity, the model output
+ceiling and compatible reasoning metadata, clamping the existing reply budget
+without increasing it. Same-alias metadata changes are dirty, survive final form
+capture and participate in the existing whole-envelope Save CAS. Refresh never
+adopts model metadata. Manual alias changes clear the prior model ceiling and
+image-input declaration. Catalog image badges are descriptive; they do not grant
+attachment capability.
+
+Save retains existing model/route fork behavior. The saved connection picker and
+New Chat consume those saved routes, and only explicit composer submission sends
+a Responses request. The catalog URL and source lineage remain separate from
+runtime dispatch configuration. See [catalog contracts](model-catalog-setup.md)
+for origin, parser, cancellation, cache, metadata and validation boundaries.
+
 ## Catalog, authority and lifecycle invariants
 
 Catalog v7 retains the explicit nullable `connection_id` introduced by v6 and
@@ -90,7 +117,7 @@ dynamic-resource constructor is unchanged.
 
 ## Explicit gaps and bounded differences
 
-This preview excludes other Settings sections, model catalog discovery, mini models,
+This preview excludes other Settings sections, mini models,
 advanced routing/reasoning controls, imported/legacy Messages conversion, connection
 probe chats, multi-project/sides/background connection switching, native secure
 keyboard/IME/accessibility acceptance and signing. Native vault composition is

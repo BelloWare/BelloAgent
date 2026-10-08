@@ -2,7 +2,7 @@ name: Rust macOS native checks
 on:
   push:
     branches: [rust]
-    paths: ['rust/**', '.github/workflows/rust-macos.yml']
+    paths: ['rust/**', 'catalogs/bello-agent.models.json', '.github/workflows/rust-macos.yml']
   workflow_dispatch:
 permissions:
   contents: read

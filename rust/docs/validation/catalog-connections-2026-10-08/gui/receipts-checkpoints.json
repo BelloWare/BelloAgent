@@ -1,0 +1,77 @@
+[
+  {
+    "checkpoint": "bundled_choose_cancel",
+    "catalog_gets": 0,
+    "provider_posts": 0,
+    "source": "both independent numeric-loopback logs",
+    "app_log_bytes": 0
+  },
+  {
+    "checkpoint": "route_fork_two_explicit_sends",
+    "same_origin": [
+      {
+        "accept_json": true,
+        "any_authorization": true,
+        "custom_header_present": false,
+        "fixture_authorization": true,
+        "kind": "catalog",
+        "method": "GET",
+        "no_cache": true
+      },
+      {
+        "accept_json": false,
+        "any_authorization": true,
+        "custom_header_present": true,
+        "fixture_authorization": true,
+        "kind": "responses",
+        "max_output_tokens": 8192,
+        "method": "POST",
+        "model": "fixture-model-169",
+        "no_cache": false,
+        "reasoning": null,
+        "tools": 3
+      },
+      {
+        "accept_json": true,
+        "any_authorization": true,
+        "custom_header_present": false,
+        "fixture_authorization": true,
+        "kind": "catalog",
+        "method": "GET",
+        "no_cache": true
+      },
+      {
+        "accept_json": false,
+        "any_authorization": true,
+        "custom_header_present": true,
+        "fixture_authorization": true,
+        "kind": "responses",
+        "max_output_tokens": 1024,
+        "method": "POST",
+        "model": "fixture-model-168",
+        "no_cache": false,
+        "reasoning": null,
+        "tools": 3
+      },
+      {
+        "accept_json": true,
+        "any_authorization": true,
+        "custom_header_present": false,
+        "fixture_authorization": true,
+        "kind": "catalog",
+        "method": "GET",
+        "no_cache": true
+      },
+      {
+        "accept_json": true,
+        "any_authorization": true,
+        "custom_header_present": false,
+        "fixture_authorization": true,
+        "kind": "catalog",
+        "method": "GET",
+        "no_cache": true
+      }
+    ],
+    "external_gets": 0
+  }
+]

@@ -1,0 +1,2670 @@
+{
+  "base_commit": "6eee1d06776b18b55b45f0f8adbbe6204c3cb328",
+  "base_tree": "9de46a57039fce8e06973ff8d8578d25438bc441",
+  "baseline_audit_sha256": "c247b71a7a721a28e9200cf59999088efde39fcc777fea18c673b270606cd91e",
+  "baseline_counts": {
+    "production": 44145,
+    "tests_and_test_support": 59558,
+    "benchmark_example": 1192
+  },
+  "delta": {
+    "production": 1384,
+    "tests_and_test_support": 2206,
+    "benchmark_example": 0
+  },
+  "counts": {
+    "production": 45529,
+    "tests_and_test_support": 61764,
+    "benchmark_example": 1192
+  },
+  "physical_total": 108485,
+  "preserved_equal_line_category_changes": 0,
+  "method": "Nonblank physical owned Rust lines including comments. Inherit exact6eee category ledger including its138 native-generalized lines; source-review all changed/new file spans. No old8914 delta reused; no unchanged source reclassification. Not completion or performance evidence.",
+  "files": [
+    {
+      "path": "rust/crates/bello-agent-app/src/chat_navigation.rs",
+      "before_sha256": "7f85dde301dbd74940034fbe56438c7859f214640ca4ae97654c403bdc5ba374",
+      "after_sha256": "150e67f601057b304282fe2f1d359c0b80ab416719504fe8e399ce3adf27d636",
+      "origin": {
+        "kind": "exact6eee additive audit",
+        "sha256": "c247b71a7a721a28e9200cf59999088efde39fcc777fea18c673b270606cd91e"
+      },
+      "before_counts": {
+        "production": 1166,
+        "tests_and_test_support": 0,
+        "benchmark_example": 0
+      },
+      "after_counts": {
+        "production": 1167,
+        "tests_and_test_support": 0,
+        "benchmark_example": 0
+      },
+      "delta": {
+        "production": 1,
+        "tests_and_test_support": 0,
+        "benchmark_example": 0
+      },
+      "after_reviewed_support_ranges": [],
+      "equal_line_category_changes": [],
+      "changed_spans": [
+        {
+          "operation": "insert",
+          "before": [
+            1070,
+            1069
+          ],
+          "after": [
+            1070,
+            1070
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 1,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        }
+      ]
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/connection_model_catalog.rs",
+      "before_sha256": null,
+      "after_sha256": "7ef35e6b418ef0b8694305f1a157563473eec10e44735b4c35ffb81a94b22d68",
+      "origin": {
+        "kind": "new file"
+      },
+      "before_counts": {
+        "production": 0,
+        "tests_and_test_support": 0,
+        "benchmark_example": 0
+      },
+      "after_counts": {
+        "production": 321,
+        "tests_and_test_support": 102,
+        "benchmark_example": 0
+      },
+      "delta": {
+        "production": 321,
+        "tests_and_test_support": 102,
+        "benchmark_example": 0
+      },
+      "after_reviewed_support_ranges": [
+        {
+          "start": 321,
+          "end": 337,
+          "start_text": "        #[cfg(feature = \"synthetic-authority\")]",
+          "end_text": "        }"
+        },
+        {
+          "start": 343,
+          "end": 429,
+          "start_text": "#[cfg(test)]",
+          "end_text": "mod lifecycle_tests;"
+        }
+      ],
+      "equal_line_category_changes": [],
+      "changed_spans": [
+        {
+          "operation": "insert",
+          "before": [
+            1,
+            0
+          ],
+          "after": [
+            1,
+            429
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 321,
+            "tests_and_test_support": 102,
+            "benchmark_example": 0
+          }
+        }
+      ]
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/connection_catalog_workflow_tests.rs",
+      "before_sha256": null,
+      "after_sha256": "ced39f50d12e6cc5a39a386d1f7d7856fe21209aadfbe9ae2cdcdc86bc34f97b",
+      "origin": {
+        "kind": "new file"
+      },
+      "before_counts": {
+        "production": 0,
+        "tests_and_test_support": 0,
+        "benchmark_example": 0
+      },
+      "after_counts": {
+        "production": 0,
+        "tests_and_test_support": 565,
+        "benchmark_example": 0
+      },
+      "delta": {
+        "production": 0,
+        "tests_and_test_support": 565,
+        "benchmark_example": 0
+      },
+      "after_reviewed_support_ranges": [
+        {
+          "start": 1,
+          "end": 573,
+          "start_text": "//! Cost-free end-to-end catalog -> form -> vault -> route -> explicit send.",
+          "end_text": "}"
+        }
+      ],
+      "equal_line_category_changes": [],
+      "changed_spans": [
+        {
+          "operation": "insert",
+          "before": [
+            1,
+            0
+          ],
+          "after": [
+            1,
+            573
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 0,
+            "tests_and_test_support": 565,
+            "benchmark_example": 0
+          }
+        }
+      ]
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/connection_catalog_lifecycle_tests.rs",
+      "before_sha256": null,
+      "after_sha256": "62e9b197e85a402bdd33708e89017d886ac7dd2ae153386832cb58d6e4160657",
+      "origin": {
+        "kind": "new file"
+      },
+      "before_counts": {
+        "production": 0,
+        "tests_and_test_support": 0,
+        "benchmark_example": 0
+      },
+      "after_counts": {
+        "production": 0,
+        "tests_and_test_support": 180,
+        "benchmark_example": 0
+      },
+      "delta": {
+        "production": 0,
+        "tests_and_test_support": 180,
+        "benchmark_example": 0
+      },
+      "after_reviewed_support_ranges": [
+        {
+          "start": 1,
+          "end": 182,
+          "start_text": "//! Deterministic queued-success races complement actual HTTP cancellation tests.",
+          "end_text": "}"
+        }
+      ],
+      "equal_line_category_changes": [],
+      "changed_spans": [
+        {
+          "operation": "insert",
+          "before": [
+            1,
+            0
+          ],
+          "after": [
+            1,
+            182
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 0,
+            "tests_and_test_support": 180,
+            "benchmark_example": 0
+          }
+        }
+      ]
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/connection_settings_controller.rs",
+      "before_sha256": "4d5e634386bfcbd10838f98f2a00f81dfb52fb66382b0abe812fd3c7bb4c0e8e",
+      "after_sha256": "7d266bab174a335e729242d5d7f42e4c146757fb747ca552a4887d6ee4e4f958",
+      "origin": {
+        "kind": "exact6eee additive audit",
+        "sha256": "c247b71a7a721a28e9200cf59999088efde39fcc777fea18c673b270606cd91e"
+      },
+      "before_counts": {
+        "production": 1126,
+        "tests_and_test_support": 24,
+        "benchmark_example": 0
+      },
+      "after_counts": {
+        "production": 1216,
+        "tests_and_test_support": 24,
+        "benchmark_example": 0
+      },
+      "delta": {
+        "production": 90,
+        "tests_and_test_support": 0,
+        "benchmark_example": 0
+      },
+      "after_reviewed_support_ranges": [
+        {
+          "start": 6,
+          "end": 7,
+          "start_text": "#[cfg(feature = \"synthetic-authority\")]",
+          "end_text": "use bello_agent_core::project_authority::synthetic::SyntheticAuthorityControl;"
+        },
+        {
+          "start": 28,
+          "end": 31,
+          "start_text": "#[cfg(feature = \"synthetic-authority\")]",
+          "end_text": "impl gpui::Global for LaunchConnectionAuthority {}"
+        },
+        {
+          "start": 149,
+          "end": 159,
+          "start_text": "        #[cfg(feature = \"synthetic-authority\")]",
+          "end_text": "            });"
+        },
+        {
+          "start": 169,
+          "end": 172,
+          "start_text": "                #[cfg(feature = \"synthetic-authority\")]",
+          "end_text": "                }"
+        },
+        {
+          "start": 1247,
+          "end": 1249,
+          "start_text": "#[cfg(all(test, feature = \"synthetic-authority\"))]",
+          "end_text": "mod tests;"
+        }
+      ],
+      "equal_line_category_changes": [],
+      "changed_spans": [
+        {
+          "operation": "insert",
+          "before": [
+            4,
+            3
+          ],
+          "after": [
+            4,
+            5
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 2,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            15,
+            14
+          ],
+          "after": [
+            17,
+            17
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 1,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "replace",
+          "before": [
+            46,
+            46
+          ],
+          "after": [
+            49,
+            74
+          ],
+          "before_counts": {
+            "production": 1,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 26,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            53,
+            52
+          ],
+          "after": [
+            81,
+            81
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 1,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            79,
+            78
+          ],
+          "after": [
+            108,
+            109
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 2,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "replace",
+          "before": [
+            86,
+            87
+          ],
+          "after": [
+            117,
+            117
+          ],
+          "before_counts": {
+            "production": 2,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 1,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "replace",
+          "before": [
+            89,
+            92
+          ],
+          "after": [
+            119,
+            120
+          ],
+          "before_counts": {
+            "production": 4,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 2,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "replace",
+          "before": [
+            94,
+            94
+          ],
+          "after": [
+            122,
+            123
+          ],
+          "before_counts": {
+            "production": 1,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 2,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            103,
+            102
+          ],
+          "after": [
+            132,
+            133
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 2,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            162,
+            161
+          ],
+          "after": [
+            193,
+            194
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 2,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            182,
+            181
+          ],
+          "after": [
+            215,
+            215
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 1,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            209,
+            208
+          ],
+          "after": [
+            243,
+            256
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 14,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            217,
+            216
+          ],
+          "after": [
+            265,
+            265
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 1,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            222,
+            221
+          ],
+          "after": [
+            271,
+            282
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 12,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            224,
+            223
+          ],
+          "after": [
+            285,
+            285
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 1,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "replace",
+          "before": [
+            298,
+            298
+          ],
+          "after": [
+            360,
+            360
+          ],
+          "before_counts": {
+            "production": 1,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 1,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            300,
+            299
+          ],
+          "after": [
+            362,
+            362
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 1,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            358,
+            357
+          ],
+          "after": [
+            421,
+            421
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 1,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            398,
+            397
+          ],
+          "after": [
+            462,
+            462
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 1,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            407,
+            406
+          ],
+          "after": [
+            472,
+            472
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 1,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "replace",
+          "before": [
+            434,
+            434
+          ],
+          "after": [
+            500,
+            500
+          ],
+          "before_counts": {
+            "production": 1,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 1,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            440,
+            439
+          ],
+          "after": [
+            506,
+            524
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 19,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            441,
+            440
+          ],
+          "after": [
+            526,
+            526
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 1,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            446,
+            445
+          ],
+          "after": [
+            532,
+            532
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 1,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            490,
+            489
+          ],
+          "after": [
+            577,
+            577
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 1,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            580,
+            579
+          ],
+          "after": [
+            668,
+            668
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 1,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            705,
+            704
+          ],
+          "after": [
+            794,
+            794
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 1,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        }
+      ]
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/connection_settings_controller_tests.rs",
+      "before_sha256": "5ce074d26ffdb09d16156d12efed1330d075d37eaaac4ba3633e4ef426c6b24e",
+      "after_sha256": "d0415a9be73db1951b3574073169f45848aaecbca0cee4120e14c46f140dda9d",
+      "origin": {
+        "kind": "exact6eee additive audit",
+        "sha256": "c247b71a7a721a28e9200cf59999088efde39fcc777fea18c673b270606cd91e"
+      },
+      "before_counts": {
+        "production": 0,
+        "tests_and_test_support": 2013,
+        "benchmark_example": 0
+      },
+      "after_counts": {
+        "production": 0,
+        "tests_and_test_support": 2184,
+        "benchmark_example": 0
+      },
+      "delta": {
+        "production": 0,
+        "tests_and_test_support": 171,
+        "benchmark_example": 0
+      },
+      "after_reviewed_support_ranges": [
+        {
+          "start": 1,
+          "end": 2231,
+          "start_text": "//! Synthetic Settings -> saved connection -> actual loopback dispatch. No native",
+          "end_text": "}"
+        }
+      ],
+      "equal_line_category_changes": [],
+      "changed_spans": [
+        {
+          "operation": "replace",
+          "before": [
+            95,
+            95
+          ],
+          "after": [
+            95,
+            95
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 1,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 0,
+            "tests_and_test_support": 1,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "replace",
+          "before": [
+            106,
+            106
+          ],
+          "after": [
+            106,
+            106
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 1,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 0,
+            "tests_and_test_support": 1,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "replace",
+          "before": [
+            120,
+            120
+          ],
+          "after": [
+            120,
+            120
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 1,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 0,
+            "tests_and_test_support": 1,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "replace",
+          "before": [
+            131,
+            131
+          ],
+          "after": [
+            131,
+            131
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 1,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 0,
+            "tests_and_test_support": 1,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "replace",
+          "before": [
+            153,
+            153
+          ],
+          "after": [
+            153,
+            153
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 1,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 0,
+            "tests_and_test_support": 1,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            627,
+            626
+          ],
+          "after": [
+            627,
+            765
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 0,
+            "tests_and_test_support": 136,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            2055,
+            2054
+          ],
+          "after": [
+            2194,
+            2231
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 0,
+            "tests_and_test_support": 35,
+            "benchmark_example": 0
+          }
+        }
+      ]
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/connection_settings_view.rs",
+      "before_sha256": "72550d09568e97924a0ac8909ace99cb6e7873df17bc4d973951d982b9cc2b44",
+      "after_sha256": "4482bd23786fdf8859f21d74e37f544d93370adee6dd3f3c752429cb4e897d7f",
+      "origin": {
+        "kind": "exact6eee additive audit",
+        "sha256": "c247b71a7a721a28e9200cf59999088efde39fcc777fea18c673b270606cd91e"
+      },
+      "before_counts": {
+        "production": 1585,
+        "tests_and_test_support": 3,
+        "benchmark_example": 0
+      },
+      "after_counts": {
+        "production": 1883,
+        "tests_and_test_support": 3,
+        "benchmark_example": 0
+      },
+      "delta": {
+        "production": 298,
+        "tests_and_test_support": 0,
+        "benchmark_example": 0
+      },
+      "after_reviewed_support_ranges": [
+        {
+          "start": 1937,
+          "end": 1939,
+          "start_text": "#[cfg(test)]",
+          "end_text": "mod tests;"
+        }
+      ],
+      "equal_line_category_changes": [],
+      "changed_spans": [
+        {
+          "operation": "insert",
+          "before": [
+            12,
+            11
+          ],
+          "after": [
+            12,
+            12
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 1,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "replace",
+          "before": [
+            23,
+            23
+          ],
+          "after": [
+            24,
+            24
+          ],
+          "before_counts": {
+            "production": 1,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 1,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            33,
+            32
+          ],
+          "after": [
+            34,
+            36
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 3,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            47,
+            46
+          ],
+          "after": [
+            51,
+            52
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 2,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            55,
+            54
+          ],
+          "after": [
+            61,
+            73
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 12,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            60,
+            59
+          ],
+          "after": [
+            79,
+            81
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 3,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            115,
+            114
+          ],
+          "after": [
+            137,
+            141
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 5,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            213,
+            212
+          ],
+          "after": [
+            240,
+            253
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 14,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "replace",
+          "before": [
+            214,
+            214
+          ],
+          "after": [
+            255,
+            269
+          ],
+          "before_counts": {
+            "production": 1,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 15,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            248,
+            247
+          ],
+          "after": [
+            303,
+            304
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 2,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "replace",
+          "before": [
+            253,
+            253
+          ],
+          "after": [
+            310,
+            310
+          ],
+          "before_counts": {
+            "production": 1,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 1,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            259,
+            258
+          ],
+          "after": [
+            316,
+            317
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 2,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            269,
+            268
+          ],
+          "after": [
+            328,
+            329
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 2,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            280,
+            279
+          ],
+          "after": [
+            341,
+            342
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 2,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            291,
+            290
+          ],
+          "after": [
+            354,
+            355
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 2,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "replace",
+          "before": [
+            790,
+            790
+          ],
+          "after": [
+            855,
+            867
+          ],
+          "before_counts": {
+            "production": 1,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 13,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "replace",
+          "before": [
+            848,
+            848
+          ],
+          "after": [
+            925,
+            959
+          ],
+          "before_counts": {
+            "production": 1,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 35,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "replace",
+          "before": [
+            885,
+            886
+          ],
+          "after": [
+            996,
+            1001
+          ],
+          "before_counts": {
+            "production": 2,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 6,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "replace",
+          "before": [
+            931,
+            931
+          ],
+          "after": [
+            1046,
+            1056
+          ],
+          "before_counts": {
+            "production": 1,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 11,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            1062,
+            1061
+          ],
+          "after": [
+            1187,
+            1319
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 132,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "replace",
+          "before": [
+            1397,
+            1397
+          ],
+          "after": [
+            1655,
+            1655
+          ],
+          "before_counts": {
+            "production": 1,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 1,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            1406,
+            1405
+          ],
+          "after": [
+            1664,
+            1669
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 6,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            1420,
+            1419
+          ],
+          "after": [
+            1684,
+            1686
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 3,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            1421,
+            1420
+          ],
+          "after": [
+            1688,
+            1720
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 33,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        }
+      ]
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/connection_settings_view_tests.rs",
+      "before_sha256": "cd1ee030acc5e241b917f7de294ff8ef721878583e5675cb228792b7945b43cc",
+      "after_sha256": "b3381f792ffe834ae384b20d579630fee5b9d8b81206e3b46167bc76364a3bc8",
+      "origin": {
+        "kind": "exact6eee additive audit",
+        "sha256": "c247b71a7a721a28e9200cf59999088efde39fcc777fea18c673b270606cd91e"
+      },
+      "before_counts": {
+        "production": 0,
+        "tests_and_test_support": 932,
+        "benchmark_example": 0
+      },
+      "after_counts": {
+        "production": 0,
+        "tests_and_test_support": 1026,
+        "benchmark_example": 0
+      },
+      "delta": {
+        "production": 0,
+        "tests_and_test_support": 94,
+        "benchmark_example": 0
+      },
+      "after_reviewed_support_ranges": [
+        {
+          "start": 1,
+          "end": 1061,
+          "start_text": "//! Isolated fake-platform view contracts. No vault, provider or native access.",
+          "end_text": "}"
+        }
+      ],
+      "equal_line_category_changes": [],
+      "changed_spans": [
+        {
+          "operation": "insert",
+          "before": [
+            30,
+            29
+          ],
+          "after": [
+            30,
+            32
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 0,
+            "tests_and_test_support": 3,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            35,
+            34
+          ],
+          "after": [
+            38,
+            39
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 0,
+            "tests_and_test_support": 2,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            965,
+            964
+          ],
+          "after": [
+            970,
+            1061
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 0,
+            "tests_and_test_support": 89,
+            "benchmark_example": 0
+          }
+        }
+      ]
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/lib.rs",
+      "before_sha256": "00d0e6fc12ab534c70424aa328816ff7851b570a61be0424247f8d06bb23acdf",
+      "after_sha256": "82291599f6b6043531bbdd1b259eb22c3e91dca7496bcdfb3317d0bcc2706af7",
+      "origin": {
+        "kind": "reviewed simple module-export file, only positive synthetic module declaration is support"
+      },
+      "before_counts": {
+        "production": 56,
+        "tests_and_test_support": 2,
+        "benchmark_example": 0
+      },
+      "after_counts": {
+        "production": 57,
+        "tests_and_test_support": 2,
+        "benchmark_example": 0
+      },
+      "delta": {
+        "production": 1,
+        "tests_and_test_support": 0,
+        "benchmark_example": 0
+      },
+      "after_reviewed_support_ranges": [
+        {
+          "start": 22,
+          "end": 23,
+          "start_text": "#[cfg(feature = \"synthetic-authority\")]",
+          "end_text": "pub mod synthetic_project_runtime;"
+        }
+      ],
+      "equal_line_category_changes": [],
+      "changed_spans": [
+        {
+          "operation": "insert",
+          "before": [
+            9,
+            8
+          ],
+          "after": [
+            9,
+            9
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 1,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        }
+      ]
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/model_catalog.rs",
+      "before_sha256": null,
+      "after_sha256": "7519a071e9aeeee35ce5155b6d7d4b0403489a4ab0bfc7dbaf3fbde4b062f94f",
+      "origin": {
+        "kind": "new file"
+      },
+      "before_counts": {
+        "production": 0,
+        "tests_and_test_support": 0,
+        "benchmark_example": 0
+      },
+      "after_counts": {
+        "production": 452,
+        "tests_and_test_support": 3,
+        "benchmark_example": 0
+      },
+      "delta": {
+        "production": 452,
+        "tests_and_test_support": 3,
+        "benchmark_example": 0
+      },
+      "after_reviewed_support_ranges": [
+        {
+          "start": 460,
+          "end": 462,
+          "start_text": "#[cfg(test)]",
+          "end_text": "mod tests;"
+        }
+      ],
+      "equal_line_category_changes": [],
+      "changed_spans": [
+        {
+          "operation": "insert",
+          "before": [
+            1,
+            0
+          ],
+          "after": [
+            1,
+            462
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 452,
+            "tests_and_test_support": 3,
+            "benchmark_example": 0
+          }
+        }
+      ]
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/model_catalog_tests.rs",
+      "before_sha256": null,
+      "after_sha256": "d91308a85c812a2cf70b4131e500090fe3aca23a7cd91c68a29cf265b5508c06",
+      "origin": {
+        "kind": "new file"
+      },
+      "before_counts": {
+        "production": 0,
+        "tests_and_test_support": 0,
+        "benchmark_example": 0
+      },
+      "after_counts": {
+        "production": 0,
+        "tests_and_test_support": 655,
+        "benchmark_example": 0
+      },
+      "delta": {
+        "production": 0,
+        "tests_and_test_support": 655,
+        "benchmark_example": 0
+      },
+      "after_reviewed_support_ranges": [
+        {
+          "start": 1,
+          "end": 659,
+          "start_text": "use super::*;",
+          "end_text": "}"
+        }
+      ],
+      "equal_line_category_changes": [],
+      "changed_spans": [
+        {
+          "operation": "insert",
+          "before": [
+            1,
+            0
+          ],
+          "after": [
+            1,
+            659
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 0,
+            "tests_and_test_support": 655,
+            "benchmark_example": 0
+          }
+        }
+      ]
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/connection_vault.rs",
+      "before_sha256": "88917fc4859187de589a915a6188ff35c97dab7479cedbb4d580bd2caba76290",
+      "after_sha256": "0e34414f3de5a7148fd2a7a785df9531a01c653cd5f29e6bd20d85b3649502d7",
+      "origin": {
+        "path": "/workspace/scratch/8b6fda578834/BelloAgent/rust/docs/validation/loc-saved-runtime-2026-10-07-delta.json",
+        "sha256": "569b588c90057a8b9f775c4cee4212f7f1bfa15aa827a25f0cb6e3474746046f",
+        "source_blob": "1e5050c5bce063f7958f6fa5e61c442d1d21e89a",
+        "state": {
+          "nonblank": 618,
+          "counts": {
+            "production": 497,
+            "tests_and_test_support": 121,
+            "benchmark_example": 0
+          },
+          "reviewed_support_ranges": [
+            {
+              "start": 279,
+              "end": 280,
+              "reason": "#[cfg(feature = \"synthetic-authority\")]",
+              "start_text": "        #[cfg(feature = \"synthetic-authority\")]",
+              "end_text": "        super::AuthorityProvenance::Fixture => validate_synthetic(profile, key),"
+            },
+            {
+              "start": 283,
+              "end": 303,
+              "reason": "#[cfg(feature = \"synthetic-authority\")]",
+              "start_text": "#[cfg(feature = \"synthetic-authority\")]",
+              "end_text": "}"
+            },
+            {
+              "start": 528,
+              "end": 530,
+              "reason": "#[cfg(feature = \"synthetic-authority\")]",
+              "start_text": "#[cfg(feature = \"synthetic-authority\")]",
+              "end_text": "mod synthetic_runtime;"
+            },
+            {
+              "start": 531,
+              "end": 532,
+              "reason": "#[cfg(feature = \"synthetic-authority\")]",
+              "start_text": "#[cfg(feature = \"synthetic-authority\")]",
+              "end_text": "pub use synthetic_runtime::SyntheticConnectionRuntime;"
+            },
+            {
+              "start": 534,
+              "end": 536,
+              "reason": "#[cfg(all(test, feature = \"synthetic-authority\"))]",
+              "start_text": "#[cfg(all(test, feature = \"synthetic-authority\"))]",
+              "end_text": "mod tests;"
+            },
+            {
+              "start": 538,
+              "end": 627,
+              "reason": "#[cfg(test)]",
+              "start_text": "#[cfg(test)]",
+              "end_text": "}"
+            }
+          ]
+        }
+      },
+      "before_counts": {
+        "production": 497,
+        "tests_and_test_support": 121,
+        "benchmark_example": 0
+      },
+      "after_counts": {
+        "production": 718,
+        "tests_and_test_support": 132,
+        "benchmark_example": 0
+      },
+      "delta": {
+        "production": 221,
+        "tests_and_test_support": 11,
+        "benchmark_example": 0
+      },
+      "after_reviewed_support_ranges": [
+        {
+          "start": 194,
+          "end": 195,
+          "start_text": "#[cfg(test)]",
+          "end_text": "thread_local! { static CATALOG_TEST_KEY_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }"
+        },
+        {
+          "start": 197,
+          "end": 200,
+          "start_text": "    #[cfg(test)]",
+          "end_text": "    }"
+        },
+        {
+          "start": 385,
+          "end": 386,
+          "start_text": "        #[cfg(feature = \"synthetic-authority\")]",
+          "end_text": "        super::AuthorityProvenance::Fixture => validate_synthetic(profile, key),"
+        },
+        {
+          "start": 389,
+          "end": 409,
+          "start_text": "#[cfg(feature = \"synthetic-authority\")]",
+          "end_text": "}"
+        },
+        {
+          "start": 709,
+          "end": 710,
+          "start_text": "            #[cfg(feature = \"synthetic-authority\")]",
+          "end_text": "            super::AuthorityProvenance::Fixture => true,"
+        },
+        {
+          "start": 757,
+          "end": 761,
+          "start_text": "#[cfg(feature = \"synthetic-authority\")]",
+          "end_text": "pub use synthetic_runtime::SyntheticConnectionRuntime;"
+        },
+        {
+          "start": 763,
+          "end": 769,
+          "start_text": "#[cfg(all(test, feature = \"synthetic-authority\"))]",
+          "end_text": "mod catalog_tests;"
+        },
+        {
+          "start": 771,
+          "end": 860,
+          "start_text": "#[cfg(test)]",
+          "end_text": "}"
+        }
+      ],
+      "equal_line_category_changes": [],
+      "changed_spans": [
+        {
+          "operation": "replace",
+          "before": [
+            7,
+            7
+          ],
+          "after": [
+            7,
+            10
+          ],
+          "before_counts": {
+            "production": 1,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 4,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            39,
+            38
+          ],
+          "after": [
+            42,
+            43
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 2,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            47,
+            46
+          ],
+          "after": [
+            52,
+            52
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 1,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            69,
+            68
+          ],
+          "after": [
+            75,
+            75
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 1,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            70,
+            69
+          ],
+          "after": [
+            77,
+            77
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 1,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            82,
+            81
+          ],
+          "after": [
+            90,
+            102
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 13,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            88,
+            87
+          ],
+          "after": [
+            109,
+            114
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 6,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            113,
+            112
+          ],
+          "after": [
+            140,
+            142
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 3,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            127,
+            126
+          ],
+          "after": [
+            157,
+            158
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 2,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            134,
+            133
+          ],
+          "after": [
+            166,
+            171
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 6,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            156,
+            155
+          ],
+          "after": [
+            194,
+            195
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 0,
+            "tests_and_test_support": 2,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            157,
+            156
+          ],
+          "after": [
+            197,
+            200
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 0,
+            "tests_and_test_support": 4,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            158,
+            157
+          ],
+          "after": [
+            202,
+            251
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 50,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            177,
+            176
+          ],
+          "after": [
+            271,
+            279
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 9,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "replace",
+          "before": [
+            187,
+            187
+          ],
+          "after": [
+            290,
+            291
+          ],
+          "before_counts": {
+            "production": 1,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 2,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            216,
+            215
+          ],
+          "after": [
+            320,
+            320
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 1,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            233,
+            232
+          ],
+          "after": [
+            338,
+            338
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 1,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            349,
+            348
+          ],
+          "after": [
+            455,
+            455
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 1,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            416,
+            415
+          ],
+          "after": [
+            523,
+            529
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 7,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "replace",
+          "before": [
+            423,
+            453
+          ],
+          "after": [
+            537,
+            565
+          ],
+          "before_counts": {
+            "production": 31,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 29,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            455,
+            454
+          ],
+          "after": [
+            567,
+            570
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 4,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "delete",
+          "before": [
+            456,
+            457
+          ],
+          "after": [
+            572,
+            571
+          ],
+          "before_counts": {
+            "production": 2,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "delete",
+          "before": [
+            459,
+            463
+          ],
+          "after": [
+            573,
+            572
+          ],
+          "before_counts": {
+            "production": 5,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            465,
+            464
+          ],
+          "after": [
+            574,
+            574
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 1,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "replace",
+          "before": [
+            489,
+            491
+          ],
+          "after": [
+            599,
+            618
+          ],
+          "before_counts": {
+            "production": 3,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 20,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "replace",
+          "before": [
+            493,
+            496
+          ],
+          "after": [
+            620,
+            624
+          ],
+          "before_counts": {
+            "production": 4,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 5,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "replace",
+          "before": [
+            498,
+            501
+          ],
+          "after": [
+            626,
+            639
+          ],
+          "before_counts": {
+            "production": 4,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 14,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            503,
+            502
+          ],
+          "after": [
+            641,
+            642
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 2,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            504,
+            503
+          ],
+          "after": [
+            644,
+            732
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 87,
+            "tests_and_test_support": 2,
+            "benchmark_example": 0
+          }
+        },
+        {
+          "operation": "insert",
+          "before": [
+            537,
+            536
+          ],
+          "after": [
+            766,
+            769
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 0,
+            "tests_and_test_support": 3,
+            "benchmark_example": 0
+          }
+        }
+      ]
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/connection_catalog_tests.rs",
+      "before_sha256": null,
+      "after_sha256": "404e25bec653a158ecaca3521c4ae9931f2c42e114a2f95d3cbc281bd4167ace",
+      "origin": {
+        "kind": "new file"
+      },
+      "before_counts": {
+        "production": 0,
+        "tests_and_test_support": 0,
+        "benchmark_example": 0
+      },
+      "after_counts": {
+        "production": 0,
+        "tests_and_test_support": 425,
+        "benchmark_example": 0
+      },
+      "delta": {
+        "production": 0,
+        "tests_and_test_support": 425,
+        "benchmark_example": 0
+      },
+      "after_reviewed_support_ranges": [
+        {
+          "start": 1,
+          "end": 426,
+          "start_text": "use super::*;",
+          "end_text": "}"
+        }
+      ],
+      "equal_line_category_changes": [],
+      "changed_spans": [
+        {
+          "operation": "insert",
+          "before": [
+            1,
+            0
+          ],
+          "after": [
+            1,
+            426
+          ],
+          "before_counts": {
+            "production": 0,
+            "tests_and_test_support": 0,
+            "benchmark_example": 0
+          },
+          "after_counts": {
+            "production": 0,
+            "tests_and_test_support": 425,
+            "benchmark_example": 0
+          }
+        }
+      ]
+    }
+  ]
+}

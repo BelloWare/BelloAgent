@@ -1,0 +1,196 @@
+   Compiling bello-agent-app v0.1.0 (/workspace/shared/catalog-native-app-focused/rust/crates/bello-agent-app)
+warning: methods `test_seed_pin` and `test_finish_pin` are never used
+   --> crates/bello-agent-app/src/chat_organization.rs:556:19
+    |
+555 | impl AgentView {
+    | -------------- methods in this implementation
+556 |     pub(crate) fn test_seed_pin(&mut self, id: &str, token: uuid::Uuid, cx: &mut Context<Self>) {
+    |                   ^^^^^^^^^^^^^
+...
+582 |     pub(crate) fn test_finish_pin(
+    |                   ^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `editor_for_test` is never used
+   --> crates/bello-agent-app/src/file_tab.rs:146:19
+    |
+ 72 | impl FileTabView {
+    | ---------------- method in this implementation
+...
+146 |     pub(crate) fn editor_for_test(&self) -> Entity<EditorView> {
+    |                   ^^^^^^^^^^^^^^^
+
+warning: methods `replace_configuration_draft`, `output_text`, and `focus_intent` are never used
+   --> crates/bello-agent-app/src/mcp_inspector_view.rs:331:12
+    |
+202 | impl McpInspectorView {
+    | --------------------- methods in this implementation
+...
+331 |     pub fn replace_configuration_draft(&mut self, text: String, cx: &mut Context<Self>) {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+449 |     pub fn output_text(&self) -> &str {
+    |            ^^^^^^^^^^^
+...
+453 |     pub fn focus_intent(&self, intent: &McpIntent, window: &mut Window) {
+    |            ^^^^^^^^^^^^
+
+warning: struct `MenuCommand` is never constructed
+  --> crates/bello-agent-app/src/native_menu.rs:10:8
+   |
+10 | struct MenuCommand {
+   |        ^^^^^^^^^^^
+
+warning: function `pin_command` is never used
+  --> crates/bello-agent-app/src/native_menu.rs:16:4
+   |
+16 | fn pin_command(pinned: bool) -> MenuCommand {
+   |    ^^^^^^^^^^^
+
+warning: function `archive_command` is never used
+  --> crates/bello-agent-app/src/native_menu.rs:32:4
+   |
+32 | fn archive_command(archived: bool) -> MenuCommand {
+   |    ^^^^^^^^^^^^^^^
+
+warning: function `copy_id_command` is never used
+  --> crates/bello-agent-app/src/native_menu.rs:48:4
+   |
+48 | fn copy_id_command() -> MenuCommand {
+   |    ^^^^^^^^^^^^^^^
+
+warning: function `selected_action` is never used
+  --> crates/bello-agent-app/src/native_menu.rs:56:4
+   |
+56 | fn selected_action(selected: u8, pinned: bool) -> Option<SidebarAction> {
+   |    ^^^^^^^^^^^^^^^
+
+warning: function `finish_if_open` is never used
+  --> crates/bello-agent-app/src/native_menu.rs:65:4
+   |
+65 | fn finish_if_open(
+   |    ^^^^^^^^^^^^^^
+
+warning: struct `Tracking` is never constructed
+  --> crates/bello-agent-app/src/native_menu.rs:81:8
+   |
+81 | struct Tracking;
+   |        ^^^^^^^^
+
+warning: associated function `begin` is never used
+  --> crates/bello-agent-app/src/native_menu.rs:83:8
+   |
+82 | impl Tracking {
+   | ------------- associated function in this implementation
+83 |     fn begin() -> Option<Self> {
+   |        ^^^^^
+
+warning: function `anchor_in_view` is never used
+   --> crates/bello-agent-app/src/native_menu.rs:101:4
+    |
+101 | fn anchor_in_view(
+    |    ^^^^^^^^^^^^^^
+
+warning: struct `ViewCategory` is never constructed
+   --> crates/bello-agent-app/src/native_menu.rs:128:8
+    |
+128 | struct ViewCategory {
+    |        ^^^^^^^^^^^^
+
+warning: function `gpui_child_index` is never used
+   --> crates/bello-agent-app/src/native_menu.rs:137:4
+    |
+137 | fn gpui_child_index(content_attached: bool, children: &[ViewCategory]) -> Option<usize> {
+    |    ^^^^^^^^^^^^^^^^
+
+warning: multiple methods are never used
+    --> crates/bello-agent-app/src/transcript_view.rs:969:19
+     |
+ 709 | impl TranscriptView {
+     | ------------------- methods in this implementation
+...
+ 969 |     pub(crate) fn edit_cache_computations(&self) -> usize {
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 973 |     pub(crate) fn edit_card_labels(&self) -> Vec<String> {
+     |                   ^^^^^^^^^^^^^^^^
+...
+ 989 |     pub(crate) fn tool_height_invalidation_count(&self) -> usize {
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 994 |     pub(crate) fn retained_tool_editor_count(&self) -> usize {
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 999 |     pub(crate) fn tool_card_selectors(&self) -> Vec<String> {
+     |                   ^^^^^^^^^^^^^^^^^^^
+...
+1013 |     pub(crate) fn tool_section_editors(&self) -> Vec<(&'static str, Entity<EditorView>)> {
+     |                   ^^^^^^^^^^^^^^^^^^^^
+...
+1023 |     pub(crate) fn override_navigation_estimate(&self, height: Pixels) {
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1027 |     pub(crate) fn has_pending_navigation(&self) -> bool {
+     |                   ^^^^^^^^^^^^^^^^^^^^^^
+...
+1031 |     pub(crate) fn target_preflight_counts(&self) -> Vec<usize> {
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^
+...
+1035 |     pub(crate) fn render_count(&self) -> usize {
+     |                   ^^^^^^^^^^^^
+...
+1039 |     pub(crate) fn list_state(&self) -> ListState {
+     |                   ^^^^^^^^^^
+...
+1043 |     pub(crate) fn buffer_margin(&self) -> Pixels {
+     |                   ^^^^^^^^^^^^^
+...
+1047 |     pub(crate) fn materialized_indexes(&self) -> Vec<usize> {
+     |                   ^^^^^^^^^^^^^^^^^^^^
+...
+1051 |     pub(crate) fn painted_indexes(&self) -> Vec<usize> {
+     |                   ^^^^^^^^^^^^^^^
+...
+1055 |     pub(crate) fn materialized_texts(&self) -> Vec<(usize, String)> {
+     |                   ^^^^^^^^^^^^^^^^^^
+...
+1059 |     pub(crate) fn logical_row_ids(&self) -> Vec<String> {
+     |                   ^^^^^^^^^^^^^^^
+
+warning: `bello-agent-app` (bin "bello-agent" test) generated 15 warnings
+    Finished `test` profile [unoptimized] target(s) in 22.07s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running unittests src/main.rs (BelloAgent/rust/target/debug/deps/bello_agent-da265fe39e8ef0f9)
+
+running 3 tests
+test connection_settings_controller::tests::catalog_workflow::catalog_discard_reopen_removes_selected_metadata_and_success_notice ... ok
+test connection_settings_controller::tests::non_error_recovery_notice_survives_discard_reopen ... FAILED
+test connection_settings_controller::tests::save_errors_survive_discard_reopen_and_uncertainty_still_blocks_admission ... FAILED
+
+failures:
+
+---- connection_settings_controller::tests::non_error_recovery_notice_survives_discard_reopen stdout ----
+
+thread 'connection_settings_controller::tests::non_error_recovery_notice_survives_discard_reopen' (614) panicked at crates/bello-agent-app/src/connection_settings_controller_tests.rs:765:18:
+assertion `left == right` failed
+  left: None
+ right: Some(ConnectionSettingsNotice { text: "Settings were saved, but a chat could not apply them. Explicit recovery is required.", is_error: false })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- connection_settings_controller::tests::save_errors_survive_discard_reopen_and_uncertainty_still_blocks_admission stdout ----
+
+thread 'connection_settings_controller::tests::save_errors_survive_discard_reopen_and_uncertainty_still_blocks_admission' (616) panicked at crates/bello-agent-app/src/connection_settings_controller_tests.rs:727:17:
+assertion `left == right` failed
+  left: None
+ right: Some(ConnectionSettingsNotice { text: "Connection save did not complete: Failed save draft: Project authority changed. Reload and review before saving.", is_error: true })
+
+
+failures:
+    connection_settings_controller::tests::non_error_recovery_notice_survives_discard_reopen
+    connection_settings_controller::tests::save_errors_survive_discard_reopen_and_uncertainty_still_blocks_admission
+
+test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 91 filtered out; finished in 1.08s
+
+error: test failed, to rerun pass `-p bello-agent-app --bin bello-agent`

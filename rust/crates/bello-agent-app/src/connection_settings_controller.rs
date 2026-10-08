@@ -1,6 +1,8 @@
 //! Connections Settings coordinator. Vault writes are distinct from runtime
 //! publication; no save implicitly sends a provider request.
 use crate::{AgentView, Palette, connection_settings_view::*};
+#[path = "connection_model_catalog.rs"]
+mod model_catalog;
 #[cfg(feature = "synthetic-authority")]
 use bello_agent_core::project_authority::synthetic::SyntheticAuthorityControl;
 use bello_agent_core::{
@@ -12,6 +14,7 @@ use bello_agent_core::{
     workspace::ChatRecord,
 };
 use gpui::{AppContext, Context, Entity, Subscription, Window};
+use model_catalog::CatalogState;
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
@@ -43,13 +46,39 @@ impl RetainedForm {
         }
     }
     fn dirty(&self) -> bool {
-        self.fields != self.baseline
+        let mut visible = self.fields.clone();
+        visible
+            .catalog_search
+            .clone_from(&self.baseline.catalog_search);
+        visible != self.baseline || self.draft.has_changes()
+    }
+    fn update_fields(&mut self, fields: ConnectionFields) {
+        // Every manual alias edit invalidates earlier catalog selection metadata,
+        // even when the user later types the old alias again before saving.
+        if fields.model != self.fields.model {
+            self.draft.profile.model_id = fields.model.clone();
+            self.draft.profile.model_output_limit = None;
+            self.draft.profile.input = vec!["text".into()];
+        }
+        self.fields = fields;
+    }
+    fn model_metadata(&self) -> String {
+        let profile = &self.draft.profile;
+        let ceiling = profile
+            .model_output_limit
+            .filter(|_| profile.model_id == self.fields.model);
+        format!(
+            "Model output ceiling: {} · Effort: {}. Budget stays separate; choosing a model never raises it.",
+            ceiling.map_or_else(|| "unknown".into(), |n| n.to_string()),
+            profile.thinking_level
+        )
     }
     fn capture(&self) -> Result<ConnectionDraft, String> {
         let mut draft = self.draft.clone();
         draft.name = self.fields.name.clone();
         draft.profile.api = self.fields.api.clone();
         draft.profile.base_url = self.fields.base_url.clone();
+        draft.catalog_url = self.fields.catalog_url.clone();
         if draft.profile.model_id != self.fields.model {
             draft.profile.model_output_limit = None;
             draft.profile.input = vec!["text".into()];
@@ -76,6 +105,8 @@ fn fields(draft: &ConnectionDraft) -> ConnectionFields {
         api: draft.profile.api.clone(),
         base_url: draft.profile.base_url.clone(),
         model: draft.profile.model_id.clone(),
+        catalog_url: draft.catalog_url.clone(),
+        catalog_search: String::new(),
         context_window: draft.profile.context_window.to_string(),
         output_budget: draft.profile.max_output_tokens.to_string(),
         key: draft.key_input.clone(),
@@ -83,15 +114,13 @@ fn fields(draft: &ConnectionDraft) -> ConnectionFields {
     }
 }
 fn new_form(mode: crate::launch_authority::AuthorityMode) -> RetainedForm {
-    let profile: Profile = serde_json::from_value(serde_json::json!({"id":uuid::Uuid::new_v4().to_string(),"api":"openai-responses","providerId":"litellm","baseUrl":"http://127.0.0.1:47831","modelId":"local-test-fixture","contextWindow":32000,"maxOutputTokens":4096})).expect("fixture profile shape");
-    let mut form = RetainedForm::new(ConnectionDraft::new(profile, "New connection".into()));
+    let mut profile: Profile = serde_json::from_value(serde_json::json!({"id":uuid::Uuid::new_v4().to_string(),"api":"openai-responses","providerId":"litellm","baseUrl":"http://127.0.0.1:47831","modelId":"local-test-fixture","contextWindow":32000,"maxOutputTokens":4096})).expect("fixture profile shape");
     if !mode.is_fixture() {
-        form.draft.profile.base_url.clear();
-        form.draft.profile.model_id.clear();
-        form.fields = fields(&form.draft);
-        form.baseline = form.fields.clone();
+        profile.base_url.clear();
+        profile.model_id.clear();
     }
-    form
+    // Establish the actual blank Native baseline before metadata dirty tracking.
+    RetainedForm::new(ConnectionDraft::new(profile, "New connection".into()))
 }
 
 pub(crate) struct ConnectionSettingsController {
@@ -100,6 +129,8 @@ pub(crate) struct ConnectionSettingsController {
     authority: Arc<ProjectAuthority>,
     loaded: Option<LoadedConnections>,
     forms: BTreeMap<String, RetainedForm>,
+    catalogs: BTreeMap<String, CatalogState>,
+    draft_notice_owner: Option<String>,
     active: Option<String>,
     pub choice: Option<String>,
     pub operation: Option<uuid::Uuid>,
@@ -159,6 +190,8 @@ impl ConnectionSettingsController {
             authority,
             loaded: None,
             forms: BTreeMap::new(),
+            catalogs: BTreeMap::new(),
+            draft_notice_owner: None,
             active: None,
             choice: None,
             operation: None,
@@ -179,6 +212,7 @@ impl ConnectionSettingsController {
             .is_some_and(|l| l.profiles().iter().any(|p| p.profile.id == id))
     }
     fn publish(&mut self, cx: &mut Context<AgentView>) {
+        self.sync_catalog_sources();
         self.presentation.revision = self
             .presentation
             .revision
@@ -206,6 +240,20 @@ impl ConnectionSettingsController {
                 id: id.clone(),
                 saved: self.saved(id),
                 fields: form.fields.clone(),
+                catalog: self.catalog_presentation(id, form),
+                model_metadata: form.model_metadata(),
+                inherited_catalog_name: self
+                    .loaded
+                    .as_ref()
+                    .and_then(|loaded| loaded.catalog_source(id).ok())
+                    .filter(|source| {
+                        source.profile.id != *id
+                            && form.fields.catalog_url.trim() == form.baseline.catalog_url.trim()
+                            && form.fields.api == form.baseline.api
+                            && form.fields.base_url == form.baseline.base_url
+                            && form.fields.key.is_empty()
+                    })
+                    .map(|source| source.name.clone()),
             })
         });
         self.presentation.dirty = self.forms.values().any(RetainedForm::dirty);
@@ -214,13 +262,27 @@ impl ConnectionSettingsController {
         cx.notify();
     }
     fn notice(&mut self, text: impl Into<String>, error: bool) {
+        self.draft_notice_owner = None;
         self.presentation.notice = Some(ConnectionSettingsNotice {
             text: text.into(),
             is_error: error,
         });
     }
+    fn discard_draft_notice(&mut self, discarded: Option<&str>) {
+        // Save/runtime notices have no draft owner and must survive Cancel,
+        // including non-error recovery warnings and unconfirmed CAS results.
+        if self
+            .draft_notice_owner
+            .as_deref()
+            .is_some_and(|owner| discarded.is_none_or(|discarded| discarded == owner))
+        {
+            self.presentation.notice = None;
+            self.draft_notice_owner = None;
+        }
+    }
     fn install(&mut self, loaded: LoadedConnections, discard: bool) {
         if discard {
+            self.catalogs.clear();
             self.forms.clear();
         }
         for p in loaded.profiles() {
@@ -295,8 +357,9 @@ impl AgentView {
                     .as_ref()
                     .and_then(|id| self.connections.forms.get_mut(id))
             {
-                form.fields = fields;
+                form.update_fields(fields);
             }
+            self.connections.cancel_catalog_loads();
             self.connections.bound_window = binding;
             self.connections.publish(cx);
         }
@@ -355,6 +418,7 @@ impl AgentView {
             return;
         }
         let token = uuid::Uuid::new_v4();
+        self.connections.cancel_catalog_loads();
         self.connections.load = Some(token);
         self.connections.presentation.availability = ConnectionSettingsAvailability::Loading;
         self.connections.presentation.confirmation = ConnectionConfirmation::None;
@@ -395,6 +459,7 @@ impl AgentView {
             return;
         }
         self.connections.load = None;
+        self.connections.cancel_catalog_loads();
         self.connections.open = false;
         self.connections.presentation.confirmation = ConnectionConfirmation::None;
         if discard {
@@ -404,6 +469,7 @@ impl AgentView {
                 self.connections.forms.clear();
                 self.connections.active = None;
             }
+            self.connections.discard_draft_notice(None);
         }
         self.connections.publish(cx);
         self.connections
@@ -431,18 +497,39 @@ impl AgentView {
         if let (Some(id), Some(fields)) = (id, fields)
             && let Some(form) = self.connections.forms.get_mut(&id)
         {
-            form.fields = fields;
+            form.update_fields(fields);
         }
         self.connections.presentation.confirmation = ConnectionConfirmation::None;
         use ConnectionSettingsIntent::*;
         match intent {
             Edited => {}
+            BrowseCatalog | RefreshCatalog => {
+                self.load_connection_catalog(matches!(intent, RefreshCatalog), cx);
+                return;
+            }
+            CloseCatalog => {
+                if let Some(id) = &self.connections.active
+                    && let Some(catalog) = self.connections.catalogs.get_mut(id)
+                {
+                    catalog.close();
+                }
+            }
+            CatalogPage(page) => {
+                if let Some(id) = &self.connections.active
+                    && let Some(catalog) = self.connections.catalogs.get_mut(id)
+                {
+                    catalog.page = page;
+                }
+            }
+            ChooseCatalog { id, generation } => self.choose_connection_model(&id, generation),
             Select(id) => {
+                self.connections.cancel_catalog_loads();
                 if self.connections.forms.contains_key(&id) {
                     self.connections.active = Some(id);
                 }
             }
             New => {
+                self.connections.cancel_catalog_loads();
                 let pending = self
                     .connections
                     .forms
@@ -487,6 +574,7 @@ impl AgentView {
             DiscardCurrent => {
                 if let Some(id) = self.connections.active.clone() {
                     self.connections.forms.remove(&id);
+                    self.connections.discard_draft_notice(Some(&id));
                     if let Some(loaded) = self.connections.loaded.clone() {
                         self.connections.install(loaded, false);
                     }
@@ -577,6 +665,7 @@ impl AgentView {
             let authority = self.connections.authority.clone();
             let controllers = self.connection_controllers();
             let token = uuid::Uuid::new_v4();
+            self.connections.cancel_catalog_loads();
             self.connections.operation = Some(token);
             self.connections.presentation.saving = true;
             self.connections.presentation.availability =
@@ -702,6 +791,7 @@ impl AgentView {
             let _ = controller.retire();
         }
         let token = uuid::Uuid::new_v4();
+        self.connections.cancel_catalog_loads();
         self.connections.operation = Some(token);
         self.connections.presentation.saving = true;
         self.connections.presentation.availability = ConnectionSettingsAvailability::Busy(

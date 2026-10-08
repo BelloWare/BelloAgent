@@ -1,0 +1,7 @@
+{
+  "file": "/workspace/shared/catalog-native-app-focused/rust/crates/bello-agent-app/src/connection_settings_controller.rs",
+  "before_sha256": "7d266bab174a335e729242d5d7f42e4c146757fb747ca552a4887d6ee4e4f958",
+  "after_sha256": "b857cca4c7e252756ebfa58902c5eb8319b8109bca99de178a0ebda6a1217224",
+  "old": "    fn notice(&mut self, text: impl Into<String>, error: bool) {\n        self.draft_notice_owner = None;",
+  "new": "    fn notice(&mut self, text: impl Into<String>, error: bool) {"
+}

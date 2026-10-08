@@ -1067,6 +1067,7 @@ impl AgentView {
             cx.notify();
             return;
         }
+        self.connections.cancel_catalog_loads();
         self.shutting_down = true;
         self.close_dialog = false;
         let mut drafts = Vec::new();
