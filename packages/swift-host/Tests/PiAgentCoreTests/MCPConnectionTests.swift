@@ -75,9 +75,13 @@ final class MCPConnectionTests: XCTestCase {
         let folder=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:folder) }
         let marker=folder.appendingPathComponent("unknown.json"), manager=MCPManager(cwd:folder,outcomeMarker:marker)
         await manager.installForTesting(name:"test",transport:FakeMCP())
-        await manager.installForTesting(name:"slow",transport:SlowListMCP())
+        let slow=SlowListMCP(); await manager.installForTesting(name:"slow",transport:slow)
         let refused=Task { try await manager.perform(["action":"invoke","server":"slow","tool":"missing","arguments":[:]]) }
+        // The refused call is admitted and waiting on its catalog before the other one starts.
+        try await eventually { await slow.listing }
         _ = try await manager.perform(["action":"invoke","server":"test","tool":"echo","arguments":["text":"done"]])
+        XCTAssertTrue(FileManager.default.fileExists(atPath:marker.path),"Another invocation is still running, so the marker stays")
+        await slow.release()
         do { _ = try await refused.value; XCTFail("A tool the server does not list is refused") }
         catch let error as AgentError { XCTAssertEqual(error.code,"mcp_tool") }
         XCTAssertFalse(FileManager.default.fileExists(atPath:marker.path),"No outcome is unknown, so no marker may survive a restart")
@@ -86,11 +90,17 @@ final class MCPConnectionTests: XCTestCase {
     }
 }
 
-/// Lists its tools only after a pause, and never lists `missing`.
+/// Lists its tools only when released, and never lists `missing`.
 private actor SlowListMCP: MCPTransport {
+    var listing=false, held=true
+    func release() { held=false }
     func request(_ method:String,params:JSON) async throws -> JSON {
         if method=="initialize" { return ["protocolVersion":"2025-11-25","capabilities":["tools":[:]]] }
-        if method=="tools/list" { try await Task.sleep(nanoseconds:200_000_000); return ["tools":[]] }
+        if method=="tools/list" {
+            listing=true
+            while held { try await Task.sleep(nanoseconds:5_000_000) }
+            return ["tools":[]]
+        }
         throw AgentError("unexpected","Unexpected MCP method")
     }
     func notify(_ method:String,params:JSON) async throws {}
