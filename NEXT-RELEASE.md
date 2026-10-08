@@ -1,3 +1,26 @@
+# Next release: 0.1.122
+
+**Not released.** 0.1.121 (build 125, tag `v0.1.121`) is the latest release.
+
+**Scope (owner, 2026-10-08):**
+- [ ] **Mark as Unread**: a chat can be marked unread from the sidebar's context menu and the File menu; it shows the unread dot until opened, and survives a relaunch.
+- [ ] **Paused after restart**: a chat that was paused (stopped mid-run, or holding queued work) still shows as paused in the sidebar and in the chat after the app restarts.
+- [ ] **Sidebar sorted by last updated, always** (owner chose this over a switch): newest activity first; pinned chats stay on top; manual drag ordering is removed.
+- [ ] **Search inside threads**, both ways (owner chose both):
+  - the sidebar search matches message text as well as titles, shows a snippet under each matching chat, and opening it goes to the matching message;
+  - ⌘F in an open chat shows a find bar that highlights matches in the transcript, with next/previous.
+
+**Rules:** AppKit only (no SwiftUI); Pi components (`docs/appkit-components.md`); every change planned and reviewed with Codex (gpt-6.1-sol, xhigh, read-only) to no findings, plus a final whole-change Codex double-check with advice; mutation-checked tests; serial-lane classes alone; work on `dev/next` via workstream branches; `main` only at release.
+
+## Before release
+- [ ] Codex whole-change double-check from 0.1.121 (`f4f80ddd`), with advice.
+- [ ] Full gate (`scripts/verify-release.sh`), run alone.
+- [ ] Hour-long soak of a Release build, no exceptions.
+- [ ] Gallery review of the new states (light/dark, 920×600).
+- [ ] Release notes.
+
+---
+
 # Next release
 
 **Released 2026-10-08:** 0.1.121 (build 125, tag `v0.1.121`) removes every editing-tool lock (owner, 2026-10-08); record `docs/validation/Bello-Agent-0.1.121-2026-10-08.md`. Nothing is planned beyond it yet.
