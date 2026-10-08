@@ -14,7 +14,16 @@ struct ContentPresence {
     skills: bool,
 }
 #[derive(Default, Deserialize)]
+struct ToolPresence {
+    #[serde(default, deserialize_with = "present")]
+    duration_us: bool,
+    #[serde(default, deserialize_with = "present")]
+    tool_batch_timing: bool,
+}
+#[derive(Default, Deserialize)]
 struct RowPresence {
+    #[serde(default)]
+    tool_record: Option<ToolPresence>,
     #[serde(default, deserialize_with = "present")]
     task_root_id: bool,
     #[serde(default, deserialize_with = "present")]
@@ -34,6 +43,8 @@ impl RowPresence {
 }
 #[derive(Deserialize)]
 struct SnapshotPresence {
+    #[serde(default, deserialize_with = "present")]
+    tool_timing: bool,
     version: u32,
     #[serde(default)]
     messages: Vec<RowPresence>,
@@ -46,6 +57,18 @@ struct SnapshotPresence {
 }
 pub(crate) fn parse_snapshot(bytes: &[u8]) -> Result<crate::Session> {
     let presence: SnapshotPresence = serde_json::from_slice(bytes)?;
+    if presence.version < 9
+        && (presence.tool_timing
+            || presence.messages.iter().any(|row| {
+                row.tool_record
+                    .as_ref()
+                    .is_some_and(|record| record.duration_us || record.tool_batch_timing)
+            }))
+    {
+        return Err(invalid(
+            "Tool timing fields require Rust snapshot version 9",
+        ));
+    }
     if presence.version < 8
         && presence
             .messages

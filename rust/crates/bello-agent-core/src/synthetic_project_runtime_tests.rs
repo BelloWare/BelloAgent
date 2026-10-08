@@ -445,6 +445,7 @@ fn expected_id_is_checked_before_migration_recovery_or_stream_journal_cleanup() 
             let mut saved: Value =
                 serde_json::from_slice(&std::fs::read(&fixture.record.snapshot).unwrap()).unwrap();
             saved["version"] = 1.into();
+            saved.as_object_mut().unwrap().remove("tool_timing");
             for row in saved["messages"].as_array_mut().unwrap() {
                 row.as_object_mut().unwrap().remove("task_root_id");
             }
@@ -476,7 +477,7 @@ fn expected_id_is_checked_before_migration_recovery_or_stream_journal_cleanup() 
                 .unwrap()
                 .snapshot();
         assert_eq!(recovered.id, fixture.record.id);
-        assert_eq!(recovered.version, if kind == "v1" { 2 } else { 8 });
+        assert_eq!(recovered.version, if kind == "v1" { 2 } else { 9 });
         if kind != "v1" {
             assert_eq!(recovered.state, RunState::Paused);
         }

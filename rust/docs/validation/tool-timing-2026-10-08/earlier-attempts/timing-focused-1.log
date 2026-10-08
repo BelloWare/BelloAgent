@@ -1,0 +1,26 @@
+   Compiling bello-agent-core v0.1.0 (/workspace/shared/agent-tool-timing/rust/crates/bello-agent-core)
+error[E0432]: unresolved import `crate::SessionInspectionLease`
+ --> crates/bello-agent-core/src/tool_timing_runtime_tests.rs:4:5
+  |
+4 |     SessionInspectionLease, SessionStore,
+  |     ^^^^^^^^^^^^^^^^^^^^^^ no `SessionInspectionLease` in the root
+  |
+  = help: consider importing this struct instead:
+          crate::session::SessionInspectionLease
+
+error[E0282]: type annotations needed
+   --> crates/bello-agent-core/src/tool_timing_runtime_tests.rs:128:18
+    |
+128 |     let batch = |n| BatchTiming {
+    |                  ^
+129 |         wall_us: n.map(DurationUs::new),
+    |                  - type must be known at this point
+    |
+help: consider giving this closure parameter an explicit type
+    |
+128 |     let batch = |n: /* Type */| BatchTiming {
+    |                   ++++++++++++
+
+Some errors have detailed explanations: E0282, E0432.
+For more information about an error, try `rustc --explain E0282`.
+error: could not compile `bello-agent-core` (lib test) due to 2 previous errors

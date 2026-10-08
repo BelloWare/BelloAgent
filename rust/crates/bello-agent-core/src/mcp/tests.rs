@@ -263,6 +263,8 @@ impl ServerFixture {
                             "reject"=>{let body=json!({"jsonrpc":"2.0","id":request.body["id"],"error":{"code":-32602,"message":SYNTHETIC_KEY}}).to_string();request.raw(200,"application/json",&body,"").await;},
                             "expire" if !expired_once=>{expired_once=true;request.raw(404,"application/json","{}","").await;},
                             "wrong-id"=>request.raw(200,"application/json",r#"{"jsonrpc":"2.0","id":"wrong","result":{}}"#,"").await,
+                            "bad-content"=>request.json(json!({"content":"not-a-list"})).await,
+                            "long-text"=>request.json(json!({"content":[{"type":"text","text":"x".repeat(70_000)}]})).await,
                             "malformed"=>request.raw(200,"application/json","{bad","").await,
                             "large"=>request.raw(200,"application/json",&" ".repeat(4*1024*1024+1),"").await,
                             "delay"=>{tokio::time::sleep(Duration::from_millis(150)).await;request.json(json!({"content":[{"type":"text","text":"delayed success"}]})).await;},
@@ -622,7 +624,7 @@ async fn actual_controller_wrapper_failed_images_structured_replay_and_reopen() 
         .await;
     settled(&actor).await;
     let snapshot = actor.snapshot();
-    assert_eq!(snapshot.version, 8);
+    assert_eq!(snapshot.version, 9);
     // V6 is narrow: only a matching MCP owner can retain an explicit Failed
     // result. It never legitimizes an unknown or mispaired payload.
     for mutation in [
@@ -681,7 +683,7 @@ async fn actual_controller_wrapper_failed_images_structured_replay_and_reopen() 
         .find(|r| r.id == record.id)
         .unwrap();
     let reopened = f.factory.open_registered(&saved).unwrap();
-    assert_eq!(reopened.snapshot().version, 8);
+    assert_eq!(reopened.snapshot().version, 9);
     assert_eq!(mcp.calls.load(Ordering::SeqCst), 1);
     assert_eq!(
         mcp.requests
@@ -1618,3 +1620,116 @@ mod bash_tests;
 
 #[path = "concurrency_tests.rs"]
 mod concurrency_tests;
+
+#[tokio::test]
+async fn tool_timing_mcp_rejection_and_unprocessed_expiry_retain_elapsed_without_changing_receipts()
+{
+    for (mode, expected_outcome, calls) in [
+        ("reject", ToolOutcome::NotExecuted, 1),
+        ("expire", ToolOutcome::Completed, 2),
+    ] {
+        let server = ServerFixture::start().await;
+        let provider = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let fixture = Fixture::new(
+            &format!("http://{}", provider.local_addr().unwrap()),
+            &server.url,
+        );
+        let (record, actor) = fixture.chat(ChatToolMode::Editing);
+        fixture.submit(&record, &actor, "generated timing fixture");
+        Request::accept(&provider).await.provider(json!([{
+            "type":"function_call", "call_id":"timing-mcp", "name":"mcp",
+            "arguments":json!({"action":"invoke","server":"fixture","tool":"echo","arguments":{"mode":mode}}).to_string()
+        }])).await;
+        Request::accept(&provider)
+            .await
+            .provider(json!([{"type":"message","content":[{"type":"output_text","text":"done"}]}]))
+            .await;
+        settled(&actor).await;
+        let snapshot = actor.snapshot();
+        let result = snapshot
+            .messages
+            .iter()
+            .find_map(|row| match &row.tool_record {
+                Some(ToolRecord::Result(result)) => Some(result),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(result.outcome, expected_outcome);
+        assert!(
+            result.duration_us.is_some(),
+            "wrapper entry has duration even when remote effects were rejected"
+        );
+        let batch = snapshot
+            .messages
+            .iter()
+            .find_map(|row| match &row.tool_record {
+                Some(ToolRecord::Assistant(record)) => record.tool_batch_timing,
+                _ => None,
+            })
+            .unwrap();
+        assert!(batch.wall_us.is_some());
+        assert_eq!(snapshot.tool_timing.unwrap().total_us, batch.wall_us);
+        assert_eq!(server.calls.load(Ordering::SeqCst), calls);
+        assert_eq!(fixture.manager().status().pending_results, 0);
+        assert!(!fixture.manager().status().outcome_unknown);
+        actor.retire_and_wait().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn tool_timing_mcp_transport_failure_is_measured_but_record_fallback_is_unknown() {
+    for (mode, measured) in [
+        ("malformed", true),
+        ("bad-content", false),
+        ("long-text", false),
+    ] {
+        let server = ServerFixture::start().await;
+        let provider = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let fixture = Fixture::new(
+            &format!("http://{}", provider.local_addr().unwrap()),
+            &server.url,
+        );
+        let (record, actor) = fixture.chat(ChatToolMode::Editing);
+        fixture.submit(&record, &actor, "generated retention fixture");
+        let output = record.snapshot.parent().unwrap().join("tool-output");
+        if mode == "long-text" {
+            std::fs::write(&output, b"fixture blocks output directory").unwrap();
+        }
+        Request::accept(&provider).await.provider(json!([{
+            "type":"function_call", "call_id":"timing-fallback", "name":"mcp",
+            "arguments":json!({"action":"invoke","server":"fixture","tool":"echo","arguments":{"mode":mode}}).to_string()
+        }])).await;
+        Request::accept(&provider)
+            .await
+            .provider(json!([{"type":"message","content":[{"type":"output_text","text":"done"}]}]))
+            .await;
+        settled(&actor).await;
+        let snapshot = actor.snapshot();
+        let result = snapshot
+            .messages
+            .iter()
+            .find_map(|row| match &row.tool_record {
+                Some(ToolRecord::Result(result)) => Some(result),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(result.outcome, ToolOutcome::Unknown);
+        assert_eq!(result.duration_us.is_some(), measured, "{mode}");
+        if mode == "long-text" {
+            assert_eq!(
+                std::fs::read(&output).unwrap(),
+                b"fixture blocks output directory"
+            );
+        }
+        assert!(
+            snapshot.tool_timing.unwrap().total_us.is_some(),
+            "whole joined batch was observed"
+        );
+        assert!(
+            fixture.manager().status().outcome_unknown,
+            "timing never clears uncertainty"
+        );
+        assert_eq!(server.calls.load(Ordering::SeqCst), 1);
+        actor.retire_and_wait().await.unwrap();
+    }
+}

@@ -582,7 +582,7 @@ impl Controller {
     pub(super) async fn settle_image_tools(
         &self,
         reply: &str,
-        results: Vec<super::tool_runtime::ToolResultRow>,
+        results: super::tool_runtime::CompletedToolBatch,
         cancel: CancellationToken,
     ) -> Option<(Submission, Session)> {
         let (candidate, config, generation, stop) = {
@@ -609,7 +609,7 @@ impl Controller {
                     .map_err(|_| invalid("Session is unavailable"))?
                     .store
                     .snapshot();
-                projection.settle_tools_with_prepared_steering(
+                projection.settle_completed_tool_batch(
                     reply,
                     results.clone(),
                     false,
@@ -676,8 +676,7 @@ impl Controller {
         let steering = current.map(|item| item.id.as_str());
         let stopped = error.is_some();
         let outcome = inner.store.transact(|session| {
-            session
-                .settle_tools_with_prepared_steering(reply, results, stopped, steering, prepared)?;
+            session.settle_completed_tool_batch(reply, results, stopped, steering, prepared)?;
             if let Some(error) = &error {
                 session.error = Some(error.to_string());
             }

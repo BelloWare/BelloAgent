@@ -259,6 +259,7 @@ fn complete_tool_occurrences_are_indivisible_and_missing_result_refuses_summary(
     rows.pop();
     let mut assistant = row("tool-owner", "assistant", "");
     assistant.tool_record = Some(ToolRecord::Assistant(AssistantRecord {
+        tool_batch_timing: None,
         completion: Completion::Complete,
         calls: vec![crate::provider::ToolCall {
             id: "call".into(),
@@ -277,6 +278,7 @@ fn complete_tool_occurrences_are_indivisible_and_missing_result_refuses_summary(
     );
     let mut result = row("result", "toolResult", "Historical output");
     result.tool_record = Some(ToolRecord::Result(ResultRecord {
+        duration_us: None,
         assistant_id: "tool-owner".into(),
         call_id: "call".into(),
         is_error: false,
@@ -297,6 +299,7 @@ fn summary_request_never_replaces_retained_images_with_placeholders() {
     rows.pop();
     let mut assistant = row("a2", "assistant", "");
     assistant.tool_record = Some(ToolRecord::Assistant(AssistantRecord {
+        tool_batch_timing: None,
         completion: Completion::Complete,
         calls: vec![crate::provider::ToolCall {
             id: "call".into(),
@@ -309,6 +312,7 @@ fn summary_request_never_replaces_retained_images_with_placeholders() {
     rows.push(assistant);
     let mut result = row("r", "toolResult", "");
     result.tool_record = Some(ToolRecord::Result(ResultRecord {
+        duration_us: None,
         assistant_id: "a2".into(),
         call_id: "call".into(),
         is_error: false,
@@ -368,6 +372,7 @@ fn additive_cut_matches_full_request_reference_across_unicode_tool_groups_and_pr
                 let owner = format!("owner-{index}");
                 let mut assistant = row(&owner, "assistant", &"Evidence 😀 ".repeat(index * 19));
                 assistant.tool_record = Some(ToolRecord::Assistant(AssistantRecord {
+                    tool_batch_timing: None,
                     completion: Completion::Complete,
                     calls: vec![crate::provider::ToolCall {
                         id: "reused-call".into(),
@@ -384,6 +389,7 @@ fn additive_cut_matches_full_request_reference_across_unicode_tool_groups_and_pr
                     &"Observed lines 漢字\n".repeat(index * 11),
                 );
                 result.tool_record = Some(ToolRecord::Result(ResultRecord {
+                    duration_us: None,
                     assistant_id: owner,
                     call_id: "reused-call".into(),
                     is_error: false,

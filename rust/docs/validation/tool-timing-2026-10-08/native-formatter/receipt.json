@@ -1,0 +1,133 @@
+{
+  "commit": "f4f80ddda3c27fac9e266896f69b725a06242e8f",
+  "tree": "5954f1d2d67cf4962d368d314c63aa655c188c1d",
+  "source_files": [
+    {
+      "path": "apps/macos/PiApp/Transcript/TranscriptActivity.swift",
+      "sha256": "eceecf6915e6e5a2429ae7cc08f37fa794cb52d518fdde6246ff7e101a2ba5b6",
+      "git_blob": "1bd67a61eb65e5a0f811bc7d7fe3d9baa73e8c54",
+      "bytes": 55208
+    },
+    {
+      "path": "apps/macos/PiApp/Transcript/TranscriptRowParts.swift",
+      "sha256": "c9de78f7ae14f429b9d635728cc4accf6f8156880650d64e86b424793edd4949",
+      "git_blob": "0112264df12b6d75724a13a9a01db2ea0fae7e9c",
+      "bytes": 20875
+    }
+  ],
+  "extraction_locations": {
+    "formatter": "TranscriptActivity.swift:406-418, trailing LF retained",
+    "display_validator": "TranscriptActivity.swift:5-11, trailing LF retained",
+    "elapsed": "TranscriptRowParts.swift:46-49, trailing LF retained"
+  },
+  "host": {
+    "macOS": "14.8 (23J21)",
+    "architecture": "arm64",
+    "swift": "6.0.2 (swiftlang-6.0.2.1.2 clang-1600.0.26.4)",
+    "swiftc": "/Applications/Xcode_16.1.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+    "sdk": "15.1",
+    "locale_current": "en_US",
+    "environment": {
+      "MACOSX_DEPLOYMENT_TARGET": "14.0",
+      "DEVELOPER_DIR": null,
+      "LANG": "en_US.UTF-8",
+      "LC_ALL": "C.UTF-8",
+      "LC_NUMERIC": null
+    }
+  },
+  "commands": [
+    {
+      "name": "compile",
+      "command": [
+        "/usr/bin/xcrun",
+        "swiftc",
+        "-O",
+        "-target",
+        "arm64-apple-macosx14.0",
+        "/Users/admin/Library/Caches/BelloRustWork/agent-native-duration-oracle-8p617xlq/evidence/DurationOracle.swift",
+        "-o",
+        "/Users/admin/Library/Caches/BelloRustWork/agent-native-duration-oracle-8p617xlq/evidence/native-duration-oracle"
+      ],
+      "cwd": "/Users/admin/Library/Caches/BelloRustWork/agent-native-duration-oracle-8p617xlq/evidence",
+      "exit_code": 0,
+      "elapsed_seconds": 1.3291824168991297,
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "log_bytes": 0
+    },
+    {
+      "name": "run",
+      "command": [
+        "/Users/admin/Library/Caches/BelloRustWork/agent-native-duration-oracle-8p617xlq/evidence/native-duration-oracle",
+        "/Users/admin/Library/Caches/BelloRustWork/agent-native-duration-oracle-8p617xlq/evidence/inputs.json"
+      ],
+      "cwd": "/Users/admin/Library/Caches/BelloRustWork/agent-native-duration-oracle-8p617xlq/evidence",
+      "exit_code": 0,
+      "elapsed_seconds": 0.02457158302422613,
+      "log_sha256": "2c9b148461aa3d11726c2ffa800e7eea266d3d4274e2da71d717aa9918df3f83",
+      "log_bytes": 33665
+    }
+  ],
+  "fixtures": 48,
+  "formatter_input_fixtures": 47,
+  "missing_duration_fixture": 1,
+  "checked_microsecond_roundtrips": 36,
+  "all_roundtrips_bitwise_equal": true,
+  "source_and_extractions_unchanged": true,
+  "repository_unchanged": true,
+  "evidence_files": {
+    "formatDuration.swift": {
+      "sha256": "972fe671e78c576ed4d33a3e17283c848537174d3be21eddcecc549731bb6cb1",
+      "bytes": 815
+    },
+    "DurationObservation.swift": {
+      "sha256": "fc5f32d293cbd173f4dd119aa5172f089a7cfdd3e9fc1a2bf6f133886aef3b42",
+      "bytes": 262
+    },
+    "elapsed.swift": {
+      "sha256": "162a388d77e8f831d9414f793404190c9b85fb3b0df9f7dfdd0e1c2ca635f491",
+      "bytes": 246
+    },
+    "DurationOracle.swift": {
+      "sha256": "793e8f0cac02a07a1a8c1d2808ac5f09e5d86d486828a5e77621c2cd40c6e43b",
+      "bytes": 5376
+    },
+    "inputs.json": {
+      "sha256": "98687152d63ff7cd491f6b5cb54a2cca447aa374940ba0ef47160e92c13663a7",
+      "bytes": 12005
+    },
+    "outputs.json": {
+      "sha256": "2c9b148461aa3d11726c2ffa800e7eea266d3d4274e2da71d717aa9918df3f83",
+      "bytes": 33665
+    },
+    "run.log": {
+      "sha256": "2c9b148461aa3d11726c2ffa800e7eea266d3d4274e2da71d717aa9918df3f83",
+      "bytes": 33665
+    },
+    "compile.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "native-duration-oracle": {
+      "sha256": "954c6349dd9f2afd6d1e92af8e6042ca0b5339cda51afacd449d1ee1495e25d8",
+      "bytes": 85784
+    },
+    "host-toolchain.json": {
+      "sha256": "6b6690a59d90f9e2f196b1a33b37d61444b31f73fe9072eb1db5fbc6533d9757",
+      "bytes": 1638
+    },
+    "commands-results.json": {
+      "sha256": "c79c441090bb442603f808722d6d3342ec5b5f1c74936012574d64c3d4450bff",
+      "bytes": 1240
+    },
+    "preparation.json": {
+      "sha256": "4e8106037d930e36ea117936e8e1882a0352f3dd9fe520025c884e6b822efcff",
+      "bytes": 1298
+    },
+    "fixture-preparation.json": {
+      "sha256": "42180b4fd07ec9dffa73dfa093d1ff83b7bc58ab33413bdcadc9bee51c955d37",
+      "bytes": 536
+    }
+  },
+  "validation_json_sha256": "ab8ddc65794fb28c5fa96c55af1300b82140b2caf37146f86e0ce9c20c4d7749",
+  "scope": "Exact production formatter/display validator and elapsed helper. Only ToolView/outcome are controlled shims for the threshold; no full outcome classification, live native UI, timing performance, or Rust candidate execution."
+}

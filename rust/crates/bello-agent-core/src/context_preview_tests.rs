@@ -290,6 +290,7 @@ fn active_and_waiting_tools_use_delivered_profile_and_original_request_boundary(
                 session.settle_tools(
                     &reply_id,
                     vec![super::super::tool_runtime::ToolResultRow {
+                        duration_us: None,
                         content: None,
                         text: "Retained result".into(),
                         outcome: crate::tool_history::ToolOutcome::Completed,

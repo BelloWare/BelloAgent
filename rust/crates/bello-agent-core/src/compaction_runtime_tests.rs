@@ -128,6 +128,19 @@ async fn manual_checkpoint_reopens_and_next_request_inspector_share_exact_projec
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
     let actor = controller(&path, endpoint.clone());
+    {
+        let mut inner = actor.inner.lock().unwrap();
+        inner
+            .store
+            .transact(|session| {
+                session.tool_timing = Some(crate::tool_timing::SessionToolTiming {
+                    total_us: Some(crate::tool_timing::DurationUs::new(75_000)),
+                });
+                Ok(())
+            })
+            .unwrap();
+        actor.publish(&inner);
+    }
     let original = actor.snapshot().messages;
     let (sent, mut requests) = tokio::sync::mpsc::channel(2);
     let server = tokio::spawn(async move {
@@ -144,7 +157,11 @@ async fn manual_checkpoint_reopens_and_next_request_inspector_share_exact_projec
     let summary_request = timeout(DEADLINE, requests.recv()).await.unwrap().unwrap();
     assert_eq!(summary_request["tool_choice"], "none");
     let snapshot = settled(&actor).await;
-    assert_eq!(snapshot.version, 5);
+    assert_eq!(snapshot.version, 9);
+    assert_eq!(
+        snapshot.tool_timing.unwrap().total_us,
+        Some(crate::tool_timing::DurationUs::new(75_000))
+    );
     assert_eq!(
         snapshot.compaction.as_ref().unwrap().phase,
         Phase::Completed

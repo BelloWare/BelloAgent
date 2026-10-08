@@ -690,6 +690,7 @@ async fn retiring_tool_focus_case(cx: &mut TestAppContext, dismiss_early: bool, 
         model: None,
         compaction: None,
         tool_record: Some(ToolRecord::Assistant(AssistantRecord {
+            tool_batch_timing: None,
             completion: Completion::Complete,
             calls: vec![ToolCall {
                 id: "tool-call".into(),
@@ -719,6 +720,7 @@ async fn retiring_tool_focus_case(cx: &mut TestAppContext, dismiss_early: bool, 
         model: None,
         compaction: None,
         tool_record: Some(ToolRecord::Result(ResultRecord {
+            duration_us: None,
             assistant_id: assistant.id.clone(),
             call_id: "tool-call".into(),
             is_error: false,

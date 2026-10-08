@@ -32,6 +32,7 @@ fn row(id: &str, role: &str, text: &str) -> Message {
 fn history() -> Vec<Message> {
     let mut assistant = row("assistant", "assistant", "");
     assistant.tool_record = Some(ToolRecord::Assistant(AssistantRecord {
+        tool_batch_timing: None,
         completion: Completion::Complete,
         calls: vec![ToolCall {
             id: "read-call".into(),
@@ -60,6 +61,7 @@ fn history() -> Vec<Message> {
     };
     let mut result = row("result", "toolResult", note);
     result.tool_record = Some(ToolRecord::Result(ResultRecord {
+        duration_us: None,
         assistant_id: "assistant".into(),
         call_id: "read-call".into(),
         is_error: false,
@@ -79,7 +81,7 @@ fn durable_image_content_survives_reopen_and_replays_by_model_capability() {
             Ok(())
         })
         .unwrap();
-    assert_eq!(store.snapshot().version, 4);
+    assert_eq!(store.snapshot().version, 9);
     let expected = serde_json::to_value(&store.snapshot().messages).unwrap();
     drop(store);
     let reopened = SessionStore::open(&path).unwrap();
@@ -142,6 +144,10 @@ fn legacy_result_serialization_has_no_new_empty_content_field() {
 fn version_four_content_cannot_be_loaded_as_legacy_and_failed_read_preserves_bytes() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("session.json");
+    let mut legacy = bello_agent_core::Session::new();
+    legacy.version = 2;
+    legacy.tool_timing = None;
+    std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
     let mut store = SessionStore::open(&path).unwrap();
     store
         .transact(|session| {

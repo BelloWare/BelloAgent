@@ -102,7 +102,7 @@ async fn saved_editing_mode_preserves_reply_order_and_replays_without_reexecutio
     continuation.complete("Changed fixture").await;
     let state = settled(&controller, |s| s.state == RunState::Idle).await;
     assert_eq!(outcomes(&state), vec![ToolOutcome::Completed; 4]);
-    assert_eq!(state.version, 8);
+    assert_eq!(state.version, 9);
     let stats: Vec<_> = state
         .messages
         .iter()

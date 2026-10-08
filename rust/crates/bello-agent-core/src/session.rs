@@ -122,6 +122,8 @@ pub struct EditOutcome {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Session {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_timing: Option<crate::tool_timing::SessionToolTiming>,
     #[serde(skip)]
     pub live_tools: Vec<crate::tool_history::LiveToolView>,
     pub version: u32,
@@ -151,7 +153,8 @@ impl Session {
     pub fn new() -> Self {
         Self {
             live_tools: Vec::new(),
-            version: 2,
+            tool_timing: Some(crate::tool_timing::SessionToolTiming::ZERO),
+            version: 9,
             stream_generation: Uuid::new_v4().to_string(),
             stream_sequence: 0,
             id: Uuid::new_v4().to_string(),
@@ -528,7 +531,22 @@ impl Session {
     fn validate_task_roots(&self) -> Result<()> {
         validate_task_provenance(&self.messages).map(|_| ())
     }
+    fn has_tool_timing(&self) -> bool {
+        self.tool_timing.is_some()
+            || self.messages.iter().any(|row| match &row.tool_record {
+                Some(crate::tool_history::ToolRecord::Assistant(record)) => {
+                    record.tool_batch_timing.is_some()
+                }
+                Some(crate::tool_history::ToolRecord::Result(record)) => {
+                    record.duration_us.is_some()
+                }
+                None => false,
+            })
+    }
     fn validate_tool_history(&self) -> Result<()> {
+        if self.version < 9 && self.has_tool_timing() {
+            return Err(invalid("Tool timing requires Rust snapshot version 9"));
+        }
         if self.version < 8 && self.has_skill_fields() {
             return Err(invalid(
                 "Skills and task roots require Rust snapshot version 8",
@@ -950,7 +968,7 @@ impl SessionInspectionLease {
         if session.id != expected_session_id {
             return Err(invalid("The session file belongs to another chat"));
         }
-        if ![1, 2, 3, 4, 5, 6, 7, 8].contains(&session.version) {
+        if ![1, 2, 3, 4, 5, 6, 7, 8, 9].contains(&session.version) {
             return Err(invalid(
                 "Unsupported Rust session format. Swift journals are not imported automatically.",
             ));
@@ -1230,7 +1248,7 @@ impl SessionStore {
         {
             return Err(invalid("The session file belongs to another chat"));
         }
-        if ![1, 2, 3, 4, 5, 6, 7, 8].contains(&session.version) {
+        if ![1, 2, 3, 4, 5, 6, 7, 8, 9].contains(&session.version) {
             return Err(invalid(
                 "Unsupported Rust session format. Swift journals are not imported automatically.",
             ));
@@ -1346,6 +1364,9 @@ impl SessionStore {
         }
         let mut next = self.session.clone();
         let result = change(&mut next)?;
+        if next.has_tool_timing() {
+            next.version = next.version.max(9);
+        }
         if next.has_skill_fields() {
             next.version = next.version.max(8);
         }
@@ -1890,6 +1911,7 @@ mod tests {
             let path = dir.path().join("session.json");
             let mut session = Session::new();
             session.version = version;
+            session.tool_timing = None;
             session
                 .resolve_edit("cancelled-before-begin", "cancelled", None)
                 .unwrap();
@@ -1954,6 +1976,7 @@ mod tests {
             None,
         );
         assistant.tool_record = Some(ToolRecord::Assistant(AssistantRecord {
+            tool_batch_timing: None,
             completion: Completion::Complete,
             calls: vec![crate::provider::ToolCall {
                 id: "fixture-call".into(),
@@ -1972,6 +1995,7 @@ mod tests {
             None,
         );
         result.tool_record = Some(ToolRecord::Result(ResultRecord {
+            duration_us: None,
             assistant_id: "tool-assistant".into(),
             call_id: "fixture-call".into(),
             is_error: false,
@@ -2026,7 +2050,7 @@ mod tests {
         drop(store);
         let reopened = SessionStore::open(&path).unwrap();
         let snapshot = reopened.snapshot();
-        assert_eq!(snapshot.version, 3);
+        assert_eq!(snapshot.version, 9);
         assert_eq!(snapshot.messages.len(), 2);
         let projection =
             crate::tool_history::project(&snapshot.messages, &typed_fixture_profile()).unwrap();
@@ -2047,6 +2071,10 @@ mod tests {
         ] {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("typed.json");
+            let mut legacy = Session::new();
+            legacy.version = 2;
+            legacy.tool_timing = None;
+            fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
             let mut store = SessionStore::open(&path).unwrap();
             let before = fs::read(&path).unwrap();
             store.fault = fault;
@@ -2133,7 +2161,7 @@ mod tests {
             .unwrap();
         let original = fs::read(&journal).unwrap();
         let snapshot = SessionStore::open(&path).unwrap().snapshot();
-        assert_eq!(snapshot.version, 8);
+        assert_eq!(snapshot.version, 9);
         assert_eq!(snapshot.state, RunState::Paused);
         assert_eq!(snapshot.messages.last().unwrap().text, "retained partial");
         assert!(!snapshot.messages.last().unwrap().replay_eligible);
@@ -2899,6 +2927,7 @@ mod tests {
         let path = dir.path().join("session.json");
         let mut old = serde_json::to_value(Session::new()).unwrap();
         old["version"] = serde_json::json!(1);
+        old.as_object_mut().unwrap().remove("tool_timing");
         old.as_object_mut().unwrap().remove("stream_generation");
         old.as_object_mut().unwrap().remove("stream_sequence");
         fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
@@ -3095,6 +3124,7 @@ mod tool_recovery_capacity_tests {
             .calls
             .iter()
             .map(|_| ToolResultRow {
+                duration_us: None,
                 text: "result".into(),
                 outcome: ToolOutcome::Completed,
                 content: None,

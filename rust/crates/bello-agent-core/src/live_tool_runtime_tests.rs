@@ -151,6 +151,7 @@ fn generic_terminal_result_is_bounded_utf8_and_image_payload_is_never_copied() {
     use crate::tool_content::ToolContent;
     let (_root, controller, identity) = active();
     let result = ToolResultRow {
+        duration_us: Some(crate::tool_timing::DurationUs::new(125_000)),
         text: "🦀".repeat(MAX_LIVE_PREVIEW_BYTES),
         content: Some(Arc::new(ToolContent {
             blocks: vec![ContentBlock::Image {
@@ -163,6 +164,7 @@ fn generic_terminal_result_is_bounded_utf8_and_image_payload_is_never_copied() {
     };
     identity.finish_result(&result);
     let snapshot = controller.snapshot();
+    assert_eq!(snapshot.live_tools[0].duration_us, result.duration_us);
     let preview = &snapshot.live_tools[0].preview;
     assert!(preview.starts_with("[Image: image/png]\n🦀"));
     assert!(preview.len() <= MAX_LIVE_PREVIEW_BYTES);
@@ -178,6 +180,7 @@ fn generic_terminal_result_is_bounded_utf8_and_image_payload_is_never_copied() {
     image_only.text.clear();
     assert_eq!(terminal_preview(&image_only), "[Image: image/png]\n");
     let empty = ToolResultRow {
+        duration_us: None,
         text: String::new(),
         content: None,
         outcome: ToolOutcome::NotExecuted,
@@ -230,6 +233,7 @@ fn many_calls_and_batches_have_fixed_collection_bounds_without_retired_reinserti
                         &assistant,
                         (0..count)
                             .map(|_| ToolResultRow {
+                                duration_us: None,
                                 text: "durable".into(),
                                 content: None,
                                 outcome: ToolOutcome::Completed,
@@ -298,6 +302,7 @@ fn terminal_outcome_classification_is_preserved_for_generic_calls() {
         identity.update(1, "x".repeat(MAX_LIVE_PREVIEW_BYTES + 1));
         assert!(controller.snapshot().live_tools.is_empty());
         identity.finish_result(&ToolResultRow {
+            duration_us: None,
             text: String::new(),
             content: None,
             outcome,

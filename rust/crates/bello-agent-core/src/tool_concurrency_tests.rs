@@ -128,6 +128,10 @@ async fn editing_capacity_rejection_is_failed_without_effect_and_waiting_cancell
             token.cancel();
         }
         let result = result.await;
+        assert!(
+            result.duration_us.is_some(),
+            "entered queue/capacity outcomes carry observations"
+        );
         assert_eq!(
             result.outcome,
             if waiting_slots == 0 {
@@ -251,6 +255,30 @@ async fn controller_batch_overlaps_mutations_then_commits_ordered_results_and_re
     assert!(!root.path().join("a").exists());
     assert!(!root.path().join("b").exists());
     release.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !controller
+            .snapshot()
+            .live_tools
+            .iter()
+            .any(|row| row.outcome.is_some())
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let partial = controller.snapshot();
+    assert!(
+        partial
+            .live_tools
+            .iter()
+            .any(|row| row.duration_us.is_some())
+    );
+    assert_eq!(
+        partial.tool_timing.unwrap().total_us,
+        Some(crate::tool_timing::DurationUs::ZERO)
+    );
+    assert!(!partial.messages.iter().any(|row| row.role == "toolResult"));
     release.send(()).unwrap();
     let (socket, continuation) = provider_request(&listener).await;
     let results: Vec<_> = continuation["input"]
@@ -277,6 +305,26 @@ async fn controller_batch_overlaps_mutations_then_commits_ordered_results_and_re
     fs::write(root.path().join("a"), "external replacement").unwrap();
     let reopened = crate::SessionStore::open(&path).unwrap();
     let snapshot = reopened.snapshot();
+    let observed = snapshot
+        .messages
+        .iter()
+        .find_map(|row| match &row.tool_record {
+            Some(ToolRecord::Assistant(record)) => record.tool_batch_timing,
+            _ => None,
+        })
+        .unwrap();
+    assert!(observed.wall_us.is_some());
+    assert_eq!(snapshot.tool_timing.unwrap().total_us, observed.wall_us);
+    assert!(
+        snapshot
+            .messages
+            .iter()
+            .filter_map(|row| match &row.tool_record {
+                Some(ToolRecord::Result(record)) => Some(record),
+                _ => None,
+            })
+            .all(|record| record.duration_us.is_some())
+    );
     let replay =
         request_body_with_tools(&profile, &snapshot.messages, "", &snapshot.id, &[]).unwrap();
     let replayed: Vec<_> = replay["input"]

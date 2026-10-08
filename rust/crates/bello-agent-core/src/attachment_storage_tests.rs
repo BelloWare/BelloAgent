@@ -58,7 +58,7 @@ fn user_delivery_checkpoint_has_exactly_one_recovery_owner_at_rename_failures() 
         }
         drop(store);
         let reopened = SessionStore::open(&path).unwrap().snapshot();
-        assert_eq!(reopened.version, if delivered { 8 } else { 7 });
+        assert_eq!(reopened.version, 9);
         assert_eq!(
             reopened.pending.iter().filter(|s| s.id == item.id).count(),
             usize::from(!delivered)
@@ -118,7 +118,10 @@ fn retained_user_payload_wrong_version_role_base64_or_metadata_is_never_rewritte
     for mutation in 0..5 {
         let mut value = valid.clone();
         match mutation {
-            0 => value["version"] = serde_json::json!(6),
+            0 => {
+                value["version"] = 6.into();
+                value.as_object_mut().unwrap().remove("tool_timing");
+            }
             1 => value["messages"][0]["role"] = serde_json::json!("assistant"),
             2 => {
                 value["messages"][0]["user_content"]["blocks"][0]["data"] =

@@ -23,6 +23,7 @@ mod stream_journal;
 pub mod synthetic_project_runtime;
 pub mod tool_content;
 pub mod tool_history;
+pub mod tool_timing;
 pub mod tools;
 pub mod user_content;
 pub mod workspace;

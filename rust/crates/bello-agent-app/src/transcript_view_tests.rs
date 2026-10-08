@@ -2015,6 +2015,7 @@ fn retained_tool_rows(count: usize, output: &str) -> Vec<Message> {
             let mut assistant = message(&format!("tool-assistant-{i}"), "assistant", "");
             assistant.state = "completed".into();
             assistant.tool_record = Some(ToolRecord::Assistant(AssistantRecord {
+                tool_batch_timing: None,
                 completion: Completion::Complete,
                 calls: vec![ToolCall {
                     id: "reused".into(),
@@ -2032,6 +2033,7 @@ fn retained_tool_rows(count: usize, output: &str) -> Vec<Message> {
             }));
             let mut result = message(&format!("tool-result-{i}"), "toolResult", output);
             result.tool_record = Some(ToolRecord::Result(ResultRecord {
+                duration_us: None,
                 assistant_id: assistant.id.clone(),
                 call_id: "reused".into(),
                 is_error: false,
@@ -2461,6 +2463,7 @@ fn live_bash_output_remeasures_existing_card_then_settles_to_retained_result(
         panic!("fixture assistant")
     };
     session.live_tools.push(LiveToolView {
+        duration_us: None,
         assistant_id: assistant,
         call_id: call,
         sequence: 1,
@@ -2500,3 +2503,6 @@ fn live_bash_output_remeasures_existing_card_then_settles_to_retained_result(
 
 #[path = "transcript_live_terminal_ui_tests.rs"]
 mod live_terminal_ui;
+
+#[path = "transcript_tool_timing_tests.rs"]
+mod tool_timing_ui;

@@ -241,6 +241,25 @@ pub(super) fn live(
         .find(|view| &view.assistant_id == owner && &view.call_id == id)
 }
 
+/// Canonical results, including an unknown observation, always replace live data.
+pub(super) fn duration(
+    session: &Session,
+    row: ProjectedRow,
+) -> Option<bello_agent_core::tool_timing::DurationUs> {
+    if let Some(index) = row.result() {
+        return match &session.messages[index].tool_record {
+            Some(ToolRecord::Result(record)) => record.duration_us,
+            _ => None,
+        };
+    }
+    let view = live(session, row)?;
+    view.outcome.and(view.duration_us)
+}
+
+pub(super) fn elapsed(session: &Session, row: ProjectedRow) -> Option<String> {
+    crate::tool_timing_presentation::elapsed(duration(session, row))
+}
+
 pub(super) fn same_content(
     a: &Session,
     a_row: ProjectedRow,
@@ -286,6 +305,7 @@ pub(super) fn same_content(
                         && a.call_id == b.call_id
                         && a.outcome == b.outcome
                         && a.is_error == b.is_error
+                        && a.duration_us == b.duration_us
                         && match (&a.content, &b.content) {
                             // Payloads are immutable and may retain megabytes of images.
                             // New/reopened allocations remeasure rather than comparing
@@ -380,6 +400,7 @@ mod tests {
     fn assistant(id: &str) -> Message {
         let mut message = message(id);
         message.tool_record = Some(ToolRecord::Assistant(AssistantRecord {
+            tool_batch_timing: None,
             completion: Completion::Complete,
             calls: vec![ToolCall {
                 id: "same-call".into(),
@@ -402,6 +423,7 @@ mod tests {
         message.role = "toolResult".into();
         message.text = format!("result for {owner}");
         message.tool_record = Some(ToolRecord::Result(ResultRecord {
+            duration_us: None,
             assistant_id: owner.into(),
             call_id: "same-call".into(),
             is_error: outcome != ToolOutcome::Completed,
@@ -604,6 +626,7 @@ mod tests {
         session
             .live_tools
             .push(bello_agent_core::tool_history::LiveToolView {
+                duration_us: None,
                 assistant_id: "one".into(),
                 call_id: "same-call".into(),
                 sequence: 1,
@@ -629,6 +652,7 @@ mod tests {
         session
             .live_tools
             .push(bello_agent_core::tool_history::LiveToolView {
+                duration_us: None,
                 assistant_id: "one".into(),
                 call_id: "same-call".into(),
                 sequence: 99,
@@ -663,6 +687,7 @@ mod tests {
         session
             .live_tools
             .push(bello_agent_core::tool_history::LiveToolView {
+                duration_us: None,
                 assistant_id: "one".into(),
                 call_id: "running-sibling".into(),
                 sequence: 2,
@@ -713,6 +738,7 @@ mod tests {
                     terminal
                         .live_tools
                         .push(bello_agent_core::tool_history::LiveToolView {
+                            duration_us: None,
                             assistant_id: "one".into(),
                             call_id: "same-call".into(),
                             sequence: 1,
@@ -748,6 +774,7 @@ mod tests {
             before
                 .live_tools
                 .push(bello_agent_core::tool_history::LiveToolView {
+                    duration_us: None,
                     assistant_id: "one".into(),
                     call_id: "same-call".into(),
                     sequence: 1,
@@ -797,6 +824,7 @@ mod tests {
                 before
                     .live_tools
                     .push(bello_agent_core::tool_history::LiveToolView {
+                        duration_us: None,
                         assistant_id: "one".into(),
                         call_id: "same-call".into(),
                         sequence: 1,
@@ -846,5 +874,59 @@ mod tests {
                 ProjectedRow::Result(2)
             ]
         );
+    }
+    #[test]
+    fn duration_only_updates_and_canonical_unknown_are_authoritative() {
+        use bello_agent_core::tool_timing::DurationUs;
+        let mut before = generic_live_batch("grep");
+        before
+            .live_tools
+            .push(bello_agent_core::tool_history::LiveToolView {
+                assistant_id: "one".into(),
+                call_id: "same-call".into(),
+                sequence: 1,
+                preview: "same".into(),
+                outcome: Some(ToolOutcome::Completed),
+                duration_us: Some(DurationUs::new(990_000)),
+            });
+        let row = project(&before, 0)[0];
+        assert_eq!(elapsed(&before, row).as_deref(), Some("1s"));
+        let mut next = before.clone();
+        next.live_tools[1].duration_us = Some(DurationUs::new(2_000_000));
+        assert!(!same_content(&before, row, &next, row));
+        next.live_tools[1].outcome = None;
+        assert_eq!(elapsed(&next, row), None, "running has no clock");
+        next.messages.push(result("r", "one", ToolOutcome::Unknown));
+        let retained = project(&next, 0)[0];
+        assert_eq!(
+            duration(&next, retained),
+            None,
+            "canonical unknown replaces live known"
+        );
+        let mut timed = next.clone();
+        if let Some(ToolRecord::Result(result)) = &mut timed.messages[1].tool_record {
+            result.duration_us = Some(DurationUs::new(2_000_000));
+        }
+        assert!(!same_content(&next, retained, &timed, retained));
+        assert_eq!(elapsed(&timed, retained).as_deref(), Some("2s"));
+        for outcome in [
+            ToolOutcome::Completed,
+            ToolOutcome::Failed,
+            ToolOutcome::Cancelled,
+            ToolOutcome::NotExecuted,
+            ToolOutcome::Unknown,
+        ] {
+            let mut terminal = timed.clone();
+            if let Some(ToolRecord::Result(result)) = &mut terminal.messages[1].tool_record {
+                result.outcome = outcome;
+            }
+            assert_eq!(elapsed(&terminal, retained).as_deref(), Some("2s"));
+        }
+        let mut stale = timed.clone();
+        stale.live_tools[1].duration_us = Some(DurationUs::new(u64::MAX));
+        assert!(same_content(&timed, retained, &stale, retained));
+        assert_eq!(elapsed(&stale, retained).as_deref(), Some("2s"));
+        before.live_tools[1].assistant_id = "older".into();
+        assert_eq!(duration(&before, row), None);
     }
 }

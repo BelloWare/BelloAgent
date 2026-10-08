@@ -42,6 +42,7 @@ fn known_idle_formats_are_observed_without_migration_or_file_changes() {
     let (directory, path, mut session) = fixture();
     for version in [1, 2, 3] {
         session.version = version;
+        session.tool_timing = None;
         session.stream_generation = if version == 1 {
             String::new()
         } else {

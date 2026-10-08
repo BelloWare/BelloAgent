@@ -10,6 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 /// from Session serialization; only ResultRecord proves a retained outcome.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LiveToolView {
+    pub duration_us: Option<crate::tool_timing::DurationUs>,
     pub assistant_id: String,
     pub call_id: String,
     pub sequence: u64,
@@ -77,6 +78,8 @@ pub enum Completion {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AssistantRecord {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_batch_timing: Option<crate::tool_timing::BatchTiming>,
     pub completion: Completion,
     pub calls: Vec<ToolCall>,
     pub binding: ReplayBinding,
@@ -97,6 +100,8 @@ pub enum ToolOutcome {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResultRecord {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_us: Option<crate::tool_timing::DurationUs>,
     pub assistant_id: String,
     pub call_id: String,
     pub is_error: bool,
@@ -292,6 +297,9 @@ pub fn validate(messages: &[Message]) -> Result<()> {
                 if message.text.len() > MAX_RESULT_BYTES {
                     return Err(invalid("Recorded tool result exceeds 16 MiB"));
                 }
+                if record.duration_us.is_some() && assistant.tool_batch_timing.is_none() {
+                    return Err(invalid("Tool duration lacks an observed batch owner"));
+                }
                 if record.is_error == (record.outcome == ToolOutcome::Completed) {
                     return Err(invalid("Tool outcome and error flag disagree"));
                 }
@@ -303,6 +311,26 @@ pub fn validate(messages: &[Message]) -> Result<()> {
                 current = None;
                 last_result = None;
             }
+        }
+    }
+    let mut result_counts = BTreeMap::new();
+    for message in messages {
+        if let Some(ToolRecord::Result(record)) = &message.tool_record {
+            *result_counts
+                .entry(record.assistant_id.as_str())
+                .or_insert(0usize) += 1;
+        }
+    }
+    for message in messages {
+        if let Some(ToolRecord::Assistant(record)) = &message.tool_record
+            && record.tool_batch_timing.is_some()
+            && (record.completion != Completion::Complete
+                || result_counts.get(message.id.as_str()).copied().unwrap_or(0)
+                    != record.calls.len())
+        {
+            return Err(invalid(
+                "Observed tool batch lacks its complete ordered result set",
+            ));
         }
     }
     Ok(())

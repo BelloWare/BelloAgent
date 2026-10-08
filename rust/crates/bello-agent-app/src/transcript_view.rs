@@ -1882,6 +1882,18 @@ fn render_tool_card(
                                 .child(status.label(&name)),
                         ),
                 )
+                .when_some(
+                    tool_presentation::elapsed(session, projected),
+                    |header, elapsed| {
+                        header.child(
+                            div()
+                                .debug_selector(|| format!("{selector}-duration"))
+                                .text_size(px(11.5))
+                                .text_color(rgb(p.secondary))
+                                .child(elapsed),
+                        )
+                    },
+                )
                 .child(
                     button(
                         p,

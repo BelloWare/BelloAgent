@@ -1,0 +1,34 @@
+    Checking bello-agent-core v0.1.0 (/workspace/shared/agent-tool-timing/rust/crates/bello-agent-core)
+error[E0425]: cannot find value `recorded` in this scope
+   --> crates/bello-agent-core/src/tool_runtime.rs:793:8
+    |
+793 |     if recorded { result.duration_us = crate::tool_timing::DurationUs::since(started); }
+    |        ^^^^^^^^ not found in this scope
+
+error[E0308]: mismatched types
+   --> crates/bello-agent-core/src/tool_runtime.rs:791:9
+    |
+791 |     let (mut result, receipt) =
+    |         ^^^^^^^^^^^^^^^^^^^^^ expected a tuple with 3 elements, found one with 2 elements
+792 |         run_mcp_call_observed(tools, call, directory, cancel, budget, admission).await;
+    |         ------------------------------------------------------------------------------ this expression has type `(ToolResultRow, std::option::Option<Ticket>, bool)`
+    |
+    = note: expected tuple `(ToolResultRow, std::option::Option<Ticket>, bool)`
+               found tuple `(_, _)`
+
+error[E0308]: mismatched types
+   --> crates/bello-agent-core/src/tool_runtime.rs:791:9
+    |
+791 |     let (mut result, receipt) =
+    |         ^^^^^^^^^^^^^^^^^^^^^ expected a tuple with 3 elements, found one with 2 elements
+792 |         run_mcp_call_observed(tools, call, directory, cancel, budget, admission).await;
+    |         ------------------------------------------------------------------------------ this expression has type `(tool_runtime::ToolResultRow, std::option::Option<Ticket>, bool)`
+    |
+    = note: expected tuple `(tool_runtime::ToolResultRow, std::option::Option<Ticket>, bool)`
+               found tuple `(_, _)`
+
+Some errors have detailed explanations: E0308, E0425.
+For more information about an error, try `rustc --explain E0308`.
+error: could not compile `bello-agent-core` (lib) due to 2 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `bello-agent-core` (lib test) due to 2 previous errors

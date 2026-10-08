@@ -1,0 +1,382 @@
+{
+  "schema_version": 1,
+  "units": "milliseconds",
+  "finite_decimal_scaling": "Exact Decimal arithmetic, checked unsigned 64-bit integer microseconds; comparison baseline uses rational integer half-up only, not candidate Rust source.",
+  "fixtures": [
+    {
+      "id": "ms:0",
+      "kind": "decimal",
+      "value": "0",
+      "checked_microseconds": "0",
+      "microseconds_check": "exact decimal milliseconds x 1000 fits UInt64",
+      "integer_half_up_reference": "0.0s"
+    },
+    {
+      "id": "ms:49",
+      "kind": "decimal",
+      "value": "49",
+      "checked_microseconds": "49000",
+      "microseconds_check": "exact decimal milliseconds x 1000 fits UInt64",
+      "integer_half_up_reference": "0.0s"
+    },
+    {
+      "id": "ms:50",
+      "kind": "decimal",
+      "value": "50",
+      "checked_microseconds": "50000",
+      "microseconds_check": "exact decimal milliseconds x 1000 fits UInt64",
+      "integer_half_up_reference": "0.1s"
+    },
+    {
+      "id": "ms:149",
+      "kind": "decimal",
+      "value": "149",
+      "checked_microseconds": "149000",
+      "microseconds_check": "exact decimal milliseconds x 1000 fits UInt64",
+      "integer_half_up_reference": "0.1s"
+    },
+    {
+      "id": "ms:150",
+      "kind": "decimal",
+      "value": "150",
+      "checked_microseconds": "150000",
+      "microseconds_check": "exact decimal milliseconds x 1000 fits UInt64",
+      "integer_half_up_reference": "0.2s"
+    },
+    {
+      "id": "ms:249",
+      "kind": "decimal",
+      "value": "249",
+      "checked_microseconds": "249000",
+      "microseconds_check": "exact decimal milliseconds x 1000 fits UInt64",
+      "integer_half_up_reference": "0.2s"
+    },
+    {
+      "id": "ms:250",
+      "kind": "decimal",
+      "value": "250",
+      "checked_microseconds": "250000",
+      "microseconds_check": "exact decimal milliseconds x 1000 fits UInt64",
+      "integer_half_up_reference": "0.3s"
+    },
+    {
+      "id": "ms:251",
+      "kind": "decimal",
+      "value": "251",
+      "checked_microseconds": "251000",
+      "microseconds_check": "exact decimal milliseconds x 1000 fits UInt64",
+      "integer_half_up_reference": "0.3s"
+    },
+    {
+      "id": "ms:349",
+      "kind": "decimal",
+      "value": "349",
+      "checked_microseconds": "349000",
+      "microseconds_check": "exact decimal milliseconds x 1000 fits UInt64",
+      "integer_half_up_reference": "0.3s"
+    },
+    {
+      "id": "ms:350",
+      "kind": "decimal",
+      "value": "350",
+      "checked_microseconds": "350000",
+      "microseconds_check": "exact decimal milliseconds x 1000 fits UInt64",
+      "integer_half_up_reference": "0.4s"
+    },
+    {
+      "id": "ms:450",
+      "kind": "decimal",
+      "value": "450",
+      "checked_microseconds": "450000",
+      "microseconds_check": "exact decimal milliseconds x 1000 fits UInt64",
+      "integer_half_up_reference": "0.5s"
+    },
+    {
+      "id": "ms:550",
+      "kind": "decimal",
+      "value": "550",
+      "checked_microseconds": "550000",
+      "microseconds_check": "exact decimal milliseconds x 1000 fits UInt64",
+      "integer_half_up_reference": "0.6s"
+    },
+    {
+      "id": "ms:650",
+      "kind": "decimal",
+      "value": "650",
+      "checked_microseconds": "650000",
+      "microseconds_check": "exact decimal milliseconds x 1000 fits UInt64",
+      "integer_half_up_reference": "0.7s"
+    },
+    {
+      "id": "ms:750",
+      "kind": "decimal",
+      "value": "750",
+      "checked_microseconds": "750000",
+      "microseconds_check": "exact decimal milliseconds x 1000 fits UInt64",
+      "integer_half_up_reference": "0.8s"
+    },
+    {
+      "id": "ms:850",
+      "kind": "decimal",
+      "value": "850",
+      "checked_microseconds": "850000",
+      "microseconds_check": "exact decimal milliseconds x 1000 fits UInt64",
+      "integer_half_up_reference": "0.9s"
+    },
+    {
+      "id": "ms:949",
+      "kind": "decimal",
+      "value": "949",
+      "checked_microseconds": "949000",
+      "microseconds_check": "exact decimal milliseconds x 1000 fits UInt64",
+      "integer_half_up_reference": "0.9s"
+    },
+    {
+      "id": "ms:950",
+      "kind": "decimal",
+      "value": "950",
+      "checked_microseconds": "950000",
+      "microseconds_check": "exact decimal milliseconds x 1000 fits UInt64",
+      "integer_half_up_reference": "1s"
+    },
+    {
+      "id": "ms:951",
+      "kind": "decimal",
+      "value": "951",
+      "checked_microseconds": "951000",
+      "microseconds_check": "exact decimal milliseconds x 1000 fits UInt64",
+      "integer_half_up_reference": "1s"
+    },
+    {
+      "id": "ms:990",
+      "kind": "decimal",
+      "value": "990",
+      "checked_microseconds": "990000",
+      "microseconds_check": "exact decimal milliseconds x 1000 fits UInt64",
+      "integer_half_up_reference": "1s"
+    },
+    {
+      "id": "ms:1000",
+      "kind": "decimal",
+      "value": "1000",
+      "checked_microseconds": "1000000",
+      "microseconds_check": "exact decimal milliseconds x 1000 fits UInt64",
+      "integer_half_up_reference": "1s"
+    },
+    {
+      "id": "ms:1499",
+      "kind": "decimal",
+      "value": "1499",
+      "checked_microseconds": "1499000",
+      "microseconds_check": "exact decimal milliseconds x 1000 fits UInt64",
+      "integer_half_up_reference": "1s"
+    },
+    {
+      "id": "ms:1500",
+      "kind": "decimal",
+      "value": "1500",
+      "checked_microseconds": "1500000",
+      "microseconds_check": "exact decimal milliseconds x 1000 fits UInt64",
+      "integer_half_up_reference": "2s"
+    },
+    {
+      "id": "ms:59499",
+      "kind": "decimal",
+      "value": "59499",
+      "checked_microseconds": "59499000",
+      "microseconds_check": "exact decimal milliseconds x 1000 fits UInt64",
+      "integer_half_up_reference": "59s"
+    },
+    {
+      "id": "ms:59500",
+      "kind": "decimal",
+      "value": "59500",
+      "checked_microseconds": "59500000",
+      "microseconds_check": "exact decimal milliseconds x 1000 fits UInt64",
+      "integer_half_up_reference": "1m"
+    },
+    {
+      "id": "ms:59999",
+      "kind": "decimal",
+      "value": "59999",
+      "checked_microseconds": "59999000",
+      "microseconds_check": "exact decimal milliseconds x 1000 fits UInt64",
+      "integer_half_up_reference": "1m"
+    },
+    {
+      "id": "ms:60000",
+      "kind": "decimal",
+      "value": "60000",
+      "checked_microseconds": "60000000",
+      "microseconds_check": "exact decimal milliseconds x 1000 fits UInt64",
+      "integer_half_up_reference": "1m"
+    },
+    {
+      "id": "ms:3599499",
+      "kind": "decimal",
+      "value": "3599499",
+      "checked_microseconds": "3599499000",
+      "microseconds_check": "exact decimal milliseconds x 1000 fits UInt64",
+      "integer_half_up_reference": "59m 59s"
+    },
+    {
+      "id": "ms:3599500",
+      "kind": "decimal",
+      "value": "3599500",
+      "checked_microseconds": "3599500000",
+      "microseconds_check": "exact decimal milliseconds x 1000 fits UInt64",
+      "integer_half_up_reference": "1h"
+    },
+    {
+      "id": "ms:3600000",
+      "kind": "decimal",
+      "value": "3600000",
+      "checked_microseconds": "3600000000",
+      "microseconds_check": "exact decimal milliseconds x 1000 fits UInt64",
+      "integer_half_up_reference": "1h"
+    },
+    {
+      "id": "ms:49.999",
+      "kind": "decimal",
+      "value": "49.999",
+      "checked_microseconds": "49999",
+      "microseconds_check": "exact decimal milliseconds x 1000 fits UInt64",
+      "integer_half_up_reference": "0.0s"
+    },
+    {
+      "id": "ms:149.999",
+      "kind": "decimal",
+      "value": "149.999",
+      "checked_microseconds": "149999",
+      "microseconds_check": "exact decimal milliseconds x 1000 fits UInt64",
+      "integer_half_up_reference": "0.1s"
+    },
+    {
+      "id": "ms:949.999",
+      "kind": "decimal",
+      "value": "949.999",
+      "checked_microseconds": "949999",
+      "microseconds_check": "exact decimal milliseconds x 1000 fits UInt64",
+      "integer_half_up_reference": "0.9s"
+    },
+    {
+      "id": "ms:59499.999",
+      "kind": "decimal",
+      "value": "59499.999",
+      "checked_microseconds": "59499999",
+      "microseconds_check": "exact decimal milliseconds x 1000 fits UInt64",
+      "integer_half_up_reference": "59s"
+    },
+    {
+      "id": "ms:60500",
+      "kind": "decimal",
+      "value": "60500",
+      "checked_microseconds": "60500000",
+      "microseconds_check": "exact decimal milliseconds x 1000 fits UInt64",
+      "integer_half_up_reference": "1m 1s"
+    },
+    {
+      "id": "ms:3599499.999",
+      "kind": "decimal",
+      "value": "3599499.999",
+      "checked_microseconds": "3599499999",
+      "microseconds_check": "exact decimal milliseconds x 1000 fits UInt64",
+      "integer_half_up_reference": "59m 59s"
+    },
+    {
+      "id": "ms:3660000",
+      "kind": "decimal",
+      "value": "3660000",
+      "checked_microseconds": "3660000000",
+      "microseconds_check": "exact decimal milliseconds x 1000 fits UInt64",
+      "integer_half_up_reference": "1h 1m"
+    },
+    {
+      "id": "ms:18446744073709552",
+      "kind": "decimal",
+      "value": "18446744073709552",
+      "checked_microseconds": null,
+      "microseconds_check": "negative or outside UInt64 microsecond range",
+      "integer_half_up_reference": null
+    },
+    {
+      "id": "ms:-1",
+      "kind": "decimal",
+      "value": "-1",
+      "checked_microseconds": null,
+      "microseconds_check": "negative or outside UInt64 microsecond range",
+      "integer_half_up_reference": null
+    },
+    {
+      "id": "ms:-0.001",
+      "kind": "decimal",
+      "value": "-0.001",
+      "checked_microseconds": null,
+      "microseconds_check": "negative or outside UInt64 microsecond range",
+      "integer_half_up_reference": null
+    },
+    {
+      "id": "negativeZero",
+      "kind": "negativeZero",
+      "checked_microseconds": null,
+      "microseconds_check": "native special/boundary fixture; see labeled value and bit pattern",
+      "integer_half_up_reference": null
+    },
+    {
+      "id": "nan",
+      "kind": "nan",
+      "checked_microseconds": null,
+      "microseconds_check": "native special/boundary fixture; see labeled value and bit pattern",
+      "integer_half_up_reference": null
+    },
+    {
+      "id": "positiveInfinity",
+      "kind": "positiveInfinity",
+      "checked_microseconds": null,
+      "microseconds_check": "native special/boundary fixture; see labeled value and bit pattern",
+      "integer_half_up_reference": null
+    },
+    {
+      "id": "negativeInfinity",
+      "kind": "negativeInfinity",
+      "checked_microseconds": null,
+      "microseconds_check": "native special/boundary fixture; see labeled value and bit pattern",
+      "integer_half_up_reference": null
+    },
+    {
+      "id": "doubleIntMax",
+      "kind": "doubleIntMax",
+      "checked_microseconds": null,
+      "microseconds_check": "native special/boundary fixture; see labeled value and bit pattern",
+      "integer_half_up_reference": null
+    },
+    {
+      "id": "doubleIntMaxNextDown",
+      "kind": "doubleIntMaxNextDown",
+      "checked_microseconds": null,
+      "microseconds_check": "native special/boundary fixture; see labeled value and bit pattern",
+      "integer_half_up_reference": null
+    },
+    {
+      "id": "doubleIntMaxNextUp",
+      "kind": "doubleIntMaxNextUp",
+      "checked_microseconds": null,
+      "microseconds_check": "native special/boundary fixture; see labeled value and bit pattern",
+      "integer_half_up_reference": null
+    },
+    {
+      "id": "greatestFinite",
+      "kind": "greatestFinite",
+      "checked_microseconds": null,
+      "microseconds_check": "native special/boundary fixture; see labeled value and bit pattern",
+      "integer_half_up_reference": null
+    },
+    {
+      "id": "missing",
+      "kind": "missing",
+      "checked_microseconds": null,
+      "microseconds_check": "native special/boundary fixture; see labeled value and bit pattern",
+      "integer_half_up_reference": null
+    }
+  ]
+}

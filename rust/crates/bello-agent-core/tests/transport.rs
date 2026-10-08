@@ -21,6 +21,7 @@ fn typed_fixture_history(profile: &Profile) -> Vec<bello_agent_core::Message> {
     };
     let mut assistant: Message = serde_json::from_value(json!({"id":"fixture-assistant","role":"assistant","text":"","reasoning":"","replay_eligible":true,"state":"completed","usage":null,"model":null})).unwrap();
     assistant.tool_record = Some(ToolRecord::Assistant(AssistantRecord {
+        tool_batch_timing: None,
         completion: Completion::Complete,
         calls: vec![ToolCall {
             id: "fixture-call".into(),
@@ -32,6 +33,7 @@ fn typed_fixture_history(profile: &Profile) -> Vec<bello_agent_core::Message> {
     }));
     let mut result: Message = serde_json::from_value(json!({"id":"fixture-result","role":"toolResult","text":"世界\n😀","reasoning":"","replay_eligible":true,"state":"completed","usage":null,"model":null})).unwrap();
     result.tool_record = Some(ToolRecord::Result(ResultRecord {
+        duration_us: None,
         assistant_id: "fixture-assistant".into(),
         call_id: "fixture-call".into(),
         is_error: false,

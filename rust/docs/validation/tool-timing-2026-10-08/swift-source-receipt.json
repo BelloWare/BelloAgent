@@ -1,0 +1,48 @@
+{
+  "commit": "f4f80ddda3c27fac9e266896f69b725a06242e8f",
+  "scope": "Immutable source identities inspected; this receipt is not native Swift execution or GUI evidence.",
+  "files": [
+    {
+      "path": "packages/swift-host/Sources/PiAgentCore/SessionTools.swift",
+      "bytes": 16875,
+      "sha256": "7685b9e8d4f643ab47ec3ae2e71a4e5103098a9b7075e5e78e43a0a3d1c56417",
+      "git_blob": "43d2b4df6b7aead70f42934d32777d60903429f5"
+    },
+    {
+      "path": "packages/swift-host/Sources/PiAgentCore/Support.swift",
+      "bytes": 9239,
+      "sha256": "74b8eae612e2a7d7a09b2d3df6f663f21e252ba94b81df6de189a567dac59f0e",
+      "git_blob": "97d7de2f2494414036bee7b1c98a0b218cc6dd81"
+    },
+    {
+      "path": "packages/swift-host/Sources/PiAgentCore/TelemetryValues.swift",
+      "bytes": 4934,
+      "sha256": "e894524598961ea5e93a48db372c8f090457117f56dcdecce30ef230f48b1129",
+      "git_blob": "94085d34389d77095f00cb4f6ba6038a12ea690e"
+    },
+    {
+      "path": "packages/swift-host/Sources/PiAgentCore/Sessions.swift",
+      "bytes": 32314,
+      "sha256": "54162fb939c08c8a238820fd3fc4330154ec97d14b059e9a0a8b16b54c3cf986",
+      "git_blob": "872d3045b5c4537554597c6808ba7e1a9fa49723"
+    },
+    {
+      "path": "packages/swift-host/Sources/PiAgentCore/SessionTaskPresentation.swift",
+      "bytes": 3730,
+      "sha256": "35fd8ccbf4b5d874c64de41b6bee47ccbcb7bcfe6efab4c59f4c4ed54b67de96",
+      "git_blob": "07bd90fc72fe73e577b1e3bfac78bc6871d9f54f"
+    },
+    {
+      "path": "apps/macos/PiApp/Transcript/TranscriptRowParts.swift",
+      "bytes": 20875,
+      "sha256": "c9de78f7ae14f429b9d635728cc4accf6f8156880650d64e86b424793edd4949",
+      "git_blob": "0112264df12b6d75724a13a9a01db2ea0fae7e9c"
+    },
+    {
+      "path": "apps/macos/PiApp/Transcript/TranscriptActivity.swift",
+      "bytes": 55208,
+      "sha256": "eceecf6915e6e5a2429ae7cc08f37fa794cb52d518fdde6246ff7e101a2ba5b6",
+      "git_blob": "1bd67a61eb65e5a0f811bc7d7fe3d9baa73e8c54"
+    }
+  ]
+}

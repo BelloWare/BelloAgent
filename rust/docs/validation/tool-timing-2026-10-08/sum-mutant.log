@@ -1,0 +1,38 @@
+   Compiling bello-agent-core v0.1.0 (/workspace/shared/agent-tool-timing-mutant/rust/crates/bello-agent-core)
+warning: field `timing` is never read
+   --> crates/bello-agent-core/src/tool_runtime.rs:185:9
+    |
+183 | pub(crate) struct CompletedToolBatch {
+    |                   ------------------ field in this struct
+184 |     pub rows: Vec<ToolResultRow>,
+185 |     pub timing: crate::tool_timing::BatchTiming,
+    |         ^^^^^^
+    |
+    = note: `CompletedToolBatch` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `bello-agent-core` (lib) generated 1 warning
+warning: `bello-agent-core` (lib test) generated 1 warning (1 duplicate)
+    Finished `test` profile [unoptimized] target(s) in 25.23s
+     Running unittests src/lib.rs (/workspace/shared/build-recovery/target/debug/deps/bello_agent_core-94383b5840279b36)
+
+running 1 test
+test runtime::tool_runtime::timing_tests::tool_timing_projection_commit_reopen_and_retry_charge_batch_once ... FAILED
+
+failures:
+
+---- runtime::tool_runtime::timing_tests::tool_timing_projection_commit_reopen_and_retry_charge_batch_once stdout ----
+
+thread 'runtime::tool_runtime::timing_tests::tool_timing_projection_commit_reopen_and_retry_charge_batch_once' (537) panicked at crates/bello-agent-core/src/tool_timing_runtime_tests.rs:51:5:
+assertion `left == right` failed
+  left: Some(240000)
+ right: Some(140000)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    runtime::tool_runtime::timing_tests::tool_timing_projection_commit_reopen_and_retry_charge_batch_once
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 605 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p bello-agent-core --lib`

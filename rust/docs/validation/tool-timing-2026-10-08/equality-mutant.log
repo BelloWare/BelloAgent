@@ -1,0 +1,25 @@
+   Compiling bello-agent-core v0.1.0 (/workspace/shared/agent-tool-timing-mutant/rust/crates/bello-agent-core)
+   Compiling bello-agent-app v0.1.0 (/workspace/shared/agent-tool-timing-mutant/rust/crates/bello-agent-app)
+    Finished `test` profile [unoptimized] target(s) in 25.56s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running unittests src/main.rs (/workspace/shared/build-recovery/target/debug/deps/bello_agent-a54be717f3dcc926)
+
+running 1 test
+test transcript_view::tool_presentation::tests::duration_only_updates_and_canonical_unknown_are_authoritative ... FAILED
+
+failures:
+
+---- transcript_view::tool_presentation::tests::duration_only_updates_and_canonical_unknown_are_authoritative stdout ----
+
+thread 'transcript_view::tool_presentation::tests::duration_only_updates_and_canonical_unknown_are_authoritative' (90) panicked at crates/bello-agent-app/src/transcript_tool_presentation.rs:909:9:
+assertion failed: !same_content(&next, retained, &timed, retained)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    transcript_view::tool_presentation::tests::duration_only_updates_and_canonical_unknown_are_authoritative
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 599 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p bello-agent-app --bin bello-agent`

@@ -126,7 +126,7 @@ async fn image_only_retains_exact_bytes_retry_and_reopen_never_reread_source() {
         .as_ref()
         .unwrap()
         .clone();
-    assert_eq!(failed.version, 8);
+    assert_eq!(failed.version, 9);
     assert_eq!(image.image_count(), 1);
     c.retry().unwrap();
     let (socket, retry) = request(&l).await;
@@ -379,6 +379,13 @@ async fn dropped_acceptance_cancels_waiting_work_and_retirement_rejects_stale_pu
 #[tokio::test]
 async fn committed_stopped_tool_boundary_is_returned_for_ticket_settlement_but_uncertainty_is_not()
 {
+    tool_boundary_timing_fixture(true).await;
+}
+#[tokio::test]
+async fn tool_timing_actual_image_steering_projection_charges_only_real_checkpoint() {
+    tool_boundary_timing_fixture(false).await;
+}
+async fn tool_boundary_timing_fixture(missing_image: bool) {
     use crate::{Reply, provider::ToolCall, session::WriteFault, tool_history::ToolOutcome};
     for fault in [
         WriteFault::None,
@@ -420,24 +427,43 @@ async fn committed_stopped_tool_boundary_is_returned_for_ticket_settlement_but_u
                 })
                 .unwrap()
         };
-        std::fs::remove_file(&source).unwrap();
+        if missing_image {
+            std::fs::remove_file(&source).unwrap();
+        }
         c.inner.lock().unwrap().store.fault = fault;
         let settled = c
             .settle_image_tools(
                 &reply_id,
-                vec![super::super::tool_runtime::ToolResultRow {
-                    text: "completed result".into(),
-                    content: None,
-                    outcome: ToolOutcome::Completed,
-                }],
+                super::super::tool_runtime::CompletedToolBatch {
+                    timing: crate::tool_timing::BatchTiming {
+                        wall_us: Some(crate::tool_timing::DurationUs::new(20_000)),
+                    },
+                    rows: vec![super::super::tool_runtime::ToolResultRow {
+                        duration_us: None,
+                        text: "completed result".into(),
+                        content: None,
+                        outcome: ToolOutcome::Completed,
+                    }],
+                },
                 CancellationToken::new(),
             )
             .await;
         if matches!(fault, WriteFault::None) {
             let (_, state) =
                 settled.expect("durably committed results must allow ticket settlement");
-            assert_eq!(state.state, RunState::Paused);
-            assert_eq!(state.pending.len(), 1);
+            assert_eq!(
+                state.state,
+                if missing_image {
+                    RunState::Paused
+                } else {
+                    RunState::Running
+                }
+            );
+            assert_eq!(state.pending.len(), usize::from(missing_image));
+            assert_eq!(
+                state.tool_timing.unwrap().total_us,
+                Some(crate::tool_timing::DurationUs::new(20_000))
+            );
             assert!(
                 state
                     .messages
@@ -450,6 +476,11 @@ async fn committed_stopped_tool_boundary_is_returned_for_ticket_settlement_but_u
                 "failed or uncertain checkpoint must not acknowledge ticket"
             );
             assert!(c.inner.lock().unwrap().fatal.is_some());
+            assert_eq!(
+                c.snapshot().tool_timing.unwrap().total_us,
+                Some(crate::tool_timing::DurationUs::ZERO),
+                "failed checkpoint must not publish the disposable projection's charge"
+            );
         }
         c.retire_and_wait().await.unwrap();
     }

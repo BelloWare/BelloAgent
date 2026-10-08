@@ -1,0 +1,16 @@
+{
+  "source_comment": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6068923733",
+  "source_commit": "f4f80ddda3c27fac9e266896f69b725a06242e8f",
+  "peer_native_execution": "Peer-attested macOS14.8 arm64 Swift6.0.2. Not rerun on cloud Linux.",
+  "independently_verified": [
+    "Exact source-file Git blobs and SHA256 identities",
+    "Three unchanged source extraction sizes/hashes and inclusion in portable Swift harness",
+    "Portable Swift harness/input/output byte sizes and SHA256 against peer receipt",
+    "36 representable outputs compared against exact current Rust production formatter/elapsed bodies using local rustc harness"
+  ],
+  "native_fixtures": 48,
+  "representable_comparison_cases": 36,
+  "rust_comparison_passed": true,
+  "outside_rust_representation": "Negative, NaN/infinite, negative-zero and above-u64-microsecond source inputs are retained in native outputs but excluded from Rust DurationUs equivalence; Rust rejects invalid typed data and checked elapsed overflow yields unknown.",
+  "rust_harness_scope": "Exact extracted function bodies; DurationUs get() adapter only. App-integrated oracle fixture also requested."
+}

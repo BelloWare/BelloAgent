@@ -42,6 +42,7 @@ mod shutdown_barrier;
 mod sidebar_actions;
 mod stop_shortcut;
 mod theme;
+mod tool_timing_presentation;
 mod transcript_actions;
 #[cfg(test)]
 #[path = "../../../benches/transcript.rs"]
@@ -2579,12 +2580,22 @@ impl AgentView {
                     .pb(px(6.))
                     .flex()
                     .items_center()
-                    .gap(px(12.))
+                    // Wrapped metric rows need less vertical space than their
+                    // horizontal separation, especially in minimum-width splits.
+                    .gap_x(px(12.))
+                    .gap_y(px(4.))
                     .text_size(px(11.5))
                     .text_color(rgb(p.secondary))
                     .flex_wrap()
                     .child(self.badge(tokens, "chart"))
                     .child(self.badge("Cost n/a".into(), "chart"))
+                    .child(
+                        self.badge(
+                            tool_timing_presentation::total_label(&self.session),
+                            "chart",
+                        )
+                        .debug_selector(|| "composer-tool-time".into()),
+                    )
                     .child(
                         self.badge("Context n/a".into(), "cpu")
                             .id("context-inspector-open")

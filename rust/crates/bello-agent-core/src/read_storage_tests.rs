@@ -41,6 +41,7 @@ fn active(path: &Path) -> (SessionStore, String) {
 fn result(data: String) -> ToolResultRow {
     let text = "Read image file [image/png]".to_owned();
     ToolResultRow {
+        duration_us: None,
         text: text.clone(),
         outcome: ToolOutcome::Completed,
         content: Some(Arc::new(ToolContent {
@@ -71,7 +72,7 @@ fn image_outcome_payload_and_version_share_before_after_rename_certainty() {
                 .transact(|s| s.settle_tools(&id, vec![result("YWJj".into())], true))
                 .is_err()
         );
-        assert_eq!(store.snapshot().version, 8);
+        assert_eq!(store.snapshot().version, 9);
         assert!(store.snapshot().active_tool_calls().is_some());
         if committed {
             assert!(store.uncertain);
@@ -82,7 +83,7 @@ fn image_outcome_payload_and_version_share_before_after_rename_certainty() {
         }
         drop(store);
         let restored = SessionStore::open(&path).unwrap().snapshot();
-        assert_eq!(restored.version, 8);
+        assert_eq!(restored.version, 9);
         let record = restored
             .messages
             .iter()
@@ -118,7 +119,7 @@ fn snapshot_capacity_failure_preserves_admitted_calls_for_unknown_recovery() {
     assert_eq!(fs::read(&path).unwrap(), before);
     drop(store);
     let restored = SessionStore::open(&path).unwrap().snapshot();
-    assert_eq!(restored.version, 8);
+    assert_eq!(restored.version, 9);
     assert!(restored.messages.iter().any(|m|matches!(&m.tool_record,Some(ToolRecord::Result(record)) if record.outcome==ToolOutcome::Unknown&&record.content.is_none())));
 }
 

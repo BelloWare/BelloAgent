@@ -103,6 +103,7 @@ impl Identity {
             view.preview = preview.into();
         } else {
             inner.live_tools.push(LiveToolView {
+                duration_us: None,
                 assistant_id: self.assistant.clone(),
                 call_id: self.call.clone(),
                 sequence,
@@ -122,9 +123,22 @@ impl Identity {
         controller.publish_live(&inner, self.stop);
     }
     pub fn finish_result(&self, result: &ToolResultRow) {
-        self.finish(&terminal_preview(result), result.outcome);
+        self.finish_observed(
+            &terminal_preview(result),
+            result.outcome,
+            result.duration_us,
+        );
     }
+    #[cfg(test)]
     pub fn finish(&self, text: &str, outcome: ToolOutcome) {
+        self.finish_observed(text, outcome, None);
+    }
+    fn finish_observed(
+        &self,
+        text: &str,
+        outcome: ToolOutcome,
+        duration_us: Option<crate::tool_timing::DurationUs>,
+    ) {
         let Some(controller) = self.controller.upgrade() else {
             return;
         };
@@ -150,9 +164,11 @@ impl Identity {
                 return;
             }
             view.outcome = Some(outcome);
+            view.duration_us = duration_us;
             view.preview = preview;
         } else {
             inner.live_tools.push(LiveToolView {
+                duration_us,
                 assistant_id: self.assistant.clone(),
                 call_id: self.call.clone(),
                 sequence: 0,

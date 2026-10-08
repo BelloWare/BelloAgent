@@ -54,6 +54,7 @@ fn terminal_cards_case(name: &str, cx: &mut TestAppContext) {
         },
     ]);
     session.live_tools.push(LiveToolView {
+        duration_us: None,
         assistant_id: assistant.clone(),
         call_id: "running-sibling".into(),
         sequence: 1,
@@ -122,6 +123,7 @@ fn terminal_cards_case(name: &str, cx: &mut TestAppContext) {
         let mut next = (*changed.session).clone();
         next.live_tools.truncate(1);
         next.live_tools.push(LiveToolView {
+            duration_us: None,
             assistant_id: assistant.clone(),
             call_id: "reused".into(),
             sequence: sequence as u64 + 1,
@@ -191,6 +193,7 @@ fn terminal_cards_case(name: &str, cx: &mut TestAppContext) {
     ] {
         let mut result = message(&format!("durable-{index}"), "toolResult", text);
         result.tool_record = Some(ToolRecord::Result(ResultRecord {
+            duration_us: None,
             assistant_id: assistant.clone(),
             call_id: call_id.into(),
             outcome,

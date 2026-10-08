@@ -192,6 +192,7 @@ mod tests {
         };
         let mut assistant = base.clone();
         assistant.tool_record = Some(ToolRecord::Assistant(AssistantRecord {
+            tool_batch_timing: None,
             completion: Completion::Complete,
             calls: vec![ToolCall {
                 id: "call".into(),
@@ -212,6 +213,7 @@ mod tests {
         result.role = "toolResult".into();
         result.text = text.into();
         result.tool_record = Some(ToolRecord::Result(ResultRecord {
+            duration_us: None,
             assistant_id: "owner".into(),
             call_id: "call".into(),
             is_error: false,

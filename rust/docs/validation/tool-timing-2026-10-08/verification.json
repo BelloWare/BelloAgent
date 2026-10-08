@@ -1,0 +1,44 @@
+{
+  "source_manifest": "candidate-r3-manifest.json",
+  "source_hashes_verified_after_all_gates": true,
+  "package_clean_verification": "clean-verification.json",
+  "core_default": {
+    "unit_passed": 429,
+    "integration_passed": 127,
+    "failed": 0
+  },
+  "core_all_features": {
+    "unit_passed": 606,
+    "integration_passed": 127,
+    "failed": 0
+  },
+  "app_all_features": {
+    "passed": 598,
+    "failed": 0,
+    "ignored": 3
+  },
+  "strict_clippy_default_and_all_features": "passed both core and app all-targets -D warnings",
+  "fmt": "passed",
+  "negative_controls": {
+    "sum_of_call_durations": "one intended assertion failure: 240000 != 140000 microseconds",
+    "duration_equality_removed": "one intended assertion failure: changed duration treated same_content"
+  },
+  "final_test_binaries": [
+    {
+      "file": "bello_agent_core-8bfe315c8d6b13f3",
+      "bytes": 43822544,
+      "sha256": "c7f6b3b2c9b54e683e63fe87d197771a37faaeed9925b9b7440956d6d9b4684a"
+    },
+    {
+      "file": "bello_agent_core-94383b5840279b36",
+      "bytes": 65664960,
+      "sha256": "0b3a76f85732605cd1b723b434aa28e4897c270666a0efa17658886c6604ed2b"
+    },
+    {
+      "file": "bello_agent-a54be717f3dcc926",
+      "bytes": 109747864,
+      "sha256": "95d044e01c5e025637180dd7f352b15e87bac949fa2ed18f34bf2367345a47a5"
+    }
+  ],
+  "scope": "Cloud Linux synthetic fixtures/loopback/GPUI tests. Peer native formatter oracle attributed separately. No actual interactive GUI, native security, performance or release acceptance."
+}

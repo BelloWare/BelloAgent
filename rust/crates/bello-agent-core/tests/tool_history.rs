@@ -29,6 +29,7 @@ fn message(id: &str, role: &str, text: &str) -> Message {
 fn assistant(id: &str, calls: &[&str]) -> Message {
     let mut message = message(id, "assistant", "");
     message.tool_record = Some(ToolRecord::Assistant(AssistantRecord {
+        tool_batch_timing: None,
         completion: Completion::Complete,
         calls: calls
             .iter()
@@ -46,6 +47,7 @@ fn assistant(id: &str, calls: &[&str]) -> Message {
 fn result(id: &str, owner: &str, call: &str, text: &str) -> Message {
     let mut message = message(id, "toolResult", text);
     message.tool_record = Some(ToolRecord::Result(ResultRecord {
+        duration_us: None,
         assistant_id: owner.into(),
         call_id: call.into(),
         is_error: false,
@@ -271,6 +273,10 @@ fn bindings_omit_headers_and_credentials_and_do_not_copy_foreign_item_ids() {
 fn typed_snapshots_upgrade_to_v3_while_plain_snapshots_stay_v2() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("fixture.json");
+    let mut legacy = bello_agent_core::Session::new();
+    legacy.version = 2;
+    legacy.tool_timing = None;
+    std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
     let mut store = SessionStore::open(&path).unwrap();
     store
         .transact(|s| {
@@ -320,6 +326,7 @@ fn invalid_typed_load_never_rewrites_the_original_bytes() {
     for version in [1, 2] {
         let mut malformed = valid.clone();
         malformed["version"] = json!(version);
+        malformed.as_object_mut().unwrap().remove("tool_timing");
         let bytes = serde_json::to_vec(&malformed).unwrap();
         std::fs::write(&path, &bytes).unwrap();
         assert!(SessionStore::open(&path).is_err());

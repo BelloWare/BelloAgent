@@ -28,6 +28,7 @@ pub(crate) struct McpError {
     pub code: &'static str,
     pub message: String,
     pub not_executed: bool,
+    pub recording_failed: bool,
 }
 pub(crate) type McpResult<T> = std::result::Result<T, McpError>;
 impl McpError {
@@ -36,6 +37,7 @@ impl McpError {
             code,
             message: message.into(),
             not_executed: true,
+            recording_failed: false,
         }
     }
     fn unknown(code: &'static str, message: impl Into<String>) -> Self {
@@ -43,7 +45,12 @@ impl McpError {
             code,
             message: message.into(),
             not_executed: false,
+            recording_failed: false,
         }
+    }
+    fn recording_failed(mut self) -> Self {
+        self.recording_failed = true;
+        self
     }
     fn config() -> Self {
         Self::rejected("mcp_config", "MCP configuration is invalid or unavailable")
@@ -698,7 +705,8 @@ impl McpManager {
                 normalized: content::normalize(
                     crate::tools::result_text(value.to_string(), false),
                     &[],
-                )?,
+                )
+                .map_err(McpError::recording_failed)?,
                 ticket: None,
             });
         }
@@ -825,13 +833,14 @@ impl McpManager {
         match result {
             Ok(value) => {
                 let value = crate::tools::BlockingWorkExecutor::shared().run(cancel.clone(), move |token| crate::tools::mcp_images::normalize(value, &token)).await
-                    .map_err(|_| McpError::unknown("mcp_result", "MCP image/result retention was interrupted; effects may have occurred. No automatic replay."))?;
+                    .map_err(|_| McpError::unknown("mcp_result", "MCP image/result retention was interrupted; effects may have occurred. No automatic replay.").recording_failed())?;
                 let secrets = self
                     .configuration
                     .read()
                     .map_err(|_| McpError::config())?
                     .redactions();
-                let normalized = content::normalize(value, &secrets)?;
+                let normalized =
+                    content::normalize(value, &secrets).map_err(McpError::recording_failed)?;
                 Ok(Performed {
                     normalized,
                     ticket: Some(ticket),

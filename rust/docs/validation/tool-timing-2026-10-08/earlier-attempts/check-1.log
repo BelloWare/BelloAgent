@@ -1,0 +1,28 @@
+   Compiling bello-agent-core v0.1.0 (/workspace/shared/agent-tool-timing/rust/crates/bello-agent-core)
+error[E0308]: mismatched types
+   --> crates/bello-agent-core/src/attachment_runtime_tests.rs:428:17
+    |
+426 |               .settle_image_tools(
+    |                ------------------ arguments to this method are incorrect
+427 |                   &reply_id,
+428 | /                 vec![super::super::tool_runtime::ToolResultRow {
+429 | |                     duration_us: None,
+430 | |                     text: "completed result".into(),
+431 | |                     content: None,
+432 | |                     outcome: ToolOutcome::Completed,
+433 | |                 }],
+    | |__________________^ expected `CompletedToolBatch`, found `Vec<ToolResultRow>`
+    |
+    = note: expected struct `CompletedToolBatch`
+               found struct `Vec<tool_runtime::ToolResultRow>`
+note: method defined here
+   --> crates/bello-agent-core/src/attachment_runtime.rs:582:25
+    |
+582 |     pub(super) async fn settle_image_tools(
+    |                         ^^^^^^^^^^^^^^^^^^
+...
+585 |         results: super::tool_runtime::CompletedToolBatch,
+    |         ------------------------------------------------
+
+For more information about this error, try `rustc --explain E0308`.
+error: could not compile `bello-agent-core` (lib test) due to 1 previous error

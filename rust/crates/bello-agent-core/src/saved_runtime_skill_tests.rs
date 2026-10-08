@@ -94,7 +94,7 @@ async fn picker_skill_only_order_literal_arguments_receipt_context_and_plain_sla
     assert!(text.ends_with("\n\n"));
     assert!(request.body.to_string().contains("PROJECT INSTRUCTIONS"));
     let current = actor.snapshot();
-    assert_eq!(current.version, 8);
+    assert_eq!(current.version, 9);
     let row = current
         .messages
         .iter()

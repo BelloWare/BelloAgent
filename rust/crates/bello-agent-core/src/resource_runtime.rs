@@ -467,7 +467,7 @@ impl Controller {
     pub(super) async fn settle_resource_tools(
         &self,
         reply_id: &str,
-        results: Vec<super::tool_runtime::ToolResultRow>,
+        results: super::tool_runtime::CompletedToolBatch,
         cancel: CancellationToken,
     ) -> Option<(Submission, Session)> {
         let captured = {
@@ -538,9 +538,7 @@ impl Controller {
         let steering = candidate_current.map(|candidate| candidate.item.id.as_str());
         let stopped = error.is_some();
         let persisted = inner.store.transact(|session| {
-            session.settle_tools_with_prepared_steering(
-                reply_id, results, stopped, steering, images,
-            )?;
+            session.settle_completed_tool_batch(reply_id, results, stopped, steering, images)?;
             if let Some(error) = &error {
                 session.error = Some(error.to_string());
             }

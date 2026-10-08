@@ -1,0 +1,24 @@
+{
+  "verified": true,
+  "baseline": "fdc5bb0232f54def59b7a7df5363b6d73bdc2573",
+  "delta": {
+    "production": 376,
+    "tests_and_test_support": 848,
+    "benchmark_example": 0
+  },
+  "counts": {
+    "production": 46356,
+    "tests_and_test_support": 64976,
+    "benchmark_example": 1192
+  },
+  "physical": {
+    "before": 111300,
+    "after": 112524
+  },
+  "rust_files": {
+    "before": 213,
+    "after": 217,
+    "changed": 43
+  },
+  "live_tree_checked": false
+}

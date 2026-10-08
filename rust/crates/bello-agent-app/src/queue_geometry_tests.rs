@@ -68,6 +68,16 @@ fn assert_measured(
     let composer = visual.debug_bounds("queue-measured-composer").unwrap();
     let footer = visual.debug_bounds("queue-measured-footer").unwrap();
     let transcript = visual.debug_bounds("queue-measured-transcript").unwrap();
+    let tool_time = visual.debug_bounds("composer-tool-time").unwrap();
+    assert!(
+        tool_time.left() >= footer.left() && tool_time.right() <= footer.right(),
+        "Tool time must stay readable inside the footer"
+    );
+    assert!(tool_time.top() >= footer.top() && tool_time.bottom() <= footer.bottom());
+    assert!(
+        tool_time.size.height <= px(28.),
+        "Tool time label must not wrap internally"
+    );
     cx.read(|cx| {
         let view = root.read(cx);
         let measured = view

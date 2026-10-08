@@ -162,6 +162,7 @@ impl TrustedReadOnlyTools {
 
 #[derive(Clone, Debug)]
 pub(crate) struct ToolResultRow {
+    pub duration_us: Option<crate::tool_timing::DurationUs>,
     pub text: String,
     pub content: Option<Arc<crate::tool_content::ToolContent>>,
     pub outcome: ToolOutcome,
@@ -169,9 +170,25 @@ pub(crate) struct ToolResultRow {
 impl ToolResultRow {
     fn error(text: impl Into<String>, outcome: ToolOutcome) -> Self {
         Self {
+            duration_us: None,
             text: text.into(),
             content: None,
             outcome,
+        }
+    }
+}
+
+/// One immutable observation, cloned only into disposable candidate snapshots.
+#[derive(Clone, Debug)]
+pub(crate) struct CompletedToolBatch {
+    pub rows: Vec<ToolResultRow>,
+    pub timing: crate::tool_timing::BatchTiming,
+}
+impl CompletedToolBatch {
+    fn unobserved(rows: Vec<ToolResultRow>) -> Self {
+        Self {
+            rows,
+            timing: crate::tool_timing::BatchTiming { wall_us: None },
         }
     }
 }
@@ -253,6 +270,7 @@ impl Session {
         row.state = "completed".into();
         row.replay_eligible = true;
         row.tool_record = Some(ToolRecord::Assistant(AssistantRecord {
+            tool_batch_timing: None,
             completion: Completion::Complete,
             calls: reply.calls.clone(),
             binding: ReplayBinding::from_profile(profile)?,
@@ -297,9 +315,26 @@ impl Session {
         steering: Option<&str>,
         prepared: Option<crate::session::PreparedUserInput>,
     ) -> Result<()> {
+        self.settle_completed_tool_batch(
+            reply_id,
+            CompletedToolBatch::unobserved(results),
+            stop,
+            steering,
+            prepared,
+        )
+    }
+    pub(crate) fn settle_completed_tool_batch(
+        &mut self,
+        reply_id: &str,
+        batch: CompletedToolBatch,
+        stop: bool,
+        steering: Option<&str>,
+        prepared: Option<crate::session::PreparedUserInput>,
+    ) -> Result<()> {
         if self.active_reply.as_deref() != Some(reply_id) {
             return Err(invalid("Stale tool batch completion"));
         }
+        let results = batch.rows;
         // Validate before appending any tool rows in this pure state operation.
         let content = if !stop && self.edit.is_none() && !self.queue_paused {
             if let Some(item) = self
@@ -321,6 +356,27 @@ impl Session {
         if calls.len() != results.len() {
             return Err(invalid("Tool batch results do not match its calls"));
         }
+        {
+            let timing = batch.timing;
+            let owner = self
+                .messages
+                .iter_mut()
+                .find(|row| row.id == reply_id)
+                .and_then(|row| row.tool_record.as_mut())
+                .ok_or_else(|| invalid("Missing tool batch owner"))?;
+            let ToolRecord::Assistant(owner) = owner else {
+                return Err(invalid("Invalid tool batch owner"));
+            };
+            if owner.tool_batch_timing.is_some() {
+                return Err(invalid("Tool batch timing already recorded"));
+            }
+            owner.tool_batch_timing = Some(timing);
+            self.tool_timing = Some(crate::tool_timing::SessionToolTiming::adding(
+                self.tool_timing,
+                timing,
+            ));
+            self.version = self.version.max(9);
+        }
         let model = self.active.as_ref().and_then(|item| item.model.clone());
         for (call, result) in calls.iter().zip(results) {
             let mut row = message("toolResult", result.text, model.clone());
@@ -330,6 +386,7 @@ impl Session {
                 is_error: result.outcome != ToolOutcome::Completed,
                 outcome: result.outcome,
                 content: result.content,
+                duration_us: result.duration_us,
             }));
             self.messages.push(row);
         }
@@ -592,7 +649,11 @@ impl Controller {
             };
             // Every call, including same-file edits and MCP invocations, starts
             // independently. Durable rows still follow original reply order.
+            let batch_started = std::time::Instant::now();
             let mut completed = join_all((0..calls.len()).map(execute)).await;
+            let timing = crate::tool_timing::BatchTiming {
+                wall_us: crate::tool_timing::DurationUs::since(batch_started),
+            };
             completed.sort_by_key(|(index, _, _)| *index);
             let mut receipts = Vec::new();
             let results = completed
@@ -602,6 +663,10 @@ impl Controller {
                     result
                 })
                 .collect();
+            let results = CompletedToolBatch {
+                rows: results,
+                timing,
+            };
             #[cfg(feature = "synthetic-authority")]
             if self.resources.is_some() {
                 let Some((next_item, next_snapshot)) = self
@@ -710,6 +775,38 @@ where
     F: Fn() -> Fut,
     Fut: std::future::Future<Output = Result<()>>,
 {
+    let started = std::time::Instant::now();
+    if cancel.is_cancelled() {
+        return (
+            ToolResultRow::error(
+                "Not executed: cancelled before invocation",
+                ToolOutcome::NotExecuted,
+            ),
+            None,
+        );
+    }
+    // Invocation means entering the MCP wrapper, not proof of remote effects.
+    // In particular HTTP rejections/404 recovery can truthfully have elapsed
+    // time even when their outcome contract says no remote action executed.
+    let (mut result, receipt, recorded) =
+        run_mcp_call_observed(tools, call, directory, cancel, budget, admission).await;
+    if recorded {
+        result.duration_us = crate::tool_timing::DurationUs::since(started);
+    }
+    (result, receipt)
+}
+async fn run_mcp_call_observed<F, Fut>(
+    tools: &McpTools,
+    call: &ToolCall,
+    directory: &Path,
+    cancel: CancellationToken,
+    budget: Arc<BatchContentBudget>,
+    admission: F,
+) -> (ToolResultRow, Option<crate::mcp::Ticket>, bool)
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Result<()>>,
+{
     let performed = match tools
         .manager
         .perform(&call.arguments, tools.read_only, cancel.clone(), admission)
@@ -724,7 +821,11 @@ where
             } else {
                 ToolOutcome::Failed
             };
-            return (ToolResultRow::error(error.message, outcome), None);
+            return (
+                ToolResultRow::error(error.message, outcome),
+                None,
+                !error.recording_failed,
+            );
         }
     };
     let mut ticket = performed.ticket;
@@ -764,6 +865,7 @@ where
                         },
                     ),
                     None,
+                    false,
                 );
             }
         }
@@ -783,10 +885,12 @@ where
                 },
             ),
             None,
+            false,
         );
     }
     (
         ToolResultRow {
+            duration_us: None,
             text,
             content: Some(content),
             outcome: if performed.normalized.is_error {
@@ -796,6 +900,7 @@ where
             },
         },
         ticket,
+        true,
     )
 }
 
@@ -920,6 +1025,7 @@ async fn run_call_with_admission(
     budget: Arc<BatchContentBudget>,
     admission: impl std::future::Future<Output = crate::tools::ToolResult<()>>,
 ) -> ToolResultRow {
+    let started = std::time::Instant::now();
     if cancel.is_cancelled() {
         return ToolResultRow::error(
             "Not executed: cancelled before invocation",
@@ -941,21 +1047,31 @@ async fn run_call_with_admission(
     #[cfg(unix)]
     let tools = &configured;
     let retained_directory = directory.to_owned();
-    match tools
-        .invoke_mapped_with_admission(
+    let mut entered = false;
+    let recording_failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let recording_status = recording_failed.clone();
+    let mut result = match tools
+        .invoke_mapped_with_observed_admission(
             &prepared,
             cancel.clone(),
             move |value| {
-                let mut output = retain_native_content(value, &budget)?;
-                if output.text.len() > 65_536 {
-                    // Still inside the physical worker slot, including the
-                    // malformed-UTF8 Bash preview's second retention layer.
-                    output.text = retain_output(&retained_directory, &output.text)?;
-                    output.content = None;
+                let normalized = (|| {
+                    let mut output = retain_native_content(value, &budget)?;
+                    if output.text.len() > 65_536 {
+                        // Still inside the physical worker slot, including the
+                        // malformed-UTF8 Bash preview's second retention layer.
+                        output.text = retain_output(&retained_directory, &output.text)?;
+                        output.content = None;
+                    }
+                    Ok(output)
+                })();
+                if normalized.is_err() {
+                    recording_status.store(true, Ordering::Release);
                 }
-                Ok(output)
+                normalized
             },
             admission,
+            || entered = true,
         )
         .await
     {
@@ -964,6 +1080,7 @@ async fn run_call_with_admission(
             content,
             is_error,
         }) => ToolResultRow {
+            duration_us: None,
             text,
             content,
             outcome: if is_error {
@@ -984,7 +1101,11 @@ async fn run_call_with_admission(
         Err(error) => {
             failed_tool_result_with_editing(error, cancel.is_cancelled(), tools.editing_call(call))
         }
+    };
+    if entered && !recording_failed.load(Ordering::Acquire) {
+        result.duration_us = crate::tool_timing::DurationUs::since(started);
     }
+    result
 }
 
 #[cfg(test)]
@@ -1136,10 +1257,10 @@ mod tests {
     use crate::{SessionStore, session::WriteFault};
     use serde_json::json;
 
-    fn profile() -> Profile {
+    pub(super) fn profile() -> Profile {
         serde_json::from_value(json!({"id":"fixture","api":"openai-responses","providerId":"litellm","modelId":"fixture-model","baseUrl":"http://127.0.0.1:12345","contextWindow":32000,"maxOutputTokens":4096})).unwrap()
     }
-    fn reply() -> Reply {
+    pub(super) fn reply() -> Reply {
         Reply {
             text: "Listing".into(),
             reasoning: String::new(),
@@ -1153,7 +1274,7 @@ mod tests {
             provider_items: vec![],
         }
     }
-    fn active_store(path: &Path) -> (SessionStore, String) {
+    pub(super) fn active_store(path: &Path) -> (SessionStore, String) {
         let mut store = SessionStore::open(path).unwrap();
         store
             .transact(|s| {
@@ -1165,8 +1286,9 @@ mod tests {
         let id = store.snapshot().active_reply.unwrap();
         (store, id)
     }
-    fn result() -> Vec<ToolResultRow> {
+    pub(super) fn result() -> Vec<ToolResultRow> {
         vec![ToolResultRow {
+            duration_us: None,
             text: "kept result".into(),
             outcome: ToolOutcome::Completed,
             content: None,
@@ -1182,7 +1304,7 @@ mod tests {
             .transact(|s| s.begin_tools(&id, &reply(), &profile()))
             .unwrap();
         let batch = store.snapshot();
-        assert_eq!(batch.version, 8);
+        assert_eq!(batch.version, 9);
         assert_eq!(batch.state, RunState::Running);
         // Exact pre-integration v3 reader invariant. It rejects before the
         // existing open path's confirm/recover/write stages can run.
@@ -1646,3 +1768,7 @@ mod bash_tests;
 #[cfg(test)]
 #[path = "tool_concurrency_tests.rs"]
 mod tool_concurrency_tests;
+
+#[cfg(test)]
+#[path = "tool_timing_runtime_tests.rs"]
+mod timing_tests;

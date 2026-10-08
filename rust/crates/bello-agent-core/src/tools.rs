@@ -603,6 +603,21 @@ impl NativeTools {
         T: Send + 'static,
         F: FnOnce(Value) -> ToolResult<T> + Send + 'static,
     {
+        self.invoke_mapped_with_observed_admission(call, cancellation, map, admission, || {})
+            .await
+    }
+    pub(crate) async fn invoke_mapped_with_observed_admission<T, F>(
+        &self,
+        call: &ToolCall,
+        cancellation: CancellationToken,
+        map: F,
+        admission: impl std::future::Future<Output = ToolResult<()>>,
+        entered: impl FnOnce(),
+    ) -> ToolResult<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(Value) -> ToolResult<T> + Send + 'static,
+    {
         #[cfg(test)]
         {
             let barrier = self.admission_barrier.lock().unwrap().clone();
@@ -628,6 +643,7 @@ impl NativeTools {
             ));
         }
         check_cancelled(&cancellation)?;
+        entered();
         if !self.offers(&call.name) {
             return Err(ToolError::failure(
                 "tool_unavailable",

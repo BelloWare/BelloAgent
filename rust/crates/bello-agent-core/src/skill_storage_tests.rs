@@ -43,7 +43,7 @@ fn frozen_delivery_rename_faults_keep_exactly_one_recoverable_owner() {
         let mut store = SessionStore::open(&path).unwrap();
         let item = input();
         store.transact(|s| s.submit(item.clone())).unwrap();
-        assert_eq!(store.snapshot().version, 8);
+        assert_eq!(store.snapshot().version, 9);
         let before = fs::read(&path).unwrap();
         store.fault = fault;
         assert!(
@@ -92,7 +92,10 @@ fn corrupt_skill_versions_hashes_expansions_and_foreign_roots_preserve_original_
     for mutation in 0..7 {
         let mut value = valid.clone();
         match mutation {
-            0 => value["version"] = 7.into(),
+            0 => {
+                value["version"] = 7.into();
+                value.as_object_mut().unwrap().remove("tool_timing");
+            }
             1 => value["active"]["frozen_skills"][0]["body"] = "replaced body".into(),
             2 => {
                 value["messages"][0]["user_content"]["blocks"][0]["text"] =
@@ -124,6 +127,7 @@ fn old_empty_new_fields_fail_without_rewrite_and_clean_legacy_opens_byte_preserv
         let path = dir.path().join("session.json");
         let mut model = Session::new();
         model.version = version;
+        model.tool_timing = None;
         let value = serde_json::to_value(model).unwrap();
         let bytes = serde_json::to_vec(&value).unwrap();
         fs::write(&path, &bytes).unwrap();
@@ -241,6 +245,7 @@ fn delivered(session: &mut Session, item: Submission) {
 fn compaction_protects_answered_latest_and_current_task_but_not_older_task_forever() {
     let mut session = Session::new();
     session.version = 8;
+    session.tool_timing = None;
     let first = input();
     let first_id = first.id.clone();
     delivered(&mut session, first);
@@ -313,6 +318,7 @@ fn missing_later_root_or_return_to_old_task_is_rejected_before_rewrite() {
     let path = dir.path().join("session.json");
     let mut model = Session::new();
     model.version = 8;
+    model.tool_timing = None;
     let one = input();
     let old = one.id.clone();
     delivered(&mut model, one);
