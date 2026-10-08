@@ -180,6 +180,19 @@ extension NSScrollView {
               let reading = readingRow(in: native, clip: clip) else { return false }
         return candidate.isDescendant(of: reading)
     }
+    /// The row after `reading`, when `reading` starts above the screen and
+    /// less than a third of the screen shows it, and that next row starts on
+    /// screen; nil otherwise. The reader is reading that next row: held by the
+    /// top of the one above it, a measurement of that one's unseen part (an
+    /// estimate the page replaces as the row comes into reach) moved
+    /// everything they can see.
+    static func firstStartingOnScreen(_ document: TranscriptNativeDocument, clip: NSClipView, after reading: TranscriptRowContainer) -> TranscriptRowContainer? {
+        let screen = document.convert(clip.bounds, from: clip)
+        guard reading.frame.minY < screen.minY - 0.5, reading.frame.maxY - screen.minY < screen.height / 3,
+              document.retainedRows.indices.contains(reading.layoutIndex + 1) else { return nil }
+        let next = document.retainedRows[reading.layoutIndex + 1]
+        return next.frame.minY < screen.maxY && next.frame.height > 0 ? next : nil
+    }
     /// The row the reader's line is in, once it is on screen: a row the page
     /// has not mounted there yet has no place to be held from.
     private func readingRow(in document: TranscriptNativeDocument, clip: NSClipView) -> TranscriptRowContainer? {
@@ -214,7 +227,11 @@ extension NSScrollView {
         if let reading = readingRow(in: native, clip: clip) {
             visit(reading)
             if source == nil {
-                row = reading; rowDisplacement = reading.convert(.zero, to: clip).y - clip.bounds.minY
+                // A row of which only a little shows is not the one being read:
+                // the row after it, which starts on screen, is held instead,
+                // as a web page holds its first visible element.
+                let held = Self.firstStartingOnScreen(native, clip: clip, after: reading) ?? reading
+                row = held; rowDisplacement = native.convert(NSPoint(x: 0, y: held.frame.minY), to: clip).y - clip.bounds.minY
             }
             return
         }
@@ -222,7 +239,8 @@ extension NSScrollView {
         // mounted yet. It still has its place in the document, and that place
         // is held: a page read in above in this moment would otherwise move
         // everything on screen by its height.
-        guard let unmounted = native.retainedRows.first(where: { $0.frame.maxY > clip.bounds.minY }), unmounted.frame.height > 0 else { return }
+        guard let first = native.retainedRows.first(where: { $0.frame.maxY > clip.bounds.minY }), first.frame.height > 0 else { return }
+        let unmounted = Self.firstStartingOnScreen(native, clip: clip, after: first) ?? first
         row = unmounted
         rowDisplacement = native.convert(NSPoint(x: 0, y: native.isFlipped ? unmounted.frame.minY : unmounted.frame.maxY), to: clip).y - clip.bounds.minY
     }

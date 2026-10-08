@@ -102,12 +102,15 @@ import AppKit
         guard let scroll else { return 0 }
         return max(lowest, (scroll.documentView?.frame.height ?? 0) - scroll.contentView.bounds.height + scroll.contentInsets.bottom)
     }
-    /// The row at the reader's line (the top of the viewport) and where its
-    /// top is on screen, relative to the viewport's top.
+    /// The row the reader is reading at the top of the screen and where its
+    /// top is, relative to the viewport's top: the row covering the top, or —
+    /// when less than a third of the screen shows that one — the row after
+    /// it, which starts on screen (`TranscriptReadingCoordinator.firstStartingOnScreen`).
     func readingRow() -> (id: String, top: CGFloat)? {
         guard let document, let scroll else { return nil }
         let top = scroll.contentView.bounds.minY
-        guard let row = document.retainedRows.first(where: { $0.frame.maxY > top + 1 }) else { return nil }
+        guard let covering = document.retainedRows.first(where: { $0.frame.maxY > top + 1 }) else { return nil }
+        let row = TranscriptReadingCoordinator.firstStartingOnScreen(document, clip: scroll.contentView, after: covering) ?? covering
         return (row.itemID, row.frame.minY - top)
     }
     /// Where row `id`'s top is on screen now, or nil once the page let go of it.

@@ -1095,7 +1095,10 @@ final class TranscriptWidthChangeTests: TranscriptStressTestCase {
         await stage.settleUntilExact()
         stage.readerScroll(to: 400)
         await stage.settle()
-        let read = try XCTUnwrap(stage.rows.first { $0.frame.maxY > stage.scrollY })
+        // The row the reader is reading: the one covering the top of the
+        // screen, or the one after it when little of that one shows.
+        let covering = try XCTUnwrap(stage.rows.first { $0.frame.maxY > stage.scrollY })
+        let read = TranscriptReadingCoordinator.firstStartingOnScreen(stage.document, clip: stage.scroll.contentView, after: covering) ?? covering
         let readID = read.itemID
         let screenY = read.frame.minY - stage.scrollY
 
