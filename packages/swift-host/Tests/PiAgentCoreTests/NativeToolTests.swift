@@ -197,15 +197,14 @@ final class NativeToolTests: XCTestCase {
     }
 
     /// End to end: Stop on a bash call whose daemon keeps the pipes open
-    /// settles the run, and the workspace editing gate is free again.
-    func testStoppingABashCallHeldByADaemonSettlesTheRunAndFreesTheWorkspace() async throws {
+    /// settles the run.
+    func testStoppingABashCallHeldByADaemonSettlesTheRun() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let pidFile = root.appendingPathComponent("daemon.pid"); defer { end(pidFile) }
         let call = ToolCall(id: "bash-1", name: "bash", arguments: ["command": JSON(daemon(pidFile) + " sleep 20"), "timeout": 60])
         let reply = ModelReply(message: ChatMessage(role: "assistant", content: [["type": "toolCall", "id": "bash-1", "name": "bash", "arguments": call.arguments]]), calls: [call])
-        let gate = AsyncGate()
         let tools = NativeTools(cwd: root, outputs: root.appendingPathComponent("out"), mcp: MCPManager(cwd: root))
-        let session = try AgentSession(id: "s", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root.appendingPathComponent("state"), readOnly: false, resources: Resources(cwd: root, home: root), client: ScriptClient([reply]), tools: tools, traces: TraceStore(), editingGate: gate, autoCompaction: false)
+        let session = try AgentSession(id: "s", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root.appendingPathComponent("state"), readOnly: false, resources: Resources(cwd: root, home: root), client: ScriptClient([reply]), tools: tools, traces: TraceStore(), autoCompaction: false)
         _ = try await session.submit(Submission(commandID: "c", turnID: "t", text: "start a server"), steer: false)
         try await started(pidFile)
         let stoppedAt = nowMS()
@@ -217,8 +216,6 @@ final class NativeToolTests: XCTestCase {
         let state = await session.snapshot()
         XCTAssertEqual(state["state"].text, "paused")
         XCTAssertTrue(state["messages"].list.contains { $0["role"].text == "tool" && ($0["text"].text ?? "").contains("Tool interrupted") })
-        let acquiredAt = nowMS(); try await gate.acquire(); await gate.release()
-        XCTAssertLessThan(nowMS() - acquiredAt, 100, "The workspace editing gate is released")
         await session.close()
     }
 }

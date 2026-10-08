@@ -170,31 +170,4 @@ final class BlockingWorkTests: XCTestCase {
         XCTAssertTrue(text.hasPrefix(String(repeating: "x", count: 32_768)))
         XCTAssertTrue(text.contains("Truncated")); XCTAssertLessThan(text.utf8.count, 33_000)
     }
-
-    func testNativeReadSessionFinishesWhileAnEditSessionWaitsForTheExistingGate() async throws {
-        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
-        let file = root.appendingPathComponent("file.txt")
-        try Data("before".utf8).write(to: file)
-        let gate = AsyncGate(), tools = NativeTools(cwd: root, outputs: root.appendingPathComponent("out"), mcp: MCPManager(cwd: root))
-        func session(_ id: String, call: ToolCall) throws -> AgentSession {
-            let reply = ModelReply(message: ChatMessage(role: "assistant", content: [["type": "toolCall", "id": JSON(call.id), "name": JSON(call.name), "arguments": call.arguments]]), calls: [call])
-            return try AgentSession(id: id, profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root.appendingPathComponent(id), readOnly: false, resources: Resources(cwd: root, home: root), client: ScriptClient([reply, answer("done")]), tools: tools, traces: TraceStore(), editingGate: gate, autoCompaction: false)
-        }
-        let edit = try session("editing", call: ToolCall(id: "edit", name: "edit", arguments: ["path": "file.txt", "oldText": "before", "newText": "after"]))
-        let read = try session("reading", call: ToolCall(id: "read", name: "read", arguments: ["path": "file.txt"]))
-        try await gate.acquire()
-        var held = true
-        defer { if held { Task { await gate.release() } } }
-        _ = try await edit.submit(Submission(commandID: "edit", turnID: "edit", text: "edit"), steer: false)
-        try await eventually { await edit.snapshot()["activity"]["phase"].text == "tool" }
-        _ = try await read.submit(Submission(commandID: "read", turnID: "read", text: "read"), steer: false)
-        try await eventually { !(await read.isRunning) }
-        let snapshot = await read.snapshot(), editing = await edit.isRunning
-        XCTAssertEqual(snapshot["state"].text, "idle"); XCTAssertTrue(snapshot["messages"].encoded().contains("before"))
-        XCTAssertTrue(editing); XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "before")
-        await gate.release(); held = false
-        try await eventually { !(await edit.isRunning) }
-        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "after")
-        await read.close(); await edit.close()
-    }
 }

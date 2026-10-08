@@ -45,14 +45,16 @@ final class ParallelToolCallTests: XCTestCase {
         await session.close()
     }
 
-    func testEditingCallsKeepTheirOrderBesideTheOthers() async throws {
+    /// Unlike pi, editing calls are not serialized (owner, 2026-10-08): a
+    /// later write starts while an earlier edit is still running.
+    func testEditingCallsRunTogetherWithTheOthers() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let tools = Rendezvous(), client = ScriptClient([toolReply(["edit", "write", "second"]), answer("done")])
         let session = try session(client, tools, root: root, readOnly: false)
         _ = try await session.submit(Submission(commandID: "a", turnID: "a", text: "go"), steer: false)
         try await eventually { !(await session.isRunning) }
         let started = await tools.started
-        XCTAssertLessThan(try XCTUnwrap(started.firstIndex(of: "edit-done")), try XCTUnwrap(started.firstIndex(of: "write")), "A later edit waits for the earlier one")
+        XCTAssertLessThan(try XCTUnwrap(started.firstIndex(of: "write")), try XCTUnwrap(started.firstIndex(of: "edit-done")), "A later edit does not wait for the earlier one")
         XCTAssertLessThan(try XCTUnwrap(started.firstIndex(of: "second")), try XCTUnwrap(started.firstIndex(of: "edit-done")), "A call that changes nothing runs beside the edits")
         let results = await session.context.filter { $0.role == "toolResult" }
         XCTAssertEqual(results.map(\.toolCallId), ["call-0", "call-1", "call-2"])

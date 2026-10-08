@@ -24,9 +24,10 @@ struct ToolHistoryIndex {
 }
 
 extension AgentSession {
-    /// Tools that change the workspace. Sessions of one workspace run their
-    /// model requests concurrently; only these invocations take turns, so two
-    /// chats never edit or run commands at the same moment.
+    /// Tools that change the workspace. Nothing makes them take turns (owner,
+    /// 2026-10-08): chats, and the calls of one reply, edit and run commands
+    /// at the same time. The set still decides whether an interrupted call's
+    /// outcome is unknown.
     static let editingTools: Set<String> = ["write", "edit", "bash"]
     static func isEditing(_ call: ToolCall) -> Bool { editingTools.contains(call.name) || (call.name == "mcp" && call.arguments["action"].text == "invoke") }
     /// Errors a tool raises before it has done anything: arguments it cannot
@@ -64,17 +65,10 @@ extension AgentSession {
     func invokeTool(_ call: ToolCall) async throws -> JSON {
         let prepared=await piPrepared(call)
         let update: @Sendable (JSON) async -> Void = { [weak self] update in await self?.toolUpdate(call.id,update) }
-        guard !readOnly, Self.isEditing(call) else {
-            showToolInvocation(call); toolInvocationsBegan.insert(call.id)
-            // Refused before anything runs; `read_only` reads as a rejection.
-            if let refusal=sideRefusal(call) { throw refusal }
-            return try await tools.invoke(prepared,readOnly:readOnly,onUpdate:update)
-        }
-        try await editingGate.acquire()
-        showToolInvocation(call)
-        toolInvocationsBegan.insert(call.id)
-        do { let result=try await tools.invoke(prepared,readOnly:readOnly,onUpdate:update); await editingGate.release(); return result }
-        catch { await editingGate.release(); throw error }
+        showToolInvocation(call); toolInvocationsBegan.insert(call.id)
+        // Refused before anything runs; `read_only` reads as a rejection.
+        if readOnly || !Self.isEditing(call), let refusal=sideRefusal(call) { throw refusal }
+        return try await tools.invoke(prepared,readOnly:readOnly,onUpdate:update)
     }
     func toolUpdate(_ id:String,_ update:JSON) {
         guard var view=toolStates[id], view["state"].text=="running" else { return }
@@ -168,10 +162,9 @@ extension AgentSession {
 
     /// Pi 0.85.1's executeToolCallsParallel: a reply's calls run together, each
     /// card ends as its call ends, and the result rows join the context in call
-    /// order once every call has finished. Calls that change the workspace
-    /// (write, edit, bash, MCP invocations) run one after another in call order
-    /// beside the rest, as pi serializes the mutations of a file; the workspace
-    /// editing gate still keeps two chats from editing at once.
+    /// order once every call has finished. Unlike pi, calls that change the
+    /// workspace are not serialized, not even two edits of one file: the owner
+    /// removed every editing lock (2026-10-08).
     func runToolBatch(_ calls: [ToolCall]) async throws {
         toolInvocationsBegan.removeAll(); runStatus = .waitingTool
         for call in calls {
@@ -182,19 +175,10 @@ extension AgentSession {
             event("tool_execution_queued")
         }
         let began=nowMS()
-        let ordered=calls.enumerated().map { (index: $0.offset, call: $0.element) }
-        let editing=ordered.filter { !readOnly && Self.isEditing($0.call) }, others=ordered.filter { readOnly || !Self.isEditing($0.call) }
         var outcomes=[ToolOutcome?](repeating: nil, count: calls.count)
-        await withTaskGroup(of: [ToolOutcome].self) { group in
-            for entry in others { group.addTask { [self] in [await runToolCall(entry.call, index: entry.index)] } }
-            if !editing.isEmpty {
-                group.addTask { [self] in
-                    var done: [ToolOutcome]=[]
-                    for entry in editing { done.append(await runToolCall(entry.call, index: entry.index)) }
-                    return done
-                }
-            }
-            for await finished in group { for outcome in finished { outcomes[outcome.index]=outcome } }
+        await withTaskGroup(of: ToolOutcome.self) { group in
+            for (index, call) in calls.enumerated() { group.addTask { [self] in await runToolCall(call, index: index) } }
+            for await outcome in group { outcomes[outcome.index]=outcome }
         }
         let wall=nowMS()-began
         turnToolMs += wall; cumulativeToolMs = ObservedDuration.adding(cumulativeToolMs, wall)
@@ -220,8 +204,7 @@ extension AgentSession {
             return outcome(result, started:start, state:result["isError"].flag == true ? .failed : .completed)
         } catch {
             let cancelled=Task.isCancelled || error is CancellationError
-            // A call stopped before its tool was entered (still waiting for
-            // the workspace editing gate) never ran.
+            // A call stopped before its tool was entered never ran.
             let entered=toolInvocationsBegan.contains(call.id)
             let text=cancelled ? (entered ? "Tool interrupted. Effects may already have occurred; inspect before retrying. No automatic replay." : "Not executed: cancelled before invocation") : (error as? AgentError)?.message ?? "Tool failed; inspect its effects before retrying."
             // Only an editing tool that had begun, and failed other than by

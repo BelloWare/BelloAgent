@@ -40,7 +40,7 @@ public actor AgentSession {
     /// once when the session is idle and when a run ends otherwise.
     public private(set) var profile: Profile
     public let resources: Resources
-    let cwd: URL, directory: URL, client: any ModelClient, tools: any ToolExecuting, traces: TraceStore, editingGate: AsyncGate
+    let cwd: URL, directory: URL, client: any ModelClient, tools: any ToolExecuting, traces: TraceStore
     var apiKey: String
     let changed: @Sendable (String, Int) -> Void
     /// Settings saved while a run is going: they wait until it ends.
@@ -116,8 +116,8 @@ public actor AgentSession {
     /// so sorting keys would retire a running card and keep a finished one.
     var toolStateOrder: [String]=[], toolStateBytes: [String:Int]=[:]
     /// The call whose tool was actually entered, set just before the invoke.
-    /// A call stopped while it still waited for the workspace editing gate
-    /// never ran, and is recorded as not executed rather than unknown.
+    /// A call stopped before its tool was entered never ran, and is recorded
+    /// as not executed rather than unknown.
     /// Pi's customInstructions for the manual compaction being run.
     var compactionFocus: String?
     /// Calls of the running tool batch whose tool has been entered.
@@ -276,13 +276,13 @@ public actor AgentSession {
     /// Where each loaded row's content is in the journal, for the next
     /// metadata file (`JournalCheckpoint`).
     var rowSpans: [String: JournalCheckpoint.Row] = [:]
-    public init(id: String, profile: Profile, apiKey: String, cwd: URL, directory: URL, readOnly: Bool, resources: Resources, client: any ModelClient, tools: any ToolExecuting, traces: TraceStore, editingGate: AsyncGate = AsyncGate(), resumePath: String? = nil, seed: [ChatMessage]? = nil, parent: JSON = .null, autoCompaction: Bool = true, titleTask: Bool = false, utilityPurpose: String = "title", unknownToolOutcomes: Bool = true, compactionPolicy: CompactionPolicy = CompactionPolicy(), displayClock: @escaping @Sendable () -> Double = { ProcessInfo.processInfo.systemUptime * 1000 }, beforeJournalAppend: @escaping @Sendable (JSON) throws -> Void = { _ in }, beforeJournalSynchronize: @escaping @Sendable () throws -> Void = {}, changed: @escaping @Sendable (String, Int) -> Void = {_,_ in}) throws {
-        try self.init(id:id,profile:profile,apiKey:apiKey,cwd:cwd,directory:directory,readOnly:readOnly,resources:resources,client:client,tools:tools,traces:traces,editingGate:editingGate,resumePath:resumePath,prepared:nil,seed:seed,parent:parent,autoCompaction:autoCompaction,titleTask:titleTask,utilityPurpose:utilityPurpose,unknownToolOutcomes:unknownToolOutcomes,compactionPolicy:compactionPolicy,displayClock:displayClock,beforeJournalAppend:beforeJournalAppend,beforeJournalSynchronize:beforeJournalSynchronize,changed:changed)
+    public init(id: String, profile: Profile, apiKey: String, cwd: URL, directory: URL, readOnly: Bool, resources: Resources, client: any ModelClient, tools: any ToolExecuting, traces: TraceStore, resumePath: String? = nil, seed: [ChatMessage]? = nil, parent: JSON = .null, autoCompaction: Bool = true, titleTask: Bool = false, utilityPurpose: String = "title", unknownToolOutcomes: Bool = true, compactionPolicy: CompactionPolicy = CompactionPolicy(), displayClock: @escaping @Sendable () -> Double = { ProcessInfo.processInfo.systemUptime * 1000 }, beforeJournalAppend: @escaping @Sendable (JSON) throws -> Void = { _ in }, beforeJournalSynchronize: @escaping @Sendable () throws -> Void = {}, changed: @escaping @Sendable (String, Int) -> Void = {_,_ in}) throws {
+        try self.init(id:id,profile:profile,apiKey:apiKey,cwd:cwd,directory:directory,readOnly:readOnly,resources:resources,client:client,tools:tools,traces:traces,resumePath:resumePath,prepared:nil,seed:seed,parent:parent,autoCompaction:autoCompaction,titleTask:titleTask,utilityPurpose:utilityPurpose,unknownToolOutcomes:unknownToolOutcomes,compactionPolicy:compactionPolicy,displayClock:displayClock,beforeJournalAppend:beforeJournalAppend,beforeJournalSynchronize:beforeJournalSynchronize,changed:changed)
     }
     /// `prepared`: the replay of the journal at `resumePath`, made as a fork
     /// wrote it (`forked`); used only while it is the whole journal as it is.
-    init(id: String, profile: Profile, apiKey: String, cwd: URL, directory: URL, readOnly: Bool, resources: Resources, client: any ModelClient, tools: any ToolExecuting, traces: TraceStore, editingGate: AsyncGate = AsyncGate(), resumePath: String? = nil, prepared: JournalReplayConsumer?, seed: [ChatMessage]? = nil, parent: JSON = .null, autoCompaction: Bool = true, titleTask: Bool = false, utilityPurpose: String = "title", unknownToolOutcomes: Bool = true, compactionPolicy: CompactionPolicy = CompactionPolicy(), displayClock: @escaping @Sendable () -> Double = { ProcessInfo.processInfo.systemUptime * 1000 }, beforeJournalAppend: @escaping @Sendable (JSON) throws -> Void = { _ in }, beforeJournalSynchronize: @escaping @Sendable () throws -> Void = {}, changed: @escaping @Sendable (String, Int) -> Void = {_,_ in}) throws {
-        self.id=id; self.profile=profile; self.apiKey=apiKey; self.cwd=cwd; self.directory=directory; self.readOnly=readOnly; self.resources=resources; self.client=client; self.tools=tools; self.traces=traces; self.editingGate=editingGate; self.changed=changed; self.autoCompaction=autoCompaction; self.titleTask=titleTask; self.utilityPurpose=utilityPurpose; self.reportsUnknownToolOutcomes=unknownToolOutcomes; self.displayClock=displayClock; self.compactionPolicy=compactionPolicy
+    init(id: String, profile: Profile, apiKey: String, cwd: URL, directory: URL, readOnly: Bool, resources: Resources, client: any ModelClient, tools: any ToolExecuting, traces: TraceStore, resumePath: String? = nil, prepared: JournalReplayConsumer?, seed: [ChatMessage]? = nil, parent: JSON = .null, autoCompaction: Bool = true, titleTask: Bool = false, utilityPurpose: String = "title", unknownToolOutcomes: Bool = true, compactionPolicy: CompactionPolicy = CompactionPolicy(), displayClock: @escaping @Sendable () -> Double = { ProcessInfo.processInfo.systemUptime * 1000 }, beforeJournalAppend: @escaping @Sendable (JSON) throws -> Void = { _ in }, beforeJournalSynchronize: @escaping @Sendable () throws -> Void = {}, changed: @escaping @Sendable (String, Int) -> Void = {_,_ in}) throws {
+        self.id=id; self.profile=profile; self.apiKey=apiKey; self.cwd=cwd; self.directory=directory; self.readOnly=readOnly; self.resources=resources; self.client=client; self.tools=tools; self.traces=traces; self.changed=changed; self.autoCompaction=autoCompaction; self.titleTask=titleTask; self.utilityPurpose=utilityPurpose; self.reportsUnknownToolOutcomes=unknownToolOutcomes; self.displayClock=displayClock; self.compactionPolicy=compactionPolicy
         if let seed {
             history=seed; context=seed; boundary=seed; visible=seed; toolHistory=ToolHistoryIndex(seed); parentInfo=parent; ephemeral=true
             taskRootID=seed.last(where: { $0.role == "user" })?.taskRootID

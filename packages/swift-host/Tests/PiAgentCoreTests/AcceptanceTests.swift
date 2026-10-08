@@ -24,8 +24,7 @@ final class AcceptanceTests: XCTestCase {
     func testSideDuringModelAndToolUsesCompleteBoundaryAndIndependentCancellation() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let directory = root.appendingPathComponent("state"), resources = Resources(cwd: root, home: root)
-        // Calls that change the workspace run in call order, so one is in
-        // flight while the next waits; other calls would run together.
+        // Both calls run together; neither has finished when the side opens.
         let client = ScriptClient([toolReply(["edit", "write"]), answer("parent complete")], holdFirst: true)
         let tools = HeldTools(), traces = TraceStore()
         let parent = try AgentSession(id: "parent", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: directory, readOnly: false, resources: resources, client: client, tools: tools, traces: traces, autoCompaction: false)
@@ -38,7 +37,7 @@ final class AcceptanceTests: XCTestCase {
         try await eventually { !(await modelSide.isRunning) }
         let stillRunning = await parent.isRunning; XCTAssertTrue(stillRunning)
         await client.release()
-        try await eventually { await tools.calls.count == 1 }
+        try await eventually { await tools.calls.count == 2 }
         let duringTool = await parent.sideSeed()
         XCTAssertEqual(duringTool.messages.map(\.id), duringModel.messages.map(\.id), "An unfinished tool batch must not enter a side snapshot")
         let sideClient = ScriptClient([answer("never delivered")], holdFirst: true)
@@ -85,27 +84,27 @@ final class AcceptanceTests: XCTestCase {
         let directory = root.appendingPathComponent("state"), tools = HeldTools(), resources = Resources(cwd: root, home: root), traces = TraceStore()
         let first = try AgentSession(id: "s", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: directory, readOnly: false, resources: resources, client: ScriptClient([toolReply(["edit", "write"])]), tools: tools, traces: traces, autoCompaction: false)
         _ = try await first.submit(Submission(commandID: "initial", turnID: "initial", text: "Run tools"), steer: false)
-        try await eventually { await tools.calls.count == 1 }
+        // Both calls run at once, so both have begun when Stop comes.
+        try await eventually { await tools.calls.count == 2 }
         _ = try await first.submit(Submission(commandID: "follow", turnID: "follow", text: "Continue after inspection"), steer: false)
         await first.stop(); try await eventually { !(await first.isRunning) }
         let before = await first.snapshot(), path = await first.path
         let results = before["messages"].list.filter { $0["role"].text == "tool" }
         XCTAssertEqual(results.count, 2)
-        XCTAssertTrue(try XCTUnwrap(results.first?["text"].text).contains("Effects may already have occurred"))
-        XCTAssertTrue(try XCTUnwrap(results.last?["text"].text).contains("Not executed"))
-        // The call that was running when Stop came has an unknown outcome; the
-        // one that never started was skipped. The same after a reopen, when
-        // the cards come from the journal instead of the live state.
+        XCTAssertTrue(results.allSatisfy { ($0["text"].text ?? "").contains("Effects may already have occurred") })
+        // Both calls were running when Stop came, so both outcomes are
+        // unknown. The same after a reopen, when the cards come from the
+        // journal instead of the live state.
         func cards(_ value: JSON) -> [String] { value["messages"].list.filter { $0["role"].text == "assistant" }.flatMap { $0["tools"].list }.compactMap { $0["state"].text } }
-        XCTAssertEqual(cards(before), ["unknown", "cancelled"])
+        XCTAssertEqual(cards(before), ["unknown", "unknown"])
         await first.close()
         let client = ScriptClient([answer("Continued")])
         let resumed = try AgentSession(id: "s", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: directory, readOnly: false, resources: resources, client: client, tools: tools, traces: traces, resumePath: path, autoCompaction: false)
         let reopened = await resumed.snapshot()
-        XCTAssertEqual(cards(reopened), ["unknown", "cancelled"])
+        XCTAssertEqual(cards(reopened), ["unknown", "unknown"])
         try await resumed.resumeQueue(); try await eventually { !(await resumed.isRunning) }
         let calls = await tools.calls, requests = await client.requests
-        XCTAssertEqual(calls, ["edit"]); XCTAssertEqual(requests.count, 1)
+        XCTAssertEqual(calls.sorted(), ["edit", "write"], "Each call ran once; nothing is invoked again on resume"); XCTAssertEqual(requests.count, 1)
         XCTAssertEqual(requests[0].filter { $0.role == "toolResult" }.count, 2)
         await resumed.close()
     }

@@ -52,7 +52,7 @@ public actor NativeHostService {
     private var unknownToolOutcomes = false
     private var cwd: URL?, roots: [URL]=[], directory: URL?, resources: Resources?, mcp: MCPManager?, nativeTools: NativeTools?
     private let traces: TraceStore, capture: CaptureDelivery
-    private let editingGate=AsyncGate(), runtimeGate=AsyncGate()
+    private let runtimeGate=AsyncGate()
     private var sessions:[String:AgentSession]=[:], profiles:[String:(Profile,String)]=[:]
     /// Journals being slimmed (`JournalSlimming`), by session: an open of one waits for it.
     private var slimming:[String:Task<JournalSlimming.Outcome,Error>]=[:]
@@ -191,9 +191,9 @@ public actor NativeHostService {
     /// whole journal. (A side starts from its parent's context instead.)
     private func makeSession(_ id: String, profile: Profile, apiKey: String, readOnly: Bool, resources: Resources, tools: any ToolExecuting, resumePath: String? = nil, prepared: JournalReplayConsumer? = nil, seed: [ChatMessage]? = nil, parent: JSON = .null, titleTask: Bool = false, utilityPurpose: String = "title") async throws -> AgentSession {
         guard let cwd, let directory else { throw AgentError("workspace_required", "Open a workspace first") }
-        let client=ProviderClient(traces:traces), traces=traces, gate=editingGate, outcomes=unknownToolOutcomes, changed=notification()
+        let client=ProviderClient(traces:traces), traces=traces, outcomes=unknownToolOutcomes, changed=notification()
         return try await Task.detached(priority:.userInitiated) {
-            try AgentSession(id:id,profile:profile,apiKey:apiKey,cwd:cwd,directory:directory,readOnly:readOnly,resources:resources,client:client,tools:tools,traces:traces,editingGate:gate,resumePath:resumePath,prepared:prepared,seed:seed,parent:parent,autoCompaction:!titleTask,titleTask:titleTask,utilityPurpose:utilityPurpose,unknownToolOutcomes:outcomes,changed:changed)
+            try AgentSession(id:id,profile:profile,apiKey:apiKey,cwd:cwd,directory:directory,readOnly:readOnly,resources:resources,client:client,tools:tools,traces:traces,resumePath:resumePath,prepared:prepared,seed:seed,parent:parent,autoCompaction:!titleTask,titleTask:titleTask,utilityPurpose:utilityPurpose,unknownToolOutcomes:outcomes,changed:changed)
         }.value
     }
     /// Runs `body` holding the runtime gate, which serializes opens, forks

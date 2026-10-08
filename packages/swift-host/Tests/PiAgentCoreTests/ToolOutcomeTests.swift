@@ -51,27 +51,6 @@ final class ToolOutcomeTests: XCTestCase {
         await reopened.close()
     }
 
-    func testAnEditStoppedWhileWaitingForTheWorkspaceNeverRan() async throws {
-        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
-        let gate = AsyncGate(), tools = ScriptedEditTools()
-        func session(_ id: String) throws -> AgentSession {
-            try AgentSession(id: id, profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root.appendingPathComponent("state-" + id), readOnly: false, resources: Resources(cwd: root, home: root), client: ScriptClient([editReply(["held"]), answer("done")]), tools: tools, traces: TraceStore(), editingGate: gate, autoCompaction: false)
-        }
-        let holder = try session("holder"), waiter = try session("waiter")
-        _ = try await holder.submit(Submission(commandID: "h", turnID: "h", text: "edit"), steer: false)
-        try await eventually { await tools.calls.count == 1 }
-        _ = try await waiter.submit(Submission(commandID: "w", turnID: "w", text: "edit"), steer: false)
-        try await eventually { await waiter.snapshot()["activity"]["phase"].text == "tool" }
-        await waiter.stop(); try await eventually { !(await waiter.isRunning) }
-        let stopped = await waiter.snapshot(), recorded = await outcomes(waiter)
-        let calls = await tools.calls
-        XCTAssertEqual(calls.count, 1, "the waiting edit never entered the tool")
-        XCTAssertEqual(recorded, ["not_executed"]); XCTAssertEqual(cards(stopped), ["cancelled"])
-        XCTAssertTrue(stopped["messages"].list.contains { $0["role"].text == "tool" && ($0["text"].text ?? "").hasPrefix("Not executed") }, "the model is not told that effects may have occurred")
-        await tools.release(); try await eventually { !(await holder.isRunning) }
-        await holder.close(); await waiter.close()
-    }
-
     /// A reader that did not ask for recorded outcomes (an app from before
     /// 0.1.85) keeps the card states it knows: a stopped call reads
     /// "cancelled" live and "failed" from the journal, as it always did.
@@ -81,16 +60,17 @@ final class ToolOutcomeTests: XCTestCase {
             let directory = root.appendingPathComponent("state"), tools = ScriptedEditTools()
             let session = try AgentSession(id: "s", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: directory, readOnly: false, resources: Resources(cwd: root, home: root), client: ScriptClient([editReply(["held", "held"])]), tools: tools, traces: TraceStore(), autoCompaction: false, unknownToolOutcomes: asked)
             _ = try await session.submit(Submission(commandID: "c", turnID: "t", text: "edit"), steer: false)
-            try await eventually { await tools.calls.count == 1 }
+            // Both calls of the reply run at once, so both have begun when Stop comes.
+            try await eventually { await tools.calls.count == 2 }
             await session.stop(); try await eventually { !(await session.isRunning) }
             let live = cards(await session.snapshot()), recorded = await outcomes(session)
             let path = await session.path; await session.close()
             let reopened = try AgentSession(id: "s", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: directory, readOnly: false, resources: Resources(cwd: root, home: root), client: ScriptClient([]), tools: tools, traces: TraceStore(), resumePath: path, autoCompaction: false, unknownToolOutcomes: asked)
             let reloaded = cards(await reopened.snapshot())
             await reopened.close()
-            XCTAssertEqual(recorded, ["unknown", "not_executed"], "the journal records the outcome either way")
-            XCTAssertEqual(live, asked ? ["unknown", "cancelled"] : ["cancelled", "cancelled"])
-            XCTAssertEqual(reloaded, asked ? ["unknown", "cancelled"] : ["failed", "failed"])
+            XCTAssertEqual(recorded, ["unknown", "unknown"], "the journal records the outcome either way")
+            XCTAssertEqual(live, asked ? ["unknown", "unknown"] : ["cancelled", "cancelled"])
+            XCTAssertEqual(reloaded, asked ? ["unknown", "unknown"] : ["failed", "failed"])
         }
     }
 
