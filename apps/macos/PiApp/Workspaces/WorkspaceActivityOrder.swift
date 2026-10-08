@@ -44,12 +44,14 @@ extension WorkspaceModel {
     func setSidebarOrderHold(_ reason: SidebarOrderHold, _ held: Bool) {
         if held { sidebarOrderHolds.insert(reason) } else { sidebarOrderHolds.remove(reason) }
         if sidebarOrderHolds.isEmpty, !heldActivity.isEmpty { heldActivity.removeAll() }
+        if sidebarOrderHolds.isEmpty { sidebarSearchStorage?.orderReleased() }
     }
     /// The app went to the background, or the sidebar left its window:
     /// nobody is reaching for a row.
     func releaseSidebarOrder() {
         sidebarOrderHolds.removeAll()
         if !heldActivity.isEmpty { heldActivity.removeAll() }
+        sidebarSearchStorage?.orderReleased()
     }
 }
 
