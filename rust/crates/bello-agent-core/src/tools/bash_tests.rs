@@ -164,6 +164,16 @@ async fn cancellation_and_dropped_awaiter_hold_gate_through_owned_escalation() {
         .unwrap()
         .unwrap();
     assert!(gate.try_lock().is_ok());
+    // The job registry signals after physical cleanup, just before the owning
+    // executor decrements its slot. Require actual slot retirement by a
+    // deadline rather than assuming both publications are simultaneous.
+    tokio::time::timeout(Duration::from_secs(4), async {
+        while executor.occupancy().active != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the physically settled Bash worker must release its executor slot");
     assert_eq!(executor.occupancy().active, 0);
 }
 #[test]
@@ -285,7 +295,10 @@ async fn stopped_shell_never_chases_short_lived_escaped_process_group() {
         Err(ToolError::Cancelled)
     ));
     tokio::time::timeout(Duration::from_secs(3), async {
-        while !root.path().join("escaped-finished").exists() {
+        // The child creates the file before it publishes the complete marker.
+        while !fs::read_to_string(root.path().join("escaped-finished"))
+            .is_ok_and(|marker| marker == "done")
+        {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })

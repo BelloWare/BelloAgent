@@ -1,0 +1,11 @@
+{
+  "date": "2026-10-08",
+  "tests": 15,
+  "result": "pass",
+  "scope": "Synthetic Python transport controls; no native executable run or CI-log roundtrip yet",
+  "sha256": {
+    ".github/workflows/rust-macos.yml": "ac4c92ac071463bb89621ebceaa8119959c1087aca271088bd6f25f312102d5d",
+    "rust/scripts/source-utf8-log-transfer.py": "bb80e7abd7f82b81c2508016e8f0ea96f65e4dfd8e8c144d845d9f3518bb3129",
+    "rust/scripts/test-source-utf8-log-transfer.py": "d65d4adff313e6af0376f93d1295fa0c498971aaa49423c5393c94d7a91448c6"
+  }
+}

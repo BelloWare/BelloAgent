@@ -21,6 +21,7 @@ jobs:
         working-directory: rust
     env:
       CARGO_BUILD_JOBS: '2'
+      MACOSX_DEPLOYMENT_TARGET: '14.0'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -29,6 +30,8 @@ jobs:
         run: |
           test "$(uname -s)" = Darwin
           test "$(uname -m)" = arm64
+          export DEVELOPER_DIR="$(xcode-select --print-path)"
+          echo "DEVELOPER_DIR=$DEVELOPER_DIR" >> "$GITHUB_ENV"
           xcodebuild -version
           xcrun --sdk macosx --show-sdk-version
           xcrun --find clang
@@ -40,6 +43,14 @@ jobs:
           rustc --version
       - name: Compile and link all native test targets
         run: cargo test --locked --workspace --no-run
+      - name: Verify and transport same-build UTF-8 decoder bundle
+        # Synthetic decoder probes only. Job logs avoid artifact-storage charges.
+        # Failure or the size bound must not trigger a paid transfer fallback.
+        run: |
+          python3 scripts/test-source-utf8-log-transfer.py
+          python3 scripts/validate-source-utf8-macos.py build-bundle "$RUNNER_TEMP/a4-modern-bundle"
+          python3 scripts/validate-source-utf8-macos.py run-bundle "$RUNNER_TEMP/a4-modern-bundle" --receipt "$RUNNER_TEMP/a4-modern-receipt.json"
+          python3 scripts/source-utf8-log-transfer.py emit "$RUNNER_TEMP/a4-modern-bundle" --receipt "$RUNNER_TEMP/a4-modern-receipt.json"
       - name: Run pure domain and filesystem tests
         # No GPUI application launch, permissions, keychain, capture or updater actions.
         run: cargo test --locked -p bello-agent-core

@@ -1,0 +1,78 @@
+{
+  "schema": 1,
+  "date_utc": "2026-10-08",
+  "platform": "x86_64-unknown-linux-gnu",
+  "rustc": "1.99.0 (b940084d7 2026-09-28)",
+  "source_base_commit": "4ca6bcb048e9671c52e1950a2ff383089f5d5bfa",
+  "published_catalog_base": "cf63b6d6f4007e65fe8e6e23bb211caf75b6e6ba",
+  "core_source_changes": [
+    "rust/crates/bello-agent-core/src/tools/bash_tests.rs"
+  ],
+  "combined_patch_sha256": "46cd4d80e0b9f1a9f9e932f70895002ef2e9479a94a3e37cf6978fe4eb5ae261",
+  "core_source_hash_manifest": "core-source-hashes.json",
+  "core_source_hash_manifest_sha256": "d469e3121c91a3b2ad13c05224b8b96d4804df09230a18873200d2284b720480",
+  "source_files_verified_unchanged_before_and_after": 135,
+  "environment": {
+    "CARGO_BUILD_JOBS": "2",
+    "test_threads": "2",
+    "network_services": "Locked dependency downloads and synthetic loopback test servers only; no real credentials or paid model services."
+  },
+  "checks": [
+    {
+      "command": "cargo fmt --manifest-path rust/Cargo.toml --all -- --check",
+      "log": "logs/fmt.log",
+      "exit_code": 0,
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": "cargo test --manifest-path rust/Cargo.toml --locked -p bello-agent-core --all-features --lib tools::bash::tests -- --test-threads=2",
+      "log": "logs/bash-focused.log",
+      "unit_passed": 15,
+      "exit_code": 0,
+      "log_sha256": "cf5690c11501a0c9a6e9d0a3aeb6aa3ffc2aa96bb6f94d95207873aca12e2151",
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo test --manifest-path rust/Cargo.toml --locked --offline -p bello-agent-core --all-features -- --test-threads=2",
+      "log": "logs/core-all-features.log",
+      "unit_passed": 567,
+      "integration_passed": 127,
+      "doc_tests": 0,
+      "exit_code": 0,
+      "log_sha256": "738f00c01ea2e919e68deafb32361faf1ebe0fb46b8156791d22735cb025d194",
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo test --manifest-path rust/Cargo.toml --locked --offline -p bello-agent-core -- --test-threads=2",
+      "log": "logs/core-default.log",
+      "unit_passed": 410,
+      "integration_passed": 127,
+      "doc_tests": 0,
+      "exit_code": 0,
+      "log_sha256": "886c9f78085c633e158b328d1d439a72b979d17d8eda8979b14512069e4ae723",
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo clippy --manifest-path rust/Cargo.toml --locked --offline -p bello-agent-core --all-features --all-targets -- -D warnings",
+      "log": "logs/clippy-all-features.log",
+      "exit_code": 0,
+      "log_sha256": "9d73f8f91136254fbe7136cb248aaf22f5d1b86af736ecc69901110817766a3e"
+    },
+    {
+      "command": "cargo clippy --manifest-path rust/Cargo.toml --locked --offline -p bello-agent-core --all-targets -- -D warnings",
+      "log": "logs/clippy-default.log",
+      "exit_code": 0,
+      "log_sha256": "77d81ce32c2244148f40893fabb7656226e68f14eab27291d269162dc57c0511"
+    }
+  ],
+  "notes": [
+    "Log paths normalized to <repository> and <cargo-target>; all other output retained.",
+    "Two subprocess test repetitions are not added to unit totals.",
+    "Native macOS decoder tests executed: 0. Native tests are cfg-excluded on Linux, rather than ignored.",
+    "No workspace/App build, native GUI, signing, Keychain, or performance acceptance is claimed.",
+    "Modern-built identical-bundle validation on both macOS hosts remains pending."
+  ]
+}

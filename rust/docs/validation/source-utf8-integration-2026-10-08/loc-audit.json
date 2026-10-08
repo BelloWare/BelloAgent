@@ -1,0 +1,142 @@
+{
+  "baseline_commit": "cf63b6d6f4007e65fe8e6e23bb211caf75b6e6ba",
+  "recovered_commit": "4ca6bcb048e9671c52e1950a2ff383089f5d5bfa",
+  "baseline_evidence_path": "rust/docs/validation/catalog-connections-2026-10-08/notice-repair/corrected-r4/integrated-loc-r4.json",
+  "baseline_evidence_sha256": "12f06092e69a7c76456408eb14aa553bae25e2610101fb8a1171c7eadfbca02f",
+  "baseline_counts": {
+    "production": 45529,
+    "tests_and_test_support": 61764,
+    "benchmark_example": 1192
+  },
+  "a4_delta": {
+    "production": 220,
+    "tests_and_test_support": 389,
+    "benchmark_example": 0
+  },
+  "bash_support_delta": 13,
+  "bash_worktree_sha256": "e941733d14d7bb23e06811ea6439e927608b2c1b76c3974c9ec6165736e353e0",
+  "combined_counts": {
+    "production": 45749,
+    "tests_and_test_support": 62166,
+    "benchmark_example": 1192
+  },
+  "baseline_physical_total": 108485,
+  "combined_physical_total": 109107,
+  "rust_file_counts": {
+    "baseline": 207,
+    "recovered": 210
+  },
+  "files": [
+    {
+      "path": "rust/crates/bello-agent-core/build.rs",
+      "before_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "after_sha256": "e7f198285f681bda356b5cce23172c0044e57cd25e45305b53c289070cfc8ece",
+      "delta": {
+        "production": 145,
+        "tests_and_test_support": 0,
+        "benchmark_example": 0
+      }
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/tools/edit/macos.rs",
+      "before_sha256": "eb3b8e8bc7f021c5867a8a5fe16c69919dfa656e51bad6873a2e8c4c5d2c778f",
+      "after_sha256": "b41c0a56edf7612dbb6d33b07f9ba891dc179067e5509ee295d9bd4fd02bfcec",
+      "delta": {
+        "production": 0,
+        "tests_and_test_support": 0,
+        "benchmark_example": 0
+      }
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/tools/edit/macos_tests.rs",
+      "before_sha256": "c468a665a89d71b01241c8951207ac0d8a4cfc606dd9e614f631b32680057d55",
+      "after_sha256": "f34d4afbd60868ad464b6c52e76c880bccc000c464b9c8d4a66cccc0db11f5e6",
+      "delta": {
+        "production": 0,
+        "tests_and_test_support": 2,
+        "benchmark_example": 0
+      }
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/tools/grep/macos.rs",
+      "before_sha256": "f9e08ddac0f7040e7f6cdb04386196afc5a202e88fc60cfb996100657b6bd9dd",
+      "after_sha256": "514cc3a043a2a6602bfe66a02547bd60a412b4e779ecfdd253dd06c99ee5603d",
+      "delta": {
+        "production": 0,
+        "tests_and_test_support": 0,
+        "benchmark_example": 0
+      }
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/tools/read.rs",
+      "before_sha256": "297c11fcc7df4c80e95cf5c878eca5d2eec09d019cf160466c0f0eaa0b60f2c0",
+      "after_sha256": "13867d99c0791e59c9fd0ca037e5205132a0c782fd4cbe1c6165c1ca7bcfa6c7",
+      "delta": {
+        "production": 0,
+        "tests_and_test_support": 0,
+        "benchmark_example": 0
+      }
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/tools/read/macos.rs",
+      "before_sha256": "d6998bd7877382a553299d517279707538b2e539f120b61276aa4440d2e78fc2",
+      "after_sha256": "f30f339987d17644dcf39f848b54414a3dc27d28210308d505b732db6514aa4d",
+      "delta": {
+        "production": 16,
+        "tests_and_test_support": 0,
+        "benchmark_example": 0
+      }
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/tools/read/macos/source_utf8.rs",
+      "before_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "after_sha256": "4d939d0109a6422712724d049e7062f388b3b27a92b999c02299d04d5a05c12e",
+      "delta": {
+        "production": 59,
+        "tests_and_test_support": 117,
+        "benchmark_example": 0
+      }
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/tools/read/macos/tests.rs",
+      "before_sha256": "6a4affd402e2599c2157740d2a3e497b1f8fa8a627aa3f903fb5a8b1e1b2a099",
+      "after_sha256": "4453bda4fba0c789c615ade0d91f08df6bc86e5bb7bf33ace865dbf2532b8b73",
+      "delta": {
+        "production": 0,
+        "tests_and_test_support": 0,
+        "benchmark_example": 0
+      }
+    },
+    {
+      "path": "rust/crates/bello-agent-core/tests/find.rs",
+      "before_sha256": "bc52e732bc5df9ec261774b841eaf454e09c0492c31f1ce4acf50999f65b700e",
+      "after_sha256": "559830b2fa690b0bd8f42dc9cd11bb18429bfdeb865df841e4c08e2b15617520",
+      "delta": {
+        "production": 0,
+        "tests_and_test_support": 24,
+        "benchmark_example": 0
+      }
+    },
+    {
+      "path": "rust/crates/bello-agent-core/tests/read_text_native.rs",
+      "before_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "after_sha256": "60fc5572acb52cde3a7884dbf321216aa8559cf203545d739a01ecb8cf0c8114",
+      "delta": {
+        "production": 0,
+        "tests_and_test_support": 226,
+        "benchmark_example": 0
+      }
+    },
+    {
+      "path": "rust/crates/bello-agent-core/tests/write_edit.rs",
+      "before_sha256": "3c89457f03fcc21e662df6bf1454a06866785b7168aefb85c48e548524ed4fbe",
+      "after_sha256": "7d237ee11a9824495406c89927ad9a727c6ceeb10836774a367b772c7c75771a",
+      "delta": {
+        "production": 0,
+        "tests_and_test_support": 20,
+        "benchmark_example": 0
+      }
+    }
+  ],
+  "method": "Nonblank physical owned Rust lines including comments. Published cf63 catalog ledger inherited; its changed afterimages independently hash verified against cf63, and full tracked Rust nonblank sum checked. Changed A4 source reviewed: new source_utf8.rs production before #[cfg(test)], support from that attribute through EOF; build.rs production; test files support; other changed runtime spans production. No unchanged lines reclassified. Python/Swift/YAML/docs excluded; shared Box source not duplicated."
+}
