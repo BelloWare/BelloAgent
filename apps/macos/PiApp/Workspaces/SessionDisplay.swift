@@ -676,6 +676,10 @@ struct TranscriptVersionView: Equatable, Sendable {
     var snapshotInFlight = false
     var dirty = false
     var uncertain = false { didSet { if uncertain != oldValue { activityChanges.send() } } }
+    /// Whether the run state here is the chat's own: a helper snapshot or its
+    /// journal has been adopted. Until then a new display reads idle, and the
+    /// chat's saved hold (`WorkspaceRunHolds.swift`) is what its row shows.
+    var runStateKnown = false
     @Published var contextSelectionReady = false
     var used = Date()
     init(id: String) {

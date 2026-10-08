@@ -496,12 +496,14 @@ struct SidesPanelActivity: Equatable {
                 let footer = display.footer
                 stats = ChatRowStats(totals: footer.gateway, timing: footer.timing, now: now)
                 stats.updateActivity(state: display.state, loading: display.loading, activity: display.activity)
+                if !display.runStateKnown, let held = model.heldRunState(entry.id) { stats.updateActivity(state: held, loading: false, activity: [:]) }
                 if let at = display.messages.last(where: { $0.at != nil })?.at { stats.noteActivity(max(stats.lastActivity ?? 0, at / 1_000), now: now) }
                 objects += [ObjectIdentifier(display), ObjectIdentifier(footer)]
                 watch.append { [weak self] in self?.observer.observe(display); self?.observer.observe(footer) }
             } else {
                 let accounting = model.chatAccounting.row(for: entry.id)
                 stats = ChatRowStats(totals: accounting.totals, now: now)
+                if let held = model.heldRunState(entry.id) { stats.updateActivity(state: held, loading: false, activity: [:]) }
                 objects.append(ObjectIdentifier(accounting))
                 watch.append { [weak self] in self?.observer.observe(accounting) }
             }

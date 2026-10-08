@@ -199,8 +199,8 @@ extension WorkspaceModel {
                     NSWorkspace.shared.recycle([URL(fileURLWithPath: path)]) { _, error in if let error { continuation.resume(throwing: error) } else { continuation.resume() } }
                 }
             }
-            forgetReadState(item.id)
-            for kind in ["chat", "draft", "anchor", "capture-preference", "handoff", "side-keep", "session-read", ContextReading.recordKind, JournalSlimMark.kind] { try await store.remove(kind: kind, id: item.id) }
+            forgetReadState(item.id); forgetRunHold(item.id)
+            for kind in ["chat", "draft", "anchor", "capture-preference", "handoff", "side-keep", "session-read", RunHoldRecord.kind, ContextReading.recordKind, JournalSlimMark.kind] { try await store.remove(kind: kind, id: item.id) }
             contextReadings.removeValue(forKey: item.id)
             try await store.removeAll(kind: "receipt:\(item.id)")
             for intent in try await store.list(CommandIntent.self, kind: "pending:\(item.id)") { try await store.remove(kind: "pending:\(item.id)", id: intent.id) }

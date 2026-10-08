@@ -109,7 +109,9 @@ extension WorkspaceModel {
         if let view = displays[id] {
             let raw = view.activity, unread = unreadOutputCount(sessionID: view.id)
             // The same phase the live monitor's activity graph counts.
-            let phase = view.activityPhase
+            // A display that does not know its run yet shows the chat's saved hold.
+            let held = view.runStateKnown ? nil : heldRunState(view.id)
+            let phase = held == nil ? view.activityPhase : "paused"
             let followUps = activityCount(raw["pendingFollowUps"]) ?? max(0, view.queueCount)
             let steering = activityCount(raw["pendingSteering"]) ?? 0
             guard phase != "idle" || followUps + steering > 0 || unread > 0 else { return nil }
@@ -133,7 +135,7 @@ extension WorkspaceModel {
             row.latestRate = view.footer.timing.latest.flatMap(SessionTimingMetric.rate.value(in:))
             row.ttft = view.footer.timing.latest?.ttftMilliseconds
             row.utility = record.isBackgroundTask
-            row.uncertain = view.uncertain || view.runState == .interrupted
+            row.uncertain = view.uncertain || view.runState == .interrupted || held == RunState.interrupted.rawValue
             row.errorDetail = (view.failureMessage ?? (row.uncertain ? view.notice : nil)).map { String($0.prefix(512)) }
             row.tokens = totals?.tokens?.total
             row.costUSD = totals?.costUSD
@@ -143,12 +145,14 @@ extension WorkspaceModel {
             }
             return row
         }
-        let unread = unreadOutputCount(sessionID: id)
-        guard unread > 0 else { return nil }
+        let unread = unreadOutputCount(sessionID: id), held = heldRunState(id)
+        guard unread > 0 || held != nil else { return nil }
         let workspace = workspaces.first { $0.id == record.workspaceID }.map { URL(fileURLWithPath: $0.path).lastPathComponent } ?? "Project"
         let model = record.model ?? profiles.first { $0.id == record.profileID }?.modelId ?? ""
-        var row = MenuBarActivityRow(id: id, title: record.title, workspace: workspace, phase: "idle", model: model, resolvedModel: nil, tools: [], followUps: 0, steering: 0, unread: unread)
+        // Paused before a restart and not opened since: it waits on the reader.
+        var row = MenuBarActivityRow(id: id, title: record.title, workspace: workspace, phase: held == nil ? "idle" : "paused", model: model, resolvedModel: nil, tools: [], followUps: 0, steering: 0, unread: unread)
         row.markedUnread = markedUnreadOnly(sessionID: id)
+        row.uncertain = held == RunState.interrupted.rawValue
         return row
     }
 

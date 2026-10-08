@@ -93,6 +93,8 @@ class ApplicationLifecycle: NSObject, NSApplicationDelegate {
                 // Stop does and are waited for, so a reply cut off mid-stream
                 // stays in the chat as an interrupted one.
                 await model.stopHostsAndWait()
+                // The runs those stops paused, for the sidebar after the relaunch.
+                await model.flushRunHolds()
                 // History indexes have files in the temporary folder.
                 await model.history.releaseIndexes()
                 model.shutdown()

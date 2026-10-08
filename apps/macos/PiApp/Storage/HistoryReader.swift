@@ -77,6 +77,18 @@ actor HistoryReader {
         }
     }
     private typealias Ref = HistoryOffset
+    /// A run-state record's data, as `JournalRunHold` reads it.
+    struct RunStateRecord: Decodable {
+        fileprivate var work: IndexRecord.PendingWork
+        init(from decoder: Decoder) throws { work = try IndexRecord.PendingWork(from: decoder) }
+        /// "interrupted" for a run cut off, "paused" for one stopped or with
+        /// work held behind it, nil for none or a failure.
+        var hold: String? {
+            if work.active == true { return "interrupted" }
+            if work.runStatus == "failed" { return nil }
+            return work.exists || work.pausedWithoutWork ? "paused" : nil
+        }
+    }
     fileprivate struct IndexRecord: Decodable {
         var type: String?; var id: String?; var parentId: String?
         var fromMessageId: String?; var keptIds: [String]?; var nativeKeptIDs: [String]?; var contextIDs: [String]?
@@ -96,8 +108,12 @@ actor HistoryReader {
                 let detail = errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                 return detail.isEmpty ? "Run failed." : detail
             }
+            /// Stopped by the reader (or a quit) with nothing queued: the run
+            /// is over, but the chat waits for Resume, as the helper restores
+            /// it. Not a failure, which is shown as one.
+            var pausedWithoutWork: Bool { !exists && queuePaused == true && runStatus != "failed" }
             func retained(unanswered: Set<String>) -> RetainedRun? {
-                guard exists else { return nil }
+                guard exists || pausedWithoutWork else { return nil }
                 func row(_ item: PendingItem, steering: Bool) -> [String: WireValue]? {
                     guard let id = item.turnID else { return nil }
                     let text = item.text ?? "", kept = String(text.prefix(1024))
@@ -882,6 +898,41 @@ extension HistoryReader {
 /// the rest of the line must be exactly that ending. Anything else answers nil,
 /// and the line is decoded as before. The helper reads its journal the same way
 /// (`JournalLineScan.stateTail`).
+/// Whether a journal's newest run-state record leaves the chat waiting for
+/// Resume, read from the end of the file alone: what a chat paused before
+/// this build looked like, for its sidebar row before it is first opened
+/// (`WorkspaceRunHolds.swift`). The run state is written after the messages of
+/// each run, so it sits near the end. What cannot be told from the end
+/// (a state record further back than `window`, or a file that cannot be read)
+/// is `.unknown`, never a guess.
+enum JournalRunHold: Equatable {
+    /// "paused" or "interrupted".
+    case held(String)
+    /// Nothing waits: the newest state is finished or failed, the journal has
+    /// no state at all, or it is gone.
+    case clear
+    case unknown
+
+    static func read(path: String, window: Int = 262_144) -> JournalRunHold {
+        guard FileManager.default.fileExists(atPath: path) else { return .clear }
+        guard let file = FileHandle(forReadingAtPath: path) else { return .unknown }
+        defer { try? file.close() }
+        guard let size = try? file.seekToEnd() else { return .unknown }
+        guard size > 0 else { return .clear }
+        let start = size > UInt64(window) ? size - UInt64(window) : 0
+        guard (try? file.seek(toOffset: start)) != nil, let data = try? file.readToEnd() else { return .unknown }
+        var lines = data.split(separator: 10, omittingEmptySubsequences: true)
+        if start > 0, !lines.isEmpty { lines.removeFirst() }  // cut off at the window's start
+        for line in lines.reversed() where line.starts(with: StateRecordTail.prefix) {
+            struct Record: Decodable { var data: HistoryReader.RunStateRecord? }
+            guard let work = (try? JSONDecoder().decode(Record.self, from: Data(line)))?.data else { return .unknown }
+            return work.hold.map(JournalRunHold.held) ?? .clear
+        }
+        // The whole journal was read and holds no run state: nothing ever ran.
+        return start == 0 ? .clear : .unknown
+    }
+}
+
 enum StateRecordTail {
     static let customType = "pi-app.native.state.v1"
     static let prefix = Data(#"{"customType":"pi-app.native.state.v1","#.utf8)

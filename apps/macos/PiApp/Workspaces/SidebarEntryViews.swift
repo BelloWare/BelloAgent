@@ -139,8 +139,10 @@ import Combine
     static func content(model: WorkspaceModel, chat: ChatRecord, state: SidebarChatRowState,
                         display: SessionDisplay?, retained: CachedSessionAccounting?) -> ChatRowBodyView.Content {
         let now = SidebarMinute.shared.now
-        let stats = display.map { liveStats($0, now: now) }
+        var stats = display.map { liveStats($0, now: now) }
             ?? ChatRowStats(totals: (retained ?? model.chatAccounting.row(for: chat.id)).totals, now: now)
+        // Paused before a restart, and not opened since: the saved hold says so.
+        if display?.runStateKnown != true, let held = state.heldRun { stats.updateActivity(state: held, loading: false, activity: [:]) }
         return ChatRowBodyView.Content(stats: stats, title: chat.title, subtitle: state.subtitle, symbol: symbol(chat), selected: state.selected,
                                        unreadCount: state.unreadCount, unreadFailure: state.unreadFailure,
                                        markedUnreadOnly: state.markedUnreadOnly, hasSide: state.hasSide,

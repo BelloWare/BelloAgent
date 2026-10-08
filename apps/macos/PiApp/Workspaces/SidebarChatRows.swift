@@ -49,7 +49,8 @@ struct ChatRowStats: Equatable {
         lastActivity = seconds
         recencyLabel = seconds.flatMap { $0.isFinite && $0 > 0 ? ChatRowStats.relative(Date(timeIntervalSince1970: $0), now: now) : nil }
     }
-    var hasActivity: Bool { requests > 0 || busy || loading || tokens != nil || timing?.latest != nil }
+    /// A stopped run shows its state word even with no figures yet.
+    var hasActivity: Bool { requests > 0 || busy || loading || tokens != nil || timing?.latest != nil || RunState(rawValue: state).isStopped }
     /// "12k in · 8.1k cached · 2.4k out". Unreported usage reads n/a, never zero.
     var usageLabel: String? {
         guard requests > 0 || inputTokens != nil || outputTokens != nil else { return nil }
@@ -284,6 +285,8 @@ struct ChatRowStats: Equatable {
         /// unread or failed.
         var accessibilityLabel: String {
             var words = [title]
+            let run = RunState(rawValue: stats.state)
+            if run.holdsQueue { words.append(run == .interrupted ? "paused, run interrupted" : "paused") }
             if unreadCount > 0 { words.append("unread") } else if unreadFailure { words.append("run failed") }
             return words.joined(separator: ", ")
         }

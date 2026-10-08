@@ -24,6 +24,17 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     func chatRecord(_ id: String) -> ChatRecord? { sidebarIndex.chat(id, in: chats) }
     @Published var unreadStates: [String: SessionReadState] = [:] { didSet { readBadgeCache = nil; noteActivityChanged() } }
     var readBadgeCache: SidebarReadCounts?
+    /// Owned by `WorkspaceRunHolds.swift`: chats whose run waits for Resume
+    /// (or was under way when last seen), kept across relaunches.
+    @Published var runHolds: [String: RunHoldRecord] = [:] {
+        didSet { menuBarProjection.dirty.formUnion(oldValue.keys); menuBarProjection.dirty.formUnion(runHolds.keys); activityChanged.send() }
+    }
+    var dirtyRunHolds: Set<String> = []
+    var runHoldWrites: [String: Task<Void, Never>] = [:]
+    /// Launch's reading of the journals the holds name (tests wait on it).
+    var runHoldVerification: Task<Void, Never>?
+    /// Test seam: hold writes fail, as a full or locked store would.
+    var runHoldWritesFail = false
     /// Owned by `WorkspaceReadState.swift`: replies that finished in the chat
     /// the reader is looking at, waiting for the page's own read check.
     var heldUnread: [String: HeldUnread] = [:]
@@ -255,6 +266,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
         // Read only the affected committed phase, never text or the chat array.
         if let id, let view = displays[id], let item = record(id) {
             liveActivity.phase(view.activityPhase, workspace: item.workspaceID, session: id)
+            if view.runStateKnown { reconcileRunHold(id) }
         }
     }
     private var activityObservers: [ObjectIdentifier: AnyCancellable] = [:]

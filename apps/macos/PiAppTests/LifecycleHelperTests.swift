@@ -42,7 +42,8 @@ final class LifecycleHelperTests: XCTestCase, SerialTestLane {
         /// A relaunch: the old model is shut down and a new one restores
         /// from the same state root and vault.
         func relaunch() async throws -> WorkspaceModel {
-            await model.stopHostsAndWait(); model.shutdown(); try await model.traces.close(); await model.store?.close()
+            // As a quit does: the helpers stop, then what their stops changed is saved.
+            await model.stopHostsAndWait(); await model.flushRunHolds(); model.shutdown(); try await model.traces.close(); await model.store?.close()
             model = WorkspaceModel(stateRoot: root.appendingPathComponent("app-state"), vault: ConfigurationVault(storage: MemoryVaultStorage(try JSONEncoder().encode(configuration))))
             await model.restore()
             return model
@@ -116,7 +117,9 @@ extension LifecycleHelperTests {
         let path = try XCTUnwrap(model.record(chat.id)?.path, "The first send names the journal")
         let lifecycle = ApplicationLifecycle(); lifecycle.model = model
         var answers: [Bool] = [], helpersRunningAtAnswer: [Int32] = [], journalAtAnswer: [[String: WireValue]] = []
+        var holdsSavedAtAnswer = false
         lifecycle.answerTermination = { value in
+            holdsSavedAtAnswer = model.dirtyRunHolds.isEmpty && model.runHoldWrites.isEmpty && model.runHolds[chat.id] != nil
             // What is on disk and alive now is all a quitting app leaves.
             helpersRunningAtAnswer = model.hosts.values.compactMap(\.helperProcessIdentifier)
             journalAtAnswer = (try? Self.records(path)) ?? []
@@ -139,6 +142,16 @@ extension LifecycleHelperTests {
         XCTAssertEqual(partial?["nativeStopReason"]?.string, "interrupted", "The reply cut off by the quit is kept as an interrupted one")
         let text = partial?["content"]?.array?.compactMap { $0.object?["text"]?.string }.joined() ?? ""
         XCTAssertFalse(text.isEmpty, "The interrupted reply holds the text that had streamed")
+        // Paused after the restart (0.1.122): the chat's hold was saved before the app answered.
+        XCTAssertTrue(holdsSavedAtAnswer, "the quit saves the run hold before it answers")
+        let relaunched = try await bench.relaunch()
+        await relaunched.runHoldVerification?.value
+        // Launch reopens it (it was open at the quit): its own state, read from its journal, says so.
+        try await Self.waitUntil("The chat is not paused after the relaunch", seconds: 20, settle: { await Task.yield(); try? await Task.sleep(for: .milliseconds(25)) }) {
+            if let view = relaunched.displays[chat.id], view.runStateKnown { return view.runState == .paused }
+            return relaunched.heldRunState(chat.id) == "paused"
+        }
+        XCTAssertEqual(relaunched.runHolds[chat.id]?.state, "paused")
         await bench.close()
     }
 }
@@ -335,6 +348,102 @@ extension LifecycleHelperTests {
             session.sendFailure != nil || (!session.hasWork && session.messages.filter { $0.role == "assistant" }.count >= 2)
         }
         XCTAssertNil(session.sendFailure, session.sendFailure ?? "")
+        await bench.close()
+    }
+}
+
+extension LifecycleHelperTests {
+    /// The model requests the gateway has answered, connection tests left out.
+    static func modelRequests(_ base: String) async throws -> Int {
+        let (data, _) = try await URLSession.shared.data(from: URL(string: base + "/captures")!)
+        let records = try JSONDecoder().decode([[String: WireValue]].self, from: data)
+        return records.filter { $0["connectionTest"]?.bool != true }.count
+    }
+
+    /// Paused after a restart (0.1.122). A chat stopped mid-run, with a
+    /// follow-up queued behind the stop, used to come back "Ready": its row
+    /// said nothing, and the chat opened idle although its helper restores it
+    /// paused. After a relaunch the row says Paused (VoiceOver "paused")
+    /// before the chat is opened; opened, the chat is paused with its
+    /// follow-up waiting and Resume offered; nothing is sent until Resume, and
+    /// Resume sends the follow-up once. A chat paused by an older build (no
+    /// saved hold) is found in its journal. After it finishes, a relaunch
+    /// shows it plain again.
+    @MainActor func testAPausedChatIsStillPausedAfterARelaunch() async throws {
+        let bench = try await Bench("paused-relaunch"); defer { bench.tearDown() }
+        var model = bench.model
+        let chat = try await bench.newChat("Refund edge cases")
+        await model.select(chat.id)
+        let session = try XCTUnwrap(model.displays[chat.id])
+        func settle() async { await Task.yield(); try? await Task.sleep(for: .milliseconds(25)) }
+        session.draft = "slow: walk through the retry loop step by step"
+        model.send(sessionID: chat.id)
+        try await Self.waitUntil("No text streamed", settle: settle) {
+            session.busy && session.messages.contains { $0.role == "assistant" && !$0.text.isEmpty }
+        }
+        // A follow-up queued behind the run, then Stop: the follow-up waits for Resume.
+        session.draft = "and then summarize what changed"
+        model.send(sessionID: chat.id)
+        try await Self.waitUntil("The follow-up was not queued", settle: settle) { session.queue.count == 1 }
+        model.stop(sessionID: chat.id)
+        try await Self.waitUntil("The run never paused", settle: settle) { session.runState == .paused && !session.busy && session.queue.count == 1 }
+        XCTAssertEqual(model.runHolds[chat.id]?.state, "paused")
+        let sent = try await Self.modelRequests(bench.fixture.base)
+        // Another chat is the one open at the quit, so launch does not reopen this one.
+        let other = try await bench.newChat("Other")
+        await model.select(other.id)
+
+        func relaunched() async throws -> WorkspaceModel {
+            let next = try await bench.relaunch()
+            await next.runHoldVerification?.value
+            return next
+        }
+        func rowState(_ model: WorkspaceModel) throws -> (state: String, spoken: String) {
+            let record = try XCTUnwrap(model.record(chat.id))
+            let project = try XCTUnwrap(model.workspaces.first { $0.id == record.workspaceID })
+            let contents = model.sidebarGroupContents(in: project, topicID: nil, archived: false, filter: "", showEmpty: true,
+                                                      sidebarWidth: 300, namesConnection: false)
+            let row = try XCTUnwrap(contents.rows.first { $0.id == chat.id })
+            let content = SidebarChatRowView.content(model: model, chat: record, state: row.state, display: model.displays[chat.id], retained: nil)
+            return (content.stats.state, content.accessibilityLabel)
+        }
+
+        model = try await relaunched()
+        XCTAssertNotEqual(model.selectedID, chat.id)
+        XCTAssertNil(model.displays[chat.id], "not opened yet")
+        XCTAssertEqual(try rowState(model).state, "paused", "the row says Paused before the chat is opened")
+        let spoken = try rowState(model).spoken
+        XCTAssertTrue(spoken.hasPrefix("Refund edge cases, paused"), spoken)
+        // A chat paused before this build kept holds: the journal is read once.
+        if let store = model.store {
+            try await store.remove(kind: RunHoldRecord.kind, id: chat.id)
+            try await store.remove(kind: RunHoldRecord.bootstrapKind, id: RunHoldRecord.bootstrapID)
+        }
+        model = try await relaunched()
+        XCTAssertEqual(model.runHolds[chat.id]?.state, "paused", "found in the journal of an older build's chat")
+
+        // Opened: paused, the follow-up waiting, Resume offered, nothing sent.
+        await model.select(chat.id)
+        let reopened = try XCTUnwrap(model.displays[chat.id])
+        try await Self.waitUntil("The chat never read its journal", settle: settle) { reopened.runStateKnown }
+        XCTAssertEqual(reopened.runState, .paused)
+        XCTAssertEqual(reopened.queue.count, 1, "the follow-up waits behind the stop")
+        XCTAssertTrue(reopened.canResumeQueue)
+        XCTAssertEqual(try rowState(model).state, "paused")
+        for _ in 0..<40 { await settle() }
+        let afterOpen = try await Self.modelRequests(bench.fixture.base)
+        XCTAssertEqual(afterOpen, sent, "nothing is replayed or resumed by a relaunch or by opening the chat")
+
+        // Resume sends the follow-up, once.
+        model.action("queue.resume", sessionID: chat.id)
+        try await Self.waitUntil("Resume never ran the follow-up", seconds: 90, settle: settle) {
+            reopened.queue.isEmpty && !reopened.busy && reopened.runState == .idle
+        }
+        let afterResume = try await Self.modelRequests(bench.fixture.base)
+        XCTAssertEqual(afterResume, sent + 1, "Resume sends the follow-up once")
+        XCTAssertNil(model.runHolds[chat.id], "nothing waits any more")
+        model = try await relaunched()
+        XCTAssertNil(model.heldRunState(chat.id), "and a relaunch shows it plain again")
         await bench.close()
     }
 }

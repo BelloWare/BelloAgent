@@ -28,6 +28,10 @@ struct SidebarChatRowState: Equatable {
     /// Only the reader's Mark as Unread makes it unread: the dot says
     /// "Unread", not "Unread replies".
     var markedUnreadOnly = false
+    /// The chat's saved run hold ("paused", "interrupted"), shown while its
+    /// display does not know its own state: after a restart, before the
+    /// chat is opened (`WorkspaceRunHolds.swift`).
+    var heldRun: String?
     /// Identity of the loaded page, when the chat has one. A row swaps between
     /// retained billing and a live session only when this changes; the live
     /// session's own figures are observed by the row underneath.
@@ -150,6 +154,7 @@ extension WorkspaceModel {
                 unreadCount: unreadOutputCount(sessionID: chat.id),
                 unreadFailure: unreadFailure(sessionID: chat.id),
                 markedUnreadOnly: markedUnreadOnly(sessionID: chat.id),
+                heldRun: chat.isArchived || chat.isUtilityChat ? nil : runHolds[chat.id]?.presented,
                 liveIdentity: displays[chat.id].map(ObjectIdentifier.init),
                 hasSide: entry.hasChildren || side?.kept == false,
                 expanded: !folded.contains(chat.id),

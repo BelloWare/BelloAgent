@@ -62,6 +62,10 @@ extension WorkspaceModel {
                 "latestAssistantMessageId": page.latestAssistantID.map(WireValue.string) ?? .null])
         }
         view.observeRetainedFailure(page.failure); view.observeRetainedRun(page)
+        // The journal said what was unfinished: the chat's hold follows it.
+        // (Not while a run or an opening is under way: the journal is not read
+        // over those, and the helper's next snapshot says.)
+        if page.fromJournal, !view.busy, !view.loading { view.runStateKnown = true; reconcileRunHold(view.id) }
         if let notice = page.notice { view.notice = notice }
         view.endTranscriptBatch()
         // The request goes after the rows it is for. Asked inside the batch,

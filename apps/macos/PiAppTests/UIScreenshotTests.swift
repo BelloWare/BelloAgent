@@ -237,8 +237,9 @@ final class UIScreenshotTests: XCTestCase {
         if testEnvironment("PI_APP_UI_GALLERY_SIDEBAR_STATES_ONLY") == "1" {
             try await captureSidebarStateScenes(model: model, window: window, gallery: gallery, appearances: appearances, markedID: second.id)
             XCTAssertNil(model.error, model.error ?? "")
-            for host in model.hosts.values { try await host.shutdownAndWait() }
-            try await model.traces.close()
+            try await capturePausedAfterRestartScenes(model: model, vault: vault, window: window, gallery: gallery, appearances: appearances,
+                                                      workspaceID: workspace.id, profileID: connections[0].profile.id, otherID: main.id,
+                                                      stateRoot: folder.appendingPathComponent("app-state"))
             return
         }
         if testEnvironment("PI_APP_UI_GALLERY_WEBHOOK_ONLY") == "1" {
@@ -455,8 +456,10 @@ final class UIScreenshotTests: XCTestCase {
         }
         onboarding.orderOut(nil); fresh.shutdown()
         XCTAssertNil(model.error, model.error ?? "")
-        for host in model.hosts.values { try await host.shutdownAndWait() }
-        try await model.traces.close()
+        // Last: it relaunches the workspace.
+        try await capturePausedAfterRestartScenes(model: model, vault: vault, window: window, gallery: gallery, appearances: appearances,
+                                                  workspaceID: workspace.id, profileID: connections[0].profile.id, otherID: main.id,
+                                                      stateRoot: folder.appendingPathComponent("app-state"))
     }
 
     /// Scenes the gallery above never reached, added for the 0.1.60 UX review:
@@ -618,6 +621,58 @@ final class UIScreenshotTests: XCTestCase {
         }
         model.markSessionRead(markedID)
         window.setContentSize(size); window.center(); try await settle(0.8)
+    }
+
+    /// 27a, 27b · Paused after a restart, at 920×600. A chat's run is stopped
+    /// with a follow-up queued behind it; the workspace is then relaunched as
+    /// a quit and a launch do (helpers stopped, a new model over the same
+    /// state). 27a: another chat open, the paused chat's row says Paused
+    /// before it is opened. 27b: the paused chat opened: paused, its
+    /// follow-up waiting with Resume. Nothing is resumed. Ends the gallery:
+    /// the relaunched workspace is shut down here.
+    @MainActor private func capturePausedAfterRestartScenes(model: WorkspaceModel, vault: ConfigurationVault, window: NSWindow, gallery: URL,
+                                                            appearances: [(String, NSAppearance.Name)], workspaceID: String,
+                                                            profileID: String, otherID: String, stateRoot: URL) async throws {
+        let chat = ChatRecord(id: UUID().uuidString, workspaceID: workspaceID, title: "Migrate the ledger schema", path: nil, profileID: profileID)
+        model.chats.append(chat); try await model.store?.put(chat, kind: "chat", id: chat.id)
+        await model.select(chat.id); try await settle(0.6)
+        let session = try XCTUnwrap(model.displays[chat.id])
+        session.draft = "slow: plan the ledger schema migration step by step"
+        model.send(sessionID: chat.id)
+        let deadline = Date().addingTimeInterval(60)
+        while Date() < deadline, !(session.busy && session.messages.contains { $0.role == "assistant" && !$0.text.isEmpty }) { try await settle(0.2) }
+        session.draft = "Then list the rollback steps."
+        model.send(sessionID: chat.id)
+        while Date() < deadline, session.queue.count != 1 { try await settle(0.2) }
+        model.stop(sessionID: chat.id)
+        while Date() < deadline, !(session.runState == .paused && !session.busy) { try await settle(0.2) }
+        XCTAssertEqual(session.runState, .paused, "27 needs a paused chat"); XCTAssertEqual(session.queue.count, 1)
+        await model.select(otherID); try await settle(0.6)
+        // The relaunch: as a quit and a launch do it.
+        await model.stopHostsAndWait(); await model.flushRunHolds(); await model.flushReadStates(); await model.flushSelection()
+        model.shutdown(); try await model.traces.close(); await model.store?.close()
+        let relaunched = WorkspaceModel(stateRoot: stateRoot, vault: vault)
+        defer { relaunched.shutdown() }
+        await relaunched.restore()
+        await relaunched.runHoldVerification?.value
+        window.contentView = WorkspaceRootView(model: relaunched)
+        window.setContentSize(NSSize(width: 920, height: 600)); window.center(); try await settle(1.5)
+        XCTAssertNotEqual(relaunched.selectedID, chat.id)
+        XCTAssertEqual(relaunched.heldRunState(chat.id), "paused", "27a: the row's chat is paused before it is opened")
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(1.0)
+            try capture(window, to: gallery.appendingPathComponent("27a-paused-after-restart-row-\(name).png"))
+        }
+        await relaunched.select(chat.id); try await settle(1.2)
+        let reopened = try XCTUnwrap(relaunched.displays[chat.id])
+        XCTAssertEqual(reopened.runState, .paused, "27b: the chat itself is paused"); XCTAssertEqual(reopened.queue.count, 1)
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(1.0)
+            try capture(window, to: gallery.appendingPathComponent("27b-paused-after-restart-chat-\(name).png"))
+        }
+        XCTAssertEqual(reopened.runState, .paused, "nothing resumed it")
+        XCTAssertNil(relaunched.error, relaunched.error ?? "")
+        await relaunched.stopHostsAndWait(); try await relaunched.traces.close()
     }
 
     /// 14c · The archive switch on: each group of every project lists its
