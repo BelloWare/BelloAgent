@@ -1,10 +1,10 @@
 import XCTest
 @testable import PiAgentCore
 
-/// MCP servers: discovery and serial invocation, an unknown outcome that
-/// survives a restart, and the configurations that are refused outright.
+/// MCP servers: discovery and invocations that run together, an unknown
+/// outcome that survives a restart, and the configurations refused outright.
 final class MCPConnectionTests: XCTestCase {
-    func testMCPListDescribeSerialInvokeAndUnknownOutcome() async throws {
+    func testMCPListDescribeConcurrentInvokeAndUnknownOutcome() async throws {
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
         let manager=MCPManager(cwd:root),transport=FakeMCP();await manager.installForTesting(name:"test",transport:transport)
         let list=try await manager.perform(["action":"list","server":"test"])
@@ -15,7 +15,7 @@ final class MCPConnectionTests: XCTestCase {
             for i in 0..<5 { group.addTask { try await manager.perform(["action":"invoke","server":"test","tool":"echo","arguments":["text":JSON(String(i))]]) } }
             for try await _ in group {}
         }
-        let maximum=await transport.maximum;XCTAssertEqual(maximum,1)
+        let maximum=await transport.maximum;XCTAssertGreaterThan(maximum,1,"Invocations no longer take turns (owner, 2026-10-08)")
         do { _ = try await manager.perform(["action":"invoke","server":"test","tool":"echo","arguments":[:]],readOnly:true);XCTFail("Readonly invocation accepted") } catch {}
         do { _ = try await manager.perform(["action":"invoke","targets":[]]);XCTFail("Batch accepted") } catch {}
         await transport.failNext()
@@ -67,4 +67,42 @@ final class MCPConnectionTests: XCTestCase {
         }
         let names = await manager.serverNames(); XCTAssertTrue(names.isEmpty)
     }
+
+    /// The last invocation to end clears the outcome marker, even when it is
+    /// not the one that wrote it: one call succeeds while another, still
+    /// listing its server's tools, is then refused before it is sent.
+    func testTheLastInvocationToEndClearsTheOutcomeMarker() async throws {
+        let folder=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:folder) }
+        let marker=folder.appendingPathComponent("unknown.json"), manager=MCPManager(cwd:folder,outcomeMarker:marker)
+        await manager.installForTesting(name:"test",transport:FakeMCP())
+        let slow=SlowListMCP(); await manager.installForTesting(name:"slow",transport:slow)
+        let refused=Task { try await manager.perform(["action":"invoke","server":"slow","tool":"missing","arguments":[:]]) }
+        // The refused call is admitted and waiting on its catalog before the other one starts.
+        try await eventually { await slow.listing }
+        _ = try await manager.perform(["action":"invoke","server":"test","tool":"echo","arguments":["text":"done"]])
+        XCTAssertTrue(FileManager.default.fileExists(atPath:marker.path),"Another invocation is still running, so the marker stays")
+        await slow.release()
+        do { _ = try await refused.value; XCTFail("A tool the server does not list is refused") }
+        catch let error as AgentError { XCTAssertEqual(error.code,"mcp_tool") }
+        XCTAssertFalse(FileManager.default.fileExists(atPath:marker.path),"No outcome is unknown, so no marker may survive a restart")
+        let list=try await MCPManager(cwd:folder,outcomeMarker:marker).perform(["action":"list"])
+        XCTAssertEqual(list["outcomeUnknown"].flag,false)
+    }
+}
+
+/// Lists its tools only when released, and never lists `missing`.
+private actor SlowListMCP: MCPTransport {
+    var listing=false, held=true
+    func release() { held=false }
+    func request(_ method:String,params:JSON) async throws -> JSON {
+        if method=="initialize" { return ["protocolVersion":"2025-11-25","capabilities":["tools":[:]]] }
+        if method=="tools/list" {
+            listing=true
+            while held { try await Task.sleep(nanoseconds:5_000_000) }
+            return ["tools":[]]
+        }
+        throw AgentError("unexpected","Unexpected MCP method")
+    }
+    func notify(_ method:String,params:JSON) async throws {}
+    func close() async {}
 }
