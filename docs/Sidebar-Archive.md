@@ -20,7 +20,7 @@ lists the archived chats of every project at once.
   read quieter than active ones, until one is the chat on screen.
 
 An archived row is the row the archive list had: its "Archived" line, its
-Restore button, marking, dragging and reordering within its group. The
+Restore button, marking, and dragging into another topic or project. The
 archived chats of a group page on their own ("Show N more"), so turning the
 switch on or off leaves the active list on the page it was on. The filter
 field searches both lists while the switch is on.

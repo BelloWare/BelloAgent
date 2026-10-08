@@ -47,6 +47,52 @@ final class ReportMessageNavigationTests: XCTestCase {
         try await close(model, root: root)
     }
 
+    /// Reaching a side from the report opens its chat on the way: the side
+    /// is what was opened, so only it moves to the front of the recently
+    /// opened chats (0.1.122).
+    @MainActor func testReachingASideFromTheReportOpensOnlyTheSide() async throws {
+        let (model, root, _) = try await makeModel()
+        var side = ChatRecord(id: "side", workspaceID: "workspace", title: "Side", path: nil, profileID: "profile"); side.parentSessionID = "chat"
+        let other = ChatRecord(id: "other", workspaceID: "workspace", title: "Other", path: nil, profileID: "profile")
+        model.chats += [side, other]
+        model.sides["chat"] = .init(id: "side", parentID: "chat", workspaceID: "workspace", profileID: "profile", title: "Side", kept: true)
+        model.displays["side"] = SessionDisplay(id: "side")
+        model.focusedSessionID = "other"; model.selectedID = "other"
+        XCTAssertEqual(model.recentlyOpened.prefix(2), ["other", "chat"])
+        model.openReport()
+        _ = await model.revealMessage(sessionID: "side", messageID: nil)
+        XCTAssertEqual(model.focusedSessionID, "side")
+        XCTAssertEqual(model.recentlyOpened.prefix(3), ["side", "other", "chat"], "the chat passed through is not opened again")
+        try await close(model, root: root)
+    }
+
+    /// The parent passed over is only the focus the navigation gives it: the
+    /// reader coming to it meanwhile is an opening.
+    @MainActor func testOnlyTheNavigationsOwnFocusOfTheParentIsPassedOver() async throws {
+        let (model, root, _) = try await makeModel()
+        model.chats.append(ChatRecord(id: "other", workspaceID: "workspace", title: "Other", path: nil, profileID: "profile"))
+        model.focusedSessionID = "other"
+        await model.passingThrough("chat") {
+            model.focusedSessionID = "chat"      // the navigation's own
+            model.focusedSessionID = "other"
+            model.focusedSessionID = "chat"      // the reader's
+        }
+        XCTAssertEqual(model.recentlyOpened.first, "chat")
+        // The parent already focused: the navigation's own focus of it still takes the pass.
+        await model.passingThrough("chat") {
+            model.focusedSessionID = "chat"      // the navigation's own, unchanged
+            model.focusedSessionID = "other"
+            model.focusedSessionID = "chat"      // the reader's
+        }
+        XCTAssertEqual(model.recentlyOpened.prefix(2), ["chat", "other"])
+        // A New chat thrown away unsent holds no place.
+        model.chats.append(ChatRecord(id: "new", workspaceID: "workspace", title: ChatRecord.defaultTitle, path: nil, profileID: "profile"))
+        model.pendingChatIDs = ["new"]; model.focusedSessionID = "new"
+        model.discardPendingChat("new")
+        XCTAssertFalse(model.recentlyOpened.contains("new"))
+        try await close(model, root: root)
+    }
+
     @MainActor func testLoadedHistoricalPageReceivesRetainedAccountingWithoutStartingHost() async throws {
         let (model, root, view) = try await makeModel()
         let wall = Date().timeIntervalSince1970

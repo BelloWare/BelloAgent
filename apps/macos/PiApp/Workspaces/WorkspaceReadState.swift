@@ -10,7 +10,17 @@ struct SessionReadState: Codable, Sendable, Equatable, Identifiable {
     var unreadTargetID: String?
     /// The last run failed while the chat was out of view: shown as unread, never counted in the Dock badge.
     var unreadFailure: Bool?
+    /// The reader marked the chat unread (Mark as Unread): shown and counted
+    /// as one unread reply, in the Dock badge too, until the reader opens it
+    /// or marks it read.
+    var markedUnread: Bool?
+    /// Made by Mark as Unread before any count was observed for the chat: the
+    /// next observation takes the helper's counter as already read rather
+    /// than counting the whole history as new.
+    var baselinePending: Bool?
     var revision: Int64 = 0
+    /// Shown as unread in the sidebar, whatever made it so.
+    var isUnread: Bool { unreadOutputs > 0 || markedUnread == true }
 }
 
 /// Replies not yet published as unread: see `WorkspaceModel.visibleReplyGrace`.
@@ -32,19 +42,57 @@ extension WorkspaceModel {
         var counts = SidebarReadCounts()
         for state in unreadStates.values {
             guard let chat = record(state.id), !chat.isArchived, chat.connectionTest != true else { continue }
-            if state.unreadOutputs > 0 {
+            if state.isUnread {
                 counts.unreadChats += 1
-                if state.unreadFailure != true { counts.dockChats += 1 }
+                // A mark the reader made counts on its own: a run that fails
+                // after it does not take it off the badge.
+                if state.markedUnread == true || state.unreadFailure != true { counts.dockChats += 1 }
             }
-            if state.unreadOutputs > 0 || state.unreadFailure == true { counts.projects.insert(chat.workspaceID) }
+            if state.isUnread || state.unreadFailure == true { counts.projects.insert(chat.workspaceID) }
         }
         readBadgeCache = counts
         return counts
     }
     var unreadCount: Int { sidebarReadCounts.unreadChats }
+    /// Unread replies, or one for a chat the reader marked unread: everything
+    /// that shows a dot, a bold title or a count reads this.
     func unreadOutputCount(sessionID: String) -> Int {
-        guard let item = record(sessionID), item.connectionTest != true, !item.isArchived else { return 0 }
-        return unreadStates[sessionID]?.unreadOutputs ?? 0
+        guard let item = record(sessionID), item.connectionTest != true, !item.isArchived, let state = unreadStates[sessionID] else { return 0 }
+        return max(state.unreadOutputs, state.markedUnread == true ? 1 : 0)
+    }
+    /// Unread only because the reader marked it so, with no reply behind the
+    /// mark: its words say "Unread", not "New reply".
+    func markedUnreadOnly(sessionID: String) -> Bool {
+        guard let item = record(sessionID), item.connectionTest != true, !item.isArchived, let state = unreadStates[sessionID] else { return false }
+        return state.markedUnread == true && state.unreadOutputs == 0
+    }
+    /// Whether Mark as Unread applies: a saved chat of the reader's own (not
+    /// archived, not a connection test or background request, not a side that
+    /// has not been kept, not a New chat never sent), with nothing unread.
+    func canMarkSessionUnread(_ sessionID: String) -> Bool {
+        guard let item = record(sessionID), !item.isArchived, !item.isUtilityChat, !isEphemeral(sessionID),
+              !pendingChatIDs.contains(sessionID), readStatesRestored else { return false }
+        return !offersMarkSessionRead(sessionID)
+    }
+    /// Whether Mark as Read applies: replies not viewed, a failure mark, or
+    /// a mark the reader made.
+    func offersMarkSessionRead(_ sessionID: String) -> Bool {
+        unreadOutputCount(sessionID: sessionID) > 0 || unreadFailure(sessionID: sessionID)
+    }
+    /// Mark as Unread: the chat shows and counts as one unread reply until
+    /// the reader opens it again or marks it read.
+    func markSessionUnread(_ sessionID: String) {
+        guard canMarkSessionUnread(sessionID) else { return }
+        var next = unreadStates[sessionID] ?? SessionReadState(id: sessionID, observedAssistantCount: 0, latestAssistantID: nil, baselinePending: true)
+        next.markedUnread = true
+        saveReadState(next)
+    }
+    /// The reader opened the chat: a mark they made is done with. Replies
+    /// not yet viewed stay unread until the page sees them.
+    func clearManualUnread(sessionID: String) {
+        guard var next = unreadStates[sessionID], next.markedUnread == true else { return }
+        next.markedUnread = nil
+        saveReadState(next)
     }
     /// Whether a collapsed group has to show its dot. Driven from the unread
     /// states, which are few, rather than from every chat of the project.
@@ -76,6 +124,10 @@ extension WorkspaceModel {
         let known = Set(chats.filter { $0.connectionTest != true }.map(\.id))
         let saved = try await store?.list(SessionReadState.self, kind: "session-read") ?? []
         unreadStates = Dictionary(saved.filter { known.contains($0.id) && (0...100_000).contains($0.observedAssistantCount) && (0...100_000).contains($0.unreadOutputs) && $0.revision >= 0 && $0.revision < Int64.max }.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        readStatesRestored = true
+        // Chats the reader opened while these were read: their marks are done with.
+        for id in openedBeforeReadStates { clearManualUnread(sessionID: id) }
+        openedBeforeReadStates = []
         updateDockBadge()
     }
 
@@ -125,6 +177,12 @@ extension WorkspaceModel {
               rawCount.rounded() == rawCount, rawCount >= 0, rawCount <= 100_000 else { return }
         let latest = snapshot["latestAssistantMessageId"]?.string
         guard latest.map({ !$0.isEmpty && $0.utf8.count <= 256 }) ?? (rawCount == 0) else { return }
+        // A state Mark as Unread made before any count was seen: this count is
+        // the history the reader had, not new replies. Taken even mid-run.
+        if var pending = unreadStates[sessionID], pending.baselinePending == true {
+            pending.baselinePending = nil; pending.observedAssistantCount = Int(rawCount); pending.latestAssistantID = latest
+            saveReadState(pending); return
+        }
         // A reply is unread only once the run has finished and reported back.
         // Tool-round messages appended mid-run wait for the idle snapshot, so
         // neither the sidebar dot nor the Dock badge appears while work continues.
@@ -190,8 +248,8 @@ extension WorkspaceModel {
     /// Automatic acknowledgements still require the exact visible target above.
     func markSessionRead(_ sessionID: String) {
         dropHeldUnread(sessionID)
-        guard record(sessionID) != nil, var next = unreadStates[sessionID], next.unreadOutputs > 0 || next.unreadFailure == true else { return }
-        next.unreadOutputs = 0; next.unreadTargetID = nil; next.unreadFailure = nil
+        guard record(sessionID) != nil, var next = unreadStates[sessionID], next.isUnread || next.unreadFailure == true else { return }
+        next.unreadOutputs = 0; next.unreadTargetID = nil; next.unreadFailure = nil; next.markedUnread = nil
         saveReadState(next)
     }
 

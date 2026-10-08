@@ -167,6 +167,7 @@ extension WorkspaceModel {
                 if !isEphemeral(item.id) { try await store.put(intent, kind: "pending:\(item.id)", id: commandID); pendingIntentsChanged(item.id) }
                 try requireConnection(lease)
                 dispatched = true
+                noteChatActivity(item.id)
                 if !view.busy { shown = (.queued, view.runState); view.runState = .queued }
                 // The branch this makes is the reader's own: the snapshot that
                 // first carries it is adopted where they are (`adoptOwnBranch`).

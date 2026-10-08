@@ -80,8 +80,9 @@ final class SessionOrganizationTests: XCTestCase {
         await store.close()
         let reopened = MetadataStore(url: url)
         loaded = try await reopened.loadChats()
-        XCTAssertEqual(loaded.map(\.id), ["oldest", "middle", "newest"], "Pinned order is deterministic and retained across restart")
-        XCTAssertEqual(loaded.first?.title, "Renamed oldest")
+        // Pinned chats on top, newest activity first among them as in every group (0.1.122; it was pin time).
+        XCTAssertEqual(loaded.map(\.id), ["middle", "oldest", "newest"], "Pinned order is deterministic and retained across restart")
+        XCTAssertEqual(loaded.first { $0.id == "oldest" }?.title, "Renamed oldest")
         _ = try await reopened.updateChatOrganization(id: "oldest", change: .pinned(false))
         loaded = try await reopened.loadChats()
         XCTAssertEqual(loaded.map(\.id), ["middle", "newest", "oldest"])

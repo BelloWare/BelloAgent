@@ -40,6 +40,8 @@ struct SidesPanelActivity: Equatable {
     var sides = 0
     var working = false
     var unread = false
+    /// Every unread side is unread only by the reader's mark, with no reply.
+    var unreadMarkedOnly = false
     var failed = false
 }
 
@@ -381,7 +383,7 @@ struct SidesPanelActivity: Equatable {
     private var label: String {
         let count = "\(activity.sides) side\(activity.sides == 1 ? "" : "s")"
         if activity.working { return count + ", one working. Rest the pointer on the window's right edge to show them." }
-        if activity.unread { return count + ", one with a new reply. Rest the pointer on the window's right edge to show them." }
+        if activity.unread { return count + (activity.unreadMarkedOnly ? ", one marked unread." : ", one with a new reply.") + " Rest the pointer on the window's right edge to show them." }
         return count + ". Rest the pointer on the window's right edge to show them."
     }
     override func layout() {
@@ -494,16 +496,19 @@ struct SidesPanelActivity: Equatable {
                 let footer = display.footer
                 stats = ChatRowStats(totals: footer.gateway, timing: footer.timing, now: now)
                 stats.updateActivity(state: display.state, loading: display.loading, activity: display.activity)
+                if !display.runStateKnown, let held = model.heldRunState(entry.id) { stats.updateActivity(state: held, loading: false, activity: [:]) }
                 if let at = display.messages.last(where: { $0.at != nil })?.at { stats.noteActivity(max(stats.lastActivity ?? 0, at / 1_000), now: now) }
                 objects += [ObjectIdentifier(display), ObjectIdentifier(footer)]
                 watch.append { [weak self] in self?.observer.observe(display); self?.observer.observe(footer) }
             } else {
                 let accounting = model.chatAccounting.row(for: entry.id)
                 stats = ChatRowStats(totals: accounting.totals, now: now)
+                if let held = model.heldRunState(entry.id) { stats.updateActivity(state: held, loading: false, activity: [:]) }
                 objects.append(ObjectIdentifier(accounting))
                 watch.append { [weak self] in self?.observer.observe(accounting) }
             }
-            contents.append(SidesPanelRowView.Content(entry: entry, stats: stats, unread: unread, failed: failed, enabled: inheritedEnabled))
+            contents.append(SidesPanelRowView.Content(entry: entry, stats: stats, unread: unread, failed: failed, enabled: inheritedEnabled,
+                                                      markedUnread: model.markedUnreadOnly(sessionID: entry.id)))
         }
         if objects != watched {
             watched = objects
@@ -561,16 +566,17 @@ struct SidesPanelActivity: Equatable {
     struct Content: Equatable {
         var entry: SidesPanelEntry
         var unread: Bool
+        var markedUnread: Bool
         var failed: Bool
         var working: Bool
         var lead: String?
         var leadColor: NSColor?
         var recency: String?
         var enabled: Bool
-        @MainActor init(entry: SidesPanelEntry, stats: ChatRowStats, unread: Bool, failed: Bool, enabled: Bool) {
-            self.entry = entry; self.unread = unread; self.failed = failed; self.enabled = enabled
+        @MainActor init(entry: SidesPanelEntry, stats: ChatRowStats, unread: Bool, failed: Bool, enabled: Bool, markedUnread: Bool = false) {
+            self.entry = entry; self.unread = unread; self.markedUnread = markedUnread; self.failed = failed; self.enabled = enabled
             working = stats.busy || stats.loading
-            let lead = SidesPanelRowWords.lead(stats: stats, working: working, unread: unread, failed: failed)
+            let lead = SidesPanelRowWords.lead(stats: stats, working: working, unread: unread, failed: failed, markedUnread: markedUnread)
             self.lead = lead?.text; leadColor = lead?.color
             recency = stats.recencyLabel
         }
@@ -644,6 +650,7 @@ struct SidesPanelActivity: Equatable {
         } else if !content.working, let spinner { spinner.removeFromSuperview(); self.spinner = nil }
         dot.isHidden = content.working || !(content.failed || content.unread)
         dot.failure = content.failed
+        dot.marked = content.markedUnread
         quiet.isHidden = content.working || content.failed || content.unread
         title.font = .systemFont(ofSize: 13, weight: content.entry.open || content.unread ? .semibold : .regular)
         title.set(content.entry.title, color: .piInk)
@@ -655,14 +662,14 @@ struct SidesPanelActivity: Equatable {
         needsLayout = true; updateLayer()
     }
     /// What the side is doing, in the sidebar's words, then how long ago it last did anything.
-    static func lead(stats: ChatRowStats, working: Bool, unread: Bool, failed: Bool) -> (text: String, color: NSColor)? {
+    static func lead(stats: ChatRowStats, working: Bool, unread: Bool, failed: Bool, markedUnread: Bool = false) -> (text: String, color: NSColor)? {
         if working { return (PiSessionState.label(stats.state, loading: stats.loading), .piWarning) }
         if RunState(rawValue: stats.state).isStopped {
             return (PiSessionState.label(stats.state, costLimited: stats.costLimited),
                     RunState(rawValue: stats.state) == .paused ? .piInfo : stats.costLimited ? .piWarning : .piDanger)
         }
         if failed { return ("Failed", .piDanger) }
-        if unread { return ("New reply", .piAccent) }
+        if unread { return (markedUnread ? "Unread" : "New reply", .piAccent) }
         return nil
     }
     /// The mark, the stack's gap, the words, and the gap before the
@@ -703,7 +710,7 @@ extension WorkspaceModel {
         let shown = sides[parentID]
         var entries = chats
             .filter { $0.parentSessionID == parentID && !$0.isBackgroundTask && (!$0.isArchived || $0.id == shown?.id) }
-            .sorted(by: ChatRecord.sidebarPrecedes)
+            .sorted { sidebarPrecedes($0, $1) }
             .map { SidesPanelEntry(id: $0.id, title: $0.title, open: $0.id == shown?.id, saved: true) }
         if let shown, !entries.contains(where: { $0.id == shown.id }) {
             entries.insert(SidesPanelEntry(id: shown.id, title: shown.pending ? "New side" : "Side conversation", open: true, saved: false), at: 0)
@@ -721,12 +728,16 @@ extension WorkspaceModel {
     /// are working, have a new reply, or failed.
     func sidesPanelActivity(of parentID: String) -> SidesPanelActivity {
         let entries = sidesPanelEntries(of: parentID)
-        var activity = SidesPanelActivity(sides: entries.count)
+        var activity = SidesPanelActivity(sides: entries.count), reply = false
         for entry in entries where !entry.open {
             if let display = displays[entry.id], display.busy || display.loading { activity.working = true }
-            if unreadOutputCount(sessionID: entry.id) > 0 { activity.unread = true }
+            if unreadOutputCount(sessionID: entry.id) > 0 {
+                activity.unread = true
+                if !markedUnreadOnly(sessionID: entry.id) { reply = true }
+            }
             if unreadFailure(sessionID: entry.id) { activity.failed = true }
         }
+        activity.unreadMarkedOnly = activity.unread && !reply
         return activity
     }
 

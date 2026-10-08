@@ -111,6 +111,8 @@ struct TopicSessionRowActions {
     var image: @MainActor () -> NSImage? = { nil }
     var click: @MainActor (NSEvent.ModifierFlags) -> Void = { _ in }
     var doubleClick: @MainActor () -> Void = { }
+    /// A drag of the row began (true) or ended (false).
+    var dragging: @MainActor (Bool) -> Void = { _ in }
 }
 
 /// The transparent surface over a draggable chat row. It takes the plain left
@@ -231,8 +233,9 @@ final class TopicSessionDragSurfaceView: NSView, NSDraggingSource {
     override func viewDidMoveToWindow() { if window == nil { popCursor() } }
     /// AppKit shows its own cursor for the length of a drag, and sends no exit
     /// while it does: ours steps aside and returns if the row is still under it.
-    func draggingSession(_ session: NSDraggingSession, willBeginAt screenPoint: NSPoint) { popCursor() }
+    func draggingSession(_ session: NSDraggingSession, willBeginAt screenPoint: NSPoint) { popCursor(); actions.dragging(true) }
     func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
+        actions.dragging(false)
         guard let window, bounds.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil)) else { return }
         pushCursor()
     }

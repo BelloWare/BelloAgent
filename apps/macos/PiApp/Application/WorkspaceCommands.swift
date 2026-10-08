@@ -39,6 +39,7 @@ extension WorkspaceModel {
     func archiveCommandChat() { if let chat = commandChat { toggleSessionArchive(chat.id) } }
     func pinCommandChat() { if let chat = commandChat { toggleSessionPin(chat.id) } }
     func markCommandChatRead() { if let chat = commandChat { markSessionRead(chat.id) } }
+    func markCommandChatUnread() { if let chat = commandChat { markSessionUnread(chat.id) } }
     /// Topics the focused chat can be moved into, or nothing when the chat
     /// cannot hold a topic at all (the scratch project, a background task, a
     /// connection test) — the same rule the row's own menu applies.

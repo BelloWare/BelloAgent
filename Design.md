@@ -1627,13 +1627,17 @@ selectable text. TranscriptPage retains at most one trailing 30 Hz presentation
 job, flushing first content, tool transitions, completion/error and pane rebinding;
 it batches presentation only, never provider parsing, persistence or tools.
 
-`ChatRecord.manualSidebarOrder` is optional backward-compatible desktop metadata.
-`MetadataStore.reorderChats` validates a complete same-project/topic/parent/pin
-selection and atomically assigns ranks plus organization revisions. The sidebar's
-shared comparator honors ranks; revision-aware organization merging prevents a
-late title, model, draft or path write from undoing a drag. Pin/archive/topic moves
-reset an old group's rank. Native row drag handling remains above the SwiftUI
-insertion target, preserving selection, double-click rename and control cutouts.
+Since 0.1.122 the sidebar has no manual order: `manualSidebarOrder`,
+`MetadataStore.reorderChats` and the insertion line are gone (an old record's
+rank still decodes and is ignored). The comparator (`ChatRecord.sidebarPrecedes`)
+is pinned first, then `activityStamp` (the later of `lastActivityAt` and the
+creation stamp `sidebarOrder`), then id. `lastActivityAt` only moves forward:
+`ChatRecordMerge` keeps the maximum and `MetadataStore.noteChatActivity` sets it.
+`WorkspaceActivityOrder.swift` records activity (sends, edits, saved queued
+rewrites, live run-hold transitions; never journal adoption or tokens) and
+holds the order while the reader points at, opens a menu on, or drags in the
+list (`SidebarOrderHold`). Native row drag handling still moves chats between
+topics and projects, preserving selection, double-click rename and control cutouts.
 
 ### Activity and disclosure follow-up (0.1.65)
 

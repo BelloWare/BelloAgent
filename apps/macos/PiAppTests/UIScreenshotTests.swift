@@ -233,6 +233,15 @@ final class UIScreenshotTests: XCTestCase {
             try await model.traces.close()
             return
         }
+        // Only the sidebar's states (27*): a chat marked unread.
+        if testEnvironment("PI_APP_UI_GALLERY_SIDEBAR_STATES_ONLY") == "1" {
+            try await captureSidebarStateScenes(model: model, window: window, gallery: gallery, appearances: appearances, markedID: second.id)
+            XCTAssertNil(model.error, model.error ?? "")
+            try await capturePausedAfterRestartScenes(model: model, vault: vault, window: window, gallery: gallery, appearances: appearances,
+                                                      workspaceID: workspace.id, profileID: connections[0].profile.id, otherID: main.id,
+                                                      stateRoot: folder.appendingPathComponent("app-state"))
+            return
+        }
         // Only the sidebar's search inside chats, once a second chat has a turn of its own.
         if testEnvironment("PI_APP_UI_GALLERY_SEARCH_ONLY") == "1" {
             await model.select(second.id)
@@ -461,8 +470,10 @@ final class UIScreenshotTests: XCTestCase {
         }
         onboarding.orderOut(nil); fresh.shutdown()
         XCTAssertNil(model.error, model.error ?? "")
-        for host in model.hosts.values { try await host.shutdownAndWait() }
-        try await model.traces.close()
+        // Last: it relaunches the workspace.
+        try await capturePausedAfterRestartScenes(model: model, vault: vault, window: window, gallery: gallery, appearances: appearances,
+                                                  workspaceID: workspace.id, profileID: connections[0].profile.id, otherID: main.id,
+                                                      stateRoot: folder.appendingPathComponent("app-state"))
     }
 
     /// Scenes the gallery above never reached, added for the 0.1.60 UX review:
@@ -591,6 +602,7 @@ final class UIScreenshotTests: XCTestCase {
                                       profileID: try XCTUnwrap(model.record(mainID)?.profileID), topicID: topic?.id)
         try await captureSearchScene(model: model, window: window, gallery: gallery, appearances: appearances, minimumMatches: 1)
         await model.select(mainID); try await settle(0.8)
+        try await captureSidebarStateScenes(model: model, window: window, gallery: gallery, appearances: appearances, markedID: secondID)
 
         // 15 · The error strip over a chat: a gateway failure with a long body.
         model.error = "The gateway refused the request: 400 invalid_request_error — the model \"fixture-fast\" does not accept a 300000-token output limit on this route. Reduce the output budget in Settings, or choose a model whose catalog ceiling covers it, then send again."
@@ -606,6 +618,114 @@ final class UIScreenshotTests: XCTestCase {
         try await pair("16b-window-wide")
         window.setContentSize(NSSize(width: 1440, height: 900)); window.center(); try await settle(0.8)
         XCTAssertNil(model.error, model.error ?? "")
+    }
+
+    /// 27 · The sidebar's own states at the smallest window (920×600): a
+    /// chat the reader marked unread, with the unread dot and bold title a
+    /// new reply gives it. The mark is taken off again afterwards. 28 · the
+    /// wash of recently opened chats.
+    @MainActor private func captureSidebarStateScenes(model: WorkspaceModel, window: NSWindow, gallery: URL,
+                                                      appearances: [(String, NSAppearance.Name)], markedID: String) async throws {
+        let size = window.contentView?.frame.size ?? NSSize(width: 1440, height: 900)
+        window.setContentSize(NSSize(width: 920, height: 600)); window.center(); try await settle(1.0)
+        // Only the marked chat carries a mark in this scene.
+        for chat in model.chats where chat.id != markedID { model.markSessionRead(chat.id) }
+        model.markSessionUnread(markedID)
+        XCTAssertEqual(model.unreadOutputCount(sessionID: markedID), 1, "27 needs a chat marked unread")
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(1.0)
+            try capture(window, to: gallery.appendingPathComponent("27-sidebar-marked-unread-\(name).png"))
+        }
+        model.markSessionRead(markedID)
+
+        // 28 · Recently opened chats: the open chat has the accent wash, the
+        // four opened before it fainter washes, older ones plain. One of them
+        // is unread, to check the dot and bold title read over a wash.
+        let marked = try XCTUnwrap(model.record(markedID))
+        var opened: [String] = []
+        for title in ["Ledger rounding", "Webhook retries", "Spike: jittered backoff", "Refund edge cases"] {
+            let chat = ChatRecord(id: UUID().uuidString, workspaceID: marked.workspaceID, title: title, path: nil, profileID: marked.profileID)
+            model.chats.append(chat); try await model.store?.put(chat, kind: "chat", id: chat.id)
+            opened.append(chat.id)
+        }
+        let open = try XCTUnwrap(model.selectedID)
+        for id in opened + [markedID, open] { await model.select(id); try await settle(0.2) }
+        XCTAssertEqual(model.recencyRank(markedID), 1, "28 needs the ladder")
+        model.markSessionUnread(opened[2])
+        let pageSize = model.sidebarPageSizes[marked.workspaceID]
+        model.sidebarPageSizes[marked.workspaceID] = 10   // every row of the ladder on screen
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(1.0)
+            try capture(window, to: gallery.appendingPathComponent("28-sidebar-recently-opened-\(name).png"))
+        }
+        // 29 · Every 0.1.122 row state together, to check they read side by
+        // side: drafts (the pencil) on two washed rows, an
+        // unread one, and one paused before a restart.
+        for id in [opened[3], markedID] { try await model.store?.put(DraftRecord(id: id, text: "Unsent: check the rounding rule"), kind: "draft", id: id) }
+        model.runHolds[opened[0]] = RunHoldRecord(id: opened[0], state: "paused")
+        let drafted = Date().addingTimeInterval(5)
+        while Date() < drafted, !(model.showsDraftMark(opened[3]) && model.showsDraftMark(markedID)) { try await settle(0.1) }
+        XCTAssertTrue(model.showsDraftMark(opened[3]), "29 needs a draft marker")
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(1.0)
+            try capture(window, to: gallery.appendingPathComponent("29-sidebar-row-states-\(name).png"))
+        }
+        for id in [opened[3], markedID] { try await model.store?.put(DraftRecord(id: id, text: ""), kind: "draft", id: id) }
+        model.runHolds[opened[0]] = nil
+        model.markSessionRead(opened[2]); model.sidebarPageSizes[marked.workspaceID] = pageSize
+        window.setContentSize(size); window.center(); try await settle(0.8)
+    }
+
+    /// 27a, 27b · Paused after a restart, at 920×600. A chat's run is stopped
+    /// with a follow-up queued behind it; the workspace is then relaunched as
+    /// a quit and a launch do (helpers stopped, a new model over the same
+    /// state). 27a: another chat open, the paused chat's row says Paused
+    /// before it is opened. 27b: the paused chat opened: paused, its
+    /// follow-up waiting with Resume. Nothing is resumed. Ends the gallery:
+    /// the relaunched workspace is shut down here.
+    @MainActor private func capturePausedAfterRestartScenes(model: WorkspaceModel, vault: ConfigurationVault, window: NSWindow, gallery: URL,
+                                                            appearances: [(String, NSAppearance.Name)], workspaceID: String,
+                                                            profileID: String, otherID: String, stateRoot: URL) async throws {
+        let chat = ChatRecord(id: UUID().uuidString, workspaceID: workspaceID, title: "Migrate the ledger schema", path: nil, profileID: profileID)
+        model.chats.append(chat); try await model.store?.put(chat, kind: "chat", id: chat.id)
+        await model.select(chat.id); try await settle(0.6)
+        let session = try XCTUnwrap(model.displays[chat.id])
+        session.draft = "slow: plan the ledger schema migration step by step"
+        model.send(sessionID: chat.id)
+        let deadline = Date().addingTimeInterval(60)
+        while Date() < deadline, !(session.busy && session.messages.contains { $0.role == "assistant" && !$0.text.isEmpty }) { try await settle(0.2) }
+        session.draft = "Then list the rollback steps."
+        model.send(sessionID: chat.id)
+        while Date() < deadline, session.queue.count != 1 { try await settle(0.2) }
+        model.stop(sessionID: chat.id)
+        while Date() < deadline, !(session.runState == .paused && !session.busy) { try await settle(0.2) }
+        XCTAssertEqual(session.runState, .paused, "27 needs a paused chat"); XCTAssertEqual(session.queue.count, 1)
+        await model.select(otherID); try await settle(0.6)
+        // The relaunch: as a quit and a launch do it.
+        await model.stopHostsAndWait(); await model.flushRunHolds(); await model.flushReadStates(); await model.flushSelection()
+        model.shutdown(); try await model.traces.close(); await model.store?.close()
+        let relaunched = WorkspaceModel(stateRoot: stateRoot, vault: vault)
+        defer { relaunched.shutdown() }
+        await relaunched.restore()
+        await relaunched.runHoldVerification?.value
+        window.contentView = WorkspaceRootView(model: relaunched)
+        window.setContentSize(NSSize(width: 920, height: 600)); window.center(); try await settle(1.5)
+        XCTAssertNotEqual(relaunched.selectedID, chat.id)
+        XCTAssertEqual(relaunched.heldRunState(chat.id), "paused", "27a: the row's chat is paused before it is opened")
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(1.0)
+            try capture(window, to: gallery.appendingPathComponent("27a-paused-after-restart-row-\(name).png"))
+        }
+        await relaunched.select(chat.id); try await settle(1.2)
+        let reopened = try XCTUnwrap(relaunched.displays[chat.id])
+        XCTAssertEqual(reopened.runState, .paused, "27b: the chat itself is paused"); XCTAssertEqual(reopened.queue.count, 1)
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(1.0)
+            try capture(window, to: gallery.appendingPathComponent("27b-paused-after-restart-chat-\(name).png"))
+        }
+        XCTAssertEqual(reopened.runState, .paused, "nothing resumed it")
+        XCTAssertNil(relaunched.error, relaunched.error ?? "")
+        await relaunched.stopHostsAndWait(); try await relaunched.traces.close()
     }
 
     /// 14c · The archive switch on: each group of every project lists its
