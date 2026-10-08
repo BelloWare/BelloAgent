@@ -1,0 +1,36 @@
+    Finished `test` profile [unoptimized] target(s) in 0.15s
+     Running unittests src/lib.rs (/workspace/shared/build-recovery/target/debug/deps/bello_agent_core-8fb3b4cab755e591)
+
+running 29 tests
+test saved_runtime::tests::connection_deleted_during_delayed_open_never_acquires_or_recovers_writer ... ok
+test saved_runtime::tests::capability_badge_uses_factory_definitions_and_known_revocation_without_vault_io ... ok
+test saved_runtime::tests::bash_tests::saved_readonly_bash_is_not_offered_and_cannot_spawn ... ok
+test saved_runtime::tests::pending_unexpected_checkpoint_and_wrong_existing_identity_never_mutate_bytes ... ok
+test saved_runtime::tests::compaction_revalidates_trust_after_summary_before_checkpoint_adoption ... ok
+test saved_runtime::tests::receipt_transition_crash_requires_checkpoint_and_preserves_text ... ok
+test saved_runtime::tests::factory_recovers_dangling_tool_as_unknown_without_reexecution ... ok
+test saved_runtime::tests::deletion_during_provider_request_blocks_returned_tool_and_keeps_truthful_result ... ok
+test saved_runtime::tests::retired_persistent_actor_cannot_be_recast_as_unregistered_pending ... ok
+test saved_runtime::tests::one_factory_sends_tools_persists_results_and_reopens_without_execution ... ok
+test saved_runtime::tests::compaction_revalidates_trust_before_summary_dispatch ... ok
+test saved_runtime::tests::queued_mutation_reconfirms_after_pre_effect_admission_wait ... ok
+test saved_runtime::tests::completed_saved_runtime_tail_late_stop_or_retirement_preserves_checkpoint_and_explicit_pause ... ok
+test saved_runtime::tests::saved_factory_image_receipt_delivery_and_reopen_use_the_normal_trusted_route ... ok
+test saved_runtime::tests::same_route_settings_change_does_not_revoke_project_and_keeps_active_configuration ... ok
+test saved_runtime::tests::settings_trust_new_and_reopened_pending_chats_send_nothing ... ok
+test saved_runtime::tests::skills::image_and_skill_share_ordered_content_and_dependency_freeze_uses_actual_tools ... ok
+test saved_runtime::tests::skills::dropped_catalog_awaiter_keeps_physical_reader_and_writer_owned_until_retirement_joins ... ok
+test saved_runtime::tests::bash_tests::saved_editing_two_calls_live_failure_continuation_and_reopen ... ok
+test saved_runtime::tests::stale_connection_mode_and_path_records_fail_before_snapshot_open ... ok
+test saved_runtime::tests::skills::delivered_retry_and_reopen_never_reread_removed_skill_bodies ... ok
+test saved_runtime::tests::skills::picker_skill_only_order_literal_arguments_receipt_context_and_plain_slash_followup ... ok
+test saved_runtime::tests::saved_runtime_tail_stop_or_retirement_keeps_accepted_pending_work_paused_until_resume ... ok
+test saved_runtime::tests::trust_roots_future_policy_and_catalog_mode_fail_sticky_without_sending ... ok
+test saved_runtime::tests::skills::queued_body_is_frozen_metadata_revocation_pauses_and_empty_edit_preserves_selection ... ok
+test saved_runtime::tests::skills::stopped_or_suspended_fresh_freeze_retains_receipt_and_never_accepts ... ok
+test saved_runtime::tests::skills::mcp_presence_scope_is_rechecked_at_acceptance_delivery_and_settled_steering_commit ... ok
+test saved_runtime::tests::skills::steering_task_roots_survive_reopen_compaction_then_new_task_releases_old_carriers ... ok
+test saved_runtime::tests::bash_tests::stop_retains_unknown_and_paused_queue_then_reopen_never_replays ... ok
+
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 565 filtered out; finished in 1.15s
+

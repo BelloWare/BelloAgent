@@ -1,0 +1,10 @@
+{
+  "base": "a73f56acdf5847e7a9e34c1cb2aceeb051df0db3",
+  "files": [
+    {
+      "path": "rust/crates/bello-agent-core/src/runtime.rs",
+      "bytes": 103818,
+      "sha256": "dd3bef49822f98eb176120201107486e8240a6629e1c287e5a85844943d97d7e"
+    }
+  ]
+}

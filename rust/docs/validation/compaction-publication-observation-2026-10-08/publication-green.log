@@ -1,0 +1,9 @@
+   Compiling bello-agent-core v0.1.0 (/workspace/shared/agent-compaction-ci-fix/rust/crates/bello-agent-core)
+    Finished `test` profile [unoptimized] target(s) in 23.15s
+     Running unittests src/lib.rs (/workspace/shared/build-recovery/target/debug/deps/bello_agent_core-8fb3b4cab755e591)
+
+running 1 test
+test runtime::edit_status_tests::test_worker_observation_crosses_the_terminal_publication_barrier ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 593 filtered out; finished in 0.10s
+

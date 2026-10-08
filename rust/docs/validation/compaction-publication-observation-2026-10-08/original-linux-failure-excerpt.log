@@ -1,0 +1,17 @@
+2026-10-08T21:46:40.0575982Z failures:
+2026-10-08T21:46:40.0576153Z 
+2026-10-08T21:46:40.0576605Z ---- saved_runtime::tests::compaction_revalidates_trust_after_summary_before_checkpoint_adoption stdout ----
+2026-10-08T21:46:40.0577162Z 
+2026-10-08T21:46:40.0578177Z thread 'saved_runtime::tests::compaction_revalidates_trust_after_summary_before_checkpoint_adoption' (14893) panicked at crates/bello-agent-core/src/saved_runtime_tests.rs:531:5:
+2026-10-08T21:46:40.0578867Z assertion `left == right` failed
+2026-10-08T21:46:40.0579162Z   left: Summarizing
+2026-10-08T21:46:40.0579409Z  right: Failed
+2026-10-08T21:46:40.0579812Z note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+2026-10-08T21:46:40.0580129Z 
+2026-10-08T21:46:40.0580133Z 
+2026-10-08T21:46:40.0580220Z failures:
+2026-10-08T21:46:40.0580596Z     saved_runtime::tests::compaction_revalidates_trust_after_summary_before_checkpoint_adoption
+2026-10-08T21:46:40.0580931Z 
+2026-10-08T21:46:40.0581602Z test result: FAILED. 28 passed; 1 failed; 0 ignored; 0 measured; 564 filtered out; finished in 1.19s
+2026-10-08T21:46:40.0581960Z 
+2026-10-08T21:46:40.0598311Z error: test failed, to rerun pass `-p bello-agent-core --lib`

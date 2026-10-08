@@ -1,0 +1,24 @@
+   Compiling bello-agent-core v0.1.0 (/workspace/shared/agent-compaction-ci-fix/rust/crates/bello-agent-core)
+    Finished `test` profile [unoptimized] target(s) in 21.07s
+     Running unittests src/lib.rs (/workspace/shared/build-recovery/target/debug/deps/bello_agent_core-8fb3b4cab755e591)
+
+running 1 test
+test runtime::edit_status_tests::test_worker_observation_crosses_the_terminal_publication_barrier ... FAILED
+
+failures:
+
+---- runtime::edit_status_tests::test_worker_observation_crosses_the_terminal_publication_barrier stdout ----
+
+thread 'runtime::edit_status_tests::test_worker_observation_crosses_the_terminal_publication_barrier' (70) panicked at crates/bello-agent-core/src/runtime.rs:1168:9:
+assertion `left == right` failed: idle observation escaped before its terminal snapshot was published
+  left: (false, "New chat")
+ right: (false, "terminal checkpoint published")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    runtime::edit_status_tests::test_worker_observation_crosses_the_terminal_publication_barrier
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 593 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p bello-agent-core --lib`

@@ -419,6 +419,10 @@ impl Controller {
     }
     #[cfg(all(test, feature = "synthetic-authority"))]
     pub(crate) fn test_has_active_worker(&self) -> bool {
+        // The atomic can clear before the terminal snapshot is published under
+        // this mutex. Test callers treating false as settled must cross that
+        // publication barrier. This is not a physical worker/task join.
+        let _publication = self.inner.lock().expect("session mutex poisoned");
         self.worker_active.load(Ordering::Acquire)
     }
     pub fn revision(&self) -> u64 {
@@ -1122,6 +1126,54 @@ mod edit_status_tests {
         })
         .await
         .expect("expected session transition timed out");
+    }
+
+    #[cfg(feature = "synthetic-authority")]
+    #[test]
+    fn test_worker_observation_crosses_the_terminal_publication_barrier() {
+        let dir = tempfile::tempdir().unwrap();
+        let controller = Controller::new(
+            SessionStore::open(dir.path().join("session.json")).unwrap(),
+            None,
+        )
+        .unwrap();
+        let before = controller.snapshot_shared().title.clone();
+        let mut inner = controller.inner.lock().unwrap();
+        inner.worker_running = true;
+        controller.worker_active.store(true, Ordering::Release);
+        inner
+            .store
+            .transact(|session| {
+                session.title = "terminal checkpoint published".into();
+                Ok(())
+            })
+            .unwrap();
+        controller.worker_finished(&mut inner);
+        assert!(!controller.worker_active.load(Ordering::Acquire));
+        assert_eq!(controller.snapshot_shared().title, before);
+        let (started, start) = std::sync::mpsc::channel();
+        let (sent, result) = std::sync::mpsc::channel();
+        let observer = controller.clone();
+        let reader = std::thread::spawn(move || {
+            started.send(()).unwrap();
+            let active = observer.test_has_active_worker();
+            sent.send((active, observer.snapshot_shared().title.clone()))
+                .unwrap();
+        });
+        start.recv_timeout(Duration::from_secs(3)).unwrap();
+        // Hold the real final-publication boundary. This timeout is only a
+        // bounded test observation, never a delay added to worker settlement.
+        let early = result.recv_timeout(Duration::from_millis(100));
+        controller.publish(&inner);
+        drop(inner);
+        let observed =
+            early.unwrap_or_else(|_| result.recv_timeout(Duration::from_secs(3)).unwrap());
+        reader.join().unwrap();
+        assert_eq!(
+            observed,
+            (false, "terminal checkpoint published".into()),
+            "idle observation escaped before its terminal snapshot was published"
+        );
     }
 
     fn held_controller(path: &std::path::Path) -> (Arc<Controller>, String) {

@@ -1,0 +1,22 @@
+{
+  "base": "a73f56acdf5847e7a9e34c1cb2aceeb051df0db3",
+  "source_hashes_match_after_gates": true,
+  "production_source_unchanged": "Exact edit reversal matches baseline outside existing positive cfg(test) regions. No production API/lifetime/authority change.",
+  "regression": "Controlled held-publication RED/GREEN: old helper returned inactive with stale published title; new helper crosses actor mutex. Observer-start signal precedes helper execution, so extreme descheduling could let old code miss the100ms observation window; no universal deterministic scheduling claim. Captured RED and independent source barrier proof are retained.",
+  "core_default": {
+    "unit_passed": 431,
+    "integration_passed": 127
+  },
+  "core_all_features": {
+    "unit_passed": 610,
+    "integration_passed": 127
+  },
+  "exact_saved_runtime_selector": {
+    "passed": 29,
+    "failed": 0
+  },
+  "strict_default_and_all_feature_core_clippy": "passed -D warnings all targets",
+  "fmt": "passed",
+  "test_binary_hashes": "Not sealed before releasing the shared Cargo lane. Later target timestamps did not establish final-run identity, so no hash or executable acceptance is claimed. Source postimages and raw build/test logs are retained.",
+  "scope": "Synthetic fixture/loopback regression and existing authority tests. No physical join, GUI, performance or native acceptance claim."
+}

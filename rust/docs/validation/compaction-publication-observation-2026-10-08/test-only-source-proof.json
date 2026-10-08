@@ -1,0 +1,12 @@
+{
+  "base": "a73f56acdf5847e7a9e34c1cb2aceeb051df0db3",
+  "path": "rust/crates/bello-agent-core/src/runtime.rs",
+  "baseline_sha256": "3a86a7f813987ceb4fc4125b281918433466894bb393e959b464111b3fe2ae34",
+  "candidate_sha256": "dd3bef49822f98eb176120201107486e8240a6629e1c287e5a85844943d97d7e",
+  "exact_edit_reversal_matches_baseline": true,
+  "edits": [
+    "Four lines inside existing #[cfg(all(test, feature = \"synthetic-authority\"))] helper",
+    "One regression inside existing #[cfg(test)] edit_status_tests module, further gated by synthetic-authority"
+  ],
+  "production_source_outside_these_positive_test_regions": "byte-identical"
+}
