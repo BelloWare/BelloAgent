@@ -155,20 +155,33 @@ extension ConversationPaneTests {
         XCTAssertEqual(table.tableView(table, validateDrop: drag, proposedRow: 6, proposedDropOperation: .above), [])
     }
 
-    /// In a narrow split pane the header's status wraps beside Resume and
-    /// never runs under it; the panel grows to hold it.
-    @MainActor func testTheQueueHeaderWrapsInANarrowPane() async throws {
-        let pane = try Pane(width: 460, height: 700); defer { pane.close() }
-        pane.session.state = "error"
-        pane.session.queue = (0..<3).map { ["turnId": .string("q\($0)"), "kind": .string("follow-up"), "text": .string("Message \($0)")] }
-        await pane.settle(12)
-        let panel = try XCTUnwrap(Self.views(QueuePanelView.self, in: pane.hosted).first)
-        let status = panel.status, resume = panel.resume
-        XCTAssertFalse(resume.isHidden)
-        XCTAssertLessThanOrEqual(status.frame.maxX, resume.frame.minX, "the status never runs under Resume")
-        XCTAssertGreaterThanOrEqual(status.frame.height, status.height(forWidth: status.frame.width) - 0.5, "it has the room its lines need")
-        let wide = status.height(forWidth: status.naturalWidth)
-        XCTAssertGreaterThan(status.frame.height, wide + 4, "at this width it takes a second line")
+    /// In a narrow split pane the header's status never runs under Resume;
+    /// it wraps only when its words do not fit before Resume (the gap there
+    /// keeps just its minimum), and the panel grows to hold it. A short
+    /// "Paused · 1" stays on one line where an equal share for the gap once
+    /// broke it mid-word.
+    @MainActor func testTheQueueHeaderWrapsOnlyWhenItsWordsDoNotFit() async throws {
+        for (width, state, paused) in [(460.0, "error", false), (300.0, "error", false), (300.0, "paused", true)] {
+            let pane = try Pane(width: width, height: 700); defer { pane.close() }
+            pane.session.state = state; pane.session.queuePaused = paused
+            // One follow-up: no "Drag to reorder" hint shares the room.
+            pane.session.queue = [["turnId": .string("q0"), "kind": .string("follow-up"), "text": .string("Message 0")]]
+            await pane.settle(12)
+            let panel = try XCTUnwrap(Self.views(QueuePanelView.self, in: pane.hosted).first)
+            let status = panel.status, resume = panel.resume, label = "\(state) at \(width)"
+            XCTAssertFalse(resume.isHidden, label)
+            XCTAssertLessThanOrEqual(status.frame.maxX, resume.frame.minX, "the status never runs under Resume (\(label))")
+            XCTAssertGreaterThanOrEqual(status.frame.height, status.height(forWidth: status.frame.width) - 0.5, "it has the room its lines need (\(label))")
+            // Between the status and Resume: two spacings and the gap's minimum.
+            let room = resume.frame.minX - status.frame.minX - PiSpacing.sm * 2 - 8
+            let wide = status.height(forWidth: status.naturalWidth)
+            if status.naturalWidth <= room {
+                XCTAssertEqual(status.frame.height, wide, accuracy: 0.5, "it fits, so it keeps one line (\(label): \(status.naturalWidth) in \(room))")
+            } else {
+                XCTAssertGreaterThan(status.frame.height, wide + 4, "it does not fit, so it wraps (\(label))")
+            }
+            if paused { XCTAssertLessThanOrEqual(status.naturalWidth, room, "\"Paused · 1\" fits beside Resume at \(width)") }
+        }
     }
 
     /// The detail opened from its row: it shows the whole message; when the
