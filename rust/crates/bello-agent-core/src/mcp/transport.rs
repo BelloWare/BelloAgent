@@ -8,7 +8,7 @@ use reqwest::{
     header::{HeaderMap, HeaderName, HeaderValue},
 };
 use serde_json::{Value, json};
-use std::time::Duration;
+use std::{sync::Mutex, time::Duration};
 use tokio_util::sync::CancellationToken;
 const MAX_BODY: usize = 4 * 1024 * 1024;
 
@@ -17,12 +17,23 @@ pub(super) struct Http {
     url: String,
     headers: HeaderMap,
     timeout: Duration,
+    state: Mutex<State>,
+}
+#[derive(Clone)]
+struct State {
     session: Option<String>,
     version: String,
-    pub expired: bool,
-    pub generation: u64,
+    expired: bool,
+    generation: u64,
+    epoch: u64,
 }
 impl Http {
+    pub fn expired(&self) -> bool {
+        self.state.lock().map_or(true, |s| s.expired)
+    }
+    pub fn generation(&self) -> u64 {
+        self.state.lock().map_or(u64::MAX, |s| s.generation)
+    }
     pub fn new(config: &ServerConfiguration) -> McpResult<Self> {
         let client = Client::builder()
             .retry(reqwest::retry::never())
@@ -47,14 +58,17 @@ impl Http {
             url: config.url.clone(),
             headers,
             timeout: Duration::from_secs(config.timeout_seconds),
-            session: None,
-            version: "2025-11-25".into(),
-            expired: false,
-            generation: 0,
+            state: Mutex::new(State {
+                session: None,
+                version: "2025-11-25".into(),
+                expired: false,
+                generation: 0,
+                epoch: 0,
+            }),
         })
     }
     pub async fn request(
-        &mut self,
+        &self,
         method: &str,
         params: Value,
         cancel: &CancellationToken,
@@ -70,11 +84,11 @@ impl Http {
         if method == "initialize"
             && let Some(version) = result["protocolVersion"].as_str()
         {
-            self.version = version.into();
+            self.state.lock().map_err(|_| McpError::protocol())?.version = version.into();
         }
         Ok(result)
     }
-    pub async fn notify(&mut self, method: &str, cancel: &CancellationToken) -> McpResult<()> {
+    pub async fn notify(&self, method: &str, cancel: &CancellationToken) -> McpResult<()> {
         self.exchange(
             json!({"jsonrpc":"2.0","method":method,"params":{}}),
             None,
@@ -84,7 +98,7 @@ impl Http {
         .map(|_| ())
     }
     async fn exchange(
-        &mut self,
+        &self,
         message: Value,
         expected: Option<&str>,
         cancel: &CancellationToken,
@@ -99,7 +113,7 @@ impl Http {
             result=tokio::time::timeout(timeout,self.exchange_inner(message,expected))=>result.unwrap_or_else(|_|Err(McpError::unknown("mcp_timeout","MCP request timed out; effects may have occurred. No automatic replay.")))
         }
     }
-    async fn exchange_inner(&mut self, message: Value, expected: Option<&str>) -> McpResult<Value> {
+    async fn exchange_inner(&self, message: Value, expected: Option<&str>) -> McpResult<Value> {
         let initializing = message["method"] == "initialize";
         let bytes = serde_json::to_vec(&message).map_err(|_| McpError::config())?;
         if bytes.len() > MAX_BODY {
@@ -109,8 +123,15 @@ impl Http {
             ));
         }
         let mut headers = self.headers.clone();
-        let sent_session = self.session.is_some();
-        if let Some(session) = &self.session {
+        let snapshot = self.state.lock().map_err(|_| McpError::protocol())?.clone();
+        if snapshot.expired && !initializing {
+            return Err(McpError::rejected(
+                "mcp_session_expired",
+                "MCP session expired before dispatch",
+            ));
+        }
+        let sent_session = snapshot.session.is_some();
+        if let Some(session) = &snapshot.session {
             headers.insert(
                 "mcp-session-id",
                 HeaderValue::from_str(session).map_err(|_| McpError::protocol())?,
@@ -119,7 +140,7 @@ impl Http {
         if !initializing {
             headers.insert(
                 "mcp-protocol-version",
-                HeaderValue::from_str(&self.version).map_err(|_| McpError::protocol())?,
+                HeaderValue::from_str(&snapshot.version).map_err(|_| McpError::protocol())?,
             );
         }
         let response=self.client.post(&self.url).headers(headers).body(bytes).send().await
@@ -127,8 +148,12 @@ impl Http {
         let status = response.status().as_u16();
         if !(200..300).contains(&status) {
             if status == 404 && sent_session && !initializing {
-                self.expired = true;
-                self.session = None;
+                let mut state = self.state.lock().map_err(|_| McpError::protocol())?;
+                if state.epoch == snapshot.epoch && state.session == snapshot.session {
+                    state.expired = true;
+                    state.session = None;
+                    state.epoch = state.epoch.checked_add(1).ok_or_else(McpError::limit)?;
+                }
                 return Err(McpError::rejected(
                     "mcp_session_expired",
                     "MCP server forgot this session (HTTP 404); this request was not processed",
@@ -145,6 +170,7 @@ impl Http {
                 format!("MCP HTTP {status}; effects may have occurred. No automatic replay."),
             ));
         }
+        let mut response_epoch = snapshot.epoch;
         if let Some(session) = response.headers().get("mcp-session-id") {
             let session = session.to_str().map_err(|_| McpError::protocol())?;
             if session.is_empty()
@@ -153,7 +179,15 @@ impl Http {
             {
                 return Err(McpError::protocol());
             }
-            self.session = Some(session.into());
+            let mut state = self.state.lock().map_err(|_| McpError::protocol())?;
+            if state.epoch == snapshot.epoch && state.session == snapshot.session && !state.expired
+            {
+                if state.session.as_deref() != Some(session) {
+                    state.epoch = state.epoch.checked_add(1).ok_or_else(McpError::limit)?;
+                    state.session = Some(session.into());
+                }
+                response_epoch = state.epoch;
+            }
         }
         if expected.is_none() && [202, 204].contains(&status) {
             return Ok(json!({}));
@@ -208,8 +242,13 @@ impl Http {
                             ));
                         }
                         if value["method"] == "notifications/tools/list_changed" {
-                            self.generation =
-                                self.generation.checked_add(1).ok_or_else(McpError::limit)?;
+                            let mut state = self.state.lock().map_err(|_| McpError::protocol())?;
+                            if state.epoch == response_epoch && !state.expired {
+                                state.generation = state
+                                    .generation
+                                    .checked_add(1)
+                                    .ok_or_else(McpError::limit)?;
+                            }
                         }
                     }
                 }

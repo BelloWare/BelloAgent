@@ -121,8 +121,12 @@ fn queued_edit_and_unsettled_receipt_survive_save_stop_and_reopen(cx: &mut TestA
         original_text: Some("original".into()),
     });
     let expected = plan.drafts[0].1.clone();
+    let workspace = Arc::downgrade(&plan.workspace);
     let outcome = cx.background_executor.block_test(plan.execute());
     assert!(outcome.result.is_ok());
+    // Completion drops the plan's last workspace owner before reopening. A
+    // remaining OS lease must not be mistaken for a delayed executor task.
+    assert!(workspace.upgrade().is_none());
     let store = WorkspaceStore::open(dir.path().join("workspace.json"), dir.path()).unwrap();
     assert_eq!(store.snapshot().drafts[&id], expected);
     assert_eq!(store.snapshot().intents[&intent.id], intent);

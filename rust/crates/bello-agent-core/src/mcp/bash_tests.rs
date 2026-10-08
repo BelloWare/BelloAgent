@@ -1,18 +1,16 @@
-//! Bash, a second chat editing call, and HTTP MCP share physical admission.
+//! Bash owns its physical cleanup without serializing other tools.
 use super::*;
 use crate::tools::{NativeTools, bash::Environment};
 #[tokio::test]
-async fn bash_cleanup_holds_shared_gate_against_mcp_and_another_chat() {
+async fn bash_cleanup_does_not_serialize_mcp_or_another_chat() {
     let server = ServerFixture::start().await;
     let f = Fixture::new("http://127.0.0.1:9", &server.url);
     let manager = f.manager();
     let root = f.project.path.clone();
-    let gate = f.workspace.lock().unwrap().editing_gate();
     let started = Arc::new(tokio::sync::Notify::new());
     let notice = started.clone();
     let tools = NativeTools::new(root.clone(), [], root.clone(), [Capability::Bash])
         .unwrap()
-        .with_editing_gate(gate.clone())
         .with_shell_output(root.join("out"))
         .with_shell_environment(Environment {
             home: root.clone(),
@@ -55,15 +53,6 @@ async fn bash_cleanup_holds_shared_gate_against_mcp_and_another_chat() {
             )
             .await
     });
-    cancel.cancel();
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert_eq!(server.calls.load(Ordering::SeqCst), 0);
-    assert!(!root.join("second-marker").exists());
-    assert!(gate.try_lock().is_err());
-    assert!(matches!(
-        timeout(DEADLINE, running).await.unwrap().unwrap(),
-        Err(crate::tools::ToolError::Cancelled)
-    ));
     let performed = timeout(DEADLINE, invoked).await.unwrap().unwrap().unwrap();
     if let Some(ticket) = performed.ticket {
         ticket.settle().unwrap();
@@ -77,6 +66,11 @@ async fn bash_cleanup_holds_shared_gate_against_mcp_and_another_chat() {
         "second"
     );
     assert_eq!(server.calls.load(Ordering::SeqCst), 1);
+    assert!(!running.is_finished());
+    cancel.cancel();
+    assert!(matches!(
+        timeout(DEADLINE, running).await.unwrap().unwrap(),
+        Err(crate::tools::ToolError::Cancelled)
+    ));
     tools.join_processes().await.unwrap();
-    assert!(gate.try_lock().is_ok());
 }

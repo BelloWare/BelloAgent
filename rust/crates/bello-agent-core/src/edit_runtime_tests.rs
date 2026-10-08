@@ -271,14 +271,14 @@ async fn mutation_stats_require_v5_and_rejected_older_marker_does_not_rewrite_fi
 
 #[cfg(feature = "synthetic-authority")]
 #[tokio::test]
-async fn distinct_chat_tools_share_gate_until_entered_mutation_worker_settles() {
+async fn distinct_chat_tools_overlap_even_on_the_same_file() {
     let root = tempfile::tempdir().unwrap();
-    let gate = Arc::new(tokio::sync::Mutex::new(()));
+    let executor = BlockingWorkExecutor::new(2, 4);
     let (entered_tx, entered_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
     let release = Arc::new(Mutex::new(release_rx));
     let first = tools(root.path())
-        .with_editing_gate(gate.clone())
+        .with_executor(executor.clone())
         .after_mutation(Arc::new(move || {
             entered_tx.send(()).unwrap();
             release
@@ -302,45 +302,40 @@ async fn distinct_chat_tools_share_gate_until_entered_mutation_worker_settles() 
         .await
         .unwrap()
         .unwrap();
-    let second = tools(root.path()).with_editing_gate(gate);
+    let second = tools(root.path()).with_executor(executor.clone());
     let edit = ToolCall {
         id: "second-chat".into(),
         name: "edit".into(),
         arguments: json!({"path":"output","oldText":"mutated","newText":"second chat"}),
     };
-    let mut waiting = Box::pin(run_call(
-        &second,
-        &edit,
-        &directory,
-        CancellationToken::new(),
-    ));
-    assert!(matches!(
-        futures_util::poll!(&mut waiting),
-        std::task::Poll::Pending
-    ));
-    assert_eq!(
-        fs::read_to_string(root.path().join("output")).unwrap(),
-        "mutated"
-    );
-    release_tx.send(()).unwrap();
-    assert_eq!(running.await.unwrap().outcome, ToolOutcome::Completed);
-    assert_eq!(waiting.await.outcome, ToolOutcome::Completed);
+    // The first worker is physically blocked after replacing this same file.
+    // The second must complete before the first is released.
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        run_call(&second, &edit, &directory, CancellationToken::new()),
+    )
+    .await
+    .expect("another chat must not wait for the first mutation");
+    assert_eq!(result.outcome, ToolOutcome::Completed);
     assert_eq!(
         fs::read_to_string(root.path().join("output")).unwrap(),
         "second chat"
     );
+    assert!(executor.occupancy().active >= 1);
+    release_tx.send(()).unwrap();
+    assert_eq!(running.await.unwrap().outcome, ToolOutcome::Completed);
 }
 
 #[cfg(feature = "synthetic-authority")]
 #[tokio::test]
-async fn dropped_mutation_future_keeps_workspace_gate_until_native_worker_returns() {
+async fn dropped_mutation_future_keeps_physical_slot_but_does_not_block_other_mutations() {
     let root = tempfile::tempdir().unwrap();
-    let gate = Arc::new(tokio::sync::Mutex::new(()));
+    let executor = BlockingWorkExecutor::new(2, 4);
     let (entered_tx, entered_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
     let release = Arc::new(Mutex::new(release_rx));
     let first = tools(root.path())
-        .with_editing_gate(gate.clone())
+        .with_executor(executor.clone())
         .after_mutation(Arc::new(move || {
             entered_tx.send(()).unwrap();
             release
@@ -357,32 +352,35 @@ async fn dropped_mutation_future_keeps_workspace_gate_until_native_worker_return
         .unwrap();
     running.abort();
     assert!(running.await.unwrap_err().is_cancelled());
-    assert!(
-        gate.try_lock().is_err(),
-        "aborted caller released an entered worker's mutation gate"
+    assert_eq!(
+        executor.occupancy().active,
+        1,
+        "aborted caller released an entered worker's physical slot"
     );
-    let second = tools(root.path()).with_editing_gate(gate);
+    let second = tools(root.path()).with_executor(executor.clone());
     let edit = ToolCall {
         id: "after-abort".into(),
         name: "edit".into(),
         arguments: json!({"path":"output","oldText":"mutated","newText":"second"}),
     };
-    let mut waiting = Box::pin(second.invoke(&edit, CancellationToken::new()));
-    assert!(matches!(
-        futures_util::poll!(&mut waiting),
-        std::task::Poll::Pending
-    ));
-    assert_eq!(
-        fs::read_to_string(root.path().join("output")).unwrap(),
-        "mutated"
-    );
-    release_tx.send(()).unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(5), waiting)
-        .await
-        .unwrap()
-        .unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        second.invoke(&edit, CancellationToken::new()),
+    )
+    .await
+    .expect("a dropped sibling cannot serialize new editing work")
+    .unwrap();
     assert_eq!(
         fs::read_to_string(root.path().join("output")).unwrap(),
         "second"
     );
+    assert!(executor.occupancy().active >= 1);
+    release_tx.send(()).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while executor.occupancy().active != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("physical workers must retire after release");
 }

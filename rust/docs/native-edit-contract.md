@@ -2,7 +2,7 @@
 
 Source specification: `packages/swift-host/Sources/PiAgentCore/Tools.swift`
 (`NativeTools.invoke`, `lineDiffStats`, `ViewerLines.changed`), `Support.swift`
-(`required`, `canonical`, `readBounded`), `SessionTools.swift` (`editingGate`,
+(`required`, `canonical`, `readBounded`), `SessionTools.swift` (`runToolBatch`,
 `rejectionCodes`, invocation/outcome persistence), and native transcript diff/file
 links in `apps/macos/PiApp/Transcript/{TranscriptActivity,TranscriptCards}.swift`.
 
@@ -34,12 +34,12 @@ links in `apps/macos/PiApp/Transcript/{TranscriptActivity,TranscriptCards}.swift
   lines using Swift canonical Unicode equality and common prefix/suffix, not LCS.
   Viewer changed ranges compare bytes and recognize LF, CRLF and lone CR. New
   files and exact no-ops omit the range. A no-op still performs the atomic write.
-- Source editing admission is workspace-wide across chats, before invocation is
-  marked begun. Waiting cancellation is NotExecuted. Once admitted, interruption
-  is Unknown. Known argument/match/read rejections are Failed; other errors may
-  leave effects and are Unknown, including permission restoration after a write.
-  Stored calls never automatically reexecute. Retry is a new model request with
-  the stored call/result history, not replay of the filesystem mutation.
+- Main 0.1.121 runs all calls concurrently, including same-file edits across
+  chats. Cancellation before invocation entry is NotExecuted. Once entered,
+  interruption is Unknown. Known argument/match/read/capacity (`tool_busy`)
+  rejections are Failed; other errors may leave effects and are Unknown,
+  including permission restoration after a write. Stored calls never
+  automatically reexecute. Retry requests a new model response using history.
 
 ## Availability and acceptance
 
@@ -51,13 +51,12 @@ constructors reject mutation capabilities. Production/default tools remain off.
 Linux executes only a cfg(test)-compiled ASCII temporary-file adapter; ordinary
 Linux constructors refuse write/edit. Native execution is macOS Foundation.
 
-One ephemeral gate belongs to the WorkspaceStore owner and is shared across chat
-controllers and fresh project confirmations. The Controller runs mutations in
-original batch call order beside concurrent readers, reconfirms authority after
-waiting on the gate, and moves the owned gate guard into the admitted native
-worker. Dropping/aborting the caller cannot admit another mutation while that
-worker still runs. Stop waits for entered workers; waiting cancellation remains
-NotExecuted. Reopening neither reconstructs tool authority nor reruns old calls.
+The Controller starts every batch call independently and retains durable rows
+in original reply order. Per-call authority checks remain before native entry;
+there is no workspace-wide or per-path editing lock. Physical work uses the
+bounded shared four-worker/64-waiting executor. Dropped awaiters cannot release
+entered worker slots or Bash process ownership. Stop joins entered work and
+reopening neither reconstructs tool authority nor reruns old calls.
 
 Typed mutation stats require snapshot v5; older v1–4 remain readable without an
 opening rewrite. Wrong-version new stats are rejected before recovery writes.
@@ -69,8 +68,7 @@ argument limit, so the connected model workflow rejects larger calls before
 invocation even though direct native write/edit implement the source's 16/4 MiB
 limits. The existing 32 MiB request and batch-retention and snapshot limits also
 remain. Mutation execution uses the bounded file-worker executor instead of
-blocking the async actor. Capacity failures after invocation admission are
-conservatively Unknown. External writers can still race; this is no CAS or
+blocking the async actor. Capacity failures are known pre-effect rejections and are Failed. External writers can still race; this is no CAS or
 filesystem sandbox. Foundation-internal allocations are not a new memory bound.
 
 The visible requested-change card uses the source's canonical-Unicode LCS with
@@ -108,3 +106,10 @@ execution result. The preceding published read baseline `49b5e933` independently
 passed Linux run37583323641 and macOS run37583323651, including native read through
 the fake-platform transcript and own-window lifecycle; those runs do not validate
 these later write/edit changes.
+
+## Main 0.1.121 reconciliation
+
+The concurrency contract above supersedes the old serialization assertions in
+historical validation records below/linked here. See
+[the scoped concurrency record](tool-concurrency-0.1.121.md) for reconstruction
+status and fresh validation. Historical test counts are not new acceptance.

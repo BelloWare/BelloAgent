@@ -1,6 +1,6 @@
 //! One project-scoped Streamable HTTP MCP manager shared by saved chat runtimes.
 //! Configuration never discovers files or credentials. Ordinary app composition
-//! remains disabled. The existing project editing gate serializes every invoke.
+//! remains disabled. Shared invocation admission drains for configuration changes.
 mod content;
 mod outcome;
 mod transport;
@@ -18,7 +18,7 @@ use std::{
     path::Path,
     sync::{Arc, RwLock},
 };
-use tokio::sync::{Mutex, OwnedMutexGuard};
+use tokio::sync::{Mutex, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock as AsyncRwLock};
 pub use tokio_util::sync::CancellationToken;
 use transport::Http;
 
@@ -81,17 +81,17 @@ impl From<McpError> for crate::Error {
 }
 struct Server {
     config: crate::project_authority::mcp::ServerConfiguration,
-    transport: Option<Http>,
+    transport: Option<Arc<Http>>,
     catalog: Option<(u64, Vec<Value>)>,
 }
 impl Server {
     async fn connect(&mut self, cancel: &CancellationToken) -> McpResult<()> {
-        if self.transport.as_ref().is_some_and(|t| !t.expired) {
+        if self.transport.as_ref().is_some_and(|t| !t.expired()) {
             return Ok(());
         }
         self.transport = None;
         self.catalog = None;
-        let mut transport = Http::new(&self.config)?;
+        let transport = Http::new(&self.config)?;
         let hello=transport.request("initialize",json!({"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"bello-agent-rust","version":"0.1.0"}}),cancel).await?;
         if !matches!(
             hello["protocolVersion"].as_str(),
@@ -106,14 +106,14 @@ impl Server {
         transport
             .notify("notifications/initialized", cancel)
             .await?;
-        self.transport = Some(transport);
+        self.transport = Some(Arc::new(transport));
         Ok(())
     }
     async fn tools(&mut self, cancel: &CancellationToken) -> McpResult<Vec<Value>> {
         for attempt in 0..2 {
             self.connect(cancel).await?;
             let transport = self.transport.as_mut().expect("initialized transport");
-            let generation = transport.generation;
+            let generation = transport.generation();
             if let Some((cached, tools)) = &self.catalog
                 && *cached == generation
             {
@@ -225,21 +225,20 @@ pub struct McpManager {
     configuration: RwLock<LoadedMcp>,
     configuration_identity: String,
     configuration_generation: std::sync::atomic::AtomicU64,
-    gate: Arc<Mutex<()>>,
-    servers: Mutex<BTreeMap<String, Server>>,
-    editing_gate: Arc<Mutex<()>>,
+    gate: Arc<AsyncRwLock<()>>,
+    servers: Mutex<BTreeMap<String, Arc<Mutex<Server>>>>,
     ledger: Arc<outcome::Ledger>,
     runtime: tokio::runtime::Handle,
 }
 pub struct McpConfigurationChange {
     manager: Arc<McpManager>,
-    _gate: OwnedMutexGuard<()>,
+    _gate: OwnedRwLockWriteGuard<()>,
 }
 pub(crate) struct Performed {
     pub normalized: Normalized,
     pub ticket: Option<Ticket>,
 }
-fn server_map(loaded: &LoadedMcp) -> BTreeMap<String, Server> {
+fn server_map(loaded: &LoadedMcp) -> BTreeMap<String, Arc<Mutex<Server>>> {
     loaded
         .configuration
         .servers
@@ -248,21 +247,17 @@ fn server_map(loaded: &LoadedMcp) -> BTreeMap<String, Server> {
         .map(|(name, config)| {
             (
                 name.clone(),
-                Server {
+                Arc::new(Mutex::new(Server {
                     config: config.clone(),
                     transport: None,
                     catalog: None,
-                },
+                })),
             )
         })
         .collect()
 }
 impl McpManager {
-    pub(crate) fn new(
-        loaded: LoadedMcp,
-        directory: &Path,
-        editing_gate: Arc<Mutex<()>>,
-    ) -> Result<Arc<Self>> {
+    pub(crate) fn new(loaded: LoadedMcp, directory: &Path) -> Result<Arc<Self>> {
         loaded.confirm().map_err(|e| invalid(e.to_string()))?;
         let ledger = outcome::Ledger::open(directory, loaded.project_id())?;
         let runtime = tokio::runtime::Handle::try_current()
@@ -273,8 +268,7 @@ impl McpManager {
             configuration: RwLock::new(loaded),
             configuration_identity: uuid::Uuid::new_v4().to_string(),
             configuration_generation: std::sync::atomic::AtomicU64::new(0),
-            gate: Arc::new(Mutex::new(())),
-            editing_gate,
+            gate: Arc::new(AsyncRwLock::new(())),
             ledger,
             runtime,
         }))
@@ -300,7 +294,6 @@ impl McpManager {
             configuration_identity: uuid::Uuid::new_v4().to_string(),
             configuration_generation: std::sync::atomic::AtomicU64::new(0),
             gate: self.gate.clone(),
-            editing_gate: self.editing_gate.clone(),
             ledger: self.ledger.clone(),
             runtime: self.runtime.clone(),
         }))
@@ -370,7 +363,7 @@ impl McpManager {
         Ok((names, revision))
     }
     pub fn status(&self) -> McpStatus {
-        let gate = self.gate.try_lock().ok();
+        let gate = self.gate.try_write().ok();
         let status = self.ledger.status();
         McpStatus {
             busy: gate.is_none(),
@@ -383,7 +376,7 @@ impl McpManager {
         let gate = self
             .gate
             .clone()
-            .try_lock_owned()
+            .try_write_owned()
             .map_err(|_| invalid("MCP work is still running"))?;
         if self.ledger.status().pending != 0 {
             return Err(invalid(
@@ -395,20 +388,57 @@ impl McpManager {
             _gate: gate,
         })
     }
-    pub fn acknowledge_unknown(&self, expected_unknown_id: &str, confirmed: bool) -> Result<()> {
-        let _guard = self
+    /// Wait for network/normalization work to drain, with responsive cancellation.
+    /// Completed receipts still prevent configuration admission.
+    #[cfg(all(test, feature = "synthetic-authority"))]
+    pub(crate) async fn wait_configuration_change(
+        self: &Arc<Self>,
+        cancel: CancellationToken,
+    ) -> Result<McpConfigurationChange> {
+        let gate = tokio::select! { biased; _ = cancel.cancelled() => return Err(crate::Error::Cancelled), gate = self.gate.clone().write_owned() => gate };
+        if cancel.is_cancelled() {
+            return Err(crate::Error::Cancelled);
+        }
+        if self.ledger.status().pending != 0 {
+            return Err(invalid(
+                "MCP results are still waiting for durable retention",
+            ));
+        }
+        Ok(McpConfigurationChange {
+            manager: self.clone(),
+            _gate: gate,
+        })
+    }
+    pub async fn acknowledge_unknown(
+        &self,
+        expected_unknown_id: &str,
+        confirmed: bool,
+    ) -> Result<()> {
+        let guard = self
             .gate
-            .try_lock()
+            .clone()
+            .try_write_owned()
             .map_err(|_| invalid("MCP work is still running"))?;
         let loaded = self
             .configuration
             .read()
             .map_err(|_| invalid("MCP configuration is unavailable"))?
             .clone();
-        loaded.confirm().map_err(|_| {
-            invalid("MCP authority changed; review current project settings before acknowledging")
-        })?;
-        self.ledger.acknowledge(expected_unknown_id, confirmed)
+        let ledger = self.ledger.clone();
+        let expected = expected_unknown_id.to_owned();
+        // Queued and physical acknowledgment own exclusive admission and the OS
+        // lease, independent of the UI awaiter. The worker checks actual live
+        // receipts under the ledger lock, never a cached presentation snapshot.
+        persistence(move || {
+            let _exclusive = guard;
+            loaded.confirm().map_err(|_| {
+                invalid(
+                    "MCP authority changed; review current project settings before acknowledging",
+                )
+            })?;
+            ledger.acknowledge(&expected, confirmed)
+        })
+        .await?
     }
     async fn spawn<T: Send + 'static>(
         &self,
@@ -431,9 +461,9 @@ impl McpManager {
         let token = cancel.clone();
         self.spawn(cancel, async move {
             let _gate = lock(manager.gate.clone(), &token).await?;
-            manager.confirm().await?;
+            manager.confirm(&token).await?;
             let ledger = manager.ledger.clone();
-            let bytes = tokio::task::spawn_blocking(move || outcome::read_bounded(&ledger.receipt_path(), crate::tool_content::MAX_CONTENT_BYTES + 4096))
+            let bytes = persistence(move || outcome::read_bounded(&ledger.receipt_path(), crate::tool_content::MAX_CONTENT_BYTES + 4096))
                 .await.map_err(|_| invalid("MCP retained result reader failed"))??;
             let Some(bytes) = bytes else { return Ok(None); };
             #[derive(serde::Deserialize)]
@@ -482,20 +512,20 @@ impl McpManager {
         let token = cancel.clone();
         self.spawn(cancel, async move {
             let _gate = lock(this.gate.clone(), &token).await?;
-            this.confirm().await?;
+            this.confirm(&token).await?;
             this.discovery_locked(&parameters, &token)
                 .await
                 .map_err(Into::into)
         })
         .await
     }
-    async fn confirm(&self) -> McpResult<()> {
+    async fn confirm(&self, cancel: &CancellationToken) -> McpResult<()> {
         let loaded = self
             .configuration
             .read()
             .map_err(|_| McpError::config())?
             .clone();
-        tokio::task::spawn_blocking(move ||loaded.confirm()).await.map_err(|_|McpError::config())?.map_err(|_|McpError::rejected("mcp_config","Saved MCP authority/configuration changed or is unavailable; review and apply current settings"))
+        persistence_before(cancel, move ||loaded.confirm()).await.map_err(|_|McpError::config())?.map_err(|_|McpError::rejected("mcp_config","Saved MCP authority/configuration changed or is unavailable; review and apply current settings"))
     }
     async fn require_known_outcome(
         &self,
@@ -509,7 +539,7 @@ impl McpManager {
                 "Not executed: MCP outcome evidence is unavailable",
             )
         };
-        let read = tokio::task::spawn_blocking(move || ledger.has_unknown_outcome());
+        let read = persistence_before(cancel, move || ledger.has_unknown_outcome());
         // Cancellation abandons only a read. The blocking worker retains its
         // Ledger Arc (and physical writer lease) until that read actually ends.
         let unknown = tokio::select! {
@@ -524,7 +554,7 @@ impl McpManager {
     }
     async fn discovery_locked(&self, p: &Value, cancel: &CancellationToken) -> McpResult<Value> {
         let fields = p.as_object().ok_or_else(arguments)?;
-        let mut servers = self.servers.lock().await;
+        let servers = self.servers.lock().await.clone();
         let mut value = match p["action"].as_str() {
             Some("list") => {
                 if fields
@@ -535,11 +565,9 @@ impl McpManager {
                 }
                 if let Some(server) = p.get("server") {
                     let name = required(server, "server")?;
-                    let tools = servers
-                        .get_mut(&name)
-                        .ok_or_else(unknown_server)?
-                        .tools(cancel)
-                        .await?;
+                    let tools =
+                        server_tools(servers.get(&name).ok_or_else(unknown_server)?, cancel)
+                            .await?;
                     let tools = tools
                         .into_iter()
                         .map(|mut t| {
@@ -551,7 +579,14 @@ impl McpManager {
                         .collect::<Vec<_>>();
                     json!({"server":name,"tools":tools})
                 } else {
-                    json!({"servers":servers.iter().map(|(name,s)|json!({"server":name,"connected":s.transport.as_ref().is_some_and(|t|!t.expired)})).collect::<Vec<_>>(),"outcomeUnknown":self.ledger.status().unknown})
+                    let mut rows = Vec::new();
+                    for (name, server) in &servers {
+                        let connected = server
+                            .try_lock()
+                            .is_ok_and(|s| s.transport.as_ref().is_some_and(|t| !t.expired()));
+                        rows.push(json!({"server":name,"connected":connected}));
+                    }
+                    json!({"servers":rows,"outcomeUnknown":self.ledger.status().unknown})
                 }
             }
             Some("describe") => {
@@ -571,11 +606,9 @@ impl McpManager {
                     }
                     let server = required(&target["server"], "server")?;
                     let tool = required(&target["tool"], "tool")?;
-                    let catalog = servers
-                        .get_mut(&server)
-                        .ok_or_else(unknown_server)?
-                        .tools(cancel)
-                        .await?;
+                    let catalog =
+                        server_tools(servers.get(&server).ok_or_else(unknown_server)?, cancel)
+                            .await?;
                     let schema = catalog
                         .into_iter()
                         .find(|t| t["name"] == tool)
@@ -612,15 +645,54 @@ impl McpManager {
         F: Fn() -> Fut,
         Fut: Future<Output = Result<()>>,
     {
+        // Active admission ends before returning a completed receipt. Never put
+        // it in Ticket: a queued fair writer would deadlock a batch's late sibling.
+        let _active = lock(self.gate.clone(), &cancel).await?;
+        self.perform_admitted(p, read_only, cancel, admission).await
+    }
+    pub(crate) async fn perform_inspector<F, Fut>(
+        &self,
+        p: &Value,
+        read_only: bool,
+        cancel: CancellationToken,
+        admission: F,
+    ) -> McpResult<Performed>
+    where
+        F: Fn() -> Fut,
+        Fut: Future<Output = Result<()>>,
+    {
+        let _exclusive = self
+            .gate
+            .clone()
+            .try_write_owned()
+            .map_err(|_| McpError::rejected("mcp_busy", "MCP work is still running"))?;
+        if self.ledger.status().pending != 0 {
+            return Err(McpError::rejected(
+                "mcp_busy",
+                "MCP results are still waiting for durable retention",
+            ));
+        }
+        self.perform_admitted(p, read_only, cancel, admission).await
+    }
+    async fn perform_admitted<F, Fut>(
+        &self,
+        p: &Value,
+        read_only: bool,
+        cancel: CancellationToken,
+        admission: F,
+    ) -> McpResult<Performed>
+    where
+        F: Fn() -> Fut,
+        Fut: Future<Output = Result<()>>,
+    {
         if p["action"] != "invoke" {
-            let _gate = lock(self.gate.clone(), &cancel).await?;
             admission().await.map_err(|_| {
                 McpError::rejected(
                     "mcp_unavailable",
                     "MCP authority was revoked before discovery",
                 )
             })?;
-            self.confirm().await?;
+            self.confirm(&cancel).await?;
             let value = self.discovery_locked(p, &cancel).await?;
             return Ok(Performed {
                 normalized: content::normalize(
@@ -651,25 +723,31 @@ impl McpManager {
             return Err(arguments());
         }
         self.require_known_outcome(&cancel, "A previous MCP invocation has an unknown outcome. Review its effects and acknowledge before requesting another invocation.").await?;
-        let _editing = lock(self.editing_gate.clone(), &cancel).await?;
-        let _gate = lock(self.gate.clone(), &cancel).await?;
         admission().await.map_err(|_| {
             McpError::rejected(
                 "mcp_unavailable",
                 "Not executed: saved chat authority changed while waiting for MCP invocation",
             )
         })?;
-        self.confirm().await?;
+        self.confirm(&cancel).await?;
         self.require_known_outcome(&cancel, "A previous MCP invocation has an unknown outcome. Review its effects and acknowledge before invoking.").await?;
-        let mut servers = self.servers.lock().await;
-        let server = servers.get_mut(&name).ok_or_else(unknown_server)?;
-        let catalog = server.tools(&cancel).await.map_err(|mut e| {
+        let server = self
+            .servers
+            .lock()
+            .await
+            .get(&name)
+            .cloned()
+            .ok_or_else(unknown_server)?;
+        let mut discovered = tokio::select! { biased; _ = cancel.cancelled() => return Err(McpError::cancelled(false)), guard = server.lock() => guard };
+        let catalog = discovered.tools(&cancel).await.map_err(|mut e| {
             e.not_executed = true;
             e
         })?;
         if !catalog.iter().any(|t| t["name"] == tool) {
             return Err(unknown_tool());
         }
+        let transport = discovered.transport.clone().expect("catalog initialized");
+        drop(discovered);
         // Discovery may have waited on a server. Reconfirm exact authority at
         // the final effect boundary, not just before initialize/list.
         admission().await.map_err(|_| {
@@ -678,57 +756,68 @@ impl McpManager {
                 "Not executed: saved chat authority changed before MCP dispatch",
             )
         })?;
-        self.confirm().await?;
+        self.confirm(&cancel).await?;
         if cancel.is_cancelled() {
             return Err(McpError::cancelled(false));
         }
         let ledger = self.ledger.clone();
         let marker_server = name.clone();
         let marker_tool = tool.clone();
-        let ticket =
-            tokio::task::spawn_blocking(move || ledger.begin(&marker_server, &marker_tool))
-                .await
-                .map_err(|_| {
-                    McpError::rejected(
-                        "mcp_marker",
-                        "MCP outcome marker worker failed; no invocation dispatched",
-                    )
-                })?
-                .map_err(|_| {
-                    McpError::rejected(
-                        "mcp_marker",
-                        "MCP outcome marker was not confirmed; no invocation dispatched",
-                    )
-                })?;
+        let marker_cancel = cancel.clone();
+        let ticket = persistence_before(&cancel, move || {
+            if marker_cancel.is_cancelled() {
+                return Err(crate::Error::Cancelled);
+            }
+            ledger.begin(&marker_server, &marker_tool)
+        })
+        .await
+        .map_err(|_| {
+            McpError::rejected(
+                "mcp_marker",
+                "MCP outcome marker worker failed; no invocation dispatched",
+            )
+        })?
+        .map_err(|_| {
+            McpError::rejected(
+                "mcp_marker",
+                "MCP outcome marker was not confirmed; no invocation dispatched",
+            )
+        })?;
         let call = json!({"name":tool,"arguments":p["arguments"]});
-        let mut result = server
-            .transport
-            .as_mut()
-            .expect("catalog initialized")
-            .request("tools/call", call.clone(), &cancel)
-            .await;
+        let mut result = async {
+            // A marker may have waited for physical persistence capacity. Check
+            // authority again immediately before dispatch, with no pool permit.
+            admission().await.map_err(|_| {
+                McpError::rejected(
+                    "mcp_unavailable",
+                    "Not executed: authority changed before MCP dispatch",
+                )
+            })?;
+            self.confirm(&cancel).await?;
+            transport.request("tools/call", call.clone(), &cancel).await
+        }
+        .await;
         if result
             .as_ref()
             .is_err_and(|e| e.code == "mcp_session_expired")
         {
             // Only source-proven unprocessed session expiry permits one retry.
             result = async {
-                server.connect(&cancel).await.map_err(|mut e| {
+                let mut discovered = tokio::select! { biased; _ = cancel.cancelled() => return Err(McpError::cancelled(false)), guard = server.lock() => guard };
+                discovered.connect(&cancel).await.map_err(|mut e| {
                     e.not_executed = true;
                     e
                 })?;
+                let transport = discovered.transport.clone().expect("reinitialized");
+                drop(discovered);
                 admission().await.map_err(|_| {
                     McpError::rejected(
                         "mcp_unavailable",
                         "Not executed: authority changed after session expiry",
                     )
                 })?;
-                self.confirm().await?;
-                server
-                    .transport
-                    .as_mut()
-                    .expect("reinitialized")
-                    .request("tools/call", call, &cancel)
+                self.confirm(&cancel).await?;
+                transport.request("tools/call", call, &cancel)
                     .await
             }
             .await;
@@ -750,7 +839,7 @@ impl McpManager {
             }
             Err(error) => {
                 if error.not_executed {
-                    tokio::task::spawn_blocking(move || ticket.settle())
+                    persistence(move || ticket.settle())
                         .await
                         .map_err(|_| {
                             McpError::unknown("mcp_marker", "MCP rejection marker could not settle")
@@ -779,7 +868,7 @@ impl McpManager {
             return Err(invalid("MCP Inspector receipt exceeds its bound"));
         }
         let ledger = self.ledger.clone();
-        tokio::task::spawn_blocking(move || {
+        persistence(move || {
             ledger.write_receipt(&bytes)?;
             ticket.settle()
         })
@@ -812,7 +901,7 @@ impl McpConfigurationChange {
                     ));
                 }
                 let checked = loaded.clone();
-                tokio::task::spawn_blocking(move || checked.confirm())
+                persistence(move || checked.confirm())
                     .await
                     .map_err(|_| invalid("MCP confirmation worker failed"))?
                     .map_err(|e| invalid(e.to_string()))?;
@@ -834,8 +923,69 @@ impl McpConfigurationChange {
             .await
     }
 }
-async fn lock(gate: Arc<Mutex<()>>, cancel: &CancellationToken) -> McpResult<OwnedMutexGuard<()>> {
-    tokio::select! { biased; _=cancel.cancelled()=>Err(McpError::cancelled(false)),guard=gate.lock_owned()=>if cancel.is_cancelled(){Err(McpError::cancelled(false))}else{Ok(guard)} }
+async fn server_tools(
+    server: &Arc<Mutex<Server>>,
+    cancel: &CancellationToken,
+) -> McpResult<Vec<Value>> {
+    let mut guard = tokio::select! { biased; _ = cancel.cancelled() => return Err(McpError::cancelled(false)), guard = server.lock() => guard };
+    guard.tools(cancel).await
+}
+// Only pre-effect admission is cancellable. Once physically submitted, the
+// closure owns its slot and captured lease until return.
+async fn persistence_before<T: Send + 'static>(
+    cancel: &CancellationToken,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T> {
+    let permit = tokio::select! { biased; _ = cancel.cancelled() => return Err(crate::Error::Cancelled), permit = persistence_slots().acquire_owned() => permit.map_err(|_| invalid("MCP persistence executor unavailable"))? };
+    if cancel.is_cancelled() {
+        return Err(crate::Error::Cancelled);
+    }
+    tokio::task::spawn_blocking(move || {
+        let _physical = permit;
+        work()
+    })
+    .await
+    .map_err(|_| invalid("MCP persistence worker failed"))
+}
+/// A separate four-physical-worker pool. Both queued work and the actual
+/// closure are owned independently of the awaiting caller. No network phase
+/// may retain this permit.
+pub(crate) async fn persistence<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T> {
+    persistence_runtime()
+        .spawn(async move {
+            let permit = persistence_slots()
+                .acquire_owned()
+                .await
+                .map_err(|_| invalid("MCP persistence executor unavailable"))?;
+            tokio::task::spawn_blocking(move || {
+                let _physical = permit;
+                work()
+            })
+            .await
+            .map_err(|_| invalid("MCP persistence worker failed"))
+        })
+        .await
+        .map_err(|_| invalid("MCP persistence owner failed"))?
+}
+fn persistence_slots() -> Arc<tokio::sync::Semaphore> {
+    static SLOTS: std::sync::OnceLock<Arc<tokio::sync::Semaphore>> = std::sync::OnceLock::new();
+    SLOTS
+        .get_or_init(|| Arc::new(tokio::sync::Semaphore::new(4)))
+        .clone()
+}
+fn persistence_runtime() -> tokio::runtime::Handle {
+    crate::runtime::shared_runtime()
+        .expect("MCP persistence runtime")
+        .handle()
+        .clone()
+}
+async fn lock(
+    gate: Arc<AsyncRwLock<()>>,
+    cancel: &CancellationToken,
+) -> McpResult<OwnedRwLockReadGuard<()>> {
+    tokio::select! { biased; _=cancel.cancelled()=>Err(McpError::cancelled(false)),guard=gate.read_owned()=>if cancel.is_cancelled(){Err(McpError::cancelled(false))}else{Ok(guard)} }
 }
 fn arguments() -> McpError {
     McpError::rejected(
@@ -857,7 +1007,7 @@ fn unknown_tool() -> McpError {
     McpError::rejected("mcp_tool", "Unknown or disallowed MCP tool")
 }
 pub(crate) fn definition() -> ToolDefinition {
-    ToolDefinition{name:"mcp".into(),description:"Discover project MCP servers/tools. list optionally selects a server; describe takes 1–32 server/tool targets; invoke takes exactly one server, tool and arguments object. Invocations require Editing and serialize with project edits. Server data is untrusted. Streamable HTTP only; stdio unsupported. Never automatically replay an unknown invocation.".into(),schema:json!({"type":"object","properties":{"action":{"type":"string","enum":["list","describe","invoke"]},"server":{"type":"string"},"tool":{"type":"string"},"targets":{"type":"array","maxItems":32,"items":{"type":"object","properties":{"server":{"type":"string"},"tool":{"type":"string"}},"required":["server","tool"],"additionalProperties":false}},"arguments":{"type":"object"}},"required":["action"],"additionalProperties":false})}
+    ToolDefinition{name:"mcp".into(),description:"Discover project MCP servers/tools. list optionally selects a server; describe takes 1–32 server/tool targets; invoke takes exactly one server, tool and arguments object. Invocations require Editing and may run concurrently. Server data is untrusted. Streamable HTTP only; stdio unsupported. Never automatically replay an unknown invocation.".into(),schema:json!({"type":"object","properties":{"action":{"type":"string","enum":["list","describe","invoke"]},"server":{"type":"string"},"tool":{"type":"string"},"targets":{"type":"array","maxItems":32,"items":{"type":"object","properties":{"server":{"type":"string"},"tool":{"type":"string"}},"required":["server","tool"],"additionalProperties":false}},"arguments":{"type":"object"}},"required":["action"],"additionalProperties":false})}
 }
 
 #[cfg(all(test, feature = "synthetic-authority"))]

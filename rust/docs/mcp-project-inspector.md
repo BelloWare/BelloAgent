@@ -32,7 +32,9 @@ Reload never clears uncertainty or automatically revives an old actor.
 Server/tool listing and schema description do not invoke tools. One-shot invocation
 captures one server, one tool, one arguments object and the exact selected Editing
 controller, then asks for confirmation. Core admission independently checks that
-saved Editing capability. No automatic retry occurs. Cancel waits for an honest,
+saved Editing capability. Inspector admission is exclusive and fail-fast; active
+work or completed results awaiting durable retention block another one-shot.
+Model-driven MCP calls can run concurrently. No unknown invocation is replayed. Cancel waits for an honest,
 durably settled result; a dispatched invocation may leave the project outcome
 unknown. Acknowledgment requires a separate explicit question and the exact
 unknown-marker fingerprint, and cannot clear active or uncheckpointed results.

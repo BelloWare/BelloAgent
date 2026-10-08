@@ -33,8 +33,8 @@ async fn saved_editing_two_calls_live_failure_continuation_and_reopen() {
             .any(|t| t["name"] == "bash")
     );
     request.respond(json!([
-        {"type":"function_call","call_id":"first","name":"bash","arguments":json!({"command":"printf first; sleep 0.2; printf second; sleep 0.2; exit 7","timeout":3}).to_string()},
-        {"type":"function_call","call_id":"second","name":"bash","arguments":json!({"command":"printf next","timeout":3}).to_string()}
+        {"type":"function_call","call_id":"first","name":"bash","arguments":json!({"command":"printf first; : > first-start; while [ ! -f second-start ]; do sleep 0.01; done; printf second; while [ ! -f allow-first-finish ]; do printf .; sleep 0.08; done; exit 7","timeout":3}).to_string()},
+        {"type":"function_call","call_id":"second","name":"bash","arguments":json!({"command":": > second-start; printf next","timeout":3}).to_string()}
     ])).await;
     timeout(DEADLINE, async {
         loop {
@@ -51,6 +51,10 @@ async fn saved_editing_two_calls_live_failure_continuation_and_reopen() {
     })
     .await
     .unwrap();
+    // Live publication is explicitly observed before allowing physical exit;
+    // previews are intentionally lossy under actor contention, so the fixture
+    // keeps producing bounded output until an update is actually observed.
+    std::fs::write(f.root.join("allow-first-finish"), b"release").unwrap();
     let request = Request::accept(&listener).await;
     let results: Vec<_> = request.body["input"]
         .as_array()
@@ -135,8 +139,6 @@ async fn stop_retains_unknown_and_paused_queue_then_reopen_never_replays() {
     assert!(actor.snapshot().messages.iter().any(
         |m| matches!(&m.tool_record,Some(ToolRecord::Result(r)) if r.outcome==ToolOutcome::Unknown)
     ));
-    let gate = f.workspace.lock().unwrap().editing_gate();
-    assert!(gate.try_lock().is_ok());
     actor.retire_and_wait().await.unwrap();
     let reopened = f.factory.open_registered(&f.current(&record.id)).unwrap();
     assert_eq!(reopened.snapshot().pending[0].id, queued.id);

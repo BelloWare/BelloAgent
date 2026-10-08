@@ -94,10 +94,7 @@ impl TrustedReadOnlyTools {
         self.mcp = Some(McpTools { manager, read_only });
         self
     }
-    fn editing_call(&self, call: &ToolCall) -> bool {
-        self.native.editing_call(call)
-            || (self.mcp.is_some() && call.name == "mcp" && call.arguments["action"] == "invoke")
-    }
+
     pub fn new(cwd: PathBuf, additional_roots: Vec<PathBuf>, home: PathBuf) -> Result<Self> {
         Self::new_with_capabilities(cwd, additional_roots, home, [Capability::Ls])
     }
@@ -133,13 +130,11 @@ impl TrustedReadOnlyTools {
         additional_roots: Vec<PathBuf>,
         home: PathBuf,
         capabilities: impl IntoIterator<Item = Capability>,
-        gate: Arc<tokio::sync::Mutex<()>>,
     ) -> Result<Self> {
         Ok(Self {
             mcp: None,
             native: NativeTools::new(cwd, additional_roots, home, capabilities)
-                .map_err(|error| invalid(error.to_string()))?
-                .with_editing_gate(gate),
+                .map_err(|error| invalid(error.to_string()))?,
         })
     }
 
@@ -149,13 +144,11 @@ impl TrustedReadOnlyTools {
         roots: Vec<PathBuf>,
         home: PathBuf,
         capabilities: Vec<Capability>,
-        gate: Arc<tokio::sync::Mutex<()>>,
     ) -> Result<Self> {
         Ok(Self {
             mcp: None,
             native: NativeTools::synthetic_mutation_fixture(cwd, roots, home, capabilities)
-                .map_err(|error| invalid(error.to_string()))?
-                .with_editing_gate(gate),
+                .map_err(|error| invalid(error.to_string()))?,
         })
     }
 
@@ -197,6 +190,20 @@ fn message(role: &str, text: String, model: Option<String>) -> Message {
         model,
         tool_record: None,
         compaction: None,
+    }
+}
+
+#[cfg(all(test, feature = "synthetic-authority"))]
+impl Controller {
+    pub(crate) fn pause_native_admission_for_test(
+        &self,
+    ) -> Arc<crate::tools::TestAdmissionBarrier> {
+        self.options
+            .tools
+            .as_ref()
+            .expect("fixture native tools")
+            .native
+            .pause_admission_for_test()
     }
 }
 
@@ -581,28 +588,9 @@ impl Controller {
                     (index, result, None)
                 }
             };
-            let (mut completed, edited) = tokio::join!(
-                async {
-                    join_all(
-                        calls
-                            .iter()
-                            .enumerate()
-                            .filter(|(_, call)| !tools.editing_call(call))
-                            .map(|(index, _)| execute(index)),
-                    )
-                    .await
-                },
-                async {
-                    let mut rows = Vec::new();
-                    for (index, call) in calls.iter().enumerate() {
-                        if tools.editing_call(call) {
-                            rows.push(execute(index).await);
-                        }
-                    }
-                    rows
-                }
-            );
-            completed.extend(edited);
+            // Every call, including same-file edits and MCP invocations, starts
+            // independently. Durable rows still follow original reply order.
+            let mut completed = join_all((0..calls.len()).map(execute)).await;
             completed.sort_by_key(|(index, _, _)| *index);
             let mut receipts = Vec::new();
             let results = completed
@@ -699,7 +687,7 @@ async fn settle_mcp_receipts(receipts: Vec<crate::mcp::Ticket>) -> Result<()> {
     if receipts.is_empty() {
         return Ok(());
     }
-    tokio::task::spawn_blocking(move || {
+    crate::mcp::persistence(move || {
         for receipt in receipts {
             receipt.settle()?;
         }
@@ -737,16 +725,18 @@ where
             return (ToolResultRow::error(error.message, outcome), None);
         }
     };
+    let mut ticket = performed.ticket;
+    let has_effect_ticket = ticket.is_some();
     let mut content = performed.normalized.content;
     let mut text = content.text();
     if text.len() > 65_536 {
         let path = directory.to_owned();
         let whole = text;
-        match BlockingWorkExecutor::shared()
-            .run(cancel.clone(), move |_| retain_output(&path, &whole))
-            .await
-        {
-            Ok(preview) => {
+        // Receipt/OS lease ownership moves with physical output retention.
+        // Caller cancellation cannot abandon a started persistence operation.
+        match crate::mcp::persistence(move || (retain_output(&path, &whole), ticket)).await {
+            Ok((Ok(preview), retained_ticket)) => {
+                ticket = retained_ticket;
                 text = preview.clone();
                 let mut blocks = vec![crate::tool_content::ContentBlock::Text { text: preview }];
                 blocks.extend(
@@ -761,11 +751,11 @@ where
                     stats: None,
                 });
             }
-            Err(_) => {
+            _ => {
                 return (
                     ToolResultRow::error(
                         "MCP result could not be retained; inspect effects before retrying. No automatic replay.",
-                        if performed.ticket.is_some() {
+                        if has_effect_ticket {
                             ToolOutcome::Unknown
                         } else {
                             ToolOutcome::Failed
@@ -784,7 +774,7 @@ where
         return (
             ToolResultRow::error(
                 "MCP result exceeds the batch retention limit; inspect effects before retrying. No automatic replay.",
-                if performed.ticket.is_some() {
+                if has_effect_ticket {
                     ToolOutcome::Unknown
                 } else {
                     ToolOutcome::Failed
@@ -803,7 +793,7 @@ where
                 ToolOutcome::Completed
             },
         },
-        performed.ticket,
+        ticket,
     )
 }
 
@@ -938,6 +928,12 @@ async fn run_call_with_admission(
     // admission. Cancellation from this point has an unknown output, even
     // when a queued filesystem read never reached the operating system.
     let prepared = tools.prepare_call(call);
+    if cancel.is_cancelled() {
+        return ToolResultRow::error(
+            "Not executed: cancelled before invocation",
+            ToolOutcome::NotExecuted,
+        );
+    }
     #[cfg(unix)]
     let configured = tools.clone().with_shell_output(directory.to_owned());
     #[cfg(unix)]
@@ -950,7 +946,7 @@ async fn run_call_with_admission(
             move |value| {
                 let mut output = retain_native_content(value, &budget)?;
                 if output.text.len() > 65_536 {
-                    // Still inside physical editing admission, including the
+                    // Still inside the physical worker slot, including the
                     // malformed-UTF8 Bash preview's second retention layer.
                     output.text = retain_output(&retained_directory, &output.text)?;
                     output.content = None;
@@ -1031,6 +1027,7 @@ fn failed_tool_result_with_editing(
                 | "missing_path"
                 | "tool_output"
                 | "missing_executable"
+                | "tool_busy"
                 | "process_spawn"
         )
     });
@@ -1643,3 +1640,7 @@ mod edit_runtime_tests;
 #[cfg(all(test, unix))]
 #[path = "bash_runtime_tests.rs"]
 mod bash_tests;
+
+#[cfg(test)]
+#[path = "tool_concurrency_tests.rs"]
+mod tool_concurrency_tests;

@@ -1,0 +1,70 @@
+{
+  "rust": "1.99.0",
+  "host": "x86_64-unknown-linux-gnu",
+  "build_jobs": 2,
+  "default_unit": 415,
+  "all_feature_unit": 589,
+  "integration_each_configuration": 127,
+  "failed": 0,
+  "ignored": 0,
+  "native_oracles_executed": 0,
+  "checks": [
+    {
+      "command": "cargo fmt --manifest-path rust/Cargo.toml --all -- --check",
+      "exit": 0,
+      "path": "logs/fresh/fmt.log",
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "normalized_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": "cargo test --manifest-path rust/Cargo.toml --locked --offline -p bello-agent-core --all-features -- --test-threads=2",
+      "exit": 0,
+      "path": "logs/fresh/core-all-features.log",
+      "raw_sha256": "ffa35df6b0551ef1d407cb30f743e47d0fed863d41c1aaee0a3726176e54a976",
+      "normalized_sha256": "2c89e67a2bccf6f1d7157b099858b068d5a9a8d1d92897783cfdca689e6e6344"
+    },
+    {
+      "command": "cargo test --manifest-path rust/Cargo.toml --locked --offline -p bello-agent-core -- --test-threads=2",
+      "exit": 0,
+      "path": "logs/fresh/core-default.log",
+      "raw_sha256": "6b17a3e08f2b97760498f9d3959aadf7a5136c2a028f88e42d469251b486a6cf",
+      "normalized_sha256": "dc4c91324e4f6ee1bd1622de84254ca9b4257d5ab7c5c6bc0f995850a0a3b995"
+    },
+    {
+      "command": "cargo clippy --manifest-path rust/Cargo.toml --locked --offline -p bello-agent-core --all-features --all-targets -- -D warnings",
+      "exit": 0,
+      "path": "logs/fresh/clippy-all-features.log",
+      "raw_sha256": "75ed40f1fd7735c9c0da68eeb0ee7344a1a7e624dbbf83ac0198eadfe11981b9",
+      "normalized_sha256": "d990282cc4ca9bb6f04924244fb510a293e682edecdb357df37f12dc0a31942b"
+    },
+    {
+      "command": "cargo clippy --manifest-path rust/Cargo.toml --locked --offline -p bello-agent-core --all-targets -- -D warnings",
+      "exit": 0,
+      "path": "logs/fresh/clippy-default.log",
+      "raw_sha256": "b2702aa9889c19c24cc66f4a655fe37d69966c7eb232667e9165c42df7897c9b",
+      "normalized_sha256": "eb3f7c26a25595270c86407fb0753a6272f09377c71e2c02205ddaf0b33d0d71"
+    },
+    {
+      "command": "cargo check --manifest-path rust/Cargo.toml --locked --offline -p bello-agent-app --all-features --all-targets",
+      "exit": 0,
+      "path": "logs/fresh/app-all-check.log",
+      "raw_sha256": "446db3c5e0a670c6989c1d4b394b3c0bacecd2b0a3e14fe0aceb406423ff5990",
+      "normalized_sha256": "80a7558c5d32a5625d47f0cbcb744e61bba948d5228c19362b24d5bd3c760578"
+    }
+  ],
+  "base_commit": "9a07b0062a4e500f1dc49cc9656b90d15b970d93",
+  "base_tree": "3030469aaf9be46506700530daf27dc7b1747ec3",
+  "date_utc": "2026-10-08",
+  "source_binding": "source-binding.json",
+  "source_binding_sha256": "11723c69e689c70185b7c6655bbd3cbd145115b4960f8cf545e38de8ec57fd00",
+  "source_files_bound": 303,
+  "candidate_patch_sha256": "21158897db4743b108ca08018316c57f45c4b5231e3b156d9f5038e1918bd659",
+  "candidate_path_count": 31,
+  "status": "Local integrated candidate validation; publication and exact-commit CI are separate.",
+  "limitations": [
+    "Native macOS oracles executed zero tests on Linux and remain pending.",
+    "App check is typechecking only; no App tests, linked executable, GUI, Keychain, signing or performance acceptance.",
+    "Two isolated subprocess repetitions are not added to suite totals."
+  ],
+  "app_advisory": "Existing dependency proc-macro-error2 v2.0.1 emits a future-incompatibility advisory; check exited0."
+}

@@ -72,9 +72,9 @@ async fn unsupported_keys_and_missing_required_members_are_rejected_before_io() 
     }
 }
 #[tokio::test]
-async fn gate_wait_cancellation_and_late_admission_refusal_never_enter_native_tool() {
+async fn admission_wait_cancellation_and_late_refusal_never_enter_native_tool() {
     let tools = offered();
-    let held = tools.editing_gate.lock().await;
+    let held = tools.pause_admission_for_test();
     let token = CancellationToken::new();
     let input = call("write", json!({"path":"x","content":"new"}));
     let mut waiting = Box::pin(tools.invoke(&input, token.clone()));
@@ -84,7 +84,7 @@ async fn gate_wait_cancellation_and_late_admission_refusal_never_enter_native_to
     ));
     token.cancel();
     assert!(matches!(waiting.await, Err(ToolError::NotExecuted(_))));
-    drop(held);
+    held.release();
     let failure = tools
         .invoke_mapped_with_admission(&input, CancellationToken::new(), Ok, async {
             Err(ToolError::NotExecuted("stale fixture trust".into()))

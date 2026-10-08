@@ -1,0 +1,26 @@
+
+running 21 tests
+test mcp::tests::concurrency_tests::abandoned_acknowledgment_keeps_exclusive_admission_while_pool_is_full ... ok
+test mcp::tests::concurrency_tests::acknowledgment_refuses_live_receipts_after_network_admission_ends ... ok
+test mcp::tests::concurrency_tests::acknowledgment_waiting_for_fsync_never_blocks_current_thread_runtime ... ok
+test mcp::tests::concurrency_tests::completed_ticket_releases_read_admission_before_fair_writer_and_late_sibling ... ok
+test mcp::tests::concurrency_tests::configuration_drain_cancellation_does_not_cancel_active_call ... ok
+test mcp::tests::concurrency_tests::contended_ticket_cleanup_owns_writer_after_all_manager_owners_drop ... ok
+test mcp::tests::concurrency_tests::delayed_old_session_404_cannot_expire_a_rotated_session ... ok
+test mcp::tests::concurrency_tests::delayed_old_session_success_cannot_replace_a_newer_session ... ok
+test mcp::tests::concurrency_tests::discovery_waiter_cancels_without_waiting_for_single_flight_initialization ... ok
+test mcp::tests::concurrency_tests::dropped_ticket_never_waits_for_fsync_state_and_retains_writer_lease ... ok
+test mcp::tests::concurrency_tests::independent_servers_dispatch_before_either_returns ... ok
+test mcp::tests::concurrency_tests::persistence_drop_keeps_four_physical_slots_and_pre_effect_wait_cancels ... ok
+test mcp::tests::concurrency_tests::persistence_progresses_while_native_physical_workers_are_full ... ok
+test mcp::tests::concurrency_tests::repeated_session_expiry_stops_after_one_retry_without_unknown ... ok
+test mcp::tests::concurrency_tests::same_server_calls_overlap_and_initialize_once_with_sticky_unknown ... ok
+test mcp::tests::concurrency_tests::saved_mixed_batch_overlaps_then_commits_in_order_and_never_replays ... ok
+test mcp::tests::concurrency_tests::stop_and_retirement_join_mixed_batch_with_completed_mcp_receipt ... ok
+test runtime::tool_runtime::tool_concurrency_tests::cancellation_during_async_authority_admission_is_not_executed ... ok
+test runtime::tool_runtime::tool_concurrency_tests::controller_batch_overlaps_mutations_then_commits_ordered_results_and_replays_without_effects ... ok
+test runtime::tool_runtime::tool_concurrency_tests::editing_capacity_rejection_is_failed_without_effect_and_waiting_cancellation_is_unknown ... ok
+test runtime::tool_runtime::tool_concurrency_tests::same_file_writes_both_enter_physical_workers_before_either_is_released ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 568 filtered out; finished in 1.35s
+

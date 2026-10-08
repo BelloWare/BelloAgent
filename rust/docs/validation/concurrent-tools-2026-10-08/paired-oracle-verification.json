@@ -1,0 +1,12 @@
+{
+  "source_specification": "f4f80ddda3c27fac9e266896f69b725a06242e8f",
+  "paired_patch_sha256": "1ed739faeb7b33936c734ca8db458799a94cf2b52542a913458e3eb9b3ab0fec",
+  "postimages": {
+    "packages/swift-host/Sources/PiAgentCore/Tools.swift": "2e78ed3798664a5720c01a27cb32476378a85219441c844804092486cf48d060",
+    "rust/crates/bello-agent-core/tests/write_edit.rs": "7c107e505881b49bad32e1a63d0e8889cad7434b24651cb47c313e6f2b0a21db"
+  },
+  "tools_swift_exact_git_object_verified": true,
+  "a4_bom_oracle_matrix_retained": true,
+  "native_execution": false,
+  "native_acceptance": "Pending; hash verification and Linux typechecks do not run native source oracles."
+}

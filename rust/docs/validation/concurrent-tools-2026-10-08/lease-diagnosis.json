@@ -1,0 +1,24 @@
+{
+  "attribution": "Separate9a07-based repair investigation, not the combined candidate executions.",
+  "mechanism": "A bare File close does not release flock while a duplicated/inherited descriptor references the same open file description. Acquired-only WorkspaceLock explicitly unlocks on Drop; failed acquisition never creates a guard.",
+  "proof": "Deterministic duplicated-descriptor regression failed on original production source and passed with exact lease repair.",
+  "historical_ci_limit": "Matching mechanism is proven; the exact inheriting child and timing in the original CI run are inferred, not traced.",
+  "app_assertion": "The original shutdown test now asserts its Weak workspace owner cannot upgrade before immediate reopen; original saved-draft/intent checks remain unchanged.",
+  "logs": [
+    {
+      "log": "logs/lease-diagnosis/ci-failure-excerpt.log",
+      "raw_sha256": "3ad9198e79fb4f6e5b27f222438e790c6beaa2df92c24862d8900f40766b0f0c",
+      "normalized_sha256": "3ad9198e79fb4f6e5b27f222438e790c6beaa2df92c24862d8900f40766b0f0c"
+    },
+    {
+      "log": "logs/lease-diagnosis/regression-before.log",
+      "raw_sha256": "9b0a5bd2a814a773e33a1cd727f9da99d363cd2299885e5990fc9c5e6ad609f6",
+      "normalized_sha256": "938f79dbebc5907e3d649df03709f2887eef3a4f1e73286fa48cd1182a9376fa"
+    },
+    {
+      "log": "logs/lease-diagnosis/regression-after.log",
+      "raw_sha256": "88c062c45fa9a8dcb29e172fd1c3dc557bf92a14da9610d17b9b447f369664e0",
+      "normalized_sha256": "b3d5de446eb4c5139ac0b0d85df0139049b866b6a65517cf8eb7be47fab65987"
+    }
+  ]
+}

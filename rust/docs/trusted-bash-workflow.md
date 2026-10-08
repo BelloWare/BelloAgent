@@ -11,7 +11,7 @@ Workspace roots are the command's working-directory context, not an OS boundary.
 
 The specification is `packages/swift-host/Sources/PiAgentCore/Tools.swift`'s
 `ShellRun`, `MCP.swift`'s `ManagedChild`/`toolEnvironment`, and the invocation,
-rejection, retention, and editing-gate paths in `SessionTools.swift`.
+rejection, retention, and concurrent invocation paths in `SessionTools.swift`.
 `NativeToolTests.swift` supplies the inherited-pipe/deadline/Stop cases.
 
 The definition is `bash(command, timeout?)`. Invocation uses `/bin/bash
@@ -58,16 +58,16 @@ grace. Deadline includes that grace, and is rechecked after draining/file writes
 not only before them. On Stop/deadline, output grace is 0.5 seconds after exit;
 owned escalation remains alive through its one-second bound. After three seconds,
 an unreaped child can yield an uncertain logical result, but its same physical
-worker, editing guard and registered owner remain until reaping. Retirement and
+worker slot and registered owner remain until reaping. Retirement and
 shutdown wait for that physical registry. Dropping either a call awaiter or a
 retirement waiter cannot consume the sole cleanup owner. Opaque uninterruptible
-OS operations cannot be forcibly bounded; the gate/session writer must not
+OS operations cannot be forcibly bounded; the physical owner/session writer must not
 pretend those operations joined.
 
-Editing admission is released after physical settlement and native-result
-retention, before the whole-batch durable receipt. Retaining it to that receipt
-would deadlock a second editing call in the same sequential batch. Durable
-begin/result ownership separately preserves Unknown after a missing receipt.
+Main 0.1.121 has no editing gate: sibling Bash/file/MCP calls may overlap.
+The bounded physical slot lasts through final cleanup and native-result retention;
+durable begin/result ownership separately preserves Unknown after a missing
+receipt. Completed calls do not retain admission that could deadlock batch joins.
 Normal background jobs are intentionally allowed to outlive Bash, as in Swift;
 the background-process note explains closed inherited pipes and SIGPIPE risk.
 Escaped process groups are never chased.

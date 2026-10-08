@@ -394,27 +394,26 @@ async fn interrupted_and_malformed_results_quarantine_without_retry_until_exact_
         assert!(invoke(&manager, "").await.is_err());
         assert_eq!(server.calls.load(Ordering::SeqCst), 1);
         let status = manager.status();
-        assert!(manager.acknowledge_unknown("wrong", true).is_err());
+        assert!(manager.acknowledge_unknown("wrong", true).await.is_err());
         assert!(
             manager
                 .acknowledge_unknown(status.unknown_id.as_ref().unwrap(), false)
+                .await
                 .is_err()
         );
         let loaded = f.authority.load_mcp(&f.project).unwrap();
-        let (directory, gate) = {
-            let workspace = f.workspace.lock().unwrap();
-            (workspace.state_directory(), workspace.editing_gate())
-        };
+        let directory = f.workspace.lock().unwrap().state_directory();
         // A restart cannot acquire the outcome writer while any prior owner
         // remains live, even when the workspace catalog itself is different.
-        assert!(McpManager::new(loaded.clone(), &directory, gate.clone()).is_err());
+        assert!(McpManager::new(loaded.clone(), &directory).is_err());
         let _directory_owner = f.into_directory();
         drop(manager);
-        let reopened = McpManager::new(loaded, &directory, gate).unwrap();
+        let reopened = McpManager::new(loaded, &directory).unwrap();
         assert!(reopened.status().outcome_unknown);
         assert_eq!(status.unknown_id, reopened.status().unknown_id);
         reopened
             .acknowledge_unknown(status.unknown_id.as_ref().unwrap(), true)
+            .await
             .unwrap();
         assert!(!reopened.status().outcome_unknown);
     }
@@ -430,6 +429,7 @@ async fn dropped_success_receipt_and_marker_faults_survive_restart() {
     let status = manager.status();
     manager
         .acknowledge_unknown(status.unknown_id.as_ref().unwrap(), true)
+        .await
         .unwrap();
     for fault in [1, 2] {
         manager.ledger.set_fault(fault);
@@ -440,6 +440,7 @@ async fn dropped_success_receipt_and_marker_faults_survive_restart() {
         let status = manager.status();
         manager
             .acknowledge_unknown(status.unknown_id.as_ref().unwrap(), true)
+            .await
             .unwrap();
     }
 }
@@ -448,8 +449,8 @@ async fn invoke_wait_cancel_and_postgate_authority_recheck_are_not_dispatched() 
     let server = ServerFixture::start().await;
     let f = Fixture::new("http://127.0.0.1:9", &server.url);
     let manager = f.manager();
-    let gate = f.workspace.lock().unwrap().editing_gate();
-    let held = gate.lock().await;
+    let gate = f.manager().gate.clone();
+    let held = gate.write().await;
     let cancel = CancellationToken::new();
     let token = cancel.clone();
     let m = manager.clone();
@@ -1086,7 +1087,7 @@ async fn multiple_mcp_calls_in_one_controller_batch_settle_only_their_receipts()
     actor.retire_and_wait().await.unwrap();
 }
 #[tokio::test]
-async fn second_chat_cancelled_behind_first_invocation_never_dispatches_or_quarantines() {
+async fn inspector_rejects_a_second_chat_while_first_invocation_is_active() {
     let server = ServerFixture::start().await;
     let f = Fixture::new("http://127.0.0.1:9", &server.url);
     let (_, first) = f.chat(ChatToolMode::Editing);
@@ -1126,7 +1127,7 @@ async fn second_chat_cancelled_behind_first_invocation_never_dispatches_or_quara
             .unwrap()
             .unwrap_err()
             .to_string()
-            .contains("Not executed")
+            .contains("still running")
     );
     assert!(one.await.unwrap().is_ok());
     tokio::time::sleep(Duration::from_millis(30)).await;
@@ -1136,33 +1137,26 @@ async fn second_chat_cancelled_behind_first_invocation_never_dispatches_or_quara
     second.retire_and_wait().await.unwrap();
 }
 #[tokio::test]
-async fn abandoned_inspector_waiter_still_joins_and_releases_guard_without_dispatch() {
+async fn inspector_exclusive_admission_fails_without_dispatch() {
     let server = ServerFixture::start().await;
     let f = Fixture::new("http://127.0.0.1:9", &server.url);
     let (_, actor) = f.chat(ChatToolMode::Editing);
-    let gate = f.workspace.lock().unwrap().editing_gate();
-    let held = gate.lock().await;
-    let copy = actor.clone();
-    let task = tokio::spawn(async move {
-        copy.mcp_invoke_once(
+    let manager = f.manager();
+    let held = manager.gate.read().await;
+    let result = actor
+        .mcp_invoke_once(
             "fixture".into(),
             "echo".into(),
             json!({}),
             true,
             CancellationToken::new(),
         )
-        .await
-    });
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    task.abort();
-    assert!(task.await.is_err());
-    timeout(DEADLINE, actor.retire_and_wait())
-        .await
-        .unwrap()
-        .unwrap();
+        .await;
+    assert!(result.unwrap_err().to_string().contains("still running"));
+    actor.retire_and_wait().await.unwrap();
     drop(held);
     assert_eq!(server.calls.load(Ordering::SeqCst), 0);
-    assert!(!f.manager().status().outcome_unknown);
+    assert!(!manager.status().outcome_unknown);
 }
 #[tokio::test]
 async fn latest_inspector_result_reopens_without_clearing_later_unknown_evidence() {
@@ -1217,16 +1211,13 @@ async fn latest_inspector_result_reopens_without_clearing_later_unknown_evidence
     assert_eq!(recovered["outcomeUnknown"], true);
     assert_eq!(manager.status().unknown_id, unknown);
     assert_eq!(server.calls.load(Ordering::SeqCst), 2);
-    let (directory, gate) = {
-        let workspace = f.workspace.lock().unwrap();
-        (workspace.state_directory(), workspace.editing_gate())
-    };
+    let directory = f.workspace.lock().unwrap().state_directory();
     let loaded = f.authority.load_mcp(&f.project).unwrap();
     actor.retire_and_wait().await.unwrap();
     drop(actor);
     let _directory_owner = f.into_directory();
     drop(manager);
-    let reopened = McpManager::new(loaded, &directory, gate).unwrap();
+    let reopened = McpManager::new(loaded, &directory).unwrap();
     assert_eq!(
         reopened
             .latest_result(CancellationToken::new())
@@ -1278,16 +1269,13 @@ async fn inspector_receipt_and_marker_settlement_crash_cuts_are_distinct() {
                 .unwrap();
             assert_eq!(receipt.is_some(), !receipt_failure || fault == 2);
             assert_eq!(manager.status().unknown_id, unknown);
-            let (directory, gate) = {
-                let workspace = f.workspace.lock().unwrap();
-                (workspace.state_directory(), workspace.editing_gate())
-            };
+            let directory = f.workspace.lock().unwrap().state_directory();
             let loaded = f.authority.load_mcp(&f.project).unwrap();
             actor.retire_and_wait().await.unwrap();
             drop(actor);
             let _directory_owner = f.into_directory();
             drop(manager);
-            let reopened = McpManager::new(loaded, &directory, gate).unwrap();
+            let reopened = McpManager::new(loaded, &directory).unwrap();
             // Only a positively durable canonical receipt permits a possibly
             // committed empty housekeeping ledger to recover as settled-known.
             assert_eq!(
@@ -1546,7 +1534,7 @@ async fn distinct_catalogs_share_one_outcome_writer_until_last_ticket_drops() {
     assert_eq!(server.calls.load(Ordering::SeqCst), 1);
     assert_eq!(std::fs::read(&marker).unwrap(), before);
     let unknown = recovered.status().unknown_id.unwrap();
-    recovered.acknowledge_unknown(&unknown, true).unwrap();
+    recovered.acknowledge_unknown(&unknown, true).await.unwrap();
     assert!(!recovered.status().outcome_unknown);
 }
 
@@ -1599,12 +1587,11 @@ async fn same_workspace_root_retrust_rebinds_without_losing_lease_or_quarantine(
         .trust_project(&f.project.id, &f.project.path, &[extra])
         .unwrap();
     f.authority.save(&mut draft).unwrap();
-    let held = previous.gate.clone().lock_owned().await;
+    let held = previous.gate.clone().write_owned().await;
     let rebound = f.manager();
     assert!(!Arc::ptr_eq(&previous, &rebound));
     assert!(Arc::ptr_eq(&previous.ledger, &rebound.ledger));
     assert!(Arc::ptr_eq(&previous.gate, &rebound.gate));
-    assert!(Arc::ptr_eq(&previous.editing_gate, &rebound.editing_gate));
     assert!(rebound.matches_project(&project));
     assert!(rebound.status().busy);
     assert_eq!(
@@ -1612,11 +1599,11 @@ async fn same_workspace_root_retrust_rebinds_without_losing_lease_or_quarantine(
         Some(unknown.as_str())
     );
     drop(held);
-    assert!(previous.acknowledge_unknown(&unknown, true).is_err());
-    assert!(previous.confirm().await.is_err());
+    assert!(previous.acknowledge_unknown(&unknown, true).await.is_err());
+    assert!(previous.confirm(&CancellationToken::new()).await.is_err());
     assert!(invoke(&rebound, "ok").await.is_err());
     assert_eq!(server.calls.load(Ordering::SeqCst), 0);
-    rebound.acknowledge_unknown(&unknown, true).unwrap();
+    rebound.acknowledge_unknown(&unknown, true).await.unwrap();
     settle(invoke(&rebound, "ok").await.unwrap()).await;
     assert_eq!(server.calls.load(Ordering::SeqCst), 1);
     // The rebound manager initializes fresh transport/catalog state, while the
@@ -1628,3 +1615,6 @@ async fn same_workspace_root_retrust_rebinds_without_losing_lease_or_quarantine(
 #[cfg(unix)]
 #[path = "bash_tests.rs"]
 mod bash_tests;
+
+#[path = "concurrency_tests.rs"]
+mod concurrency_tests;

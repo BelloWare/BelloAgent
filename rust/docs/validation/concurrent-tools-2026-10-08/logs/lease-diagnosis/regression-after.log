@@ -1,0 +1,9 @@
+   Compiling bello-agent-core v0.1.0 (<isolated-lease-repair>/rust/crates/bello-agent-core)
+    Finished `test` profile [unoptimized] target(s) in 12.65s
+     Running unittests src/lib.rs (<cargo-target>/debug/deps/bello_agent_core-8bfe315c8d6b13f3)
+
+running 1 test
+test workspace::tests::dropped_workspace_releases_writer_with_duplicated_descriptor ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 410 filtered out; finished in 0.00s
+

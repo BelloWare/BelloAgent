@@ -1,0 +1,77 @@
+{
+  "scope": "Attributed prior cf63-based A5 staging runs. These are not fresh integrated executions. Raw original-log SHA256 and normalized publication-log SHA256 are distinct.",
+  "entries": [
+    {
+      "attribution": "Initial staging failure:576 passed/3 failed direct pre-cancellation contracts.",
+      "path": "logs/staging/core-all-unit.log",
+      "raw_sha256": "75a66e2fd6852a10bb14ca359361f2cfa7804f21f9249c3d8d773597a4215522",
+      "normalized_sha256": "75a66e2fd6852a10bb14ca359361f2cfa7804f21f9249c3d8d773597a4215522"
+    },
+    {
+      "attribution": "Second staging failure:588 passed/1 failed saved Bash preview observation.",
+      "path": "logs/staging/core-all-unit-r2.log",
+      "raw_sha256": "1484f28e4ad81eb46674fa777965d51b23a75271419b3895a3204c4b8a81a69e",
+      "normalized_sha256": "1484f28e4ad81eb46674fa777965d51b23a75271419b3895a3204c4b8a81a69e"
+    },
+    {
+      "attribution": "Intermediate staging full589 pass; later isolated repeat failure means this was insufficient alone.",
+      "path": "logs/staging/core-all-unit-r3.log",
+      "raw_sha256": "52df64cf708e5301b9662a47c826ca0ab6c726f3862fa40d4b7552b116f8d52e",
+      "normalized_sha256": "52df64cf708e5301b9662a47c826ca0ab6c726f3862fa40d4b7552b116f8d52e"
+    },
+    {
+      "attribution": "Intermediate staging isolated repeats1-3 passed, repeat4 failed.",
+      "path": "logs/staging/bash-preview-repeat-r3.log",
+      "raw_sha256": "ff53c153c116ec318e97fbac5c692964741d4f7728a1ce94c03a3cddf6d7fd48",
+      "normalized_sha256": "ff53c153c116ec318e97fbac5c692964741d4f7728a1ce94c03a3cddf6d7fd48"
+    },
+    {
+      "attribution": "Final staging589 unit+127 integration passed.",
+      "path": "logs/staging/core-all-full-r4.log",
+      "raw_sha256": "7b32d5182666686c41bebd5d2d6eb471506741d4ea797bf891a814d841b1dcad",
+      "normalized_sha256": "95eda4c13a5b0dad4a738a4df2982cf2a133df1ac9441125171ffa05f3b2a8a5"
+    },
+    {
+      "attribution": "Final staging415 default unit passed; integration not run in this staging command.",
+      "path": "logs/staging/core-default-unit-r4.log",
+      "raw_sha256": "91afb5d4880986bcfff5ec96c667a6779f2cba8823e61ff4a0e75e3fa3e6b1ec",
+      "normalized_sha256": "91afb5d4880986bcfff5ec96c667a6779f2cba8823e61ff4a0e75e3fa3e6b1ec"
+    },
+    {
+      "attribution": "Final staging20 consecutive isolated passes.",
+      "path": "logs/staging/bash-preview-repeat-r4.log",
+      "raw_sha256": "c285aa67ae95b04cc4b4b37d012ebe4784957ff61f636080e680a436e5021242",
+      "normalized_sha256": "c285aa67ae95b04cc4b4b37d012ebe4784957ff61f636080e680a436e5021242"
+    },
+    {
+      "attribution": "Staging21 focused concurrency passes.",
+      "path": "logs/staging/concurrency-focused-r2.log",
+      "raw_sha256": "abc54fc315d0e54a88502ffca06d2f75ebc86f4b269c46084478c681fc1377fc",
+      "normalized_sha256": "abc54fc315d0e54a88502ffca06d2f75ebc86f4b269c46084478c681fc1377fc"
+    },
+    {
+      "attribution": "Final staging App typecheck passed.",
+      "path": "logs/staging/app-all-check-r4.log",
+      "raw_sha256": "ca4764f870bdb4be18e29cdc64c3b8c61d4e3eb54c86677d11c71fcdb9822f78",
+      "normalized_sha256": "18524e0011ba29b500fbd9b92220569f2800327d49f04877f848502069202a2e"
+    },
+    {
+      "attribution": "Final staging all-feature strict Clippy passed.",
+      "path": "logs/staging/core-all-clippy-final.log",
+      "raw_sha256": "b4a72d9c8ad1d460b96e0ffa5ab5eac199dce33f53497e0b7cd4b72613653aaf",
+      "normalized_sha256": "f771f736012541b5bbcbc794836fb2efa63e2da120b8f75436cfe6fdaa943342"
+    },
+    {
+      "attribution": "Final staging default strict Clippy passed.",
+      "path": "logs/staging/core-default-clippy-final.log",
+      "raw_sha256": "1094a36867300c1838cdc4ee40efe961d83bac574665f8ee57a40d5b1e88698c",
+      "normalized_sha256": "1094a36867300c1838cdc4ee40efe961d83bac574665f8ee57a40d5b1e88698c"
+    },
+    {
+      "attribution": "Final staging formatting passed.",
+      "path": "logs/staging/fmt-final.log",
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "normalized_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ]
+}

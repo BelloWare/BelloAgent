@@ -10,7 +10,8 @@ with no paid provider calls or external MCP traffic.
 
 ## Source and visible workflow
 
-The behavioral anchors are `MCP.swift:272–349,385–564`,
+The concurrency behavior is pinned to Swift main `f4f80ddda3c27fac9e266896f69b725a06242e8f`
+([immutable MCP source](https://github.com/BelloWare/BelloAgent/blob/f4f80ddda3c27fac9e266896f69b725a06242e8f/packages/swift-host/Sources/PiAgentCore/MCP.swift)). Earlier behavioral anchors include `MCP.swift:272–349,385–564`,
 `ConfigurationVault.swift:320–349`, `WorkspaceConfiguration.swift:334–432`,
 `ResourceInspector.swift:315–479`, and `SessionTools.swift:28–72,95–143,172–233`.
 The Inspector edits a project's HTTP server JSON, with credentials in the reviewed
@@ -35,10 +36,16 @@ mode, regardless of server annotations. Existing ordinary-chat Editing defaults
 and every saved explicit mode are preserved. Genuine saved ReadOnly chats expose
 the existing source-backed, one-way Enable Editing confirmation.
 
-All factories and chats for the same workspace owner share one manager and the
-existing workspace editing gate. Full saved chat, connection, project and exact
-MCP configuration checks run outside actor/catalog locks after gate waits and
-again immediately before dispatch. Inspector one-shot work uses a Controller-owned
+All factories and chats for the same workspace owner share one manager. Model
+invocations take shared active admission and may overlap on the same HTTP server,
+across servers and with native editing or Bash. Configuration takes exclusive
+admission and still refuses completed receipts awaiting durable retention before
+the vault CAS. Active admission ends after normalization, before a completed
+Ticket is returned; retaining it in a Ticket would deadlock late batch siblings
+behind a fair configuration writer. Full saved chat, connection, project and exact
+MCP configuration checks run outside actor/catalog locks after admission waits and
+again immediately before dispatch. Inspector one-shot work has separate fail-fast
+exclusive admission and refuses pending receipts. It uses a Controller-owned
 joined worker and idle-admission guard; Stop, retirement, dropped callers and
 window lifecycle cannot detach a live invocation or release its writer early.
 
@@ -65,7 +72,11 @@ disable proxies, redirects and reqwest's protocol-level retry policy.
 The client supports protocol 2025-11-25 and 2025-06-18, lazy initialize/initialized,
 Mcp-Session-Id, protocol headers, bounded JSON responses and chunked SSE. Priming
 and data-less events are ignored; list-change notifications invalidate cached
-catalogs. The optional GET channel, server-initiated capabilities, sampling and
+catalogs. Per-server connection/catalog setup is single-flight, while tools/call
+clones the transport and releases discovery locks before network I/O. Transport
+mutable state uses short snapshot locks and a session epoch: delayed old-session
+404s or session headers cannot invalidate or replace a newer session. Catalogs
+are scoped to their exact transport and list-change generation. The optional GET channel, server-initiated capabilities, sampling and
 elicitation are not offered. Each response, including all SSE bytes, is limited
 to 4 MiB and 2048 events, with a configured 1–300 second timeout. Catalogs have
 1000 tools per page, 2000 total names, 100 unique cursors, a 4 MiB aggregate bound,
@@ -88,11 +99,20 @@ until the canonical result checkpoint is positively durable, following the
 existing Rust Unknown/recovery contract. This is a conservative safety extension,
 not a claim of byte-identical Swift behavior.
 
+MCP persistence has its own four-physical-closure executor, separate from native
+file/image/Bash workers. Pre-effect permit waits can be cancelled. Each submitted
+blocking closure owns its permit through physical return; dropping an awaiter
+cannot free capacity prematurely. Post-effect settlement is independently owned,
+including queued work, and retains its ticket and OS lease. No persistence permit
+is held across network or native-pool waits. Ticket target metadata is immutable,
+and a contended Ticket drop closes admission immediately then schedules cleanup
+without blocking a Tokio/UI thread on a mutex held through fsync.
+
 Before `tools/call`, a private atomic/fsynced project ledger records an invocation
 UUID and bounded server/tool identities, never URLs, headers or arguments. Up to
 64 unresolved results are allowed. Successful calls carry settlement receipts;
 a normal Controller batch removes only its own IDs after its ordered result
-checkpoint commits. This supports multiple serialized MCP calls in a batch
+checkpoint commits. This supports multiple concurrent MCP calls in a batch
 without clearing another chat's unresolved result. Dropping or failing to retain
 a receipt quarantines the manager. Any unresolved ledger entries on restart also
 quarantine the project. Failed or uncertain session/result writes do not remove
@@ -143,7 +163,7 @@ and declared model image capability, never network calls or historical execution
 Injected-storage and numeric-loopback tests cover configuration validation/CAS,
 secret preservation/clearing/redaction, catalog and schema/cursor limits, JSON and
 chunked SSE, notifications/cache/expiry, no inherited proxy or followed redirect,
-exactly one wrapper, read-only refusal, cross-chat gate cancellation, dropped
+exactly one wrapper, read-only refusal, shared admission cancellation, dropped
 Inspector callers, same-batch receipts, Controller continuation/reopen, v6 negative
 ownership cases, marker/canonical-result crash cuts and explicit acknowledgment.
 
@@ -153,3 +173,14 @@ uncertain apply fencing and unknown outcome recovery. Actual computer-use eviden
 must be recorded against a final immutable copied binary and matching source
 manifest. Automated GPUI tests are not actual desktop or native macOS acceptance.
 See `mcp-gui-acceptance-recipe.md` for the disposable no-cost manual fixture.
+
+
+## A5 reconstruction acceptance
+
+The reconstructed concurrency tests include same-server overlap, single-flight
+initialization, a sticky unknown sibling, the completed-ticket/fair-writer/late-
+sibling deadlock regression, cancellable configuration drain, stale-session
+response/404 fencing, physical persistence permit retention after dropped
+awaiters, native-pool independence, and nonblocking ticket cleanup. These are
+source additions, not a claim of passed tests. Record fresh runs at the final
+integrated commit; historical GUI evidence above does not validate A5.

@@ -1,0 +1,164 @@
+{
+  "schema": 1,
+  "host": {
+    "os": "ProductName:\t\tmacOS\nProductVersion:\t\t14.8\nBuildVersion:\t\t23J21",
+    "architecture": "arm64"
+  },
+  "manifest_sha256": "3e03233e43062a1b7c96d279393af5838a5a457e6b6cef54c59b1b99549118a5",
+  "files": {
+    "bridge-Swift.h": "5de85ad0296ff7701dd2e86a95b3b5b4e7730cebb748db93676f0dd961a2e53a",
+    "bridge.a": "9244c9346611ea47356d2b189850133eddc16d78012e799a73e494b5ce5fd6f8",
+    "build.json": "fa6dc37a2e377e8ed69128073978720f0b8e0cf968009d67d836ac23257691ce",
+    "oracle.swift": "dd7a2dd8672fd902d745e102749aa44668b36fbd3f117515345afb936274aa96",
+    "rust-probe": "a4f27dd153224a7ee195e419c190d620717e490b1fe64467e6333d153482fab9",
+    "swift-oracle": "abfb2d6f401e9f521477b4096dfb38a626568f5daf4b3dc8d7223361c5ff488e"
+  },
+  "passed": true,
+  "actual": [
+    {
+      "case": "empty",
+      "input": "",
+      "output": ""
+    },
+    {
+      "case": "bom",
+      "input": "efbbbf",
+      "output": "efbbbf"
+    },
+    {
+      "case": "single",
+      "input": "efbbbf6e6565646c65",
+      "output": "efbbbf6e6565646c65"
+    },
+    {
+      "case": "double",
+      "input": "efbbbfefbbbf6e6565646c65",
+      "output": "efbbbfefbbbf6e6565646c65"
+    },
+    {
+      "case": "interior",
+      "input": "61efbbbf6e6565646c65",
+      "output": "61efbbbf6e6565646c65"
+    },
+    {
+      "case": "nul",
+      "input": "efbbbf0061",
+      "output": "efbbbf0061"
+    },
+    {
+      "case": "invalid",
+      "input": "efbbbfff",
+      "output": null
+    },
+    {
+      "case": "truncated",
+      "input": "e282",
+      "output": null
+    },
+    {
+      "case": "overlong",
+      "input": "c080",
+      "output": null
+    },
+    {
+      "case": "surrogate",
+      "input": "eda080",
+      "output": null
+    },
+    {
+      "case": "unicode",
+      "input": "efbbbfc3a92065cc8120f09fa6800d0a",
+      "output": "efbbbfc3a92065cc8120f09fa6800d0a"
+    },
+    {
+      "case": "bom15",
+      "input": "efbbbf616161616161616161616161",
+      "output": "efbbbf616161616161616161616161"
+    },
+    {
+      "case": "bom16",
+      "input": "efbbbf61616161616161616161616161",
+      "output": "efbbbf61616161616161616161616161"
+    },
+    {
+      "case": "bom32",
+      "input": "efbbbf6161616161616161616161616161616161616161616161616161616161",
+      "output": "efbbbf6161616161616161616161616161616161616161616161616161616161"
+    }
+  ],
+  "expected": [
+    {
+      "case": "empty",
+      "input": "",
+      "output": ""
+    },
+    {
+      "case": "bom",
+      "input": "efbbbf",
+      "output": "efbbbf"
+    },
+    {
+      "case": "single",
+      "input": "efbbbf6e6565646c65",
+      "output": "efbbbf6e6565646c65"
+    },
+    {
+      "case": "double",
+      "input": "efbbbfefbbbf6e6565646c65",
+      "output": "efbbbfefbbbf6e6565646c65"
+    },
+    {
+      "case": "interior",
+      "input": "61efbbbf6e6565646c65",
+      "output": "61efbbbf6e6565646c65"
+    },
+    {
+      "case": "nul",
+      "input": "efbbbf0061",
+      "output": "efbbbf0061"
+    },
+    {
+      "case": "invalid",
+      "input": "efbbbfff",
+      "output": null
+    },
+    {
+      "case": "truncated",
+      "input": "e282",
+      "output": null
+    },
+    {
+      "case": "overlong",
+      "input": "c080",
+      "output": null
+    },
+    {
+      "case": "surrogate",
+      "input": "eda080",
+      "output": null
+    },
+    {
+      "case": "unicode",
+      "input": "efbbbfc3a92065cc8120f09fa6800d0a",
+      "output": "efbbbfc3a92065cc8120f09fa6800d0a"
+    },
+    {
+      "case": "bom15",
+      "input": "efbbbf616161616161616161616161",
+      "output": "efbbbf616161616161616161616161"
+    },
+    {
+      "case": "bom16",
+      "input": "efbbbf61616161616161616161616161",
+      "output": "efbbbf61616161616161616161616161"
+    },
+    {
+      "case": "bom32",
+      "input": "efbbbf6161616161616161616161616161616161616161616161616161616161",
+      "output": "efbbbf6161616161616161616161616161616161616161616161616161616161"
+    }
+  ],
+  "probe_stdout": "\nrunning 4 tests\ntest tools::read::macos::source_utf8::tests::bundle_receipt ... BELLO_UTF8_RECEIPT:[{\"case\":\"empty\",\"input\":\"\",\"output\":\"\"},{\"case\":\"bom\",\"input\":\"efbbbf\",\"output\":\"efbbbf\"},{\"case\":\"single\",\"input\":\"efbbbf6e6565646c65\",\"output\":\"efbbbf6e6565646c65\"},{\"case\":\"double\",\"input\":\"efbbbfefbbbf6e6565646c65\",\"output\":\"efbbbfefbbbf6e6565646c65\"},{\"case\":\"interior\",\"input\":\"61efbbbf6e6565646c65\",\"output\":\"61efbbbf6e6565646c65\"},{\"case\":\"nul\",\"input\":\"efbbbf0061\",\"output\":\"efbbbf0061\"},{\"case\":\"invalid\",\"input\":\"efbbbfff\",\"output\":null},{\"case\":\"truncated\",\"input\":\"e282\",\"output\":null},{\"case\":\"overlong\",\"input\":\"c080\",\"output\":null},{\"case\":\"surrogate\",\"input\":\"eda080\",\"output\":null},{\"case\":\"unicode\",\"input\":\"efbbbfc3a92065cc8120f09fa6800d0a\",\"output\":\"efbbbfc3a92065cc8120f09fa6800d0a\"},{\"case\":\"bom15\",\"input\":\"efbbbf616161616161616161616161\",\"output\":\"efbbbf616161616161616161616161\"},{\"case\":\"bom16\",\"input\":\"efbbbf61616161616161616161616161\",\"output\":\"efbbbf61616161616161616161616161\"},{\"case\":\"bom32\",\"input\":\"efbbbf6161616161616161616161616161616161616161616161616161616161\",\"output\":\"efbbbf6161616161616161616161616161616161616161616161616161616161\"}]\nok\ntest tools::read::macos::source_utf8::tests::contract_failure_cannot_become_binary_rejection_or_partial_text ... ok\ntest tools::read::macos::source_utf8::tests::maximum_input_is_bounded_before_bridge_call ... ok\ntest tools::read::macos::source_utf8::tests::pointer_capacity_and_invalid_input_never_write_partial_output ... ok\n\ntest result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 422 filtered out; finished in 0.07s\n\n",
+  "probe_stderr": "",
+  "oracle_stderr": ""
+}

@@ -1,0 +1,86 @@
+{
+  "scope": "Independent static consistency and exact-byte hash audit of peer-published receipts; native execution attributed to migration-peer, not this verifier.",
+  "source_comment_url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6067113669",
+  "source_snapshot_sha256": "b8341f124a5fdc0dfda82215e495548cbd586d6f1b0e7527b1a6de1add17030d",
+  "peer_comment_body_sha256": "7ed04c6ae697e85790e1baa896e462f65978215004ed61ab09c5052a37a81ae7",
+  "receipts": [
+    {
+      "file": "modern-host-receipt.json",
+      "bytes": 5641,
+      "sha256": "21229ea4f64c14bca0a23326f6ef81053e9b820beaa802384c9ceb829aec0a11",
+      "exact_reported_hash_verified": true,
+      "host": {
+        "os": "ProductName:\t\tmacOS\nProductVersion:\t\t26.6.2\nBuildVersion:\t\t25G83",
+        "architecture": "arm64"
+      },
+      "cases": 14,
+      "actual_equals_expected": true,
+      "embedded_probe_receipt_equals_actual": true,
+      "embedded_test_summary": "4 passed; 0 failed; 0 ignored; 0 measured",
+      "empty_stderr": true
+    },
+    {
+      "file": "macos14-host-receipt.json",
+      "bytes": 5783,
+      "sha256": "99cd77c772316cc659f4a369eceb1e9117432bc3e791ee25c8cfd9c931b63129",
+      "exact_reported_hash_verified": true,
+      "host": {
+        "os": "ProductName:\t\tmacOS\nProductVersion:\t\t14.8\nBuildVersion:\t\t23J21",
+        "architecture": "arm64"
+      },
+      "cases": 14,
+      "actual_equals_expected": true,
+      "embedded_probe_receipt_equals_actual": true,
+      "embedded_test_summary": "4 passed; 0 failed; 0 ignored; 0 measured",
+      "empty_stderr": true
+    }
+  ],
+  "same_manifest_hash": "3e03233e43062a1b7c96d279393af5838a5a457e6b6cef54c59b1b99549118a5",
+  "identical_six_file_hashes": {
+    "bridge-Swift.h": "5de85ad0296ff7701dd2e86a95b3b5b4e7730cebb748db93676f0dd961a2e53a",
+    "bridge.a": "9244c9346611ea47356d2b189850133eddc16d78012e799a73e494b5ce5fd6f8",
+    "build.json": "fa6dc37a2e377e8ed69128073978720f0b8e0cf968009d67d836ac23257691ce",
+    "oracle.swift": "dd7a2dd8672fd902d745e102749aa44668b36fbd3f117515345afb936274aa96",
+    "rust-probe": "a4f27dd153224a7ee195e419c190d620717e490b1fe64467e6333d153482fab9",
+    "swift-oracle": "abfb2d6f401e9f521477b4096dfb38a626568f5daf4b3dc8d7223361c5ff488e"
+  },
+  "identical_case_input_matrix": true,
+  "cross_host_output_differences": [
+    "bom",
+    "single",
+    "double",
+    "nul",
+    "unicode",
+    "bom15",
+    "bom16",
+    "bom32"
+  ],
+  "verified_git_source_identity": {
+    "commit": "a80b8719771d23156e1547bd9c7b67e84352c06c",
+    "tree": "842fcd81bb3b286b8e81f560657a3274d9142309",
+    "validator_sha256": "16a0659927350af5a0f1c3619ea77dc91fde0da2c44a99f8920398d1a26bcc75"
+  },
+  "peer_reported_not_independently_reproduced": {
+    "bundle_build_commit": "a80b8719771d23156e1547bd9c7b67e84352c06c",
+    "bundle_build_tree": "842fcd81bb3b286b8e81f560657a3274d9142309",
+    "clean_build_checkout": true,
+    "raw_job_log": {
+      "bytes": 8022546,
+      "sha256": "ea0e043ba02797c015ef677a24e61774fc5adfcc34237cb5f072cf8e0e29f49b"
+    },
+    "archive": {
+      "bytes": 4696612,
+      "sha256": "eb5e9dabaafb0ab5f294bef0341ce4da7ad2a3c7204584bc87745229efeb15b4"
+    },
+    "ordered_transport_chunks": 510,
+    "transport_controls_passed": 18,
+    "native_execution": "Modern26.6.2 and macOS14.8, same frozen A80 bundle, local no rebuild; both returned success",
+    "build_and_linkage": "Rust1.99.0, AppleSwift6.3.3, Xcode26.6, SDK26.5, arm64 minimum14.0 and system-only runtime linkage"
+  },
+  "limits": [
+    "Complete raw log, archive, manifest bytes, and native executables were not supplied in the saved comment and are not present in this evidence package. Their hashes, ordered chunk integrity, extraction policy, and unchanged-before/after assertions cannot be independently recomputed from receipts alone.",
+    "Matching receipt manifest/file hashes establish consistency of peer-published identity claims; without manifest bytes the linkage from manifest digest to A80 source/build identity remains peer-attested. The stated A80 Git commit-to-tree mapping itself was verified locally.",
+    "No native binary executed and no remote write performed. Embedded stdout is verified as receipt content, not an independently observed execution.",
+    "A4 same-bundle decoder validation only. No conclusion about other CI revisions, A5, or wider migration acceptance."
+  ]
+}

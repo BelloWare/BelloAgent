@@ -60,7 +60,7 @@ Dynamic fixture resources retain their explicit Context/compaction refusal.
 
 Full vault/catalog/filesystem checks run outside actor and catalog mutexes, before
 new delivery, provider continuation and tool batches. Mutation calls recheck after
-waiting for the workspace's shared editing gate. Actor admission uses only cheap
+pre-effect asynchronous admission. Actor admission uses only cheap
 atomic validity checks. A guard's observed authority/catalog failure is sticky;
 restoring trust cannot reactivate that old Controller. Compaction rechecks before
 summary dispatch and again before durable checkpoint adoption. Configuration Arc
@@ -117,7 +117,7 @@ Responses requests, tool results and durable replay. They cover no-send
 save/trust/new/pending reopen, active/deferred settings, connection deletion,
 project policy/trust/root changes, mode/path mismatch, exact-ID open-before-
 recovery safety, stale and uncertain catalog saves, queued mutation revocation
-after the editing gate, and compaction dispatch/adoption revocation. Production
+after pre-effect admission, and compaction dispatch/adoption revocation. Production
 validator tests use ordinary-format test-only inputs with an injected memory
 backend; they never invoke native storage or network endpoints.
 
@@ -149,7 +149,7 @@ final test pass:
   identity. A bounded one-second lock regression fails without hanging the test
   suite; a delayed active confirmation cannot cross settlement or a newer epoch.
 - Tool dispatch rechecks saved connection/project state after a returned model
-  call, and mutation admission rechecks again after the shared editing gate.
+  call, and mutation admission rechecks again before concurrent native entry.
   Compaction confirms authority both before summary dispatch and before adoption.
 
 Independent Linux verification before the final presentation-only helper:

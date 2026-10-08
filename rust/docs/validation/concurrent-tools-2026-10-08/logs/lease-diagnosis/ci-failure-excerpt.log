@@ -1,0 +1,19 @@
+ed_file_undo_and_both_window_scoped_subscriptions_survive_detach ... ok
+2026-10-08T19:06:37.0228518Z 
+2026-10-08T19:06:37.0228620Z failures:
+2026-10-08T19:06:37.0228747Z 
+2026-10-08T19:06:37.0229118Z ---- shutdown_barrier::tests::queued_edit_and_unsettled_receipt_survive_save_stop_and_reopen stdout ----
+2026-10-08T19:06:37.0229478Z 
+2026-10-08T19:06:37.0229931Z thread 'shutdown_barrier::tests::queued_edit_and_unsettled_receipt_survive_save_stop_and_reopen' (19059) panicked at crates/bello-agent-app/src/shutdown_barrier_tests.rs:126:85:
+2026-10-08T19:06:37.0230617Z called `Result::unwrap()` on an `Err` value: Invalid("This Rust workspace is already open elsewhere")
+2026-10-08T19:06:37.0231032Z note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+2026-10-08T19:06:37.0231264Z 
+2026-10-08T19:06:37.0231267Z 
+2026-10-08T19:06:37.0231335Z failures:
+2026-10-08T19:06:37.0231611Z     shutdown_barrier::tests::queued_edit_and_unsettled_receipt_survive_save_stop_and_reopen
+2026-10-08T19:06:37.0231871Z 
+2026-10-08T19:06:37.0232077Z test result: FAILED. 580 passed; 1 failed; 3 ignored; 0 measured; 0 filtered out; finished in 20.07s
+2026-10-08T19:06:37.0232338Z 
+2026-10-08T19:06:37.0317771Z error: test failed, to rerun pass `-p bello-agent-app --bin bello-agent`
+2026-10-08T19:06:37.0387937Z ##[error]Process completed with exit code 101.
+2026-10-08T19:06:37.0444537Z ##[group]Run if test -f "$RUNNER_TEMP/ui-evidence/rep

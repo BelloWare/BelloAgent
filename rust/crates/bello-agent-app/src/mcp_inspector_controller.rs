@@ -907,7 +907,7 @@ impl AgentView {
         self.mcp.publish(cx);
         let task = cx
             .background_executor()
-            .spawn(async move { manager.acknowledge_unknown(&expected, true) });
+            .spawn(async move { manager.acknowledge_unknown(&expected, true).await });
         cx.spawn(async move|owner,cx|{let result=task.await;let _=owner.update(cx,|view,cx|{
             if !scope.matches(view)||view.mcp.operation.as_ref().map(|o|o.id)!=Some(id){return;}view.mcp.operation=None;
             view.mcp.presentation.notice=match result{Ok(())=>"The exact previous unknown outcome was acknowledged. Nothing was retried or undone.".into(),Err(e)=>e.to_string()};view.mcp.publish(cx);

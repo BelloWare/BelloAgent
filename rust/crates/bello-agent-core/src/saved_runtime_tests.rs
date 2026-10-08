@@ -440,7 +440,7 @@ async fn retired_persistent_actor_cannot_be_recast_as_unregistered_pending() {
 
 #[cfg(not(target_os = "macos"))]
 #[tokio::test]
-async fn queued_mutation_reconfirms_after_shared_workspace_gate() {
+async fn queued_mutation_reconfirms_after_pre_effect_admission_wait() {
     let (listener, url) = listener().await;
     let mut f = Fixture::new(&url);
     f.factory.options.editing_capabilities = vec![Capability::Write];
@@ -449,29 +449,19 @@ async fn queued_mutation_reconfirms_after_shared_workspace_gate() {
         .factory
         .new_chat(&f.connection, ChatToolMode::Editing)
         .unwrap();
-    let gate = f.workspace.lock().unwrap().editing_gate();
-    let held = gate.lock_owned().await;
+    let held = actor.pause_native_admission_for_test();
     let item = f.prepare(&record, &actor, "write once");
     actor.submit_identified(item).unwrap();
     let request = Request::accept(&listener).await;
-    let confirmations = f.factory.confirmations.load(Ordering::SeqCst);
     request
         .call(
             "write",
             json!({"path":"must-not-exist.txt","content":"not authorized after revocation"}),
         )
         .await;
-    // A successful pre-batch full confirmation has finished; the held gate
-    // prevents the per-invocation confirmation from passing until released.
-    timeout(DEADLINE, async {
-        while f.factory.confirmations.load(Ordering::SeqCst) <= confirmations {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .unwrap();
+    timeout(DEADLINE, held.entered.notified()).await.unwrap();
     f.change(|v| v["workspaces"][0]["trusted"] = false.into());
-    drop(held);
+    held.release();
     settled(&actor).await;
     assert!(!f.root.join("must-not-exist.txt").exists());
     assert!(actor.snapshot().messages.iter().any(|m|matches!(&m.tool_record,Some(ToolRecord::Result(r)) if r.outcome==ToolOutcome::NotExecuted)));

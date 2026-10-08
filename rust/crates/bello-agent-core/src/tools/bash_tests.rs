@@ -117,13 +117,10 @@ async fn raw_preview_bounds_lossy_expansion_and_live_updates_stop_at_cap() {
     assert!(updates.iter().all(|u| u.preview.len() <= 3 * PREVIEW_BYTES));
 }
 #[tokio::test]
-async fn cancellation_and_dropped_awaiter_hold_gate_through_owned_escalation() {
+async fn cancellation_and_dropped_awaiter_hold_physical_slot_through_owned_escalation() {
     let root = tempfile::tempdir().unwrap();
-    let gate = Arc::new(tokio::sync::Mutex::new(()));
     let executor = BlockingWorkExecutor::new(1, 4);
-    let tools = tools(root.path())
-        .with_executor(executor.clone())
-        .with_editing_gate(gate.clone());
+    let tools = tools(root.path()).with_executor(executor.clone());
     let token = CancellationToken::new();
     let running_tools = tools.clone();
     let running_token = token.clone();
@@ -140,10 +137,7 @@ async fn cancellation_and_dropped_awaiter_hold_gate_through_owned_escalation() {
     });
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
-            if root.path().join("out").exists()
-                && gate.try_lock().is_err()
-                && executor.occupancy().active == 1
-            {
+            if root.path().join("out").exists() && executor.occupancy().active == 1 {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -155,7 +149,7 @@ async fn cancellation_and_dropped_awaiter_hold_gate_through_owned_escalation() {
     task.abort();
     let _ = task.await;
     assert!(
-        tokio::time::timeout(Duration::from_millis(200), gate.lock())
+        tokio::time::timeout(Duration::from_millis(200), tools.join_processes())
             .await
             .is_err()
     );
@@ -163,17 +157,14 @@ async fn cancellation_and_dropped_awaiter_hold_gate_through_owned_escalation() {
         .await
         .unwrap()
         .unwrap();
-    assert!(gate.try_lock().is_ok());
-    // The job registry signals after physical cleanup, just before the owning
-    // executor decrements its slot. Require actual slot retirement by a
-    // deadline rather than assuming both publications are simultaneous.
+    // Registry completion precedes the executor's final physical decrement.
     tokio::time::timeout(Duration::from_secs(4), async {
         while executor.occupancy().active != 0 {
             tokio::task::yield_now().await;
         }
     })
     .await
-    .expect("the physically settled Bash worker must release its executor slot");
+    .expect("physically settled Bash worker releases its executor slot");
     assert_eq!(executor.occupancy().active, 0);
 }
 #[test]
@@ -295,7 +286,6 @@ async fn stopped_shell_never_chases_short_lived_escaped_process_group() {
         Err(ToolError::Cancelled)
     ));
     tokio::time::timeout(Duration::from_secs(3), async {
-        // The child creates the file before it publishes the complete marker.
         while !fs::read_to_string(root.path().join("escaped-finished"))
             .is_ok_and(|marker| marker == "done")
         {

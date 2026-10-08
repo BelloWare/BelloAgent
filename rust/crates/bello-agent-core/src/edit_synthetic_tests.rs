@@ -40,7 +40,7 @@ fn outcomes(state: &Session) -> Vec<ToolOutcome> {
 }
 
 #[tokio::test]
-async fn saved_editing_mode_orders_same_file_mutations_and_replays_without_reexecution() {
+async fn saved_editing_mode_preserves_reply_order_and_replays_without_reexecution() {
     let fixture = Fixture::new(true, ChatToolMode::ReadOnly);
     // Existing confirmed one-way catalog operation, no mode inference from text.
     fixture
@@ -49,6 +49,8 @@ async fn saved_editing_mode_orders_same_file_mutations_and_replays_without_reexe
         .unwrap()
         .enable_editing_after_confirmation(&fixture.record.id)
         .unwrap();
+    std::fs::write(fixture.root.join("edit-a"), "one\n").unwrap();
+    std::fs::write(fixture.root.join("edit-b"), "two\n").unwrap();
     let runtime = fixture.runtime();
     let (listener, endpoint) = listener().await;
     let controller = open(&fixture, &runtime, &endpoint);
@@ -76,13 +78,13 @@ async fn saved_editing_mode_orders_same_file_mutations_and_replays_without_reexe
             (
                 "edit-1",
                 "edit",
-                json!({"path":"nested/file","oldText":"one","newText":"two"}),
+                json!({"path":"edit-a","oldText":"one","newText":"two"}),
             ),
             ("list", "ls", json!({"path":"."})),
             (
                 "edit-2",
                 "edit",
-                json!({"path":"nested/file","oldText":"two","newText":"three"}),
+                json!({"path":"edit-b","oldText":"two","newText":"three"}),
             ),
         ],
     )
@@ -91,7 +93,7 @@ async fn saved_editing_mode_orders_same_file_mutations_and_replays_without_reexe
         Request::accept_case(&listener, "tool continuation", Some(&controller)).await;
     assert_eq!(
         std::fs::read_to_string(fixture.root.join("nested/file")).unwrap(),
-        "three\n"
+        "one\n"
     );
     let kept: Vec<Value> = outputs(&continuation.body).into_iter().cloned().collect();
     assert!(kept[0].as_str().unwrap().starts_with("Wrote "));
@@ -180,12 +182,11 @@ fn mutation_tools_require_explicit_editing_entry_and_preserve_default_readonly_g
 }
 
 #[tokio::test]
-async fn stop_while_waiting_on_workspace_gate_records_not_executed_and_keeps_files() {
+async fn stop_while_waiting_for_admission_records_not_executed_and_keeps_files() {
     let fixture = Fixture::new(true, ChatToolMode::Editing);
-    let gate = fixture.workspace.lock().unwrap().editing_gate();
-    let held = gate.lock().await;
     let (listener, endpoint) = listener().await;
     let controller = open(&fixture, &fixture.runtime(), &endpoint);
+    let held = controller.pause_native_admission_for_test();
     controller
         .submit("Synthetic waiting mutation".into(), Lane::FollowUp)
         .unwrap();
@@ -194,13 +195,15 @@ async fn stop_while_waiting_on_workspace_gate_records_not_executed_and_keeps_fil
         &[("write", "write", json!({"path":"blocked","content":"new"}))],
     )
     .await;
-    settled(&controller, |s| s.active_tool_calls().is_some()).await;
+    tokio::time::timeout(std::time::Duration::from_secs(5), held.entered.notified())
+        .await
+        .unwrap();
     controller.stop().unwrap();
     let state = settled(&controller, |s| s.state == RunState::Paused).await;
     assert_eq!(outcomes(&state), [ToolOutcome::NotExecuted]);
     assert!(!fixture.root.join("blocked").exists());
-    // Stop need not wait for an unrelated holder: cancelled gate wait is removed.
-    drop(held);
+    // Stop need not wait for an unrelated pre-effect admission barrier.
+    held.release();
     controller.retire_and_wait().await.unwrap();
 }
 
@@ -208,10 +211,9 @@ async fn stop_while_waiting_on_workspace_gate_records_not_executed_and_keeps_fil
 async fn stale_trust_or_archival_after_wait_never_mutates() {
     for archive_chat in [false, true] {
         let fixture = Fixture::new(true, ChatToolMode::Editing);
-        let gate = fixture.workspace.lock().unwrap().editing_gate();
-        let held = gate.lock().await;
         let (listener, endpoint) = listener().await;
         let controller = open(&fixture, &fixture.runtime(), &endpoint);
+        let held = controller.pause_native_admission_for_test();
         controller
             .submit("Wait for source editing admission".into(), Lane::FollowUp)
             .unwrap();
@@ -220,7 +222,9 @@ async fn stale_trust_or_archival_after_wait_never_mutates() {
             &[("write", "write", json!({"path":"blocked","content":"new"}))],
         )
         .await;
-        settled(&controller, |s| s.active_tool_calls().is_some()).await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), held.entered.notified())
+            .await
+            .unwrap();
         if archive_chat {
             let mut workspace = fixture.workspace.lock().unwrap();
             workspace
@@ -229,7 +233,7 @@ async fn stale_trust_or_archival_after_wait_never_mutates() {
         } else {
             fixture.replace_authority(|value| value["workspaces"][0]["trusted"] = json!(false));
         }
-        drop(held);
+        held.release();
         let state = settled(&controller, |s| s.state != RunState::Running).await;
         assert_eq!(outcomes(&state), [ToolOutcome::NotExecuted]);
         assert!(!fixture.root.join("blocked").exists());
@@ -288,11 +292,12 @@ async fn rejections_are_failed_but_filesystem_mutation_failures_are_unknown() {
 }
 
 #[test]
-fn confirmations_share_one_workspace_gate_across_generations() {
+fn confirmations_keep_one_workspace_writer_across_generations() {
     let fixture = Fixture::new(true, ChatToolMode::Editing);
     let first = fixture.runtime();
     let second = fixture.runtime();
-    let a = first.binding.workspace.lock().unwrap().editing_gate();
-    let b = second.binding.workspace.lock().unwrap().editing_gate();
-    assert!(Arc::ptr_eq(&a, &b));
+    assert!(Arc::ptr_eq(
+        &first.binding.workspace,
+        &second.binding.workspace
+    ));
 }

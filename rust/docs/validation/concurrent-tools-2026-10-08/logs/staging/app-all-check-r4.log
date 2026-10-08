@@ -1,0 +1,55 @@
+   Compiling displaydoc v0.2.7
+    Checking tinystr v0.8.4
+    Checking icu_locale_core v2.3.0
+    Checking zerotrie v0.2.5
+    Checking icu_collections v2.3.0
+    Checking icu_provider v2.3.1
+    Checking icu_normalizer v2.3.0
+    Checking icu_properties v2.3.0
+    Checking idna_adapter v1.2.2
+    Checking idna v1.1.0
+   Compiling tokio-macros v2.7.2
+    Checking tokio v1.53.2
+    Checking url v2.5.8
+    Checking num-bigint v0.4.8
+    Checking tokio-util v0.7.19
+    Checking h2 v0.4.19
+    Checking num-rational v0.4.2
+   Compiling serde_json v1.0.151
+    Checking hyper v1.11.1
+   Compiling libz-sys v1.1.29
+    Checking hyper-util v0.1.21
+    Checking zvariant v5.15.0
+    Checking tower v0.5.3
+    Checking tokio-rustls v0.26.6
+   Compiling libgit2-sys v0.18.8+1.9.7
+    Checking hyper-rustls v0.27.10
+    Checking zbus_names v4.3.4
+    Checking zbus v5.19.0
+    Checking av-scenechange v0.14.1
+    Checking av1-grain v0.2.5
+   Compiling freetype-sys v0.20.1
+    Checking schemars v1.2.2
+    Checking rav1e v0.8.1
+    Checking git2 v0.20.4
+    Checking tokio-socks v0.5.3
+    Checking gpui_util v0.2.2
+   Compiling zed-font-kit v0.14.1-zed
+    Checking ravif v0.13.0
+    Checking zed-reqwest v0.12.15-zed
+    Checking num v0.4.3
+    Checking ashpd v0.12.3
+    Checking image v0.25.10
+    Checking oo7 v0.5.0
+    Checking ashpd v0.11.1
+    Checking gpui_http_client v0.2.2
+    Checking tower-http v0.6.11
+    Checking gpui v0.2.2
+    Checking reqwest v0.12.28
+    Checking bello-workbench v0.1.0 (https://github.com/BelloWare/BelloBox.git?rev=393133cd19d134ffd93c3a86449d94a7b1040683#393133cd)
+    Checking bello-workbench-ui v0.1.0 (https://github.com/BelloWare/BelloBox.git?rev=393133cd19d134ffd93c3a86449d94a7b1040683#393133cd)
+    Checking bello-agent-core v0.1.0 (<staging-repository>/rust/crates/bello-agent-core)
+    Checking bello-agent-app v0.1.0 (<staging-repository>/rust/crates/bello-agent-app)
+    Finished `dev` profile [unoptimized] target(s) in 1m 24s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`

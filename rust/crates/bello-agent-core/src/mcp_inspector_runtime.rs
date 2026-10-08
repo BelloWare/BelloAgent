@@ -65,7 +65,7 @@ impl Controller {
                 let _lifetime=InspectorLifetime{controller:owner.clone(),guard:Some(guard)};
                 let result=async {
                     let parameters=json!({"action":"invoke","server":server,"tool":tool,"arguments":arguments});
-                    let performed=tools.manager.perform(&parameters,false,cancel.clone(),||async {
+                    let performed=tools.manager.perform_inspector(&parameters,false,cancel.clone(),||async {
                         if owner.is_retired()||cancel.is_cancelled() { return Err(crate::Error::Cancelled) }
                         if let Some(configuration)=owner.configuration() { configuration.confirm_for_request().await?; }
                         owner.confirm_runtime_authority(cancel.clone()).await

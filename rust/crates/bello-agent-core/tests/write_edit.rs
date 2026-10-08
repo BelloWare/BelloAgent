@@ -1,5 +1,6 @@
 //! Same-filesystem native write/edit comparisons against extracted current Swift
 //! source. Only disposable fixtures; no production authority, provider or UI.
+//! Extracts the 0.1.121 synchronous helper; worker scheduling is outside this oracle.
 #![cfg(target_os = "macos")]
 use bello_agent_core::{
     provider::ToolCall,
@@ -71,10 +72,17 @@ fn oracle_source() -> String {
         "        let p=call.arguments",
         "        if [\"read\", \"ls\", \"find\", \"grep\"].contains(call.name)",
     );
+    let cancellation = section(
+        include_str!(
+            "../../../../packages/swift-host/Sources/PiAgentCore/BlockingWorkExecutor.swift"
+        ),
+        "final class BlockingWorkCancellation:",
+        "/// Bounds both blocking",
+    );
     let body = section(
         TOOLS,
-        "        case \"write\", \"edit\":",
-        "        default: throw AgentError(\"tool_unavailable\", \"Unsupported tool\")",
+        "    private static func writeOrEdit(",
+        "\n}\n\n/// Only immutable workspace paths cross into blocking workers.",
     );
     let definition =
         |name: &str| line(TOOLS, &format!("ToolDefinition(\"{name}\"")).trim_end_matches(',');
@@ -82,18 +90,19 @@ fn oracle_source() -> String {
         r#"import Foundation
 import Darwin
 {values}
+{cancellation}
 {context}
 }}
-private func invoke(_ call: ToolCall, files: FileToolContext) throws -> JSON {{
+private enum MutationOracle {{
+static func invoke(_ call: ToolCall, files: FileToolContext) throws -> JSON {{
     try Task.checkCancellation()
     let s: JSON = ["type":"string"]
     let definitions = [{write},{edit}]
     guard let definition = definitions.first(where:{{$0.name == call.name}}) else {{ throw AgentError("tool_unavailable", "Tool \(call.name) not found") }}
 {validation}
-    switch call.name {{
+    return try writeOrEdit(call, p, files: files, cancellation: BlockingWorkCancellation())
+}}
 {body}
-    default: throw AgentError("tool_unavailable", "Unsupported tool")
-    }}
 }}
 do {{
     let data = try Data(contentsOf:URL(fileURLWithPath:CommandLine.arguments[1]))
@@ -103,7 +112,7 @@ do {{
     let roots = request["roots"].list.map {{ URL(fileURLWithPath:$0.text!) }}
     let files = FileToolContext(cwd:cwd,roots:workspaceRoots(primary:cwd,additional:roots))
     var response: JSON
-    do {{ response = ["result":try invoke(ToolCall(id:"fixture",name:request["name"].text!,arguments:request["arguments"]),files:files)] }}
+    do {{ response = ["result":try MutationOracle.invoke(ToolCall(id:"fixture",name:request["name"].text!,arguments:request["arguments"]),files:files)] }}
     catch let error as AgentError {{ response = ["error":error.json] }}
     catch {{ let native=error as NSError; response=["nativeError":["domain":JSON(native.domain),"code":JSON(native.code)]] }}
     FileHandle.standardOutput.write(try response.data())

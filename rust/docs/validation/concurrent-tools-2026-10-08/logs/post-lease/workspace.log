@@ -1,0 +1,171 @@
+   Compiling bello-agent-core v0.1.0 (<repository>/rust/crates/bello-agent-core)
+    Finished `test` profile [unoptimized] target(s) in 28.97s
+     Running unittests src/lib.rs (<cargo-target>/debug/deps/bello_agent_core-94383b5840279b36)
+
+running 61 tests
+test workspace::attachment_tests::legacy_catalog_is_byte_preserved_and_wrong_version_images_are_rejected ... ok
+test workspace::attachment_tests::image_only_receipt_and_draft_clear_have_one_owner_at_each_rename_boundary ... ok
+test workspace::attachment_tests::newer_image_draft_and_exact_receipt_identity_cannot_be_erased_or_replaced ... ok
+test workspace::connection_tests::connection_switch_patches_identity_only_and_rejects_stale_expected_route ... ok
+test workspace::connection_tests::switch_never_materializes_an_unknown_pending_chat ... ok
+test workspace::connection_tests::uncertain_connection_commit_never_claims_rollback_or_accepts_more_writes ... ok
+test workspace::connection_tests::old_catalogs_do_not_invent_connections_or_rewrite_on_read ... ok
+test workspace::connection_tests::v6_requires_explicit_connection_field_and_valid_saved_identity ... ok
+test workspace::identity_tests::binding::binding_consumes_confirmed_existing_id_without_authority_io_or_retrust ... ok
+test workspace::identity_tests::all_legacy_versions_open_without_binding_or_rewrite_then_migrate_on_draft_write ... ok
+test workspace::identity_tests::binding::mismatched_root_rebinding_and_same_id_relocation_fail_without_catalog_write ... ok
+test workspace::identity_tests::binding::untrusted_stale_denied_and_unsupported_authority_cannot_mint_binding ... ok
+test workspace::identity_tests::enable_editing_patches_only_mode_and_stale_rows_cannot_take_it_back ... ok
+test workspace::identity_tests::binding::binding_pre_and_post_rename_failures_keep_drafts_archive_and_cancellation ... ok
+test workspace::identity_tests::invalid_v5_and_future_metadata_fail_before_confirmation_without_rewriting ... ok
+test workspace::identity_tests::source_ordinary_default_and_two_exact_wire_modes_do_not_create_tools ... ok
+test workspace::materialization_tests::first_receipt_and_checkpoint_requirement_share_before_and_after_rename_failure ... ok
+test workspace::materialization_tests::stale_draft_organization_and_register_never_regress_materialization ... ok
+test workspace::identity_tests::mode_pre_and_post_rename_failures_preserve_recovery_material_and_fence_writes ... ok
+test workspace::materialization_tests::v7_requires_explicit_valid_provenance_and_v6_reads_preserve_bytes ... ok
+test workspace::tests::archive_identity_validation_and_catalog_overflow_preserve_exact_bytes ... ok
+test workspace::tests::archive_malformed_metadata_and_future_versions_fail_before_confirmation ... ok
+test workspace::tests::archive_and_restore_fault_boundaries_preserve_memory_until_confirmed_reopen ... ok
+test workspace::tests::archive_metadata_survives_every_existing_writer_including_cancel_preparation ... ok
+test workspace::tests::archive_old_versions_open_without_rewrite_then_promote_only_on_mutation ... ok
+test workspace::tests::archive_patches_only_metadata_and_preserves_pending_and_settled_receipts ... ok
+test workspace::tests::archive_pending_materialization_is_atomic_without_transcript_and_can_retry ... ok
+test workspace::tests::archive_repeated_state_preserves_timestamp_pin_order_and_bytes ... ok
+test workspace::tests::archive_restore_of_pending_active_chat_materializes_without_state_transition ... ok
+test workspace::tests::archive_uncertainty_refuses_every_mutation_including_noop_and_stale_paths ... ok
+test workspace::tests::archive_visibility_exact_revision_fence_is_independent_and_monotonic ... ok
+test workspace::tests::archive_pending_success_retains_draft_pin_and_capacity_rejects_new_record ... ok
+test workspace::tests::archive_visibility_fault_boundaries_require_confirmed_reopen ... ok
+test workspace::tests::cancel_receipt_fence_and_draft_fence_remain_independent_across_retries ... ok
+test workspace::tests::cancel_revision_allocation_and_catalog_overflow_leave_original_recovery_material ... ok
+test workspace::tests::cancel_without_a_retained_queued_draft_preserves_ordinary_typing ... ok
+test workspace::tests::cancellation_settlement_catalog_revision_overflow_rolls_back_every_change ... ok
+test workspace::tests::cancellation_prepare_is_atomic_at_real_rename_boundaries_and_reopen_confirms ... ok
+test workspace::tests::catalog_promotion_is_monotonic_and_other_transactions_preserve_cancel_receipts ... ok
+test workspace::tests::clearing_debounce_carries_intent_and_late_debounce_cannot_resurrect_settled_send ... ok
+test workspace::tests::cancellation_settlement_is_atomic_at_real_rename_boundaries ... ok
+test workspace::tests::dropped_workspace_releases_writer_with_duplicated_descriptor ... ok
+test workspace::tests::exact_flush_and_cancel_reject_equal_revision_different_contents_without_writes ... ok
+test workspace::tests::exact_pending_retry_updates_only_newer_valid_draft_and_rejects_payload_conflict ... ok
+test workspace::tests::exact_flush_failure_never_authorizes_dispatch_before_reopen_confirmation ... ok
+test workspace::tests::exact_retry_and_settlement_preserve_a_different_newer_held_draft ... ok
+test workspace::tests::failed_intent_commit_keeps_text_or_durable_receipt_at_each_rename_boundary ... ok
+test workspace::tests::failures_preserve_memory_and_postrename_uncertainty_blocks_writes ... ok
+test workspace::tests::lock_and_project_binding_are_checked ... ok
+test workspace::tests::existing_catalog_confirmation_is_required_without_opening_rewrite_for_all_versions ... ok
+test workspace::tests::newer_held_draft_must_be_reconciled_before_cancellation_can_settle ... ok
+test workspace::tests::pending_creation_has_no_catalog_and_atomic_materialization_keeps_draft ... ok
+test workspace::tests::pin_commit_failure_preserves_old_state_or_marks_uncertain_until_reopen ... ok
+test workspace::tests::rejected_preparation_without_receipt_cannot_be_resurrected_by_late_debounce ... ok
+test workspace::tests::same_edit_with_a_different_turn_conflicts_even_on_exact_pending_retry ... ok
+test workspace::tests::settlement_accepts_an_exact_already_reconciled_source_and_validates_the_whole_merge ... ok
+test workspace::tests::stale_draft_and_selection_writes_never_replace_newer_records ... ok
+test workspace::tests::submission_receipt_and_clear_are_atomic_and_do_not_clear_newer_typing ... ok
+test workspace::tests::workspace_failed_open_releases_lease_without_rewriting_catalog ... ok
+test workspace::tests::wrong_cancel_identity_revision_payload_and_unknown_chat_never_mutate_catalog ... ok
+test workspace::tests::malformed_cancel_receipts_fail_before_confirmation_and_preserve_exact_bytes ... ok
+
+test result: ok. 61 passed; 0 failed; 0 ignored; 0 measured; 530 filtered out; finished in 0.08s
+
+     Running tests/bash_native.rs (<cargo-target>/debug/deps/bash_native-e32f4d0cd1379364)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/chat_workspace.rs (<cargo-target>/debug/deps/chat_workspace-bc8ec03205a18fed)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.00s
+
+     Running tests/find.rs (<cargo-target>/debug/deps/find-7bbae4100c1b72cb)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/instruction_discovery.rs (<cargo-target>/debug/deps/instruction_discovery-586b563c016d11e4)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+     Running tests/process_locks.rs (<cargo-target>/debug/deps/process_locks-965491e0896ded75)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/production_tools.rs (<cargo-target>/debug/deps/production_tools-21e433314652b18f)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+     Running tests/project_skills.rs (<cargo-target>/debug/deps/project_skills-81b6a0612184cd78)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.00s
+
+     Running tests/project_skills_native.rs (<cargo-target>/debug/deps/project_skills_native-60b7104902e9b429)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/queued_cancellation.rs (<cargo-target>/debug/deps/queued_cancellation-e35a3cb6d0f93095)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s
+
+     Running tests/read_content_history.rs (<cargo-target>/debug/deps/read_content_history-1adcfcbe1caf0b25)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+     Running tests/read_text_native.rs (<cargo-target>/debug/deps/read_text_native-9e6ed00cb25f0077)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/runtime.rs (<cargo-target>/debug/deps/runtime-c6db17bc1b7d9874)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.00s
+
+     Running tests/sidebar_organization.rs (<cargo-target>/debug/deps/sidebar_organization-42a9754991a48110)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+
+     Running tests/tool_history.rs (<cargo-target>/debug/deps/tool_history-aa983aef73668ab5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.00s
+
+     Running tests/tools.rs (<cargo-target>/debug/deps/tools-2eb9aa642bdb8213)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 20 filtered out; finished in 0.00s
+
+     Running tests/transport.rs (<cargo-target>/debug/deps/transport-0e78c34d30614ff9)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+
+     Running tests/write_edit.rs (<cargo-target>/debug/deps/write_edit-02d0293eeeadd0fc)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

@@ -1,0 +1,91 @@
+{
+  "schema": 1,
+  "date_utc": "2026-10-08",
+  "base_commit": "9a07b0062a4e500f1dc49cc9656b90d15b970d93",
+  "status": "Fresh local integrated candidate with workspace lease supplement; does not claim publication or exact-commit CI success.",
+  "rustc": "1.99.0",
+  "platform": "x86_64-unknown-linux-gnu",
+  "build_jobs": 2,
+  "test_threads": 2,
+  "source_binding": "post-lease-source-binding.json",
+  "source_binding_sha256": "720b1926c50f1a37b472bbf615e2072db7d2b86869f0846ed7f922f733466c70",
+  "source_files_verified_unchanged": 303,
+  "lease_patch_sha256": "85865abf1207d4807e91018ca326265601eaa3aad541ce3500e0cb73b79e43d2",
+  "checks": [
+    {
+      "command": "cargo test --manifest-path rust/Cargo.toml --offline --locked -p bello-agent-core --all-features workspace:: -- --test-threads=2",
+      "exit_code": 0,
+      "log": "logs/post-lease/workspace.log",
+      "raw_sha256": "fc69deb0845360b130dcf486cca427ba2716e15b892607e43979fcd757de82b1",
+      "normalized_sha256": "6151c75819e2424dfbb8165ffba3d26d1f35389253dd7cf31fc030b0db948c1d",
+      "passed": 61
+    },
+    {
+      "command": "cargo test --manifest-path rust/Cargo.toml --offline --locked -p bello-agent-core --test process_locks -- --test-threads=2",
+      "exit_code": 0,
+      "log": "logs/post-lease/process-locks.log",
+      "raw_sha256": "2c1d0bc59889c36d0defcf108391fc307fc60e7abe354486cc3d972254bf6501",
+      "normalized_sha256": "6816abbdeec3a82469cd80f92e32c2a1cbbab5e3e59f73b5a6ff2466dc0a4f40",
+      "passed": 3
+    },
+    {
+      "command": "cargo test --manifest-path rust/Cargo.toml --offline --locked -p bello-agent-core --all-features -- --test-threads=2",
+      "exit_code": 0,
+      "log": "logs/post-lease/core-all-features.log",
+      "raw_sha256": "34e8c9384776d14a8ea75018ddc03d687693e460bda6073dfb7dea8196af984d",
+      "normalized_sha256": "b6636ab7d54eb0eea3336c9a799c66727ab2e843482c1ba3fa85a3ca47609624",
+      "passed": 591,
+      "integration_passed": 127,
+      "ignored": 0
+    },
+    {
+      "command": "cargo clippy --manifest-path rust/Cargo.toml --offline --locked -p bello-agent-core --all-features --all-targets -- -D warnings",
+      "exit_code": 0,
+      "log": "logs/post-lease/core-clippy.log",
+      "raw_sha256": "15068522964413645742bcd66ff4c9756dccb09b79125a06e8e5b0e233a11d0b",
+      "normalized_sha256": "b3cdbc30dd4b895e09f7d180e849c3f9901f7a321a29a8b425d770a3ad4b5646"
+    },
+    {
+      "command": "cargo test --manifest-path rust/Cargo.toml --offline --locked -p bello-agent-app --features synthetic-authority shutdown_barrier:: -- --test-threads=2",
+      "exit_code": 101,
+      "log": "logs/post-lease/app-shutdown.log",
+      "raw_sha256": "ef4c1476da17c60df917b50bac2d7929a691b983accfd7b9ce95bca42fe76a43",
+      "normalized_sha256": "0f28348e62a6667b596f7a162021cc292a7ab914df90bfab3c2da9bacb4f40e4",
+      "outcome": "Environment-only link failure: plain compiler environment omitted xcb/xkbcommon library search paths. No tests executed. Exact retry used verified GPUI sysroot configuration."
+    },
+    {
+      "command": "cargo test --manifest-path rust/Cargo.toml --offline --locked -p bello-agent-app --features synthetic-authority shutdown_barrier:: -- --test-threads=2",
+      "exit_code": 0,
+      "log": "logs/post-lease/app-shutdown-configured.log",
+      "raw_sha256": "bcb57611c1860254d9d983e087b7f803a378a8f0dc1b996e64511df56d22e4a3",
+      "normalized_sha256": "9d9d60a82d36703e82c8ad90987614c09b4131c5464913940ae19409023f97e6",
+      "passed": 4
+    },
+    {
+      "command": "cargo test --manifest-path rust/Cargo.toml --offline --locked -p bello-agent-app --features synthetic-authority -- --test-threads=2",
+      "exit_code": 0,
+      "log": "logs/post-lease/app-synthetic-full.log",
+      "raw_sha256": "327362e52aee87f9e24e4928fd171c1ec0cbe61fce85f6d5f70ef83bdd52a115",
+      "normalized_sha256": "5c5996816b2b1ae649cd44008c38cebe443595a5502212973c2b7de21c2cc17b",
+      "passed": 581,
+      "ignored": 3,
+      "failed": 0
+    },
+    {
+      "command": "cargo clippy --manifest-path rust/Cargo.toml --offline --locked -p bello-agent-app --features synthetic-authority --all-targets -- -D warnings",
+      "exit_code": 0,
+      "log": "logs/post-lease/app-clippy.log",
+      "raw_sha256": "6cd5b4cfafd0378123763707701cf1a23c37df3880575c5771f7090d1f1404d7",
+      "normalized_sha256": "e5cf3d1a983945b3fbfbf54c3f3301687da06a984c445bc977b3475b1b0f3315"
+    }
+  ],
+  "formatting": "cargo fmt --manifest-path rust/Cargo.toml --all -- --check exited0 after exact lease patch application.",
+  "prior_validation": "pre-lease-validation.json retains default415+127 and all-feature589+127 plus prior Clippy/App typecheck. Full default suite was not rerun after lease supplement.",
+  "environment": "Core uses pinned compiler and cached locked dependencies. App uses verified local GPUI build prerequisites and library/pkg-config search paths; no GUI runtime setup or native credentials.",
+  "limits": [
+    "Native macOS source-oracle execution remains pending for this combined candidate.",
+    "Synthetic headless App tests do not establish interactive GUI, native macOS input/accessibility, Keychain, signing, or performance acceptance.",
+    "The three App ignored tests remain ignored and are not passing coverage.",
+    "Existing proc-macro-error2 future-incompatibility advisory remains; strict Clippy exited0."
+  ]
+}

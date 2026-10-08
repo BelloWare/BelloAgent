@@ -1,0 +1,22 @@
+   Compiling bello-agent-core v0.1.0 (<isolated-lease-repair>/rust/crates/bello-agent-core)
+    Finished `test` profile [unoptimized] target(s) in 11.46s
+     Running unittests src/lib.rs (<cargo-target>/debug/deps/bello_agent_core-8bfe315c8d6b13f3)
+
+running 1 test
+test workspace::tests::dropped_workspace_releases_writer_with_duplicated_descriptor ... FAILED
+
+failures:
+
+---- workspace::tests::dropped_workspace_releases_writer_with_duplicated_descriptor stdout ----
+
+thread 'workspace::tests::dropped_workspace_releases_writer_with_duplicated_descriptor' (45) panicked at crates/bello-agent-core/src/workspace.rs:2641:67:
+called `Result::unwrap()` on an `Err` value: Invalid("This Rust workspace is already open elsewhere")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    workspace::tests::dropped_workspace_releases_writer_with_duplicated_descriptor
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 410 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p bello-agent-core --lib`

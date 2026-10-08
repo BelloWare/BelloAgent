@@ -56,7 +56,7 @@ pub enum ToolError {
     Failure { code: &'static str, message: String },
     #[error("Stopped")]
     Cancelled,
-    /// The workspace editing gate or current authority refused admission.
+    /// Current authority or pre-entry cancellation refused admission.
     #[error("{0}")]
     NotExecuted(String),
     // Keep native Foundation failure identity for direct callers and fixtures.
@@ -194,7 +194,8 @@ pub struct NativeTools {
     paths: FileToolContext,
     capabilities: BTreeSet<Capability>,
     workers: BlockingWorkExecutor,
-    editing_gate: Arc<tokio::sync::Mutex<()>>,
+    #[cfg(test)]
+    admission_barrier: Arc<Mutex<Option<Arc<TestAdmissionBarrier>>>>,
     #[cfg(unix)]
     shell_jobs: Arc<bash::Jobs>,
     #[cfg(unix)]
@@ -213,7 +214,30 @@ pub struct NativeTools {
     after_mutation: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
+/// Deterministic per-instance pre-effect admission seam; absent in production.
+#[cfg(test)]
+pub(crate) struct TestAdmissionBarrier {
+    pub entered: tokio::sync::Notify,
+    release: tokio::sync::Semaphore,
+}
+#[cfg(test)]
+impl TestAdmissionBarrier {
+    pub fn release(&self) {
+        self.release.add_permits(1);
+    }
+}
+
 impl NativeTools {
+    #[cfg(test)]
+    pub(crate) fn pause_admission_for_test(&self) -> Arc<TestAdmissionBarrier> {
+        let barrier = Arc::new(TestAdmissionBarrier {
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Semaphore::new(0),
+        });
+        *self.admission_barrier.lock().unwrap() = Some(barrier.clone());
+        barrier
+    }
+
     /// Explicit absolute paths stand in for the Swift host's already-created
     /// file URLs. Construction performs no filesystem or environment discovery.
     pub fn new(
@@ -261,7 +285,8 @@ impl NativeTools {
             paths: FileToolContext { cwd, roots, home },
             capabilities,
             workers: BlockingWorkExecutor::shared(),
-            editing_gate: Arc::new(tokio::sync::Mutex::new(())),
+            #[cfg(test)]
+            admission_barrier: Arc::new(Mutex::new(None)),
             #[cfg(unix)]
             shell_jobs: Arc::new(bash::Jobs::default()),
             #[cfg(unix)]
@@ -303,11 +328,6 @@ impl NativeTools {
         tools.capabilities = capabilities.into_iter().collect();
         tools.synthetic_mutations = true;
         Ok(tools)
-    }
-
-    pub(crate) fn with_editing_gate(mut self, gate: Arc<tokio::sync::Mutex<()>>) -> Self {
-        self.editing_gate = gate;
-        self
     }
 
     pub(crate) fn editing_call(&self, call: &ToolCall) -> bool {
@@ -549,6 +569,9 @@ impl NativeTools {
         call: &ToolCall,
         cancellation: CancellationToken,
     ) -> ToolResult<Value> {
+        // Preserve the direct NativeTools cancellation contract. Controller
+        // pre-entry admission separately records NotExecuted before this API.
+        check_cancelled(&cancellation)?;
         self.invoke_mapped(call, cancellation, Ok).await
     }
 
@@ -580,24 +603,30 @@ impl NativeTools {
         T: Send + 'static,
         F: FnOnce(Value) -> ToolResult<T> + Send + 'static,
     {
-        // Swift acquires the shared workspace gate before marking an editing
-        // invocation begun. Keep the guard through worker settlement/retention.
-        let _editing = if self.editing_call(call) {
-            let guard = tokio::select! {
-                biased;
-                _ = cancellation.cancelled() => return Err(ToolError::NotExecuted("Not executed: cancelled before invocation".into())),
-                guard = self.editing_gate.clone().lock_owned() => guard,
-            };
-            if cancellation.is_cancelled() {
-                return Err(ToolError::NotExecuted(
-                    "Not executed: cancelled before invocation".into(),
-                ));
+        #[cfg(test)]
+        {
+            let barrier = self.admission_barrier.lock().unwrap().clone();
+            if let Some(barrier) = barrier {
+                barrier.entered.notify_one();
+                tokio::select! {
+                    biased;
+                    _ = cancellation.cancelled() => return Err(ToolError::NotExecuted("Not executed: cancelled before invocation".into())),
+                    permit = barrier.release.acquire() => { drop(permit); }
+                }
             }
-            Some(guard)
-        } else {
-            None
-        };
-        admission.await?;
+        }
+        // The source runs editing calls concurrently. Authority admission is
+        // independent of physical worker ownership and cannot serialize tools.
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => return Err(ToolError::NotExecuted("Not executed: cancelled before invocation".into())),
+            result = admission => result?,
+        }
+        if cancellation.is_cancelled() {
+            return Err(ToolError::NotExecuted(
+                "Not executed: cancelled before invocation".into(),
+            ));
+        }
         check_cancelled(&cancellation)?;
         if !self.offers(&call.name) {
             return Err(ToolError::failure(
@@ -660,7 +689,6 @@ impl NativeTools {
                     let result = workers
                         .run(token, move |cancel| {
                             let _job = job;
-                            let editing = _editing;
                             let mut completion =
                                 bash::run(request, &cwd, &directory, environment, &cancel, update)?;
                             let result = std::mem::replace(
@@ -669,7 +697,6 @@ impl NativeTools {
                             )
                             .and_then(map);
                             if completion.physically_settled() {
-                                drop(editing);
                                 if let Some(sender) =
                                     sender.lock().expect("Bash result mutex").take()
                                 {
@@ -682,7 +709,6 @@ impl NativeTools {
                                     let _ = sender.send(result);
                                 }
                                 completion.reap();
-                                drop(editing);
                             }
                             Ok(())
                         })
@@ -726,9 +752,7 @@ impl NativeTools {
         let after_mutation = self.after_mutation.clone();
         self.workers
             .run(cancellation, move |cancel| {
-                // Caller cancellation-by-drop must not release workspace
-                // mutation admission while this native worker still runs.
-                let _editing = _editing;
+                // Physical worker ownership survives cancellation-by-drop.
                 #[cfg(test)]
                 if let Some(callback) = before_read {
                     callback();

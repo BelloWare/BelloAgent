@@ -210,12 +210,6 @@ impl SyntheticProjectRuntime {
         });
         guard.confirm()?;
         let tools = if mode == ChatToolMode::Editing {
-            let gate = self
-                .binding
-                .workspace
-                .lock()
-                .map_err(|_| invalid("Workspace is unavailable"))?
-                .editing_gate();
             #[cfg(all(test, not(target_os = "macos")))]
             if options.synthetic_mutations {
                 TrustedReadOnlyTools::synthetic_mutation_fixture(
@@ -223,7 +217,6 @@ impl SyntheticProjectRuntime {
                     self.binding.project.paths.clone(),
                     home,
                     options.capabilities,
-                    gate,
                 )?
             } else {
                 TrustedReadOnlyTools::new_with_editing_capabilities(
@@ -231,7 +224,6 @@ impl SyntheticProjectRuntime {
                     self.binding.project.paths.clone(),
                     home,
                     options.capabilities,
-                    gate,
                 )?
             }
             #[cfg(not(all(test, not(target_os = "macos"))))]
@@ -240,7 +232,6 @@ impl SyntheticProjectRuntime {
                 self.binding.project.paths.clone(),
                 home,
                 options.capabilities,
-                gate,
             )?
         } else {
             TrustedReadOnlyTools::new_with_capabilities(

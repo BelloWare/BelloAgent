@@ -653,16 +653,30 @@ impl WorkspaceSnapshot {
         Ok(())
     }
 }
+// Close alone leaves the lease alive if a concurrent fork/exec inherited the
+// open file description. Release it explicitly only after this owner is done.
+// Construct the guard only after acquisition succeeds; never unlink the sidecar.
+struct WorkspaceLock(File);
+impl WorkspaceLock {
+    fn acquire(file: File) -> Result<Self> {
+        file.try_lock()
+            .map_err(|_| invalid("This Rust workspace is already open elsewhere"))?;
+        Ok(Self(file))
+    }
+}
+impl Drop for WorkspaceLock {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
+}
+
 /// Single writer, atomic small-file transactions. Revision receipts reject stale
 /// debounce work independently of wall-clock changes and task cancellation.
 pub struct WorkspaceStore {
-    // One in-memory source editing gate per live catalog owner. Every saved
-    // factory confirmation and chat shares it; it is never durable authority.
-    editing_gate: std::sync::Arc<tokio::sync::Mutex<()>>,
     pub(crate) mcp_manager: Option<std::sync::Arc<crate::mcp::McpManager>>,
     pub(crate) mcp_creation_gate: std::sync::Arc<std::sync::Mutex<()>>,
     path: PathBuf,
-    _lock: File,
+    _lock: WorkspaceLock,
     state: WorkspaceSnapshot,
     uncertain: bool,
     #[cfg(test)]
@@ -708,9 +722,7 @@ impl WorkspaceStore {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
         }
-        let lock = options.open(path.with_extension("workspace.lock"))?;
-        lock.try_lock()
-            .map_err(|_| invalid("This Rust workspace is already open elsewhere"))?;
+        let lock = WorkspaceLock::acquire(options.open(path.with_extension("workspace.lock"))?)?;
         let state = if path.exists() {
             if fs::metadata(&path)?.len() > MAX_BYTES as u64 {
                 return Err(invalid("Rust workspace catalog exceeds 16 MiB"));
@@ -728,7 +740,6 @@ impl WorkspaceStore {
             WorkspaceSnapshot::new(project)
         };
         Ok(Self {
-            editing_gate: std::sync::Arc::new(tokio::sync::Mutex::new(())),
             mcp_manager: None,
             mcp_creation_gate: std::sync::Arc::new(std::sync::Mutex::new(())),
             path,
@@ -738,9 +749,6 @@ impl WorkspaceStore {
             #[cfg(test)]
             fault: Fault::None,
         })
-    }
-    pub(crate) fn editing_gate(&self) -> std::sync::Arc<tokio::sync::Mutex<()>> {
-        self.editing_gate.clone()
     }
 
     pub(crate) fn state_directory(&self) -> PathBuf {
@@ -2626,6 +2634,50 @@ mod tests {
     fn lock_and_project_binding_are_checked() {
         let (dir, _store, _) = fixture();
         assert!(WorkspaceStore::open(dir.path().join("workspace.json"), dir.path()).is_err());
+    }
+    #[test]
+    fn dropped_workspace_releases_writer_with_duplicated_descriptor() {
+        let (dir, mut store, chat) = fixture();
+        store.register(chat, DraftRecord::default()).unwrap();
+        let path = dir.path().join("workspace.json");
+        let before = std::fs::read(&path).unwrap();
+        // A fork inherits the same open file description until exec closes it.
+        // Duplicate it deterministically rather than racing a child process.
+        let inherited = store._lock.0.try_clone().unwrap();
+        assert!(WorkspaceStore::open(&path, dir.path()).is_err());
+        drop(store);
+        let replacement = WorkspaceStore::open(&path, dir.path()).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        drop(inherited);
+        // Closing the old duplicate must not release the replacement's lease.
+        assert!(WorkspaceStore::open(&path, dir.path()).is_err());
+        drop(replacement);
+        drop(WorkspaceStore::open(&path, dir.path()).unwrap());
+    }
+    #[test]
+    fn workspace_failed_open_releases_lease_without_rewriting_catalog() {
+        let (dir, mut store, chat) = fixture();
+        store.register(chat, DraftRecord::default()).unwrap();
+        let path = dir.path().join("workspace.json");
+        let before = std::fs::read(&path).unwrap();
+        drop(store);
+        assert!(
+            WorkspaceStore::open_with_confirmation(&path, dir.path(), |_| {
+                Err(invalid("injected confirmation failure"))
+            })
+            .is_err()
+        );
+        let replacement = WorkspaceStore::open(&path, dir.path()).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        // A failed independent acquisition must not unlock the live owner.
+        for _ in 0..2 {
+            assert!(matches!(
+                WorkspaceStore::open(&path, dir.path()),
+                Err(Error::Invalid(message)) if message == "This Rust workspace is already open elsewhere"
+            ));
+        }
+        drop(replacement);
+        drop(WorkspaceStore::open(&path, dir.path()).unwrap());
     }
     fn held_draft(revision: u64) -> DraftRecord {
         DraftRecord {

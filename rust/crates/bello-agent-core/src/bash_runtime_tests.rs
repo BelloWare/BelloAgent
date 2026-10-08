@@ -130,14 +130,14 @@ async fn checkpoint_failure_after_shell_effect_recovers_unknown_without_automati
 }
 
 #[tokio::test]
-async fn cancelled_retirement_waiter_keeps_writer_and_gate_after_logical_shell_result() {
+async fn cancelled_retirement_waiter_keeps_writer_and_worker_after_logical_shell_result() {
     use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("session.json");
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let profile:Profile=serde_json::from_value(json!({"id":"fixture","api":"openai-responses","providerId":"litellm","modelId":"fixture-model","baseUrl":format!("http://{}",listener.local_addr().unwrap()),"contextWindow":32000,"maxOutputTokens":4096})).unwrap();
-    let gate = Arc::new(tokio::sync::Mutex::new(()));
+    let executor = BlockingWorkExecutor::new(2, 4);
     let started = Arc::new(tokio::sync::Notify::new());
     let cleanup = Arc::new(tokio::sync::Notify::new());
     let (release, released) = std::sync::mpsc::channel();
@@ -145,7 +145,7 @@ async fn cancelled_retirement_waiter_keeps_writer_and_gate_after_logical_shell_r
     let notice = started.clone();
     let at_cleanup = cleanup.clone();
     let native = tools(root.path())
-        .with_editing_gate(gate.clone())
+        .with_executor(executor.clone())
         .with_shell_update(Some(Arc::new(move |update| {
             if update.preview.contains("started") {
                 notice.notify_one();
@@ -235,7 +235,7 @@ async fn cancelled_retirement_waiter_keeps_writer_and_gate_after_logical_shell_r
     assert!(futures_util::poll!(&mut first).is_pending());
     drop(first);
     assert!(SessionStore::open(&path).is_err());
-    assert!(gate.try_lock().is_err());
+    assert_eq!(executor.occupancy().active, 1);
     let mut second = Box::pin(controller.retire_and_wait());
     assert!(futures_util::poll!(&mut second).is_pending());
     release.send(()).unwrap();
@@ -243,7 +243,13 @@ async fn cancelled_retirement_waiter_keeps_writer_and_gate_after_logical_shell_r
         .await
         .unwrap()
         .unwrap();
-    assert!(gate.try_lock().is_ok());
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while executor.occupancy().active != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
     let reopened = SessionStore::open(&path).unwrap();
     assert_eq!(reopened.snapshot().state, RunState::Paused);
     server.await.unwrap();

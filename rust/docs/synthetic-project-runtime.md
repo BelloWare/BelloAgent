@@ -80,9 +80,9 @@ interaction are distinct gates; no new desktop acceptance is claimed.
 ## Explicit write/edit validation path
 
 The later write/edit checkpoint adds only `open_editing_chat` to this synthetic
-host. It shares one ephemeral workspace editing gate across controllers and fresh
-project confirmations, rechecks current trust/catalog after waiting, and keeps
-that gate owned by entered native workers even if their caller is dropped.
+host. Main 0.1.121 runs these calls concurrently across controllers, retaining
+pre-effect trust/catalog checks and bounded physical worker ownership even if
+the caller is dropped. There is no workspace or same-file mutation lock.
 Public read-only tool constructors still reject mutation capabilities. Paths
 remain resolution context, not a sandbox. Defaults and production composition are
 unchanged; Linux actual file mutations exist only in cfg(test) temporary adapters.

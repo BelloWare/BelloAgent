@@ -283,33 +283,40 @@ public actor NativeTools: ToolExecuting {
             guard timeout > 0 else { throw AgentError("tool_arguments", "Timeout must be positive") }
             return try await ShellRun(command:command,cwd:cwd,outputDirectory:outputs,onUpdate:onUpdate).run(timeoutSeconds:timeout)
         case "write", "edit":
-            let file=try files.path(p["path"],existing:call.name == "edit"); var value: String; var previous=""
-            if call.name == "write" {
-                guard let content=p["content"].text, content.utf8.count <= 16*1024*1024 else { throw AgentError("tool_arguments", "Content must be text below 16 MiB") }; value=content
-                previous=(try? readBounded(file,maximum:16*1024*1024)).flatMap { String(data:$0,encoding:.utf8) } ?? ""
-            } else {
-                let old=try required(p["oldText"],"oldText",maximum:4*1024*1024)
-                guard let new=p["newText"].text, new.utf8.count <= 4*1024*1024, let existing=String(data:try readBounded(file,maximum:16*1024*1024),encoding:.utf8) else { throw AgentError("tool_arguments", "Invalid edit or non-text file") }
-                let parts=existing.components(separatedBy:old)
-                guard parts.count == 2 else { throw AgentError("edit_match", "oldText must match exactly once; found \(parts.count-1) matches") }
-                value=parts[0]+new+parts[1]; previous=existing
-            }
-            try Task.checkCancellation()
-            try FileManager.default.createDirectory(at:file.deletingLastPathComponent(),withIntermediateDirectories:true)
-            let attributes=try? FileManager.default.attributesOfItem(atPath:file.path)
-            try Data(value.utf8).write(to:file,options:.atomic)
-            if let permissions=attributes?[.posixPermissions] { try FileManager.default.setAttributes([.posixPermissions:permissions],ofItemAtPath:file.path) }
-            let stats=lineDiffStats(previous,value)
-            var result=resultText("\(call.name == "edit" ? "Edited" : "Wrote") \(file.path) (+\(stats.added) -\(stats.removed))")
-            result["stats"]=["path":JSON(file.path),"added":JSON(stats.added),"removed":JSON(stats.removed)]
-            // Where it changed, for a file that was there before: a new file
-            // is shown from its start.
-            if attributes != nil, let lines=ViewerLines.changed(previous,value) {
-                result["stats"]["line"]=JSON(lines.lowerBound); result["stats"]["lastLine"]=JSON(lines.upperBound)
-            }
-            return result
+            // Off the actor, like reads: edits and writes run at the same
+            // time as each other and as every other call (owner, 2026-10-08).
+            let files=self.files
+            return try await workers.run { try Self.writeOrEdit(call, p, files: files, cancellation: $0) }
         default: throw AgentError("tool_unavailable", "Unsupported tool")
         }
+    }
+    /// One write or edit, read-modify-write on a blocking worker.
+    private static func writeOrEdit(_ call: ToolCall, _ p: JSON, files: FileToolContext, cancellation: BlockingWorkCancellation) throws -> JSON {
+        let file=try files.path(p["path"],existing:call.name == "edit"); var value: String; var previous=""
+        if call.name == "write" {
+            guard let content=p["content"].text, content.utf8.count <= 16*1024*1024 else { throw AgentError("tool_arguments", "Content must be text below 16 MiB") }; value=content
+            previous=(try? readBounded(file,maximum:16*1024*1024)).flatMap { String(data:$0,encoding:.utf8) } ?? ""
+        } else {
+            let old=try required(p["oldText"],"oldText",maximum:4*1024*1024)
+            guard let new=p["newText"].text, new.utf8.count <= 4*1024*1024, let existing=String(data:try readBounded(file,maximum:16*1024*1024),encoding:.utf8) else { throw AgentError("tool_arguments", "Invalid edit or non-text file") }
+            let parts=existing.components(separatedBy:old)
+            guard parts.count == 2 else { throw AgentError("edit_match", "oldText must match exactly once; found \(parts.count-1) matches") }
+            value=parts[0]+new+parts[1]; previous=existing
+        }
+        try cancellation.checkCancellation()
+        try FileManager.default.createDirectory(at:file.deletingLastPathComponent(),withIntermediateDirectories:true)
+        let attributes=try? FileManager.default.attributesOfItem(atPath:file.path)
+        try Data(value.utf8).write(to:file,options:.atomic)
+        if let permissions=attributes?[.posixPermissions] { try FileManager.default.setAttributes([.posixPermissions:permissions],ofItemAtPath:file.path) }
+        let stats=lineDiffStats(previous,value)
+        var result=resultText("\(call.name == "edit" ? "Edited" : "Wrote") \(file.path) (+\(stats.added) -\(stats.removed))")
+        result["stats"]=["path":JSON(file.path),"added":JSON(stats.added),"removed":JSON(stats.removed)]
+        // Where it changed, for a file that was there before: a new file
+        // is shown from its start.
+        if attributes != nil, let lines=ViewerLines.changed(previous,value) {
+            result["stats"]["line"]=JSON(lines.lowerBound); result["stats"]["lastLine"]=JSON(lines.upperBound)
+        }
+        return result
     }
 }
 

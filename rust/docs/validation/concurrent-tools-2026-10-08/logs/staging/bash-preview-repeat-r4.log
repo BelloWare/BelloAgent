@@ -1,0 +1,140 @@
+repeat 1
+
+running 1 test
+test saved_runtime::tests::bash_tests::saved_editing_two_calls_live_failure_continuation_and_reopen ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 588 filtered out; finished in 0.26s
+
+repeat 2
+
+running 1 test
+test saved_runtime::tests::bash_tests::saved_editing_two_calls_live_failure_continuation_and_reopen ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 588 filtered out; finished in 0.17s
+
+repeat 3
+
+running 1 test
+test saved_runtime::tests::bash_tests::saved_editing_two_calls_live_failure_continuation_and_reopen ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 588 filtered out; finished in 0.17s
+
+repeat 4
+
+running 1 test
+test saved_runtime::tests::bash_tests::saved_editing_two_calls_live_failure_continuation_and_reopen ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 588 filtered out; finished in 0.10s
+
+repeat 5
+
+running 1 test
+test saved_runtime::tests::bash_tests::saved_editing_two_calls_live_failure_continuation_and_reopen ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 588 filtered out; finished in 0.18s
+
+repeat 6
+
+running 1 test
+test saved_runtime::tests::bash_tests::saved_editing_two_calls_live_failure_continuation_and_reopen ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 588 filtered out; finished in 0.18s
+
+repeat 7
+
+running 1 test
+test saved_runtime::tests::bash_tests::saved_editing_two_calls_live_failure_continuation_and_reopen ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 588 filtered out; finished in 0.11s
+
+repeat 8
+
+running 1 test
+test saved_runtime::tests::bash_tests::saved_editing_two_calls_live_failure_continuation_and_reopen ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 588 filtered out; finished in 0.17s
+
+repeat 9
+
+running 1 test
+test saved_runtime::tests::bash_tests::saved_editing_two_calls_live_failure_continuation_and_reopen ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 588 filtered out; finished in 0.17s
+
+repeat 10
+
+running 1 test
+test saved_runtime::tests::bash_tests::saved_editing_two_calls_live_failure_continuation_and_reopen ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 588 filtered out; finished in 0.18s
+
+repeat 11
+
+running 1 test
+test saved_runtime::tests::bash_tests::saved_editing_two_calls_live_failure_continuation_and_reopen ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 588 filtered out; finished in 0.17s
+
+repeat 12
+
+running 1 test
+test saved_runtime::tests::bash_tests::saved_editing_two_calls_live_failure_continuation_and_reopen ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 588 filtered out; finished in 0.12s
+
+repeat 13
+
+running 1 test
+test saved_runtime::tests::bash_tests::saved_editing_two_calls_live_failure_continuation_and_reopen ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 588 filtered out; finished in 0.17s
+
+repeat 14
+
+running 1 test
+test saved_runtime::tests::bash_tests::saved_editing_two_calls_live_failure_continuation_and_reopen ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 588 filtered out; finished in 0.18s
+
+repeat 15
+
+running 1 test
+test saved_runtime::tests::bash_tests::saved_editing_two_calls_live_failure_continuation_and_reopen ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 588 filtered out; finished in 0.17s
+
+repeat 16
+
+running 1 test
+test saved_runtime::tests::bash_tests::saved_editing_two_calls_live_failure_continuation_and_reopen ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 588 filtered out; finished in 0.18s
+
+repeat 17
+
+running 1 test
+test saved_runtime::tests::bash_tests::saved_editing_two_calls_live_failure_continuation_and_reopen ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 588 filtered out; finished in 0.17s
+
+repeat 18
+
+running 1 test
+test saved_runtime::tests::bash_tests::saved_editing_two_calls_live_failure_continuation_and_reopen ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 588 filtered out; finished in 0.10s
+
+repeat 19
+
+running 1 test
+test saved_runtime::tests::bash_tests::saved_editing_two_calls_live_failure_continuation_and_reopen ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 588 filtered out; finished in 0.17s
+
+repeat 20
+
+running 1 test
+test saved_runtime::tests::bash_tests::saved_editing_two_calls_live_failure_continuation_and_reopen ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 588 filtered out; finished in 0.25s
+

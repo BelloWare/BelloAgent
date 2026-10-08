@@ -23,7 +23,7 @@ pub struct SavedChatOptions {
     pub instructions: String,
 }
 /// Owns no session writer and sends nothing. Opens obtain fresh authority;
-/// clones share the existing workspace editing gate, not a second registry.
+/// clones share the project MCP manager, not a second registry.
 #[derive(Clone)]
 pub struct SavedRuntimeFactory {
     authority: ProjectAuthority,
@@ -38,6 +38,24 @@ pub struct SavedRuntimeFactory {
     synthetic_mutations: bool,
 }
 impl SavedRuntimeFactory {
+    /// Synthetic-only mixed-tool acceptance uses the same saved runtime route.
+    #[cfg(all(test, feature = "synthetic-authority", unix))]
+    pub(crate) fn with_mixed_mcp_test_tools(mut self) -> Self {
+        self.options.editing_capabilities =
+            vec![Capability::Ls, Capability::Write, Capability::Bash];
+        self.shell_environment = Some(crate::tools::bash::Environment {
+            home: self.options.home.clone(),
+            path: "/usr/bin:/bin".into(),
+            lang: "C".into(),
+            temporary: self.options.home.clone(),
+        });
+        #[cfg(not(target_os = "macos"))]
+        {
+            self.synthetic_mutations = true;
+        }
+        self
+    }
+
     pub fn new(
         authority: ProjectAuthority,
         workspace: Arc<Mutex<WorkspaceStore>>,
@@ -103,7 +121,7 @@ impl SavedRuntimeFactory {
             .authority
             .load_mcp(&binding.project)
             .map_err(|e| invalid(e.to_string()))?;
-        let (directory, gate, previous) = {
+        let (directory, previous) = {
             let catalog = self
                 .workspace
                 .lock()
@@ -116,17 +134,13 @@ impl SavedRuntimeFactory {
                 }
                 return Ok(manager.clone());
             }
-            (
-                catalog.state_directory(),
-                catalog.editing_gate(),
-                catalog.mcp_manager.clone(),
-            )
+            (catalog.state_directory(), catalog.mcp_manager.clone())
         };
         let manager = match previous {
             Some(previous) if previous.project_id() == binding.project.id => {
                 previous.rebind(loaded.clone())?
             }
-            _ => crate::mcp::McpManager::new(loaded.clone(), &directory, gate)?,
+            _ => crate::mcp::McpManager::new(loaded.clone(), &directory)?,
         };
         let mut catalog = self
             .workspace
@@ -267,11 +281,6 @@ impl SavedRuntimeFactory {
                     capabilities,
                 )?,
                 ChatToolMode::Editing => {
-                    let gate = self
-                        .workspace
-                        .lock()
-                        .map_err(|_| invalid("Workspace is unavailable"))?
-                        .editing_gate();
                     #[cfg(all(test, feature = "synthetic-authority", not(target_os = "macos")))]
                     if self.synthetic_mutations {
                         TrustedReadOnlyTools::synthetic_mutation_fixture(
@@ -279,7 +288,6 @@ impl SavedRuntimeFactory {
                             project.paths.clone(),
                             home,
                             capabilities,
-                            gate,
                         )?
                     } else {
                         TrustedReadOnlyTools::new_with_editing_capabilities(
@@ -287,7 +295,6 @@ impl SavedRuntimeFactory {
                             project.paths.clone(),
                             home,
                             capabilities,
-                            gate,
                         )?
                     }
                     #[cfg(not(all(
@@ -300,7 +307,6 @@ impl SavedRuntimeFactory {
                         project.paths.clone(),
                         home,
                         capabilities,
-                        gate,
                     )?
                 }
             };

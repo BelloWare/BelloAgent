@@ -75,6 +75,7 @@ pub(super) struct Ledger {
     state: Mutex<State>,
     cached_status: Mutex<Status>,
     project: String,
+    abandoned: std::sync::atomic::AtomicBool,
     #[cfg(test)]
     fault: std::sync::atomic::AtomicU8,
     #[cfg(test)]
@@ -134,6 +135,7 @@ impl Ledger {
             _writer: writer,
             cached_status: Mutex::new(cached_status),
             project: project.into(),
+            abandoned: std::sync::atomic::AtomicBool::new(false),
             state: Mutex::new(State {
                 record,
                 unknown,
@@ -149,7 +151,11 @@ impl Ledger {
     pub fn status(&self) -> Status {
         self.cached_status
             .try_lock()
-            .map(|status| status.clone())
+            .map(|status| {
+                let mut status = status.clone();
+                status.unknown |= self.abandoned.load(std::sync::atomic::Ordering::Acquire);
+                status
+            })
             .unwrap_or(Status {
                 unknown: true,
                 unknown_id: None,
@@ -163,7 +169,7 @@ impl Ledger {
     pub fn has_unknown_outcome(&self) -> Result<bool> {
         self.state
             .lock()
-            .map(|state| state.unknown)
+            .map(|state| state.unknown || self.abandoned.load(std::sync::atomic::Ordering::Acquire))
             .map_err(|_| invalid("MCP outcome evidence is unavailable"))
     }
     #[cfg(all(test, feature = "synthetic-authority"))]
@@ -201,7 +207,7 @@ impl Ledger {
             .state
             .lock()
             .map_err(|_| invalid("MCP outcome evidence is unavailable"))?;
-        if state.unknown {
+        if state.unknown || self.abandoned.load(std::sync::atomic::Ordering::Acquire) {
             return Err(invalid(
                 "A previous MCP invocation has an unknown outcome. Review its effects and acknowledge before another invocation.",
             ));
@@ -233,6 +239,7 @@ impl Ledger {
             ledger: self.clone(),
             id,
             settled: false,
+            target: (server.into(), tool.into()),
         })
     }
     fn write(&self, record: &Record) -> Result<()> {
@@ -287,6 +294,8 @@ impl Ledger {
         self.write(&next)?;
         state.record = next;
         state.unknown = false;
+        self.abandoned
+            .store(false, std::sync::atomic::Ordering::Release);
         self.publish_status(&state);
         Ok(())
     }
@@ -324,23 +333,14 @@ pub(crate) struct Ticket {
     ledger: Arc<Ledger>,
     id: String,
     settled: bool,
+    target: (String, String),
 }
 impl Ticket {
     pub fn id(&self) -> &str {
         &self.id
     }
     pub fn target(&self) -> Result<(String, String)> {
-        let state = self
-            .ledger
-            .state
-            .lock()
-            .map_err(|_| invalid("MCP outcome evidence is unavailable"))?;
-        let entry = state
-            .record
-            .pending
-            .get(&self.id)
-            .ok_or_else(|| invalid("MCP outcome receipt is no longer current"))?;
-        Ok((entry.server.clone(), entry.tool.clone()))
+        Ok(self.target.clone())
     }
     pub fn settle(mut self) -> Result<()> {
         self.ledger.settle(&self.id)?;
@@ -350,12 +350,32 @@ impl Ticket {
 }
 impl Drop for Ticket {
     fn drop(&mut self) {
-        if !self.settled {
-            let mut state = self.ledger.state.lock().unwrap_or_else(|e| e.into_inner());
+        if self.settled {
+            return;
+        }
+        // The flag closes admission immediately, without waiting on a state
+        // mutex held through fsync. Cleanup owns the Ledger/OS lease until it
+        // physically finishes, even when this ticket is dropped on Tokio.
+        self.ledger
+            .abandoned
+            .store(true, std::sync::atomic::Ordering::Release);
+        if let Ok(mut state) = self.ledger.state.try_lock() {
             state.unknown = true;
             state.live.remove(&self.id);
             self.ledger.publish_status(&state);
+            return;
         }
+        let ledger = self.ledger.clone();
+        let id = self.id.clone();
+        super::persistence_runtime().spawn(async move {
+            let _ = super::persistence(move || {
+                let mut state = ledger.state.lock().unwrap_or_else(|e| e.into_inner());
+                state.unknown = true;
+                state.live.remove(&id);
+                ledger.publish_status(&state);
+            })
+            .await;
+        });
     }
 }
 pub(super) fn atomic_write(path: &Path, bytes: &[u8], fault: u8) -> Result<()> {
@@ -440,6 +460,30 @@ mod tests {
         process::{Command, Stdio},
         time::{Duration, Instant},
     };
+
+    #[test]
+    fn acknowledgment_uses_authoritative_live_set_even_with_stale_presentation() {
+        let directory = tempfile::tempdir().unwrap();
+        let ledger = Ledger::open(directory.path(), &uuid::Uuid::new_v4().to_string()).unwrap();
+        let first = ledger.begin("fixture", "first").unwrap();
+        let second = ledger.begin("fixture", "second").unwrap();
+        drop(first);
+        let expected = ledger.status().unknown_id.unwrap();
+        ledger.cached_status.lock().unwrap().pending = 0;
+        assert!(
+            ledger
+                .acknowledge(&expected, true)
+                .unwrap_err()
+                .to_string()
+                .contains("still running")
+        );
+        second.settle().unwrap();
+        assert!(ledger.status().unknown);
+        assert!(ledger.acknowledge(&expected, true).is_err());
+        ledger
+            .acknowledge(&ledger.status().unknown_id.unwrap(), true)
+            .unwrap();
+    }
 
     fn paths(directory: &Path, project: &str) -> (PathBuf, PathBuf) {
         let marker = directory.join(format!("mcp-outcomes-{project}.json"));

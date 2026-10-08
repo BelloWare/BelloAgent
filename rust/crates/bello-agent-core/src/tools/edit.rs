@@ -1,4 +1,4 @@
-//! Source write/edit body, separate from serialized workspace admission.
+//! Source write/edit body, running on independent bounded workers.
 //! Native filesystem/string behavior is macOS Foundation only. Linux fixtures
 //! exercise this same ordering with a deliberately synthetic temporary adapter.
 use super::{FileToolContext, ToolError, ToolResult};

@@ -1,0 +1,11 @@
+   Compiling bello-agent-core v0.1.0 (<repository>/rust/crates/bello-agent-core)
+    Finished `test` profile [unoptimized] target(s) in 7.71s
+     Running tests/process_locks.rs (<cargo-target>/debug/deps/process_locks-3afccd6c8afd09d0)
+
+running 3 tests
+test subprocess_lock_probe ... ok
+test session_excludes_other_process_and_reopens_after_drop ... ok
+test workspace_excludes_other_process_and_reopens_after_drop ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
