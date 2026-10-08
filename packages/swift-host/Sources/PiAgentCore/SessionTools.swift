@@ -65,6 +65,8 @@ extension AgentSession {
     func invokeTool(_ call: ToolCall) async throws -> JSON {
         let prepared=await piPrepared(call)
         let update: @Sendable (JSON) async -> Void = { [weak self] update in await self?.toolUpdate(call.id,update) }
+        // Stopped while its arguments were prepared: it never began.
+        try Task.checkCancellation()
         showToolInvocation(call); toolInvocationsBegan.insert(call.id)
         // Refused before anything runs; `read_only` reads as a rejection.
         if readOnly || !Self.isEditing(call), let refusal=sideRefusal(call) { throw refusal }

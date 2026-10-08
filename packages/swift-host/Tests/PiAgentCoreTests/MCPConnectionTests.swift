@@ -1,10 +1,10 @@
 import XCTest
 @testable import PiAgentCore
 
-/// MCP servers: discovery and serial invocation, an unknown outcome that
-/// survives a restart, and the configurations that are refused outright.
+/// MCP servers: discovery and invocations that run together, an unknown
+/// outcome that survives a restart, and the configurations refused outright.
 final class MCPConnectionTests: XCTestCase {
-    func testMCPListDescribeSerialInvokeAndUnknownOutcome() async throws {
+    func testMCPListDescribeConcurrentInvokeAndUnknownOutcome() async throws {
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
         let manager=MCPManager(cwd:root),transport=FakeMCP();await manager.installForTesting(name:"test",transport:transport)
         let list=try await manager.perform(["action":"list","server":"test"])
@@ -15,7 +15,7 @@ final class MCPConnectionTests: XCTestCase {
             for i in 0..<5 { group.addTask { try await manager.perform(["action":"invoke","server":"test","tool":"echo","arguments":["text":JSON(String(i))]]) } }
             for try await _ in group {}
         }
-        let maximum=await transport.maximum;XCTAssertEqual(maximum,1)
+        let maximum=await transport.maximum;XCTAssertGreaterThan(maximum,1,"Invocations no longer take turns (owner, 2026-10-08)")
         do { _ = try await manager.perform(["action":"invoke","server":"test","tool":"echo","arguments":[:]],readOnly:true);XCTFail("Readonly invocation accepted") } catch {}
         do { _ = try await manager.perform(["action":"invoke","targets":[]]);XCTFail("Batch accepted") } catch {}
         await transport.failNext()

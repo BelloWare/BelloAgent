@@ -349,7 +349,7 @@ actor HTTPMCP: MCPTransport {
 }
 
 /// Actor reentrancy does not itself serialize async work. This explicit gate
-/// holds across awaits. All MCP invocations in this workspace share one gate.
+/// holds across awaits.
 public actor AsyncGate {
     private var locked=false
     private var waiters:[(UUID,CheckedContinuation<Void,Error>)]=[]
@@ -388,7 +388,19 @@ public actor MCPManager {
     /// Workspace roots, primary first. stdio servers start in the primary root.
     public let roots: [URL]
     private let outcomeMarker: URL?
-    private var invoking = false
+    /// Invocations running now. They run together (owner, 2026-10-08); the
+    /// gate only keeps a configuration change from replacing the servers
+    /// while any is running.
+    private var inFlight = 0
+    private var drainWaiters: [CheckedContinuation<Void, Never>] = []
+    private func drained() async {
+        if inFlight == 0 { return }
+        await withCheckedContinuation { drainWaiters.append($0) }
+    }
+    private func finishInvocation() {
+        inFlight -= 1
+        if inFlight == 0 { let waiters = drainWaiters; drainWaiters.removeAll(); for waiter in waiters { waiter.resume() } }
+    }
     public init(cwd: URL, roots: [URL] = [], outcomeMarker: URL? = nil) { self.cwd=cwd; self.roots=workspaceRoots(primary:cwd,additional:roots); self.outcomeMarker=outcomeMarker; unknownOutcome=outcomeMarker.map { FileManager.default.fileExists(atPath:$0.path) } ?? false }
     public func serverNames() -> [String] { servers.keys.sorted() }
     public func configure(_ config: JSON) async throws {
@@ -398,6 +410,8 @@ public actor MCPManager {
         // not released strands every later invocation in this workspace, so
         // these must run even when the invoking turn is being cancelled.
         try await gate.acquire(); defer { Task { await gate.release() } }
+        // Holding the gate stops new invocations; wait for running ones.
+        await drained()
         try await connectionGate.acquire(); defer { Task { await connectionGate.release() } }
         var proposed: [String: Server] = [:]
         for (name, c) in config["servers"].map {
@@ -519,7 +533,9 @@ public actor MCPManager {
             guard !readOnly else { throw AgentError("read_only", "MCP invocation is disabled in discussion-only sessions; annotations are not authorization") }
             guard Set(p.map.keys) == ["action","server","tool","arguments"], p["arguments"].isObject else { throw AgentError("mcp_arguments", "Invoke requires exactly one server, tool and arguments object; batches are not supported") }
             let server=try required(p["server"],"server"), name=try required(p["tool"],"tool")
-            try await gate.acquire()
+            // The gate is held only to start: a configuration change waits for
+            // running invocations, and invocations do not wait for each other.
+            try await gate.acquire(); inFlight += 1; await gate.release()
             // dispatched: a tools/call may have reached the server and run.
             // marked: this invocation wrote the outcome marker.
             var dispatched=false, marked=false
@@ -534,7 +550,7 @@ public actor MCPManager {
                     try FileManager.default.setAttributes([.posixPermissions:0o600],ofItemAtPath:outcomeMarker.path)
                     let marker = try FileHandle(forWritingTo:outcomeMarker);try marker.synchronize();try marker.close()
                 }
-                dispatched=true;invoking=true
+                dispatched=true
                 let call: JSON = ["name":JSON(name),"arguments":p["arguments"]], result: JSON
                 do { result = try await transport.request("tools/call", params:call) }
                 catch let error as AgentError where error.code == "mcp_session_expired" {
@@ -543,21 +559,24 @@ public actor MCPManager {
                     dispatched=false; transport = try await connect(server); dispatched=true
                     result = try await transport.request("tools/call", params:call)
                 }
-                if let outcomeMarker { try FileManager.default.removeItem(at:outcomeMarker) }
-                invoking=false;await gate.release(); return result
+                finishInvocation()
+                // The marker stays while another invocation is still running
+                // or an earlier one's outcome is unknown.
+                if inFlight == 0, !unknownOutcome, let outcomeMarker { try? FileManager.default.removeItem(at:outcomeMarker) }
+                return result
             } catch {
-                invoking=false
+                finishInvocation()
                 // A call the server refused without processing it did not run:
                 // it leaves no unknown outcome, in memory or on disk.
                 if dispatched, !mcpNotExecutedCodes.contains((error as? AgentError)?.code ?? "") { unknownOutcome=true }
-                else if marked, let outcomeMarker { try? FileManager.default.removeItem(at:outcomeMarker) }
-                await gate.release(); throw error
+                else if marked, inFlight == 0, !unknownOutcome, let outcomeMarker { try? FileManager.default.removeItem(at:outcomeMarker) }
+                throw error
             }
         default: throw AgentError("mcp_arguments", "Use list, describe, or invoke")
         }
     }
     public func acknowledgeUnknown() throws {
-        guard !invoking else { throw AgentError("mcp_busy","An invocation is still running") }
+        guard inFlight == 0 else { throw AgentError("mcp_busy","An invocation is still running") }
         if let outcomeMarker, FileManager.default.fileExists(atPath:outcomeMarker.path) { try FileManager.default.removeItem(at:outcomeMarker) }
         unknownOutcome=false
     }

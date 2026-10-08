@@ -170,4 +170,25 @@ final class BlockingWorkTests: XCTestCase {
         XCTAssertTrue(text.hasPrefix(String(repeating: "x", count: 32_768)))
         XCTAssertTrue(text.contains("Truncated")); XCTAssertLessThan(text.utf8.count, 33_000)
     }
+
+    /// Edits and writes run on a blocking worker, not inside the tools actor,
+    /// so they run at the same time as each other and as reads.
+    func testEditsAndWritesRunOnWorkersNotOnTheToolsActor() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        try Data("before".utf8).write(to: root.appendingPathComponent("file.txt"))
+        let workers = BlockingWorkExecutor(maximumWorkers: 1, maximumWaiting: 4), barrier = WorkerBarrier()
+        defer { barrier.release() }
+        let blocker = Task { try await workers.run { try barrier.enter(0, cancellation: $0) } }
+        try await eventually { barrier.state.started == [0] }
+        let tools = NativeTools(cwd: root, outputs: root.appendingPathComponent("out"), mcp: MCPManager(cwd: root), workers: workers)
+        let edit = Task { try await tools.invoke(ToolCall(id: "e", name: "edit", arguments: ["path": "file.txt", "oldText": "before", "newText": "after"]), readOnly: false) }
+        let write = Task { try await tools.invoke(ToolCall(id: "w", name: "write", arguments: ["path": "new.txt", "content": "fresh"]), readOnly: false) }
+        // Both wait for a worker; inside the actor they would have run at once.
+        try await eventually { workers.occupancy.waiting == 2 }
+        XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("file.txt"), encoding: .utf8), "before")
+        barrier.release(); _ = try await blocker.value
+        _ = try await edit.value; _ = try await write.value
+        XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("file.txt"), encoding: .utf8), "after")
+        XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("new.txt"), encoding: .utf8), "fresh")
+    }
 }

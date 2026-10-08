@@ -15,13 +15,16 @@ private actor CountingTools: ToolExecuting {
 
 private actor HeldEditingTools: ToolExecuting {
     var held = true, active = 0, maximum = 0, calls: [Int] = []
+    /// Holds every call, not just session 0's.
+    let holdAll: Bool
+    init(holdAll: Bool = false) { self.holdAll = holdAll }
     func release() { held = false }
     func definitions(readOnly: Bool) -> [ToolDefinition] { [ToolDefinition("edit", "fixture", [:])] }
     func invoke(_ call: ToolCall, readOnly: Bool) async throws -> JSON {
         let index = call.arguments["session"].int ?? -1
         calls.append(index); active += 1; maximum = max(maximum, active)
         defer { active -= 1 }
-        while index == 0 && held { try await Task.sleep(nanoseconds: 5_000_000) }
+        while (index == 0 || holdAll) && held { try await Task.sleep(nanoseconds: 5_000_000) }
         try Task.checkCancellation()
         return resultText("edited-\(index)")
     }
@@ -89,6 +92,37 @@ final class ConcurrentSessionsTests: XCTestCase {
         XCTAssertTrue(stillHeld)
         await sessions[0].stop(); try await eventually { !(await sessions[0].isRunning) }
         for index in 1..<20 { let state = await sessions[index].snapshot()["state"].text; XCTAssertEqual(state, "idle") }
+        for session in sessions { await session.close() }
+    }
+
+    /// Several chats are in their edits at once; stopping some leaves the
+    /// others in theirs, and they finish when their tool returns.
+    func testStoppingSomeChatsMidEditLeavesTheOthersEditing() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let traces = TraceStore(), tools = HeldEditingTools(holdAll: true)
+        let sessions = try (0..<6).map { index -> AgentSession in
+            let call = ToolCall(id: "call-\(index)", name: "edit", arguments: ["session": JSON(index)])
+            let reply = ModelReply(message: ChatMessage(role: "assistant", content: [["type": "toolCall", "id": JSON(call.id), "name": "edit", "arguments": call.arguments]]), calls: [call])
+            return try session("held-\(index)", root: root, client: ScriptClient([reply, answer("done-\(index)")]), tools: tools, traces: traces)
+        }
+        for (index, session) in sessions.enumerated() { _ = try await session.submit(Submission(commandID: "c\(index)", turnID: "t\(index)", text: "edit"), steer: false) }
+        try await eventually { await tools.active == 6 }
+        for index in 0..<3 { await sessions[index].stop() }
+        try await eventually {
+            for index in 0..<3 { if await sessions[index].isRunning { return false } }
+            return true
+        }
+        for index in 3..<6 { let running = await sessions[index].isRunning; XCTAssertTrue(running, "Stopping other chats must not end chat \(index)'s edit") }
+        await tools.release()
+        try await eventually {
+            for index in 3..<6 { if await sessions[index].isRunning { return false } }
+            return true
+        }
+        for index in 3..<6 {
+            let snapshot = await sessions[index].snapshot()
+            XCTAssertEqual(snapshot["state"].text, "idle")
+            XCTAssertTrue(snapshot["messages"].list.contains { $0["role"].text == "tool" && $0["text"].text == "edited-\(index)" })
+        }
         for session in sessions { await session.close() }
     }
 
