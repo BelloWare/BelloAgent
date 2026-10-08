@@ -773,8 +773,12 @@ struct ContentGeometry: Equatable {
         return true
     }
     /// Whether the page is still taking the reader somewhere: a destination
-    /// or a first placement not yet landed, or a jump still running.
-    var landingPending: Bool { pendingAnchor != nil || awaitingFirstPlacement || openingPlacementPending || jumping }
+    /// asked for (a saved place, a reveal) or a first placement not yet
+    /// landed, or a jump still running. The anchor the page re-takes on every
+    /// pass to hold a line — the question a short chat opened at, the row a
+    /// reflow keeps — is not a landing: it lasts until the reader moves, and
+    /// counted as one it held back every place a find asked for.
+    var landingPending: Bool { (pendingAnchor != nil && explicitDestination) || awaitingFirstPlacement || openingPlacementPending || jumping }
     /// While a jump to the newest row is running it owns the scroll position;
     /// nothing else may move the reader.
     var isPlacingScroll: Bool { jumping }
