@@ -182,8 +182,11 @@ extension ConversationPaneTests {
         XCTAssertEqual(pane.editor?.string, "Short one, rewritten")
         XCTAssertEqual(pane.edits.count("queue.edit.save"), 3, "repeated presses send no second Save")
         XCTAssertTrue(pane.session.sendingRows.isEmpty, "Return queued nothing new")
+        let activityBeforeSave = pane.model.record(pane.session.id)?.lastActivityAt
         await gate.open()
         try await waitFor("The confirmed Save never closed the editor") { pane.session.queueEditingID == nil }
+        XCTAssertGreaterThan(pane.model.record(pane.session.id)?.lastActivityAt ?? 0, activityBeforeSave ?? 0,
+                             "a saved rewrite is activity: the chat moves up its sidebar group (0.1.122)")
         await pane.settle(6)
         XCTAssertEqual(pane.editor?.string, "unsent thought", "The set-aside draft comes back")
         XCTAssertEqual(QueuedMessage.from(pane.session.queue).first?.text, "Short one, rewritten")

@@ -710,7 +710,7 @@ extension WorkspaceModel {
         let shown = sides[parentID]
         var entries = chats
             .filter { $0.parentSessionID == parentID && !$0.isBackgroundTask && (!$0.isArchived || $0.id == shown?.id) }
-            .sorted(by: ChatRecord.sidebarPrecedes)
+            .sorted { sidebarPrecedes($0, $1) }
             .map { SidesPanelEntry(id: $0.id, title: $0.title, open: $0.id == shown?.id, saved: true) }
         if let shown, !entries.contains(where: { $0.id == shown.id }) {
             entries.insert(SidesPanelEntry(id: shown.id, title: shown.pending ? "New side" : "Side conversation", open: true, saved: false), at: 0)

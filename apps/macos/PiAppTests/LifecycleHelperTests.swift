@@ -392,6 +392,7 @@ extension LifecycleHelperTests {
         // Another chat is the one open at the quit, so launch does not reopen this one.
         let other = try await bench.newChat("Other")
         await model.select(other.id)
+        await model.flushSelection()
 
         func relaunched() async throws -> WorkspaceModel {
             let next = try await bench.relaunch()
@@ -444,6 +445,50 @@ extension LifecycleHelperTests {
         XCTAssertNil(model.runHolds[chat.id], "nothing waits any more")
         model = try await relaunched()
         XCTAssertNil(model.heldRunState(chat.id), "and a relaunch shows it plain again")
+        await bench.close()
+    }
+}
+
+extension LifecycleHelperTests {
+    /// Sorted by last activity (0.1.122), with the real helper: a message
+    /// sent in an older chat moves it to the top of its group when it goes
+    /// out, and the turn's end moves it again; the stream between changes
+    /// nothing in the chat records, so the sidebar is not sorted again per
+    /// token.
+    @MainActor func testAStreamedTurnMovesItsChatUpWithoutReSortingPerToken() async throws {
+        let bench = try await Bench("activity-order"); defer { bench.tearDown() }
+        let model = bench.model
+        let older = try await bench.newChat("Older")
+        _ = try await bench.newChat("Newer")
+        func order() -> [String] { model.sidebarEntries(in: bench.workspace.id, topicID: nil, archived: false, collapsed: []).map(\.chat.title) }
+        XCTAssertEqual(order(), ["Newer", "Older"])
+        await model.select(older.id)
+        let session = try XCTUnwrap(model.displays[older.id])
+        func settle() async { await Task.yield(); try? await Task.sleep(for: .milliseconds(20)) }
+        session.draft = "slow: walk through the retry loop step by step"
+        model.send(sessionID: older.id)
+        try await Self.waitUntil("No text streamed", settle: settle) { session.busy && session.messages.contains { $0.role == "assistant" && !$0.text.isEmpty } }
+        XCTAssertEqual(order(), ["Older", "Newer"], "the message going out moved the chat up")
+        let revisionAtStream = model.chatsRevision, activityAtStream = model.record(older.id)?.lastActivityAt
+        var tokens = 0, lastText = ""
+        while session.busy {
+            let text = session.messages.last { $0.role == "assistant" }?.text ?? ""
+            if text != lastText { tokens += 1; lastText = text }
+            if tokens >= 8 { break }
+            await settle()
+        }
+        XCTAssertGreaterThanOrEqual(tokens, 8, "the reply streamed")
+        XCTAssertEqual(model.chatsRevision, revisionAtStream, "streamed text changes no chat record: nothing is sorted again per token")
+        XCTAssertEqual(model.record(older.id)?.lastActivityAt, activityAtStream)
+        // A follow-up queued behind the run is a message going out: activity, once.
+        session.draft = "and then summarize"
+        model.send(sessionID: older.id)
+        try await Self.waitUntil("The follow-up was not queued", settle: settle) { session.queue.count == 1 }
+        XCTAssertGreaterThan(model.record(older.id)?.lastActivityAt ?? 0, activityAtStream ?? 0, "a queued follow-up is activity")
+        let activityAtFollowUp = model.record(older.id)?.lastActivityAt ?? 0
+        model.stop(sessionID: older.id)
+        try await Self.waitUntil("The run never stopped", settle: settle) { !session.busy }
+        XCTAssertGreaterThan(model.record(older.id)?.lastActivityAt ?? 0, activityAtFollowUp, "the run's stop is activity")
         await bench.close()
     }
 }

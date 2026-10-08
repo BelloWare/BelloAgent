@@ -132,7 +132,7 @@ extension WorkspaceModel {
     /// running chat to stop. Drafts, unread state and captures stay intact.
     func sidebarChats(in workspaceID: String?, archived: Bool, excluding ids: Set<String> = []) -> [ChatRecord] {
         chats.filter { $0.workspaceID == workspaceID && $0.isArchived == archived && !ids.contains($0.id) && !$0.isBackgroundTask }
-            .sorted(by: ChatRecord.sidebarPrecedes)
+            .sorted { sidebarPrecedes($0, $1) }
     }
 
     /// Durable side sessions stay under their parent even when their split pane
@@ -167,7 +167,7 @@ extension WorkspaceModel {
                     ? chat.topicID.flatMap { validTopics.contains($0) ? $0 : nil } : nil
                 buckets[SidebarIndex.GroupKey(project: project, topic: group, archived: chat.isArchived), default: []].append(chat)
             }
-            for key in buckets.keys { buckets[key]?.sort(by: ChatRecord.sidebarPrecedes) }
+            for key in buckets.keys { buckets[key]?.sort { sidebarPrecedes($0, $1) } }
             return buckets
         }
     }
@@ -188,6 +188,20 @@ extension WorkspaceModel {
                 if shown { result.append(SidebarChatEntry(chat: chat, depth: depth, hasChildren: !descendants.isEmpty)) }
                 for child in descendants.reversed() { stack.append((child, depth + 1, shown && !collapsed.contains(chat.id))) }
             }
+        }
+        // A family is as recent as its newest member: a side that just
+        // answered lifts its parent's place, and stays under it.
+        var family: [String: Int64] = [:]
+        func familyActivity(_ chat: ChatRecord, _ seen: inout Set<String>) -> Int64 {
+            if let known = family[chat.id] { return known }
+            guard seen.insert(chat.id).inserted else { return sidebarActivity(chat) }
+            let value = (children[chat.id] ?? []).reduce(sidebarActivity(chat)) { max($0, familyActivity($1, &seen)) }
+            family[chat.id] = value; return value
+        }
+        var seen: Set<String> = []
+        for chat in roots { _ = familyActivity(chat, &seen) }
+        roots.sort { lhs, rhs in
+            ChatRecord.sidebarPrecedes(lhs, rhs, activity: family[lhs.id] ?? sidebarActivity(lhs), family[rhs.id] ?? sidebarActivity(rhs))
         }
         for chat in roots { appendTree(chat) }
         for chat in visible where !visited.contains(chat.id) { appendTree(chat) }

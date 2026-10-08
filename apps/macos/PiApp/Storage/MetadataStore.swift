@@ -230,10 +230,8 @@ actor MetadataStore {
             guard !chat.isBackgroundTask else { throw StoreError.invalidRecord }
             chat.title = try ChatRecord.normalizedTitle(title); chat.titleWasEdited = true; chat.titleWasGenerated = nil
         case .pinned(let pinned):
-            if chat.isPinned != pinned { chat.manualSidebarOrder = nil }
             chat.pinnedAt = pinned ? (chat.pinnedAt ?? now) : nil
         case .archived(let archived):
-            if chat.isArchived != archived { chat.manualSidebarOrder = nil }
             chat.archivedAt = archived ? (chat.archivedAt ?? now) : nil
         }
     }
@@ -319,7 +317,7 @@ actor MetadataStore {
             }
             var chats = selected.values.sorted { $0.id < $1.id }
             for index in chats.indices where chats[index].topicID != topicID {
-                chats[index].topicID = topicID; chats[index].manualSidebarOrder = nil
+                chats[index].topicID = topicID
                 chats[index].organizationRevision = try nextOrganizationRevision(chats[index])
             }
             for chat in chats { try put(chat, kind: "chat", id: chat.id) }
@@ -327,29 +325,12 @@ actor MetadataStore {
         }
     }
 
-    /// A single atomic organization update; later stale title/path writes keep
-    /// these ranks through applyOrganization, just as they preserve pin/archive.
-    func reorderChats(_ ids: [String], relativeTo targetID: String, after: Bool, workspaceID: String) throws -> [ChatRecord] {
+    /// A chat's last activity, moved forward only (`ChatRecord.lastActivityAt`).
+    func noteChatActivity(id: String, at stamp: Int64) throws {
         try transaction {
-            guard !ids.isEmpty, !ids.contains(targetID), Set(ids).count == ids.count,
-                  let target = try get(ChatRecord.self, kind: "chat", id: targetID), target.workspaceID == workspaceID,
-                  !target.isUtilityChat else { throw StoreError.invalidRecord }
-            let selected = Set(ids)
-            var group = try organizationRows().filter {
-                $0.workspaceID == workspaceID && $0.groupable && $0.topicID == target.topicID &&
-                ($0.pinnedAt != nil || $0.parentSessionID == target.parentSessionID) &&
-                ($0.pinnedAt != nil) == target.isPinned && ($0.archivedAt != nil) == target.isArchived
-            }.compactMap { try? get(ChatRecord.self, kind: "chat", id: $0.id) }.sorted(by: ChatRecord.sidebarPrecedes)
-            guard selected.isSubset(of: Set(group.map(\.id))) else { throw HostError.failure("Reorder chats within the same topic, parent and pinned group. Drop on a topic header to move between topics.") }
-            let moving = group.filter { selected.contains($0.id) }; group.removeAll { selected.contains($0.id) }
-            guard let index = group.firstIndex(where: { $0.id == targetID }) else { throw StoreError.invalidRecord }
-            group.insert(contentsOf: moving, at: index + (after ? 1 : 0))
-            for index in group.indices {
-                group[index].manualSidebarOrder = index
-                group[index].organizationRevision = try nextOrganizationRevision(group[index])
-                try put(group[index], kind: "chat", id: group[index].id)
-            }
-            return group
+            guard var chat = try get(ChatRecord.self, kind: "chat", id: id), stamp > (chat.lastActivityAt ?? .min) else { return }
+            chat.lastActivityAt = stamp
+            try put(chat, kind: "chat", id: id)
         }
     }
 
@@ -360,7 +341,7 @@ actor MetadataStore {
             guard let topic = try get(TopicRecord.self, kind: TopicRecord.recordKind, id: id), topic.isValid else { throw StoreError.invalidRecord }
             var members = try organizationRows().filter { $0.topicID == id }.compactMap { try get(ChatRecord.self, kind: "chat", id: $0.id) }
             for index in members.indices {
-                members[index].topicID = nil; members[index].manualSidebarOrder = nil
+                members[index].topicID = nil
                 members[index].organizationRevision = try nextOrganizationRevision(members[index])
             }
             let revision = try reserveRevision(kind: TopicRecord.recordKind, id: id)
@@ -648,8 +629,13 @@ struct ChatRecord: Codable, Sendable, Identifiable, Hashable {
     /// Older records stored catalog ceilings in maxOutputTokens. New records separate them.
     var outputBudgetVersion: Int? = 1
     /// Optional for records created before session organization was introduced.
+    /// When the chat was made (µs since 1970); for records older than that,
+    /// fixed once from the store's revision (`loadChats`).
     var sidebarOrder: Int64? = Int64(Date().timeIntervalSince1970 * 1_000_000)
-    var manualSidebarOrder: Int?
+    /// When the chat last had a message, a reply or a run change (µs since
+    /// 1970), nil until it has. Only ever moves forward
+    /// (`ChatRecordMerge.swift`, `MetadataStore.noteChatActivity`).
+    var lastActivityAt: Int64?
     var pinnedAt: Date?
     var archivedAt: Date?
     var titleWasEdited: Bool?
@@ -706,16 +692,20 @@ struct ChatRecord: Codable, Sendable, Identifiable, Hashable {
         }
         outputBudgetVersion = 1
     }
+    /// When anything last happened in this chat, for the sidebar's order:
+    /// its last message, reply or run change, or else when it was made.
+    var activityStamp: Int64 { max(lastActivityAt ?? 0, sidebarOrder ?? 0) }
+    /// The sidebar's order, the same in every group: pinned chats first, then
+    /// newest activity first (`activityStamp`). There is no order of the
+    /// reader's own any more: records written while there was keep a
+    /// `manualSidebarOrder` key, which nothing reads.
     static func sidebarPrecedes(_ lhs: ChatRecord, _ rhs: ChatRecord) -> Bool {
+        sidebarPrecedes(lhs, rhs, activity: lhs.activityStamp, rhs.activityStamp)
+    }
+    /// The same order, with the activity each side is sorted by given: the
+    /// sidebar holds a chat's place while the reader is pointing at it.
+    static func sidebarPrecedes(_ lhs: ChatRecord, _ rhs: ChatRecord, activity a: Int64, _ b: Int64) -> Bool {
         if lhs.isPinned != rhs.isPinned { return lhs.isPinned }
-        if lhs.manualSidebarOrder != nil || rhs.manualSidebarOrder != nil {
-            // Newly created chats remain above an explicitly ordered group.
-            if lhs.manualSidebarOrder == nil { return true }
-            if rhs.manualSidebarOrder == nil { return false }
-            if lhs.manualSidebarOrder != rhs.manualSidebarOrder { return lhs.manualSidebarOrder! < rhs.manualSidebarOrder! }
-        }
-        if let a = lhs.pinnedAt, let b = rhs.pinnedAt, a != b { return a < b }
-        let a = lhs.sidebarOrder ?? 0, b = rhs.sidebarOrder ?? 0
         if a != b { return a > b }
         return lhs.id < rhs.id
     }
@@ -732,7 +722,7 @@ struct ChatRecord: Codable, Sendable, Identifiable, Hashable {
         connectionRevision = other.connectionRevision; journalRebind = other.journalRebind
     }
     mutating func applyOrganization(from other: ChatRecord) {
-        pinnedAt = other.pinnedAt; archivedAt = other.archivedAt; topicID = other.topicID; manualSidebarOrder = other.manualSidebarOrder
+        pinnedAt = other.pinnedAt; archivedAt = other.archivedAt; topicID = other.topicID
         titleWasEdited = other.titleWasEdited; titleWasGenerated = other.titleWasGenerated; organizationRevision = other.organizationRevision
         if other.titleWasEdited == true || other.titleWasGenerated == true { title = other.title }
     }

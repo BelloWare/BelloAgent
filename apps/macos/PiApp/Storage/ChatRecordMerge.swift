@@ -19,6 +19,8 @@ extension ChatRecord {
     ///   `connectionRevision`) takes that connection, its model choices and
     ///   whether the journal is still to move back instead of undoing them.
     /// - A copy with no sidebar order or parent keeps the ones held.
+    /// - The last activity only moves forward: a copy read before a reply
+    ///   or a send landed does not move the chat back down the sidebar.
     /// - A copy with no title claim keeps the claim of the title request
     ///   still running, unless the write releases it on purpose
     ///   (`releasingTitleClaim`).
@@ -31,6 +33,7 @@ extension ChatRecord {
         if (previous.connectionRevision ?? 0) > (chat.connectionRevision ?? 0) { chat.applyConnection(from: previous) }
         if chat.sidebarOrder == nil { chat.sidebarOrder = previous.sidebarOrder }
         if chat.parentSessionID == nil { chat.parentSessionID = previous.parentSessionID }
+        if let held = previous.lastActivityAt, held > (chat.lastActivityAt ?? .min) { chat.lastActivityAt = held }
         if chat.titleTaskSessionID == nil, !releasingTitleClaim { chat.titleTaskSessionID = previous.titleTaskSessionID }
         if previous.isBackgroundTask {
             chat.title = previous.title; chat.backgroundTask = previous.backgroundTask; chat.sourceSessionID = previous.sourceSessionID

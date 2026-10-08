@@ -251,10 +251,12 @@ final class SidebarDropZoneTests: XCTestCase {
         XCTAssertEqual(list.dropTarget(at: projectGap), loose.target)
         XCTAssertEqual(list.dropTarget(at: underEverything), loose.target, "The project's whole group takes a drop, not only its header strip")
         XCTAssertEqual(list.dropTarget(at: CGPoint(x: 40, y: try frame("project|" + project.id).midY)), loose.target)
-        // Over a row itself: before or after it.
-        let out1 = try frame("chat|out1")
-        XCTAssertEqual(list.dropTarget(at: CGPoint(x: 40, y: out1.minY + 2)), .row(id: "out1", projectID: project.id, after: false))
-        XCTAssertEqual(list.dropTarget(at: CGPoint(x: 40, y: out1.maxY - 2)), .row(id: "out1", projectID: project.id, after: true))
+        // Over a row itself: its group. There is no place between two rows
+        // to drop on: the sidebar keeps its own order (0.1.122).
+        let out1 = try frame("chat|out1"), inside = try frame("chat|in1")
+        XCTAssertEqual(list.dropTarget(at: CGPoint(x: 40, y: out1.minY + 2)), loose.target)
+        XCTAssertEqual(list.dropTarget(at: CGPoint(x: 40, y: out1.maxY - 2)), loose.target)
+        XCTAssertEqual(list.dropTarget(at: CGPoint(x: 40, y: inside.midY)), topic.target)
         // Beside a row, in its indent: the group it sits in, not the row.
         XCTAssertEqual(list.dropTarget(at: CGPoint(x: out1.minX + 2, y: out1.midY)), loose.target)
         let in1 = try frame("chat|in1")
@@ -272,8 +274,7 @@ final class SidebarDropZoneTests: XCTestCase {
             list.draggingExited(drag)
         }
         drag.draggingLocation = list.convert(CGPoint(x: 40, y: out1.minY + 2), to: nil)
-        XCTAssertEqual(list.draggingEntered(drag), .move, "Over a row, the chats move beside it")
-        XCTAssertTrue(TopicSessionDragSurfaceView.operationMask(for: .withinApplication).contains(.move))
+        XCTAssertEqual(list.draggingEntered(drag), .copy, "Over a row, the chats go to its group: there is no place between rows (0.1.122)")
         list.draggingExited(drag)
         // Nothing else on the pasteboard is a chat move.
         let text = NSPasteboardItem(); text.setString("chat", forType: .string)
@@ -369,7 +370,7 @@ final class SidebarDropZoneTests: XCTestCase {
         sidebar.inheritedEnabled = true
         XCTAssertNotNil(sidebar.hitTest(sidebar.convert(point, to: sidebar.superview)))
         XCTAssertTrue(sidebar.newChat.isEnabled)
-        XCTAssertEqual(sidebar.list.draggingEntered(drag), .move)
+        XCTAssertEqual(sidebar.list.draggingEntered(drag), .copy, "Enabled again, the list takes the drop into the row's group")
         sidebar.list.draggingExited(drag)
         NSPasteboard(name: .drag).clearContents()
     }

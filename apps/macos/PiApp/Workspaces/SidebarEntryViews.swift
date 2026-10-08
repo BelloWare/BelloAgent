@@ -21,9 +21,6 @@ import Combine
     let body = ChatRowBodyView()
     let row: PiKit.SelectableRow
     private var surface: TopicSessionDragSurfaceView?
-    private let insertion = CALayer()
-    /// Where a chat dragged over this row would land: before it, after it, or nowhere.
-    var insertionAfter: Bool? { didSet { if oldValue != insertionAfter { updateInsertion() } } }
     private var sourceWatch: AnyCancellable?
     private var minuteWatch: AnyCancellable?
     /// The live page this row last read its figures from.
@@ -40,8 +37,6 @@ import Combine
         super.init(frame: .zero)
         wantsLayer = true
         addSubview(row)
-        layer?.addSublayer(insertion)
-        insertion.isHidden = true
         row.onPress = { [weak self] in self?.click(NSEvent.modifierFlags) }
         // Archive's confirmation is wider than the button it replaces: the
         // surface's cut-outs follow it at once.
@@ -90,7 +85,8 @@ import Combine
             surface = view
         } else if !state.draggable, let surface { surface.removeFromSuperview(); self.surface = nil }
         surface?.actions = TopicSessionRowActions(item: { [weak self] in self?.dragItem() }, image: { [weak self] in self?.dragImage() },
-                                                  click: { [weak self] in self?.click($0) }, doubleClick: { [weak self] in self?.rename() })
+                                                  click: { [weak self] in self?.click($0) }, doubleClick: { [weak self] in self?.rename() },
+                                                  dragging: dragHold.callback(model: model, list: { [weak self] in self?.superview as? SidebarListDocument }))
         needsLayout = true
     }
 
@@ -183,10 +179,18 @@ import Combine
     // MARK: Menu
 
     override func menu(for event: NSEvent) -> NSMenu? {
-        if state.anyMarked && state.marked { return PiMenus.menu(MarkedSessionActions.entries(model: model)) }
-        let model = self.model, chat = self.chat, state = self.state
-        return PiMenus.menu(Self.entries(model: model, chat: chat, state: state))
+        let menu: NSMenu
+        if state.anyMarked && state.marked { menu = PiMenus.menu(MarkedSessionActions.entries(model: model)) }
+        else {
+            let model = self.model, chat = self.chat, state = self.state
+            menu = PiMenus.menu(Self.entries(model: model, chat: chat, state: state))
+        }
+        // The rows stay where they are while the menu is open.
+        menuHold.hold(menu, model: model, list: superview as? SidebarListDocument)
+        return menu
     }
+    private let menuHold = SidebarMenuOrderHold()
+    private let dragHold = SidebarDragOrderHold()
     @MainActor @PiMenuBuilder static func entries(model: WorkspaceModel, chat: ChatRecord, state: SidebarChatRowState) -> [PiMenuEntry] {
         if chat.parentSessionID != nil {
             PiMenuEntry.button("Open on Its Own", systemImage: "rectangle.expand.vertical") { Task { await model.select(chat.id) } }
@@ -218,16 +222,6 @@ import Combine
             row.layoutSubtreeIfNeeded()
             surface.controls = body.controlFrames.map { body.convert($0, to: surface) }
         }
-        updateInsertion()
-    }
-    /// A 2-point accent line along the edge a dropped chat would land on.
-    private func updateInsertion() {
-        CATransaction.begin(); CATransaction.setDisableActions(true)
-        insertion.isHidden = insertionAfter == nil
-        insertion.backgroundColor = piCGColor(.piAccent)
-        let y = insertionAfter == true ? row.frame.maxY - 2 : row.frame.minY
-        insertion.frame = CGRect(x: row.frame.minX, y: y, width: row.frame.width, height: 2)
-        CATransaction.commit()
     }
 }
 
@@ -298,8 +292,11 @@ import Combine
     }
     override func menu(for event: NSEvent) -> NSMenu? {
         let model = self.model, state = self.state
-        return PiMenus.menu(Self.entries(model: model, state: state))
+        let menu = PiMenus.menu(Self.entries(model: model, state: state))
+        menuHold.hold(menu, model: model, list: superview as? SidebarListDocument)
+        return menu
     }
+    private let menuHold = SidebarMenuOrderHold()
     @MainActor @PiMenuBuilder static func entries(model: WorkspaceModel, state: SidebarSideRowState) -> [PiMenuEntry] {
         if state.kept, let record = model.record(state.id) { SessionOrganizationActions.entries(model: model, chat: record) }
         SessionReferenceActions.entries(model: model, sessionID: state.id)

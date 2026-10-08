@@ -33,6 +33,12 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     var runHoldWrites: [String: Task<Void, Never>] = [:]
     /// Launch's reading of the journals the holds name (tests wait on it).
     var runHoldVerification: Task<Void, Never>?
+    /// Owned by `WorkspaceActivityOrder.swift`: what holds the sidebar's order
+    /// still, and the activity held chats are sorted by meanwhile.
+    var sidebarOrderHolds: Set<SidebarOrderHold> = []
+    /// Chats whose state is being read from their journal, which is not activity.
+    var quietActivity: Set<String> = []
+    @Published var heldActivity: [String: Int64] = [:] { didSet { if heldActivity != oldValue { sidebarIndex.invalidate() } } }
     /// Test seam: hold writes fail, as a full or locked store would.
     var runHoldWritesFail = false
     /// Owned by `WorkspaceReadState.swift`: replies that finished in the chat

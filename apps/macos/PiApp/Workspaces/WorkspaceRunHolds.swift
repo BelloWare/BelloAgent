@@ -51,11 +51,17 @@ extension WorkspaceModel {
     }
 
     /// The display's state is now known (a helper snapshot or the journal was
-    /// adopted): the chat's hold follows it, written when it changes.
-    func reconcileRunHold(_ sessionID: String) {
+    /// adopted): the chat's hold follows it, written when it changes. A
+    /// change seen live (`isActivity`: a run started, stopped, was cut off or
+    /// finished) is activity for the sidebar's order; one read from a journal
+    /// is not.
+    func reconcileRunHold(_ sessionID: String, isActivity: Bool = true) {
         guard let view = displays[sessionID], view.runStateKnown, let item = record(sessionID), !item.isUtilityChat,
               !isEphemeral(sessionID), !pendingChatIDs.contains(sessionID) else { return }
-        setRunHold(sessionID, view.runHold)
+        let hold = view.runHold
+        guard runHolds[sessionID]?.state != hold else { return }
+        setRunHold(sessionID, hold)
+        if isActivity, !quietActivity.contains(sessionID) { noteChatActivity(sessionID) }
     }
 
     func setRunHold(_ sessionID: String, _ state: String?) {

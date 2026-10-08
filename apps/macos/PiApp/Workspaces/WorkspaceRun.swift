@@ -165,6 +165,8 @@ extension WorkspaceModel {
         sendSteps?("durable")
         try requireConnection(lease)
         progress.dispatched = true
+        // A message going out is activity: the chat moves up its sidebar group.
+        noteChatActivity(item.id)
         // A new message shows the run starting at once. A steer joins
         // a run that is already showing, and may reach the helper
         // after it ended: it never puts "running" up itself.
