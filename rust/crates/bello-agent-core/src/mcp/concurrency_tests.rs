@@ -652,15 +652,22 @@ async fn repeated_session_expiry_stops_after_one_retry_without_unknown() {
 #[cfg(unix)]
 #[tokio::test]
 async fn saved_mixed_batch_overlaps_then_commits_in_order_and_never_replays() {
-    mixed_saved_batch(false).await;
+    mixed_saved_batch(false, 0).await;
 }
 #[cfg(unix)]
 #[tokio::test]
 async fn stop_and_retirement_join_mixed_batch_with_completed_mcp_receipt() {
-    mixed_saved_batch(true).await;
+    mixed_saved_batch(true, 0).await;
 }
 #[cfg(unix)]
-async fn mixed_saved_batch(stop: bool) {
+#[tokio::test]
+async fn live_terminal_cards_do_not_hide_failed_checkpoint_or_replay_on_reopen() {
+    for fault in [1, 2] {
+        mixed_saved_batch(false, fault).await;
+    }
+}
+#[cfg(unix)]
+async fn mixed_saved_batch(stop: bool, fault: u8) {
     let _pool_test = if stop {
         Some(pool_test_lock().lock().await)
     } else {
@@ -698,6 +705,26 @@ async fn mixed_saved_batch(stop: bool) {
         std::fs::read_to_string(fixture.project.path.join("native-marker")).unwrap(),
         "native done"
     );
+    // The native card must settle independently while MCP and Bash are held.
+    timeout(DEADLINE, async {
+        loop {
+            if actor.snapshot().live_tools.iter().any(|view| {
+                view.call_id == "native" && view.outcome == Some(ToolOutcome::Completed)
+            }) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        !actor
+            .snapshot()
+            .live_tools
+            .iter()
+            .any(|view| view.call_id == "remote" && view.outcome.is_some())
+    );
     success(remote).await;
     let manager = fixture.manager();
     timeout(DEADLINE, async {
@@ -709,6 +736,79 @@ async fn mixed_saved_batch(stop: bool) {
     .unwrap();
     assert_eq!(manager.status().pending_results, 1);
     assert!(manager.begin_configuration_change().is_err());
+    // Result normalization has completed, but the Ticket remains pending and no
+    // canonical output or provider continuation exists until the sibling joins.
+    timeout(DEADLINE, async {
+        loop {
+            let snapshot = actor.snapshot();
+            if ["native", "remote"].iter().all(|call| {
+                snapshot.live_tools.iter().any(|view| {
+                    view.call_id == *call && view.outcome == Some(ToolOutcome::Completed)
+                })
+            }) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let before_commit = actor.snapshot();
+    assert!(
+        before_commit
+            .messages
+            .iter()
+            .all(|row| !matches!(&row.tool_record, Some(ToolRecord::Result(_))))
+    );
+    assert!(
+        !before_commit
+            .live_tools
+            .iter()
+            .any(|view| view.call_id == "shell" && view.outcome.is_some())
+    );
+    let mut premature = Box::pin(provider.accept());
+    assert!(
+        futures_util::future::poll_fn(|cx| std::task::Poll::Ready(
+            premature.as_mut().poll(cx).is_pending()
+        ))
+        .await
+    );
+    drop(premature);
+    assert_eq!(manager.status().pending_results, 1);
+    if fault != 0 {
+        actor.mcp_checkpoint_fault_for_test(fault);
+        std::fs::write(fixture.project.path.join("release-bash"), b"release").unwrap();
+        settled(&actor).await;
+        assert!(manager.status().outcome_unknown);
+        actor.mcp_checkpoint_fault_for_test(0);
+        actor.retire_and_wait().await.unwrap();
+        let saved = fixture
+            .workspace
+            .lock()
+            .unwrap()
+            .snapshot()
+            .chats
+            .into_iter()
+            .find(|chat| chat.id == record.id)
+            .unwrap();
+        let reopened = fixture.factory.open_registered(&saved).unwrap();
+        assert!(reopened.snapshot().live_tools.is_empty());
+        let expected = if fault == 1 {
+            ToolOutcome::Unknown
+        } else {
+            ToolOutcome::Completed
+        };
+        assert!(reopened.snapshot().messages.iter().any(|row| matches!(&row.tool_record, Some(ToolRecord::Result(result)) if result.call_id == "remote" && result.outcome == expected)));
+        assert!(manager.status().outcome_unknown);
+        assert!(server.calls.try_recv().is_err());
+        assert!(
+            timeout(Duration::from_millis(40), provider.accept())
+                .await
+                .is_err()
+        );
+        reopened.retire_and_wait().await.unwrap();
+        return;
+    }
     if stop {
         // Hold the physical persistence pool after all MCP/native effects and
         // before the remaining Bash call retires. Stop must still checkpoint

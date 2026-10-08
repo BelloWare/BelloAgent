@@ -1,0 +1,127 @@
+{
+  "schema": 1,
+  "date_utc": "2026-10-08",
+  "base": "b3acabc25817fbac97f54b73c88362fa584d40e3",
+  "base_tree": "b88d8335683a7c116b1f9aac21f7fda7842c5f16",
+  "candidate_patch_sha256": "4bfaccf95a7516b0aa0a4610523b452b78b4066d8e1f3c8ace0167e4a37fd65a",
+  "status": "Local integrated candidate validation; publication and exact-commit CI are separate.",
+  "platform": "x86_64-unknown-linux-gnu",
+  "rustc": "1.99.0",
+  "build_jobs": 2,
+  "test_threads": 2,
+  "source_binding": "source-binding.json",
+  "source_binding_sha256": "a392bc0e1cce87fda4bc93c0709cebe2d4c2edfadf596636f6b579daadc5c720",
+  "all_original_input_files_verified_unchanged": 2113,
+  "bound_compile_input_files": 304,
+  "binary_binding": "test-binaries.json",
+  "binary_binding_sha256": "efaf2e21d37c58e662589a22ad0edf4468e6502ce870daedb4da72b5cb69fd0c",
+  "clean_compile_proof": "Package clean removed 1029 files / 1.2 GiB. A filesystem assertion confirmed no Agent App/core test executable survived. Subsequent logs show both packages compiling before execution. No mutation tests ran in this fresh integration.",
+  "checks": [
+    {
+      "command": "cargo clean --manifest-path rust/Cargo.toml -p bello-agent-core -p bello-agent-app",
+      "exit_code": 0,
+      "log": "logs/fresh/package-clean.log",
+      "raw_sha256": "34f4ebe2216a2a171765242cfaf035944501af06073cf05f690e3d233f8ef4e5",
+      "normalized_sha256": "34f4ebe2216a2a171765242cfaf035944501af06073cf05f690e3d233f8ef4e5"
+    },
+    {
+      "command": "cargo fmt --manifest-path rust/Cargo.toml --all -- --check",
+      "exit_code": 0,
+      "log": "logs/fresh/fmt.log",
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "normalized_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": "cargo test --manifest-path rust/Cargo.toml --offline --locked -p bello-agent-core --all-features --lib runtime::live_tool_runtime:: -- --test-threads=2",
+      "exit_code": 0,
+      "log": "logs/fresh/core-live.log",
+      "raw_sha256": "cdb07de7e8eebfc7be9555d3b46ae602ddd77e3cfa6dfd2e86c654b0d8eca42a",
+      "normalized_sha256": "99cb4ff1b99cae089cc0b021608522fd83c43052311028a08137238a7ad2b569",
+      "passed": 9
+    },
+    {
+      "command": "cargo test --manifest-path rust/Cargo.toml --offline --locked -p bello-agent-core --all-features --lib mcp::concurrency_tests:: -- --test-threads=2",
+      "exit_code": 0,
+      "log": "logs/fresh/core-concurrency.log",
+      "raw_sha256": "a755d9ebd0f33bb1412fca8c1058198c2aa16bef770be21b437ebf279bb0188e",
+      "normalized_sha256": "4e0fc51c57baaf60d2a5b9871de7432332e26e6af9779b0b8680822207e09174",
+      "passed": 0,
+      "coverage": "None: incomplete module filter selected zero tests; corrected run is recorded separately."
+    },
+    {
+      "command": "cargo test --manifest-path rust/Cargo.toml --offline --locked -p bello-agent-core --all-features --lib mcp::tests::concurrency_tests:: -- --test-threads=2",
+      "exit_code": 0,
+      "log": "logs/fresh/core-concurrency-corrected.log",
+      "raw_sha256": "806c6d46d3b3c49c3e023502596dcf03e570703aafe459aaf8bd4409ac7b81ec",
+      "normalized_sha256": "a60bea9524f6c3913b1ad6e7dc73d4c73d00422a6a6e2acefbaa99eacfb4a041",
+      "passed": 18
+    },
+    {
+      "command": "cargo test --manifest-path rust/Cargo.toml --offline --locked -p bello-agent-core --all-features -- --test-threads=2",
+      "exit_code": 0,
+      "log": "logs/fresh/core-all.log",
+      "raw_sha256": "27891cae7ec440fc5d59ff495659118ccb9cffb65fc53f2c8cfd8b817d2907b4",
+      "normalized_sha256": "e5423ae7dc1afb024fd0a2ece5fcb9392c27f13587c104fb7a39beeb2cfb1c87",
+      "passed": 596,
+      "integration_passed": 127,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo test --manifest-path rust/Cargo.toml --offline --locked -p bello-agent-core -- --test-threads=2",
+      "exit_code": 0,
+      "log": "logs/fresh/core-default.log",
+      "raw_sha256": "533868a68dd46582188e9f9ddb9da9629371986879ba9bb49e31a2dadaaba65b",
+      "normalized_sha256": "dfb3b6b0a3b1c139ed10aae41f3d45adb92b27d0a7deeaf72744b78b4efe3cf0",
+      "passed": 421,
+      "integration_passed": 127,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo clippy --manifest-path rust/Cargo.toml --offline --locked -p bello-agent-core --all-features --all-targets -- -D warnings",
+      "exit_code": 0,
+      "log": "logs/fresh/core-clippy.log",
+      "raw_sha256": "053d335d6c437069da5577c4a633c6cb0988ce5624ea0f528b875a6fc1077185",
+      "normalized_sha256": "5b1cc7adb58f4f8c258889ea2f8ae7cbf1b31d2dca8b21a9748ab706a3a75efc"
+    },
+    {
+      "command": "cargo clippy --manifest-path rust/Cargo.toml --offline --locked -p bello-agent-core --all-targets -- -D warnings",
+      "exit_code": 0,
+      "log": "logs/fresh/core-default-clippy.log",
+      "raw_sha256": "1385f8b295f687296efbb44c1bafb851ce9fc2bf067570f6b4760221e7fa1d82",
+      "normalized_sha256": "41d862adaa9181cb50b2b01423aaa74f4229bf09a29553d7b23e6f08c4505c49"
+    },
+    {
+      "command": "cargo test --manifest-path rust/Cargo.toml --offline --locked -p bello-agent-app --all-features generic_ -- --test-threads=2",
+      "exit_code": 0,
+      "log": "logs/fresh/app-generic.log",
+      "raw_sha256": "03886144da3b3f7423d08a45c274a7d412fb40dbc7fbfccc59254b77e0ee6f4e",
+      "normalized_sha256": "b151f2755097255bd24a2bdd398188ced1ec820c4e62f4c52bf597269272f309",
+      "passed": 9
+    },
+    {
+      "command": "cargo test --manifest-path rust/Cargo.toml --offline --locked -p bello-agent-app --all-features -- --test-threads=2",
+      "exit_code": 0,
+      "log": "logs/fresh/app-all.log",
+      "raw_sha256": "30e3f2d4cd3090a8e656c694255584fbdee98f563f936dc377634d93de28e211",
+      "normalized_sha256": "e2f339aed042f2aaaec1ae54f665b2ec4588d8e52bb2bf327d207a328b5c9e34",
+      "passed": 593,
+      "failed": 0,
+      "ignored": 3
+    },
+    {
+      "command": "cargo clippy --manifest-path rust/Cargo.toml --offline --locked -p bello-agent-app --all-features --all-targets -- -D warnings",
+      "exit_code": 0,
+      "log": "logs/fresh/app-clippy.log",
+      "raw_sha256": "da9bbb21748d2f0a3406e87c2c703be4aa7170711ba2bcefa613dcf9466b53e6",
+      "normalized_sha256": "7ecdcc3e05f9bff189c1dcef3113ab574ce597eb4f3c90448ff744e55781cbde"
+    }
+  ],
+  "limits": [
+    "First 16 calls in source order have ephemeral cards; later calls execute and commit normally but wait for canonical results in presentation.",
+    "No actual GUI interaction, macOS source-oracle execution, native input/accessibility or timing/performance acceptance.",
+    "Three App tests remain ignored.",
+    "Existing proc-macro-error2 future-incompatibility advisory remains; current strict Clippy passed."
+  ]
+}

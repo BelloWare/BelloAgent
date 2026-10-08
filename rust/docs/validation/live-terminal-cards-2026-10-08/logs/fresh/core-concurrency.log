@@ -1,0 +1,7 @@
+    Finished `test` profile [unoptimized] target(s) in 0.14s
+     Running unittests src/lib.rs (<cargo-target>/debug/deps/bello_agent_core-94383b5840279b36)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 596 filtered out; finished in 0.00s
+

@@ -1,0 +1,17 @@
+[
+  {
+    "binary": "bello_agent-a54be717f3dcc926",
+    "sha256": "d318c00c086a1825df3e93177236fab6460db5e3b0b0b57377634ba50247e724",
+    "bytes": 109380536
+  },
+  {
+    "binary": "bello_agent_core-8bfe315c8d6b13f3",
+    "sha256": "3af288d9f7e3f5ce65cfaf714b9c5e7f69c86aac7a76f8933f36e82f76472657",
+    "bytes": 42850192
+  },
+  {
+    "binary": "bello_agent_core-94383b5840279b36",
+    "sha256": "647b7ae61cc7c7a9c623cde6089fe96c2e46fac6af7ed6054e31f59c0436be45",
+    "bytes": 64632048
+  }
+]

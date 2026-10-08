@@ -1,0 +1,18 @@
+    Finished `test` profile [unoptimized] target(s) in 0.14s
+     Running unittests src/lib.rs (<cargo-target>/debug/deps/bello_agent_core-94383b5840279b36)
+
+running 1 test
+
+thread 'mcp::tests::concurrency_tests::saved_mixed_batch_overlaps_then_commits_in_order_and_never_replays' (10) panicked at crates/bello-agent-core/src/mcp/concurrency_tests.rs:720:6:
+called `Result::unwrap()` on an `Err` value: Elapsed(())
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test mcp::tests::concurrency_tests::saved_mixed_batch_overlaps_then_commits_in_order_and_never_replays ... FAILED
+
+failures:
+
+failures:
+    mcp::tests::concurrency_tests::saved_mixed_batch_overlaps_then_commits_in_order_and_never_replays
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 595 filtered out; finished in 5.02s
+
+error: test failed, to rerun pass `-p bello-agent-core --lib`

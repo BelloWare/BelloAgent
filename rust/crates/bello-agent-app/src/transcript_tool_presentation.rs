@@ -639,6 +639,193 @@ mod tests {
         assert_eq!(status(&session, row), Status::Unknown);
         assert!(live(&session, row).is_none());
     }
+    fn generic_live_batch(name: &str) -> Session {
+        let mut session = Session::new();
+        session.state = RunState::Running;
+        session.active_reply = Some("one".into());
+        session.messages = vec![assistant("one")];
+        let Some(ToolRecord::Assistant(record)) = &mut session.messages[0].tool_record else {
+            panic!("fixture assistant")
+        };
+        record.calls[0].name = name.into();
+        record.calls.extend([
+            ToolCall {
+                id: "awaiting-sibling".into(),
+                name: "mcp".into(),
+                arguments: json!({"action":"invoke","server":"fixture","tool":"held"}),
+            },
+            ToolCall {
+                id: "running-sibling".into(),
+                name: "bash".into(),
+                arguments: json!({"command":"printf held"}),
+            },
+        ]);
+        session
+            .live_tools
+            .push(bello_agent_core::tool_history::LiveToolView {
+                assistant_id: "one".into(),
+                call_id: "running-sibling".into(),
+                sequence: 2,
+                preview: "held sibling output".into(),
+                outcome: None,
+            });
+        session
+    }
+
+    #[test]
+    fn generic_terminal_projection_preserves_awaiting_and_running_siblings() {
+        for name in ["grep", "mcp"] {
+            let before = generic_live_batch(name);
+            let rows = project(&before, 0);
+            assert_eq!(rows.len(), 3);
+            assert_eq!(status(&before, rows[0]), Status::Awaiting);
+            assert_eq!(status(&before, rows[1]), Status::Awaiting);
+            assert_eq!(status(&before, rows[2]), Status::Running);
+            for (outcome, expected, label, is_error) in [
+                (
+                    ToolOutcome::Completed,
+                    Status::Completed,
+                    "Completed",
+                    false,
+                ),
+                (ToolOutcome::Failed, Status::Failed, "Failed", true),
+                (
+                    ToolOutcome::Unknown,
+                    Status::Unknown,
+                    "Outcome unknown",
+                    true,
+                ),
+                (
+                    ToolOutcome::NotExecuted,
+                    Status::NotExecuted,
+                    "Not executed",
+                    false,
+                ),
+                (
+                    ToolOutcome::Cancelled,
+                    Status::Cancelled,
+                    "Cancelled; no result retained",
+                    false,
+                ),
+            ] {
+                for preview in ["normalized terminal output", "", "[Image: image/png]\n"] {
+                    let mut terminal = before.clone();
+                    terminal
+                        .live_tools
+                        .push(bello_agent_core::tool_history::LiveToolView {
+                            assistant_id: "one".into(),
+                            call_id: "same-call".into(),
+                            sequence: 1,
+                            preview: preview.into(),
+                            outcome: Some(outcome),
+                        });
+                    assert_eq!(project(&terminal, 0), rows, "{name}: no durable result row");
+                    assert_eq!(terminal.messages.len(), 1);
+                    assert_eq!(status(&terminal, rows[0]), expected, "{name}: {outcome:?}");
+                    assert_eq!(status(&terminal, rows[0]).label(name), label);
+                    assert_eq!(status(&terminal, rows[0]).is_error(), is_error);
+                    assert_eq!(live(&terminal, rows[0]).unwrap().preview.as_ref(), preview);
+                    assert!(!same_content(&before, rows[0], &terminal, rows[0]));
+                    assert_eq!(status(&terminal, rows[1]), Status::Awaiting);
+                    assert!(live(&terminal, rows[1]).is_none());
+                    assert_eq!(status(&terminal, rows[2]), Status::Running);
+                    assert_eq!(live(&terminal, rows[2]), live(&before, rows[2]));
+                    for row in &rows[1..] {
+                        assert!(
+                            same_content(&before, *row, &terminal, *row),
+                            "{name}: held sibling changed"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn generic_terminal_display_changes_invalidate_only_the_owning_call() {
+        for name in ["grep", "mcp"] {
+            let mut before = generic_live_batch(name);
+            before
+                .live_tools
+                .push(bello_agent_core::tool_history::LiveToolView {
+                    assistant_id: "one".into(),
+                    call_id: "same-call".into(),
+                    sequence: 1,
+                    preview: "same terminal text".into(),
+                    outcome: Some(ToolOutcome::Completed),
+                });
+            let rows = project(&before, 0);
+            assert!(same_content(&before, rows[0], &before.clone(), rows[0]));
+            for change in ["preview", "sequence", "outcome", "removed", "owner", "call"] {
+                let mut next = before.clone();
+                match change {
+                    "preview" => next.live_tools[1].preview = "changed terminal text".into(),
+                    "sequence" => next.live_tools[1].sequence += 1,
+                    "outcome" => next.live_tools[1].outcome = Some(ToolOutcome::Unknown),
+                    "removed" => {
+                        next.live_tools.pop();
+                    }
+                    "owner" => next.live_tools[1].assistant_id = "different-owner".into(),
+                    "call" => next.live_tools[1].call_id = "different-call".into(),
+                    _ => unreachable!(),
+                }
+                assert!(
+                    !same_content(&before, rows[0], &next, rows[0]),
+                    "{name}: {change}"
+                );
+                for row in &rows[1..] {
+                    assert!(
+                        same_content(&before, *row, &next, *row),
+                        "{name}: {change} touched sibling"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn generic_retained_results_supersede_live_outcomes_and_ignore_late_previews() {
+        for name in ["grep", "mcp"] {
+            for (outcome, expected) in [
+                (ToolOutcome::Completed, Status::Completed),
+                (ToolOutcome::Failed, Status::Failed),
+                (ToolOutcome::Unknown, Status::Unknown),
+                (ToolOutcome::NotExecuted, Status::NotExecuted),
+                (ToolOutcome::Cancelled, Status::Cancelled),
+            ] {
+                let mut before = generic_live_batch(name);
+                before
+                    .live_tools
+                    .push(bello_agent_core::tool_history::LiveToolView {
+                        assistant_id: "one".into(),
+                        call_id: "same-call".into(),
+                        sequence: 1,
+                        preview: "ephemeral preview".into(),
+                        outcome: Some(if outcome == ToolOutcome::Completed {
+                            ToolOutcome::Failed
+                        } else {
+                            ToolOutcome::Completed
+                        }),
+                    });
+                let old_row = project(&before, 0)[0];
+                let mut retained = before.clone();
+                retained.messages.push(result("durable", "one", outcome));
+                let row = project(&retained, 0)[0];
+                assert_eq!(row.result(), Some(1));
+                assert_eq!(status(&retained, row), expected, "{name}: {outcome:?}");
+                assert!(live(&retained, row).is_none());
+                assert!(!same_content(&before, old_row, &retained, row));
+                let mut late = retained.clone();
+                late.live_tools[1].sequence = u64::MAX;
+                late.live_tools[1].preview = "late replacement must not render".into();
+                late.live_tools[1].outcome = Some(ToolOutcome::Unknown);
+                assert!(same_content(&retained, row, &late, row));
+                late.live_tools.clear();
+                assert!(same_content(&retained, row, &late, row));
+            }
+        }
+    }
+
     #[test]
     fn ambiguous_results_are_not_hidden_or_arbitrarily_paired() {
         let mut session = Session::new();

@@ -1,0 +1,20 @@
+   Compiling bello-agent-core v0.1.0 (<repository>/rust/crates/bello-agent-core)
+   Compiling bello-agent-app v0.1.0 (<repository>/rust/crates/bello-agent-app)
+    Finished `test` profile [unoptimized] target(s) in 28.84s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running unittests src/main.rs (<cargo-target>/debug/deps/bello_agent-a54be717f3dcc926)
+
+running 9 tests
+test chat_organization::tests::archive_generic_command_and_send_fenced_before_dispatch_without_freezing_typing ... ok
+test chat_organization::tests::archive_waits_for_real_generic_retry_failure_without_erasing_that_error ... ok
+test queue_cancel::tests::durable_cancel_generic_remove_flushes_even_when_cached_hold_is_missing ... ok
+test transcript_view::tool_presentation::tests::generic_retained_results_supersede_live_outcomes_and_ignore_late_previews ... ok
+test transcript_view::tool_presentation::tests::generic_terminal_display_changes_invalidate_only_the_owning_call ... ok
+test transcript_view::tool_presentation::tests::generic_terminal_projection_preserves_awaiting_and_running_siblings ... ok
+test transcript_view_tests::live_terminal_ui::generic_mcp_terminal_cards_render_while_siblings_wait_then_settle ... ok
+test queue_cancel::tests::durable_cancel_save_and_generic_remove_do_not_cross_exact_draft_failure ... ok
+test transcript_view_tests::live_terminal_ui::generic_native_terminal_cards_render_while_siblings_wait_then_settle ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 587 filtered out; finished in 0.38s
+

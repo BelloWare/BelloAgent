@@ -1,0 +1,47 @@
+{
+  "scope": "Attributed earlier candidate evidence, not fresh integrated executions. R2 sibling-module import compile error was corrected in frozen r3 before integration. The two mutation/filter/cache issues below remain explicit.",
+  "entries": [
+    {
+      "attribution": "Prior candidate mutation attempt selected zero tests; no detecting coverage.",
+      "log": "logs/prior-candidate/mutation-bash-only.log",
+      "raw_sha256": "f10909fd7e94e5a521ae9939bb1337cfd5a076f1d264aec658b7b88a4ebca923",
+      "normalized_sha256": "35fd52806453d23e762c6f66b3e1788deda85ed25d6835bda4ebcd75c3d1bc09"
+    },
+    {
+      "attribution": "Corrected prior candidate mutation detected Bash-only publication by held native terminal timeout.",
+      "log": "logs/prior-candidate/mutation-bash-only-detect.log",
+      "raw_sha256": "1d2d4919c0e8589ddc3b3e72147c5d24fe91f9935ee62292b461dd224bb8ab63",
+      "normalized_sha256": "c7f4fc456678ec1972b3ef7b65f9ee49ca38d0d04935d4f5ffe52db95665cb47"
+    },
+    {
+      "attribution": "Prior switch-back reused mutant binary in shared target; this was not accepted as restored validation.",
+      "log": "logs/prior-candidate/restored-candidate-r3.log",
+      "raw_sha256": "02055dcea402ccc7bb00f1f191f695afc9e8511997e75f33a05906ad886be23f",
+      "normalized_sha256": "0349478051a530f6463c9c64f17991a813ec16f429a548f0f35739bd6cea8723"
+    },
+    {
+      "attribution": "Prior forced rebuild corrected cache reuse and focused candidate test passed.",
+      "log": "logs/prior-candidate/restored-candidate-rebuilt-r3.log",
+      "raw_sha256": "48ca429a9fd43980436594094d86ea563ebfd7c7ed6ffc36e994b1da7a1645c7",
+      "normalized_sha256": "21c07aa6c6e2987894216590edc5862f016b6dcb3ef21c762ccde91624a2c2e1"
+    },
+    {
+      "attribution": "Prior candidate all-feature 596 + 127 result; separate from fresh integration.",
+      "log": "logs/prior-candidate/core-all-r3.log",
+      "raw_sha256": "17e48ff46720f06309a711e151b0eff97b05096dc47c8557c54a7793a191400a",
+      "normalized_sha256": "d130a772a5a810605675c052ae091f2c0f3ef057ca23b5af1ec5f4055a30e815"
+    },
+    {
+      "attribution": "Prior candidate default 421 + 127 result; separate from fresh integration.",
+      "log": "logs/prior-candidate/core-default-r3.log",
+      "raw_sha256": "303e9c94cbb2a9e1e4960882b759d7f146d889fb91083a96b7a3c470e3790f9c",
+      "normalized_sha256": "a9775e87ce3fe830d00705092313ed800340ff488d43c148e94c4297b592253f"
+    },
+    {
+      "attribution": "Prior candidate App 593 passed / 3 ignored; separate from fresh integration.",
+      "log": "logs/prior-candidate/app-all-r3.log",
+      "raw_sha256": "bdf91385c81db1c4d6e6f1614d19868683221a26dc82793009a79ac0b69b132d",
+      "normalized_sha256": "a49d0a51e8036c89671794c482ab369e381a66b7420a634ca115cab4ad11958f"
+    }
+  ]
+}

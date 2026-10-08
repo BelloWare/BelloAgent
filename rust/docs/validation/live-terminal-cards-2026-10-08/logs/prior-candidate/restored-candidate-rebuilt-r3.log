@@ -1,0 +1,9 @@
+   Compiling bello-agent-core v0.1.0 (<prior-candidate>/rust/crates/bello-agent-core)
+    Finished `test` profile [unoptimized] target(s) in 23.02s
+     Running unittests src/lib.rs (<cargo-target>/debug/deps/bello_agent_core-94383b5840279b36)
+
+running 1 test
+test mcp::tests::concurrency_tests::saved_mixed_batch_overlaps_then_commits_in_order_and_never_replays ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 595 filtered out; finished in 0.10s
+

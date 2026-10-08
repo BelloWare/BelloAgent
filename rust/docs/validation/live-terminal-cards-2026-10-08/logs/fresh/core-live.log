@@ -1,0 +1,17 @@
+   Compiling bello-agent-core v0.1.0 (<repository>/rust/crates/bello-agent-core)
+    Finished `test` profile [unoptimized] target(s) in 21.91s
+     Running unittests src/lib.rs (<cargo-target>/debug/deps/bello_agent_core-94383b5840279b36)
+
+running 9 tests
+test runtime::live_tool_runtime::tests::lossy_utf8_preview_may_shrink_when_a_split_scalar_completes ... ok
+test runtime::live_tool_runtime::tests::generic_terminal_result_is_bounded_utf8_and_image_payload_is_never_copied ... ok
+test runtime::live_tool_runtime::tests::prepared_generic_publication_after_stop_preserves_durable_state_but_strips_live_output ... ok
+test runtime::live_tool_runtime::tests::publication_rechecks_stop_inside_watch_barrier_after_preparation ... ok
+test runtime::live_tool_runtime::tests::rejects_delayed_out_of_order_terminal_stop_and_configuration_updates ... ok
+test runtime::live_tool_runtime::tests::rejects_retired_controller_and_reused_call_on_new_worker_or_assistant ... ok
+test runtime::live_tool_runtime::tests::terminal_generic_results_reject_stop_retirement_configuration_and_new_worker ... ok
+test runtime::live_tool_runtime::tests::terminal_outcome_classification_is_preserved_for_generic_calls ... ok
+test runtime::live_tool_runtime::tests::many_calls_and_batches_have_fixed_collection_bounds_without_retired_reinsertion ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 587 filtered out; finished in 0.60s
+

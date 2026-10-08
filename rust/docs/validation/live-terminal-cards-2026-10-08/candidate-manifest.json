@@ -1,0 +1,54 @@
+{
+  "seed_binding": "seed-binding.json",
+  "patch_sha256": "4bfaccf95a7516b0aa0a4610523b452b78b4066d8e1f3c8ace0167e4a37fd65a",
+  "files": [
+    {
+      "path": "rust/crates/bello-agent-app/src/transcript_live_terminal_ui_tests.rs",
+      "preimage_sha256": null,
+      "postimage_sha256": "9e23463131e5f63e471bb586c48606bc60c91e842cf3faf7a994f46b95bc6932",
+      "bytes": 10125
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/transcript_tool_presentation.rs",
+      "preimage_sha256": "04b156e50d7fec468e3c36325b49a9dcd35f4d5d9841315288fbf3d19ac7812c",
+      "postimage_sha256": "d54b8b166a2d413b3bfff40b617e6c8d5834cc636838c069fb21ffd3f85df7f6",
+      "bytes": 33258
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/transcript_view_tests.rs",
+      "preimage_sha256": "a5e80daf6349ce0150da6559883537d23c0231f1fc16fab256271b4c57246c21",
+      "postimage_sha256": "fa8dd2007b694412db42b8e4c0bca9f374b47a8bd3c9fce58172efdedfdd43ef",
+      "bytes": 96733
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/live_tool_runtime.rs",
+      "preimage_sha256": "c869782499452f080ad426741bb9ede02bd8285f3263c9752b8f1fc84852f76d",
+      "postimage_sha256": "a1b934d864f1b3d7ce5197816517f48f02695301e3cb287575119468699ac20d",
+      "bytes": 7508
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/live_tool_runtime_tests.rs",
+      "preimage_sha256": "70fb7b88b9fa6b4bc83d164e2a1e6b9cdf3acefe77a456891be26050e74ff9ba",
+      "postimage_sha256": "5b6365690fdd0ec88d388c5a57af4197d13804f9dfa2b1f148e960aa1d57e9c2",
+      "bytes": 11940
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/mcp/concurrency_tests.rs",
+      "preimage_sha256": "bb6012d2ee1285d54c23bf16f5a76ca17c89ca79ecc5983cb3cb203e92ea0e79",
+      "postimage_sha256": "726f68c6243426b91a49dde19b470c26461ae062f84761e31d56c9f0658607e1",
+      "bytes": 34197
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/tool_runtime.rs",
+      "preimage_sha256": "8598673ab20398bf88d642e2f76bc2f5935f2f17e78c671cf56333eb0cc8e7f3",
+      "postimage_sha256": "29167de0b529880d1f96a1b33de9ce603db85f4d99ba6b200bbf73d1d22c3a97",
+      "bytes": 62437
+    },
+    {
+      "path": "rust/docs/live-terminal-cards.md",
+      "preimage_sha256": null,
+      "postimage_sha256": "3d7b626bd849b788a71f49f70299def907dffa113bc5d369a5673ffacfc87e2c",
+      "bytes": 1705
+    }
+  ]
+}

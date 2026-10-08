@@ -2497,3 +2497,6 @@ fn live_bash_output_remeasures_existing_card_then_settles_to_retained_result(
             .any(|(_, editor)| cx.read(|cx| editor.read(cx).text().contains("Exit code: 7")))
     );
 }
+
+#[path = "transcript_live_terminal_ui_tests.rs"]
+mod live_terminal_ui;

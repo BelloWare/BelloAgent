@@ -2,10 +2,33 @@ use super::*;
 use crate::{Lane, Profile, Reply, SessionStore, Submission, provider::ToolCall};
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
+fn fixture_profile() -> Profile {
+    serde_json::from_value(json!({"id":"fixture","api":"openai-responses","providerId":"litellm","modelId":"fixture-model","baseUrl":"http://127.0.0.1:12345","contextWindow":32000,"maxOutputTokens":4096})).unwrap()
+}
+fn calls(count: usize) -> Vec<ToolCall> {
+    (0..count)
+        .map(|index| ToolCall {
+            id: if index == 0 {
+                "reused-call".into()
+            } else {
+                format!("call-{index}")
+            },
+            name: if index % 2 == 0 {
+                "mcp".into()
+            } else {
+                "ls".into()
+            },
+            arguments: json!({}),
+        })
+        .collect()
+}
 fn active() -> (tempfile::TempDir, Arc<Controller>, Identity) {
+    active_with_calls(calls(1))
+}
+fn active_with_calls(calls: Vec<ToolCall>) -> (tempfile::TempDir, Arc<Controller>, Identity) {
     let root = tempfile::tempdir().unwrap();
     let mut store = SessionStore::open(root.path().join("session.json")).unwrap();
-    let profile: Profile = serde_json::from_value(json!({"id":"fixture","api":"openai-responses","providerId":"litellm","modelId":"fixture-model","baseUrl":"http://127.0.0.1:12345","contextWindow":32000,"maxOutputTokens":4096})).unwrap();
+    let profile = fixture_profile();
     store
         .transact(|session| {
             session.submit(Submission::new("test".into(), Lane::FollowUp))?;
@@ -21,11 +44,7 @@ fn active() -> (tempfile::TempDir, Arc<Controller>, Identity) {
                 &Reply {
                     text: String::new(),
                     reasoning: String::new(),
-                    calls: vec![ToolCall {
-                        id: "reused-call".into(),
-                        name: "bash".into(),
-                        arguments: json!({"command":"printf test"}),
-                    }],
+                    calls,
                     usage: serde_json::Value::Null,
                     status: "completed".into(),
                     provider_items: vec![],
@@ -125,4 +144,167 @@ fn prepared_generic_publication_after_stop_preserves_durable_state_but_strips_li
     let shown = controller.snapshot();
     assert_eq!(shown.title, "legitimate queue/durable update");
     assert!(shown.live_tools.is_empty());
+}
+
+#[test]
+fn generic_terminal_result_is_bounded_utf8_and_image_payload_is_never_copied() {
+    use crate::tool_content::ToolContent;
+    let (_root, controller, identity) = active();
+    let result = ToolResultRow {
+        text: "🦀".repeat(MAX_LIVE_PREVIEW_BYTES),
+        content: Some(Arc::new(ToolContent {
+            blocks: vec![ContentBlock::Image {
+                mime_type: "image/png".into(),
+                data: "secret-base64-payload".repeat(100_000),
+            }],
+            stats: None,
+        })),
+        outcome: ToolOutcome::Completed,
+    };
+    identity.finish_result(&result);
+    let snapshot = controller.snapshot();
+    let preview = &snapshot.live_tools[0].preview;
+    assert!(preview.starts_with("[Image: image/png]\n🦀"));
+    assert!(preview.len() <= MAX_LIVE_PREVIEW_BYTES);
+    assert!(!preview.contains("secret-base64"));
+    assert!(snapshot.messages.iter().all(|row| !matches!(
+        row.tool_record,
+        Some(crate::tool_history::ToolRecord::Result(_))
+    )));
+    identity.finish("late failure", ToolOutcome::Failed);
+    assert_eq!(controller.snapshot().live_tools, snapshot.live_tools);
+
+    let mut image_only = result.clone();
+    image_only.text.clear();
+    assert_eq!(terminal_preview(&image_only), "[Image: image/png]\n");
+    let empty = ToolResultRow {
+        text: String::new(),
+        content: None,
+        outcome: ToolOutcome::NotExecuted,
+    };
+    assert_eq!(terminal_preview(&empty), "");
+}
+
+#[test]
+fn many_calls_and_batches_have_fixed_collection_bounds_without_retired_reinsertion() {
+    let count = MAX_LIVE_TOOL_CARDS * 3;
+    let (_root, controller, first) = active_with_calls(calls(count));
+    let mut retired = Vec::new();
+    let mut assistant = first.assistant.clone();
+    for batch in 0..20 {
+        for (index, call) in calls(count).iter().enumerate() {
+            let identity = controller.live_tool_identity(&assistant, &call.id);
+            assert_eq!(identity.is_some(), index < MAX_LIVE_TOOL_CARDS);
+            if let Some(identity) = identity {
+                identity.update(1, "🦀".repeat(MAX_LIVE_PREVIEW_BYTES / 4));
+                identity.finish(&"é".repeat(MAX_LIVE_PREVIEW_BYTES), ToolOutcome::Completed);
+                retired.push(identity);
+            }
+        }
+        let inner = controller.inner.lock().unwrap();
+        assert_eq!(inner.live_tools.len(), MAX_LIVE_TOOL_CARDS);
+        assert!(
+            inner
+                .live_tools
+                .iter()
+                .all(|view| view.assistant_id == assistant)
+        );
+        assert!(
+            inner
+                .live_tools
+                .iter()
+                .map(|view| view.preview.len())
+                .sum::<usize>()
+                <= MAX_LIVE_TOTAL_PREVIEW_BYTES
+        );
+        drop(inner);
+        if batch == 19 {
+            break;
+        }
+        let next = {
+            let mut inner = controller.inner.lock().unwrap();
+            inner
+                .store
+                .transact(|session| {
+                    session.settle_tools(
+                        &assistant,
+                        (0..count)
+                            .map(|_| ToolResultRow {
+                                text: "durable".into(),
+                                content: None,
+                                outcome: ToolOutcome::Completed,
+                            })
+                            .collect(),
+                        false,
+                    )?;
+                    let next = session.active_reply.clone().unwrap();
+                    session.begin_tools(
+                        &next,
+                        &Reply {
+                            text: String::new(),
+                            reasoning: String::new(),
+                            calls: calls(count),
+                            usage: serde_json::Value::Null,
+                            status: "completed".into(),
+                            provider_items: vec![],
+                        },
+                        &fixture_profile(),
+                    )?;
+                    Ok(next)
+                })
+                .unwrap()
+        };
+        assistant = next;
+        let current = controller
+            .live_tool_identity(&assistant, "reused-call")
+            .unwrap();
+        current.finish("current", ToolOutcome::Unknown);
+        for old in &retired {
+            old.update(99, "stale stream".into());
+            old.finish("stale terminal", ToolOutcome::Completed);
+        }
+        let inner = controller.inner.lock().unwrap();
+        assert_eq!(inner.live_tools.len(), 1);
+        assert_eq!(inner.live_tools[0].assistant_id, assistant);
+        assert_eq!(&*inner.live_tools[0].preview, "current");
+    }
+}
+
+#[test]
+fn terminal_generic_results_reject_stop_retirement_configuration_and_new_worker() {
+    for fence in 0..4 {
+        let (_root, controller, identity) = active();
+        match fence {
+            0 => controller.stop().unwrap(),
+            1 => controller.retire().unwrap(),
+            2 => controller.inner.lock().unwrap().configuration_epoch = Arc::new(()),
+            _ => controller.inner.lock().unwrap().worker_epoch = Arc::new(()),
+        }
+        identity.finish("late terminal", ToolOutcome::Completed);
+        assert!(controller.snapshot().live_tools.is_empty());
+    }
+}
+
+#[test]
+fn terminal_outcome_classification_is_preserved_for_generic_calls() {
+    for outcome in [
+        ToolOutcome::Completed,
+        ToolOutcome::Failed,
+        ToolOutcome::Unknown,
+        ToolOutcome::NotExecuted,
+        ToolOutcome::Cancelled,
+    ] {
+        let (_root, controller, identity) = active();
+        identity.update(1, "x".repeat(MAX_LIVE_PREVIEW_BYTES + 1));
+        assert!(controller.snapshot().live_tools.is_empty());
+        identity.finish_result(&ToolResultRow {
+            text: String::new(),
+            content: None,
+            outcome,
+        });
+        let shown = controller.snapshot();
+        assert_eq!(shown.live_tools.len(), 1);
+        assert_eq!(shown.live_tools[0].outcome, Some(outcome));
+        assert!(shown.live_tools[0].preview.is_empty());
+    }
 }

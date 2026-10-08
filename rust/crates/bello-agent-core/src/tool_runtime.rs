@@ -535,57 +535,59 @@ impl Controller {
                 let directory = &output_directory;
                 let reply_id = &reply_id;
                 async move {
-                    if call.name == "mcp"
+                    let live = self.live_tool_identity(reply_id, &call.id);
+                    let (result, receipt) = if call.name == "mcp"
                         && let Some(mcp) = &tools.mcp
                     {
-                        let (result, receipt) =
-                            run_mcp_call(mcp, call, directory, token.clone(), budget, || async {
-                                self.confirm_turn_resources(token.clone()).await
-                            })
-                            .await;
-                        return (index, result, receipt);
-                    }
-                    let live = (call.name == "bash")
-                        .then(|| self.live_tool_identity(reply_id, &call.id))
-                        .flatten();
-                    #[cfg(unix)]
-                    let native =
-                        tools
-                            .native
-                            .clone()
-                            .with_shell_update(live.clone().map(|identity| {
-                                Arc::new(move |update: crate::tools::bash::Update| {
-                                    identity.update(update.sequence, update.preview)
-                                }) as crate::tools::bash::OnUpdate
-                            }));
-                    #[cfg(not(unix))]
-                    let native = tools.native.clone();
-                    let result = run_call_with_admission(
-                        &native,
-                        call,
-                        directory,
-                        token.clone(),
-                        budget,
-                        async {
-                            let confirmation = if tools.native.editing_call(call) {
-                                self.confirm_turn_resources(token.clone()).await
-                            } else {
-                                self.check_resources()
-                            };
-                            confirmation.map_err(|error| {
-                                ToolError::NotExecuted(if token.is_cancelled() {
-                                    "Not executed: cancelled before invocation".into()
+                        run_mcp_call(mcp, call, directory, token.clone(), budget, || async {
+                            self.confirm_turn_resources(token.clone()).await
+                        })
+                        .await
+                    } else {
+                        #[cfg(unix)]
+                        let native = tools.native.clone().with_shell_update(
+                            (call.name == "bash")
+                                .then(|| live.clone())
+                                .flatten()
+                                .map(|identity| {
+                                    Arc::new(move |update: crate::tools::bash::Update| {
+                                        identity.update(update.sequence, update.preview)
+                                    })
+                                        as crate::tools::bash::OnUpdate
+                                }),
+                        );
+                        #[cfg(not(unix))]
+                        let native = tools.native.clone();
+                        let result = run_call_with_admission(
+                            &native,
+                            call,
+                            directory,
+                            token.clone(),
+                            budget,
+                            async {
+                                let confirmation = if tools.native.editing_call(call) {
+                                    self.confirm_turn_resources(token.clone()).await
                                 } else {
-                                    format!("Not executed: {error}")
+                                    self.check_resources()
+                                };
+                                confirmation.map_err(|error| {
+                                    ToolError::NotExecuted(if token.is_cancelled() {
+                                        "Not executed: cancelled before invocation".into()
+                                    } else {
+                                        format!("Not executed: {error}")
+                                    })
                                 })
-                            })
-                        },
-                    )
-                    .await;
+                            },
+                        )
+                        .await;
+                        (result, None)
+                    };
+                    // Publish only display state. The Ticket and canonical rows
+                    // remain owned by ordered whole-batch settlement below.
                     if let Some(live) = live {
-                        live.finish(&result.text, result.outcome);
+                        live.finish_result(&result);
                     }
-                    (index, result, None)
+                    (index, result, receipt)
                 }
             };
             // Every call, including same-file edits and MCP invocations, starts
