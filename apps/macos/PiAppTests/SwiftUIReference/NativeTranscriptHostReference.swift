@@ -25,6 +25,7 @@ struct NativeTranscriptView: NSViewRepresentable {
     func updateNSView(_ pane: NativeTranscriptPane, context: Context) {
         pane.onAnchorChanged = onAnchorChanged; pane.onReadReply = onReadReply
         pane.onLoadEarlier = onLoadEarlier; pane.onLoadNewer = onLoadNewer; pane.onLatest = onLatest
+        pane.onPrefetchEarlier = onLoadEarlier; pane.onPrefetchNewer = onLoadNewer
         pane.onViewportReady = onViewportReady
         pane.update(session: session, state: state, actions: actions, environment: TranscriptRowEnvironment(context.environment),
                     reduceMotion: context.environment.piReduceMotion)

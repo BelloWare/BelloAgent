@@ -103,6 +103,17 @@ struct TranscriptVersionView: Equatable, Sendable {
     }
     @Published var historyProgress: String?
     @Published var olderPage = ConversationPageBoundary()
+    /// The place the transcript was last asked to show (`revealInTranscript`):
+    /// the page lands on it and marks its range.
+    @Published var reveal: TranscriptReveal?
+    /// ⌘F, ⌘G and ⇧⌘G for this chat's find bar (`TranscriptFindCommand`).
+    @Published var findCommand: TranscriptFindCommand?
+    /// The messages of the rows on the reader's screen right now, from
+    /// the page showing this chat. A page read in at an edge never lets go of
+    /// them, whatever the last reported anchor says.
+    var visibleMessageIDs: (@MainActor () -> Set<String>)?
+    /// The reveal whose read is under way; a newer one supersedes it.
+    var revealRead: Int?
     @Published var newerPage = ConversationPageBoundary()
     @Published var draftReady = true
     var completionTracker = SessionCompletionTracker()

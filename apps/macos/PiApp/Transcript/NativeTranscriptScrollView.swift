@@ -79,7 +79,14 @@ final class TranscriptNativeScrollView: NSScrollView {
     /// Moves the reader the way the key they pressed says. Returns whether
     /// there was anywhere to go, so a key the conversation cannot use goes
     /// back to whoever sent it.
+    /// Asked first for Home and End: true when the pane took the key to an
+    /// end of the chat that its window does not reach.
+    var edgeKey: ((TranscriptKeyScroll) -> Bool)?
     @discardableResult func scroll(by move: TranscriptKeyScroll) -> Bool {
+        if move == .top || move == .bottom, let edgeKey, edgeKey(move) {
+            readerWillNavigate(upward: move == .top)
+            return true
+        }
         let clip = contentView
         let lowest = -contentInsets.top
         let highest = max(lowest, (documentView?.frame.height ?? 0) - clip.bounds.height + contentInsets.bottom)
@@ -104,6 +111,18 @@ final class TranscriptNativeScrollView: NSScrollView {
         NotificationCenter.default.post(name: NSScrollView.didEndLiveScrollNotification, object: self)
         return true
     }
+    /// Home, End, Page Up and Page Down with the conversation focused, and
+    /// ⌘↑ / ⌘↓ for its first and newest messages.
+    override func keyDown(with event: NSEvent) {
+        let command = event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.command)
+        let move: TranscriptKeyScroll? = command
+            ? (event.keyCode == KeyCode.upArrow ? .top : event.keyCode == KeyCode.downArrow ? .bottom : nil)
+            : ComposerTextView.conversationScroll(for: event.keyCode)
+        if let move { scroll(by: move); return }
+        super.keyDown(with: event)
+    }
+    override func scrollToBeginningOfDocument(_ sender: Any?) { scroll(by: .top) }
+    override func scrollToEndOfDocument(_ sender: Any?) { scroll(by: .bottom) }
     override func layout() {
         super.layout()
         (documentView as? TranscriptNativeDocument)?.layoutRows(width: contentSize.width)
@@ -250,6 +269,52 @@ final class TranscriptNativeScrollView: NSScrollView {
     static let sliceQuietPeriod: TimeInterval = 0.15
     /// At most this many rows are measured in one idle unit.
     static let sliceRowLimit = 16
+    /// What the find bar or a reveal marks in the text (`TranscriptHighlights`).
+    var highlights = TranscriptHighlights() {
+        didSet {
+            guard highlights != oldValue else { return }
+            highlightGeneration += 1
+            // A new request — the find bar's and a reveal's counters are
+            // separate, so the source is part of a request's identity.
+            if let focus = highlights.focus, focus.serial != oldValue.focus?.serial || focus.fromFind != oldValue.focus?.fromFind { focusPending = true; focusRetries = 0 }
+            if highlights.focus == nil { focusPending = false }
+            markMountedRows()
+            if focusPending { scheduleFocusReveal() }
+        }
+    }
+    var highlightGeneration = 0
+    var focusPending = false
+    /// The focused place as last resolved (`resolveFocus`).
+    weak var focusText: NSTextView?
+    var focusRange = NSRange(location: NSNotFound, length: 0)
+    var reportedFocus: Int?
+    /// Told how many times the focused message's text shows the needle, once
+    /// every row of it has been on screen to count (the find bar's counts are
+    /// the source's until then).
+    var onFocusResolved: ((String, String, Int) -> Void)?
+    /// How many times each row of the focused message showed the needle,
+    /// for the focus request they were counted for.
+    var focusRowCounts: [ObjectIdentifier: Int] = [:]
+    var focusCountsSerial: String?
+    /// Looks again for a place an inner scroll is building, at most this often.
+    var focusRetries = 0
+    /// The highlight generation each text view was last marked for, and its
+    /// text's length then (a streamed reply marks again as it grows).
+    let markedText = NSMapTable<NSTextView, NSNumber>.weakToStrongObjects()
+    let markedLength = NSMapTable<NSTextView, NSNumber>.weakToStrongObjects()
+    private var focusRevealScheduled = false
+    /// After the pass that mounted the focused row, and once the page has
+    /// landed wherever it was taking the reader.
+    func scheduleFocusReveal() {
+        guard !focusRevealScheduled else { return }
+        focusRevealScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.focusRevealScheduled = false
+            guard self.focusPending, self.page?.landingPending != true else { return }
+            self.revealFocusIfPending()
+        }
+    }
     private weak var observedClip: NSClipView?
     nonisolated(unsafe) private var boundsObserver: NSObjectProtocol?
     /// All exact rows stay retained; only the buffered viewport participates
@@ -304,7 +369,11 @@ final class TranscriptNativeScrollView: NSScrollView {
     /// Whether the page is on its newest row and placing nothing else, so a
     /// viewport that changes height keeps it there (`TranscriptNativeScrollView.tile`).
     var pinsNewestRow: Bool { page?.pinsNewestRow ?? false }
-    func readerWillNavigate(upward: Bool) { page?.readerWillNavigate(upward: upward) }
+    func readerWillNavigate(upward: Bool) {
+        // The reader's own movement wins over a place still being brought into view.
+        focusPending = false
+        page?.readerWillNavigate(upward: upward)
+    }
     /// Which chat's rows the document currently holds, which lags the page's
     /// own binding by one SwiftUI update.
     var shownSessionID: String? { snapshot?.sessionID }
@@ -966,6 +1035,8 @@ final class TranscriptNativeScrollView: NSScrollView {
             travelingForward = clip.bounds.minY > lastViewportTop
         }
         lastViewportTop = clip.bounds.minY
+        if !highlights.isEmpty { markMountedRows() }
+        if focusPending { scheduleFocusReveal() }
         if cold || !approximate.isEmpty { scheduleSlice() }
     }
     /// Builds the trees the reader is about to need, in the direction they

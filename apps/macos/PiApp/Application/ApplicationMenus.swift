@@ -158,7 +158,10 @@ import AppKit
         command(conversation, "Fold This Response to One Line", enabled: { [model] in model.canFoldResponses }) { [model] in model.setFocusedResponseCollapsed(true) }
         command(conversation, "Show This Response", enabled: { [model] in model.canFoldResponses }) { [model] in model.setFocusedResponseCollapsed(false) }
         conversation.addItem(.separator())
-        command(conversation, "Search and Copy Conversation…", key: "f", enabled: active, action: { [model] in model.searchFocusedConversation() })
+        command(conversation, "Find…", key: "f", enabled: active, action: { [model] in model.findInFocusedConversation(.show) })
+        command(conversation, "Find Next", key: "g", enabled: active, action: { [model] in model.findInFocusedConversation(.next) })
+        command(conversation, "Find Previous", key: "g", modifiers: [.command, .shift], enabled: active, action: { [model] in model.findInFocusedConversation(.previous) })
+        command(conversation, "Search and Copy Conversation…", key: "f", modifiers: [.command, .option], enabled: active, action: { [model] in model.searchFocusedConversation() })
 
         let window = menu("Window")
         system(window, "Minimize", #selector(NSWindow.performMiniaturize(_:)), key: "m")

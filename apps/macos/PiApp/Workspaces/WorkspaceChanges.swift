@@ -64,6 +64,13 @@ extension WorkspaceModel {
         guard !Self.typingInATab(in: window), let id = focusedSessionID ?? selectedID else { return }
         inspectConversation(id)
     }
+    /// ⌘F, ⌘G, ⇧⌘G: the focused chat's find bar over its transcript,
+    /// unless the keys are in text a tab holds.
+    func findInFocusedConversation(_ kind: TranscriptFindCommand.Kind, in window: NSWindow? = NSApp.keyWindow) {
+        guard !Self.typingInATab(in: window), let id = focusedSessionID ?? selectedID, let view = displays[id] else { return }
+        revealSerial += 1
+        view.findCommand = TranscriptFindCommand(kind: kind, serial: revealSerial)
+    }
     /// ⌘.: stops the focused chat, unless the keys are in text a tab holds.
     func stopFocused(in window: NSWindow? = NSApp.keyWindow) {
         guard !Self.typingInATab(in: window) else { return }

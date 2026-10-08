@@ -315,7 +315,8 @@ actor HistoryReader {
             if query.isEmpty { hits.append(.init(id: ref.id, position: cursor + 1, preview: String(text.prefix(240)))) }
             else if let range = text.range(of: query, options: [.caseInsensitive]) {
                 let from = text.index(range.lowerBound, offsetBy: -60, limitedBy: text.startIndex) ?? text.startIndex
-                hits.append(.init(id: ref.id, position: cursor + 1, preview: String(text[from...].prefix(240))))
+                hits.append(.init(id: ref.id, position: cursor + 1, preview: String(text[from...].prefix(240)),
+                                  count: ConversationContent.occurrences(of: query, in: text)))
             }
             cursor += 1
         }
@@ -430,20 +431,24 @@ actor HistoryReader {
         return try read(path: path)
     }
     typealias Progress = @Sendable (_ records: Int, _ bytes: UInt64, _ total: UInt64) -> Void
-    func window(path: String, cursor: ConversationCursor? = nil, newer: Bool = false, around: String? = nil, progress: Progress? = nil) throws -> HistoryPage {
+    /// `start`: the chat's first page, wherever the reader is. It indexes the
+    /// whole journal: an index built from a checkpoint begins at its retained
+    /// rows, and the chat's first message is before them.
+    func window(path: String, cursor: ConversationCursor? = nil, newer: Bool = false, around: String? = nil, start: Bool = false,
+                progress: Progress? = nil) throws -> HistoryPage {
         try read(path: path, before: newer ? nil : cursor?.entry, around: around,
-                 after: newer ? cursor?.entry : nil, targetTurns: HistoryWindowPolicy.turns, expected: cursor, progress: progress)
+                 after: newer ? cursor?.entry : nil, start: start, targetTurns: HistoryWindowPolicy.turns, expected: cursor, progress: progress)
     }
     /// `whole` indexes every record: what reads the whole chat (search, copy,
     /// an edit's timeline, a record's role in any version) needs it.
-    func read(path: String, before: String? = nil, around: String? = nil, after: String? = nil,
+    func read(path: String, before: String? = nil, around: String? = nil, after: String? = nil, start atStart: Bool = false,
               targetTurns: Int? = nil, expected: ConversationCursor? = nil, progress: Progress? = nil, whole: Bool = false) throws -> HistoryPage {
         try Task.checkCancellation()
         let file = try open(path); defer { try? file.close() }
         let identity = try stamp(file)
         let size = try file.seekToEnd(); try file.seek(toOffset: 0)
         let journal = try journalIndex(path: path, file: file, identity: identity, size: size, before: before, around: around, after: after,
-                                       targetTurns: targetTurns, progress: progress, whole: whole)
+                                       targetTurns: targetTurns, progress: progress, whole: whole || atStart)
         let branch = journal.branch, notice = journal.notice, olderRows = journal.olderRows, versions = journal.versions
         let assistantCount = journal.assistantCount, latestAssistantID = journal.latestAssistantID, failureMessage = journal.failureMessage
         let taskRecords = journal.taskRecords, retainedRun = journal.retainedRun, incompleteTail = journal.incompleteTail
@@ -475,7 +480,7 @@ actor HistoryReader {
             if let digest { cursor.committedBytes = size; cursor.fingerprint = digest }
             return cursor
         }
-        let (range, forward) = try Self.pageRange(in: branch, before: before, around: around, after: after, targetTurns: targetTurns)
+        let (range, forward) = try Self.pageRange(in: branch, before: before, around: around, after: after, start: atStart, targetTurns: targetTurns)
         let (messages, start, end) = try decodePage(range, forward: forward, from: file, path: path, identity: identity,
                                                     branch: branch, versions: versions, retainedRun: retainedRun)
         return HistoryPage(messages: messages, before: start > 0 && start < branch.count ? try branch.at(start).id : nil, total: olderRows + branch.count, notice: notice,
@@ -779,9 +784,9 @@ actor HistoryReader {
     /// The rows a page holds, and whether it reads forward from its first:
     /// the turns around, after or before a row, or sixty rows when no count
     /// of turns is asked for. A boundary no longer in the branch throws.
-    private static func pageRange(in branch: HistoryOffsetIndex, before: String?, around: String?, after: String?,
+    private static func pageRange(in branch: HistoryOffsetIndex, before: String?, around: String?, after: String?, start: Bool = false,
                                   targetTurns: Int?) throws -> (range: Range<Int>, forward: Bool) {
-        let anchorIndex = try around.flatMap { try branch.index(of: $0) }
+        let anchorIndex = start ? (branch.count > 0 ? 0 : nil) : try around.flatMap { try branch.index(of: $0) }
         let beforeIndex = try before.flatMap { try branch.index(of: $0) }
         let afterIndex = try after.flatMap { try branch.index(of: $0) }
         guard (around == nil || anchorIndex != nil), (before == nil || beforeIndex != nil), (after == nil || afterIndex != nil) else {

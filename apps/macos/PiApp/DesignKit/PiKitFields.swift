@@ -157,8 +157,15 @@ extension PiKit {
         }
         private var iconView: SymbolView?
         required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+        /// Escape in the field, when set; otherwise Escape does what it did.
+        var onCancel: (() -> Void)?
         @objc private func submitted() { onSubmit?() }
         func controlTextDidChange(_ notification: Notification) { onChange?(field.stringValue) }
+        func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+            guard selector == #selector(NSResponder.cancelOperation(_:)), let onCancel else { return false }
+            onCancel()
+            return true
+        }
 
         private var iconWidth: CGFloat { icon.map { $0.layoutSize.width + 7 } ?? 0 }
         override var intrinsicContentSize: NSSize {
