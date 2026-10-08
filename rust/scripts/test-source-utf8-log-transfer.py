@@ -76,6 +76,48 @@ class TransferTests(unittest.TestCase):
                 self.assertEqual(stat.S_IMODE(source.stat().st_mode), stat.S_IMODE(recovered.stat().st_mode))
             self.assertEqual(self.receipt.read_bytes(), (target / t.RECEIPT).read_bytes())
 
+    def test_github_segment_bom_at_chunk_boundaries_roundtrip(self):
+        # Real CI logs had U+FEFF before UTC timestamps on chunks 158 and 327.
+        (self.bundle / "rust-probe").write_bytes(os.urandom(4 * 1024 * 1024))
+        self.manifest["files"]["rust-probe"] = t.sha((self.bundle / "rust-probe").read_bytes())
+        self.write_identity()
+        archive, _ = t.pack(self.bundle, self.receipt)
+        lines = self.logs(archive).splitlines()
+        self.assertGreater(len(lines), 330)
+        timestamp = "2026-10-08T18:50:00.1234567Z "
+        log = "\n".join(("\ufeff" if index in {159, 328} else "") + timestamp + line
+                        for index, line in enumerate(lines)) + "\n"
+        target = self.root / "segment-out"
+        t.decode(io.StringIO(log), target, t.sha(archive), COMMIT)
+        for source in self.bundle.iterdir():
+            recovered = target / t.BUNDLE / source.name
+            self.assertEqual(source.read_bytes(), recovered.read_bytes())
+            self.assertEqual(stat.S_IMODE(source.stat().st_mode), stat.S_IMODE(recovered.stat().st_mode))
+        self.assertEqual(self.receipt.read_bytes(), (target / t.RECEIPT).read_bytes())
+
+    def test_segment_bom_incomplete_through_chunk495_of510_still_rejected(self):
+        stream = io.StringIO()
+        t.emit_records(b"x" * 4696612, COMMIT, stream)
+        lines = stream.getvalue().splitlines()
+        self.assertEqual(json.loads(lines[0][len(t.PREFIX):])["chunk_count"], 510)
+        # Begin plus chunks 0–495 (496 chunks), no end: match the live snapshot.
+        incomplete = "\n".join(("\ufeff" if index in {159, 328} else "") +
+            "2026-10-08T18:50:00.1234567Z " + line
+            for index, line in enumerate(lines[:497])) + "\n"
+        with self.assertRaisesRegex(ValueError, "missing complete bundle"):
+            t.decode_records(io.StringIO(incomplete))
+
+    def test_bom_only_allowed_once_before_valid_timestamp(self):
+        for prefix in ("\ufeff", "\ufeff\ufeff2026-10-08T18:50:00Z ",
+                       "\ufeff2026-10-08T18:50:00+00:00 ", "\ufeffnot-a-timestamp ",
+                       "2026-10-08T18:50:00Z \ufeff", " \ufeff2026-10-08T18:50:00Z "):
+            with self.subTest(prefix=repr(prefix)):
+                self.reject(prefix + self.log)
+        self.reject(self.log.replace(t.PREFIX + "{", t.PREFIX + "\ufeff{", 1))
+        encoded = self.records[1]["data"]
+        self.reject(self.log.replace(encoded, encoded[:50] + "\ufeff" + encoded[50:], 1))
+        self.reject(self.log.replace('"schema":1', '"schema":\ufeff1', 1))
+
     def test_missing_duplicate_reordered_and_extra_records(self):
         variants = [self.records[1:], self.records[:-1], self.records[:1] + self.records[2:],
                     [self.records[0]] + self.records, self.records[:2] + self.records[1:],

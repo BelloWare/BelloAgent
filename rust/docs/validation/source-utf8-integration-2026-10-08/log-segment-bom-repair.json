@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "date": "2026-10-08",
+  "cause": "GitHub job-log segments can prefix UTC timestamps with one U+FEFF; exact report comment6066876364",
+  "change": "Accept one BOM only immediately before a valid timestamp prefix. No JSON/base64 normalization.",
+  "tests_passed": 18,
+  "controls": [
+    "Timestamped multi-chunk roundtrip with BOM before chunks158/327",
+    "Interior, double and malformed-prefix BOM rejection",
+    "Incomplete496of510chunks rejected without footer",
+    "Original-regex negative control reproduces malformed prefix"
+  ],
+  "helper_sha256": "2653e550c1e44e9a82fd8535c80339f2432e4b974daf8c3935c1f0a3219a5569",
+  "tests_sha256": "25ad64e595cc37ad27866f7802eba0fa901a1b07e723e742943cbac7b40851b8",
+  "native_bundle_unchanged": true
+}

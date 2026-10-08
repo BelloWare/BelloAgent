@@ -33,7 +33,9 @@ RECEIPT = "a4-modern-receipt.json"
 PATHS = {f"{BUNDLE}/{name}" for name in FILES | {"manifest.json"}} | {RECEIPT}
 SHA = re.compile(r"[0-9a-f]{64}\Z")
 COMMIT = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
-TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z ")
+# GitHub concatenated log segments can start with one UTF-8 BOM. Accept it
+# only as part of this anchored UTC timestamp prefix, never via general stripping.
+TIMESTAMP = re.compile(r"^\ufeff?\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z ")
 IDENTITY = {"schema", "source_commit", "archive_bytes", "archive_sha256", "chunk_count"}
 
 
