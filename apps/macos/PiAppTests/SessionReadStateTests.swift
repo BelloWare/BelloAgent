@@ -429,3 +429,241 @@ extension SessionReadStateTests {
         try await close(model, root: root)
     }
 }
+
+/// Mark as Unread (0.1.122): a chat the reader has read can be marked unread
+/// from its row's menu, the marked rows' menu and the File menu. It shows and
+/// counts as one unread reply — the dot, the bold title, the sidebar's count,
+/// the project's dot and the Dock badge — until the reader opens it again or
+/// marks it read, and it survives a relaunch.
+final class SessionMarkUnreadTests: SessionReadStateTestCase {
+    /// "chat" (open, focused) and "other", both read, with replies seen.
+    @MainActor private func twoChats(root: URL? = nil) async throws -> (WorkspaceModel, URL) {
+        let (model, root, _) = try await makeModel(root: root)
+        let other = ChatRecord(id: "other", workspaceID: "workspace", title: "Other chat", path: nil, profileID: "profile")
+        model.chats.append(other); try await model.store?.put(other, kind: "chat", id: other.id)
+        try await model.restoreReadStates()
+        model.observeAssistantOutputs(sessionID: "chat", snapshot: snapshot(3, "c3"))
+        model.observeAssistantOutputs(sessionID: "other", snapshot: snapshot(2, "o2"))
+        return (model, root)
+    }
+
+    @MainActor func testAMarkedChatShowsAndCountsLikeAnUnreadReply() async throws {
+        let (model, root) = try await twoChats()
+        XCTAssertTrue(model.canMarkSessionUnread("other")); XCTAssertFalse(model.offersMarkSessionRead("other"))
+        model.markSessionUnread("other")
+        XCTAssertEqual(model.unreadOutputCount(sessionID: "other"), 1, "the row shows one unread reply's dot and bold title")
+        XCTAssertEqual(model.unreadCount, 1)
+        XCTAssertTrue(model.projectHasUnread("workspace"))
+        XCTAssertTrue(model.markedUnreadOnly(sessionID: "other"))
+        XCTAssertEqual(NSApp.dockTile.badgeLabel, "1", "a marked chat counts on the Dock as an unread reply does")
+        XCTAssertFalse(model.canMarkSessionUnread("other")); XCTAssertTrue(model.offersMarkSessionRead("other"))
+        let row = try XCTUnwrap(model.menuBarActivity().rows.first { $0.id == "other" })
+        XCTAssertEqual(row.phaseLabel, "Marked unread")
+        // A real reply on top: still one chat, now an ordinary unread reply.
+        model.observeAssistantOutputs(sessionID: "other", snapshot: snapshot(3, "o3"))
+        XCTAssertEqual(model.unreadOutputCount(sessionID: "other"), 1); XCTAssertEqual(model.unreadCount, 1)
+        XCTAssertFalse(model.markedUnreadOnly(sessionID: "other"))
+        // Mark as Read clears both.
+        model.markSessionRead("other")
+        XCTAssertEqual(model.unreadCount, 0); XCTAssertNil(NSApp.dockTile.badgeLabel)
+        XCTAssertNil(model.unreadStates["other"]?.markedUnread)
+        try await close(model, root: root)
+    }
+
+    @MainActor func testOpeningTheChatClearsTheMarkButSeeingAReplyDoesNot() async throws {
+        let (model, root) = try await twoChats()
+        let view = try XCTUnwrap(model.displays["chat"])
+        // The chat open now is marked: the dot stays while the reader is still on it.
+        model.markSessionUnread("chat")
+        view.messages = [.init(id: "c3", role: "assistant", text: "Seen")]
+        model.unreadStates["chat"]?.unreadTargetID = "c3"
+        model.acknowledgeVisibleReply(sessionID: "chat", messageID: "c3")
+        XCTAssertEqual(model.unreadOutputCount(sessionID: "chat"), 1, "the page seeing a reply does not undo the reader's mark")
+        model.focusedSessionID = "chat"
+        XCTAssertEqual(model.unreadOutputCount(sessionID: "chat"), 1, "staying on the chat keeps the mark")
+        // Leaving and coming back is opening it.
+        model.focusedSessionID = "other"
+        XCTAssertEqual(model.unreadOutputCount(sessionID: "chat"), 1)
+        model.focusedSessionID = "chat"
+        XCTAssertEqual(model.unreadOutputCount(sessionID: "chat"), 0, "opening the chat clears the mark")
+        XCTAssertNil(NSApp.dockTile.badgeLabel)
+        // Opening clears only the mark: a reply not yet seen stays unread.
+        model.focusedSessionID = "other"
+        model.markSessionUnread("chat")
+        model.observeAssistantOutputs(sessionID: "chat", snapshot: snapshot(4, "c4"))
+        model.focusedSessionID = "chat"
+        XCTAssertEqual(model.unreadStates["chat"]?.unreadOutputs, 1, "an unseen reply is not read by opening")
+        XCTAssertNil(model.unreadStates["chat"]?.markedUnread)
+        try await close(model, root: root)
+    }
+
+    @MainActor func testAMarkBeforeAnyCountTakesTheNextCountAsReadEvenMidRun() async throws {
+        let (model, root, _) = try await makeModel()
+        let fresh = ChatRecord(id: "fresh", workspaceID: "workspace", title: "Fresh", path: nil, profileID: "profile")
+        model.chats.append(fresh); try await model.store?.put(fresh, kind: "chat", id: fresh.id)
+        try await model.restoreReadStates()
+        model.markSessionUnread("fresh")
+        XCTAssertEqual(model.unreadStates["fresh"]?.baselinePending, true)
+        var running = snapshot(7, "f7"); running["state"] = .string("running")
+        model.observeAssistantOutputs(sessionID: "fresh", snapshot: running)
+        XCTAssertEqual(model.unreadStates["fresh"]?.observedAssistantCount, 7, "the history the reader had is the baseline")
+        XCTAssertNil(model.unreadStates["fresh"]?.baselinePending)
+        XCTAssertEqual(model.unreadStates["fresh"]?.unreadOutputs, 0)
+        XCTAssertEqual(model.unreadOutputCount(sessionID: "fresh"), 1, "still marked")
+        model.observeAssistantOutputs(sessionID: "fresh", snapshot: snapshot(8, "f8"))
+        XCTAssertEqual(model.unreadStates["fresh"]?.unreadOutputs, 1, "only replies after the baseline are new")
+        try await close(model, root: root)
+    }
+
+    @MainActor func testAMarkSurvivesARelaunchAndTheChatLaunchReopensKeepsIt() async throws {
+        let (first, root) = try await twoChats()
+        first.markSessionUnread("other")
+        try await close(first, root: root, remove: false)
+        let (second, _, _) = try await makeModel(root: root)
+        second.selectedID = nil; second.selected = nil; second.focusedSessionID = nil
+        let other = ChatRecord(id: "other", workspaceID: "workspace", title: "Other chat", path: nil, profileID: "profile")
+        second.chats.insert(other, at: 0)
+        try await second.restoreReadStates()
+        XCTAssertEqual(second.unreadOutputCount(sessionID: "other"), 1); XCTAssertEqual(NSApp.dockTile.badgeLabel, "1")
+        // Launch reopens the chat open at the quit: that is not the reader opening it.
+        second.unreadStates["chat"]?.markedUnread = true
+        await second.reopenRememberedSelection(RememberedSelection(chatID: "chat"), unlessSelectedSince: second.selectionRevision)
+        XCTAssertEqual(second.focusedSessionID, "chat")
+        XCTAssertEqual(second.unreadStates["chat"]?.markedUnread, true, "the reopened chat keeps its mark")
+        // The reader opening another chat does clear its mark.
+        second.focusedSessionID = "other"
+        XCTAssertEqual(second.unreadOutputCount(sessionID: "other"), 0)
+        try await close(second, root: root)
+    }
+
+    @MainActor func testMarkingWaitsForTheSavedStatesAndAnEarlyOpenStillClearsTheMark() async throws {
+        let (first, root) = try await twoChats()
+        first.observeAssistantOutputs(sessionID: "other", snapshot: snapshot(5, "o5"))
+        first.markSessionUnread("chat")
+        try await close(first, root: root, remove: false)
+        let (second, _, _) = try await makeModel(root: root)
+        let other = ChatRecord(id: "other", workspaceID: "workspace", title: "Other chat", path: nil, profileID: "profile")
+        second.chats.append(other)
+        // Before the saved states are read, nothing can be marked: a fresh
+        // state would stand in for the saved one and lose its replies.
+        XCTAssertFalse(second.canMarkSessionUnread("other"))
+        second.markSessionUnread("other")
+        XCTAssertNil(second.unreadStates["other"])
+        // The reader opens the marked chat before the states are read.
+        second.focusedSessionID = "other"; second.focusedSessionID = "chat"
+        try await second.restoreReadStates()
+        XCTAssertEqual(second.unreadStates["other"]?.unreadOutputs, 3, "the saved replies are kept")
+        XCTAssertNil(second.unreadStates["other"]?.markedUnread)
+        XCTAssertNil(second.unreadStates["chat"]?.markedUnread, "opened before the states were read: its mark is done with")
+        XCTAssertEqual(second.unreadOutputCount(sessionID: "chat"), 0)
+        XCTAssertTrue(second.canMarkSessionUnread("chat"))
+        try await close(second, root: root)
+    }
+
+    @MainActor func testOnlyLaunchsOwnFocusIsExemptWhileItReopens() async throws {
+        let (model, root) = try await twoChats()
+        model.focusedSessionID = "other"
+        model.markSessionUnread("chat"); model.markSessionUnread("third-missing")
+        // Launch is reopening "chat"; meanwhile the reader focuses "other", then launch's focus lands.
+        model.markSessionRead("other"); model.focusedSessionID = nil
+        model.markSessionUnread("other")
+        model.launchFocus = "chat"
+        model.focusedSessionID = "other"
+        XCTAssertEqual(model.unreadOutputCount(sessionID: "other"), 0, "the reader's own focus clears its mark while launch is busy")
+        model.focusedSessionID = "chat"
+        XCTAssertEqual(model.unreadStates["chat"]?.markedUnread, true, "launch's own focus does not")
+        XCTAssertNil(model.launchFocus, "the exemption is used once")
+        model.focusedSessionID = "other"; model.focusedSessionID = "chat"
+        XCTAssertNil(model.unreadStates["chat"]?.markedUnread, "coming back to it afterwards does")
+        try await close(model, root: root)
+    }
+
+    @MainActor func testOnlyTheReadersOwnSavedChatsCanBeMarked() async throws {
+        let (model, root) = try await twoChats()
+        var archived = ChatRecord(id: "archived", workspaceID: "workspace", title: "Old", path: nil, profileID: "profile"); archived.archivedAt = Date()
+        var probe = ChatRecord(id: "probe", workspaceID: "workspace", title: "Test", path: nil, profileID: "profile"); probe.connectionTest = true
+        var task = ChatRecord(id: "task", workspaceID: "workspace", title: "Title job", path: nil, profileID: "profile"); task.backgroundTask = "title"
+        let pending = ChatRecord(id: "pending", workspaceID: "workspace", title: ChatRecord.defaultTitle, path: nil, profileID: "profile")
+        model.chats += [archived, probe, task, pending]; model.pendingChatIDs = ["pending"]
+        for id in ["archived", "probe", "task", "pending", "missing"] {
+            XCTAssertFalse(model.canMarkSessionUnread(id), id)
+            model.markSessionUnread(id)
+            XCTAssertNil(model.unreadStates[id]?.markedUnread, id)
+        }
+        XCTAssertEqual(model.unreadCount, 0); XCTAssertNil(NSApp.dockTile.badgeLabel)
+        try await close(model, root: root)
+    }
+
+    @MainActor func testAMarkStaysOnTheDockWhenTheRunThenFails() async throws {
+        let (model, root) = try await twoChats()
+        model.markSessionUnread("other")
+        model.markRunFailed(sessionID: "other")
+        XCTAssertTrue(model.unreadFailure(sessionID: "other"))
+        XCTAssertEqual(NSApp.dockTile.badgeLabel, "1", "the reader's mark counts on its own, failure or not")
+        try await close(model, root: root)
+    }
+
+    @MainActor func testTheMenusOfferMarkAsUnreadForAReadChatAndMarkAsReadOtherwise() async throws {
+        let (model, root) = try await twoChats()
+        func titles(_ entries: [PiMenuEntry]) -> [String] {
+            entries.compactMap { if case .item(let item) = $0 { return item.title } else { return nil } }
+        }
+        func rowMenu(_ id: String) throws -> [String] {
+            let chat = try XCTUnwrap(model.record(id))
+            let state = SidebarChatRowState(unreadCount: model.unreadOutputCount(sessionID: id), unreadFailure: model.unreadFailure(sessionID: id))
+            return titles(SidebarChatRowView.entries(model: model, chat: chat, state: state))
+        }
+        XCTAssertTrue(try rowMenu("other").contains("Mark as Unread")); XCTAssertFalse(try rowMenu("other").contains("Mark as Read"))
+        model.markSessionUnread("other")
+        XCTAssertTrue(try rowMenu("other").contains("Mark as Read")); XCTAssertFalse(try rowMenu("other").contains("Mark as Unread"))
+        // Several rows marked: one with a failure mark only, one read, one unread.
+        model.markRunFailed(sessionID: "chat")
+        let third = ChatRecord(id: "third", workspaceID: "workspace", title: "Third", path: nil, profileID: "profile")
+        model.chats.append(third)
+        model.observeAssistantOutputs(sessionID: "third", snapshot: snapshot(1, "t1"))
+        model.markedSessionIDs = ["chat", "other", "third"]
+        let bulk = titles(MarkedSessionActions.entries(model: model))
+        XCTAssertTrue(bulk.contains("Mark 2 as Read"), "a failure mark is cleared by Mark as Read, so it counts: \(bulk)")
+        XCTAssertTrue(bulk.contains("Mark 1 as Unread"), "\(bulk)")
+        model.markMarkedSessionsUnread()
+        XCTAssertEqual(model.unreadOutputCount(sessionID: "third"), 1)
+        XCTAssertEqual(model.unreadOutputCount(sessionID: "chat"), 0, "a failure-marked chat is not read, so it is not marked")
+
+        // The File menu, through the installed main menu.
+        let previous = NSApp.mainMenu; defer { NSApp.mainMenu = previous }
+        let menus = ApplicationMenus(model: model, updates: UpdateController(), workspaceWindow: { nil }, revealWorkspace: {}, showSettings: {})
+        menus.install()
+        func item(_ title: String) throws -> NSMenuItem {
+            for menu in NSApp.mainMenu?.items.compactMap(\.submenu) ?? [] {
+                if let value = menu.items.first(where: { $0.title == title }) { return value }
+            }
+            throw CancellationError()
+        }
+        let markRead = try item("Mark as Read"), markUnread = try item("Mark as Unread")
+        XCTAssertEqual(markUnread.menu, markRead.menu, "both live in the File menu")
+        model.markSessionRead("third"); model.focusedSessionID = "third"
+        XCTAssertTrue(menus.validateMenuItem(markUnread))
+        _ = markUnread.target?.perform(markUnread.action, with: markUnread)
+        XCTAssertEqual(model.unreadOutputCount(sessionID: "third"), 1, "File ▸ Mark as Unread marks the chat in front")
+        XCTAssertFalse(menus.validateMenuItem(markUnread), "an unread chat cannot be marked unread again")
+        _ = markRead.target?.perform(markRead.action, with: markRead)
+        XCTAssertEqual(model.unreadOutputCount(sessionID: "third"), 0)
+        withExtendedLifetime(menus) {}
+        try await close(model, root: root)
+    }
+
+    @MainActor func testTheRowSaysUnreadToVoiceOver() async throws {
+        let (model, root) = try await twoChats()
+        model.markSessionUnread("other")
+        let chat = try XCTUnwrap(model.record("other"))
+        let state = SidebarChatRowState(unreadCount: model.unreadOutputCount(sessionID: "other"), markedUnreadOnly: model.markedUnreadOnly(sessionID: "other"))
+        let row = SidebarChatRowView(model: model, chat: chat, state: state, projectID: "workspace", glide: PiKit.SelectionGlide())
+        XCTAssertEqual(row.row.accessibilityLabel(), "Other chat, unread")
+        let dot = try XCTUnwrap(Self.descendants(row).compactMap { $0 as? UnreadDotView }.first)
+        XCTAssertFalse(dot.isHidden); XCTAssertEqual(dot.accessibilityLabel(), "Unread")
+        row.apply(chat: chat, state: SidebarChatRowState(), projectID: "workspace")
+        XCTAssertEqual(row.row.accessibilityLabel(), "Other chat")
+        try await close(model, root: root)
+    }
+    @MainActor private static func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap { descendants($0) } }
+}

@@ -3,9 +3,10 @@
 **Not released.** 0.1.121 (build 125, tag `v0.1.121`) is the latest release.
 
 **Scope (owner, 2026-10-08):**
-- [ ] **Mark as Unread**: a chat can be marked unread from the sidebar's context menu and the File menu; it shows the unread dot until opened, and survives a relaunch.
+- [x] **Mark as Unread**: a chat can be marked unread from the sidebar's context menu and the File menu; it shows the unread dot until opened, and survives a relaunch. Done on `dev/sidebar`: row, side-row and marked-rows menus plus File ▸ Mark as Unread; it looks and counts like one unread reply, **including the Dock badge** (decided with Codex; a later run failure does not take it off); opening the chat (the reader focusing it, not launch reopening it) clears it, seeing a reply does not; persisted in the read state; not for archived chats, connection tests, background requests, unkept sides or unsent New chats. VoiceOver: "<title>, unread"; the dot says "Unread". Gallery `27-sidebar-marked-unread-*`.
 - [ ] **Paused after restart**: a chat that was paused (stopped mid-run, or holding queued work) still shows as paused in the sidebar and in the chat after the app restarts.
 - [ ] **Sidebar sorted by last updated, always** (owner chose this over a switch): newest activity first; pinned chats stay on top; manual drag ordering is removed.
+- [ ] **Sidebar tint by recent opening** (owner, 2026-10-08): the open chat's row has the strongest accent tint, the previously opened ones less, fading to the plain row after a few steps; ranked by order of opening (not time), kept across relaunch; no reordering, no per-token redraws.
 - [ ] **Search inside threads**, both ways (owner chose both):
   - the sidebar search matches message text as well as titles, shows a snippet under each matching chat, and opening it goes to the matching message;
   - ⌘F in an open chat shows a find bar that highlights matches in the transcript, with next/previous.

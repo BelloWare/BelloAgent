@@ -120,6 +120,8 @@ struct ChatRowStats: Equatable {
 @MainActor final class UnreadDotView: NSView {
     /// A run that failed while you were away: marked, but never counted in the Dock badge.
     var failure = false { didSet { if oldValue != failure { apply() } } }
+    /// Unread because the reader marked it so, not for a reply.
+    var marked = false { didSet { if oldValue != marked { apply() } } }
     static let size: CGFloat = 7
     init(failure: Bool = false) {
         self.failure = failure
@@ -132,8 +134,8 @@ struct ChatRowStats: Equatable {
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
     override var intrinsicContentSize: NSSize { NSSize(width: Self.size, height: Self.size) }
     private func apply() {
-        setAccessibilityLabel(failure ? "Run failed" : "Unread replies")
-        toolTip = failure ? "The last run failed while you were away" : "New replies you have not viewed"
+        setAccessibilityLabel(failure ? "Run failed" : marked ? "Unread" : "Unread replies")
+        toolTip = failure ? "The last run failed while you were away" : marked ? "Marked as unread" : "New replies you have not viewed"
         needsDisplay = true; updateLayer()
     }
     override var wantsUpdateLayer: Bool { true }
@@ -271,12 +273,20 @@ struct ChatRowStats: Equatable {
         var selected: Bool
         var unreadCount = 0
         var unreadFailure = false
+        var markedUnreadOnly = false
         var hasSide = false
         var expanded = true
         var pinned = false
         var archived = false
         var archivable = false
         var available: CGFloat = .infinity
+        /// What VoiceOver says for the row: its title, then whether it is
+        /// unread or failed.
+        var accessibilityLabel: String {
+            var words = [title]
+            if unreadCount > 0 { words.append("unread") } else if unreadFailure { words.append("run failed") }
+            return words.joined(separator: ", ")
+        }
         var help: String {
             subtitle + (stats.requests > 0 ? " · \(stats.requests) requests · cache \(stats.cacheHits) hit / \(stats.cacheMisses) miss" : "")
         }
@@ -356,6 +366,7 @@ struct ChatRowStats: Equatable {
         pin.isHidden = !new.pinned
         let showsDot = new.unreadCount > 0 || new.unreadFailure
         dot.failure = new.unreadFailure && new.unreadCount == 0
+        dot.marked = new.markedUnreadOnly
         if dot.isHidden == showsDot {
             dot.isHidden = !showsDot
             if showsDot, before != nil { dot.popIn() }

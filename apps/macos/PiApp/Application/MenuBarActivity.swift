@@ -12,6 +12,8 @@ struct MenuBarActivityRow: Identifiable, Equatable, Sendable {
     let steering: Int
     let unread: Int
     var modelActive = false
+    /// Unread only because the reader marked it so (Mark as Unread).
+    var markedUnread = false
     var startedUptimeMs: Double?
     var elapsedMs: Double?
     var latestRate: Double?
@@ -39,7 +41,7 @@ struct MenuBarActivityRow: Identifiable, Equatable, Sendable {
         case "queued": return "Waiting for project"
         case "paused": return "Paused · needs attention"
         case "error": return "Error · needs attention"
-        default: return unread > 0 ? "\(unread) unread \(unread == 1 ? "reply" : "replies")" : "Idle"
+        default: return markedUnread ? "Marked unread" : unread > 0 ? "\(unread) unread \(unread == 1 ? "reply" : "replies")" : "Idle"
         }
     }
     func elapsed(atUptimeMs now: Double = ProcessInfo.processInfo.systemUptime * 1000) -> Double? {
@@ -121,6 +123,7 @@ extension WorkspaceModel {
             let totals = view.footer.gateway.requests > 0 ? view.footer.gateway : chatStats[view.id]
             var row = MenuBarActivityRow(id: view.id, title: record.title, workspace: workspace, phase: phase, model: model, resolvedModel: resolved != model ? resolved : nil, tools: tools, followUps: followUps, steering: steering, unread: unread)
             row.modelActive = raw["modelActive"]?.bool == true
+            row.markedUnread = markedUnreadOnly(sessionID: view.id)
             row.workspaceID = record.workspaceID
             row.startedUptimeMs = activityNumber(view.turnTiming["startedAt"])
             row.elapsedMs = activityNumber(view.turnTiming["elapsedMs"])
@@ -144,7 +147,9 @@ extension WorkspaceModel {
         guard unread > 0 else { return nil }
         let workspace = workspaces.first { $0.id == record.workspaceID }.map { URL(fileURLWithPath: $0.path).lastPathComponent } ?? "Project"
         let model = record.model ?? profiles.first { $0.id == record.profileID }?.modelId ?? ""
-        return MenuBarActivityRow(id: id, title: record.title, workspace: workspace, phase: "idle", model: model, resolvedModel: nil, tools: [], followUps: 0, steering: 0, unread: unread)
+        var row = MenuBarActivityRow(id: id, title: record.title, workspace: workspace, phase: "idle", model: model, resolvedModel: nil, tools: [], followUps: 0, steering: 0, unread: unread)
+        row.markedUnread = markedUnreadOnly(sessionID: id)
+        return row
     }
 
 }

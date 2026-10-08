@@ -134,4 +134,9 @@ extension WorkspaceModel {
         clearSessionMarks()
         for id in ids where chats.contains(where: { $0.id == id }) { markSessionRead(id) }
     }
+    func markMarkedSessionsUnread() {
+        let ids = markedChats.map(\.id)
+        clearSessionMarks()
+        for id in ids { markSessionUnread(id) }
+    }
 }

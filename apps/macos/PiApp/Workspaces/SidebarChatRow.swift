@@ -25,6 +25,9 @@ struct SidebarChatRowState: Equatable {
     var anyMarked = false
     var unreadCount = 0
     var unreadFailure = false
+    /// Only the reader's Mark as Unread makes it unread: the dot says
+    /// "Unread", not "Unread replies".
+    var markedUnreadOnly = false
     /// Identity of the loaded page, when the chat has one. A row swaps between
     /// retained billing and a live session only when this changes; the live
     /// session's own figures are observed by the row underneath.
@@ -146,6 +149,7 @@ extension WorkspaceModel {
                 anyMarked: anyMarked,
                 unreadCount: unreadOutputCount(sessionID: chat.id),
                 unreadFailure: unreadFailure(sessionID: chat.id),
+                markedUnreadOnly: markedUnreadOnly(sessionID: chat.id),
                 liveIdentity: displays[chat.id].map(ObjectIdentifier.init),
                 hasSide: entry.hasChildren || side?.kept == false,
                 expanded: !folded.contains(chat.id),

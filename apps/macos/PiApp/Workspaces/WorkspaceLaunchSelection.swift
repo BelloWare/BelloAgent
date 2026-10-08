@@ -281,12 +281,15 @@ extension WorkspaceModel {
             let highlighted = remembered?.sideFocused == true ? side ?? saved : saved
             revealForLaunch(highlighted)
         }
+        launchFocus = target.id
         await select(target.id, revealInSidebar: false)
+        if launchFocus == target.id { launchFocus = nil }
         if selectedID == target.id, selectionRevision == revision + 1 { reopenReport() }
         // The reader may have opened something else while the page loaded.
         guard let saved, selectedID == saved.id else { return true }
         if remembered?.sideFocused == true, let side, sides[saved.id]?.id == side.id, focusedSessionID == saved.id {
-            focusedSessionID = side.id; focusComposer(side.id)
+            launchFocus = side.id; focusedSessionID = side.id; focusComposer(side.id)
+            if launchFocus == side.id { launchFocus = nil }
         }
         return true
     }

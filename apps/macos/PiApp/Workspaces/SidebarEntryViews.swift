@@ -91,7 +91,6 @@ import Combine
         } else if !state.draggable, let surface { surface.removeFromSuperview(); self.surface = nil }
         surface?.actions = TopicSessionRowActions(item: { [weak self] in self?.dragItem() }, image: { [weak self] in self?.dragImage() },
                                                   click: { [weak self] in self?.click($0) }, doubleClick: { [weak self] in self?.rename() })
-        row.setAccessibilityLabel(chat.title)
         needsLayout = true
     }
 
@@ -143,7 +142,8 @@ import Combine
         let stats = display.map { liveStats($0, now: now) }
             ?? ChatRowStats(totals: (retained ?? model.chatAccounting.row(for: chat.id)).totals, now: now)
         return ChatRowBodyView.Content(stats: stats, title: chat.title, subtitle: state.subtitle, symbol: symbol(chat), selected: state.selected,
-                                       unreadCount: state.unreadCount, unreadFailure: state.unreadFailure, hasSide: state.hasSide,
+                                       unreadCount: state.unreadCount, unreadFailure: state.unreadFailure,
+                                       markedUnreadOnly: state.markedUnreadOnly, hasSide: state.hasSide,
                                        expanded: state.expanded, pinned: chat.isPinned, archived: chat.isArchived,
                                        archivable: !chat.isUtilityChat, available: state.available)
     }
@@ -153,7 +153,9 @@ import Combine
     }
     private func refreshBody() {
         let height = bounds.width > 0 ? entryHeight(width: bounds.width) : nil
-        body.update(Self.content(model: model, chat: chat, state: state, display: watchedDisplay, retained: retained))
+        let content = Self.content(model: model, chat: chat, state: state, display: watchedDisplay, retained: retained)
+        body.update(content)
+        if row.accessibilityLabel() != content.accessibilityLabel { row.setAccessibilityLabel(content.accessibilityLabel) }
         // A line more or less under the title: the list lays out again.
         if let height, entryHeight(width: bounds.width) != height { (superview as? SidebarListDocument)?.entryChangedHeight() }
     }
@@ -194,6 +196,9 @@ import Combine
         if state.offersMarkAsRead {
             PiMenuEntry.divider
             PiMenuEntry.button("Mark as Read") { model.markSessionRead(chat.id) }
+        } else if model.canMarkSessionUnread(chat.id) {
+            PiMenuEntry.divider
+            PiMenuEntry.button("Mark as Unread", identifier: "markSessionUnread") { model.markSessionUnread(chat.id) }
         }
     }
 
@@ -297,6 +302,7 @@ import Combine
         if state.kept, let record = model.record(state.id) { SessionOrganizationActions.entries(model: model, chat: record) }
         SessionReferenceActions.entries(model: model, sessionID: state.id)
         if state.unreadCount > 0 { PiMenuEntry.button("Mark as Read") { model.markSessionRead(state.id) } }
+        else if model.canMarkSessionUnread(state.id) { PiMenuEntry.button("Mark as Unread", identifier: "markSessionUnread") { model.markSessionUnread(state.id) } }
     }
     func entryHeight(width: CGFloat) -> CGFloat { row.height(forWidth: max(0, width - state.indent)) }
     override func setFrameSize(_ newSize: NSSize) { super.setFrameSize(newSize); needsLayout = true }
@@ -492,7 +498,9 @@ enum MarkedSessionActions {
     @MainActor @PiMenuBuilder static func entries(model: WorkspaceModel) -> [PiMenuEntry] {
         let marked = model.markedChats
         let archived = marked.filter(\.isArchived).count
-        let unread = marked.filter { model.unreadOutputCount(sessionID: $0.id) > 0 }.count
+        // A failure mark is cleared by Mark as Read too, so it counts here.
+        let unread = marked.filter { model.offersMarkSessionRead($0.id) }.count
+        let read = marked.filter { model.canMarkSessionUnread($0.id) }.count
         PiMenuEntry.note("\(marked.count) chats selected")
         PiMenuEntry.divider
         PiMenuEntry.button("Copy Session References", systemImage: "doc.on.doc", identifier: "copyMarkedSessionReferences",
@@ -521,10 +529,9 @@ enum MarkedSessionActions {
                 }
             }
         }
-        if unread > 0 {
-            PiMenuEntry.divider
-            PiMenuEntry.button("Mark \(unread) as Read") { model.markMarkedSessionsRead() }
-        }
+        if unread > 0 || read > 0 { PiMenuEntry.divider }
+        if unread > 0 { PiMenuEntry.button("Mark \(unread) as Read") { model.markMarkedSessionsRead() } }
+        if read > 0 { PiMenuEntry.button("Mark \(read) as Unread", identifier: "markMarkedSessionsUnread") { model.markMarkedSessionsUnread() } }
         PiMenuEntry.divider
         PiMenuEntry.button("Clear Selection", systemImage: "xmark.circle") { model.clearSessionMarks() }
     }

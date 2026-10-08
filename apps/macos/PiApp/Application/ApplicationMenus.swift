@@ -111,6 +111,8 @@ import AppKit
         file.addItem(topicItem)
         rebuildTopics(topics)
         command(file, "Mark as Read", enabled: { [model] in model.commandChat != nil }, action: model.markCommandChatRead)
+        command(file, "Mark as Unread", enabled: { [model] in model.commandChat.map { model.canMarkSessionUnread($0.id) } ?? false },
+                action: model.markCommandChatUnread)
         file.addItem(.separator())
         system(file, "Close Window", #selector(NSWindow.performClose(_:)), key: "w")
 

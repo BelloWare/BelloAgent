@@ -57,7 +57,26 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     var archiveStopWorkers = 0
     /// Optional delayed writer used by race/failure fixtures, never by production.
     var organizationWrite: (([String], ChatOrganizationChange) async throws -> ChatOrganizationBatch)?
-    @Published var focusedSessionID: String? { didSet { if focusedSessionID != oldValue { organizationNavigationRevision &+= 1; cancelAutomaticContext(); noteSelectionChanged() } } }
+    @Published var focusedSessionID: String? {
+        didSet {
+            guard focusedSessionID != oldValue else { return }
+            organizationNavigationRevision &+= 1; cancelAutomaticContext(); noteSelectionChanged()
+            // The reader came to this chat: a Mark as Unread on it is done
+            // with. Not the chat a launch reopens by itself.
+            if let id = focusedSessionID {
+                if launchFocus == id { launchFocus = nil }
+                else if readStatesRestored { clearManualUnread(sessionID: id) } else { openedBeforeReadStates.insert(id) }
+            }
+        }
+    }
+    /// The chat (or side) launch is about to focus, reopening it as it was at
+    /// the last quit (`reopenRememberedSelection`): that one focus is not the
+    /// reader opening it. Taken by the focus it is for.
+    var launchFocus: String?
+    /// Mark as Unread waits for the saved read states (`restoreReadStates`);
+    /// chats the reader opens before then have their mark cleared once read.
+    var readStatesRestored = false
+    var openedBeforeReadStates: Set<String> = []
     @Published var selected: SessionDisplay?
     @Published var error: String?
     /// Projects whose folder was not found when a helper was to start in it,
