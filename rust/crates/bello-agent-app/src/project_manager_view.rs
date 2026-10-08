@@ -60,7 +60,7 @@ pub(crate) struct ProjectManagerPresentation {
     pub(crate) stage: ProjectManagerStage,
     pub(crate) availability: ProjectManagerAvailability,
     pub(crate) notice: Option<ProjectManagerNotice>,
-    pub(crate) synthetic: bool,
+    pub(crate) mode: crate::launch_authority::AuthorityMode,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -676,7 +676,8 @@ impl Render for ProjectManagerView {
                 .child(self.badge("Current"))
                 .when(presentation.trusted && presentation.availability == ProjectManagerAvailability::Ready, |row| row.child(self.badge("Trusted")))
                 .when(matches!(presentation.availability, ProjectManagerAvailability::Unconfirmed(_)), |row| row.child(self.badge("Trust unconfirmed")))
-                .when(presentation.synthetic, |row| row.child(self.badge("Memory-only fixture"))))
+                .when(presentation.mode.is_fixture(), |row| row.child(self.badge("Memory-only fixture")))
+                .when(presentation.mode == crate::launch_authority::AuthorityMode::Native, |row| row.child(self.badge("Rust Keychain vault · experimental"))))
             .child(div().flex().flex_col().gap(px(4.))
                 .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).child(if draft { "Review project folders" } else { "Folders" }))
                 .child(div().text_size(px(11.5)).text_color(rgb(p.secondary)).child("The primary folder is the working directory. Extra folders are additional locations for the same project.")))
@@ -712,7 +713,7 @@ impl Render for ProjectManagerView {
             div()
                 .text_size(px(11.5))
                 .text_color(rgb(p.secondary))
-                .child(if presentation.synthetic { "Fixture-only tools require a saved loopback connection and confirmed project trust. Trusting or selecting never sends a request. Native production tools remain disabled." } else { TOOLS_NOTICE }),
+                .child(if presentation.mode.is_fixture() { "Fixture-only tools require a saved loopback connection and confirmed project trust. Trusting or selecting never sends a request. Native production tools remain disabled." } else { TOOLS_NOTICE }),
         );
         if draft {
             body = body.child(

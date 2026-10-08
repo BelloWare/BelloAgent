@@ -174,10 +174,59 @@ impl AgentView {
             cx.notify();
             return;
         }
-        match self.runtime.new_chat(
+        if self.connections.presentation.mode == crate::launch_authority::AuthorityMode::Native {
+            let runtime = self.runtime.clone();
+            let choice = self.connections.choice.clone();
+            let project = self.project.clone();
+            let generation = self.navigation_generation;
+            let binding = self.window_binding;
+            let handle = window
+                .window_handle()
+                .downcast::<AgentView>()
+                .expect("workspace window");
+            let requested = choice.clone();
+            let task = cx.background_executor().spawn(async move {
+                runtime.new_chat(
+                    requested.as_deref(),
+                    bello_agent_core::workspace::ChatToolMode::Editing,
+                )
+            });
+            cx.spawn(async move |_, cx| {
+                let result = task.await;
+                let _ = handle.update(cx, |view, window, cx| {
+                    if view.shutting_down
+                        || view.project != project
+                        || view.navigation_generation != generation
+                        || view.window_binding != binding
+                        || view.connections.choice != choice
+                        || view.connections.uncertain
+                        || !view.connections.switches.is_empty()
+                        || view.project_actions_blocked()
+                    {
+                        return;
+                    }
+                    view.install_new_chat(result, window, cx);
+                });
+            })
+            .detach();
+            return;
+        }
+        let result = self.runtime.new_chat(
             self.connections.choice.as_deref(),
             bello_agent_core::workspace::ChatToolMode::Editing,
-        ) {
+        );
+        self.install_new_chat(result, window, cx);
+    }
+    fn install_new_chat(
+        &mut self,
+        result: bello_agent_core::Result<(
+            bello_agent_core::workspace::ChatRecord,
+            Arc<Controller>,
+        )>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match result {
             Ok((record, controller)) => {
                 let chat = ChatState::new(
                     controller,

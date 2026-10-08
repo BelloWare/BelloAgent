@@ -19,6 +19,7 @@ use secure_input::{HEADER_BYTES, KEY_BYTES, SecureInput, SecureInputEvent};
 use std::{cell::Cell, collections::BTreeMap, fmt, rc::Rc};
 
 const FIXTURE_NOTICE: &str = "Fixture-only · In-memory connections. Use only numeric loopback URLs, the key synthetic-project-fixture-only, and header values synthetic-header-fixture-only. Do not enter real keys. Nothing is saved to Keychain.";
+const NATIVE_NOTICE: &str = "Experimental native authority · Connections are stored in the separate Bello Agent Rust Keychain vault. No Swift settings are imported. Native signing, credential input and no-prompt acceptance remain under validation. Chats can send to your explicitly saved endpoint; model tools, MCP and project resources remain unavailable.";
 const SCOPE_NOTICE: &str = "This Rust preview covers Connections only. Model catalog discovery, Mini models, routing/reasoning controls and the other Settings sections are not available here. Saving does not send a request; send explicitly from a chat.";
 
 /// Only user-typed replacements belong in key/headers. Never populate these
@@ -97,7 +98,7 @@ pub(crate) struct ConnectionSettingsNotice {
 pub(crate) struct ConnectionSettingsPresentation {
     /// Monotonic coordinator revision, including completed operations and edits.
     pub(crate) revision: u64,
-    pub(crate) synthetic: bool,
+    pub(crate) mode: crate::launch_authority::AuthorityMode,
     pub(crate) availability: ConnectionSettingsAvailability,
     /// Loading is busy but may close. Saving/deleting must finish before close.
     pub(crate) saving: bool,
@@ -152,7 +153,7 @@ impl ConnectionSettingsPresentation {
     }
 
     fn editable(&self) -> bool {
-        self.synthetic
+        self.mode.editable()
             && !self.busy()
             && self.availability == ConnectionSettingsAvailability::Ready
             && self.confirmation == ConnectionConfirmation::None
@@ -175,7 +176,7 @@ impl ConnectionSettingsPresentation {
                 return match intent {
                     Intent::KeepEditing | Intent::DiscardAndClose => true,
                     Intent::SaveAndClose => {
-                        self.synthetic
+                        self.mode.editable()
                             && !self.busy()
                             && self.availability == ConnectionSettingsAvailability::Ready
                     }
@@ -193,7 +194,7 @@ impl ConnectionSettingsPresentation {
                 return match intent {
                     Intent::Keep => !self.busy(),
                     Intent::ConfirmDelete => {
-                        self.synthetic
+                        self.mode.editable()
                             && !self.busy()
                             && self.availability == ConnectionSettingsAvailability::Ready
                             && self.active.as_ref().is_some_and(|form| form.saved)
@@ -1275,7 +1276,7 @@ impl Render for ConnectionSettingsView {
             .flex()
             .flex_col()
             .gap(px(16.));
-        if presentation.synthetic {
+        if presentation.mode.is_fixture() {
             body = body.child(
                 div()
                     .id("settings-fixture-notice")
@@ -1286,6 +1287,19 @@ impl Render for ConnectionSettingsView {
                     .bg(p.accent_soft())
                     .text_size(px(11.5))
                     .child(FIXTURE_NOTICE),
+            );
+        }
+        if presentation.mode == crate::launch_authority::AuthorityMode::Native {
+            body = body.child(
+                div()
+                    .id("settings-native-notice")
+                    .debug_selector(|| "settings-native-notice".into())
+                    .flex_shrink_0()
+                    .p(px(12.))
+                    .rounded(px(8.))
+                    .bg(p.accent_soft())
+                    .text_size(px(11.5))
+                    .child(NATIVE_NOTICE),
             );
         }
         if let Some(form) = &presentation.active {
@@ -1299,7 +1313,7 @@ impl Render for ConnectionSettingsView {
                     Field::Name,
                     "Name",
                     "Rename freely: the connection keeps its identity and earlier chats.",
-                    "Fixture router",
+                    if presentation.mode.is_fixture() { "Fixture router" } else { "Connection name" },
                     cx,
                 ))
                 .child(
@@ -1337,26 +1351,58 @@ impl Render for ConnectionSettingsView {
                 (
                     Field::BaseUrl,
                     "Base URL or full API route",
-                    "Fixture-only: numeric loopback endpoint. Route changes save a new identity; earlier chats keep the original.",
-                    "http://127.0.0.1:PORT",
+                    if presentation.mode.is_fixture() {
+                        "Fixture-only: numeric loopback endpoint. Route changes save a new identity; earlier chats keep the original."
+                    } else {
+                        "HTTPS is required except for loopback. Route changes save a new identity; earlier chats keep the original."
+                    },
+                    if presentation.mode.is_fixture() {
+                        "http://127.0.0.1:PORT"
+                    } else {
+                        "Your HTTPS endpoint"
+                    },
                 ),
                 (
                     Field::Key,
-                    "Fixture API key",
-                    "Blank keeps the saved key. Only synthetic-project-fixture-only is accepted. Saved keys are never shown.",
-                    "Blank preserves saved fake key",
+                    if presentation.mode.is_fixture() {
+                        "Fixture API key"
+                    } else {
+                        "API key"
+                    },
+                    if presentation.mode.is_fixture() {
+                        "Blank keeps the saved key. Only synthetic-project-fixture-only is accepted. Saved keys are never shown."
+                    } else {
+                        "Enter a key for a new connection. Blank keeps the saved key. Saved keys are never shown."
+                    },
+                    if presentation.mode.is_fixture() {
+                        "Blank preserves saved fake key"
+                    } else {
+                        "Blank preserves saved key"
+                    },
                 ),
                 (
                     Field::Headers,
                     "Custom headers JSON",
-                    "Blank preserves saved headers; {} clears them. Values must be synthetic-header-fixture-only.",
+                    if presentation.mode.is_fixture() {
+                        "Blank preserves saved headers; {} clears them. Values must be synthetic-header-fixture-only."
+                    } else {
+                        "Blank preserves saved headers; {} clears them. Saved values are never shown."
+                    },
                     "Blank preserves; {} clears",
                 ),
                 (
                     Field::Model,
                     "Requested model / router alias",
-                    "Type the fixture model alias. Changing it saves a new connection for new chats.",
-                    "fixture-model",
+                    if presentation.mode.is_fixture() {
+                        "Type the fixture model alias. Changing it saves a new connection for new chats."
+                    } else {
+                        "Type your model or router alias. Changing it saves a new connection for new chats."
+                    },
+                    if presentation.mode.is_fixture() {
+                        "fixture-model"
+                    } else {
+                        "Model or router alias"
+                    },
                 ),
                 (
                     Field::ContextWindow,

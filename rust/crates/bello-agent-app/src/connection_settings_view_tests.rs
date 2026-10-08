@@ -15,7 +15,7 @@ use std::{cell::RefCell, rc::Rc};
 fn ready() -> ConnectionSettingsPresentation {
     ConnectionSettingsPresentation {
         revision: 1,
-        synthetic: true,
+        mode: crate::launch_authority::AuthorityMode::Fixture,
         availability: ConnectionSettingsAvailability::Ready,
         saving: false,
         tabs: vec![ConnectionTab {
@@ -45,7 +45,7 @@ fn ready() -> ConnectionSettingsPresentation {
 }
 
 #[test]
-fn production_and_unavailable_never_enable_mutating_controls() {
+fn unavailable_storage_never_enables_mutating_controls() {
     use ConnectionSettingsAvailability as Availability;
     for availability in [
         Availability::Loading,
@@ -67,11 +67,38 @@ fn production_and_unavailable_never_enable_mutating_controls() {
         assert!(p.status().is_some());
     }
     let mut p = ready();
-    p.synthetic = false;
+    p.mode = crate::launch_authority::AuthorityMode::Unavailable;
     assert!(!p.allows(&ConnectionSettingsIntent::Edited));
     assert!(!p.allows(&ConnectionSettingsIntent::SaveAll));
     assert!(!p.allows(&ConnectionSettingsIntent::RequestDelete));
     assert!(p.allows(&ConnectionSettingsIntent::RequestClose));
+}
+
+#[test]
+fn native_mode_enables_only_ready_settings_and_retains_confirmation_guards() {
+    let mut p = ready();
+    p.mode = crate::launch_authority::AuthorityMode::Native;
+    for intent in [
+        ConnectionSettingsIntent::Edited,
+        ConnectionSettingsIntent::New,
+        ConnectionSettingsIntent::SaveAll,
+        ConnectionSettingsIntent::RequestDelete,
+    ] {
+        assert!(p.allows(&intent));
+    }
+    p.confirmation = ConnectionConfirmation::Close;
+    assert!(p.allows(&ConnectionSettingsIntent::SaveAndClose));
+    assert!(!p.allows(&ConnectionSettingsIntent::New));
+    p.confirmation = ConnectionConfirmation::Delete {
+        summary: String::new(),
+    };
+    assert!(p.allows(&ConnectionSettingsIntent::ConfirmDelete));
+    p.availability = ConnectionSettingsAvailability::Unconfirmed("Review required".into());
+    assert!(!p.allows(&ConnectionSettingsIntent::ConfirmDelete));
+    assert!(!super::NATIVE_NOTICE.contains("Fixture-only"));
+    assert!(
+        super::NATIVE_NOTICE.contains("model tools, MCP and project resources remain unavailable")
+    );
 }
 
 #[test]

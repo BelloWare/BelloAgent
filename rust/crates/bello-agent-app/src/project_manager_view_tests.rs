@@ -16,7 +16,7 @@ fn ready() -> ProjectManagerPresentation {
         stage: ProjectManagerStage::Current,
         availability: ProjectManagerAvailability::Ready,
         notice: None,
-        synthetic: true,
+        mode: crate::launch_authority::AuthorityMode::Fixture,
     }
 }
 

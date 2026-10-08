@@ -19,6 +19,29 @@ pub(crate) struct AppRuntime {
     legacy: Option<Arc<Configuration>>,
 }
 impl AppRuntime {
+    pub fn for_launch(
+        authority: ProjectAuthority,
+        workspace: Arc<Mutex<WorkspaceStore>>,
+        home: PathBuf,
+        mode: crate::launch_authority::AuthorityMode,
+        legacy: Option<Arc<Configuration>>,
+    ) -> Self {
+        if mode == crate::launch_authority::AuthorityMode::Native {
+            Self {
+                saved: SavedRuntimeFactory::connection_only(authority, workspace.clone()),
+                workspace,
+                // Native launch rejects legacy credentials before any input.
+                legacy: None,
+            }
+        } else {
+            Self::new(
+                authority,
+                workspace,
+                Self::options(home, mode.is_fixture()),
+                legacy,
+            )
+        }
+    }
     pub fn new(
         authority: ProjectAuthority,
         workspace: Arc<Mutex<WorkspaceStore>>,

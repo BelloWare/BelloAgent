@@ -45,7 +45,6 @@ impl RetainedForm {
     fn dirty(&self) -> bool {
         self.fields != self.baseline
     }
-    #[cfg(feature = "synthetic-authority")]
     fn capture(&self) -> Result<ConnectionDraft, String> {
         let mut draft = self.draft.clone();
         draft.name = self.fields.name.clone();
@@ -83,17 +82,22 @@ fn fields(draft: &ConnectionDraft) -> ConnectionFields {
         headers: draft.headers_input.clone(),
     }
 }
-fn new_form() -> RetainedForm {
+fn new_form(mode: crate::launch_authority::AuthorityMode) -> RetainedForm {
     let profile: Profile = serde_json::from_value(serde_json::json!({"id":uuid::Uuid::new_v4().to_string(),"api":"openai-responses","providerId":"litellm","baseUrl":"http://127.0.0.1:47831","modelId":"local-test-fixture","contextWindow":32000,"maxOutputTokens":4096})).expect("fixture profile shape");
-    RetainedForm::new(ConnectionDraft::new(profile, "New connection".into()))
+    let mut form = RetainedForm::new(ConnectionDraft::new(profile, "New connection".into()));
+    if !mode.is_fixture() {
+        form.draft.profile.base_url.clear();
+        form.draft.profile.model_id.clear();
+        form.fields = fields(&form.draft);
+        form.baseline = form.fields.clone();
+    }
+    form
 }
 
 pub(crate) struct ConnectionSettingsController {
     pub view: Entity<ConnectionSettingsView>,
     pub presentation: ConnectionSettingsPresentation,
     authority: Arc<ProjectAuthority>,
-    #[cfg(feature = "synthetic-authority")]
-    control: Option<SyntheticAuthorityControl>,
     loaded: Option<LoadedConnections>,
     forms: BTreeMap<String, RetainedForm>,
     active: Option<String>,
@@ -127,13 +131,19 @@ impl ConnectionSettingsController {
             .try_global::<crate::project_manager_controller::LaunchProjectAuthority>()
             .map(|launch| launch.authority.clone())
             .unwrap_or_else(|| Arc::new(ProjectAuthority::new()));
-        #[cfg(feature = "synthetic-authority")]
-        let synthetic = control.is_some();
-        #[cfg(not(feature = "synthetic-authority"))]
-        let synthetic = false;
+        let mode = cx
+            .try_global::<crate::project_manager_controller::LaunchProjectAuthority>()
+            .map(|launch| launch.mode)
+            .unwrap_or_else(|| {
+                #[cfg(feature = "synthetic-authority")]
+                if control.is_some() {
+                    return crate::launch_authority::AuthorityMode::Fixture;
+                }
+                crate::launch_authority::AuthorityMode::Unavailable
+            });
         let presentation = ConnectionSettingsPresentation {
             revision: 1,
-            synthetic,
+            mode,
             availability: ConnectionSettingsAvailability::Loading,
             saving: false,
             tabs: vec![],
@@ -147,8 +157,6 @@ impl ConnectionSettingsController {
             view,
             presentation,
             authority,
-            #[cfg(feature = "synthetic-authority")]
-            control,
             loaded: None,
             forms: BTreeMap::new(),
             active: None,
@@ -227,7 +235,7 @@ impl ConnectionSettingsController {
             form.dirty() || loaded.profiles().iter().any(|p| p.profile.id == *id)
         });
         if self.forms.is_empty() {
-            let f = new_form();
+            let f = new_form(self.presentation.mode);
             self.forms.insert(f.draft.profile.id.clone(), f);
         }
         if self
@@ -366,7 +374,7 @@ impl AgentView {
                     Ok(loaded) => {
                         view.connections.install(loaded, discard);
                         view.connections
-                            .notice("Loaded fixture connections. Nothing was sent.", false);
+                            .notice(view.connections.presentation.mode.loaded_notice(), false);
                     }
                     Err(e) => {
                         view.connections.presentation.availability =
@@ -444,7 +452,7 @@ impl AgentView {
                 let id = if let Some(id) = pending {
                     id
                 } else {
-                    let form = new_form();
+                    let form = new_form(self.connections.presentation.mode);
                     let id = form.draft.profile.id.clone();
                     self.connections.forms.insert(id.clone(), form);
                     id
@@ -485,7 +493,7 @@ impl AgentView {
                 }
             }
             RequestDelete => {
-                self.connections.presentation.confirmation=ConnectionConfirmation::Delete{summary:"Its fixture key will be removed. Chats keep history and paused queued input; running work stops. Inspect/remove queued input before choosing another connection.".into()};
+                self.connections.presentation.confirmation=ConnectionConfirmation::Delete{summary:"Its saved key will be removed from this vault. Chats keep history and paused queued input; running work stops. Inspect/remove queued input before choosing another connection.".into()};
             }
             SaveAll | SaveAndClose => {
                 self.save_connections(window, cx);
@@ -500,7 +508,6 @@ impl AgentView {
     }
 }
 
-#[cfg(feature = "synthetic-authority")]
 struct SavedTabs {
     loaded: LoadedConnections,
     saved: Vec<(String, String, String)>,
@@ -510,7 +517,6 @@ struct SavedTabs {
     runtime_notices: Vec<String>,
 }
 impl AgentView {
-    #[cfg(feature = "synthetic-authority")]
     fn connection_controllers(&self) -> Vec<(String, Arc<Controller>)> {
         std::iter::once(&self.chat)
             .chain(self.inactive.values())
@@ -523,21 +529,18 @@ impl AgentView {
             .collect()
     }
     fn save_connections(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        #[cfg(not(feature = "synthetic-authority"))]
         {
-            let _ = (window, cx);
-        }
-        #[cfg(feature = "synthetic-authority")]
-        {
+            if !self.connections.presentation.mode.editable() {
+                return;
+            }
             if self.connections.operation.is_some()
                 || self.connections.uncertain
                 || self.shutting_down
             {
                 return;
             }
-            let (Some(mut loaded), Some(_control), Some(current)) = (
+            let (Some(mut loaded), Some(current)) = (
                 self.connections.loaded.clone(),
-                self.connections.control.clone(),
                 self.connections.active.clone(),
             ) else {
                 return;
@@ -618,7 +621,7 @@ impl AgentView {
                     let names=result.saved.iter().map(|(_,_,n)|n.as_str()).collect::<Vec<_>>().join(", ");
                     if result.uncertain {view.connections.uncertain=true;view.connections.presentation.availability=ConnectionSettingsAvailability::Unconfirmed("A vault write may have committed. Drafts are retained; new connection actions remain blocked.".into());}
                     let success=result.failure.is_none();
-                    let mut message=if let Some(error)=result.failure{if names.is_empty(){format!("Connection save did not complete: {error}")}else{format!("Saved {names}. The following save did not complete: {error}")}}else{"Saved to the in-memory fixture vault. Nothing was sent.".into()};
+                    let mut message=if let Some(error)=result.failure{if names.is_empty(){format!("Connection save did not complete: {error}")}else{format!("Saved {names}. The following save did not complete: {error}")}}else{view.connections.presentation.mode.saved_notice().into()};
                     if forked {message.push_str(" Route changes created new connections; earlier chats keep their original connections.");}
                     for note in result.runtime_notices {message.push(' ');message.push_str(&note);}
                     view.connections.notice(message,!success);view.connections.publish(cx);
@@ -838,13 +841,75 @@ impl AgentView {
             cx.notify();
             return;
         }
-        let mut target = self.record.clone();
-        target.connection_id = Some(id.into());
+        if self.connections.presentation.mode == crate::launch_authority::AuthorityMode::Native {
+            // An explicit route selection supersedes an earlier background New
+            // Chat request, even while its authority read is still pending.
+            if !self.advance_navigation(cx) {
+                return;
+            }
+            let runtime = self.runtime.clone();
+            let selected = id.to_owned();
+            let target = selected.clone();
+            let old = self.record.clone();
+            let chat_id = old.id.clone();
+            let previous = Arc::downgrade(&self.controller);
+            let project = self.project.clone();
+            let generation = self.navigation_generation;
+            let binding = self.window_binding;
+            let token = uuid::Uuid::new_v4();
+            self.connections.switches.insert(chat_id.clone(), token);
+            self.connections.picker = false;
+            cx.notify();
+            let task = cx
+                .background_executor()
+                .spawn(async move { runtime.preflight(&target) });
+            cx.spawn(async move |owner, cx| {
+                let result = task.await;
+                let _ = owner.update(cx, |view, cx| {
+                    if view.connections.switches.get(&chat_id) != Some(&token) {
+                        return;
+                    }
+                    view.connections.switches.remove(&chat_id);
+                    if view.project != project
+                        || view.record != old
+                        || view.navigation_generation != generation
+                        || view.window_binding != binding
+                        || !previous.ptr_eq(&Arc::downgrade(&view.controller))
+                    {
+                        cx.notify();
+                        return;
+                    }
+                    if let Err(error) = result {
+                        view.error = Some(error.to_string());
+                        cx.notify();
+                        return;
+                    }
+                    // Admission is rechecked after async preflight. A failed or
+                    // stale confirmation never retires the current actor.
+                    view.select_connection_after_preflight(&selected, cx);
+                });
+            })
+            .detach();
+            return;
+        }
         if let Err(error) = self.runtime.preflight(id) {
             self.error = Some(error.to_string());
             cx.notify();
             return;
         }
+        self.select_connection_after_preflight(id, cx);
+    }
+    fn select_connection_after_preflight(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.connections.open {
+            return;
+        }
+        if let Some(reason) = self.connection_switch_blocker() {
+            self.error = Some(reason);
+            cx.notify();
+            return;
+        }
+        let mut target = self.record.clone();
+        target.connection_id = Some(id.into());
         if self.pending && !self.controller.is_persistent() {
             // An unsent legacy anchor has no journal to move. Saved runtimes
             // mint only the workspace-derived path before first registration.

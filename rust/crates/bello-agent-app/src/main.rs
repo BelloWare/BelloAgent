@@ -13,6 +13,7 @@ mod connection_settings_view;
 mod context_inspector;
 mod draft_status;
 mod file_tab;
+mod launch_authority;
 mod layout;
 mod mcp_inspector_controller;
 mod mcp_inspector_host;
@@ -309,16 +310,14 @@ impl AgentView {
         let mcp = mcp_inspector_controller::McpInspectorController::new(
             palette,
             connections.authority().clone(),
-            connections.presentation.synthetic,
+            connections.presentation.mode.is_fixture(),
             cx,
         );
-        let runtime = saved_runtime_adapter::AppRuntime::new(
+        let runtime = saved_runtime_adapter::AppRuntime::for_launch(
             connections.authority().as_ref().clone(),
             workspace.clone(),
-            saved_runtime_adapter::AppRuntime::options(
-                project.clone(),
-                connections.presentation.synthetic,
-            ),
+            project.clone(),
+            connections.presentation.mode,
             legacy_configuration.clone(),
         );
         let icon = Arc::new(Image::from_bytes(
@@ -334,8 +333,16 @@ impl AgentView {
         let initial_view = cx.weak_entity();
         let initial_controller = Arc::downgrade(&chat.controller);
         let initial_chat = chat.record.id.clone();
+        let native_startup = connections.presentation.mode
+            == launch_authority::AuthorityMode::Native
+            && !pending
+            && !chat.controller.is_persistent();
         cx.defer(move |cx| {
             let _ = initial_view.update(cx, |view, cx| {
+                if native_startup {
+                    view.load_chat(&initial_chat, cx);
+                    return;
+                }
                 let Some(chat) = view
                     .chat_ref(&initial_chat)
                     .filter(|chat| initial_controller.ptr_eq(&Arc::downgrade(&chat.controller)))
@@ -1985,7 +1992,7 @@ impl AgentView {
                             self.badge(
                                 saved_runtime_adapter::tool_runtime_label(
                                     &self.controller,
-                                    self.connections.presentation.synthetic,
+                                    self.connections.presentation.mode.is_fixture(),
                                 )
                                 .into(),
                                 "pencil",
@@ -3305,6 +3312,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut session = default_session();
     let mut profile_path = None;
     let mut credential_stdin = false;
+    let mut native_authority = false;
     #[cfg(all(feature = "synthetic-authority", debug_assertions))]
     let mut synthetic_authority = false;
     #[cfg(all(feature = "synthetic-authority", debug_assertions))]
@@ -3321,6 +3329,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 profile_path = Some(PathBuf::from(args.next().ok_or("--profile needs a file")?))
             }
             "--credential-stdin" => credential_stdin = true,
+            "--native-authority" => native_authority = true,
             #[cfg(all(feature = "synthetic-authority", debug_assertions))]
             "--synthetic-project-authority" => synthetic_authority = true,
             #[cfg(all(feature = "synthetic-authority", debug_assertions))]
@@ -3342,6 +3351,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!(
                     "BelloAgent Rust GPUI preview\n  --project DIR\n  --session FILE    isolated Rust snapshot (never a Swift journal)\n  --profile FILE    explicit non-secret LiteLLM Responses JSON\n  --credential-stdin  read an in-memory key until EOF; never stored\n  BELLO_PERF_LOG=FILE  optional real CPU callback JSONL telemetry"
                 );
+                #[cfg(feature = "native-authority")]
+                println!(
+                    "  --native-authority  experimental separate Rust Keychain vault; saved provider chat only, no tools; requires approved signed macOS identity"
+                );
                 #[cfg(all(feature = "synthetic-authority", debug_assertions))]
                 println!(
                     "  --synthetic-project-authority  debug QA only; in-memory trust and fixture Connections/tools, never native storage\n  --synthetic-connections  same isolated fixture; fixed fake key and numeric loopback only\n  --synthetic-attachment-fixture PROFILE  debug QA saved image connection; requires --synthetic-connections; select and trust through the UI"
@@ -3351,6 +3364,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             _ => return Err(format!("Unknown argument: {arg}").into()),
         }
     }
+    #[cfg(all(feature = "synthetic-authority", debug_assertions))]
+    let (fixture_requested, attachment_requested) =
+        (synthetic_authority, attachment_fixture_path.is_some());
+    #[cfg(not(all(feature = "synthetic-authority", debug_assertions)))]
+    let (fixture_requested, attachment_requested) = (false, false);
+    let authority_mode = launch_authority::AuthorityMode::for_launch(
+        native_authority,
+        fixture_requested,
+        profile_path.is_some(),
+        credential_stdin,
+        attachment_requested,
+    )?;
     #[cfg(all(feature = "synthetic-authority", debug_assertions))]
     let attachment_fixture = if let Some(path) = attachment_fixture_path {
         if profile_path.is_some() {
@@ -3428,22 +3453,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_default();
     #[cfg(not(all(feature = "synthetic-authority", debug_assertions)))]
     let authority = bello_agent_core::project_authority::ProjectAuthority::new();
-    #[cfg(all(feature = "synthetic-authority", debug_assertions))]
-    let fixture = synthetic.is_some();
-    #[cfg(not(all(feature = "synthetic-authority", debug_assertions)))]
-    let fixture = false;
+    #[cfg(feature = "native-authority")]
+    let authority = if authority_mode == launch_authority::AuthorityMode::Native {
+        bello_agent_core::project_authority::ProjectAuthority::with_native_storage()?
+    } else {
+        authority
+    };
     #[cfg(all(feature = "synthetic-authority", debug_assertions))]
     if let Some(fixture) = attachment_fixture {
         fixture.seed(&authority)?;
     }
-    let runtime = saved_runtime_adapter::AppRuntime::new(
+    let runtime = saved_runtime_adapter::AppRuntime::for_launch(
         authority.clone(),
         workspace.clone(),
-        saved_runtime_adapter::AppRuntime::options(project.clone(), fixture),
+        project.clone(),
+        authority_mode,
         legacy_configuration.clone(),
     );
     let controller = if pending {
         Controller::with_configuration(store, legacy_configuration.clone())?
+    } else if authority_mode == launch_authority::AuthorityMode::Native {
+        // Real authority operations belong to the existing background loader.
+        drop(store);
+        saved_runtime_adapter::AppRuntime::placeholder(&record)?
     } else {
         drop(store);
         match runtime.open_registered(&record) {
@@ -3475,7 +3507,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             cx.set_global(project_manager_controller::LaunchProjectAuthority {
                 authority: Arc::new(authority),
-                synthetic: fixture,
+                mode: authority_mode,
             });
             workspace_lifetime::WorkspaceLifetime::launch(
                 LaunchState {

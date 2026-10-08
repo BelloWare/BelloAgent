@@ -94,6 +94,7 @@ impl AgentView {
         self.project_actions_blocked()
             || self.connections.uncertain
             || self.connections.blocked.contains(id)
+            || self.connections.switches.contains_key(id)
             || self.chat_mode_blocked.contains(id)
             || self.known_catalog_uncertainty
             || self.chat_is_archived(id)

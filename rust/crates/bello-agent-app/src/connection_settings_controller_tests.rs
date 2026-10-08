@@ -26,10 +26,28 @@ fn fixture_with_trust(
     WindowHandle<AgentView>,
     Entity<AgentView>,
 ) {
+    fixture_with_mode(cx, trusted, crate::launch_authority::AuthorityMode::Fixture)
+}
+fn fixture_with_mode(
+    cx: &mut TestAppContext,
+    trusted: bool,
+    mode: crate::launch_authority::AuthorityMode,
+) -> (
+    tempfile::TempDir,
+    SyntheticAuthorityControl,
+    WindowHandle<AgentView>,
+    Entity<AgentView>,
+) {
     let dir = tempfile::tempdir().unwrap();
     let project = std::fs::canonicalize(dir.path()).unwrap();
     let (authority, control) = ProjectAuthority::with_synthetic_bytes(None).unwrap();
     cx.update(|cx| cx.set_global(LaunchConnectionAuthority(control.clone())));
+    cx.update(|cx| {
+        cx.set_global(crate::project_manager_controller::LaunchProjectAuthority {
+            authority: Arc::new(authority.clone()),
+            mode,
+        })
+    });
     let store = SessionStore::pending();
     let snapshot = store.snapshot();
     let record = ChatRecord::new(
@@ -146,7 +164,7 @@ fn wait(cx: &mut TestAppContext, mut done: impl FnMut(&mut TestAppContext) -> bo
 
 #[test]
 fn model_alias_change_clears_old_catalog_ceiling_and_invalid_numbers_retain_text() {
-    let mut form = new_form();
+    let mut form = new_form(crate::launch_authority::AuthorityMode::Fixture);
     form.draft.profile.model_output_limit = Some(1000);
     form.fields.model = "another-alias".into();
     assert!(form.capture().unwrap().profile.model_output_limit.is_none());
@@ -155,9 +173,249 @@ fn model_alias_change_clears_old_catalog_ceiling_and_invalid_numbers_retain_text
     assert_eq!(form.fields.context_window, "invalid partial number");
 }
 
+fn native_mode_saved_fixture(
+    cx: &mut TestAppContext,
+) -> (
+    tempfile::TempDir,
+    SyntheticAuthorityControl,
+    WindowHandle<AgentView>,
+    Entity<AgentView>,
+    String,
+) {
+    let (dir, control, window, root) =
+        fixture_with_mode(cx, true, crate::launch_authority::AuthorityMode::Native);
+    edit(&root, cx, |fields| {
+        fields.base_url = "http://127.0.0.1:9".into();
+        fields.model = "native-mode-fixture".into();
+    });
+    let id = save_fixture(window, &root, cx);
+    (dir, control, window, root, id)
+}
+
+#[gpui::test]
+fn native_mode_form_does_not_relax_fixture_provenance_and_retains_failed_secrets(
+    cx: &mut TestAppContext,
+) {
+    let (_dir, control, window, root) =
+        fixture_with_mode(cx, true, crate::launch_authority::AuthorityMode::Native);
+    cx.read(|cx| {
+        let view = root.read(cx);
+        let fields = &view
+            .connections
+            .presentation
+            .active
+            .as_ref()
+            .unwrap()
+            .fields;
+        assert!(fields.base_url.is_empty() && fields.model.is_empty());
+        assert!(fields.key.is_empty() && fields.headers.is_empty());
+        assert_eq!(
+            view.projects.presentation.mode,
+            crate::launch_authority::AuthorityMode::Native
+        );
+    });
+    let before = control.snapshot_bytes().unwrap();
+    edit(&root, cx, |fields| {
+        fields.base_url = "https://gateway.example.test".into();
+        fields.model = "typed-model".into();
+        fields.key = "not-a-real-key-and-not-the-fixture-key".into();
+    });
+    act(window, Intent::SaveAll, cx);
+    assert_eq!(control.snapshot_bytes().unwrap(), before);
+    cx.read(|cx| {
+        let view = root.read(cx);
+        assert!(view.connections.presentation.dirty);
+        let notice = view.connections.presentation.notice.as_ref().unwrap();
+        assert!(notice.is_error);
+        assert!(!notice.text.contains("not-a-real-key"));
+        assert!(!view.controller.configured());
+    });
+    edit(&root, cx, |fields| {
+        fields.base_url = "http://127.0.0.1:9".into();
+        fields.key = SYNTHETIC_KEY.into();
+    });
+    act(window, Intent::SaveAll, cx);
+    cx.read(|cx| {
+        let view = root.read(cx);
+        assert!(!view.connections.presentation.dirty);
+        let form = view.connections.presentation.active.as_ref().unwrap();
+        assert!(form.fields.key.is_empty() && form.fields.headers.is_empty());
+        assert!(
+            view.connections
+                .presentation
+                .notice
+                .as_ref()
+                .unwrap()
+                .text
+                .contains("separate Rust Keychain vault")
+        );
+    });
+    window
+        .update(cx, |view, window, cx| view.open_connections(window, cx))
+        .unwrap();
+    edit(&root, cx, |fields| {
+        fields.name = "retained after conflict".into()
+    });
+    control.fail_next_write(AuthorityError::Conflict).unwrap();
+    act(window, Intent::SaveAll, cx);
+    cx.read(|cx| assert!(root.read(cx).connections.presentation.dirty));
+    control.fail_next_read(AuthorityError::Denied).unwrap();
+    root.update(cx, |view, cx| view.reload_connections(false, cx));
+    cx.run_until_parked();
+    cx.read(|cx| assert!(root.read(cx).connections.presentation.dirty));
+    root.update(cx, |view, cx| view.reload_connections(false, cx));
+    cx.run_until_parked();
+    control
+        .fail_next_write(AuthorityError::Unconfirmed)
+        .unwrap();
+    act(window, Intent::SaveAll, cx);
+    cx.read(|cx| {
+        let view = root.read(cx);
+        assert!(view.connections.uncertain && view.connections.presentation.dirty);
+        assert_eq!(
+            view.connections
+                .presentation
+                .active
+                .as_ref()
+                .unwrap()
+                .fields
+                .name,
+            "retained after conflict"
+        );
+    });
+    root.update(cx, |view, cx| view.reload_connections(false, cx));
+    cx.run_until_parked();
+    cx.read(|cx| assert!(root.read(cx).connections.uncertain));
+}
+
+#[gpui::test]
+fn native_mode_preflight_blocks_submission_but_denial_preserves_current_actor(
+    cx: &mut TestAppContext,
+) {
+    let (_dir, control, _window, root, id) = native_mode_saved_fixture(cx);
+    root.update(cx, |view, cx| view.select_connection(&id, cx));
+    cx.run_until_parked();
+    let actor = cx.read(|cx| root.read(cx).controller.clone());
+    let gate = control.pause_next_read().unwrap();
+    control.fail_next_read(AuthorityError::Denied).unwrap();
+    let observer = std::thread::spawn(move || {
+        assert!(gate.wait_until_started(Duration::from_secs(3)));
+        gate.release();
+    });
+    root.update(cx, |view, cx| {
+        view.select_connection(&id, cx);
+        assert!(view.connections.switches.contains_key(&view.record.id));
+        assert!(view.actor_mutation_blocked(&view.record.id));
+        assert!(!actor.is_retired());
+        view.submit(Lane::FollowUp, cx);
+        view.resume_queued(&view.record.id.clone(), cx);
+        assert!(view.inflight_submission.is_none());
+        assert!(view.composer.read(cx).text().contains("keep composer"));
+    });
+    cx.run_until_parked();
+    observer.join().unwrap();
+    cx.read(|cx| {
+        let view = root.read(cx);
+        assert!(Arc::ptr_eq(&view.controller, &actor));
+        assert!(!actor.is_retired());
+        assert!(!view.actor_mutation_blocked(&view.record.id));
+        assert!(!view.record.snapshot.exists());
+        assert!(view.session.messages.is_empty());
+    });
+}
+
+#[gpui::test]
+fn native_mode_later_route_selection_discards_pending_new_chat(cx: &mut TestAppContext) {
+    let (_dir, _control, window, root, id) = native_mode_saved_fixture(cx);
+    root.update(cx, |view, cx| view.select_connection(&id, cx));
+    cx.run_until_parked();
+    let original = cx.read(|cx| root.read(cx).record.id.clone());
+    let count = cx.read(|cx| root.read(cx).records.len());
+    window
+        .update(cx, |view, window, cx| {
+            view.new_chat(window, cx);
+            view.select_connection(&id, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let view = root.read(cx);
+        assert_eq!(view.record.id, original);
+        assert_eq!(view.records.len(), count);
+        assert!(view.controller.configured());
+        assert!(!view.controller.has_available_tool_definitions());
+    });
+}
+
+#[gpui::test]
+fn native_mode_new_chat_and_startup_loader_keep_saved_connection_without_tools(
+    cx: &mut TestAppContext,
+) {
+    let (_dir, _control, window, root, id) = native_mode_saved_fixture(cx);
+    root.update(cx, |view, cx| view.select_connection(&id, cx));
+    cx.run_until_parked();
+    let original = cx.read(|cx| root.read(cx).record.id.clone());
+    window
+        .update(cx, |view, window, cx| view.new_chat(window, cx))
+        .unwrap();
+    cx.run_until_parked();
+    let launch = root.update(cx, |view, _| {
+        assert_ne!(view.record.id, original);
+        assert!(view.controller.configured());
+        assert!(!view.controller.has_available_tool_definitions());
+        view.workspace
+            .lock()
+            .unwrap()
+            .register(view.record.clone(), DraftRecord::default())
+            .unwrap();
+        LaunchState {
+            controller: crate::saved_runtime_adapter::AppRuntime::placeholder(&view.record)
+                .unwrap(),
+            project: view.project.clone(),
+            workspace: view.workspace.clone(),
+            record: view.record.clone(),
+            draft: DraftRecord::default(),
+            pending: false,
+        }
+    });
+    let restored = cx.add_window(|window, cx| AgentView::new(launch, window, cx));
+    cx.run_until_parked();
+    restored
+        .update(cx, |view, window, cx| {
+            assert!(view.controller.configured());
+            assert!(!view.loading && !view.load_failed);
+            assert_eq!(view.record.connection_id.as_deref(), Some(id.as_str()));
+            assert!(!view.controller.has_available_tool_definitions());
+            assert!(view.runtime.mcp_manager().is_err());
+            assert!(!view.record.snapshot.exists());
+            assert!(!view.can_choose_skills());
+            view.open_skill_picker(window, cx);
+            assert!(view.skill_picker.is_none());
+        })
+        .unwrap();
+}
+
 #[gpui::test]
 fn settings_save_select_and_real_composer_send_use_selected_fixture(cx: &mut TestAppContext) {
-    let (dir, _control, window, root) = fixture(cx);
+    exercise_settings_send(cx, crate::launch_authority::AuthorityMode::Fixture);
+}
+
+#[gpui::test]
+fn native_mode_settings_send_uses_same_factory_with_no_tools_or_project_resources(
+    cx: &mut TestAppContext,
+) {
+    // Storage is still the synthetic fake. Only the app composition/presentation
+    // is native; production credential acceptance is tested in core fake-native tests.
+    exercise_settings_send(cx, crate::launch_authority::AuthorityMode::Native);
+}
+
+fn exercise_settings_send(cx: &mut TestAppContext, mode: crate::launch_authority::AuthorityMode) {
+    let (dir, _control, window, root) = fixture_with_mode(cx, true, mode);
+    std::fs::write(
+        dir.path().join("AGENTS.md"),
+        "NATIVE_PROJECT_RESOURCE_MUST_STAY_UNAVAILABLE",
+    )
+    .unwrap();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
@@ -233,13 +491,34 @@ fn settings_save_select_and_real_composer_send_use_selected_fixture(cx: &mut Tes
     let body = body.unwrap();
     assert_eq!(body["model"], "selected-fixture-alias");
     assert!(body.to_string().contains("keep composer 日本語"));
-    assert!(
-        body["tools"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|tool| tool["name"] == "ls")
-    );
+    if mode.is_fixture() {
+        assert!(
+            body["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tool| tool["name"] == "ls")
+        );
+    } else {
+        assert!(
+            body.get("tools")
+                .is_none_or(|tools| tools.as_array().is_some_and(Vec::is_empty))
+        );
+        assert!(
+            !body
+                .to_string()
+                .contains("NATIVE_PROJECT_RESOURCE_MUST_STAY_UNAVAILABLE")
+        );
+        cx.read(|cx| {
+            let view = root.read(cx);
+            assert!(!view.controller.has_available_tool_definitions());
+            assert!(view.runtime.mcp_manager().is_err());
+            assert_eq!(
+                crate::saved_runtime_adapter::tool_runtime_label(&view.controller, false),
+                "Tools unavailable"
+            );
+        });
+    }
     worker.join().unwrap();
     wait(cx, |cx| {
         cx.read(|cx| root.read(cx).session.state != bello_agent_core::RunState::Running)
@@ -369,7 +648,7 @@ fn delete_replaces_pending_chat_with_disconnected_controller_and_preserves_compo
         assert_eq!(
             crate::saved_runtime_adapter::tool_runtime_label(
                 &view.controller,
-                view.connections.presentation.synthetic
+                view.connections.presentation.mode.is_fixture()
             ),
             "Tools unavailable"
         );
@@ -1168,7 +1447,7 @@ fn window_close_captures_local_typing_before_owner_acknowledgment_and_keep_retai
 
 #[::core::prelude::v1::test]
 fn manual_model_change_clears_inherited_image_capability_but_name_edit_keeps_it() {
-    let mut form = new_form();
+    let mut form = new_form(crate::launch_authority::AuthorityMode::Fixture);
     form.draft.profile.input = vec!["text".into(), "image".into()];
     form.fields.name = "Renamed fixture".into();
     assert!(form.capture().unwrap().profile.supports_images());
@@ -1243,7 +1522,7 @@ fn saved_settings_require_trust_then_open_the_same_pending_chat_without_sending(
         assert_eq!(
             crate::saved_runtime_adapter::tool_runtime_label(
                 &view.controller,
-                view.connections.presentation.synthetic
+                view.connections.presentation.mode.is_fixture()
             ),
             "Fixture tool runtime"
         );
@@ -1258,8 +1537,27 @@ fn saved_settings_require_trust_then_open_the_same_pending_chat_without_sending(
 fn checkpoint_required_missing_on_navigation_keeps_draft_and_inert_placeholder(
     cx: &mut TestAppContext,
 ) {
-    let (_directory, _control, window, root) = fixture(cx);
-    let saved = save_fixture(window, &root, cx);
+    exercise_missing_checkpoint(cx, crate::launch_authority::AuthorityMode::Fixture);
+}
+
+#[gpui::test]
+fn native_mode_required_missing_checkpoint_keeps_draft_and_inert_placeholder(
+    cx: &mut TestAppContext,
+) {
+    exercise_missing_checkpoint(cx, crate::launch_authority::AuthorityMode::Native);
+}
+
+fn exercise_missing_checkpoint(
+    cx: &mut TestAppContext,
+    mode: crate::launch_authority::AuthorityMode,
+) {
+    let (_directory, _control, window, root, saved) = if mode.is_fixture() {
+        let (directory, control, window, root) = fixture(cx);
+        let saved = save_fixture(window, &root, cx);
+        (directory, control, window, root, saved)
+    } else {
+        native_mode_saved_fixture(cx)
+    };
     let id = uuid::Uuid::new_v4().to_string();
     window
         .update(cx, |view, window, cx| {

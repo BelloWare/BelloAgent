@@ -29,6 +29,7 @@ pub struct SavedRuntimeFactory {
     authority: ProjectAuthority,
     workspace: Arc<Mutex<WorkspaceStore>>,
     options: SavedChatOptions,
+    connection_only: bool,
     #[cfg(all(test, unix))]
     shell_environment: Option<crate::tools::bash::Environment>,
     #[cfg(test)]
@@ -46,6 +47,7 @@ impl SavedRuntimeFactory {
             authority,
             workspace,
             options,
+            connection_only: false,
             #[cfg(all(test, unix))]
             shell_environment: None,
             #[cfg(test)]
@@ -54,9 +56,34 @@ impl SavedRuntimeFactory {
             synthetic_mutations: false,
         }
     }
+    /// Saved provider chat with the same project/catalog admission, but no
+    /// builtin tools, MCP manager, project instructions or skill discovery.
+    /// This is explicit host policy, never inferred from saved metadata.
+    pub fn connection_only(
+        authority: ProjectAuthority,
+        workspace: Arc<Mutex<WorkspaceStore>>,
+    ) -> Self {
+        let mut factory = Self::new(
+            authority,
+            workspace,
+            SavedChatOptions {
+                home: PathBuf::new(),
+                read_only_capabilities: Vec::new(),
+                editing_capabilities: Vec::new(),
+                instructions: String::new(),
+            },
+        );
+        factory.connection_only = true;
+        factory
+    }
     /// The workspace owner holds exactly one manager for its current saved
     /// project. Multiple factory instances/clones and chats reuse that manager.
     pub fn mcp_manager(&self) -> Result<Arc<crate::mcp::McpManager>> {
+        if self.connection_only {
+            return Err(invalid(
+                "MCP tools are unavailable for connection-only chats",
+            ));
+        }
         let binding = ProjectBinding::confirm(self.authority.clone(), self.workspace.clone())?;
         self.project_mcp(&binding)
     }
@@ -215,43 +242,59 @@ impl SavedRuntimeFactory {
         guard.confirm()?;
         guard.confirm_open_provenance()?;
         let configuration = self.configuration_for(connection_id)?;
-        let capabilities = match record.tool_mode {
-            ChatToolMode::ReadOnly => self.options.read_only_capabilities.clone(),
-            ChatToolMode::Editing => self.options.editing_capabilities.clone(),
-        };
-        if !self.options.home.is_absolute() || !self.options.home.is_dir() {
-            return Err(invalid(
-                "An explicit existing tool home directory is required",
-            ));
-        }
-        if capabilities.is_empty() {
-            return Err(invalid("An explicit capability selection is required"));
-        }
-        let home = std::fs::canonicalize(&self.options.home)?;
         let project = &guard.binding.project;
-        let tools = match record.tool_mode {
-            ChatToolMode::ReadOnly => TrustedReadOnlyTools::new_with_capabilities(
-                project.path.clone(),
-                project.paths.clone(),
-                home,
-                capabilities,
-            )?,
-            ChatToolMode::Editing => {
-                let gate = self
-                    .workspace
-                    .lock()
-                    .map_err(|_| invalid("Workspace is unavailable"))?
-                    .editing_gate();
-                #[cfg(all(test, feature = "synthetic-authority", not(target_os = "macos")))]
-                if self.synthetic_mutations {
-                    TrustedReadOnlyTools::synthetic_mutation_fixture(
-                        project.path.clone(),
-                        project.paths.clone(),
-                        home,
-                        capabilities,
-                        gate,
-                    )?
-                } else {
+        let tools = if self.connection_only {
+            None
+        } else {
+            let capabilities = match record.tool_mode {
+                ChatToolMode::ReadOnly => self.options.read_only_capabilities.clone(),
+                ChatToolMode::Editing => self.options.editing_capabilities.clone(),
+            };
+            if !self.options.home.is_absolute() || !self.options.home.is_dir() {
+                return Err(invalid(
+                    "An explicit existing tool home directory is required",
+                ));
+            }
+            if capabilities.is_empty() {
+                return Err(invalid("An explicit capability selection is required"));
+            }
+            let home = std::fs::canonicalize(&self.options.home)?;
+            let tools = match record.tool_mode {
+                ChatToolMode::ReadOnly => TrustedReadOnlyTools::new_with_capabilities(
+                    project.path.clone(),
+                    project.paths.clone(),
+                    home,
+                    capabilities,
+                )?,
+                ChatToolMode::Editing => {
+                    let gate = self
+                        .workspace
+                        .lock()
+                        .map_err(|_| invalid("Workspace is unavailable"))?
+                        .editing_gate();
+                    #[cfg(all(test, feature = "synthetic-authority", not(target_os = "macos")))]
+                    if self.synthetic_mutations {
+                        TrustedReadOnlyTools::synthetic_mutation_fixture(
+                            project.path.clone(),
+                            project.paths.clone(),
+                            home,
+                            capabilities,
+                            gate,
+                        )?
+                    } else {
+                        TrustedReadOnlyTools::new_with_editing_capabilities(
+                            project.path.clone(),
+                            project.paths.clone(),
+                            home,
+                            capabilities,
+                            gate,
+                        )?
+                    }
+                    #[cfg(not(all(
+                        test,
+                        feature = "synthetic-authority",
+                        not(target_os = "macos")
+                    )))]
                     TrustedReadOnlyTools::new_with_editing_capabilities(
                         project.path.clone(),
                         project.paths.clone(),
@@ -260,26 +303,19 @@ impl SavedRuntimeFactory {
                         gate,
                     )?
                 }
-                #[cfg(not(all(test, feature = "synthetic-authority", not(target_os = "macos"))))]
-                TrustedReadOnlyTools::new_with_editing_capabilities(
-                    project.path.clone(),
-                    project.paths.clone(),
-                    home,
-                    capabilities,
-                    gate,
-                )?
-            }
+            };
+            #[cfg(all(test, unix))]
+            let tools = if let Some(environment) = &self.shell_environment {
+                tools.with_shell_environment(environment.clone())
+            } else {
+                tools
+            };
+            let tools = tools.with_mcp(
+                self.project_mcp(&guard.binding)?,
+                record.tool_mode == ChatToolMode::ReadOnly,
+            );
+            Some(tools)
         };
-        #[cfg(all(test, unix))]
-        let tools = if let Some(environment) = &self.shell_environment {
-            tools.with_shell_environment(environment.clone())
-        } else {
-            tools
-        };
-        let tools = tools.with_mcp(
-            self.project_mcp(&guard.binding)?,
-            record.tool_mode == ChatToolMode::ReadOnly,
-        );
         // Permission errors/symlinks/FIFOs are not absence. Existing-only opening
         // checks identity under its existing writer lock before recovery writes.
         let store = match std::fs::symlink_metadata(&record.snapshot) {
@@ -311,16 +347,20 @@ impl SavedRuntimeFactory {
             }
             .into(),
         };
-        Ok(Controller::with_authority(
+        let controller = Controller::with_authority(
             store,
             Some(configuration),
             RuntimeOptions {
                 instructions: self.options.instructions.clone(),
-                tools: Some(tools),
+                tools,
             },
             Some(guard),
-        )?
-        .with_project_resources(binding))
+        )?;
+        if self.connection_only {
+            Ok(controller)
+        } else {
+            Ok(controller.with_project_resources(binding))
+        }
     }
 }
 /// The complete original project identity remains equal. Unrelated envelope

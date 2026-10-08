@@ -26,10 +26,10 @@ use std::{
 };
 use uuid::Uuid;
 
-/// Installed only by an explicit debug/test launch flag or a test fixture.
+/// Installed only by explicit launch composition or a test fixture.
 pub(crate) struct LaunchProjectAuthority {
     pub authority: Arc<ProjectAuthority>,
-    pub synthetic: bool,
+    pub mode: crate::launch_authority::AuthorityMode,
 }
 impl Global for LaunchProjectAuthority {}
 
@@ -61,15 +61,15 @@ pub(crate) struct ProjectManagerController {
 
 impl ProjectManagerController {
     pub fn new(primary: PathBuf, palette: Palette, cx: &mut Context<AgentView>) -> Self {
-        let (authority, synthetic) = cx
+        let (authority, mode) = cx
             .try_global::<LaunchProjectAuthority>()
-            .map(|launch| (launch.authority.clone(), launch.synthetic))
+            .map(|launch| (launch.authority.clone(), launch.mode))
             .unwrap_or_else(|| {
                 #[cfg(feature = "synthetic-authority")]
                 if let Some(launch) = cx.try_global::<crate::connection_settings_controller::LaunchConnectionAuthority>() {
-                    return (Arc::new(launch.0.authority()), true);
+                    return (Arc::new(launch.0.authority()), crate::launch_authority::AuthorityMode::Fixture);
                 }
-                (Arc::new(ProjectAuthority::new()), false)
+                (Arc::new(ProjectAuthority::new()), crate::launch_authority::AuthorityMode::Unavailable)
             });
         let presentation = ProjectManagerPresentation {
             revision: 1,
@@ -80,7 +80,7 @@ impl ProjectManagerController {
             stage: Stage::Current,
             availability: Availability::Loading,
             notice: None,
-            synthetic,
+            mode,
         };
         let view = cx.new(|cx| ProjectManagerView::new(presentation.clone(), palette, cx));
         Self {
@@ -915,7 +915,7 @@ impl AgentView {
                 self.projects.presentation.stage = Stage::Current;
                 self.projects.presentation.availability = Availability::Ready;
                 self.projects.notice(
-                    saved_project_notice(self.projects.presentation.synthetic),
+                    saved_project_notice(self.projects.presentation.mode.is_fixture()),
                     false,
                 );
                 self.projects.admission_blocked = false;

@@ -32,7 +32,7 @@ fn fixture(
     cx.update(|cx| {
         cx.set_global(LaunchProjectAuthority {
             authority: Arc::new(authority),
-            synthetic: true,
+            mode: crate::launch_authority::AuthorityMode::Fixture,
         })
     });
     let store = SessionStore::pending();
@@ -1085,7 +1085,7 @@ fn history_fixture(
     cx.update(|cx| {
         cx.set_global(LaunchProjectAuthority {
             authority: Arc::new(authority),
-            synthetic: true,
+            mode: crate::launch_authority::AuthorityMode::Fixture,
         })
     });
     let path = project.join("history.json");

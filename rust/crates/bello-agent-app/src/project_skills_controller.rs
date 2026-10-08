@@ -92,6 +92,10 @@ impl SkillTarget {
 }
 impl AgentView {
     pub(crate) fn can_choose_skills(&self) -> bool {
+        self.connections.presentation.mode != crate::launch_authority::AuthorityMode::Native
+            && self.can_edit_skill_selection()
+    }
+    fn can_edit_skill_selection(&self) -> bool {
         !self.shutting_down
             && !self.close_ready
             && !self.loading
@@ -332,7 +336,7 @@ impl AgentView {
         cx: &mut Context<Self>,
     ) {
         if !target.matches(self, true)
-            || !self.can_choose_skills()
+            || !self.can_edit_skill_selection()
             || self.draft_revision == u64::MAX
         {
             return;

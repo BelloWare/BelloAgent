@@ -115,6 +115,179 @@ fn native_feature_never_changes_default_composition() {
 }
 
 #[test]
+fn connection_only_native_storage_keeps_normal_credentials_and_authority_without_tools() {
+    use crate::{
+        project_authority::connections::ConnectionDraft,
+        saved_runtime::{SavedChatOptions, SavedRuntimeFactory},
+        tools::Capability,
+        workspace::{ChatMaterialization, ChatToolMode, DraftRecord, WorkspaceStore},
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(directory.path()).unwrap();
+    std::fs::write(root.join("AGENTS.md"), "NEVER_INCLUDE_PROJECT_INSTRUCTIONS").unwrap();
+    let (storage, fake) = fixture(None);
+    let authority = ProjectAuthority::with_test_storage(storage);
+    let profile = serde_json::from_value(serde_json::json!({
+        "id":uuid::Uuid::new_v4().to_string(), "api":"openai-responses", "providerId":"litellm",
+        "baseUrl":"https://gateway.example.test", "modelId":"test-model",
+        "contextWindow":32000,"maxOutputTokens":4096
+    }))
+    .unwrap();
+    let mut connection = ConnectionDraft::new(profile, "Fake native connection".into());
+    connection.key_input = "ordinary-test-key-never-a-real-secret".into();
+    connection.headers_input = r#"{"x-test":"ordinary-test-header"}"#.into();
+    let saved = authority
+        .save_connection(&authority.load_connections().unwrap(), &connection)
+        .unwrap();
+    let id = saved.profile.profile.id;
+    let workspace = Arc::new(Mutex::new(
+        WorkspaceStore::open(root.join("state/catalog.json"), &root).unwrap(),
+    ));
+    let factory = SavedRuntimeFactory::connection_only(authority.clone(), workspace.clone());
+    assert!(
+        factory.new_chat(&id, ChatToolMode::Editing).is_err(),
+        "saving a connection does not grant project trust"
+    );
+    let mut draft = authority.load().unwrap().edit();
+    let project = draft
+        .trust_project(&uuid::Uuid::new_v4().to_string(), &root, &[])
+        .unwrap();
+    let trusted = authority.save(&mut draft).unwrap();
+    workspace
+        .lock()
+        .unwrap()
+        .bind_project_identity(
+            authority
+                .confirm_project_binding(&trusted, &project)
+                .unwrap(),
+        )
+        .unwrap();
+    for mode in [ChatToolMode::ReadOnly, ChatToolMode::Editing] {
+        let (record, actor) = factory.new_chat(&id, mode).unwrap();
+        assert!(actor.configured());
+        assert!(!actor.has_available_tool_definitions());
+        let request = actor.prepare_context("").unwrap();
+        assert!(
+            !request
+                .request_json()
+                .contains("NEVER_INCLUDE_PROJECT_INSTRUCTIONS")
+        );
+        let request: serde_json::Value = serde_json::from_str(request.request_json()).unwrap();
+        assert!(
+            request
+                .get("tools")
+                .is_none_or(|tools| tools.as_array().is_some_and(Vec::is_empty))
+        );
+        assert!(actor.snapshot().messages.is_empty());
+        assert!(!record.snapshot.exists());
+        assert!(factory.mcp_manager().is_err());
+        assert!(workspace.lock().unwrap().mcp_manager.is_none());
+        workspace
+            .lock()
+            .unwrap()
+            .register(record.clone(), DraftRecord::default())
+            .unwrap();
+        let opened = factory.open_registered(&record).unwrap();
+        assert!(opened.configured());
+        let mut wrong = record.clone();
+        wrong.connection_id = Some(uuid::Uuid::new_v4().to_string());
+        assert!(factory.open_registered(&wrong).is_err());
+        let mut missing = record;
+        missing.materialization = ChatMaterialization::CheckpointRequired;
+        assert!(factory.open_registered(&missing).is_err());
+    }
+    // A manager owned by another explicit composition is not borrowed by the
+    // connection-only route, even when both share the workspace object.
+    let tool_factory = SavedRuntimeFactory::new(
+        authority.clone(),
+        workspace.clone(),
+        SavedChatOptions {
+            home: root,
+            read_only_capabilities: vec![Capability::Ls],
+            editing_capabilities: vec![Capability::Ls],
+            instructions: String::new(),
+        },
+    );
+    let _manager = tool_factory.mcp_manager().unwrap();
+    assert!(factory.mcp_manager().is_err());
+    let (_, actor) = factory.new_chat(&id, ChatToolMode::Editing).unwrap();
+    assert!(!actor.has_available_tool_definitions());
+    authority
+        .delete_connection(&authority.load_connections().unwrap(), &id)
+        .unwrap();
+    assert!(factory.preflight(&id).is_err());
+    assert!(actor.prepare_context("").is_err());
+    assert!(
+        actor
+            .submit("never dispatch".into(), crate::Lane::FollowUp)
+            .is_err()
+    );
+    assert!(actor.snapshot().messages.is_empty());
+    assert!(
+        fake.0.lock().unwrap().writes > 0,
+        "all storage was the inert fake NativeApi"
+    );
+}
+
+#[test]
+fn connection_only_native_denied_corrupt_and_unconfirmed_state_never_falls_back() {
+    use crate::{
+        project_authority::connections::ConnectionDraft,
+        saved_runtime::SavedRuntimeFactory,
+        workspace::{ChatToolMode, WorkspaceStore},
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    let (storage, fake) = fixture(None);
+    let authority = ProjectAuthority::with_test_storage(storage);
+    let workspace = Arc::new(Mutex::new(
+        WorkspaceStore::open(root.join("catalog.json"), &root).unwrap(),
+    ));
+    let mut project_draft = authority.load().unwrap().edit();
+    let project = project_draft.trust_project(ID, &root, &[]).unwrap();
+    let trusted = authority.save(&mut project_draft).unwrap();
+    workspace
+        .lock()
+        .unwrap()
+        .bind_project_identity(
+            authority
+                .confirm_project_binding(&trusted, &project)
+                .unwrap(),
+        )
+        .unwrap();
+    let factory = SavedRuntimeFactory::connection_only(authority.clone(), workspace);
+    for error in [AuthorityError::Unsigned, AuthorityError::Denied] {
+        fake.0.lock().unwrap().read_error = Some(error);
+        assert!(factory.new_chat(ID, ChatToolMode::Editing).is_err());
+    }
+    fake.0.lock().unwrap().bytes = Some(b"corrupt vault".to_vec());
+    assert!(factory.new_chat(ID, ChatToolMode::Editing).is_err());
+    assert_eq!(
+        fake.0.lock().unwrap().bytes.as_deref(),
+        Some(b"corrupt vault".as_slice())
+    );
+    fake.0.lock().unwrap().bytes = None;
+    let profile=serde_json::from_value(serde_json::json!({"id":ID,"api":"openai-responses","providerId":"litellm","baseUrl":"https://gateway.example.test","modelId":"test","contextWindow":32000,"maxOutputTokens":4096})).unwrap();
+    let mut draft = ConnectionDraft::new(profile, "retained draft".into());
+    draft.key_input = "fake-production-key".into();
+    let baseline = authority.load_connections().unwrap();
+    fake.0.lock().unwrap().mutation = Some((MutationOutcome::Unconfirmed, true));
+    assert!(matches!(
+        authority.save_connection(&baseline, &draft),
+        Err(AuthorityError::Unconfirmed)
+    ));
+    assert_eq!(draft.key_input, "fake-production-key");
+    assert!(matches!(
+        authority.save_connection(&baseline, &draft),
+        Err(AuthorityError::Conflict)
+    ));
+    assert!(
+        factory.new_chat(ID, ChatToolMode::Editing).is_err(),
+        "unconfirmed connection save cannot invent project authority"
+    );
+}
+
+#[test]
 fn fixed_native_identity_matches_reviewed_packaging() {
     let identity: serde_json::Value = serde_json::from_str(include_str!(
         "../../../../packaging/macos/native-authority-identity.json"
