@@ -106,6 +106,8 @@ import QuartzCore
         case .side(let state):
             measuringBody.update(SidebarSideRowView.content(model: model, state: state))
             return measuringRow.height(forWidth: max(0, width - state.indent))
+        case .searchSnippet(let state):
+            return SidebarSearchSnippetView.height(of: state, width: width)
         case .projectHeader, .topicHeader:
             let kind = entry.id.hasPrefix("project|") ? "project" : "topic"
             if let known = headerHeights[kind] { return known }
@@ -221,6 +223,11 @@ import QuartzCore
             return SidebarChatRowView(model: model, chat: chat, state: state, projectID: projectID, glide: glide)
         case .side(let state):
             return SidebarSideRowView(model: model, state: state, glide: glide)
+        case .searchSnippet(let state):
+            let view = SidebarSearchSnippetView(state: state)
+            let model = self.model, id = state.chatID
+            view.open = { Task { await model.openFromSidebar(id) } }
+            return view
         case .pagination(let groupID, let projectID, let hidden, let shown, let indent):
             let view = SidebarPaginationView(groupID: groupID)
             view.update(hiddenRoots: hidden, shownRoots: shown, indent: indent)
@@ -249,6 +256,7 @@ import QuartzCore
         case .archiveHeading(_, let count, let indent): (view as? SidebarArchiveHeadingView)?.update(count: count, indent: indent)
         case .chat(let chat, let state, let projectID): (view as? SidebarChatRowView)?.apply(chat: chat, state: state, projectID: projectID)
         case .side(let state): (view as? SidebarSideRowView)?.apply(state)
+        case .searchSnippet(let state): (view as? SidebarSearchSnippetView)?.apply(state)
         case .pagination(_, _, let hidden, let shown, let indent): (view as? SidebarPaginationView)?.update(hiddenRoots: hidden, shownRoots: shown, indent: indent)
         case .empty(_, let text, let indent): (view as? SidebarNoteView)?.update(text: text, leading: indent + 20)
         case .projectUnavailable, .nothing: break

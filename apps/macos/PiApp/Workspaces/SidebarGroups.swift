@@ -9,12 +9,13 @@ enum SidebarSessionPresentation {
     static let pageSize = 5
     /// The group key of a group's archived chats: they page on their own.
     static func archiveGroupID(_ group: String) -> String { "archived:" + group }
-    static func filtered(_ entries: [SidebarChatEntry], by query: String) -> [SidebarChatEntry] {
+    /// `contentMatches`: chats whose messages match (`SidebarSearch`), listed as a title match is.
+    static func filtered(_ entries: [SidebarChatEntry], by query: String, contentMatches: Set<String> = []) -> [SidebarChatEntry] {
         guard !query.isEmpty else { return entries }
         var kept: Set<Int> = [], ancestors: [Int] = []
         for (index, entry) in entries.enumerated() {
             while let last = ancestors.last, entries[last].depth >= entry.depth { ancestors.removeLast() }
-            if entry.chat.title.localizedCaseInsensitiveContains(query) { kept.formUnion(ancestors); kept.insert(index) }
+            if entry.chat.title.localizedCaseInsensitiveContains(query) || contentMatches.contains(entry.chat.id) { kept.formUnion(ancestors); kept.insert(index) }
             ancestors.append(index)
         }
         return entries.enumerated().compactMap { kept.contains($0.offset) ? $0.element : nil }

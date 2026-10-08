@@ -14,6 +14,8 @@ enum SidebarEntry: Equatable {
     case topicRemove(topicID: String, removing: Bool)
     case archiveHeading(groupID: String, count: Int, indent: CGFloat)
     case chat(chat: ChatRecord, state: SidebarChatRowState, projectID: String)
+    /// Under a chat the filter listed for its messages: the match (`SidebarSearch.swift`).
+    case searchSnippet(SidebarSearchSnippetState)
     case side(SidebarSideRowState)
     case pagination(groupID: String, projectID: String, hiddenRoots: Int, shownRoots: Int, indent: CGFloat)
     case empty(groupID: String, text: String, indent: CGFloat)
@@ -28,6 +30,7 @@ enum SidebarEntry: Equatable {
         case .topicRemove(let id, _): return "remove|" + id
         case .archiveHeading(let group, _, _): return "archived|" + group
         case .chat(let chat, _, _): return "chat|" + chat.id
+        case .searchSnippet(let state): return "snippet|" + state.chatID
         case .side(let state): return "side|" + state.id
         case .pagination(let group, _, _, _, _): return "pages|" + group
         case .empty(let group, _, _): return "empty|" + group
@@ -72,6 +75,8 @@ struct SidebarListContents: Equatable {
             let record = project.record
             var gap = index == 0 ? 0 : projectSpacing
             func add(_ entry: SidebarEntry, topic: String? = nil) {
+                // A snippet sits right under its row, as part of it.
+                if case .searchSnippet = entry { gap = 0 }
                 contents.entries.append(entry); contents.gaps.append(gap)
                 contents.owners.append((record.id, topic)); gap = rowSpacing
             }
@@ -98,23 +103,28 @@ struct SidebarListContents: Equatable {
                 add(.topicHeader(header), topic: topic.id)
                 if confirmingRemove.contains(topic.id) { add(.topicRemove(topicID: topic.id, removing: removing.contains(topic.id)), topic: topic.id) }
                 if group.expanded {
-                    addGroup(group.contents, projectID: record.id, topic: topic.id, add: add)
-                    if let archived = group.archive { addGroup(archived, projectID: record.id, topic: topic.id, add: add) }
+                    addGroup(group.contents, projectID: record.id, topic: topic.id, model: model, filtering: !query.isEmpty, add: add)
+                    if let archived = group.archive { addGroup(archived, projectID: record.id, topic: topic.id, model: model, filtering: !query.isEmpty, add: add) }
                 }
             }
             let archived = model.sidebarArchiveContents(in: record, topicID: nil, includesArchive: archive, filter: query,
                                                         sidebarWidth: sidebarWidth, namesConnection: names)
             addGroup(model.sidebarGroupContents(in: record, topicID: nil, archived: false, filter: query, showEmpty: topics.isEmpty && archived == nil,
-                                                sidebarWidth: sidebarWidth, namesConnection: names), projectID: record.id, topic: nil, add: add)
-            if let archived { addGroup(archived, projectID: record.id, topic: nil, add: add) }
+                                                sidebarWidth: sidebarWidth, namesConnection: names), projectID: record.id, topic: nil,
+                     model: model, filtering: !query.isEmpty, add: add)
+            if let archived { addGroup(archived, projectID: record.id, topic: nil, model: model, filtering: !query.isEmpty, add: add) }
         }
         return contents
     }
-    @MainActor private static func addGroup(_ group: SidebarGroupContents, projectID: String, topic: String?, add: (SidebarEntry, String?) -> Void) {
+    @MainActor private static func addGroup(_ group: SidebarGroupContents, projectID: String, topic: String?, model: WorkspaceModel, filtering: Bool,
+                                            add: (SidebarEntry, String?) -> Void) {
         var any = false
         if group.archived { add(.archiveHeading(groupID: group.groupID, count: group.total, indent: group.indent), topic); any = true }
         for row in group.rows {
             add(.chat(chat: row.chat, state: row.state, projectID: projectID), topic); any = true
+            if filtering, let hit = model.sidebarSearchHit(row.chat.id) {
+                add(.searchSnippet(SidebarSearchSnippetState(chat: row.chat, hit: hit, indent: row.state.indent)), topic)
+            }
             if let side = row.side { add(.side(side), topic) }
         }
         if group.paginates {
@@ -131,7 +141,7 @@ struct SidebarListContents: Equatable {
         guard !query.isEmpty else { return topics }
         return topics.filter { topic in
             topic.title.localizedCaseInsensitiveContains(query) || (archive ? [false, true] : [false]).contains { archived in
-                model.sidebarEntries(in: project.id, topicID: topic.id, archived: archived, collapsed: []).contains { $0.chat.title.localizedCaseInsensitiveContains(query) }
+                model.sidebarEntries(in: project.id, topicID: topic.id, archived: archived, collapsed: []).contains { model.sidebarMatches($0.chat, query: query) }
             }
         }
     }

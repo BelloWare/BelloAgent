@@ -7,7 +7,7 @@
 - [ ] **Paused after restart**: a chat that was paused (stopped mid-run, or holding queued work) still shows as paused in the sidebar and in the chat after the app restarts.
 - [ ] **Sidebar sorted by last updated, always** (owner chose this over a switch): newest activity first; pinned chats stay on top; manual drag ordering is removed.
 - [ ] **Search inside threads**, both ways (owner chose both):
-  - the sidebar search matches message text as well as titles, shows a snippet under each matching chat, and opening it goes to the matching message;
+  - [x] the sidebar search matches message text as well as titles, shows a snippet under each matching chat, and opening it goes to the matching message (`dev/search`: trigram FTS5 index `search-index.sqlite` beside the desktop database, `Storage/ChatSearchIndex.swift`, `Workspaces/SidebarSearch.swift`; opening goes through the one adapter `SidebarSearchReveal`, today `revealMessage`, to move to dev/scroll's reveal API);
   - ⌘F in an open chat shows a find bar that highlights matches in the transcript, with next/previous.
 - [ ] **Smooth scrolling in very long chats (owner's priority):** scrolling up and down a long chat must be smooth, with no jumps or lost position; scrolling all the way to the start of the thread must work. Study how DeepSeek Harness's web UI (`@deepseek-ai/dsh`, open source) loads and scrolls its transcript and follow the same approach; if it doesn't load partially, use whatever gives smooth scrolling, with the loaded window prefetched ahead of the reader. Prove it with end-to-end tests that measure smoothness (frame times, no position jumps) and that reaching the first message works.
 
