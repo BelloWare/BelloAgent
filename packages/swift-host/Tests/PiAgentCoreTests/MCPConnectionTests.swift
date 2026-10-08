@@ -67,4 +67,32 @@ final class MCPConnectionTests: XCTestCase {
         }
         let names = await manager.serverNames(); XCTAssertTrue(names.isEmpty)
     }
+
+    /// The last invocation to end clears the outcome marker, even when it is
+    /// not the one that wrote it: one call succeeds while another, still
+    /// listing its server's tools, is then refused before it is sent.
+    func testTheLastInvocationToEndClearsTheOutcomeMarker() async throws {
+        let folder=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:folder) }
+        let marker=folder.appendingPathComponent("unknown.json"), manager=MCPManager(cwd:folder,outcomeMarker:marker)
+        await manager.installForTesting(name:"test",transport:FakeMCP())
+        await manager.installForTesting(name:"slow",transport:SlowListMCP())
+        let refused=Task { try await manager.perform(["action":"invoke","server":"slow","tool":"missing","arguments":[:]]) }
+        _ = try await manager.perform(["action":"invoke","server":"test","tool":"echo","arguments":["text":"done"]])
+        do { _ = try await refused.value; XCTFail("A tool the server does not list is refused") }
+        catch let error as AgentError { XCTAssertEqual(error.code,"mcp_tool") }
+        XCTAssertFalse(FileManager.default.fileExists(atPath:marker.path),"No outcome is unknown, so no marker may survive a restart")
+        let list=try await MCPManager(cwd:folder,outcomeMarker:marker).perform(["action":"list"])
+        XCTAssertEqual(list["outcomeUnknown"].flag,false)
+    }
+}
+
+/// Lists its tools only after a pause, and never lists `missing`.
+private actor SlowListMCP: MCPTransport {
+    func request(_ method:String,params:JSON) async throws -> JSON {
+        if method=="initialize" { return ["protocolVersion":"2025-11-25","capabilities":["tools":[:]]] }
+        if method=="tools/list" { try await Task.sleep(nanoseconds:200_000_000); return ["tools":[]] }
+        throw AgentError("unexpected","Unexpected MCP method")
+    }
+    func notify(_ method:String,params:JSON) async throws {}
+    func close() async {}
 }

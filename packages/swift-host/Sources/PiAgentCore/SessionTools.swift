@@ -37,7 +37,7 @@ extension AgentSession {
     /// this way failed; any other error from an editing tool that had begun
     /// may have left effects behind, so its outcome is unknown.
     static let rejectionCodes: Set<String> = ["tool_arguments", "invalid_params", "invalid_range", "invalid_identity", "tool_unavailable", "read_only",
-        "edit_match", "file_unavailable", "not_regular_file", "file_too_large", "binary_file", "missing_path", "tool_output", "missing_executable",
+        "edit_match", "file_unavailable", "not_regular_file", "file_too_large", "binary_file", "missing_path", "tool_output", "missing_executable", "tool_busy",
         "mcp_arguments", "mcp_tool", "mcp_server", "mcp_config", "mcp_version", "mcp_schema", "mcp_cursor", "mcp_outcome_unknown", "mcp_rejected", "mcp_session_expired", "mcp_unavailable"]
     static func isRejection(_ error: Error) -> Bool { (error as? AgentError).map { rejectionCodes.contains($0.code) } ?? false }
     /// The state a tool card shows for a recorded outcome: `unknown` when the

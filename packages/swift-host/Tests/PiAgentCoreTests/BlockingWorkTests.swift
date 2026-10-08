@@ -191,4 +191,26 @@ final class BlockingWorkTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("file.txt"), encoding: .utf8), "after")
         XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("new.txt"), encoding: .utf8), "fresh")
     }
+
+    /// An edit refused because every worker is busy never ran: it failed,
+    /// and its outcome is not unknown.
+    func testAnEditRefusedForWantOfAWorkerFailedRatherThanUnknown() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        try Data("before".utf8).write(to: root.appendingPathComponent("file.txt"))
+        let workers = BlockingWorkExecutor(maximumWorkers: 1, maximumWaiting: 0), barrier = WorkerBarrier()
+        defer { barrier.release() }
+        let blocker = Task { try await workers.run { try barrier.enter(0, cancellation: $0) } }
+        try await eventually { barrier.state.started == [0] }
+        let tools = NativeTools(cwd: root, outputs: root.appendingPathComponent("out"), mcp: MCPManager(cwd: root), workers: workers)
+        let call = ToolCall(id: "e", name: "edit", arguments: ["path": "file.txt", "oldText": "before", "newText": "after"])
+        let reply = ModelReply(message: ChatMessage(role: "assistant", content: [["type": "toolCall", "id": "e", "name": "edit", "arguments": call.arguments]]), calls: [call])
+        let session = try AgentSession(id: "s", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root.appendingPathComponent("state"), readOnly: false, resources: Resources(cwd: root, home: root), client: ScriptClient([reply, answer("done")]), tools: tools, traces: TraceStore(), autoCompaction: false)
+        _ = try await session.submit(Submission(commandID: "c", turnID: "t", text: "edit"), steer: false)
+        try await eventually { !(await session.isRunning) }
+        let cards = await session.snapshot()["messages"].list.filter { $0["role"].text == "assistant" }.flatMap { $0["tools"].list }.compactMap { $0["state"].text }
+        XCTAssertEqual(cards, ["failed"], "Refused before it ran: failed, not unknown")
+        XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("file.txt"), encoding: .utf8), "before")
+        barrier.release(); _ = try await blocker.value
+        await session.close()
+    }
 }

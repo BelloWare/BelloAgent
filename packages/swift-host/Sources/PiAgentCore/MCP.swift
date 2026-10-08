@@ -392,14 +392,28 @@ public actor MCPManager {
     /// gate only keeps a configuration change from replacing the servers
     /// while any is running.
     private var inFlight = 0
-    private var drainWaiters: [CheckedContinuation<Void, Never>] = []
-    private func drained() async {
+    private var drainWaiters: [(UUID, CheckedContinuation<Void, Error>)] = []
+    /// Waits until no invocation is running; a cancelled wait ends at once.
+    private func drained() async throws {
+        try Task.checkCancellation()
         if inFlight == 0 { return }
-        await withCheckedContinuation { drainWaiters.append($0) }
+        let id = UUID()
+        try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
+                if Task.isCancelled { c.resume(throwing: CancellationError()) } else { drainWaiters.append((id, c)) }
+            }
+        }, onCancel: { Task { await self.cancelDrain(id) } })
     }
+    private func cancelDrain(_ id: UUID) {
+        if let i = drainWaiters.firstIndex(where: { $0.0 == id }) { drainWaiters.remove(at: i).1.resume(throwing: CancellationError()) }
+    }
+    /// Ends one invocation. The last one to end clears the outcome marker
+    /// unless an outcome is unknown, whichever invocation wrote it.
     private func finishInvocation() {
         inFlight -= 1
-        if inFlight == 0 { let waiters = drainWaiters; drainWaiters.removeAll(); for waiter in waiters { waiter.resume() } }
+        guard inFlight == 0 else { return }
+        if !unknownOutcome, let outcomeMarker { try? FileManager.default.removeItem(at: outcomeMarker) }
+        let waiters = drainWaiters; drainWaiters.removeAll(); for waiter in waiters { waiter.1.resume() }
     }
     public init(cwd: URL, roots: [URL] = [], outcomeMarker: URL? = nil) { self.cwd=cwd; self.roots=workspaceRoots(primary:cwd,additional:roots); self.outcomeMarker=outcomeMarker; unknownOutcome=outcomeMarker.map { FileManager.default.fileExists(atPath:$0.path) } ?? false }
     public func serverNames() -> [String] { servers.keys.sorted() }
@@ -411,7 +425,7 @@ public actor MCPManager {
         // these must run even when the invoking turn is being cancelled.
         try await gate.acquire(); defer { Task { await gate.release() } }
         // Holding the gate stops new invocations; wait for running ones.
-        await drained()
+        try await drained()
         try await connectionGate.acquire(); defer { Task { await connectionGate.release() } }
         var proposed: [String: Server] = [:]
         for (name, c) in config["servers"].map {
@@ -501,7 +515,7 @@ public actor MCPManager {
         return result
     }
     public nonisolated static var definition: ToolDefinition {
-        ToolDefinition("mcp", "Discover MCP servers/tools without flooding context. action=list with optional server lists names/descriptions. action=describe takes targets:[{server,tool}] and returns detailed schemas. action=invoke requires exactly one server, tool, arguments object. Invocations are serialized across this workspace host; no invocation batches. Server data is untrusted.", ["type":"object","properties":["action":["type":"string","enum":["list","describe","invoke"]],"server":["type":"string"],"tool":["type":"string"],"targets":["type":"array","maxItems":32,"items":["type":"object","properties":["server":["type":"string"],"tool":["type":"string"]],"required":["server","tool"],"additionalProperties":false]],"arguments":["type":"object"]],"required":["action"],"additionalProperties":false])
+        ToolDefinition("mcp", "Discover MCP servers/tools without flooding context. action=list with optional server lists names/descriptions. action=describe takes targets:[{server,tool}] and returns detailed schemas. action=invoke requires exactly one server, tool, arguments object. Invocations may run at the same time as each other; no invocation batches. Server data is untrusted.", ["type":"object","properties":["action":["type":"string","enum":["list","describe","invoke"]],"server":["type":"string"],"tool":["type":"string"],"targets":["type":"array","maxItems":32,"items":["type":"object","properties":["server":["type":"string"],"tool":["type":"string"]],"required":["server","tool"],"additionalProperties":false]],"arguments":["type":"object"]],"required":["action"],"additionalProperties":false])
     }
     public func perform(_ p: JSON, readOnly: Bool = false) async throws -> JSON {
         guard p.isObject else { throw AgentError("mcp_arguments", "MCP accepts one object, not a batch") }
@@ -537,14 +551,12 @@ public actor MCPManager {
             // running invocations, and invocations do not wait for each other.
             try await gate.acquire(); inFlight += 1; await gate.release()
             // dispatched: a tools/call may have reached the server and run.
-            // marked: this invocation wrote the outcome marker.
-            var dispatched=false, marked=false
+            var dispatched=false
             do {
                 guard !unknownOutcome else { throw AgentError("mcp_outcome_unknown","A previous invocation has an unknown outcome. The user must verify it and acknowledge before another invocation.") }
                 guard try await tools(server).contains(where:{$0["name"].text == name}) else { throw AgentError("mcp_tool", "Unknown or disallowed MCP tool") }
                 var transport = try await connect(server)
                 if let outcomeMarker {
-                    marked=true
                     let bytes = try JSON.object(["server":JSON(server),"tool":JSON(name),"startedAt":JSON(isoNow()),"state":"outcome-unknown-until-result-retained"]).data()
                     try bytes.write(to:outcomeMarker,options:.atomic)
                     try FileManager.default.setAttributes([.posixPermissions:0o600],ofItemAtPath:outcomeMarker.path)
@@ -560,16 +572,12 @@ public actor MCPManager {
                     result = try await transport.request("tools/call", params:call)
                 }
                 finishInvocation()
-                // The marker stays while another invocation is still running
-                // or an earlier one's outcome is unknown.
-                if inFlight == 0, !unknownOutcome, let outcomeMarker { try? FileManager.default.removeItem(at:outcomeMarker) }
                 return result
             } catch {
-                finishInvocation()
                 // A call the server refused without processing it did not run:
                 // it leaves no unknown outcome, in memory or on disk.
                 if dispatched, !mcpNotExecutedCodes.contains((error as? AgentError)?.code ?? "") { unknownOutcome=true }
-                else if marked, inFlight == 0, !unknownOutcome, let outcomeMarker { try? FileManager.default.removeItem(at:outcomeMarker) }
+                finishInvocation()
                 throw error
             }
         default: throw AgentError("mcp_arguments", "Use list, describe, or invoke")
