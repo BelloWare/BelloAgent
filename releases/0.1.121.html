@@ -1,0 +1,5 @@
+<h2>Bello Agent 0.1.121</h2>
+<ul>
+<li><strong>Edits no longer wait for each other.</strong> Chats no longer take turns to edit files or run commands: a long command in one chat no longer holds up edits in another. Within one reply, edits, writes, commands and MCP actions now run at the same time as the rest of its tool calls. Results still reach the model in the order the reply asked for them.</li>
+<li><strong>Note:</strong> two edits that change the same file at the same moment are no longer kept in order, so one may overwrite the other.</li>
+</ul>

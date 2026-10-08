@@ -1,3 +1,9 @@
+# Next release
+
+**0.1.121 (build 125)** removes every editing-tool lock (owner, 2026-10-08); record `docs/validation/Bello-Agent-0.1.121-2026-10-08.md`. Nothing is planned beyond it yet.
+
+---
+
 # Completed release: 0.1.120
 
 **Released, 2026-10-06:** 0.1.120 (build 124, tag `v0.1.120`) is the latest release. The complete AppKit migration is shipped. Source/tag and website changes are pushed; the public page, identical update feeds and downloaded DMG hash/signature pass verification at 01:07:03 UTC. See `docs/validation/Bello-Agent-0.1.120-2026-10-06.md` for evidence and the explicit manual/measurement limits. `docs/HANDOVER-0.1.120.md` preserves the original implementation snapshot.
