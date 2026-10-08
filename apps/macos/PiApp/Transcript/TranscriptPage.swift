@@ -626,8 +626,8 @@ struct ContentGeometry: Equatable {
         }
     }
     func rowFrame(_ id: String, _ frame: CGRect) {
-        guard frames[id] != frame else { return }
-        frames[id] = frame
+        // One lookup: a pass reports every row it places.
+        guard frames.updateValue(frame, forKey: id) != frame else { return }
         guard let anchor = pendingAnchor else { return }
         if pendingAnchorRow == nil { pendingAnchorRow = rowIdentifier(for: anchor.id) }
         if pendingAnchorRow == id { scheduleSettle() }

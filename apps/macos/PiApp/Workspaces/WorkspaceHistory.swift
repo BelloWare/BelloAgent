@@ -250,8 +250,14 @@ extension WorkspaceModel {
                     bounded = kept
                 }
                 var pinned = view.pinnedHistoryIDs
-                if let anchor = view.scrollAnchor, !anchor.followsBottom, known.contains(anchor.id) { pinned.insert(anchor.id) }
+                // A read the page made on its own keeps what is on screen
+                // (above); the anchor last reported trails the reader and
+                // would hold a row they have already left.
+                if !automatic, let anchor = view.scrollAnchor, !anchor.followsBottom, known.contains(anchor.id) { pinned.insert(anchor.id) }
                 guard pinned.isSubset(of: Set(bounded.map(\.id))) else {
+                    // Nobody asked for this page: it waits for the selection
+                    // to go, rather than saying so at the edge.
+                    if automatic { return false }
                     throw HostError.failure("The selected text is at the display boundary. Clear the selection to load more history.")
                 }
                 joined = bounded

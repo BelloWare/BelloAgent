@@ -168,6 +168,11 @@ import AppKit
         var errors: [String] = []
         var reached = false
         var seconds: Double = 0
+        /// For the slowest frames: what happened in them (`hitchReport`).
+        var hitches: [(ms: Double, what: String)] = []
+        func hitchReport(_ count: Int = 12) -> [String] {
+            hitches.sorted { $0.ms > $1.ms }.prefix(count).map { String(format: "%.1f ms: %@", $0.ms, $0.what) }
+        }
         func percentile(_ values: [Double], _ p: Double) -> Double {
             guard !values.isEmpty else { return 0 }
             let sorted = values.sorted(); return sorted[min(sorted.count - 1, Int(Double(sorted.count - 1) * p))]
@@ -189,12 +194,26 @@ import AppKit
         let began = clock.systemUptime, period = 1.0 / 60
         var next = began, lastStart: Double?
         var wasLoading = view.olderPage.loading || view.newerPage.loading
+        func counters(_ document: TranscriptNativeDocument) -> (rows: Int, built: Int, passes: Int, traversals: Int, corrections: Int, estimated: Int) {
+            (view.messages.count, document.rowsBuiltCount, document.layoutPassCount, document.rowLayoutTraversalCount, document.correctionRounds, document.estimatedEver)
+        }
+        var lastCounters = document.map(counters) ?? (rows: 0, built: 0, passes: 0, traversals: 0, corrections: 0, estimated: 0)
         var previous = readingRow()
         var previousClip = clipY, previousRowY = (previous?.top ?? 0) + clipY
         while clock.systemUptime - began < seconds {
             if done() { run.reached = true; break }
             let start = clock.systemUptime
-            if let lastStart { run.frames.append((start - lastStart) * 1000) }
+            if let lastStart {
+                let interval = (start - lastStart) * 1000
+                run.frames.append(interval)
+                if interval > 33, let document {
+                    let now = counters(document)
+                    run.hitches.append((interval, String(format: "rows %d→%d, built %d, passes %d, traversals %d, corrections %d, estimated %d, approximate %d, work %.1f",
+                        lastCounters.rows, now.rows, now.built - lastCounters.built, now.passes - lastCounters.passes, now.traversals - lastCounters.traversals,
+                        now.corrections - lastCounters.corrections, now.estimated - lastCounters.estimated, document.approximateRowCount, run.work.last ?? 0)))
+                }
+            }
+            if let document { lastCounters = counters(document) }
             lastStart = start
             // Between frames nobody scrolled a gesture: the reader's row must
             // be where it was. A wheel or a scroller moves the clip on AppKit's

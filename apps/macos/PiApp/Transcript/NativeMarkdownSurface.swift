@@ -62,7 +62,11 @@ import AppKit
     /// or a table keeps the padding those have above their text, which
     /// TextKit gives no paragraph at the very top.
     var topInset: CGFloat = 0 {
-        didSet { if topInset != oldValue { invalidateTextContainerOrigin(); needsDisplay = true } }
+        // Redrawn without laying the text out for it: `needsDisplay` asks a
+        // text view to lay out what it will draw, which for a long reply
+        // being built was its whole text, before the measurement that lays
+        // it out anyway.
+        didSet { if topInset != oldValue { invalidateTextContainerOrigin(); setNeedsDisplay(bounds, avoidAdditionalLayout: true) } }
     }
     override var textContainerOrigin: NSPoint { NSPoint(x: 0, y: topInset) }
     var didDraw: (() -> Void)?
