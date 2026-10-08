@@ -56,6 +56,9 @@ It adds prefetch in the direction of travel, as the owner asked.
 
 - `TranscriptReadingCoordinator`:
   - a text anchor keeps its row and falls back to it;
+  - a correction still owed when the reader moves is paid first;
+  - a row only a little of which shows gives way to the first row
+    starting on screen;
   - a replaced row is found again by its messages, bottom-aligned;
   - an unmounted reading row is held by its place in the document.
 - `TranscriptPage`:
@@ -93,7 +96,7 @@ It adds prefetch in the direction of travel, as the owner asked.
 | Wheel fling up, 400 pt/frame | stall frames | 60 / 39 | 0 / 0 |
 | | frame p95 / p99 / max (ms) | 58.7 / 82.5 / 164.1, 60.3 / 81.2 / 151.5 | 47.5 / 68.1 / 125.2, 47.7 / 80.8 / 118.1 |
 | | frames over 50 ms | 73 of 784; 80 of 934 | 49 of 1,190; 51 of 1,188 |
-| | wheel jumps | 0 / 0 | 1 / 0 (66 pt; see below) |
+| | wheel jumps | 0 / 0 (the jumps above were in gestures) | 0 in 3 runs after the final anchoring change |
 | Scroller held at the top | time to the first message | 7.9 / 8.3 s | 6.0 / 6.1 s |
 | Home | to the first message | 34 presses, 28.7 s | 1 press, 0.6 s |
 
@@ -140,7 +143,16 @@ by a quarter of a millisecond, well within a frame.
   - p99 ≤ 100 ms;
   - max ≤ 150 ms;
   - at most 5% of frames over 50 ms.
-- **A rare wheel overshoot.** One run in four of a 200-turn, 400 pt/frame
-  wheel fling moved the reader's row 66 pt backward once. This is AppKit
-  delivering a wheel step after the anchor was taken. Gestures and scroller
-  drags never showed it, and nor did the 80-turn end-to-end fling.
+- **The wheel overshoot is fixed.** A 400 pt/frame fling used to move the
+  reader's row back 6–77 pt in about half the Release runs. It had two
+  causes:
+  - a wheel step AppKit delivered between a geometry change and its
+    correction dropped the correction;
+  - a row reaching only a little into the screen from above was held by
+    its unseen top while that part re-measured.
+
+  Now `readerMoved` pays the owed correction first, and the first row
+  starting on screen is held when less than a third of the covering row
+  shows. Release afterwards: the fling passed 6 of 6, the 200-turn wheel
+  and gesture probes had zero jumps in 3 runs each, and
+  `LongChatScrollTests` passed twice with its budgets.
