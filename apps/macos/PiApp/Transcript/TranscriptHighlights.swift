@@ -33,6 +33,19 @@ struct TranscriptHighlights: Equatable {
         /// The record the place was asked for when its row is another
         /// message's (a tool's result): whose count a find reconciles.
         var record: String? = nil
+        /// Counts only the message's own prose, not its cards: a mark placed
+        /// by its text (`TranscriptReveal.Mark`) counts as the text does.
+        var proseOnly = false
+        /// With `scopeCall`: the place is in the call's input, not its output.
+        var scopeInput = false
+        /// Any run of whitespace in the needle matches any run in the text
+        /// (a search result's excerpt is on one line; the text it came from
+        /// may break where the excerpt has a space).
+        var flexibleSpace = false
+        /// The words just before and after the place (flattened, lowercased),
+        /// when known: the drawn occurrence they surround is the place,
+        /// whatever its index in the source.
+        var lead = "", trail = ""
     }
     var isEmpty: Bool { query.isEmpty && focus == nil }
 
@@ -63,6 +76,34 @@ extension TranscriptNativeDocument {
             let ya = a.convert(NSPoint.zero, to: view).y, yb = b.convert(NSPoint.zero, to: view).y
             return view.isFlipped ? ya < yb : ya > yb
         }
+    }
+    /// How much of the focus's context the words around `range` in `source`
+    /// agree with, in characters; 0 when they contradict it or say nothing.
+    /// Compared as letters, digits and single spaces, so context taken from a
+    /// call's arguments matches the card that draws them; at either end of
+    /// the text only what is there is compared, and counts for what it is.
+    static func contextScore(_ source: String, _ range: NSRange, _ focus: TranscriptHighlights.Focus) -> Int {
+        let string = source as NSString
+        guard NSMaxRange(range) <= string.length else { return 0 }
+        func norm(_ value: String) -> String {
+            String(value.lowercased().map { $0.isLetter || $0.isNumber ? $0 : " " }).split(separator: " ").joined(separator: " ")
+        }
+        let lead = norm(focus.lead), trail = norm(focus.trail)
+        let before = max(0, range.location - focus.lead.count * 3), after = min(string.length, NSMaxRange(range) + focus.trail.count * 3)
+        let shownLead = norm(string.substring(with: NSRange(location: before, length: range.location - before)))
+        let shownTrail = norm(string.substring(with: NSRange(location: NSMaxRange(range), length: after - NSMaxRange(range))))
+        var score = 0
+        if !lead.isEmpty {
+            if shownLead.hasSuffix(lead) { score += lead.count }
+            else if before == 0, lead.hasSuffix(shownLead) { score += shownLead.count }
+            else { return 0 }
+        }
+        if !trail.isEmpty {
+            if shownTrail.hasPrefix(trail) { score += trail.count }
+            else if after == string.length, trail.hasPrefix(shownTrail) { score += shownTrail.count }
+            else { return 0 }
+        }
+        return score
     }
     /// What holds text in `view`, in reading order: text views, and a card's
     /// lines as one unit (their lines are built only near the viewport).
@@ -108,9 +149,10 @@ extension TranscriptNativeDocument {
         func visit(_ view: NSView) {
             if let action = view as? TranscriptNativeActionRow, let tool = action.tool,
                focus.scopeCall.map({ $0 == tool.id }) ?? true,
-               tool.output.range(of: focus.needle, options: .caseInsensitive) != nil {
+               [tool.output, tool.input].contains(where: { !transcriptRanges(of: focus.needle, in: $0 as NSString, flexible: focus.flexibleSpace).isEmpty }) {
                 func expand(_ view: NSView) {
                     if let read = view as? TranscriptNativeReadCard, !read.expanded { read.setExpanded(true) }
+                    if let diff = view as? TranscriptNativeDiffCard, !diff.expanded { diff.setExpanded(true) }
                     for child in view.subviews { expand(child) }
                 }
                 expand(action)
@@ -121,15 +163,8 @@ extension TranscriptNativeDocument {
         visit(row)
     }
     /// The ranges of `needle` in `text`, ignoring case.
-    static func ranges(of needle: String, in text: NSString) -> [NSRange] {
-        guard !needle.isEmpty, text.length > 0 else { return [] }
-        var found: [NSRange] = [], from = 0
-        while from < text.length {
-            let range = text.range(of: needle, options: [.caseInsensitive], range: NSRange(location: from, length: text.length - from))
-            guard range.location != NSNotFound, range.length > 0 else { break }
-            found.append(range); from = NSMaxRange(range)
-        }
-        return found
+    static func ranges(of needle: String, in text: NSString, flexible: Bool = false) -> [NSRange] {
+        transcriptRanges(of: needle, in: text, flexible: flexible)
     }
 
     /// The rows that draw message `id`, in reading order: one, or several
@@ -157,31 +192,46 @@ extension TranscriptNativeDocument {
         let rows = rows(drawing: focus.messageID)
         guard !rows.isEmpty else { return nil }
         let request = "\(focus.serial):\(focus.fromFind)"
-        if focusCountsSerial != request { focusCountsSerial = request; focusRowCounts = [:] }
+        if focusCountsSerial != request { focusCountsSerial = request; focusRowCounts = [:]; focusSearched = []; focusBest = (0, nil) }
         // In reading order, the occurrences each row holds: counted from its
         // text while it is on screen, remembered once counted. The place is
         // found only among rows counted in order, so a row not yet seen never
         // lets a later one's occurrence stand for it.
         var counted = 0, pending: TranscriptRowContainer?, target: (NSTextView, NSRange, TranscriptRowContainer)?
         var unbuilt: (lines: TranscriptCardLines, index: Int)?
+        var blocked = false
+        var best: (score: Int, target: (NSTextView, NSRange, TranscriptRowContainer)?, line: (lines: TranscriptCardLines, index: Int)?, row: TranscriptRowContainer)?
         let index = max(0, focus.occurrence)
         for row in rows {
             if row.superview === self, row.isHosted {
                 // Every occurrence in order, a card's lines counted from what
                 // they hold whether or not each line is built now.
-                var ranges: [(text: NSTextView?, range: NSRange, lines: TranscriptCardLines?, line: Int)] = []
+                var ranges: [(text: NSTextView?, range: NSRange, lines: TranscriptCardLines?, line: Int, source: String)] = []
                 for unit in Self.textUnits(in: row) {
-                    if let call = focus.scopeCall, Self.card(holding: unit)?.tool?.id != call || Self.isToolInput(unit) { continue }
+                    // A call's input is drawn in more than one way (a command,
+                    // a section, a diff): an input place counts the whole card.
+                    if let call = focus.scopeCall, Self.card(holding: unit)?.tool?.id != call || (!focus.scopeInput && Self.isToolInput(unit)) { continue }
+                    if focus.proseOnly, Self.card(holding: unit) != nil || ["Reasoning", "Summary"].contains(unit.accessibilityLabel() ?? "") { continue }
                     if let lines = unit as? TranscriptCardLines {
                         for (line, content) in lines.lines.enumerated() {
-                            for range in Self.ranges(of: focus.needle, in: content.text as NSString) { ranges.append((lines.builtText(at: line), range, lines, line)) }
+                            for range in Self.ranges(of: focus.needle, in: content.text as NSString, flexible: focus.flexibleSpace) { ranges.append((lines.builtText(at: line), range, lines, line, content.text)) }
                         }
                     } else if let text = unit as? NSTextView {
-                        for range in Self.ranges(of: focus.needle, in: (text.textStorage?.string ?? "") as NSString) { ranges.append((text, range, nil, 0)) }
+                        for range in Self.ranges(of: focus.needle, in: (text.textStorage?.string ?? "") as NSString, flexible: focus.flexibleSpace) { ranges.append((text, range, nil, 0, text.textStorage?.string ?? "")) }
                     }
                 }
                 focusRowCounts[ObjectIdentifier(row)] = ranges.count
-                if target == nil, unbuilt == nil, index >= counted, index < counted + ranges.count {
+                // Surrounding words, when given, name the place in what is drawn.
+                // Surrounding words, when given, name the place: the occurrence
+                // that agrees with most of them, across every row on screen.
+                if !focus.lead.isEmpty || !focus.trail.isEmpty {
+                    for entry in ranges {
+                        let score = Self.contextScore(entry.source, entry.range, focus)
+                        guard score > (best?.score ?? 0) else { continue }
+                        best = (score, entry.text.map { ($0, entry.range, row) }, entry.lines.map { ($0, entry.line) }, row)
+                    }
+                }
+                if !blocked, target == nil, unbuilt == nil, pending == nil, index >= counted, index < counted + ranges.count {
                     let found = ranges[index - counted]
                     // An occurrence on a card line not built yet has no text
                     // to mark: the line is gone to, and looked at again.
@@ -192,11 +242,33 @@ extension TranscriptNativeDocument {
             } else if let known = focusRowCounts[ObjectIdentifier(row)] {
                 // The place is in a row counted before and off screen now:
                 // that row is where to go, and nothing after it matters yet.
-                if target == nil, index >= counted, index < counted + known { pending = row; break }
+                if !blocked, target == nil, unbuilt == nil, pending == nil, index >= counted, index < counted + known { pending = row }
                 counted += known
             } else {
-                if pending == nil, target == nil { pending = row }
-                break
+                // Not counted yet: nothing after it can be numbered, though its
+                // later rows on screen are still searched for the context.
+                if !blocked, pending == nil, target == nil, unbuilt == nil { pending = row }
+                blocked = true
+            }
+        }
+        // A partial agreement on screen does not end the search while a row
+        // not yet seen could agree with all of it: that row is gone to first.
+        func norm(_ value: String) -> String {
+            String(value.lowercased().map { $0.isLetter || $0.isNumber ? $0 : " " }).split(separator: " ").joined(separator: " ")
+        }
+        let full = norm(focus.lead).count + norm(focus.trail).count
+        for row in rows where row.superview === self && row.isHosted { focusSearched.insert(ObjectIdentifier(row)) }
+        if !focus.lead.isEmpty || !focus.trail.isEmpty {
+            let unseen = rows.first { !focusSearched.contains(ObjectIdentifier($0)) }
+            if let best, best.score > focusBest.score { focusBest = (best.score, best.row) }
+            if let best, best.score >= full || (unseen == nil && best.score >= focusBest.score) {
+                target = best.target; unbuilt = best.target == nil ? best.line : nil; pending = nil
+            } else if let unseen {
+                // Every row is looked at once before a partial agreement is taken.
+                target = nil; unbuilt = nil; pending = unseen
+            } else if focusBest.score > 0, let row = focusBest.row, !(row.superview === self) {
+                // The best agreement was in a row looked at before: back to it.
+                target = nil; unbuilt = nil; pending = row
             }
         }
         let complete = rows.allSatisfy { focusRowCounts[ObjectIdentifier($0)] != nil }
@@ -306,4 +378,22 @@ extension TranscriptNativeDocument {
         focusPending = stillPending
         scroll.transcriptReading.hold(row)
     }
+}
+
+/// The ranges of `needle` in `text`, ignoring case; with `flexible`, any run
+/// of whitespace in the needle matches any run in the text.
+func transcriptRanges(of needle: String, in text: NSString, flexible: Bool = false) -> [NSRange] {
+    guard !needle.isEmpty, text.length > 0 else { return [] }
+    if flexible, needle.contains(where: \.isWhitespace) {
+        let words = needle.split(whereSeparator: \.isWhitespace).map { NSRegularExpression.escapedPattern(for: String($0)) }
+        guard let pattern = try? NSRegularExpression(pattern: words.joined(separator: "\\s+"), options: [.caseInsensitive]) else { return [] }
+        return pattern.matches(in: text as String, range: NSRange(location: 0, length: text.length)).map(\.range)
+    }
+    var found: [NSRange] = [], from = 0
+    while from < text.length {
+        let range = text.range(of: needle, options: [.caseInsensitive], range: NSRange(location: from, length: text.length - from))
+        guard range.location != NSNotFound, range.length > 0 else { break }
+        found.append(range); from = NSMaxRange(range)
+    }
+    return found
 }

@@ -518,13 +518,16 @@ final class TranscriptSurfaceMarker: NSView {
         // and brought into view.
         if let reveal = session.reveal, reveal.serial != handledReveal,
            let message = session.messages.first(where: { $0.id == reveal.messageID }) {
-            let place = reveal.mark?.needle(in: message.text)
-            if let drawing = page.revealContent(of: reveal.messageID, needle: place?.needle ?? find.query) {
+            let place = reveal.mark?.place(in: message)
+            if let drawing = page.revealContent(of: reveal.messageID, needle: place?.needle ?? find.query, call: place?.scopeCall) {
                 handledReveal = reveal.serial
                 if let place {
                     document.highlights = TranscriptHighlights(query: find.query, focus: .init(messageID: drawing, needle: place.needle,
                                                                                               occurrence: place.occurrence, serial: reveal.serial,
-                                                                                              scopeCall: drawing == message.id ? nil : message.toolCallID))
+                                                                                              scopeCall: place.scopeCall ?? (drawing == message.id ? nil : message.toolCallID),
+                                                                                              proseOnly: place.scopeCall == nil && drawing == message.id,
+                                                                                              scopeInput: place.input, flexibleSpace: reveal.mark?.isExcerpt == true,
+                                                                                              lead: reveal.mark?.context.lead ?? "", trail: reveal.mark?.context.trail ?? ""))
                 }
             }
         }

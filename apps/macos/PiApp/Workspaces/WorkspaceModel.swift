@@ -99,6 +99,9 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// what the filter left on screen. Not published: the sidebar owns the
     /// field, and typing must not redraw the conversation pane behind it.
     var sidebarFilter = "" { didSet { if sidebarFilter != oldValue { sidebarIndex.invalidate() } } }
+    /// Owned by `SidebarSearch.swift`: the filter's search inside chats,
+    /// made when the sidebar first asks for it.
+    var sidebarSearchStorage: SidebarSearch?
     /// Chats whose side chats are folded away. Owned here rather than by the
     /// group's own `@State`, which forgot the fold whenever the project was
     /// collapsed, the archive filter flipped or the sidebar was rebuilt. Both

@@ -706,7 +706,7 @@ struct ContentGeometry: Equatable {
     /// message away opens, and so do the work section and the card or the
     /// reasoning the text is in. Returns the message whose row draws it, or
     /// nil while the page does not hold the message.
-    func revealContent(of messageID: String, needle: String) -> String? {
+    func revealContent(of messageID: String, needle: String, call scoped: String? = nil) -> String? {
         guard let snapshot, let disclosure, let message = snapshot.messages.first(where: { $0.id == messageID }) else { return nil }
         let drawing = drawingMessageID(for: messageID)
         guard unfoldTurn(containing: drawing) else { return nil }
@@ -717,11 +717,11 @@ struct ContentGeometry: Equatable {
         }
         var changed = false
         func open(_ part: TranscriptDisclosure.Part) { if !disclosure.isOpen(part) { disclosure.setOpen(true, part); changed = true } }
-        func has(_ text: String?) -> Bool { !needle.isEmpty && text?.range(of: needle, options: .caseInsensitive) != nil }
+        func has(_ text: String?) -> Bool { !needle.isEmpty && text.map { !transcriptRanges(of: needle, in: $0 as NSString, flexible: true).isEmpty } ?? false }
         // A result drawn as a row of its own (its call is not on the page)
         // opens under its own line.
         if message.kind == "toolResult", drawing == message.id, has(message.text) { open(.compaction(message.id)) }
-        let call = message.toolCallID
+        let call = scoped ?? message.toolCallID
         if blocks.isEmpty, let drawn = snapshot.messages.first(where: { $0.id == drawing }) {
             // A row of one message: its cards are keyed by call.
             for tool in drawn.tools ?? [] where tool.id == call || has(tool.output) || has(tool.input) { open(.tool(tool.id)) }

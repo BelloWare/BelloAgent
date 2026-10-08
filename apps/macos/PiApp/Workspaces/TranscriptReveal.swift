@@ -33,7 +33,7 @@ extension WorkspaceModel {
     /// it): nothing is placed in a transcript nobody is showing.
     @discardableResult
     func revealInTranscript(sessionID id: String, messageID: String, mark: TranscriptReveal.Mark? = nil) async -> Bool {
-        guard let view = displays[id], let item = record(id) else { return false }
+        guard !Task.isCancelled, transcriptShows(id), let view = displays[id], let item = record(id) else { return false }
         revealSerial += 1
         view.reveal = TranscriptReveal(messageID: messageID, mark: mark, serial: revealSerial)
         if view.messages.contains(where: { $0.id == messageID }) {
@@ -48,7 +48,7 @@ extension WorkspaceModel {
     /// place of the window.
     @discardableResult
     func revealStartOfChat(sessionID id: String) async -> Bool {
-        guard let view = displays[id], let item = record(id) else { return false }
+        guard !Task.isCancelled, transcriptShows(id), let view = displays[id], let item = record(id) else { return false }
         if view.olderPage.cursor == nil, let first = view.messages.first {
             land(view, on: first.id, landing: Double(TranscriptMetrics.pageTopInset))
             return true
@@ -56,6 +56,11 @@ extension WorkspaceModel {
         return await readWindow(item, view: view, around: nil)
     }
 
+    /// Whether chat `id`'s transcript is what the reader has in front of them:
+    /// the chats page, with the chat selected or open as the side beside it.
+    private func transcriptShows(_ id: String) -> Bool {
+        page == .chats && (id == selectedID || sides[selectedID ?? ""]?.id == id)
+    }
     private func land(_ view: SessionDisplay, on messageID: String, landing: Double = TranscriptReveal.landing) {
         view.revealRead = nil
         view.scrollAnchor = .init(id: messageID, offset: landing, followsBottom: false)
@@ -70,13 +75,13 @@ extension WorkspaceModel {
         // The newest request wins: a find bar stepping through matches quickly
         // must not land on an earlier match whose read came back last.
         revealSerial += 1
-        let serial = revealSerial
+        let serial = revealSerial, navigation = messageNavigationRevision
         view.revealRead = serial
         // Only into a transcript that still shows this chat: a read that
         // lands after the reader went to another chat leaves this one as it was.
         func current() -> Bool {
             !Task.isCancelled && displays[item.id] === view && view.presentationGeneration == generation && view.revealRead == serial
-                && (item.id == selectedID || sides[selectedID ?? ""]?.id == item.id)
+                && transcriptShows(item.id) && messageNavigationRevision == navigation
         }
         // Reads at the old window's edges join rows that are about to go.
         view.presentation.olderTask?.cancel(); view.presentation.newerTask?.cancel()
@@ -98,9 +103,41 @@ extension WorkspaceModel {
 }
 
 extension TranscriptReveal.Mark {
+    /// An excerpt's words just before and after its match, flattened and
+    /// lowercased, up to 24 characters each.
+    var context: (lead: String, trail: String) {
+        guard case .excerpt(let excerpt, let highlight) = self else { return ("", "") }
+        let line = excerpt as NSString
+        guard highlight.location >= 0, NSMaxRange(highlight) <= line.length else { return ("", "") }
+        func flat(_ text: String) -> String { text.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ").lowercased() }
+        let ellipsis = CharacterSet(charactersIn: "…")
+        return (String(flat(line.substring(to: highlight.location).trimmingCharacters(in: ellipsis)).suffix(24)),
+                String(flat(line.substring(from: NSMaxRange(highlight)).trimmingCharacters(in: ellipsis)).prefix(24)))
+    }
+    var isExcerpt: Bool { if case .excerpt = self { return true }; return false }
+    /// The place in `message` as the transcript draws it: in its text, or —
+    /// for an excerpt of a tool's output the message's card shows — in that
+    /// card alone (`scopeCall`).
+    func place(in message: TranscriptMessage) -> (needle: String, occurrence: Int, scopeCall: String?, input: Bool)? {
+        if case .excerpt = self {
+            if let found = needle(in: message.text, requireContext: true) { return (found.needle, found.occurrence, nil, false) }
+            for tool in message.tools ?? [] {
+                if let found = needle(in: tool.output, requireContext: true) { return (found.needle, found.occurrence, tool.id, false) }
+                // The index reads a call as its name and its input.
+                for source in [tool.input, tool.name + " " + tool.input] {
+                    if let found = needle(in: source, requireContext: true) {
+                        let shift = source == tool.input ? 0 : Self.ranges(of: found.needle, in: tool.name as NSString, flexible: true).count
+                        return (found.needle, max(0, found.occurrence - shift), tool.id, true)
+                    }
+                }
+            }
+        }
+        return needle(in: message.text).map { ($0.needle, $0.occurrence, nil, false) }
+    }
     /// The text to find in the message's rows and which occurrence of it (in
     /// reading order) is the place, for `TranscriptHighlights.Focus`.
-    func needle(in text: String) -> (needle: String, occurrence: Int)? {
+    /// `requireContext`: nil unless an excerpt's surrounding words are found.
+    func needle(in text: String, requireContext: Bool = false) -> (needle: String, occurrence: Int)? {
         let source = text as NSString
         switch self {
         case .range(let range):
@@ -112,21 +149,29 @@ extension TranscriptReveal.Mark {
             let line = excerpt as NSString
             guard highlight.location >= 0, highlight.length > 0, NSMaxRange(highlight) <= line.length else { return nil }
             let needle = line.substring(with: highlight)
-            let found = Self.ranges(of: needle, in: source)
-            guard !found.isEmpty else { return (needle, 0) }
-            // The words just before the match in the excerpt, as one line.
+            let found = Self.ranges(of: needle, in: source, flexible: true)
+            guard !found.isEmpty else { return requireContext ? nil : (needle, 0) }
+            // The words just before and just after the match in the excerpt,
+            // each as one line: the occurrence whose surroundings read the same.
             func flat(_ text: String) -> String { text.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ").lowercased() }
-            let lead = flat(line.substring(to: highlight.location).trimmingCharacters(in: CharacterSet(charactersIn: "…")))
-            let tail = String(lead.suffix(24))
-            guard !tail.isEmpty else { return (needle, 0) }
+            let ellipsis = CharacterSet(charactersIn: "…")
+            let lead = String(flat(line.substring(to: highlight.location).trimmingCharacters(in: ellipsis)).suffix(24))
+            let trail = String(flat(line.substring(from: NSMaxRange(highlight)).trimmingCharacters(in: ellipsis)).prefix(24))
+            // An excerpt that is the match alone says nothing more: one
+            // occurrence is that one.
+            guard !lead.isEmpty || !trail.isEmpty else { return requireContext && found.count != 1 ? nil : (needle, 0) }
             let index = found.firstIndex { range in
-                let start = max(0, range.location - tail.count * 3)
-                return flat(source.substring(with: NSRange(location: start, length: range.location - start))).hasSuffix(tail)
-            } ?? 0
-            return (needle, index)
+                let before = max(0, range.location - lead.count * 3), after = min(source.length, NSMaxRange(range) + trail.count * 3)
+                let leads = lead.isEmpty || flat(source.substring(with: NSRange(location: before, length: range.location - before))).hasSuffix(lead)
+                let trails = trail.isEmpty || flat(source.substring(with: NSRange(location: NSMaxRange(range), length: after - NSMaxRange(range)))).hasPrefix(trail)
+                return leads && trails
+            }
+            if requireContext, index == nil { return nil }
+            return (needle, index ?? 0)
         }
     }
-    static func ranges(of needle: String, in text: NSString) -> [NSRange] {
+    static func ranges(of needle: String, in text: NSString, flexible: Bool = false) -> [NSRange] {
+        if flexible { return transcriptRanges(of: needle, in: text, flexible: true) }
         guard !needle.isEmpty, text.length > 0 else { return [] }
         var found: [NSRange] = [], from = 0
         while from < text.length {

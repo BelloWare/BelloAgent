@@ -296,6 +296,10 @@ final class TranscriptNativeScrollView: NSScrollView {
     /// for the focus request they were counted for.
     var focusRowCounts: [ObjectIdentifier: Int] = [:]
     var focusCountsSerial: String?
+    /// The rows of the focused message looked at for its context, and the
+    /// best agreement found, for the request they were counted for.
+    var focusSearched: Set<ObjectIdentifier> = []
+    var focusBest: (score: Int, row: TranscriptRowContainer?) = (0, nil)
     /// Looks again for a place an inner scroll is building, at most this often.
     var focusRetries = 0
     /// The highlight generation each text view was last marked for, and its

@@ -103,7 +103,8 @@ extension WorkspaceModel {
                     let lists = archive ? [false, true] : [false]
                     return lists.flatMap { archived in
                         SidebarSessionPresentation
-                            .filtered(sidebarEntries(in: project.id, topicID: topicID, archived: archived, collapsed: []), by: query)
+                            .filtered(sidebarEntries(in: project.id, topicID: topicID, archived: archived, collapsed: []), by: query,
+                                      contentMatches: query.isEmpty ? [] : sidebarContentMatches)
                             .map(\.chat.id)
                     }
                 }
