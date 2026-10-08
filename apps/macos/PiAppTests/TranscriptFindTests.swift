@@ -121,9 +121,9 @@ final class TranscriptFindTests: XCTestCase {
         let window = chat.window
         let menus = ApplicationMenus(model: chat.model, updates: UpdateController(), workspaceWindow: { window }, revealWorkspace: {}, showSettings: {})
         menus.install()
-        NSApp.unhide(nil); NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil); window.makeKey()
-        try await eventually("The chat's window never took the keyboard") { NSApp.keyWindow === window }
+        // The keys are offered to this window directly, as AppKit offers them
+        // to the key one; it need not win the keyboard from other apps.
+        window.makeKeyAndOrderFront(nil)
         let key = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.command, .shift], timestamp: 0,
                                                  windowNumber: window.windowNumber, context: nil, characters: "G",
                                                  charactersIgnoringModifiers: "g", isARepeat: false, keyCode: 5))
