@@ -10,9 +10,10 @@ existing source Developer ID team and separate Rust bundle identifier. Having
 this record does not establish that a signing certificate/private key is
 available on a Mac or that the running binary satisfies the requirement.
 
-The optional core native-authority feature compiles the adapter only. The app's
-production constructor remains unavailable until a separately reviewed host
-composition and native acceptance gate. Actual signing, Keychain operations,
-locked/denied interaction behavior and user-desktop validation require their own
+The optional app `native-authority` feature now compiles the adapter and
+[explicit host composition](../../docs/native-authority-host.md). Ordinary startup
+remains unavailable; selecting the adapter also requires `--native-authority`.
+An unsigned or differently signed binary fails before vault access. Actual
+signing, Keychain operations, locked/denied interaction behavior and user-desktop validation require their own
 explicit authorization. Do not add an unsigned, plaintext, source-vault or
 credential fallback. No release or main-branch publication is part of this work.

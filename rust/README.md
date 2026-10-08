@@ -3,8 +3,9 @@
 An incremental native implementation alongside the unchanged Swift application.
 This is **not feature parity** or a release replacement. The source-backed
 [parity ledger](docs/parity.md) separates implemented, partial, and unported work.
-Start with its [current readiness index](docs/parity.md#readiness-index-2026-10-07)
-for ordinary startup gates, explicit synthetic workflows and scoped evidence;
+Start with its [native connection checkpoint](docs/parity.md#native-saved-connections-2026-10-08)
+and [readiness index](docs/parity.md#readiness-index-2026-10-07)
+for ordinary startup gates, explicit workflows and scoped evidence;
 older checkpoint records are not a current feature inventory.
 
 ## Build and test
@@ -27,11 +28,15 @@ cargo run -p bello-agent-app -- --project ../
 The app opens an honest disconnected workspace until a connection is supplied.
 It never discovers credentials in the shell, environment, or source app files.
 The temporary Linux credential entry point is explicit stdin; it is kept only in
-memory and is not a native vault integration. An optional, explicitly composed
-macOS authority adapter and separate Rust identity are documented in
-[the native authority contract](docs/native-authority-contract.md); the app still
-uses unavailable production authority, and no source vault is imported. Native
-acceptance, host composition and full settings flows remain separate gates.
+memory and is not a native vault integration. Ordinary launch keeps saved native
+authority unavailable. The nondefault app `native-authority` feature plus explicit
+`--native-authority` flag composes the separate macOS Rust vault with Connections,
+project trust and saved provider chats. This mode offers no model tools, MCP or
+project instruction/skill discovery. It requires the approved signed identity;
+an unsigned development binary has no fallback. See the
+[host contract](docs/native-authority-host.md) and
+[native storage contract](docs/native-authority-contract.md). No source vault is
+imported. Signed Keychain, native input and full Settings acceptance remain open.
 Profile JSON must contain no key. Accepted fields
 are validated and unknown fields rejected rather than silently ignored.
 
@@ -75,7 +80,8 @@ the source-backed comparison, exact durability contract, and backup guidance.
 - HTTPS is required except loopback HTTP. Redirects are not followed. Request,
   stream, line, event and JSON sizes are bounded. Error text redacts supplied
   credentials and custom header values.
-- Ordinary startup offers no model tools. Explicit synthetic saved-project
+- Ordinary startup and opt-in native connection chats offer no model tools.
+  Explicit synthetic saved-project
   workflows have platform-specific capabilities and trust/mode gates; see the
   [readiness index](docs/parity.md#readiness-index-2026-10-07). Unoffered calls are
   rejected visibly; unknown outcomes are retained without automatic reexecution.

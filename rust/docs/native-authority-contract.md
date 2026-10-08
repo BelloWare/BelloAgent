@@ -11,8 +11,11 @@ draft-retention, project confirmation, and host admission contracts still apply.
 only production composition boundary; on unsupported platforms it returns
 `Unavailable`. Construction is side-effect free. `ProjectAuthority::new()` and
 `Default` remain unavailable on every platform, including with all features
-enabled. Nothing installs the adapter automatically in the app or a test. The
-existing synchronous storage interface is called through the host's existing
+enabled. The app's nondefault `native-authority` feature and explicit
+`--native-authority` flag now select this boundary; see
+[the host composition contract](native-authority-host.md). Neither enabling a
+feature nor saved metadata selects it automatically, and tests use fake storage.
+The existing synchronous storage interface is called through the host's existing
 background path; this change adds no queue, timeout, cancellation, or worker
 architecture.
 
@@ -144,8 +147,9 @@ existing modes/content, and unwind cleanup. An open duplicated file descriptor
 survives dropping the lock guard to prove explicit unlock rather than relying on
 last-descriptor close.
 
-Compilation, fake tests, and static binding review do not constitute native
-acceptance. A separately authorized signed-app run must verify the approved
+App host composition is separately implemented without enabling model tools or
+project resources. Compilation, fake tests, and static binding review do not
+constitute native acceptance. A separately authorized signed-app run must verify the approved
 Developer ID identity, denied/locked/wrong-identity behavior, real CFData results,
 no-prompt behavior under the intended legacy Keychain policy, two-instance lock
 contention, initial-add/existing-update/conflict behavior, and the host's saved

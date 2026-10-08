@@ -1,12 +1,17 @@
-# Fixture Connections Settings and per-chat runtime binding
+# Connections Settings and per-chat runtime binding
 
-This is a usable, explicitly synthetic Connections workflow, not production
-credential management or full Swift Settings parity. The nondefault
+The original checkpoint below implements the explicitly synthetic workflow.
+The [2026-10-08 native host](native-authority-host.md) additionally composes these
+same forms and transactions with the separate signed Rust vault through an
+explicit feature and launch flag. Native mode accepts ordinary validated
+connection inputs, starts new endpoint/model fields empty, and labels its storage
+truthfully. It does not enable model tools or establish native Keychain/input
+acceptance or full Swift Settings parity. The nondefault
 `synthetic-authority` feature plus `--synthetic-connections` (or the existing
 `--synthetic-project-authority` debug flag) shares one in-memory authority envelope
-between Projects and Connections. Normal builds expose an unavailable Settings
-state. No signed native adapter, real key, Keychain access, credential discovery,
-paid provider, production tool, or source-vault migration is enabled.
+between Projects and Connections. Normal launches expose an unavailable Settings
+state. The synthetic path enables no signed native adapter, real key, Keychain
+access, credential discovery, paid provider, production tool or source-vault migration.
 
 ## Source contract and supported workflow
 
@@ -88,7 +93,8 @@ dynamic-resource constructor is unchanged.
 This preview excludes other Settings sections, model catalog discovery, mini models,
 advanced routing/reasoning controls, imported/legacy Messages conversion, connection
 probe chats, multi-project/sides/background connection switching, native secure
-keyboard/IME/accessibility acceptance, signing and production vault composition.
+keyboard/IME/accessibility acceptance and signing. Native vault composition is
+implemented only through the explicit host mode described above.
 Key and header replacement entry is now masked by an isolated GPUI control; see
 [secure input contracts](secure-connection-inputs.md).
 
@@ -111,7 +117,9 @@ bytes and over-limit input is rejected with a generic message. Select All + Dele
 clears the replacement; a blank replacement still preserves saved credentials.
 The input-owned buffers and local paste strings are zeroized on replacement/drop.
 This is not complete memory erasure: coordinator forms/events and platform clipboard
-copies are outside that buffer's lifetime. No real credentials may be entered.
+copies are outside that buffer's lifetime. Synthetic mode rejects real credentials;
+all automated native-mode acceptance also uses fake values. Actual native secure
+keyboard/IME/accessibility and signed Keychain acceptance remain separate work.
 
 Other fields still use the pinned shared editor's 8 MiB text / roughly 16 MiB Undo
 caps. Retained per-tab entities, coordinator forms and event clones add memory. No

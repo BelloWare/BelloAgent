@@ -12,8 +12,12 @@ The shared BelloBox revision remains unchanged.
 This is a bounded GPUI privacy contract, not native secure-input parity or
 production credential acceptance. GPUI 0.2.2's `EntityInputHandler` has no native
 secure-keyboard/privacy flag. Real macOS keyboard, IME, accessibility and process
-secure-event-input acceptance remain unopened gates. Signing, Keychain, native
-vault composition and normal startup remain disabled. Tests use only fake data.
+secure-event-input acceptance remain unopened gates. The separate
+[native host composition](native-authority-host.md) now requires an explicit
+feature and launch flag. Ordinary saved native authority remains unavailable;
+actual signing,
+Keychain and native secure-input acceptance remain unperformed. Tests use only
+fake data.
 
 ## Supported behavior
 

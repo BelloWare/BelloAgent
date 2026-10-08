@@ -9,6 +9,26 @@ This is a **vertical slice, not feature parity**. The broad product inventory
 below is deliberately unweighted: passing tests do not equal completed features.
 A working Responses chat is materially smaller than the source application.
 
+## Native saved connections (2026-10-08)
+
+The [explicit native host](native-authority-host.md) extends implementation base
+`2a788cdc226ae6f5d8142112921d04db523681bc`. The nondefault app `native-authority`
+feature and `--native-authority` flag select the separate signed Rust vault.
+Connections use normal credential validation and the existing save/conflict/
+uncertainty machinery. Saved provider chats retain project, connection and catalog
+authority checks; native startup, New Chat and connection preflight run off the UI
+thread. Ordinary launch remains unavailable, and native mode deliberately has no
+builtin tools, MCP manager or project resource discovery. Existing synthetic tool
+workflows are separate and keep their fake-key/numeric-loopback restrictions.
+
+This is host composition with fake-storage regression coverage, not signed-app
+Keychain or native secure-input acceptance. Full Settings, model discovery, native
+tool enablement, lifecycle/IME/accessibility and distribution remain unfinished.
+The older index below describes its named base; its host-composition gap is
+superseded only by this bounded checkpoint. Later skill/instruction path fixes
+are recorded in `validation/skill-source-identity-2026-10-07/README.md` and
+`validation/instruction-source-path-2026-10-08/README.md`.
+
 ## Readiness index (2026-10-07)
 
 Audited implementation base: `2ffbc323b9ad006683c2fef1eafa23f4990d8da5`.

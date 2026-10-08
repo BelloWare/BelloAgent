@@ -22,6 +22,18 @@ The current Linux fixture offers real `ls`; the native capability set is explici
 The explicit fixture project is also the fixture's `~` resolution home in startup
 and every later runtime. This is not a filesystem sandbox or process-home discovery.
 
+The explicit [native host mode](native-authority-host.md) selects
+`SavedRuntimeFactory::connection_only` through the same app adapter. It retains
+saved project/chat/connection confirmation and disables builtin tools, MCP manager
+creation, project instructions and skill discovery. Empty capability lists in the
+ordinary tool factory still fail; they never implicitly select this policy.
+Native startup restores through an unconfigured placeholder and background loader.
+Native New Chat and connection preflight also run on the existing background
+executor, with navigation/identity checks before publishing a result. A pending
+connection preflight blocks app submissions without retiring the existing actor;
+failed preflight keeps the current chat and draft. Later explicit navigation or
+connection selection cannot be replaced by an earlier New Chat completion.
+
 ## Identity and lifecycle
 
 - Catalog v7 distinguishes `pending` from `checkpoint-required`. Missing files

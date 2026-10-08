@@ -80,6 +80,13 @@ jobs:
         run: |
           cargo test --locked -p bello-agent-app --features synthetic-authority read_native_workflow
           cargo test --locked -p bello-agent-app --features synthetic-authority edit_native_workflow
+      - name: Explicit native authority host with fake storage
+        # Compile/link the native adapter; all exercised storage remains fake.
+        # No application launch, signing identity check or Keychain access.
+        run: |
+          cargo test --locked -p bello-agent-app --features native-authority
+          cargo test --locked -p bello-agent-app --features native-authority,synthetic-authority
+          cargo build --locked -p bello-agent-app --features native-authority
       - name: Build native applications without launching
         run: cargo build --locked --workspace
       - name: Test native lifecycle harness policy

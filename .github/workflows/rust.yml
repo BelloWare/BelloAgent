@@ -64,6 +64,14 @@ jobs:
           cargo clippy --locked -p bello-agent-app --all-targets --features synthetic-authority -- -D warnings
       - name: Lints
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Explicit native authority composition with fake storage
+        # These tests never select Security/Keychain or use actual credentials.
+        # The feature alone must leave ordinary startup unavailable.
+        run: |
+          cargo test --locked -p bello-agent-app --features native-authority
+          cargo test --locked -p bello-agent-app --features native-authority,synthetic-authority
+          cargo clippy --locked -p bello-agent-app --all-targets --features native-authority -- -D warnings
+          cargo clippy --locked -p bello-agent-app --all-targets --features native-authority,synthetic-authority -- -D warnings
       - name: Build native applications
         run: cargo build --locked --workspace
       - name: UI evidence harness self-tests
