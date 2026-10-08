@@ -1,0 +1,37 @@
+{
+  "base": "ca6136b57ee6f3bce84ab67ae0a12559bbfa51ca",
+  "files": [
+    {
+      "path": "rust/crates/bello-agent-app/src/mcp_inspector_controller_tests.rs",
+      "bytes": 34421,
+      "sha256": "a25695bd3ff8f98dbd543e1d481ab43c8a446ad86393a4406c9475ab5c0b8703"
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/transcript_edit_native_ui_tests.rs",
+      "bytes": 9154,
+      "sha256": "4656d043237989cbd1fd265b029adb28d18fefa3678410aa766a55e1b237ca9e"
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/transcript_read_native_ui_tests.rs",
+      "bytes": 8537,
+      "sha256": "f4043246ea80b2304c653e461e5596f9419a33d1875db5c533ab78cccbf4b4a2"
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/mcp.rs",
+      "bytes": 41712,
+      "sha256": "07ebee6819cb8db7be9bd74eb9abecfcae2497bd9d9e0e6088d425c7842085f3"
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/mcp/activity.rs",
+      "bytes": 4756,
+      "sha256": "e6a460dc86da4e15e60ba3f41769d6ae9b75684c2fecae1ad624f5b393592cfe"
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/mcp/tests.rs",
+      "bytes": 70400,
+      "sha256": "3efda743ffd158f911682ae7f2ca3d3d34e8d48887df85e16fa3bd65fe4b7b71"
+    }
+  ],
+  "r2_change": "Two macOS workflow test expectations now9 after verifying fresh pending_with_id creation, persist, tool execution and replay; legacy fixtures unchanged.",
+  "r3_change": "Checked compare_exchange_weak loop replaces deprecated Rust1.99 fetch_update while retaining Rust1.91 peer/MSRV compatibility; no warning suppression."
+}

@@ -1,0 +1,48 @@
+2026-10-08T21:18:13.2428423Z failures:
+2026-10-08T21:18:13.2428612Z 
+2026-10-08T21:18:13.2429330Z ---- mcp_inspector_controller::tests::saved_inspector_discovery_description_and_exactly_one_confirmed_invocation stdout ----
+2026-10-08T21:18:13.2430214Z 
+2026-10-08T21:18:13.2431405Z thread 'mcp_inspector_controller::tests::saved_inspector_discovery_description_and_exactly_one_confirmed_invocation' (19448) panicked at crates/bello-agent-app/src/mcp_inspector_controller_tests.rs:616:5:
+2026-10-08T21:18:13.2433124Z assertion `left == right` failed
+2026-10-08T21:18:13.2433551Z   left: 0
+2026-10-08T21:18:13.2433853Z  right: 1
+2026-10-08T21:18:13.2434380Z note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+2026-10-08T21:18:13.2434864Z 
+2026-10-08T21:18:13.2434868Z 
+2026-10-08T21:18:13.2434986Z failures:
+2026-10-08T21:18:13.2435668Z     mcp_inspector_controller::tests::saved_inspector_discovery_description_and_exactly_one_confirmed_invocation
+2026-10-08T21:18:13.2436350Z 
+2026-10-08T21:18:13.2436779Z test result: FAILED. 590 passed; 1 failed; 3 ignored; 0 measured; 0 filtered out; finished in 29.29s
+2026-10-08T21:18:13.2437368Z 
+2026-10-08T21:18:13.2519982Z error: test failed, to rerun pass `-p bello-agent-app --bin bello-agent`
+2026-10-08T21:18:13.2579010Z ##[error]Process completed with exit code 101.
+2026-10-08T21:18:13.2659955Z ##[group]Run if test -f "$RUNNER_TEMP/ui-evidence/report.json"; then
+2026-10-08T21:18:13.2660470Z [36;1mif test -f "$RUNNER_TEMP/ui-evidence/report.json"; then[0m
+2026-10-08T21:18:13.2661101Z [36;1m  echo 'Linux software-rendered UI smoke; screenshots are temporary and are not uploaded.' >> "$GITHUB_STEP_SUMMARY"[0m
+2026-10-08T21:18:13.2661706Z [36;1m  echo '```json' >> "$GITHUB_STEP_SUMMARY"[0m
+2026-10-08T21:18:13.2662503Z [36;1m  cat "$RUNNER_TEMP/ui-evidence/report.json" | tee -a "$GITHUB_STEP_SUMMARY"[0m
+2026-10-08T21:18:13.2662952Z [36;1m  echo '```' >> "$GITHUB_STEP_SUMMARY"[0m
+2026-10-08T21:18:13.2663229Z [36;1melse[0m
+2026-10-08T21:18:13.2663655Z [36;1m  echo 'Linux UI smoke did not produce a report; inspect earlier failed steps.' >> "$GITHUB_STEP_SUMMARY"[0m
+2026-10-08T21:18:13.2664328Z [36;1mfi[0m
+2026-10-08T21:18:13.2727796Z shell: /usr/bin/bash -e {0}
+2026-10-08T21:18:13.2728051Z env:
+2026-10-08T21:18:13.2728240Z   CARGO_BUILD_JOBS: 4
+2026-10-08T21:18:13.2728496Z ##[endgroup]
+2026-10-08T21:18:13.2920035Z Post job cleanup.
+2026-10-08T21:18:13.3776934Z [command]/usr/bin/git version
+2026-10-08T21:18:13.3820798Z git version 2.55.0
+2026-10-08T21:18:13.3860709Z Temporarily overriding HOME='/home/runner/work/_temp/149e843a-e0f7-4e3d-b508-f258b5920898' before making global git config changes
+2026-10-08T21:18:13.3862285Z Adding repository directory to the temporary git global config as a safe directory
+2026-10-08T21:18:13.3867448Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/BelloAgent/BelloAgent
+2026-10-08T21:18:13.3905754Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-10-08T21:18:13.3941089Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-10-08T21:18:13.4196790Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-10-08T21:18:13.4226768Z http.https://github.com/.extraheader
+2026-10-08T21:18:13.4238869Z [command]/usr/bin/git config --local --unset-all http.https://github.com/.extraheader
+2026-10-08T21:18:13.4285362Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-10-08T21:18:13.4546864Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-10-08T21:18:13.4585752Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-10-08T21:18:13.4992948Z Cleaning up orphan processes
+2026-10-08T21:18:13.5324262Z ##[warning]Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+

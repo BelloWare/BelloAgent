@@ -1,0 +1,13 @@
+{
+  "api": "openai-responses",
+  "baseUrl": "http://127.0.0.1:47891",
+  "contextWindow": 32000,
+  "id": "6a5539e8-55ca-4647-8b28-88f4b6b425a1",
+  "input": [
+    "text",
+    "image"
+  ],
+  "maxOutputTokens": 4096,
+  "modelId": "a5-concurrency-fixture",
+  "providerId": "litellm"
+}

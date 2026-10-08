@@ -1,0 +1,89 @@
+   Compiling bello-agent-core v0.1.0 (/workspace/shared/agent-timing-ci-fix/rust/crates/bello-agent-core)
+warning: use of deprecated method `std::sync::atomic::Atomic::<usize>::fetch_update`: renamed to `try_update` for consistency
+  --> crates/bello-agent-core/src/mcp/activity.rs:18:14
+   |
+18 |             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+   |              ^^^^^^^^^^^^
+   |
+   = note: `#[warn(deprecated)]` on by default
+help: replace the use of the deprecated method
+   |
+18 -             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+18 +             .try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+   |
+
+warning: `bello-agent-core` (lib test) generated 1 warning (run `cargo fix --lib -p bello-agent-core --tests` to apply 1 suggestion)
+    Finished `test` profile [unoptimized] target(s) in 23.42s
+     Running unittests src/lib.rs (/workspace/shared/build-recovery/target/debug/deps/bello_agent_core-94383b5840279b36)
+
+running 61 tests
+test mcp::outcome::tests::outcome_writer_subprocess_probe ... ok
+test mcp::activity::tests::real_readers_writers_queued_cancellation_and_failed_attempts_keep_activity_exact ... ok
+test mcp::outcome::tests::writer_lock_remains_stable_and_explicitly_unlocks ... ok
+test mcp::outcome::tests::writer_exclusion_precedes_marker_read_and_preserves_evidence ... ok
+test mcp::outcome::tests::acknowledgment_uses_authoritative_live_set_even_with_stale_presentation ... ok
+test mcp::activity::tests::unwind_and_rebound_handle_release_the_same_owned_activity ... ok
+test mcp::tests::cancellation_during_authoritative_outcome_read_never_dispatches ... ok
+test mcp::tests::concurrency_tests::acknowledgment_waiting_for_fsync_never_blocks_current_thread_runtime ... ok
+test mcp::tests::concurrency_tests::abandoned_acknowledgment_keeps_exclusive_admission_while_pool_is_full ... ok
+test mcp::outcome::tests::canonical_parent_alias_and_unsafe_lock_leaves_cannot_admit_writers ... ok
+test mcp::tests::concurrency_tests::configuration_drain_cancellation_does_not_cancel_active_call ... ok
+test mcp::tests::allowlist_absent_empty_and_explicit_list_are_distinct_and_null_is_rejected ... ok
+test mcp::tests::concurrency_tests::acknowledgment_refuses_live_receipts_after_network_admission_ends ... ok
+test mcp::tests::concurrency_tests::completed_ticket_releases_read_admission_before_fair_writer_and_late_sibling ... ok
+test mcp::tests::concurrency_tests::discovery_waiter_cancels_without_waiting_for_single_flight_initialization ... ok
+test mcp::tests::concurrency_tests::contended_ticket_cleanup_owns_writer_after_all_manager_owners_drop ... ok
+test mcp::tests::catalog_schema_cursor_duplicate_and_page_types_fail_closed ... ok
+test mcp::tests::concurrency_tests::delayed_old_session_success_cannot_replace_a_newer_session ... ok
+test mcp::tests::concurrency_tests::persistence_progresses_while_native_physical_workers_are_full ... ok
+test mcp::tests::concurrency_tests::persistence_drop_keeps_four_physical_slots_and_pre_effect_wait_cancels ... ok
+test mcp::outcome::tests::outcome_writer_excludes_subprocess_until_last_ticket_drops ... ok
+test mcp::tests::concurrency_tests::dropped_ticket_never_waits_for_fsync_state_and_retains_writer_lease ... ok
+test mcp::tests::concurrency_tests::delayed_old_session_404_cannot_expire_a_rotated_session ... ok
+test mcp::tests::concurrent_first_factories_reuse_one_workspace_manager ... ok
+test mcp::tests::concurrency_tests::independent_servers_dispatch_before_either_returns ... ok
+
+running 1 test
+test mcp::tests::concurrency_tests::repeated_session_expiry_stops_after_one_retry_without_unknown ... ok
+test mcp::tests::concurrency_tests::same_server_calls_overlap_and_initialize_once_with_sticky_unknown ... ok
+test mcp::tests::actual_controller_wrapper_failed_images_structured_replay_and_reopen ... ok
+test mcp::tests::explicit_content_normalization_never_dumps_unsupported_payloads ... ok
+test mcp::tests::concurrent_status_reader_cannot_invent_an_unknown_invocation_outcome ... ok
+test mcp::tests::inspector_exclusive_admission_fails_without_dispatch ... ok
+test mcp::tests::proxy_child ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 608 filtered out; finished in 0.01s
+
+test mcp::tests::distinct_catalogs_share_one_outcome_writer_until_last_ticket_drops ... ok
+test mcp::tests::dropped_success_receipt_and_marker_faults_survive_restart ... ok
+test mcp::tests::configured_proxy_environment_is_ignored_in_disposable_child ... ok
+test mcp::tests::concurrency_tests::saved_mixed_batch_overlaps_then_commits_in_order_and_never_replays ... ok
+test mcp::tests::bash_tests::bash_cleanup_does_not_serialize_mcp_or_another_chat ... ok
+test mcp::tests::invoke_wait_cancel_and_postgate_authority_recheck_are_not_dispatched ... ok
+test mcp::tests::inspector_requires_current_editing_and_retains_one_canonical_receipt ... ok
+test mcp::tests::inspector_stop_and_retirement_join_dispatched_unknown_but_waiting_is_not_executed ... ok
+test mcp::tests::late_ticket_settlement_holds_outcome_writer_after_workspace_drop ... ok
+test mcp::tests::proxy_child ... ok
+test mcp::tests::read_only_unknown_tool_and_invalid_actions_send_no_invocations ... ok
+test mcp::tests::inspector_rejects_a_second_chat_while_first_invocation_is_active ... ok
+test mcp::tests::latest_inspector_result_reopens_without_clearing_later_unknown_evidence ... ok
+test mcp::tests::concurrency_tests::stop_and_retirement_join_mixed_batch_with_completed_mcp_receipt ... ok
+test mcp::tests::saved_config_apply_is_reserved_exact_and_secret_echo_is_redacted ... ok
+test mcp::tests::same_workspace_root_retrust_rebinds_without_losing_lease_or_quarantine ... ok
+test mcp::tests::multiple_mcp_calls_in_one_controller_batch_settle_only_their_receipts ... ok
+test mcp::tests::shared_factory_manager_catalog_wrapper_and_explicit_receipts ... ok
+test mcp::tests::status_never_blocks_ui_behind_held_durable_ledger_lock ... ok
+test mcp::tests::status_observation_cannot_reject_a_confirmed_inspector_invocation ... ok
+test mcp::tests::unavailable_outcome_evidence_cannot_borrow_a_known_presentation ... ok
+test mcp::tests::vault_config_validation_preservation_destination_and_cas ... ok
+test mcp::tests::concurrency_tests::live_terminal_cards_do_not_hide_failed_checkpoint_or_replay_on_reopen ... ok
+test mcp::tests::sse_notifications_expiry_and_known_rejection_never_quarantine ... ok
+test mcp::tests::redirect_is_not_followed_and_unknown_cannot_be_cleared_by_config_removal ... ok
+test mcp::tests::tool_timing_mcp_rejection_and_unprocessed_expiry_retain_elapsed_without_changing_receipts ... ok
+test mcp::tests::tool_timing_mcp_transport_failure_is_measured_but_record_fallback_is_unknown ... ok
+test mcp::tests::marker_is_not_cleared_when_controller_result_checkpoint_fails ... ok
+test mcp::tests::inspector_receipt_and_marker_settlement_crash_cuts_are_distinct ... ok
+test mcp::tests::interrupted_and_malformed_results_quarantine_without_retry_until_exact_ack ... ok
+
+test result: ok. 61 passed; 0 failed; 0 ignored; 0 measured; 548 filtered out; finished in 2.21s
+

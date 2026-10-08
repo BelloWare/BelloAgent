@@ -179,9 +179,9 @@ async fn read_native_workflow_trust_loopback_checkpoint_replay_and_numbered_ui(
     server.join().unwrap();
     let restored = SessionStore::open(&path).unwrap();
     let snapshot = restored.snapshot();
-    // New user deliveries retain task provenance, which requires snapshot v8.
+    // This fresh session retains completed tool timing, requiring snapshot v9.
     // Retained read content alone still requires only v4 in legacy fixtures.
-    assert_eq!(snapshot.version, 8);
+    assert_eq!(snapshot.version, 9);
     let users = snapshot
         .messages
         .iter()

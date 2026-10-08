@@ -1,0 +1,11 @@
+{
+  "url": "https://github.com/BelloWare/BelloAgent/actions/runs/37844995502/job/113543535109",
+  "commit": "ca6136b57ee6f3bce84ab67ae0a12559bbfa51ca",
+  "command": "cargo test --locked -p bello-agent-app --features synthetic-authority",
+  "working_directory": "rust",
+  "rust": "1.99.0",
+  "cargo_build_jobs": 4,
+  "complete_decoded_log_bytes": 543009,
+  "complete_decoded_log_sha256": "b7a408572b22a045924cdc0b899310078b2766e1327f5a6ae6492a35a5c504f9",
+  "scope": "Complete decoded connector log verified and retained locally; committed failure excerpt is bounded and exact."
+}

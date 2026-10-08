@@ -1,0 +1,2 @@
+{"run": "r0001", "target": "mcp", "time_utc": "2026-10-08T21:22:03Z", "mechanism": "generated marker after both-entered proof"}
+{"run": "r0001", "target": "bash", "time_utc": "2026-10-08T21:22:29Z", "mechanism": "generated marker after MCP terminal observation"}

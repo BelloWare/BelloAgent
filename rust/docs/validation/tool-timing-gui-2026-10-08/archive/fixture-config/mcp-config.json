@@ -1,0 +1,12 @@
+{
+  "servers": {
+    "fixture": {
+      "allowedTools": [
+        "held"
+      ],
+      "timeoutSeconds": 100,
+      "transport": "http",
+      "url": "http://127.0.0.1:47891/mcp"
+    }
+  }
+}

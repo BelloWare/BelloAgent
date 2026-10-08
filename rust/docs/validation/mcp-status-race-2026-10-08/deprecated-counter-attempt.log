@@ -1,0 +1,18 @@
+   Compiling bello-agent-core v0.1.0 (/workspace/shared/agent-timing-ci-fix/rust/crates/bello-agent-core)
+error: use of deprecated method `std::sync::atomic::Atomic::<usize>::fetch_update`: renamed to `try_update` for consistency
+  --> crates/bello-agent-core/src/mcp/activity.rs:18:14
+   |
+18 |             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+   |              ^^^^^^^^^^^^
+   |
+   = note: `-D deprecated` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(deprecated)]`
+help: replace the use of the deprecated method
+   |
+18 -             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+18 +             .try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+   |
+
+error: could not compile `bello-agent-core` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `bello-agent-core` (lib test) due to 1 previous error

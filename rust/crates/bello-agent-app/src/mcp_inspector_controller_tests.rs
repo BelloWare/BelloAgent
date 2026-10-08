@@ -613,7 +613,12 @@ async fn saved_inspector_discovery_description_and_exactly_one_confirmed_invocat
         })
         .unwrap();
     wait_for(&root, cx, |v| !v.mcp.busy());
-    assert_eq!(gateway.count(), 1);
+    assert_eq!(
+        gateway.count(),
+        1,
+        "{}",
+        cx.read(|cx| inspector_state(root.read(cx)))
+    );
     cx.read(|cx| {
         let v = root.read(cx);
         assert!(

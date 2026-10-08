@@ -1733,3 +1733,48 @@ async fn tool_timing_mcp_transport_failure_is_measured_but_record_fallback_is_un
         actor.retire_and_wait().await.unwrap();
     }
 }
+
+#[tokio::test]
+async fn status_observation_cannot_reject_a_confirmed_inspector_invocation() {
+    struct Release(Option<std::sync::mpsc::Sender<()>>);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            if let Some(sender) = self.0.take() {
+                let _ = sender.send(());
+            }
+        }
+    }
+    let server = ServerFixture::start().await;
+    let fixture = Fixture::new("http://127.0.0.1:9", &server.url);
+    let manager = fixture.manager();
+    let (entered, arrival) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    let release = Release(Some(release));
+    let reader = manager.clone();
+    let observer = std::thread::spawn(move || {
+        reader.observe_status(|| {
+            entered.send(()).unwrap();
+            released.recv_timeout(Duration::from_secs(5)).unwrap();
+        })
+    });
+    tokio::task::spawn_blocking(move || arrival.recv_timeout(Duration::from_secs(3)).unwrap())
+        .await
+        .unwrap();
+    let parameters = json!({"action":"invoke","server":"fixture","tool":"echo","arguments":{}});
+    let result = manager
+        .perform_inspector(&parameters, false, CancellationToken::new(), || async {
+            Ok(())
+        })
+        .await;
+    drop(release);
+    observer.join().unwrap();
+    assert!(
+        result.is_ok(),
+        "a read-only status observer rejected authoritative admission: {:?}",
+        result.as_ref().err()
+    );
+    manager.retain_inspector(result.unwrap()).await.unwrap();
+    assert_eq!(server.calls.load(Ordering::SeqCst), 1);
+    assert!(!manager.status().busy);
+    assert_eq!(manager.status().pending_results, 0);
+}

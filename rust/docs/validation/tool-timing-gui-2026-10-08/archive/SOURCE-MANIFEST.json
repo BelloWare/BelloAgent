@@ -1,0 +1,18 @@
+{
+  "kind": "a5-gui-fixture-source-v1",
+  "source_spec": "f4f80ddda3c27fac9e266896f69b725a06242e8f",
+  "frozen_a5_runtime_unchanged": true,
+  "gui_executed": false,
+  "selftests": {
+    "passed": 7,
+    "failed": 0
+  },
+  "files": {
+    "fixture.py": "bd989866c15a0a577d8fe1e044203ec2b9bb0ccfc656630af0c72c6de71186a3",
+    "test_fixture.py": "b134ab23b11ba91709805806cf3fcdaaabde90148acce34a74b47ebe778672a4",
+    "launch.sh": "bc13397dad8a97b471f1cccc61d3f994d16324ece185e7280aa887f70ed93461",
+    "README.md": "055931dbaeee55f70059c444e35009c521e442e76487522eda71c9baac2e2374",
+    "NEXT-UI-SLICE.md": "815b05759ab32bde56b7f1f808790f21ee3074e6256aa86a47192a7f807dc2fc",
+    "selftests.log": "43701e1448bf2b1b3ed91af3ad209976cbbe2813b59228612c0ffac204ce8f15"
+  }
+}

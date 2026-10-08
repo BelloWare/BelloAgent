@@ -1,0 +1,50 @@
+{
+  "base": "ca6136b57ee6f3bce84ab67ae0a12559bbfa51ca",
+  "source_manifest": "source-r3-manifest.json",
+  "source_hashes_after_all_gates_match": true,
+  "deterministic_regression": "Original observer owns exclusive gate and produces exact mcp_busy; activity observation permits exactly one invocation and receipt settlement. The actual CI interleaving was not traced.",
+  "core_default": {
+    "unit_passed": 431,
+    "integration_passed": 127
+  },
+  "core_all_features": {
+    "unit_passed": 609,
+    "integration_passed": 127
+  },
+  "app_synthetic_authority": {
+    "passed": 591,
+    "failed": 0,
+    "ignored": 3
+  },
+  "app_all_features": {
+    "passed": 598,
+    "failed": 0,
+    "ignored": 3
+  },
+  "strict_clippy": "default and all features, all targets, both packages passed",
+  "formatting": "passed",
+  "test_binary_identities": [
+    {
+      "file": "bello_agent_core-8bfe315c8d6b13f3",
+      "bytes": 44072424,
+      "sha256": "3a76855700e1d16ea31f12770703a7ffcadf9d9268899e8c4deb917664a41c79"
+    },
+    {
+      "file": "bello_agent_core-94383b5840279b36",
+      "bytes": 66649656,
+      "sha256": "92ea1d3b392e971eacb6d5ac0b1262c95b658920b29a088e5820134ed2ebd6fa"
+    },
+    {
+      "file": "bello_agent-55ac8b6554be4afe",
+      "bytes": 109931184,
+      "sha256": "a76dff00b0b5b6eb94073d8cb96861e4ea238ec2a796f9898b6b43068ac0b1fe"
+    },
+    {
+      "file": "bello_agent-a54be717f3dcc926",
+      "bytes": 109759192,
+      "sha256": "22cc2ade90ca339597f8484b838a3f1ccac79c9e8496fd5870bed3a25cc79030"
+    }
+  ],
+  "native_tests": "Two macOS-only workflow expectations updated8\u21929 after verifying fresh session creation/tool execution/replay. Not executed by this Linux worker; peer/CI verification remains required.",
+  "scope": "Synthetic fixture and loopback tests, no interactive GUI or native security/performance/release acceptance."
+}

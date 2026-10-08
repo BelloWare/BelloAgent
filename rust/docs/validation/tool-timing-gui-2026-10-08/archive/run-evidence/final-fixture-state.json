@@ -1,0 +1,19 @@
+{
+  "fixture_id": "6c5625ed-191b-4483-93fd-87ecb24cdd35",
+  "runs": {
+    "r0001": {
+      "continuations": 1,
+      "mcp_calls": 1,
+      "mcp_entered": true,
+      "mcp_expired": false,
+      "mcp_returned": true,
+      "mode": "A5_REVERSE",
+      "ordered_result_ids": [
+        "a5-r0001-bash",
+        "a5-r0001-mcp"
+      ],
+      "result_order_correct": true
+    }
+  },
+  "sequence": 1
+}

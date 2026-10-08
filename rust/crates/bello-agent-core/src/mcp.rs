@@ -1,6 +1,7 @@
 //! One project-scoped Streamable HTTP MCP manager shared by saved chat runtimes.
 //! Configuration never discovers files or credentials. Ordinary app composition
 //! remains disabled. Shared invocation admission drains for configuration changes.
+mod activity;
 mod content;
 mod outcome;
 mod transport;
@@ -18,7 +19,7 @@ use std::{
     path::Path,
     sync::{Arc, RwLock},
 };
-use tokio::sync::{Mutex, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock as AsyncRwLock};
+use tokio::sync::Mutex;
 pub use tokio_util::sync::CancellationToken;
 use transport::Http;
 
@@ -232,14 +233,14 @@ pub struct McpManager {
     configuration: RwLock<LoadedMcp>,
     configuration_identity: String,
     configuration_generation: std::sync::atomic::AtomicU64,
-    gate: Arc<AsyncRwLock<()>>,
+    gate: Arc<activity::Gate>,
     servers: Mutex<BTreeMap<String, Arc<Mutex<Server>>>>,
     ledger: Arc<outcome::Ledger>,
     runtime: tokio::runtime::Handle,
 }
 pub struct McpConfigurationChange {
     manager: Arc<McpManager>,
-    _gate: OwnedRwLockWriteGuard<()>,
+    _gate: activity::WriteGuard,
 }
 pub(crate) struct Performed {
     pub normalized: Normalized,
@@ -275,7 +276,7 @@ impl McpManager {
             configuration: RwLock::new(loaded),
             configuration_identity: uuid::Uuid::new_v4().to_string(),
             configuration_generation: std::sync::atomic::AtomicU64::new(0),
-            gate: Arc::new(AsyncRwLock::new(())),
+            gate: Arc::new(activity::Gate::new()),
             ledger,
             runtime,
         }))
@@ -370,10 +371,14 @@ impl McpManager {
         Ok((names, revision))
     }
     pub fn status(&self) -> McpStatus {
-        let gate = self.gate.try_write().ok();
+        self.observe_status(|| {})
+    }
+    fn observe_status(&self, observed: impl FnOnce()) -> McpStatus {
+        let busy = self.gate.busy();
+        observed();
         let status = self.ledger.status();
         McpStatus {
-            busy: gate.is_none(),
+            busy,
             outcome_unknown: status.unknown,
             unknown_id: status.unknown_id,
             pending_results: status.pending,
@@ -991,9 +996,9 @@ fn persistence_runtime() -> tokio::runtime::Handle {
         .clone()
 }
 async fn lock(
-    gate: Arc<AsyncRwLock<()>>,
+    gate: Arc<activity::Gate>,
     cancel: &CancellationToken,
-) -> McpResult<OwnedRwLockReadGuard<()>> {
+) -> McpResult<activity::ReadGuard> {
     tokio::select! { biased; _=cancel.cancelled()=>Err(McpError::cancelled(false)),guard=gate.read_owned()=>if cancel.is_cancelled(){Err(McpError::cancelled(false))}else{Ok(guard)} }
 }
 fn arguments() -> McpError {

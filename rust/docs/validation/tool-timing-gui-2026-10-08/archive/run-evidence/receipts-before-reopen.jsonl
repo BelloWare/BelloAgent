@@ -1,0 +1,11 @@
+{"at_monotonic": 14905.333150005, "event": "provider-request", "last_user_mode": "A5_HELLO", "offered": ["bash", "ls", "mcp"], "result_ids": []}
+{"at_monotonic": 15048.368501686, "event": "provider-request", "last_user_mode": "A5_REVERSE", "offered": ["bash", "ls", "mcp"], "result_ids": []}
+{"at_monotonic": 15048.368969136, "event": "run-created", "mode": "A5_REVERSE", "run": "r0001"}
+{"at_monotonic": 15048.375758971, "event": "mcp-method", "method": "initialize"}
+{"at_monotonic": 15048.376665504, "event": "mcp-method", "method": "notifications/initialized"}
+{"at_monotonic": 15048.378316422, "event": "mcp-method", "method": "tools/list"}
+{"at_monotonic": 15048.383986567, "event": "mcp-method", "method": "tools/call"}
+{"at_monotonic": 15048.384346158, "event": "mcp-entered", "run": "r0001"}
+{"at_monotonic": 15060.658816752, "client_durable_retention_proven": false, "event": "mcp-response-attempt", "released": true, "run": "r0001"}
+{"at_monotonic": 15086.528212156, "event": "provider-request", "last_user_mode": "A5_REVERSE", "offered": ["bash", "ls", "mcp"], "result_ids": ["a5-r0001-bash", "a5-r0001-mcp"]}
+{"at_monotonic": 15086.52867912, "event": "provider-continuation", "original_order": true, "result_ids": ["a5-r0001-bash", "a5-r0001-mcp"], "run": "r0001"}

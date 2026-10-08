@@ -1,0 +1,51 @@
+{
+  "commit": "ca6136b57ee6f3bce84ab67ae0a12559bbfa51ca",
+  "binary_sha256": "ce913208f021a255603d0ad965b9b356e50d109586e75fe097d9a743512336f4",
+  "build_features": [
+    "synthetic-authority"
+  ],
+  "profile": "dev unoptimized",
+  "before_sibling_release": {
+    "durable_result_count": 0,
+    "tool_timing": {
+      "total_us": 0
+    }
+  },
+  "settled": {
+    "total_us": 38148589,
+    "batch_wall_us": 38148589,
+    "results": [
+      {
+        "kind": "result",
+        "duration_us": 38148498,
+        "assistant_id": "b624157f-0843-4abe-b33d-55a7acd192a4",
+        "call_id": "a5-r0001-bash",
+        "is_error": false,
+        "outcome": "completed"
+      },
+      {
+        "kind": "result",
+        "duration_us": 12286853,
+        "assistant_id": "b624157f-0843-4abe-b33d-55a7acd192a4",
+        "call_id": "a5-r0001-mcp",
+        "is_error": false,
+        "outcome": "completed",
+        "content": {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "A5 MCP completed"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "reopen": {
+    "first_exit": "0",
+    "success": false,
+    "error": "Saved chat is unavailable: The saved project identity and original root disagree",
+    "unchanged_total": true,
+    "request_log_unchanged": true
+  }
+}

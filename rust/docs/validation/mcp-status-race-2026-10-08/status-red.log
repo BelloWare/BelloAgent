@@ -1,0 +1,22 @@
+   Compiling bello-agent-core v0.1.0 (/workspace/shared/agent-timing-ci-fix/rust/crates/bello-agent-core)
+    Finished `test` profile [unoptimized] target(s) in 22.31s
+     Running unittests src/lib.rs (/workspace/shared/build-recovery/target/debug/deps/bello_agent_core-94383b5840279b36)
+
+running 1 test
+test mcp::tests::status_observation_cannot_reject_a_confirmed_inspector_invocation ... FAILED
+
+failures:
+
+---- mcp::tests::status_observation_cannot_reject_a_confirmed_inspector_invocation stdout ----
+
+thread 'mcp::tests::status_observation_cannot_reject_a_confirmed_inspector_invocation' (66) panicked at crates/bello-agent-core/src/mcp/tests.rs:1771:5:
+a read-only status observer rejected authoritative admission: Some(McpError { code: "mcp_busy", message: "MCP work is still running", not_executed: true, recording_failed: false })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    mcp::tests::status_observation_cannot_reject_a_confirmed_inspector_invocation
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 606 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p bello-agent-core --lib`

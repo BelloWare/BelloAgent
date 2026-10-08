@@ -1,0 +1,13 @@
+{
+  "fixture_id": "6c5625ed-191b-4483-93fd-87ecb24cdd35",
+  "runs": {
+    "r0001": {
+      "continuations": 0,
+      "mcp_calls": 1,
+      "mcp_entered": true,
+      "mcp_returned": false,
+      "mode": "A5_REVERSE"
+    }
+  },
+  "sequence": 1
+}

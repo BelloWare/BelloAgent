@@ -1,0 +1,42 @@
+2026-10-08T21:27:59.9964220Z failures:
+2026-10-08T21:27:59.9964320Z 
+2026-10-08T21:27:59.9966350Z ---- transcript_view_tests::edit_ui_tests::native_workflow::edit_native_workflow_trust_loopback_mutation_checkpoint_replay_and_diff_ui stdout ----
+2026-10-08T21:27:59.9968310Z 
+2026-10-08T21:27:59.9968980Z thread 'transcript_view_tests::edit_ui_tests::native_workflow::edit_native_workflow_trust_loopback_mutation_checkpoint_replay_and_diff_ui' (106584) panicked at crates/bello-agent-app/src/transcript_edit_native_ui_tests.rs:203:5:
+2026-10-08T21:27:59.9969960Z assertion `left == right` failed
+2026-10-08T21:27:59.9970240Z   left: 9
+2026-10-08T21:27:59.9970450Z  right: 8
+2026-10-08T21:27:59.9970770Z note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+2026-10-08T21:27:59.9971090Z 
+2026-10-08T21:27:59.9971520Z ---- transcript_view_tests::read_ui::native_workflow::read_native_workflow_trust_loopback_checkpoint_replay_and_numbered_ui stdout ----
+2026-10-08T21:27:59.9971980Z 
+2026-10-08T21:27:59.9972620Z thread 'transcript_view_tests::read_ui::native_workflow::read_native_workflow_trust_loopback_checkpoint_replay_and_numbered_ui' (106658) panicked at crates/bello-agent-app/src/transcript_read_native_ui_tests.rs:184:5:
+2026-10-08T21:27:59.9973450Z assertion `left == right` failed
+2026-10-08T21:27:59.9973690Z   left: 9
+2026-10-08T21:27:59.9973910Z  right: 8
+2026-10-08T21:27:59.9974420Z 
+2026-10-08T21:27:59.9974420Z 
+2026-10-08T21:27:59.9974530Z failures:
+2026-10-08T21:27:59.9975000Z     transcript_view_tests::edit_ui_tests::native_workflow::edit_native_workflow_trust_loopback_mutation_checkpoint_replay_and_diff_ui
+2026-10-08T21:27:59.9975810Z     transcript_view_tests::read_ui::native_workflow::read_native_workflow_trust_loopback_checkpoint_replay_and_numbered_ui
+2026-10-08T21:27:59.9976230Z 
+2026-10-08T21:27:59.9976470Z test result: FAILED. 583 passed; 2 failed; 1 ignored; 0 measured; 0 filtered out; finished in 27.05s
+2026-10-08T21:27:59.9976830Z 
+2026-10-08T21:28:00.0056680Z error: test failed, to rerun pass `-p bello-agent-app --bin bello-agent`
+2026-10-08T21:28:00.0297770Z ##[error]Process completed with exit code 101.
+2026-10-08T21:28:00.0922680Z Post job cleanup.
+2026-10-08T21:28:00.5248250Z [command]/opt/homebrew/bin/git version
+2026-10-08T21:28:00.5574820Z git version 2.55.0
+2026-10-08T21:28:00.5597650Z Copying '/Users/runner/.gitconfig' to '/Users/runner/work/_temp/53bb9ec5-45df-4f24-ac00-8339425fad44/.gitconfig'
+2026-10-08T21:28:00.5608510Z Temporarily overriding HOME='/Users/runner/work/_temp/53bb9ec5-45df-4f24-ac00-8339425fad44' before making global git config changes
+2026-10-08T21:28:00.5610440Z Adding repository directory to the temporary git global config as a safe directory
+2026-10-08T21:28:00.5612790Z [command]/opt/homebrew/bin/git config --global --add safe.directory /Users/runner/work/BelloAgent/BelloAgent
+2026-10-08T21:28:00.5770820Z [command]/opt/homebrew/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-10-08T21:28:00.6355260Z [command]/opt/homebrew/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-10-08T21:28:00.8509980Z [command]/opt/homebrew/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-10-08T21:28:00.8590530Z [command]/opt/homebrew/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-10-08T21:28:00.9598410Z [command]/opt/homebrew/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-10-08T21:28:00.9667640Z [command]/opt/homebrew/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-10-08T21:28:01.0766680Z Cleaning up orphan processes
+2026-10-08T21:28:03.5007560Z ##[warning]Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+

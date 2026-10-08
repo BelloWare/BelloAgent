@@ -1,0 +1,7 @@
+{
+  "url": "https://github.com/BelloWare/BelloAgent/actions/runs/37844995497/job/113543535251",
+  "commit": "ca6136b57ee6f3bce84ab67ae0a12559bbfa51ca",
+  "full_decoded_log_bytes": 7058477,
+  "full_decoded_log_sha256": "a20901d2ec1bebe8738c01d6c28270a017ddfc1f6ddf8a05bce5b24444945353",
+  "scope": "The complete decoded log was verified and retained locally; this directory publishes exact failure/command excerpts only."
+}

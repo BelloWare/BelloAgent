@@ -1,0 +1,26 @@
+2026-10-08T21:11:34.2847850Z   CARGO_BUILD_JOBS: 2
+2026-10-08T21:11:34.2848190Z   MACOSX_DEPLOYMENT_TARGET: 14.0
+2026-10-08T21:11:51.0594200Z   CARGO_BUILD_JOBS: 2
+2026-10-08T21:11:51.0594500Z   MACOSX_DEPLOYMENT_TARGET: 14.0
+2026-10-08T21:11:56.5872200Z   CARGO_BUILD_JOBS: 2
+2026-10-08T21:11:56.5872520Z   MACOSX_DEPLOYMENT_TARGET: 14.0
+2026-10-08T21:12:07.0862480Z ##[group]Run cargo test --locked --workspace --no-run
+2026-10-08T21:12:07.0863000Z [36;1mcargo test --locked --workspace --no-run[0m
+2026-10-08T21:12:07.2470290Z   CARGO_BUILD_JOBS: 2
+2026-10-08T21:12:07.2470630Z   MACOSX_DEPLOYMENT_TARGET: 14.0
+2026-10-08T21:17:26.6079400Z   CARGO_BUILD_JOBS: 2
+2026-10-08T21:17:26.6079690Z   MACOSX_DEPLOYMENT_TARGET: 14.0
+2026-10-08T21:21:25.6671460Z ##[group]Run cargo test --locked -p bello-agent-core
+2026-10-08T21:21:25.6671870Z [36;1mcargo test --locked -p bello-agent-core[0m
+2026-10-08T21:21:25.6950540Z   CARGO_BUILD_JOBS: 2
+2026-10-08T21:21:25.6950820Z   MACOSX_DEPLOYMENT_TARGET: 14.0
+2026-10-08T21:23:54.0481510Z ##[group]Run cargo test --locked -p bello-agent-core --test project_skills_native -- --nocapture
+2026-10-08T21:23:54.0482170Z [36;1mcargo test --locked -p bello-agent-core --test project_skills_native -- --nocapture[0m
+2026-10-08T21:23:54.0855110Z   CARGO_BUILD_JOBS: 2
+2026-10-08T21:23:54.0855500Z   MACOSX_DEPLOYMENT_TARGET: 14.0
+2026-10-08T21:24:00.2957270Z ##[group]Run cargo test --locked -p bello-agent-core --all-features
+2026-10-08T21:24:00.2958550Z [36;1mcargo test --locked -p bello-agent-core --all-features[0m
+2026-10-08T21:24:00.2959780Z [36;1mcargo test --locked -p bello-agent-core --all-features --test bash_native -- --nocapture[0m
+2026-10-08T21:24:00.2960330Z [36;1mcargo test --locked -p bello-agent-app --features synthetic-authority[0m
+2026-10-08T21:24:00.3426370Z   CARGO_BUILD_JOBS: 2
+2026-10-08T21:24:00.3426900Z   MACOSX_DEPLOYMENT_TARGET: 14.0
