@@ -90,9 +90,20 @@ final class TranscriptRevealTests: XCTestCase {
 
     @MainActor func testTheNewestOfTwoQuickRevealsWins() async throws {
         let chat = try await chat()
+        // The first reveal's read comes back last: an earlier request landing
+        // late must not take the reader away from the newer one.
+        let reader = chat.model.history, path = try XCTUnwrap(chat.chat.path)
+        chat.model.historyWindowLoader = { _, cursor, newer, around in
+            if around == "a10b" { try await Task.sleep(for: .milliseconds(400)) }
+            let start = around == HistoryWindowEdge.start
+            return try ConversationHistoryPage(await reader.window(path: path, cursor: cursor, newer: newer, around: start ? nil : around, start: start))
+        }
         let first = Task { await chat.model.revealInTranscript(sessionID: chat.chat.id, messageID: "a10b") }
+        try await Task.sleep(for: .milliseconds(50))
         let second = Task { await chat.model.revealInTranscript(sessionID: chat.chat.id, messageID: "a60b") }
-        _ = await (first.value, second.value)
+        let outcomes = await (first.value, second.value)
+        XCTAssertFalse(outcomes.0, "The superseded reveal reports it did not land")
+        XCTAssertTrue(outcomes.1)
         do {
             try await eventually("The newest reveal never landed", timeout: .seconds(20)) {
                 chat.draw(); return landed(chat, "a60b")

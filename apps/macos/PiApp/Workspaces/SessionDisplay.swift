@@ -112,8 +112,19 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// the page showing this chat. A page read in at an edge never lets go of
     /// them, whatever the last reported anchor says.
     var visibleMessageIDs: (@MainActor () -> Set<String>)?
-    /// The reveal whose read is under way; a newer one supersedes it.
+    /// The reveal whose read is under way; a newer one, or the reader moving,
+    /// supersedes it.
     var revealRead: Int?
+    /// Why the last reveal's read failed, for whoever asked for it.
+    var revealFailure: String?
+    /// The reader went somewhere else (a key, Back to bottom, Latest, their
+    /// own scroll): a reveal still reading its page is let go of, with the
+    /// place it would mark, so a page read in later does not take them there.
+    func abandonReveal() {
+        guard revealRead != nil else { return }
+        revealRead = nil
+        reveal = nil
+    }
     @Published var newerPage = ConversationPageBoundary()
     @Published var draftReady = true
     var completionTracker = SessionCompletionTracker()

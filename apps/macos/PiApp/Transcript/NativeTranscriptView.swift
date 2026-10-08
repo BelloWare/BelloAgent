@@ -50,7 +50,7 @@ final class TranscriptSurfaceMarker: NSView {
     /// ⌘F's bar over the transcript while it is open, and its matches.
     private(set) var findBar: TranscriptFindBar?
     private(set) lazy var find = TranscriptFindController(pane: self)
-    private var handledFind = 0, handledReveal = 0
+    private var handledFind = 0, handledReveal = 0, stoppedFocusFor = 0
     private var findSessionID: String?
     var onViewportReady: (String, UUID) -> Void = { _, _ in }
     private(set) var environment = TranscriptRowEnvironment()
@@ -106,7 +106,7 @@ final class TranscriptSurfaceMarker: NSView {
         scrollView.edgeKey = { [weak self] move in
             guard let self, let session = self.session else { return false }
             // The reader's own key wins over a reveal still being read.
-            session.revealRead = nil
+            session.abandonReveal(); self.document.focusPending = false
             switch move {
             case .top where session.olderPage.cursor != nil:
                 self.onStart(session.id); return true
@@ -214,6 +214,10 @@ final class TranscriptSurfaceMarker: NSView {
             page.onViewportReady = onViewportReady
             page.state = session.state
             page.bind(session)
+            // A new page (another chat, or this one read again for Latest)
+            // takes the reader where it was asked to: a place still being
+            // brought into view on the page before does not pull them back.
+            document.focusPending = false
         }
         watchSlowReads(session)
         applyFind(session)
@@ -322,7 +326,7 @@ final class TranscriptSurfaceMarker: NSView {
         let wanted = (!page.atBottom || session.newerPage.available) && page.snapshot?.items.isEmpty == false
         latestBox.action = { [weak self] in
             guard let self, let session = self.session else { return }
-            session.revealRead = nil
+            session.abandonReveal(); self.document.focusPending = false
             if session.browsingHistory || session.newerPage.available { self.onLatest(session.id) } else { self.page.jumpToLatest() }
         }
         if wanted != latestShown {
@@ -516,11 +520,20 @@ final class TranscriptSurfaceMarker: NSView {
         // A reveal (`revealInTranscript`): once the page holds the message, the
         // turn that folded it away opens, and a range asked for is marked
         // and brought into view.
+        // A new request stops whatever earlier place was still being brought
+        // into view, at once, not when its own message arrives.
+        if let reveal = session.reveal, reveal.serial != handledReveal, reveal.serial != stoppedFocusFor, !reveal.fromFind {
+            stoppedFocusFor = reveal.serial; document.focusPending = false
+        }
         if let reveal = session.reveal, reveal.serial != handledReveal,
            let message = session.messages.first(where: { $0.id == reveal.messageID }) {
             let place = reveal.mark?.place(in: message)
             if let drawing = page.revealContent(of: reveal.messageID, needle: place?.needle ?? find.query, call: place?.scopeCall) {
                 handledReveal = reveal.serial
+                // Each reveal replaces the last one's place, marked or not: an
+                // earlier mark still being brought into view must not pull
+                // the reader back after this one lands.
+                if place == nil, !reveal.fromFind { document.highlights = TranscriptHighlights(query: find.query) }
                 if let place {
                     document.highlights = TranscriptHighlights(query: find.query, focus: .init(messageID: drawing, needle: place.needle,
                                                                                               occurrence: place.occurrence, serial: reveal.serial,

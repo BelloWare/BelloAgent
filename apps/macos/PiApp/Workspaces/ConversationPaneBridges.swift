@@ -18,7 +18,7 @@ extension NativeTranscriptPane {
             guard let model else { throw CancellationError() }
             return try await model.searchConversation(id, query: query, start: start)
         }
-        find.reveal = { [weak model] id, messageID in await model?.revealInTranscript(sessionID: id, messageID: messageID) ?? false }
+        find.reveal = { [weak model] id, messageID in await model?.revealInTranscript(sessionID: id, messageID: messageID, fromFind: true) ?? false }
         onViewportReady = { [weak model] in model?.historyViewportReady($0, generation: $1) }
         var environment = TranscriptRowEnvironment(view: self)
         environment.isEnabled = enabled; environment.forks = canFork; environment.opensFiles = true

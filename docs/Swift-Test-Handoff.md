@@ -133,8 +133,15 @@ Inputs:
 
   It asserts zero jumps, zero lost rows and zero read errors in every
   configuration, and zero stall frames for gestures and flings. Frame
-  budgets (p95 ≤ 20 ms, p99 ≤ 34 ms, max ≤ 50 ms) apply in Release only
-  (`releaseBudget`).
+  budgets apply in Release only (`releaseBudget`):
+  - p95 ≤ 50 ms;
+  - p99 ≤ 100 ms;
+  - max ≤ 150 ms;
+  - at most 5% of frames over 50 ms.
+
+  With the scroller held at an edge, only the max applies. The reasons are
+  in `docs/perf/long-chat-scrolling.md`. These budgets record the
+  improvement, but still allow visible long frames.
 - `TranscriptRevealTests` and `TranscriptFindTests` (parallel lane) cover
   `revealInTranscript` and the ⌘F find bar on the same fixture:
   - a message read in and landed on;

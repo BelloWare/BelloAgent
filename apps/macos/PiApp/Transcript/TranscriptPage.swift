@@ -755,6 +755,10 @@ struct ContentGeometry: Equatable {
         if changed { republish() }
         return drawing
     }
+    /// A reveal still reading its page is let go of, and the place it was
+    /// for with it, so a page read in later for another reason does not take
+    /// the reader there.
+    private func abandonPendingReveal() { presentationSession?.abandonReveal() }
     /// Opens the finished turn that has folded message `messageID` away, so
     /// a place in it can be shown. Returns whether the page holds the message.
     @discardableResult func unfoldTurn(containing messageID: String) -> Bool {
@@ -959,6 +963,9 @@ struct ContentGeometry: Equatable {
     /// way it goes (AppKit's live-scroll start); its first movement says.
     func readerWillNavigate(upward: Bool, knownDirection: Bool = true) {
         if knownDirection { travelingUp = upward }
+        // The reader has gone somewhere themselves: a reveal still reading
+        // its page does not take them away from it.
+        abandonPendingReveal()
         scrollView?.transcriptReading.readerMoved()
         upwardNavigation = readerNavigationStarted ? upwardNavigation || upward : upward; readerNavigationStarted = true
         readerOwnsPosition()
@@ -1030,6 +1037,7 @@ struct ContentGeometry: Equatable {
         // pass of idle measuring put them back on it.
         let placing = openingPlacementPending || jumping || viewportResizePending
         if delivery == .reader, initialized, !placing {
+            abandonPendingReveal()
             if let last = lastReaderOffset, abs(position.offset - last) > 0.5 { travelingUp = position.offset < last }
             scrollView.transcriptReading.readerMoved()
             readerOwnsPosition()

@@ -39,6 +39,11 @@ struct TranscriptFindCommand: Equatable {
 
     /// "3 of 41", "No matches", or nothing for an empty field; a count that
     /// is still growing as the rest of the chat is searched ends in "+".
+    /// The match could not be read in (its page failed to load).
+    func showUnreachable() {
+        count.line = PiKit.Line("Couldn’t open match", font: PiKit.Font.caption, color: .piInkSecondary)
+        needsLayout = true
+    }
     func show(current: Int?, total: Int, searching: Bool, failed: Bool = false, query: String) {
         let text: String
         if query.isEmpty { text = "" }
@@ -150,7 +155,7 @@ struct TranscriptFindCommand: Equatable {
     /// A read for a match no longer wanted must not land.
     private func stopNavigation() {
         navigation?.cancel(); navigation = nil
-        pane?.session?.revealRead = nil
+        pane?.session?.abandonReveal()
     }
     /// Message `id`'s text, all of it on screen, shows the query `rendered`
     /// times: its matches become exactly those.
@@ -194,7 +199,12 @@ struct TranscriptFindCommand: Equatable {
                 if !pane.page.visibleMessageIDs().contains(drawing), let reveal {
                     let id = session.id, wanted = current
                     navigation = Task { [weak self] in
-                        guard await reveal(id, match.messageID), !Task.isCancelled, let self, self.current == wanted else { return }
+                        let landed = await reveal(id, match.messageID)
+                        guard !Task.isCancelled, let self, self.current == wanted else { return }
+                        guard landed else {
+                            if self.pane?.session?.revealFailure != nil { self.pane?.findBar?.showUnreachable() }
+                            return
+                        }
                         // Read in: the page can now say which row draws it,
                         // open what hides it, and bring it into view.
                         _ = self.pane?.page.revealContent(of: match.messageID, needle: self.query)

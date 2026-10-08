@@ -22,7 +22,21 @@ extension NSScrollView {
     private weak var surface: NativeMarkdownContainer?
     private var source: NativeMarkdownContainer.LogicalAnchor?
     private weak var row: NSView? { didSet { if row !== oldValue { noteRow() } } }
-    private var rowDisplacement: CGFloat = 0 { didSet { noteRow() } }
+    private var rowDisplacement: CGFloat = 0 {
+        didSet { noteRow(); anchorDocumentTop = scroll.map { $0.contentView.bounds.minY + rowDisplacement } }
+    }
+    /// Where the held row's top belongs in the document, as of the last time
+    /// the reader's line was where the anchor says. A row that has moved from
+    /// there since — rows above it measured, a page read in — is owed that
+    /// difference by the next correction.
+    private var anchorDocumentTop: CGFloat?
+    /// The same for the anchored character of a text anchor, whose line can
+    /// move within its row while the row's top stays put.
+    private var anchorSourceTop: CGFloat?
+    private func sourceTop(in scroll: NSScrollView) -> CGFloat? {
+        guard let source, let surface, surface.enclosingScrollView === scroll, let y = surface.top(for: source) else { return nil }
+        return surface.convert(NSPoint(x: 0, y: y), to: scroll.contentView).y
+    }
     /// What the held row draws, and how far below the viewport's top its
     /// bottom stands: a row replaced by one for the same messages — the turn
     /// at the top of the window joining its earlier part as an earlier page
@@ -97,13 +111,28 @@ extension NSScrollView {
         ledger.reset()
     }
     func readerMoved() {
+        // A movement of the reader's can land between a change of the
+        // geometry around their row and its correction (AppKit applies a
+        // wheel step on its own schedule). What the change moved is put
+        // right first; what the reader moved stays theirs.
+        if !writing, let scroll {
+            // Measured where the anchor holds: at its character when the text
+            // is on screen, else at its row.
+            var owed: CGFloat?
+            if let expected = anchorSourceTop, let now = sourceTop(in: scroll) { owed = now - expected }
+            else if let row, let expected = anchorDocumentTop, let now = heldRowTop(row, in: scroll) { owed = now - expected }
+            if let owed, abs(owed) > 0.5 {
+                let clip = scroll.contentView
+                setOrigin(NSPoint(x: clip.bounds.minX, y: clip.bounds.minY + owed))
+            }
+        }
         readerRevision &+= 1; clear(reason: "reader gesture")
         // Nothing the page wrote before the reader touched the page still
         // explains where they end up.
         ledger.forgetWrites()
     }
     private func clear(reason: String) {
-        source = nil; surface = nil; row = nil; lastInvalidation = reason
+        source = nil; surface = nil; row = nil; lastInvalidation = reason; anchorDocumentTop = nil; anchorSourceTop = nil
         // Explicitly: a row already let go of reads nil, and setting nil again
         // does not tell `noteRow`.
         heldMessages = []
@@ -134,6 +163,7 @@ extension NSScrollView {
         while let view = container, !(view is TranscriptRowContainer) { container = view.superview }
         row = container
         if let container { rowDisplacement = container.convert(NSPoint.zero, to: scroll.contentView).y - scroll.contentView.bounds.minY }
+        anchorSourceTop = sourceTop(in: scroll)
     }
     /// The reader's line is the top of the viewport. In a conversation it is
     /// in the first row, in page order, that reaches below it, and a native
@@ -164,7 +194,7 @@ extension NSScrollView {
     func hold(_ held: NSView) {
         catchUp()
         guard !following, let scroll, held.enclosingScrollView === scroll else { return }
-        source = nil; surface = nil; row = held
+        source = nil; surface = nil; anchorSourceTop = nil; row = held
         rowDisplacement = held.convert(NSPoint.zero, to: scroll.contentView).y - scroll.contentView.bounds.minY
     }
     func captureDocument() {
@@ -238,14 +268,14 @@ extension NSScrollView {
                 // The text's surface is gone for good (its row let go of its
                 // tree): the row alone holds the line from here, and a new
                 // capture may take the rebuilt text again.
-                if source != nil, surface == nil { source = nil }
+                if source != nil, surface == nil { source = nil; anchorSourceTop = nil }
                 delta = top - clip.bounds.minY - rowDisplacement
             } else if let next = successor(in: scroll) {
                 // The row was replaced by one drawing the same messages. Until
                 // it is placed there is nothing to correct against yet.
                 guard next.ready else { return true }
                 let bottom = rowBottomDisplacement
-                source = nil; surface = nil; row = next.row
+                source = nil; surface = nil; anchorSourceTop = nil; row = next.row
                 rowDisplacement = bottom - next.row.frame.height
                 continue
             } else {
@@ -255,13 +285,20 @@ extension NSScrollView {
                 // Held to the character, the row may have moved within the
                 // reader's line (text above it in the row re-measured): the
                 // row's own place is taken again from where it now stands.
-                if bySource, let row, let top = heldRowTop(row, in: scroll) { rowDisplacement = top - clip.bounds.minY }
+                if bySource, let row, let top = heldRowTop(row, in: scroll) { rowDisplacement = top - clip.bounds.minY; anchorSourceTop = sourceTop(in: scroll) }
+                else { anchorDocumentTop = clip.bounds.minY + rowDisplacement }
                 return true
             }
             let previous = clip.bounds.origin
             setOrigin(NSPoint(x: previous.x, y: previous.y + delta))
             guard clip.bounds.origin != previous else { return true }
             correctionCount += 1
+            // What this write moved is paid, and only that: a movement of the
+            // row the write itself caused (rows measured as it scrolled) is
+            // still owed by a reader movement before the next restore.
+            let moved = clip.bounds.origin.y - previous.y
+            if let paid = anchorDocumentTop { anchorDocumentTop = paid + moved }
+            if let paid = anchorSourceTop { anchorSourceTop = paid + moved }
         }
         geometryChanged()
         return true

@@ -318,7 +318,7 @@ extension WorkspaceModel {
     }
     func latest(sessionID: String? = nil) {
         if let id = sessionID ?? selectedID, let view = displays[id] {
-            view.revealRead = nil
+            view.abandonReveal()
             view.scrollAnchor = .init(id: "", offset: 0, followsBottom: true)
             anchorChanged(view); reloadHistory(id)
         }

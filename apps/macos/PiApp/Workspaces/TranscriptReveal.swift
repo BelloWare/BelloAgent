@@ -16,6 +16,8 @@ struct TranscriptReveal: Equatable, Sendable {
     }
     /// Bumped by every request, so asking for the same place again lands again.
     var serial: Int
+    /// Asked for by the find bar, which marks its own match.
+    var fromFind = false
     /// How far below the viewport's top a revealed row lands.
     static let landing: Double = 24
 }
@@ -32,10 +34,10 @@ extension WorkspaceModel {
     /// show). The chat should be the selected one (or a side shown beside
     /// it): nothing is placed in a transcript nobody is showing.
     @discardableResult
-    func revealInTranscript(sessionID id: String, messageID: String, mark: TranscriptReveal.Mark? = nil) async -> Bool {
+    func revealInTranscript(sessionID id: String, messageID: String, mark: TranscriptReveal.Mark? = nil, fromFind: Bool = false) async -> Bool {
         guard !Task.isCancelled, transcriptShows(id), let view = displays[id], let item = record(id) else { return false }
         revealSerial += 1
-        view.reveal = TranscriptReveal(messageID: messageID, mark: mark, serial: revealSerial)
+        view.reveal = TranscriptReveal(messageID: messageID, mark: mark, serial: revealSerial, fromFind: fromFind)
         if view.messages.contains(where: { $0.id == messageID }) {
             land(view, on: messageID)
             return true
@@ -76,7 +78,7 @@ extension WorkspaceModel {
         // must not land on an earlier match whose read came back last.
         revealSerial += 1
         let serial = revealSerial, navigation = messageNavigationRevision
-        view.revealRead = serial
+        view.revealRead = serial; view.revealFailure = nil
         // Only into a transcript that still shows this chat: a read that
         // lands after the reader went to another chat leaves this one as it was.
         func current() -> Bool {
@@ -96,7 +98,9 @@ extension WorkspaceModel {
             anchorChanged(view)
             return true
         } catch {
-            if !(error is CancellationError), current() { view.olderPage.error = error.localizedDescription }
+            // Said to whoever asked (the find bar shows it), not at the
+            // window's earlier edge, whose Retry reads a different page.
+            if !(error is CancellationError), current() { view.revealFailure = error.localizedDescription }
             return false
         }
     }
