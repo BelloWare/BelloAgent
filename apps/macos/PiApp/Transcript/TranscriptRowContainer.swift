@@ -283,6 +283,10 @@ struct TranscriptRowEnvironment: Equatable {
         self.toolInputs = toolInputs
         self.disclosure = disclosure.map { TranscriptRowDisclosure.of(item, in: $0, inputs: toolInputs) } ?? .default
         super.init(frame: .zero)
+        // A long page moves every row below a change in one pass; nothing
+        // listens for a row's frame or bounds, so moving one posts nothing.
+        postsFrameChangedNotifications = false
+        postsBoundsChangedNotifications = false
         // A row never paints outside itself, so a transient mismatch between a
         // resizing host and its frame can never draw over the next row.
         clipsToBounds = true

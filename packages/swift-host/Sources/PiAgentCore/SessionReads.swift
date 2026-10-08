@@ -16,13 +16,15 @@ extension AgentSession {
             throw AgentError("history_changed", "This conversation changed. Reload the visible history.")
         }
         let entry = cursor?.entry ?? params["entry"].text
+        // "edge": "start" reads the chat's first page, wherever the reader is.
+        let fromStart = params["edge"].text == "start"
         // A chat opened from its metadata file learns where its older rows
         // are the first time a page reaches past the rows it loaded, without
         // holding the actor: the chat is read again after.
         if olderRows > 0, olderIndex == nil {
             let at = entry.flatMap { id in visible.firstIndex { $0.id == id } }, target = params["around"].text
             let older = params["direction"].text != "newer" && target == nil
-            if (entry != nil && at == nil) || (target.map { id in !visible.contains { $0.id == id } } ?? false) || (older && at == 0) { try await loadOlderRows() }
+            if fromStart || (entry != nil && at == nil) || (target.map { id in !visible.contains { $0.id == id } } ?? false) || (older && at == 0) { try await loadOlderRows() }
         }
         let lineage = presentationTimeline
         if let cursor, cursor.incarnation != displayEpoch || cursor.lineage != lineage {
@@ -33,8 +35,8 @@ extension AgentSession {
             let boundary = entry.flatMap(shown.position)
             if entry != nil && boundary == nil { throw AgentError("history_changed", "The history boundary is no longer available. Reload history.") }
             let target = params["around"].text
-            let around = target.flatMap(shown.position)
-            if target != nil && around == nil { throw AgentError("message_missing", "That message is outside the current branch. Its retained content is still inspectable.") }
+            let around = fromStart ? (shown.count > 0 ? 0 : nil) : target.flatMap(shown.position)
+            if !fromStart && target != nil && around == nil { throw AgentError("message_missing", "That message is outside the current branch. Its retained content is still inspectable.") }
             let forward = params["direction"].text == "newer" || around != nil
             let range = HistoryWindowPolicy.range(count: shown.count, before: forward ? nil : boundary,
                                                   after: forward ? boundary : nil, around: around, isUser: shown.isUser)
@@ -102,12 +104,19 @@ extension AgentSession {
                 let end=min(shown.count,cursor+block)
                 try shown.prefetch(cursor..<end)
                 try autoreleasepool {
-                    while cursor < end && hits.count < 100 { let m=try shown.row(cursor), text=m.retainedDisplayText; if query.isEmpty || text.localizedCaseInsensitiveContains(query) { hits.append(["id":JSON(m.id),"position":JSON(cursor+1),"preview":JSON(preview(text,bytes:240))]) }; cursor += 1 }
+                    while cursor < end && hits.count < 100 { let m=try shown.row(cursor), text=m.retainedDisplayText; if query.isEmpty || text.localizedCaseInsensitiveContains(query) { hits.append(["id":JSON(m.id),"position":JSON(cursor+1),"preview":JSON(preview(text,bytes:240)),"count":JSON(occurrences(of:query,in:text))]) }; cursor += 1 }
                 }
                 shown.forget(); block=min(block*2,4096)
             }
             return ["hits":.array(hits),"total":JSON(shown.count),"next":cursor < shown.count ? JSON(cursor) : .null,"revision":JSON(contentRevision)]
         }
+    }
+    /// Case-insensitive occurrences of `query` in `text` (zero for an empty query).
+    func occurrences(of query: String, in text: String) -> Int {
+        guard !query.isEmpty else { return 0 }
+        var count = 0, from = text.startIndex
+        while let found = text.range(of: query, options: [.caseInsensitive], range: from..<text.endIndex) { count += 1; from = found.upperBound }
+        return count
     }
     // A branch shortens the visible timeline, so its count alone cannot
     // identify a selection. Rows not loaded count as a chat holding every row

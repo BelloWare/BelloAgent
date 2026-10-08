@@ -276,9 +276,12 @@ import Combine
 @MainActor enum SidebarSearchReveal {
     /// Test seam: called instead of revealing.
     static var override: ((String, String) async -> Void)?
-    static func reveal(_ model: WorkspaceModel, chatID: String, messageID: String) async {
+    /// Lands the open transcript on the match (reading its page in when the
+    /// window does not hold it), opens the finished turn that folded it, and
+    /// marks the excerpt's match there (`revealInTranscript`).
+    static func reveal(_ model: WorkspaceModel, chatID: String, messageID: String, mark: TranscriptReveal.Mark? = nil) async {
         if let override { await override(chatID, messageID); return }
-        await model.revealMessage(sessionID: chatID, messageID: messageID)
+        await model.revealInTranscript(sessionID: chatID, messageID: messageID, mark: mark)
     }
 }
 
@@ -312,7 +315,7 @@ extension WorkspaceModel {
               (focusedSessionID ?? selectedID) == chatID, sidebarSearch.hit(for: chatID)?.messageID == hit.messageID else { return }
         // Cancelled by the next keystroke or open while it loads the page
         // around the match: the reveal stops at its next check.
-        let reveal = Task { await SidebarSearchReveal.reveal(self, chatID: chatID, messageID: hit.messageID) }
+        let reveal = Task { await SidebarSearchReveal.reveal(self, chatID: chatID, messageID: hit.messageID, mark: .excerpt(hit.excerpt, highlight: hit.highlight)) }
         sidebarSearch.revealing = reveal
         await withTaskCancellationHandler { await reveal.value } onCancel: { reveal.cancel() }
     }

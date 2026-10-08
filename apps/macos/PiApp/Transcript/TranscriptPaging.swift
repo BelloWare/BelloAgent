@@ -54,6 +54,26 @@ enum TranscriptPaging {
         for row in messages.reversed() { guard admits(row) else { break } }
         return kept == messages.count ? messages : Array(messages.suffix(kept))
     }
+    /// The window that keeps every row of `keeping` (the rows on the
+    /// reader's screen) and, within both caps, as many rows as it can toward
+    /// the requested side — earlier rows when `keepingEarlier` — letting go
+    /// of the rows past the kept ones on the other side and the farthest
+    /// rows of the requested side. Nil when the kept rows alone pass a cap.
+    static func window(_ messages: [TranscriptMessage], keeping: Set<String>, keepingEarlier: Bool) -> [TranscriptMessage]? {
+        let indices = messages.indices.filter { keeping.contains(messages[$0].id) }
+        guard let low = indices.first, let high = indices.last else { return window(messages, keepingEarlier: keepingEarlier) }
+        let caps = residentCaps
+        var kept = 0, bytes = 0
+        for index in low...high { kept += 1; bytes += size(messages[index]) }
+        guard kept <= caps.rows, bytes <= caps.bytes || kept == 1 else { return nil }
+        var start = low, end = high + 1
+        if keepingEarlier {
+            while start > 0, kept < caps.rows, bytes + size(messages[start - 1]) <= caps.bytes { start -= 1; kept += 1; bytes += size(messages[start]) }
+        } else {
+            while end < messages.count, kept < caps.rows, bytes + size(messages[end]) <= caps.bytes { bytes += size(messages[end]); end += 1; kept += 1 }
+        }
+        return Array(messages[start..<end])
+    }
     /// Whether the window can take a whole page of earlier rows (a history
     /// page is at most `HistoryWindowPolicy.rows` rows and one envelope)
     /// without letting go of any row it holds. A page that fills itself with

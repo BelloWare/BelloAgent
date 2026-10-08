@@ -25,8 +25,14 @@ struct ContentGeometry: Equatable {
     /// the end has stopped following, and a page that kept dragging them back
     /// from there is the thing this band exists to stop.
     static let followThreshold: CGFloat = 24
-    /// Within this many points of the top the page asks for the earlier page.
+    /// A page no taller than the viewport and this much more is short: the
+    /// reader cannot scroll it to ask for more, so it fills itself.
     static let earlierThreshold: CGFloat = 240
+    /// How far ahead of the reader the page reads the rows past either end of
+    /// its window: three screenfuls, and never less than 2,400 points. A page
+    /// arrives while the reader is still that far from the edge, so a steady
+    /// scroll or a fling never reaches an edge and waits there.
+    static func prefetchDistance(viewport: CGFloat) -> CGFloat { max(2_400, viewport * 3) }
 
     struct Snapshot: Equatable {
         var sessionID: String
@@ -157,6 +163,10 @@ struct ContentGeometry: Equatable {
     private var readerNavigationStarted = false
     private var viewportResizePending = false
     private var upwardNavigation = false
+    /// Which way the reader's own movements last went, for reading ahead of
+    /// them (`requestEarlierIfNearTop`, `requestNewerIfNearBottom`).
+    private var travelingUp = false
+    private var lastReaderOffset: CGFloat?
     private var explicitDestination = false
     private var pendingAnchor: TranscriptAnchor? { didSet {
         pendingAnchorRow = nil
@@ -268,6 +278,7 @@ struct ContentGeometry: Equatable {
             self.republish()
             (self.scrollView?.documentView as? TranscriptNativeDocument)?.spanningDisclosureChanged()
         }
+        session.visibleMessageIDs = { [weak self] in self?.visibleMessageIDs() ?? [] }
         reset()
         scrollView?.transcriptReading.bind(scope: session.id + ":" + session.presentationGeneration.uuidString)
         frames = [:]
@@ -562,7 +573,12 @@ struct ContentGeometry: Equatable {
             })
         }
         scrollObservers.append(center.addObserver(forName: NSScrollView.willStartLiveScrollNotification, object: scrollView, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.readerWillNavigate(upward: false) }
+            MainActor.assumeIsolated {
+                // A drag of the scroller is the reader's: a place still being
+                // brought into view yields to it.
+                (self?.scrollView?.documentView as? TranscriptNativeDocument)?.focusPending = false
+                self?.readerWillNavigate(upward: false, knownDirection: false)
+            }
         })
         if let document = scrollView.documentView {
             document.postsFrameChangedNotifications = true
@@ -610,8 +626,8 @@ struct ContentGeometry: Equatable {
         }
     }
     func rowFrame(_ id: String, _ frame: CGRect) {
-        guard frames[id] != frame else { return }
-        frames[id] = frame
+        // One lookup: a pass reports every row it places.
+        guard frames.updateValue(frame, forKey: id) != frame else { return }
         guard let anchor = pendingAnchor else { return }
         if pendingAnchorRow == nil { pendingAnchorRow = rowIdentifier(for: anchor.id) }
         if pendingAnchorRow == id { scheduleSettle() }
@@ -647,6 +663,22 @@ struct ContentGeometry: Equatable {
         case nil: presentationSession?.pinnedHistoryIDs = []
         }
     }
+    /// The messages drawn by the rows on screen. Only these: a margin around
+    /// them could hold a row the reader can never scroll away from, in a
+    /// window whose byte budget leaves it short, and no page would join.
+    func visibleMessageIDs() -> Set<String> {
+        guard let snapshot, viewport.height > 0 else { return [] }
+        let top = position.offset, bottom = position.offset + viewport.height
+        var ids: Set<String> = []
+        for item in snapshot.items {
+            guard let frame = frames[item.id], frame.maxY > top, frame.minY < bottom else { continue }
+            switch item {
+            case .message(let message): ids.insert(message.id)
+            case .block(let block): for reply in block.replies { ids.insert(reply.id) }
+            }
+        }
+        return ids
+    }
     /// A row's frame in content coordinates, for tests.
     func rowFrame(of id: String) -> CGRect? { frames[id] }
     /// The row the reader is on and where it sits, for a layout that has to
@@ -660,6 +692,89 @@ struct ContentGeometry: Equatable {
         guard let anchor = readingAnchor else { return nil }
         return TranscriptAnchor(id: rowIdentifier(for: anchor.id), offset: anchor.offset, followsBottom: false)
     }
+    /// The message whose row draws `messageID`: itself, or for a tool's
+    /// result shown inside its call's card, the reply that made the call.
+    func drawingMessageID(for messageID: String) -> String {
+        guard let snapshot, !snapshot.items.contains(where: { $0.messageIDs.contains(messageID) }),
+              let at = snapshot.messages.firstIndex(where: { $0.id == messageID }), let call = snapshot.messages[at].toolCallID,
+              // The call the planner pairs it with: the latest one before it.
+              let issuer = snapshot.messages[..<at].last(where: { $0.role == "assistant" && ($0.tools ?? []).contains { $0.id == call } }) else { return messageID }
+        return issuer.id
+    }
+    /// Makes `needle` in message `messageID` something the page draws, as a
+    /// browser's find reveals hidden text: the finished turn that folded the
+    /// message away opens, and so do the work section and the card or the
+    /// reasoning the text is in. Returns the message whose row draws it, or
+    /// nil while the page does not hold the message.
+    func revealContent(of messageID: String, needle: String, call scoped: String? = nil) -> String? {
+        guard let snapshot, let disclosure, let message = snapshot.messages.first(where: { $0.id == messageID }) else { return nil }
+        let drawing = drawingMessageID(for: messageID)
+        guard unfoldTurn(containing: drawing) else { return nil }
+        // Every row the message is drawn in: a response laid out as a timeline
+        // has a block for each part, and each keeps its own disclosures.
+        let blocks: [TranscriptBlock] = snapshot.items.compactMap { item in
+            if case .block(let block) = item, block.replies.contains(where: { $0.id == drawing }) { return block }; return nil
+        }
+        var changed = false
+        func open(_ part: TranscriptDisclosure.Part) { if !disclosure.isOpen(part) { disclosure.setOpen(true, part); changed = true } }
+        func has(_ text: String?) -> Bool { !needle.isEmpty && text.map { !transcriptRanges(of: needle, in: $0 as NSString, flexible: true).isEmpty } ?? false }
+        // A result drawn as a row of its own (its call is not on the page)
+        // opens under its own line.
+        if message.kind == "toolResult", drawing == message.id, has(message.text) { open(.compaction(message.id)) }
+        let call = scoped ?? message.toolCallID
+        if blocks.isEmpty, let drawn = snapshot.messages.first(where: { $0.id == drawing }) {
+            // A row of one message: its cards are keyed by call.
+            for tool in drawn.tools ?? [] where tool.id == call || has(tool.output) || has(tool.input) { open(.tool(tool.id)) }
+            if has(drawn.thinking) { open(.reasoning(drawn.id)) }
+        }
+        for block in blocks {
+            for reply in block.replies {
+                // Cards are keyed as the row draws them (`TranscriptRowDisclosure`).
+                for tool in reply.tools ?? [] where tool.id == call || has(tool.output) || has(tool.input) {
+                    open(.tool(block.presentation == .work ? ToolOccurrence.key(reply.id, tool.id) : tool.id))
+                    if block.activity.contains(where: { $0.id == reply.id }) || block.presentation == .work { open(.work(block.key)) }
+                }
+                if has(reply.thinking) { open(.reasoning(reply.id)); open(.work(block.key)) }
+            }
+            // A timeline part keeps its own text (reasoning among it) and folds as work.
+            if has(block.part?.text) { open(.work(block.key)) }
+            // A response folded by the reader shows nothing of what it holds.
+            if let response = block.responseID {
+                for part in [TranscriptDisclosure.Part.response(response), .responseLine(response)] where disclosure.isOpen(part) {
+                    disclosure.setOpen(false, part); changed = true
+                }
+            }
+        }
+        if let drawn = snapshot.messages.first(where: { $0.id == drawing }), drawn.kind == "requestInfo" {
+            for part in [TranscriptDisclosure.Part.response(drawn.id), .responseLine(drawn.id)] where disclosure.isOpen(part) {
+                disclosure.setOpen(false, part); changed = true
+            }
+        }
+        // The rows read their disclosures when the page publishes again; a
+        // row already on screen re-measures in that pass.
+        if changed { republish() }
+        return drawing
+    }
+    /// A reveal still reading its page is let go of, and the place it was
+    /// for with it, so a page read in later for another reason does not take
+    /// the reader there.
+    private func abandonPendingReveal() { presentationSession?.abandonReveal() }
+    /// Opens the finished turn that has folded message `messageID` away, so
+    /// a place in it can be shown. Returns whether the page holds the message.
+    @discardableResult func unfoldTurn(containing messageID: String) -> Bool {
+        guard let snapshot, let disclosure else { return false }
+        guard let item = snapshot.items.first(where: { $0.messageIDs.contains(messageID) }) else { return false }
+        let group: String?
+        switch item {
+        case .message(let message): group = message.foldGroup
+        case .block(let block): group = block.foldGroup
+        }
+        if let group, !disclosure.isOpen(.turnFold(group)) { disclosure.setOpen(true, .turnFold(group)) }
+        return true
+    }
+    /// Whether the page is still taking the reader somewhere: a destination
+    /// or a first placement not yet landed, or a jump still running.
+    var landingPending: Bool { pendingAnchor != nil || awaitingFirstPlacement || openingPlacementPending || jumping }
     /// While a jump to the newest row is running it owns the scroll position;
     /// nothing else may move the reader.
     var isPlacingScroll: Bool { jumping }
@@ -700,6 +815,13 @@ struct ContentGeometry: Equatable {
             // after following/restoration has put the reader back in place.
             if resized, !jumping, !awaitingFirstPlacement, documentSettled {
                 requestEarlierIfNearTop(scrollY: position.offset)
+            }
+            // A page read in at an edge has landed and the reader is back on
+            // their line: if they are still within reach of an edge, the next
+            // page is read now, rather than when the reader next moves.
+            if !resized, !jumping, !awaitingFirstPlacement, !followsBottom, documentSettled {
+                requestEarlierIfNearTop(scrollY: position.offset)
+                requestNewerIfNearBottom()
             }
         }
         // An explicit jump owns scrolling until it lands. A reply arriving
@@ -789,6 +911,11 @@ struct ContentGeometry: Equatable {
            let frame = frames[rowIdentifier(for: anchor.id)] {
             return min(max(0, frame.minY - anchor.offset), bottom)
         }
+        // A page standing on its newest row and following it stays there in
+        // the pass that changes the rows above it (an estimate measuring, a
+        // card opening). Landed a run-loop turn later by `settle`, the frame
+        // between showed the rows on screen pushed down by the difference.
+        if pinsNewestRow { return bottom }
         return nil
     }
     private var documentSettled: Bool {
@@ -798,6 +925,7 @@ struct ContentGeometry: Equatable {
     /// A message folded into a block scrolls to the block that holds it.
     private func rowIdentifier(for messageID: String) -> String {
         guard let snapshot else { return messageID }
+        let messageID = drawingMessageID(for: messageID)
         if let body = snapshot.items.first(where: { item in
             if case .block(let block) = item { return block.presentation == .body && block.message?.id == messageID }; return false
         }) { return body.id }
@@ -831,7 +959,13 @@ struct ContentGeometry: Equatable {
     /// The reader scrolled: decide whether the page still follows the newest
     /// message, show or hide the jump pill, ask for the earlier page near the
     /// top, and a little later remember the anchor and check for a read.
-    func readerWillNavigate(upward: Bool) {
+    /// `knownDirection` is false where a gesture begins without saying which
+    /// way it goes (AppKit's live-scroll start); its first movement says.
+    func readerWillNavigate(upward: Bool, knownDirection: Bool = true) {
+        if knownDirection { travelingUp = upward }
+        // The reader has gone somewhere themselves: a reveal still reading
+        // its page does not take them away from it.
+        abandonPendingReveal()
         scrollView?.transcriptReading.readerMoved()
         upwardNavigation = readerNavigationStarted ? upwardNavigation || upward : upward; readerNavigationStarted = true
         readerOwnsPosition()
@@ -886,6 +1020,10 @@ struct ContentGeometry: Equatable {
         let short = liveDistanceToBottom
         let inBand = short <= Self.followThreshold + 1
         let delivery = scrollView.transcriptReading.ledger.delivered(position.offset, floor: position.offset + short)
+        // The page's own movements (a correction for rows read in above) move
+        // the offset too; the reader's direction is measured from wherever
+        // the clip last stood.
+        defer { lastReaderOffset = position.offset }
         // While the page is still putting itself where this chat opens, or
         // landing a jump, it has not finished writing where the reader should
         // be: AppKit's own clamping as the rows above them settle is not the
@@ -899,6 +1037,8 @@ struct ContentGeometry: Equatable {
         // pass of idle measuring put them back on it.
         let placing = openingPlacementPending || jumping || viewportResizePending
         if delivery == .reader, initialized, !placing {
+            abandonPendingReveal()
+            if let last = lastReaderOffset, abs(position.offset - last) > 0.5 { travelingUp = position.offset < last }
             scrollView.transcriptReading.readerMoved()
             readerOwnsPosition()
             pinIfAtLatest(inBand)
@@ -994,7 +1134,8 @@ struct ContentGeometry: Equatable {
     /// history holds, the chat takes its live rows again, and a reply still
     /// being written goes on arriving where the reader is.
     private func requestNewerIfNearBottom() {
-        guard position.viewport > 0, !jumping, liveDistanceToBottom < Self.earlierThreshold, let sessionID,
+        let reach = travelingUp ? Self.earlierThreshold : Self.prefetchDistance(viewport: position.viewport)
+        guard position.viewport > 0, !jumping, liveDistanceToBottom < reach, let sessionID,
               let session = presentationSession, session.newerPage.cursor != nil, !session.newerPage.loading,
               session.newerPage.error == nil, !session.historyState.loading, session.presentation.readyAt != nil else { return }
         reportPendingAnchor()
@@ -1005,7 +1146,13 @@ struct ContentGeometry: Equatable {
         // Rows the reader can scroll through again ask for the page before
         // them again on their own.
         if !short { earlierWaits = false }
-        guard scrollY < Self.earlierThreshold, !firstRow.isEmpty, let sessionID, let session = presentationSession,
+        // Read far ahead only in the direction the reader is going: the edge
+        // behind them asks at the edge, as before. Reading ahead at both ends
+        // of a window too short for both distances would let each page push
+        // out the rows the other end then asks for again.
+        let reach = short || !travelingUp ? Self.earlierThreshold : Self.prefetchDistance(viewport: viewport.height)
+        guard scrollY < reach, !firstRow.isEmpty,
+              let sessionID, let session = presentationSession,
               !session.historyState.loading, !session.olderPage.loading, session.olderPage.error == nil,
               session.olderPage.cursor != nil, session.presentation.readyAt != nil else { return }
         if short {

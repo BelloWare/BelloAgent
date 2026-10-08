@@ -98,6 +98,66 @@ first 100 of its 400 identical rows (`PI_PERF_SCROLL_SAMPLE_ROWS`, 0 for the
 whole page). Fixtures that page past both resident caps lower them through
 `TranscriptPaging.residentCaps`.
 
+## Long-chat scrolling, reveal and find (0.1.122)
+
+`LongChatScrollFixture.swift` builds a long chat shaped like a real one: a
+question per turn (some with code), a reply with two tool calls (grep and
+read) and their output, and a long Markdown answer with code. Every 37th
+answer has forty sections. The chat is read from its journal through the
+app's own `HistoryReader` and shown in the real `ConversationPaneView`.
+`drive(points:seconds:input:)` scrolls it one step per 60 Hz frame and
+records:
+
+- frame intervals (start to start; main-thread work between frames
+  included);
+- every move of the reader's row that the reader's input does not explain;
+- stall frames: the reader pushing at an edge with more of the chat still to
+  read;
+- page reads and read errors.
+
+Inputs:
+- `.gesture`: the clip moves at once, inside a live scroll;
+- `.wheel`: real pixel wheel events, which AppKit applies on its own
+  schedule, so the row may only move the way the reader goes, at most four
+  steps;
+- `.scroller`: knob drags, which may only move the row the way the reader
+  goes.
+
+- `LongChatScrollTests` (serial lane) covers:
+  - gesture up to the first message and back down;
+  - a 400 pt wheel fling;
+  - the scroller held at the top, then the bottom;
+  - Home to the first message, which then stays put while rows measure,
+    and ⌘↓ back;
+  - scrolling while a reply streams.
+
+  It asserts zero jumps, zero lost rows and zero read errors in every
+  configuration, and zero stall frames for gestures and flings. Frame
+  budgets apply in Release only (`releaseBudget`):
+  - p95 ≤ 50 ms;
+  - p99 ≤ 100 ms;
+  - max ≤ 150 ms;
+  - at most 5% of frames over 50 ms.
+
+  With the scroller held at an edge, only the max applies. The reasons are
+  in `docs/perf/long-chat-scrolling.md`. These budgets record the
+  improvement, but still allow visible long frames.
+- `TranscriptRevealTests` and `TranscriptFindTests` (parallel lane) cover
+  `revealInTranscript` and the ⌘F find bar on the same fixture:
+  - a message read in and landed on;
+  - an excerpt mark resolved to its own occurrence;
+  - the newest of two reveals winning;
+  - a folded finished turn opening;
+  - matches across the whole chat stepped through (and wrapped);
+  - a match in a tool's output and in a read card's folded middle;
+  - Escape clearing every mark.
+
+  If a test sets `TranscriptDisplay.mode`, it restores the previous value.
+- `LongChatScrollProbeTests` is the measurement behind these tests. It runs
+  only with `PI_LONG_PROBE=1` (and `TEST_RUNNER_PI_LONG_PROBE=1`) and prints
+  `LONGSCROLL` lines for a 200-turn chat; `PI_LONG_TURNS` and
+  `PI_LONG_STEP` change the chat and the step.
+
 ## Markdown correctness, timing and diagnostic benchmark
 
 `MarkdownStreamingCorrectnessTests` keeps the nine deterministic semantic
