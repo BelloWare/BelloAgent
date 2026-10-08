@@ -108,6 +108,8 @@ struct TranscriptVersionView: Equatable, Sendable {
     @Published var reveal: TranscriptReveal?
     /// ⌘F, ⌘G and ⇧⌘G for this chat's find bar (`TranscriptFindCommand`).
     @Published var findCommand: TranscriptFindCommand?
+    /// The pane that last opened this chat's find bar.
+    weak var findHost: (any TranscriptFindHost)?
     /// The messages of the rows on the reader's screen right now, from
     /// the page showing this chat. A page read in at an edge never lets go of
     /// them, whatever the last reported anchor says.

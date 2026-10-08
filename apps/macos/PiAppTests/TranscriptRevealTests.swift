@@ -6,8 +6,8 @@ import AppKit
 /// loaded or not — a place in it marked and shown, the newest of quick
 /// requests winning, and a finished turn that folded the message opening.
 final class TranscriptRevealTests: XCTestCase {
-    @MainActor private func chat(turns: Int = 120) async throws -> LongChatScroll {
-        let chat = try await LongChatScroll(turns: turns)
+    @MainActor private func chat(turns: Int = 120, bigOutputTurn: Int? = nil) async throws -> LongChatScroll {
+        let chat = try await LongChatScroll(turns: turns, bigOutputTurn: bigOutputTurn)
         registerWorkspaceFixtureTeardown(chat.model, root: chat.root)
         addTeardownBlock { @MainActor in chat.close() }
         try await chat.ready()
@@ -112,6 +112,35 @@ final class TranscriptRevealTests: XCTestCase {
         for _ in 0..<30 { chat.draw(); try await Task.sleep(for: .milliseconds(16)) }
         XCTAssertTrue(landed(chat, "a60b"), "An earlier reveal landing late must not take the reader away")
         XCTAssertFalse(chat.view.messages.contains { $0.id == "a10b" }, "The superseded read was never adopted")
+    }
+
+    /// A sidebar search match in a tool's output, after a result of the same
+    /// reply too large to share a page with it: the hit names the result's
+    /// own row, so the page read for it holds the match, which is marked and
+    /// shown — not the reply, whose page ends before that result.
+    @MainActor func testASidebarMatchInAToolOutputPastALargeOneIsShown() async throws {
+        let chat = try await chat(turns: 40, bigOutputTurn: 10)
+        let folder = chat.root.appendingPathComponent("search")
+        let url = folder.appendingPathComponent(ChatSearchDatabase.fileName)
+        let index = ChatSearchIndex(url: url, indexDirectory: folder), query = ChatSearchQuery(url: url)
+        _ = await index.reconcile([ChatSearchSource(id: chat.chat.id, path: try XCTUnwrap(chat.chat.path))])
+        let hit = try XCTUnwrap(try await query.search("zephyr checkpoint")[chat.chat.id])
+        await index.close()
+        XCTAssertEqual(hit.kind, .toolOutput)
+        XCTAssertEqual(hit.messageID, "r10b", "The result's own row")
+        XCTAssertFalse(chat.view.messages.contains { $0.id == hit.messageID }, "The match starts outside the window")
+        await SidebarSearchReveal.reveal(chat.model, chatID: chat.chat.id, messageID: hit.messageID, mark: .excerpt(hit.excerpt, highlight: hit.highlight))
+        let document = try XCTUnwrap(chat.document)
+        func shown() -> Bool {
+            guard let text = document.focusText, !document.focusPending, let manager = text.layoutManager, let container = text.textContainer,
+                  let clip = chat.scroll?.contentView, NSMaxRange(document.focusRange) <= (text.textStorage?.length ?? 0), document.focusRange.length > 0 else { return false }
+            let found = ((text.textStorage?.string ?? "") as NSString).substring(with: document.focusRange).lowercased()
+            let rect = text.convert(manager.boundingRect(forGlyphRange: manager.glyphRange(forCharacterRange: document.focusRange, actualCharacterRange: nil), in: container), to: clip)
+            return found == "zephyr checkpoint" && clip.bounds.contains(CGPoint(x: clip.bounds.midX, y: rect.midY))
+        }
+        do {
+            try await eventually("The match in the second output was never marked and shown", timeout: .seconds(20)) { chat.draw(); return shown() }
+        } catch { print("REVEALDBG " + state(chat, hit.messageID)); throw error }
     }
 
     /// A finished turn folds its work behind one line; revealing a message in

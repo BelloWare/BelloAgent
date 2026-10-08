@@ -18,7 +18,10 @@ import AppKit
     let firstID = "u0"
     var lastID: String { "a\(turns - 1)b" }
 
-    static func journal(turns: Int) throws -> Data {
+    /// `bigOutputTurn`: that turn's first tool output is larger than a page
+    /// may hold (`HistoryWindowPolicy.envelopeBytes`), and its second one
+    /// ends with a line nothing else says, "zephyr checkpoint 42".
+    static func journal(turns: Int, bigOutputTurn: Int? = nil) throws -> Data {
         let encoder = JSONEncoder()
         var data = Data(), parent: String? = nil
         func add(_ id: String, _ message: [String: WireValue]) throws {
@@ -41,11 +44,12 @@ import AppKit
                 .object(["type": .string("toolCall"), "id": .string("t\(turn)b"), "name": .string("read"),
                          "arguments": .object(["path": .string("Sources/Module\(turn % 17)/Parser\(turn).swift")])]),
             ])])
-            let grep = (0..<(5 + turn * 7 % 60)).map { "Sources/Module\(turn % 17)/File\($0).swift:\($0 * 3 + 1): let token = parse(input, at: \($0))" }.joined(separator: "\n")
+            let lines = turn == bigOutputTurn ? 5_000 : 5 + turn * 7 % 60
+            let grep = (0..<lines).map { "Sources/Module\(turn % 17)/File\($0).swift:\($0 * 3 + 1): let token = parse(input, at: \($0))" }.joined(separator: "\n")
             try add("r\(turn)a", ["role": .string("toolResult"), "toolCallId": .string("t\(turn)a"), "toolName": .string("bash"),
                                   "content": .array([.object(["type": .string("text"), "text": .string(grep)])])])
             try add("r\(turn)b", ["role": .string("toolResult"), "toolCallId": .string("t\(turn)b"), "toolName": .string("read"),
-                                  "content": .array([.object(["type": .string("text"), "text": .string(code(20 + turn * 13 % 150, turn))])])])
+                                  "content": .array([.object(["type": .string("text"), "text": .string(code(20 + turn * 13 % 150, turn) + (turn == bigOutputTurn ? "\n// zephyr checkpoint 42" : ""))])])])
             let sections = turn % 37 == 20 ? 40 : 1 + turn % 4
             var parts: [String] = []
             for section in 0..<sections {
@@ -61,12 +65,12 @@ import AppKit
         return data
     }
 
-    init(turns: Int, width: CGFloat = 900, height: CGFloat = 760) async throws {
+    init(turns: Int, width: CGFloat = 900, height: CGFloat = 760, bigOutputTurn: Int? = nil) async throws {
         self.turns = turns
         root = scratchRoot("long-chat-scroll")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let file = root.appendingPathComponent("long.jsonl")
-        try Self.journal(turns: turns).write(to: file)
+        try Self.journal(turns: turns, bigOutputTurn: bigOutputTurn).write(to: file)
         model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
         try await model.reloadConfiguration()
         chat = ChatRecord(id: "long", workspaceID: "project", title: "Long", path: file.path, profileID: "profile")

@@ -31,8 +31,8 @@ enum ChatSearchKind: String, Sendable {
 /// open the transcript for it, and the text around the match.
 struct ChatSearchHit: Sendable, Equatable {
     var chatID: String
-    /// The transcript row to open at: the message itself, or for a tool's
-    /// output the reply whose card shows it.
+    /// The message to open at: the one that holds the match, a tool's
+    /// result row for its output (the transcript shows it in its call's card).
     var messageID: String
     var kind: ChatSearchKind
     /// The match with some text around it, on one line.
@@ -206,6 +206,44 @@ actor ChatSearchIndex {
     private func removeForgotten() {
         guard !unremoved.isEmpty, let db = try? ready() else { return }
         for chat in unremoved where (try? remove(chat, db: db)) != nil { unremoved.remove(chat) }
+        scrubLog()
+    }
+
+    /// A chat's rows were deleted, but the write-ahead log can still hold
+    /// the pages they were on: a passive checkpoint copies the log into the
+    /// database and leaves its frames, and a reader holding an older
+    /// snapshot keeps them past any checkpoint. The log is emptied
+    /// (`TRUNCATE`) once no reader holds it, retried with backoff for a
+    /// while, and again after the next pass or deletion if it never could be.
+    /// Every opening starts with one too: a launch after a crash may find
+    /// the log of a deletion that was never emptied.
+    private var logHoldsDeleted = false
+    private var scrubbing: Task<Void, Never>?
+    static let scrubPatience: Duration = .seconds(30)
+    private func scrubLog() {
+        guard logHoldsDeleted, scrubbing == nil, !stopping else { return }
+        scrubbing = Task { await self.scrubUntilEmpty() }
+    }
+    private func scrubUntilEmpty() async {
+        defer { scrubbing = nil }
+        let deadline = ContinuousClock.now + Self.scrubPatience
+        var wait = Duration.milliseconds(20)
+        while logHoldsDeleted {
+            // A pass may be inside a transaction: it scrubs when it lets go.
+            guard !passing, let db else { return }
+            if truncateLog(db) { logHoldsDeleted = false; return }
+            guard ContinuousClock.now + wait < deadline else { return }
+            try? await Task.sleep(for: wait)
+            wait = min(wait * 2, .seconds(1))
+        }
+    }
+    /// One try at copying the log into the database and emptying it, without
+    /// waiting on readers: true once the log file holds nothing.
+    private func truncateLog(_ db: OpaquePointer) -> Bool {
+        sqlite3_busy_timeout(db, 0); defer { sqlite3_busy_timeout(db, 2_000) }
+        guard sqlite3_wal_checkpoint_v2(db, nil, SQLITE_CHECKPOINT_TRUNCATE, nil, nil) == SQLITE_OK else { return false }
+        let size = (try? FileManager.default.attributesOfItem(atPath: url.path + "-wal")[.size] as? Int) ?? 0
+        return size == 0
     }
 
     init(url: URL, indexDirectory: URL = FileManager.default.temporaryDirectory) {
@@ -244,6 +282,7 @@ actor ChatSearchIndex {
             try ChatSearchDatabase.protect(url)
         } catch { sqlite3_close_v2(handle); throw error }
         db = handle
+        logHoldsDeleted = true; scrubLog()
         return handle
     }
 
@@ -255,6 +294,10 @@ actor ChatSearchIndex {
         if !passing { removeForgotten(); closeNow() }
     }
     private func closeNow() {
+        // One last try while a query may still be open (closing the last
+        // connection empties the log by itself).
+        if let db, logHoldsDeleted, truncateLog(db) { logHoldsDeleted = false }
+        scrubbing?.cancel()
         if let db { sqlite3_close_v2(db) }
         db = nil
     }
@@ -268,7 +311,7 @@ actor ChatSearchIndex {
         guard !stopping, !passing, let db = try? ready() else { return pass }
         passing = true
         // A deleted chat's rows go before anything else, shutdown included.
-        defer { passing = false; removeForgotten(); if stopping { closeNow() } }
+        defer { passing = false; removeForgotten(); scrubLog(); if stopping { closeNow() } }
         let known = states(db)
         let listed = Set(sources.map(\.id)).subtracting(forgotten)
         for chat in known.keys where !listed.contains(chat) {
@@ -338,6 +381,7 @@ actor ChatSearchIndex {
             try run(db, "DELETE FROM chats WHERE chat=?", [chat])
             try ChatSearchDatabase.execute(db, "COMMIT")
         } catch { _ = try? ChatSearchDatabase.execute(db, "ROLLBACK"); throw error }
+        logHoldsDeleted = true
     }
 
     /// One row of the visible timeline, at its position.
@@ -581,8 +625,8 @@ final class ChatSearchQuery: @unchecked Sendable {
         if delay > 0 { Thread.sleep(forTimeInterval: delay) }
         let needle = ChatSearchHit.collapsed(query)
         guard ChatSearchDatabase.answers(needle), let db = try connection() else { return [:] }
-        // One read transaction: the winners, their text and their tools'
-        // calls all come from the same version of the index, while a pass
+        // One read transaction: the winners and their text come from the
+        // same version of the index, while a pass
         // may be replacing rows (and reusing their ids) underneath.
         try ChatSearchDatabase.execute(db, "BEGIN")
         defer { _ = sqlite3_exec(db, "COMMIT", nil, nil, nil) }
@@ -608,27 +652,17 @@ final class ChatSearchQuery: @unchecked Sendable {
             guard status == SQLITE_ROW, let chat = ChatSearchDatabase.text(statement!, 0), let message = ChatSearchDatabase.text(statement!, 1),
                   let kind = ChatSearchDatabase.text(statement!, 3).flatMap(ChatSearchKind.init(rawValue:)),
                   let text = ChatSearchDatabase.text(statement!, 5) else { throw StoreError.unavailable }
-            let call = ChatSearchDatabase.text(statement!, 2), position = sqlite3_column_int64(statement, 4)
             // The match as a line of the sidebar; the trigram index folds case
             // a little differently, so a document it found may read without one.
             let excerpt = ChatSearchHit.excerpt(of: needle, in: text)
                 ?? (String(ChatSearchHit.collapsed(String(text.prefix(400))).prefix(200)), NSRange(location: 0, length: 0), "")
-            var target = message
-            if kind == .toolOutput, let call, let issuer = try issuer(chat: chat, call: call, before: position, db: db) { target = issuer }
-            hits[chat] = ChatSearchHit(chatID: chat, messageID: target, kind: kind, excerpt: excerpt.excerpt, highlight: excerpt.highlight, context: excerpt.context)
+            // A tool's output names its own result row, not the reply whose card
+            // shows it: a page read around that reply can stop before a later
+            // result (a large one ahead of it fills the page), while one read
+            // around the result always holds it. The transcript draws it in
+            // its call's card when the page holds the call (`drawingMessageID`).
+            hits[chat] = ChatSearchHit(chatID: chat, messageID: message, kind: kind, excerpt: excerpt.excerpt, highlight: excerpt.highlight, context: excerpt.context)
         }
         return hits
-    }
-
-    /// The reply that made `call`: the transcript shows a tool's output in that reply's card.
-    private func issuer(chat: String, call: String, before position: Int64, db: OpaquePointer) throws -> String? {
-        var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(db, "SELECT msg FROM content WHERE chat=? AND call=? AND kind='toolInput' AND pos<=? ORDER BY pos DESC LIMIT 1",
-                                 -1, &statement, nil) == SQLITE_OK else { throw StoreError.unavailable }
-        defer { sqlite3_finalize(statement) }
-        sqlite3_bind_text(statement, 1, chat, -1, ChatSearchDatabase.transient)
-        sqlite3_bind_text(statement, 2, call, -1, ChatSearchDatabase.transient)
-        sqlite3_bind_int64(statement, 3, position)
-        return sqlite3_step(statement) == SQLITE_ROW ? ChatSearchDatabase.text(statement!, 0) : nil
     }
 }

@@ -29,7 +29,7 @@ final class TranscriptSurfaceMarker: NSView {
 /// The rows beyond either edge are read as the reader reaches them, and
 /// the edges float over the conversation: what comes and goes there never
 /// changes the transcript's frame, so no row moves for it.
-@MainActor final class NativeTranscriptPane: NSView {
+@MainActor final class NativeTranscriptPane: NSView, TranscriptFindHost {
     let page = TranscriptPage()
     let scrollView = TranscriptNativeScrollView()
     let document: TranscriptNativeDocument
@@ -50,8 +50,12 @@ final class TranscriptSurfaceMarker: NSView {
     /// ⌘F's bar over the transcript while it is open, and its matches.
     private(set) var findBar: TranscriptFindBar?
     private(set) lazy var find = TranscriptFindController(pane: self)
+    var findIsOpen: Bool { findBar != nil && window != nil }
     private var handledFind = 0, handledReveal = 0, stoppedFocusFor = 0
     private var findSessionID: String?
+    /// Whether this pane's chat is the one the conversation menu acts on,
+    /// and the menu acts on a chat at all (the chats page, no sheet).
+    var isFocusedConversation: () -> Bool = { false }
     var onViewportReady: (String, UUID) -> Void = { _, _ in }
     private(set) var environment = TranscriptRowEnvironment()
     private(set) var reduceMotion = false
@@ -552,6 +556,7 @@ final class TranscriptSurfaceMarker: NSView {
                                         step: { [weak self] in self?.find.step($0) },
                                         dismiss: { [weak self] in self?.closeFind(focusing: true) })
             findBar = bar
+            session?.findHost = self
             addSubview(bar)
             needsLayout = true; layoutSubtreeIfNeeded()
             bar.show(current: find.current, total: find.matches.count, searching: find.searching, query: find.query)
@@ -559,6 +564,16 @@ final class TranscriptSurfaceMarker: NSView {
         guard let findBar else { return }
         window?.makeFirstResponder(findBar.field.field)
         findBar.field.field.currentEditor()?.selectAll(nil)
+    }
+    /// ⇧⌘G steps back through the matches while the bar is open in the
+    /// focused chat, before the menu's Changes and History, which has the
+    /// same keys (and keeps them while no find bar is open).
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if findBar != nil, !isHiddenOrHasHiddenAncestor, event.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting(.capsLock) == [.command, .shift],
+           event.charactersIgnoringModifiers?.lowercased() == "g", isFocusedConversation(), !WorkspaceModel.typingInATab(in: window) {
+            find.step(-1); return true
+        }
+        return super.performKeyEquivalent(with: event)
     }
     func closeFind(focusing: Bool) {
         find.clear()

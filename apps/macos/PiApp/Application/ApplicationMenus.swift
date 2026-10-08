@@ -162,7 +162,10 @@ import AppKit
         conversation.addItem(.separator())
         command(conversation, "Find…", key: "f", enabled: active, action: { [model] in model.findInFocusedConversation(.show) })
         command(conversation, "Find Next", key: "g", enabled: active, action: { [model] in model.findInFocusedConversation(.next) })
-        command(conversation, "Find Previous", key: "g", modifiers: [.command, .shift], enabled: active, action: { [model] in model.findInFocusedConversation(.previous) })
+        // ⇧⌘G is Changes and History's too: with the find bar open the pane
+        // takes it first, and with it closed only Changes and History is enabled.
+        command(conversation, "Find Previous", key: "g", modifiers: [.command, .shift], enabled: { [model] in active() && model.focusedFindIsOpen },
+                action: { [model] in model.findInFocusedConversation(.previous) })
         command(conversation, "Search and Copy Conversation…", key: "f", modifiers: [.command, .option], enabled: active, action: { [model] in model.searchFocusedConversation() })
 
         let window = menu("Window")
