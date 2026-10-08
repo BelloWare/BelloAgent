@@ -82,6 +82,7 @@ import Combine
             // Off the sidebar at once, and out of the index as soon as no
             // pass is writing; a pass reading one of them commits nothing.
             if hits.keys.contains(where: gone.contains) { hits = hits.filter { !gone.contains($0.key) }; changed?() }
+            heldHits = heldHits?.filter { !gone.contains($0.key) }
             let index = index
             Task.detached(priority: .utility) { await index.forget(gone) }
         }
@@ -109,6 +110,8 @@ import Combine
         guard new != query else { return }
         let old = query
         query = new
+        heldHits = nil   // the reader's own query: what an older one found is not waited for
+        answerTyped = true
         queryTask?.cancel(); reader.cancel()
         revealing?.cancel(); revealing = nil
         guard ChatSearchDatabase.answers(new) else {
@@ -126,22 +129,47 @@ import Combine
         queryTask = Task { [weak self] in
             try? await Task.sleep(for: delay)
             guard !Task.isCancelled else { return }
-            await self?.ask(new)
+            await self?.ask(new, background: false)
         }
     }
 
     /// Asks the index for `text` and shows the answer if it is still what
-    /// the field holds.
-    private func ask(_ text: String) async {
+    /// the field holds. An answer to the reader's own typing shows at once;
+    /// one asked again because chats changed in the background waits while
+    /// the reader is reaching for a row (`SidebarOrderHold`), so a match
+    /// arriving or a snippet growing never moves the row under the pointer.
+    private func ask(_ text: String, background: Bool) async {
         guard !stopped else { return }
         let found: [String: ChatSearchHit]
         do { found = try await reader.search(text) } catch { return }
         guard !Task.isCancelled, text == query, !stopped else { return }
         answeredQueries += 1
+        // The first answer to what the reader typed is theirs, whoever asked it.
+        let background = background && !answerTyped
+        answerTyped = false
+        if background, let model, !model.sidebarOrderHolds.isEmpty {
+            heldHits = found == hits ? nil : found
+            return
+        }
+        heldHits = nil
+        show(found)
+    }
+    private func show(_ found: [String: ChatSearchHit]) {
         guard found != hits else { return }
         hits = found
         model?.sidebarIndex.invalidate()
         changed?()
+    }
+    /// The reader typed a query that has not been answered yet: its answer
+    /// shows at once even when the index asks it again in the meantime.
+    private var answerTyped = false
+    /// A background answer waiting for the sidebar's order to be let go of.
+    private(set) var heldHits: [String: ChatSearchHit]?
+    /// Nothing holds the sidebar's order any more: a waiting answer shows.
+    func orderReleased() {
+        guard let found = heldHits else { return }
+        heldHits = nil
+        show(found)
     }
 
     /// The match a listed chat shows and opens at, while the field asks for one.
@@ -235,7 +263,7 @@ import Combine
         lastRequery = now
         let text = query
         queryTask?.cancel(); reader.cancel()
-        queryTask = Task { [weak self] in await self?.ask(text) }
+        queryTask = Task { [weak self] in await self?.ask(text, background: true) }
     }
 }
 

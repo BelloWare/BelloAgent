@@ -405,6 +405,59 @@ final class SidebarSearchSidebarTests: XCTestCase {
         XCTAssertFalse(model.sidebarChatOrder.contains("other"))
     }
 
+    /// While the reader is reaching for a row (the pointer over the list, a
+    /// menu, a drag), a match that arrives in the background waits: the rows
+    /// do not move under the pointer. It shows once nothing holds the order.
+    /// What the reader types shows at once.
+    @MainActor func testABackgroundMatchWaitsWhileTheReaderReachesForARow() async throws {
+        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
+        let model = try model(root); defer { model.shutdown() }
+        let view = sidebar(model)
+        await model.sidebarSearch.reconcileNow()
+        await search(view, "teapot")
+        XCTAssertEqual(snippets(view).map(\.chatID), ["active"])
+        // A reply mentioning it lands in the other project's chat while the pointer is over the list.
+        model.setSidebarOrderHold(.pointer, true)
+        let line = #"{"id":"other-late","parentId":"other-a39","timestamp":"2026-09-01T00:00:00Z","type":"message","message":{"role":"assistant","content":"found the teapot"}}"# + "\n"
+        let handle = try FileHandle(forWritingTo: root.appendingPathComponent("other.jsonl"))
+        try handle.seekToEnd(); try handle.write(contentsOf: Data(line.utf8)); try handle.close()
+        await model.sidebarSearch.reconcileNow()
+        await model.sidebarSearch.settleQuery(); view.settle()
+        XCTAssertNotNil(model.sidebarSearch.heldHits, "the background answer came")
+        XCTAssertEqual(snippets(view).map(\.chatID), ["active"], "and waits while the pointer is over the list")
+        model.setSidebarOrderHold(.pointer, false); view.settle()
+        XCTAssertEqual(Set(snippets(view).map(\.chatID)), ["active", "other"], "it shows once nothing holds the order")
+        // The reader's own typing is not held.
+        model.setSidebarOrderHold(.pointer, true)
+        await search(view, "nothing here")
+        XCTAssertEqual(snippets(view).map(\.chatID), ["other"], "a query typed shows at once, held or not")
+        // A chat deleted while an answer waits does not come back with it.
+        await search(view, "teapot")
+        let more = #"{"id":"active-late","parentId":"active-a39","timestamp":"2026-09-01T00:00:00Z","type":"message","message":{"role":"assistant","content":"another teapot"}}"# + "\n"
+        let active = try FileHandle(forWritingTo: root.appendingPathComponent("active.jsonl"))
+        try active.seekToEnd(); try active.write(contentsOf: Data(more.utf8)); try active.close()
+        await model.sidebarSearch.reconcileNow(); await model.sidebarSearch.settleQuery()
+        XCTAssertNotNil(model.sidebarSearch.heldHits?["other"], "an answer waits, naming the other chat")
+        model.chats.removeAll { $0.id == "other" }
+        await Task.yield()
+        XCTAssertNil(model.sidebarSearch.heldHits?["other"], "the waiting answer forgets a deleted chat")
+        model.setSidebarOrderHold(.pointer, false); view.settle()
+        XCTAssertEqual(snippets(view).map(\.chatID), ["active"])
+    }
+
+    /// Typed before the index is ready, while the pointer is over the list:
+    /// the answer is still the reader's own, and shows when the index has it.
+    @MainActor func testATypedQueryAnsweredByAColdIndexIsNotHeld() async throws {
+        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
+        let model = try model(root); defer { model.shutdown() }
+        let view = sidebar(model)
+        model.setSidebarOrderHold(.pointer, true)
+        view.setFilter("teapot")
+        await model.sidebarSearch.reconcileNow(); await model.sidebarSearch.settleQuery(); view.settle()
+        XCTAssertEqual(snippets(view).map(\.chatID), ["active"], "the typed query's answer shows while held")
+        model.setSidebarOrderHold(.pointer, false)
+    }
+
     /// Titles answer at once; content after the index does. Each snippet
     /// sits right under its row and reads its chat and its match.
     @MainActor func testEachResultReadsItsTitleAndSnippet() async throws {
