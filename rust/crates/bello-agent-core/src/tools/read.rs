@@ -71,7 +71,7 @@ pub(super) fn invoke_with_processor(
         return Ok(result);
     }
     #[cfg(target_os = "macos")]
-    let text = macos::decode_utf8(&bytes);
+    let text = macos::decode_utf8(&bytes)?;
     #[cfg(not(target_os = "macos"))]
     let text = std::str::from_utf8(&bytes).ok().map(str::to_owned);
     let text = text.ok_or_else(|| ToolError::failure(

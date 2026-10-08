@@ -6,9 +6,7 @@ use objc2::{
     AnyThread, msg_send,
     rc::{Retained, autoreleasepool},
 };
-use objc2_foundation::{
-    NSData, NSError, NSFileHandle, NSFileManager, NSString, NSUTF8StringEncoding,
-};
+use objc2_foundation::{NSData, NSError, NSFileHandle, NSFileManager, NSString};
 use serde_json::Value;
 use std::mem::MaybeUninit;
 
@@ -99,12 +97,32 @@ pub(in crate::tools) fn acquire_resolved(path: &str) -> ToolResult<Vec<u8>> {
     })
 }
 
-pub(in crate::tools) fn decode_utf8(bytes: &[u8]) -> Option<String> {
-    autoreleasepool(|_| {
-        let data = NSData::with_bytes(bytes);
-        NSString::initWithData_encoding(NSString::alloc(), &data, NSUTF8StringEncoding)
-            .map(|text| text.to_string())
+#[path = "macos/source_utf8.rs"]
+mod source_utf8;
+
+pub(in crate::tools) fn decode_utf8(bytes: &[u8]) -> ToolResult<Option<String>> {
+    source_utf8::decode(bytes).map_err(|error| {
+        ToolError::failure(
+            "native_utf8_adapter",
+            format!("Native UTF-8 adapter failed: {error:?}"),
+        )
     })
+}
+
+/// Bridge an already-decoded String without interpreting its UTF-8 bytes again.
+/// NSString's UTF-8 initializer can consume a leading BOM on macOS 14, unlike
+/// Swift String -> NSString. Explicit UTF-16 preserves every existing code unit.
+pub(in crate::tools) fn foundation_string(text: &str) -> Retained<NSString> {
+    let mut characters: Vec<u16> = text.encode_utf16().collect();
+    // SAFETY: Vec supplies a non-null, aligned pointer even at length zero;
+    // NSString copies the initialized UTF-16 units before this buffer is dropped.
+    unsafe {
+        NSString::initWithCharacters_length(
+            NSString::alloc(),
+            std::ptr::NonNull::new(characters.as_mut_ptr()).unwrap(),
+            characters.len(),
+        )
+    }
 }
 
 struct ClosingFileHandle(Retained<NSFileHandle>);

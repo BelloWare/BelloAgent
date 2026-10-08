@@ -48,3 +48,6 @@ libc = "=0.2.186"
 
 [dev-dependencies]
 tempfile = "3"
+
+[build-dependencies]
+serde_json.workspace = true

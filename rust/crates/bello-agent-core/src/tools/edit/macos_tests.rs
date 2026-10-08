@@ -99,7 +99,9 @@ fn utf8_bom_nontext_and_native_components_match_foundation() {
                 context: &context,
                 manager: NSFileManager::defaultManager(),
             };
-            let decoded = decode_utf8(format!("\u{feff}{text}").as_bytes()).unwrap();
+            let decoded = decode_utf8(format!("\u{feff}{text}").as_bytes())
+                .unwrap()
+                .unwrap();
             let expected = native.replace_once(&decoded, old, "new");
             let actual = call(
                 &context,

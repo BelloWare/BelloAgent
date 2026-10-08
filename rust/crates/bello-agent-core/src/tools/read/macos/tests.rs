@@ -18,7 +18,7 @@ fn foundation_bom_and_invalid_utf8_are_preserved_as_native_semantics() {
         b"\xff\xfe".as_slice(),
     ] {
         std::fs::write(temp.path().join("input"), bytes).unwrap();
-        let expected = decode_utf8(bytes);
+        let expected = decode_utf8(bytes).unwrap();
         let result = invoke_with_processor(
             &context,
             &json!({"path":"input"}),

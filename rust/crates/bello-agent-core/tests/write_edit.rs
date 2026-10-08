@@ -188,7 +188,7 @@ async fn native_write_edit_match_current_swift_source_and_file_effects() {
         [Capability::Write, Capability::Edit],
     )
     .unwrap();
-    let cases = vec![
+    let mut cases = vec![
         ("write", None, json!({"path":"file","content":"hello\n"})),
         (
             "write",
@@ -283,6 +283,26 @@ async fn native_write_edit_match_current_swift_source_and_file_effects() {
             json!({"path":"file","oldText":"e\u{301}","newText":"new"}),
         ),
     ];
+    for initial in [
+        "\u{feff}".as_bytes().to_vec(),
+        "\u{feff}needle".as_bytes().to_vec(),
+        "\u{feff}\u{feff}needle".as_bytes().to_vec(),
+        "a\u{feff}needle".as_bytes().to_vec(),
+        "\u{feff}\0needle\0".as_bytes().to_vec(),
+        format!("\u{feff}{}needle", "a".repeat(40)).into_bytes(),
+        vec![0xef, 0xbb, 0xbf, 0xff],
+    ] {
+        cases.push((
+            "write",
+            Some(initial.clone()),
+            json!({"path":"file","content":"new"}),
+        ));
+        cases.push((
+            "edit",
+            Some(initial),
+            json!({"path":"file","oldText":"needle","newText":"new"}),
+        ));
+    }
     for (index, (name, initial, args)) in cases.into_iter().enumerate() {
         let reset = || {
             let _ = fs::remove_file(root.join("file"));

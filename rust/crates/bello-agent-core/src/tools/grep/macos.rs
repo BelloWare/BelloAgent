@@ -16,8 +16,7 @@ use objc2::{
 };
 use objc2_foundation::{
     NSArray, NSData, NSError, NSFileHandle, NSFileManager, NSMatchingOptions, NSNumber, NSRange,
-    NSRegularExpression, NSRegularExpressionOptions, NSString, NSURL, NSURLIsDirectoryKey,
-    NSURLResourceKey, NSUTF8StringEncoding,
+    NSRegularExpression, NSRegularExpressionOptions, NSURL, NSURLIsDirectoryKey, NSURLResourceKey,
 };
 use serde_json::Value;
 use std::mem::MaybeUninit;
@@ -144,8 +143,9 @@ fn read_bounded_utf8(path: &str) -> Option<String> {
     if data.length() > FILE_BYTES {
         return None;
     }
-    NSString::initWithData_encoding(NSString::alloc(), &data, NSUTF8StringEncoding)
-        .map(|text| text.to_string())
+    crate::tools::read::macos::decode_utf8(&data.to_vec())
+        .ok()
+        .flatten()
 }
 
 /// Match the source's explicit deferred close on every return path. Foundation
@@ -169,7 +169,7 @@ impl RegexFactory for FoundationRegexFactory {
         literal: bool,
         ignore_case: bool,
     ) -> ToolResult<Self::Matcher> {
-        let pattern = NSString::from_str(pattern);
+        let pattern = crate::tools::read::macos::foundation_string(pattern);
         let pattern = if literal {
             NSRegularExpression::escapedPatternForString(&pattern)
         } else {
@@ -198,7 +198,7 @@ struct FoundationMatcher(Retained<NSRegularExpression>);
 
 impl Matcher for FoundationMatcher {
     fn is_match(&mut self, line: &str) -> bool {
-        let line = NSString::from_str(line);
+        let line = crate::tools::read::macos::foundation_string(line);
         self.0
             .firstMatchInString_options_range(
                 &line,

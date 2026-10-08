@@ -3,12 +3,12 @@
 use super::{FileToolContext, ToolError, ToolResult, source};
 use crate::tools::{
     find::macos::resolve_path,
-    read::macos::{acquire_resolved, decode_utf8},
+    read::macos::{acquire_resolved, decode_utf8, foundation_string},
 };
 use objc2::rc::{Retained, autoreleasepool};
 use objc2_foundation::{
     NSData, NSDataWritingOptions, NSDictionary, NSError, NSFileManager, NSFilePosixPermissions,
-    NSString, NSURL,
+    NSURL,
 };
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
@@ -56,12 +56,12 @@ impl source::Files for FoundationFiles<'_> {
     }
     fn read_text(&mut self, path: &Self::Path) -> ToolResult<Option<String>> {
         let bytes = acquire_resolved(&self.path(path))?;
-        Ok(decode_utf8(&bytes))
+        decode_utf8(&bytes)
     }
     fn replace_once(&self, text: &str, old: &str, new: &str) -> ToolResult<String> {
         // Swift String.components(separatedBy:) uses this Foundation operation,
         // including its non-overlapping and Unicode matching behavior.
-        let parts = NSString::from_str(text).componentsSeparatedByString(&NSString::from_str(old));
+        let parts = foundation_string(text).componentsSeparatedByString(&foundation_string(old));
         if parts.count() != 2 {
             return Err(ToolError::failure(
                 "edit_match",

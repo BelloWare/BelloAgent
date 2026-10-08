@@ -1071,6 +1071,31 @@ async fn grep_text_and_preview_fixtures(oracle: &SwiftOracle) {
         format!("replacement:1: needle{NORMAL_NOTE}")
     );
 
+    let mut matrix = Vec::new();
+    for (index, (label, bytes)) in [
+        ("BOM only", "\u{feff}".as_bytes().to_vec()),
+        ("double BOM", "\u{feff}\u{feff}needle".as_bytes().to_vec()),
+        ("interior BOM", "a\u{feff}needle".as_bytes().to_vec()),
+        ("BOM and NUL", "\u{feff}\0needle\0".as_bytes().to_vec()),
+        ("BOM invalid UTF-8", vec![0xef, 0xbb, 0xbf, 0xff]),
+        (
+            "BOM long storage",
+            format!("\u{feff}needle{}", "a".repeat(40)).into_bytes(),
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let path = format!("utf8-matrix-{index}");
+        fs::write(root.join(&path), bytes).unwrap();
+        matrix.push(case(label, json!({"path":path,"pattern":"^needle$"})));
+        matrix.push(case(
+            label,
+            json!({"path":path,"pattern":"needle","literal":true}),
+        ));
+    }
+    compare_tool(oracle, &Context::new(root), "grep", matrix).await;
+
     // Only 40 lines exercise the combined 32-KiB byte preview independently
     // of the line cap, then 101 tiny lines exercise the default hit count.
     fs::write(root.join("preview"), format!("{long_line}\n").repeat(40)).unwrap();

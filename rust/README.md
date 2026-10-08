@@ -25,6 +25,14 @@ cargo build -p bello-agent-app
 cargo run -p bello-agent-app -- --project ../
 ```
 
+On Apple Silicon macOS, select a complete Xcode installation and export
+`MACOSX_DEPLOYMENT_TARGET=14.0` before these Cargo commands. Core builds compile
+a small static Swift decoder with the selected Xcode SDK, preserving the original
+Swift tool's UTF-8 behavior on the host runtime. Rust and Swift use the same
+deployment target. Unsupported Darwin cross-builds fail explicitly; Linux builds
+do not discover or invoke Swift. The adapter does not enable any native tool or
+authority capability. See the [build contract and validation bundle](docs/validation/macos-utf8-bridge-2026-10-08.md).
+
 The app opens an honest disconnected workspace until a connection is supplied.
 It never discovers credentials in the shell, environment, or source app files.
 The temporary Linux credential entry point is explicit stdin; it is kept only in
