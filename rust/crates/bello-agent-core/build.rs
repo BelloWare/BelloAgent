@@ -49,7 +49,7 @@ fn main() {
     if let Some(configured) = env::var_os("SDKROOT") {
         let configured = PathBuf::from(configured);
         assert!(
-            configured == PathBuf::from("macosx")
+            configured == std::path::Path::new("macosx")
                 || configured.canonicalize().ok() == PathBuf::from(&sdk).canonicalize().ok(),
             "SDKROOT must select the same macOS SDK as xcrun"
         );

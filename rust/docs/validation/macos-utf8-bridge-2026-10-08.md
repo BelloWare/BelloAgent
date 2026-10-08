@@ -124,6 +124,15 @@ Write/Edit expectations remain unchanged. On macOS14.8 (`23J21`), Xcode16.1
   Darwin target and cross-host rejection controls passed. Full Linux CI,
   modern native CI and same-modern-artifact receipts remain pending.
 
+The first [Linux PR run37737964720](https://github.com/BelloWare/BelloAgent/actions/runs/37737964720)
+at `4ec3cb010c2c10c4ad0fb720c2a37de03ca63a07` passed formatting, workspace tests,
+authority fixture checks and the all-feature core/synthetic App tests, then
+failed Clippy's `cmp_owned` lint in `build.rs`. Its `SDKROOT == macosx` comparison
+now borrows a `Path` instead of allocating a `PathBuf`. Direct build-script
+Clippy with warnings denied and the four native adapter tests passed after that
+one-line correction. No lint allowance, test expectation or runtime behavior
+was changed; remaining Linux steps require the follow-up run.
+
 All native Cargo commands above set `MACOSX_DEPLOYMENT_TARGET=14.0` and used
 `CARGO_BUILD_JOBS=2`. Hashes for this local App/core check:
 
