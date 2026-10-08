@@ -128,7 +128,8 @@ extension WorkspaceModel {
         // under a folded parent; the chevron and the open side still follow it.
         let folded = collapsedSidebarSides
         let all = SidebarSessionPresentation.filtered(
-            sidebarEntries(in: project.id, topicID: topicID, archived: archived, collapsed: filtering ? [] : folded), by: filter)
+            sidebarEntries(in: project.id, topicID: topicID, archived: archived, collapsed: filtering ? [] : folded), by: filter,
+            contentMatches: filter.isEmpty ? [] : sidebarContentMatches)
         let shown = sidebarShownRoots(groupID)
         let selection = Set([focusedSessionID, selectedID].compactMap { $0 })
         let visible = SidebarSessionPresentation.page(all, roots: shown, selected: selection, filtering: filtering)

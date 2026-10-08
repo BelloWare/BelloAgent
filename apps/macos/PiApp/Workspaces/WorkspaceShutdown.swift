@@ -53,6 +53,7 @@ extension WorkspaceModel {
         for task in titleGenerationTasks.values { task.cancel() }
         titleGenerationTasks.removeAll()
         journalSlimming?.cancel()
+        sidebarSearchStorage?.shutdown()
         for task in webhookTasks.values { task.cancel() }
         webhookTasks.removeAll()
         isShutDown = true
