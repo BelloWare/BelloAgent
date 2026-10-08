@@ -1,0 +1,10 @@
+    Checking bello-agent-core v0.1.0 (/workspace/shared/catalog-native-integrated-stage/rust/crates/bello-agent-core)
+    Checking git2 v0.20.4
+    Checking gpui_util v0.2.2
+    Checking gpui_http_client v0.2.2
+    Checking gpui v0.2.2
+    Checking bello-workbench-ui v0.1.0 (https://github.com/BelloWare/BelloBox.git?rev=393133cd19d134ffd93c3a86449d94a7b1040683#393133cd)
+    Checking bello-agent-app v0.1.0 (/workspace/shared/catalog-native-integrated-stage/rust/crates/bello-agent-app)
+    Finished `dev` profile [unoptimized] target(s) in 31.94s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`

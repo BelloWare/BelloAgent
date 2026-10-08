@@ -1,0 +1,19 @@
+    Checking bello-agent-core v0.1.0 (/workspace/shared/catalog-native-integrated-stage/rust/crates/bello-agent-core)
+    Checking bello-agent-app v0.1.0 (/workspace/shared/catalog-native-integrated-stage/rust/crates/bello-agent-app)
+error[E0596]: cannot borrow `visual` as mutable, as it is not declared as mutable
+    --> crates/bello-agent-app/src/connection_settings_view_tests.rs:1058:9
+     |
+1058 |     let visual = VisualTestContext::from_window(window.into(), cx);
+     |         ^^^^^^ not mutable
+1059 |     assert!(visual.debug_bounds("settings-catalog-url").is_none());
+     |             ------ cannot borrow as mutable
+1060 |     assert!(visual.debug_bounds("settings-browse-models").is_none());
+     |             ------ cannot borrow as mutable
+     |
+help: consider changing this to be mutable
+     |
+1058 |     let mut visual = VisualTestContext::from_window(window.into(), cx);
+     |         +++
+
+For more information about this error, try `rustc --explain E0596`.
+error: could not compile `bello-agent-app` (bin "bello-agent" test) due to 1 previous error

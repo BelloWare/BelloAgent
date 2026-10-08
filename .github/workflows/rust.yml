@@ -2,9 +2,9 @@ name: Rust Linux checks
 on:
   push:
     branches: [rust]
-    paths: ['rust/**', '.github/workflows/rust.yml']
+    paths: ['rust/**', 'catalogs/bello-agent.models.json', '.github/workflows/rust.yml']
   pull_request:
-    paths: ['rust/**', '.github/workflows/rust.yml']
+    paths: ['rust/**', 'catalogs/bello-agent.models.json', '.github/workflows/rust.yml']
 permissions:
   contents: read
 concurrency:

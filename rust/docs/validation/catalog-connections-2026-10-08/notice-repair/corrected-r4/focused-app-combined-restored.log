@@ -1,0 +1,264 @@
+   Compiling bello-agent-app v0.1.0 (/workspace/shared/catalog-native-app-focused/rust/crates/bello-agent-app)
+warning: methods `test_seed_pin` and `test_finish_pin` are never used
+   --> crates/bello-agent-app/src/chat_organization.rs:556:19
+    |
+555 | impl AgentView {
+    | -------------- methods in this implementation
+556 |     pub(crate) fn test_seed_pin(&mut self, id: &str, token: uuid::Uuid, cx: &mut Context<Self>) {
+    |                   ^^^^^^^^^^^^^
+...
+582 |     pub(crate) fn test_finish_pin(
+    |                   ^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `editor_for_test` is never used
+   --> crates/bello-agent-app/src/file_tab.rs:146:19
+    |
+ 72 | impl FileTabView {
+    | ---------------- method in this implementation
+...
+146 |     pub(crate) fn editor_for_test(&self) -> Entity<EditorView> {
+    |                   ^^^^^^^^^^^^^^^
+
+warning: methods `replace_configuration_draft`, `output_text`, and `focus_intent` are never used
+   --> crates/bello-agent-app/src/mcp_inspector_view.rs:331:12
+    |
+202 | impl McpInspectorView {
+    | --------------------- methods in this implementation
+...
+331 |     pub fn replace_configuration_draft(&mut self, text: String, cx: &mut Context<Self>) {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+449 |     pub fn output_text(&self) -> &str {
+    |            ^^^^^^^^^^^
+...
+453 |     pub fn focus_intent(&self, intent: &McpIntent, window: &mut Window) {
+    |            ^^^^^^^^^^^^
+
+warning: struct `MenuCommand` is never constructed
+  --> crates/bello-agent-app/src/native_menu.rs:10:8
+   |
+10 | struct MenuCommand {
+   |        ^^^^^^^^^^^
+
+warning: function `pin_command` is never used
+  --> crates/bello-agent-app/src/native_menu.rs:16:4
+   |
+16 | fn pin_command(pinned: bool) -> MenuCommand {
+   |    ^^^^^^^^^^^
+
+warning: function `archive_command` is never used
+  --> crates/bello-agent-app/src/native_menu.rs:32:4
+   |
+32 | fn archive_command(archived: bool) -> MenuCommand {
+   |    ^^^^^^^^^^^^^^^
+
+warning: function `copy_id_command` is never used
+  --> crates/bello-agent-app/src/native_menu.rs:48:4
+   |
+48 | fn copy_id_command() -> MenuCommand {
+   |    ^^^^^^^^^^^^^^^
+
+warning: function `selected_action` is never used
+  --> crates/bello-agent-app/src/native_menu.rs:56:4
+   |
+56 | fn selected_action(selected: u8, pinned: bool) -> Option<SidebarAction> {
+   |    ^^^^^^^^^^^^^^^
+
+warning: function `finish_if_open` is never used
+  --> crates/bello-agent-app/src/native_menu.rs:65:4
+   |
+65 | fn finish_if_open(
+   |    ^^^^^^^^^^^^^^
+
+warning: struct `Tracking` is never constructed
+  --> crates/bello-agent-app/src/native_menu.rs:81:8
+   |
+81 | struct Tracking;
+   |        ^^^^^^^^
+
+warning: associated function `begin` is never used
+  --> crates/bello-agent-app/src/native_menu.rs:83:8
+   |
+82 | impl Tracking {
+   | ------------- associated function in this implementation
+83 |     fn begin() -> Option<Self> {
+   |        ^^^^^
+
+warning: function `anchor_in_view` is never used
+   --> crates/bello-agent-app/src/native_menu.rs:101:4
+    |
+101 | fn anchor_in_view(
+    |    ^^^^^^^^^^^^^^
+
+warning: struct `ViewCategory` is never constructed
+   --> crates/bello-agent-app/src/native_menu.rs:128:8
+    |
+128 | struct ViewCategory {
+    |        ^^^^^^^^^^^^
+
+warning: function `gpui_child_index` is never used
+   --> crates/bello-agent-app/src/native_menu.rs:137:4
+    |
+137 | fn gpui_child_index(content_attached: bool, children: &[ViewCategory]) -> Option<usize> {
+    |    ^^^^^^^^^^^^^^^^
+
+warning: multiple methods are never used
+    --> crates/bello-agent-app/src/transcript_view.rs:969:19
+     |
+ 709 | impl TranscriptView {
+     | ------------------- methods in this implementation
+...
+ 969 |     pub(crate) fn edit_cache_computations(&self) -> usize {
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 973 |     pub(crate) fn edit_card_labels(&self) -> Vec<String> {
+     |                   ^^^^^^^^^^^^^^^^
+...
+ 989 |     pub(crate) fn tool_height_invalidation_count(&self) -> usize {
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 994 |     pub(crate) fn retained_tool_editor_count(&self) -> usize {
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 999 |     pub(crate) fn tool_card_selectors(&self) -> Vec<String> {
+     |                   ^^^^^^^^^^^^^^^^^^^
+...
+1013 |     pub(crate) fn tool_section_editors(&self) -> Vec<(&'static str, Entity<EditorView>)> {
+     |                   ^^^^^^^^^^^^^^^^^^^^
+...
+1023 |     pub(crate) fn override_navigation_estimate(&self, height: Pixels) {
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1027 |     pub(crate) fn has_pending_navigation(&self) -> bool {
+     |                   ^^^^^^^^^^^^^^^^^^^^^^
+...
+1031 |     pub(crate) fn target_preflight_counts(&self) -> Vec<usize> {
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^
+...
+1035 |     pub(crate) fn render_count(&self) -> usize {
+     |                   ^^^^^^^^^^^^
+...
+1039 |     pub(crate) fn list_state(&self) -> ListState {
+     |                   ^^^^^^^^^^
+...
+1043 |     pub(crate) fn buffer_margin(&self) -> Pixels {
+     |                   ^^^^^^^^^^^^^
+...
+1047 |     pub(crate) fn materialized_indexes(&self) -> Vec<usize> {
+     |                   ^^^^^^^^^^^^^^^^^^^^
+...
+1051 |     pub(crate) fn painted_indexes(&self) -> Vec<usize> {
+     |                   ^^^^^^^^^^^^^^^
+...
+1055 |     pub(crate) fn materialized_texts(&self) -> Vec<(usize, String)> {
+     |                   ^^^^^^^^^^^^^^^^^^
+...
+1059 |     pub(crate) fn logical_row_ids(&self) -> Vec<String> {
+     |                   ^^^^^^^^^^^^^^^
+
+warning: `bello-agent-app` (bin "bello-agent" test) generated 15 warnings
+    Finished `test` profile [unoptimized] target(s) in 23.50s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running unittests src/main.rs (BelloAgent/rust/target/debug/deps/bello_agent-da265fe39e8ef0f9)
+
+running 94 tests
+test connection_settings_controller::model_catalog::lifecycle_tests::failed_save_and_delete_cancel_and_reject_already_queued_catalog_success ... ok
+test connection_settings_controller::model_catalog::lifecycle_tests::reload_source_key_close_and_shutdown_discard_queued_success ... ok
+test connection_settings_controller::model_catalog::lifecycle_tests::window_rebind_fences_old_catalog_success_and_keeps_new_request_owned ... ok
+test connection_settings_controller::model_catalog::tests::cancellation_fences_old_completion_without_cancelling_a_new_request ... ok
+test connection_settings_controller::model_catalog::tests::catalog_cache_ttl_backoff_and_inherited_remote_do_not_become_permanent ... ok
+test connection_settings_controller::model_catalog::tests::source_identity_covers_typed_key_url_route_and_saved_revision_not_search ... ok
+test connection_settings_controller::model_catalog::tests::transient_search_is_clean_and_manual_alias_roundtrip_does_not_resurrect_metadata ... ok
+test connection_settings_controller::tests::catalog_workflow::catalog_bundled_is_keyless_search_only_is_clean_and_metadata_survives_capture ... ok
+test connection_settings_controller::tests::catalog_workflow::catalog_cancel_and_tab_switch_fence_stalled_completion ... ok
+test connection_settings_controller::tests::catalog_workflow::catalog_choose_save_fork_new_chat_and_explicit_posts_preserve_route_metadata ... ok
+test connection_settings_controller::tests::catalog_workflow::catalog_discard_reopen_removes_selected_metadata_and_success_notice ... ok
+test connection_settings_controller::tests::catalog_workflow::catalog_failed_refresh_keeps_rows_but_source_change_clears_and_external_stays_anonymous ... ok
+test connection_settings_controller::tests::catalog_workflow::catalog_refresh_detecting_external_vault_revision_clears_stale_choices ... ok
+test connection_settings_controller::tests::catalog_workflow::discarding_another_draft_keeps_the_selected_forms_notice ... ok
+test connection_settings_controller::tests::checkpoint_required_missing_on_navigation_keeps_draft_and_inert_placeholder ... ok
+test connection_settings_controller::tests::composer_saved_factory_executes_actual_ls_and_replays_durable_result ... ok
+test connection_settings_controller::tests::definite_delete_conflict_reopens_disconnected_queue_reviewer_and_permits_explicit_reselect ... ok
+test connection_settings_controller::tests::delete_joins_actual_stalled_request_and_preserves_persisted_history_queue_and_composer ... ok
+test connection_settings_controller::tests::delete_replaces_pending_chat_with_disconnected_controller_and_preserves_composer ... ok
+test connection_settings_controller::tests::first_saved_choice_makes_new_chat_use_it_instead_of_reusing_disconnected_placeholder ... ok
+test connection_settings_controller::tests::first_send_crash_before_checkpoint_can_recover_complete_receipt_without_opening_empty_history ... ok
+test connection_settings_controller::tests::loading_chat_blocks_settings_save_and_delete_without_losing_edits ... ok
+test connection_settings_controller::tests::manual_model_change_clears_inherited_image_capability_but_name_edit_keeps_it ... ok
+test connection_settings_controller::tests::model_alias_change_clears_old_catalog_ceiling_and_invalid_numbers_retain_text ... ok
+test connection_settings_controller::tests::native_catalog_intents_never_read_vault_or_create_catalog_work ... ok
+test connection_settings_controller::tests::native_mode_form_does_not_relax_fixture_provenance_and_retains_failed_secrets ... ok
+test connection_settings_controller::tests::native_mode_later_route_selection_discards_pending_new_chat ... ok
+test connection_settings_controller::tests::native_mode_new_chat_and_startup_loader_keep_saved_connection_without_tools ... ok
+test connection_settings_controller::tests::native_mode_preflight_blocks_submission_but_denial_preserves_current_actor ... ok
+test connection_settings_controller::tests::native_mode_required_missing_checkpoint_keeps_draft_and_inert_placeholder ... ok
+test connection_settings_controller::tests::native_mode_settings_send_uses_same_factory_with_no_tools_or_project_resources ... ok
+test connection_settings_controller::tests::new_chat_without_a_configured_choice_infers_neither_saved_identity_nor_runtime ... ok
+test connection_settings_controller::tests::non_error_recovery_notice_survives_discard_reopen ... ok
+test connection_settings_controller::tests::pending_pin_fences_connection_switch_until_fresh_catalog_registration ... ok
+test connection_settings_controller::tests::post_catalog_switch_open_failure_adopts_new_binding_and_never_revives_old_route ... ok
+test connection_settings_controller::tests::retired_materialized_actor_cannot_authorize_forged_pending_recreation ... ok
+test connection_settings_controller::tests::save_errors_survive_discard_reopen_and_uncertainty_still_blocks_admission ... ok
+test connection_settings_controller::tests::saved_settings_require_trust_then_open_the_same_pending_chat_without_sending ... ok
+test connection_settings_controller::tests::settings_editor_receives_text_selection_undo_and_navigation_without_touching_composer ... ok
+test connection_settings_controller::tests::settings_save_select_and_real_composer_send_use_selected_fixture ... ok
+test connection_settings_controller::tests::tab_drafts_route_fork_and_cancel_preserve_original_chat ... ok
+test connection_settings_controller::tests::unavailable_image_receipt_extracts_only_to_draft_across_window_rebind ... ok
+test connection_settings_controller::tests::unavailable_receipt_never_erases_newer_saved_draft_or_its_receipt ... ok
+test connection_settings_controller::tests::unavailable_receipt_non_not_found_metadata_error_is_not_absence ... ok
+test connection_settings_controller::tests::unavailable_receipt_preserves_existing_file_directory_symlink_and_fifo ... ok
+test connection_settings_controller::tests::unavailable_receipt_rejects_changed_saved_receipt_and_catalog_chat_identity ... ok
+test connection_settings_controller::tests::uncertain_save_retains_form_and_reload_does_not_reopen_admission ... ok
+test connection_settings_controller::tests::unloaded_legacy_chat_stays_disconnected_after_another_chat_selects_a_saved_connection ... ok
+test connection_settings_controller::tests::untouched_native_new_form_is_clean_with_blank_manual_fields ... ok
+test connection_settings_controller::tests::window_close_captures_local_typing_before_owner_acknowledgment_and_keep_retains_it ... ok
+test connection_settings_view::secure_input::tests::copy_cut_undo_and_redo_preserve_clipboard_and_clear_has_no_history ... ok
+test connection_settings_view::secure_input::tests::disabled_input_and_malformed_ranges_cannot_mutate ... ok
+test connection_settings_view::secure_input::tests::ime_ranges_are_relative_to_inserted_text_and_commits_do_not_duplicate ... ok
+test connection_settings_view::secure_input::tests::large_inputs_shape_only_a_masked_viewport_with_visible_caret ... ok
+test connection_settings_view::secure_input::tests::maximum_input_repaints_reuse_boundary_cache_and_keep_shaping_bounded ... ok
+test connection_settings_view::secure_input::tests::oversized_replacements_are_atomic_for_each_field_including_composition ... ok
+test connection_settings_view::secure_input::tests::paste_preserves_exact_json_whitespace_and_replaces_selection ... ok
+test connection_settings_view::secure_input::tests::real_input_dispatch_pastes_masks_and_clears ... ok
+test connection_settings_view::secure_input::tests::render_platform_queries_and_debug_only_expose_masks ... ok
+test connection_settings_view::secure_input::tests::selection_navigation_and_deletion_follow_extended_graphemes ... ok
+test connection_settings_view::secure_input::tests::unmark_emits_completion_without_changing_value_or_retaining_composition ... ok
+test connection_settings_view::secure_input::tests::utf16_ranges_are_bounded_ordered_and_never_split_scalars ... ok
+test connection_settings_view::tests::busy_presentation_freezes_editor_and_old_snapshot_cannot_unlock_it ... ok
+test connection_settings_view::tests::catalog_controls_reject_old_generation_and_refresh_while_loading ... ok
+test connection_settings_view::tests::catalog_query_values_are_redacted_in_form_event_and_presentation_debug ... ok
+test connection_settings_view::tests::click_save_is_deduplicated_and_confirmation_choices_remain_visible ... ok
+test connection_settings_view::tests::close_preserves_draft_and_does_not_steal_newer_focus ... ok
+test connection_settings_view::tests::composing_field_fences_keyboard_click_and_save_intents ... ok
+test connection_settings_view::tests::confirmation_choices_are_scoped_to_the_question_and_saved_identity ... ok
+test connection_settings_view::tests::debug_output_redacts_typed_replacements_in_forms_and_events ... ok
+test connection_settings_view::tests::delayed_edit_acknowledgment_does_not_replace_newer_local_typing ... ok
+test connection_settings_view::tests::delayed_secure_ack_does_not_replace_composition_that_matches_old_baseline ... ok
+test connection_settings_view::tests::escape_requests_close_once_and_owner_controls_actual_dismissal ... ok
+test connection_settings_view::tests::every_action_captures_final_editor_text_before_changed_notification ... ok
+test connection_settings_view::tests::history_only_api_shows_conversion_unavailable_without_an_action ... ok
+test connection_settings_view::tests::key_and_header_inputs_are_secure_and_final_action_captures_exact_replacements ... ok
+test connection_settings_view::tests::keyboard_tab_moves_between_controls_without_inserting_editor_spaces ... ok
+test connection_settings_view::tests::loading_can_close_but_saving_cannot_close_reload_or_discard ... ok
+test connection_settings_view::tests::native_form_keeps_manual_controls_without_hidden_catalog_focus_targets ... ok
+test connection_settings_view::tests::native_mode_enables_only_ready_settings_and_retains_confirmation_guards ... ok
+test connection_settings_view::tests::out_of_contract_presentation_is_not_silently_captured_as_deletion ... ok
+test connection_settings_view::tests::oversized_paste_retains_input_and_presents_content_free_error ... ok
+test connection_settings_view::tests::per_tab_editors_survive_switches_without_revealing_saved_keys ... ok
+test connection_settings_view::tests::render_does_not_overwrite_unacknowledged_typing_and_echo_retains_editor ... ok
+test connection_settings_view::tests::save_events_without_opening_tokens_cannot_act_after_reopen ... ok
+test connection_settings_view::tests::secure_composition_blocks_save_close_and_tab_until_platform_commit ... ok
+test connection_settings_view::tests::secure_delayed_ack_and_busy_state_preserve_newer_input ... ok
+test connection_settings_view::tests::stale_duplicate_and_prior_opening_callbacks_are_fenced ... ok
+test connection_settings_view::tests::status_revision_preserves_unacknowledged_composition_and_tab_switch_rehomes_focus ... ok
+test connection_settings_view::tests::tab_traversal_uses_secure_entity_focus_without_changing_replacements ... ok
+test connection_settings_view::tests::tabs_require_a_real_target_even_with_a_history_only_active_connection ... ok
+test connection_settings_view::tests::unavailable_storage_never_enables_mutating_controls ... ok
+test launch_authority::tests::features_never_select_authority_and_native_conflicts_are_rejected_first ... ok
+test transcript_view::edit_presentation::edit_row_titles_match_visible_swift_row_override_for_every_status ... ok
+
+test result: ok. 94 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 17.39s
+

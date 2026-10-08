@@ -1,0 +1,298 @@
+{
+  "review_revision": "review-r4",
+  "base_commit": "6eee1d06776b18b55b45f0f8adbbe6204c3cb328",
+  "patch_sha256": "90be24bf665ebe6e823575cb265d4235502a3159ac7076e4babb569045167b32",
+  "manifest_sha256": "461de2faea02d3af99a0a90d1b3b2d0035fc36b449fba9f8b5a62331f25b9aa6",
+  "source_digest": "b7c9fff1ff486987106e15d709a1a47246da2d6d15bd4fd0c4dd15c4d1c3e654",
+  "source_files": 198,
+  "checks_source_before_build_source_before_after_identical": true,
+  "checks": [
+    {
+      "name": "fmt-check",
+      "status": "passed",
+      "log": "notice-repair/corrected-r4/fmt-check.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "default-clippy",
+      "status": "passed",
+      "log": "notice-repair/corrected-r4/default-clippy.log",
+      "sha256": "26474c943271c879c85b5605022490384814d25bb157d6e0ceb01686eb09b8c0"
+    },
+    {
+      "name": "synthetic-clippy",
+      "status": "passed",
+      "log": "notice-repair/corrected-r4/synthetic-clippy.log",
+      "sha256": "bc20bd298fb5169c7709b85f782f1de7ac7146dd95ed761daf5588fbd3facad6"
+    },
+    {
+      "name": "core-all-features-clippy",
+      "status": "passed",
+      "log": "notice-repair/corrected-r4/core-all-features-clippy.log",
+      "sha256": "630654470a56c04d28316c30f98f6e93ae82872ce0e41df99f60a5335bce79b0"
+    },
+    {
+      "name": "native-clippy",
+      "status": "passed",
+      "log": "notice-repair/corrected-r4/native-clippy.log",
+      "sha256": "6c75da187c3dd1a99b66627e66b453a15e4199a4180912cb574fdcd4b16b9d28"
+    },
+    {
+      "name": "combined-clippy",
+      "status": "passed",
+      "log": "notice-repair/corrected-r4/combined-clippy.log",
+      "sha256": "e23e8c5a9b9e8352fbf2c2fafb8eb844655de0aa2574edefa0dc095eb46a83a7"
+    },
+    {
+      "name": "focused-app-combined-restored",
+      "status": "passed",
+      "log": "notice-repair/corrected-r4/focused-app-combined-restored.log",
+      "sha256": "26914b6db2caf2345f7fa61ea75d0105c87a70672afabac6fab39da3d228fbef"
+    },
+    {
+      "name": "focused-app-native-restored",
+      "status": "passed",
+      "log": "notice-repair/corrected-r4/focused-app-native-restored.log",
+      "sha256": "8626505b69651f5ef7ff78892869b5c6209b6f04263602cf09d9d246f175feb5"
+    }
+  ],
+  "focused_counts": {
+    "combined_app": 94,
+    "native_only_app": 48
+  },
+  "core_prior_identical_inputs": {
+    "from_review": "review-r2",
+    "to_review": "review-r4",
+    "count": 110,
+    "paths": [
+      "catalogs/bello-agent.models.json",
+      "rust/Cargo.lock",
+      "rust/Cargo.toml",
+      "rust/crates/bello-agent-core/Cargo.toml",
+      "rust/crates/bello-agent-core/src/attachment_native_tests.rs",
+      "rust/crates/bello-agent-core/src/attachment_runtime.rs",
+      "rust/crates/bello-agent-core/src/attachment_runtime_tests.rs",
+      "rust/crates/bello-agent-core/src/attachment_storage_tests.rs",
+      "rust/crates/bello-agent-core/src/attachments.rs",
+      "rust/crates/bello-agent-core/src/bash_runtime_tests.rs",
+      "rust/crates/bello-agent-core/src/bash_saved_runtime_tests.rs",
+      "rust/crates/bello-agent-core/src/compaction.rs",
+      "rust/crates/bello-agent-core/src/compaction_runtime.rs",
+      "rust/crates/bello-agent-core/src/compaction_runtime_tests.rs",
+      "rust/crates/bello-agent-core/src/compaction_session.rs",
+      "rust/crates/bello-agent-core/src/compaction_tests.rs",
+      "rust/crates/bello-agent-core/src/connection_catalog_tests.rs",
+      "rust/crates/bello-agent-core/src/connection_vault.rs",
+      "rust/crates/bello-agent-core/src/connection_vault_tests.rs",
+      "rust/crates/bello-agent-core/src/context_preview.rs",
+      "rust/crates/bello-agent-core/src/context_preview_tests.rs",
+      "rust/crates/bello-agent-core/src/edit_runtime_tests.rs",
+      "rust/crates/bello-agent-core/src/edit_synthetic_tests.rs",
+      "rust/crates/bello-agent-core/src/instructions.rs",
+      "rust/crates/bello-agent-core/src/lib.rs",
+      "rust/crates/bello-agent-core/src/live_tool_runtime.rs",
+      "rust/crates/bello-agent-core/src/live_tool_runtime_tests.rs",
+      "rust/crates/bello-agent-core/src/mcp/bash_tests.rs",
+      "rust/crates/bello-agent-core/src/mcp/content.rs",
+      "rust/crates/bello-agent-core/src/mcp/outcome.rs",
+      "rust/crates/bello-agent-core/src/mcp/tests.rs",
+      "rust/crates/bello-agent-core/src/mcp/transport.rs",
+      "rust/crates/bello-agent-core/src/mcp.rs",
+      "rust/crates/bello-agent-core/src/mcp_inspector_runtime.rs",
+      "rust/crates/bello-agent-core/src/mcp_vault.rs",
+      "rust/crates/bello-agent-core/src/model_catalog.rs",
+      "rust/crates/bello-agent-core/src/model_catalog_tests.rs",
+      "rust/crates/bello-agent-core/src/profile.rs",
+      "rust/crates/bello-agent-core/src/project_authority/native.rs",
+      "rust/crates/bello-agent-core/src/project_authority/native_lock.rs",
+      "rust/crates/bello-agent-core/src/project_authority/native_macos.rs",
+      "rust/crates/bello-agent-core/src/project_authority/native_status.rs",
+      "rust/crates/bello-agent-core/src/project_authority/native_tests.rs",
+      "rust/crates/bello-agent-core/src/project_authority.rs",
+      "rust/crates/bello-agent-core/src/project_input_runtime.rs",
+      "rust/crates/bello-agent-core/src/project_resources/identity_tests.rs",
+      "rust/crates/bello-agent-core/src/project_resources/presentation_tests.rs",
+      "rust/crates/bello-agent-core/src/project_resources/source_path.rs",
+      "rust/crates/bello-agent-core/src/project_resources.rs",
+      "rust/crates/bello-agent-core/src/provider.rs",
+      "rust/crates/bello-agent-core/src/read_runtime_tests.rs",
+      "rust/crates/bello-agent-core/src/read_storage_tests.rs",
+      "rust/crates/bello-agent-core/src/read_synthetic_tests.rs",
+      "rust/crates/bello-agent-core/src/resource_runtime.rs",
+      "rust/crates/bello-agent-core/src/resource_runtime_tests.rs",
+      "rust/crates/bello-agent-core/src/runtime.rs",
+      "rust/crates/bello-agent-core/src/runtime_admission.rs",
+      "rust/crates/bello-agent-core/src/runtime_configuration_tests.rs",
+      "rust/crates/bello-agent-core/src/saved_connection_runtime.rs",
+      "rust/crates/bello-agent-core/src/saved_runtime.rs",
+      "rust/crates/bello-agent-core/src/saved_runtime_skill_tests.rs",
+      "rust/crates/bello-agent-core/src/saved_runtime_tests.rs",
+      "rust/crates/bello-agent-core/src/session.rs",
+      "rust/crates/bello-agent-core/src/session_inspection_tests.rs",
+      "rust/crates/bello-agent-core/src/skill_metadata.rs",
+      "rust/crates/bello-agent-core/src/skill_schema.rs",
+      "rust/crates/bello-agent-core/src/skill_storage_tests.rs",
+      "rust/crates/bello-agent-core/src/skills.rs",
+      "rust/crates/bello-agent-core/src/sse.rs",
+      "rust/crates/bello-agent-core/src/stream_journal.rs",
+      "rust/crates/bello-agent-core/src/synthetic_connection_runtime.rs",
+      "rust/crates/bello-agent-core/src/synthetic_project_runtime.rs",
+      "rust/crates/bello-agent-core/src/synthetic_project_runtime_tests.rs",
+      "rust/crates/bello-agent-core/src/tool_content.rs",
+      "rust/crates/bello-agent-core/src/tool_history.rs",
+      "rust/crates/bello-agent-core/src/tool_runtime.rs",
+      "rust/crates/bello-agent-core/src/tools/attachment_images.rs",
+      "rust/crates/bello-agent-core/src/tools/bash.rs",
+      "rust/crates/bello-agent-core/src/tools/bash_tests.rs",
+      "rust/crates/bello-agent-core/src/tools/edit/macos.rs",
+      "rust/crates/bello-agent-core/src/tools/edit/macos_tests.rs",
+      "rust/crates/bello-agent-core/src/tools/edit/synthetic.rs",
+      "rust/crates/bello-agent-core/src/tools/edit/tests.rs",
+      "rust/crates/bello-agent-core/src/tools/edit.rs",
+      "rust/crates/bello-agent-core/src/tools/edit_preparation_tests.rs",
+      "rust/crates/bello-agent-core/src/tools/find/macos.rs",
+      "rust/crates/bello-agent-core/src/tools/find/tests.rs",
+      "rust/crates/bello-agent-core/src/tools/find.rs",
+      "rust/crates/bello-agent-core/src/tools/find_preparation_tests.rs",
+      "rust/crates/bello-agent-core/src/tools/grep/macos.rs",
+      "rust/crates/bello-agent-core/src/tools/grep/tests.rs",
+      "rust/crates/bello-agent-core/src/tools/grep.rs",
+      "rust/crates/bello-agent-core/src/tools/grep_preparation_tests.rs",
+      "rust/crates/bello-agent-core/src/tools/mcp_images.rs",
+      "rust/crates/bello-agent-core/src/tools/read/macos/tests.rs",
+      "rust/crates/bello-agent-core/src/tools/read/macos.rs",
+      "rust/crates/bello-agent-core/src/tools/read.rs",
+      "rust/crates/bello-agent-core/src/tools/read_image/macos/tests.rs",
+      "rust/crates/bello-agent-core/src/tools/read_image/macos.rs",
+      "rust/crates/bello-agent-core/src/tools/read_image.rs",
+      "rust/crates/bello-agent-core/src/tools/read_image_sniff.rs",
+      "rust/crates/bello-agent-core/src/tools/read_preparation_tests.rs",
+      "rust/crates/bello-agent-core/src/tools/read_text.rs",
+      "rust/crates/bello-agent-core/src/tools.rs",
+      "rust/crates/bello-agent-core/src/user_content.rs",
+      "rust/crates/bello-agent-core/src/worker_tail_test_gate.rs",
+      "rust/crates/bello-agent-core/src/workspace.rs",
+      "rust/crates/bello-agent-core/src/workspace_attachment_tests.rs",
+      "rust/crates/bello-agent-core/src/workspace_connection_tests.rs",
+      "rust/crates/bello-agent-core/src/workspace_identity_tests.rs"
+    ],
+    "equal": true,
+    "prior_core_focused_test_count": 59,
+    "prior_log_sha256": "e74cdd93889a59b7f8a73bf76ae1888d52eae38c51123f2a9fba3e6fe98c4601"
+  },
+  "negative_controls": [
+    {
+      "name": "negative-discard-clear",
+      "exit_code": 101,
+      "log_sha256": "3f579f854b04ef38c4dc39e25e13349b6d084707442079a8d8c7164936178c7c",
+      "tail": [
+        "",
+        "",
+        "failures:",
+        "    connection_settings_controller::tests::catalog_workflow::catalog_discard_reopen_removes_selected_metadata_and_success_notice",
+        "",
+        "test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 91 filtered out; finished in 1.47s",
+        "",
+        "error: test failed, to rerun pass `-p bello-agent-app --bin bello-agent`"
+      ]
+    },
+    {
+      "name": "negative-notice-owner-reset",
+      "exit_code": 101,
+      "log_sha256": "d9e4f4b6fe2177dcb4fa984596641a9170c41a9024fef17670b586440469be8b",
+      "tail": [
+        "",
+        "failures:",
+        "    connection_settings_controller::tests::non_error_recovery_notice_survives_discard_reopen",
+        "    connection_settings_controller::tests::save_errors_survive_discard_reopen_and_uncertainty_still_blocks_admission",
+        "",
+        "test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 91 filtered out; finished in 1.08s",
+        "",
+        "error: test failed, to rerun pass `-p bello-agent-app --bin bello-agent`"
+      ]
+    }
+  ],
+  "binary_sha256": "dc9ded02d04c2a1e7bae42d9a921237b2cffb89233585066a7ac47d5929020b7",
+  "build_features": [
+    "native-authority",
+    "synthetic-authority"
+  ],
+  "build_cargo_config": [
+    "profile.dev.package.gpui.codegen-units=256"
+  ],
+  "build_log_sha256": "143cfc17f00961244ea90347b72fd7accb2fb02dec01c3f35dc03c7de11ccc6f",
+  "gui_status": "final binary narrow notice repair GUI passed; earlier r2 broader workflow GUI remains separately attributed",
+  "limitations": [
+    "Focused suites explicitly exclude unrelated test modules; not full original suites",
+    "Initial negative run SIGKILLed in GPUI before execution; preserved separately",
+    "R3 test used invalid pre-Unconfirmed-save byte assertion; preserved93/94 result, corrected only in r4",
+    "Native Mac/Keychain/production remote catalog acceptance not claimed"
+  ],
+  "final_gui": {
+    "manifest": "gui-r4/gui-result-manifest.json",
+    "sha256": "cea3fc27c2ca8cfefc7e9085d71286342a82846be9c7196b37365300d925f01d",
+    "result": {
+      "binary_sha256": "dc9ded02d04c2a1e7bae42d9a921237b2cffb89233585066a7ac47d5929020b7",
+      "source_revision": "review-r4",
+      "mode": "--synthetic-connections",
+      "appearance": "light",
+      "client_size": [
+        920,
+        600
+      ],
+      "results": {
+        "choose_stages_metadata_and_success_notice": true,
+        "cancel_reopen_discards_metadata_and_success_notice": true,
+        "keep_editing_retains_metadata_and_success_notice": true,
+        "confirmed_discard_reopen_clears_metadata_and_success_notice": true,
+        "catalog_gets": 0,
+        "provider_posts": 0,
+        "saved_connections": 0,
+        "app_log_bytes": 0,
+        "exit_code": 0,
+        "fixture_processes_cleaned_up": true
+      },
+      "screenshots": [
+        {
+          "file": "01-selection-notice.png",
+          "sha256": "47826bcb62aca9d7641eba5a8831c32291051d5cc00df31a7dda084b882daeaa",
+          "bytes": 264870
+        },
+        {
+          "file": "02-cancel-clean-reopen.png",
+          "sha256": "5a17ca265e47595654f8b625465e434f27787463fa9c3337004c659f9474ee3b",
+          "bytes": 260163
+        },
+        {
+          "file": "03-close-confirmation.png",
+          "sha256": "3bd58c1738b50ee2dd27b67eef7be3f3265fa544ca7a88e11c10e49a51d788f7",
+          "bytes": 268078
+        },
+        {
+          "file": "04-keep-editing-preserves.png",
+          "sha256": "fd22be886c954b29accff1b6a3d403e7d9ed22fd2b6005a65f094b2826f3f400",
+          "bytes": 264801
+        },
+        {
+          "file": "05-confirmed-discard-clean.png",
+          "sha256": "5a17ca265e47595654f8b625465e434f27787463fa9c3337004c659f9474ee3b",
+          "bytes": 260163
+        }
+      ],
+      "scope": "Actual final-binary narrow repair recheck. Earlier r2 broad catalog workflow GUI and final r4 deterministic tests remain separate evidence."
+    }
+  },
+  "prior_gui": {
+    "manifest": "gui/observed-gui-manifest.json",
+    "sha256": "8b4b6a8b5bb3a042060f2dd313aa690ba8736e2c7c5be8beb5e71522330294bb"
+  },
+  "loc": {
+    "path": "notice-repair/corrected-r4/integrated-loc-r4.json",
+    "sha256": "12f06092e69a7c76456408eb14aa553bae25e2610101fb8a1171c7eadfbca02f",
+    "counts": {
+      "production": 45529,
+      "tests_and_test_support": 61764,
+      "benchmark_example": 1192
+    }
+  }
+}

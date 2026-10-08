@@ -9,6 +9,7 @@
 #[path = "connection_secure_input.rs"]
 pub(crate) mod secure_input;
 use crate::theme::Palette;
+use bello_agent_core::model_catalog::ModelDescriptor;
 use bello_workbench_ui::{EditorAppearance, EditorEvent, EditorView};
 use gpui::{
     AnyElement, App, Bounds, Context, Div, ElementId, Entity, EventEmitter, FocusHandle, Focusable,
@@ -20,7 +21,7 @@ use std::{cell::Cell, collections::BTreeMap, fmt, rc::Rc};
 
 const FIXTURE_NOTICE: &str = "Fixture-only · In-memory connections. Use only numeric loopback URLs, the key synthetic-project-fixture-only, and header values synthetic-header-fixture-only. Do not enter real keys. Nothing is saved to Keychain.";
 const NATIVE_NOTICE: &str = "Experimental native authority · Connections are stored in the separate Bello Agent Rust Keychain vault. No Swift settings are imported. Native signing, credential input and no-prompt acceptance remain under validation. Chats can send to your explicitly saved endpoint; model tools, MCP and project resources remain unavailable.";
-const SCOPE_NOTICE: &str = "This Rust preview covers Connections only. Model catalog discovery, Mini models, routing/reasoning controls and the other Settings sections are not available here. Saving does not send a request; send explicitly from a chat.";
+const SCOPE_NOTICE: &str = "This Rust preview covers Connections only. Catalog-assisted setup is fixture-only. Mini models, routing/reasoning controls and the other Settings sections are not available here. Saving does not send a request; send explicitly from a chat.";
 
 /// Only user-typed replacements belong in key/headers. Never populate these
 /// fields from saved authority, including the synthetic saved authority.
@@ -30,6 +31,9 @@ pub(crate) struct ConnectionFields {
     pub(crate) api: String,
     pub(crate) base_url: String,
     pub(crate) model: String,
+    pub(crate) catalog_url: String,
+    /// Transient filter, never saved and excluded from dirty tracking.
+    pub(crate) catalog_search: String,
     pub(crate) context_window: String,
     pub(crate) output_budget: String,
     pub(crate) key: String,
@@ -44,6 +48,8 @@ impl fmt::Debug for ConnectionFields {
             .field("api", &self.api)
             .field("base_url", &"[typed endpoint redacted]")
             .field("model", &self.model)
+            .field("catalog_url", &"[catalog URL redacted]")
+            .field("catalog_search", &self.catalog_search)
             .field("context_window", &self.context_window)
             .field("output_budget", &self.output_budget)
             .field("key", &"[typed replacement redacted]")
@@ -52,11 +58,27 @@ impl fmt::Debug for ConnectionFields {
     }
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ConnectionCatalogPresentation {
+    pub(crate) opened: bool,
+    pub(crate) loading: bool,
+    pub(crate) error: Option<String>,
+    pub(crate) source: String,
+    pub(crate) generation: uuid::Uuid,
+    pub(crate) models: Vec<ModelDescriptor>,
+    pub(crate) total: usize,
+    pub(crate) page: usize,
+    pub(crate) pages: usize,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ConnectionForm {
     pub(crate) id: String,
     pub(crate) saved: bool,
     pub(crate) fields: ConnectionFields,
+    pub(crate) catalog: ConnectionCatalogPresentation,
+    pub(crate) model_metadata: String,
+    pub(crate) inherited_catalog_name: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -112,6 +134,11 @@ pub(crate) struct ConnectionSettingsPresentation {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ConnectionSettingsIntent {
     Edited,
+    BrowseCatalog,
+    RefreshCatalog,
+    CloseCatalog,
+    CatalogPage(usize),
+    ChooseCatalog { id: String, generation: uuid::Uuid },
     Select(String),
     New,
     SaveAll,
@@ -210,8 +237,36 @@ impl ConnectionSettingsPresentation {
         if !self.editable() {
             return false;
         }
+        // Catalog preparation stays fixture-only. Native manual Connections
+        // keep their existing background vault and route lifecycle unchanged.
+        if !self.mode.is_fixture()
+            && matches!(
+                intent,
+                Intent::BrowseCatalog
+                    | Intent::RefreshCatalog
+                    | Intent::CloseCatalog
+                    | Intent::CatalogPage(_)
+                    | Intent::ChooseCatalog { .. }
+            )
+        {
+            return false;
+        }
         match intent {
-            Intent::Edited | Intent::New | Intent::SaveAll => true,
+            Intent::Edited | Intent::New | Intent::SaveAll | Intent::BrowseCatalog => true,
+            Intent::RefreshCatalog => self
+                .active
+                .as_ref()
+                .is_some_and(|f| f.catalog.opened && !f.catalog.loading),
+            Intent::CloseCatalog => self.active.as_ref().is_some_and(|f| f.catalog.opened),
+            Intent::CatalogPage(page) => self
+                .active
+                .as_ref()
+                .is_some_and(|f| f.catalog.opened && *page < f.catalog.pages),
+            Intent::ChooseCatalog { id, generation } => self.active.as_ref().is_some_and(|f| {
+                f.catalog.opened
+                    && f.catalog.generation == *generation
+                    && f.catalog.models.iter().any(|m| m.id == *id)
+            }),
             Intent::Select(id) => {
                 self.tabs.iter().any(|tab| &tab.id == id)
                     && self.active.as_ref().is_some_and(|form| &form.id != id)
@@ -245,17 +300,21 @@ enum Field {
     Key,
     Headers,
     Model,
+    CatalogUrl,
+    CatalogSearch,
     ContextWindow,
     OutputBudget,
 }
 
 impl Field {
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 9] = [
         Self::Name,
         Self::BaseUrl,
         Self::Key,
         Self::Headers,
         Self::Model,
+        Self::CatalogUrl,
+        Self::CatalogSearch,
         Self::ContextWindow,
         Self::OutputBudget,
     ];
@@ -266,6 +325,8 @@ impl Field {
             Self::Key => &fields.key,
             Self::Headers => &fields.headers,
             Self::Model => &fields.model,
+            Self::CatalogUrl => &fields.catalog_url,
+            Self::CatalogSearch => &fields.catalog_search,
             Self::ContextWindow => &fields.context_window,
             Self::OutputBudget => &fields.output_budget,
         }
@@ -277,6 +338,8 @@ impl Field {
             Self::Key => fields.key = value,
             Self::Headers => fields.headers = value,
             Self::Model => fields.model = value,
+            Self::CatalogUrl => fields.catalog_url = value,
+            Self::CatalogSearch => fields.catalog_search = value,
             Self::ContextWindow => fields.context_window = value,
             Self::OutputBudget => fields.output_budget = value,
         }
@@ -288,6 +351,8 @@ impl Field {
             Self::Key => "settings-api-key",
             Self::Headers => "settings-custom-headers",
             Self::Model => "settings-model-alias",
+            Self::CatalogUrl => "settings-catalog-url",
+            Self::CatalogSearch => "settings-catalog-search",
             Self::ContextWindow => "settings-context-window",
             Self::OutputBudget => "settings-output-budget",
         }
@@ -787,7 +852,19 @@ impl ConnectionSettingsView {
                         ConnectionSettingsIntent::KeepEditing
                     }
                     ConnectionConfirmation::Delete { .. } => ConnectionSettingsIntent::Keep,
-                    ConnectionConfirmation::None => ConnectionSettingsIntent::RequestClose,
+                    ConnectionConfirmation::None => {
+                        if self.presentation.mode.is_fixture()
+                            && self
+                                .presentation
+                                .active
+                                .as_ref()
+                                .is_some_and(|f| f.catalog.opened)
+                        {
+                            ConnectionSettingsIntent::CloseCatalog
+                        } else {
+                            ConnectionSettingsIntent::RequestClose
+                        }
+                    }
                 })
             }
             "w" if command => Some(ConnectionSettingsIntent::RequestClose),
@@ -845,7 +922,41 @@ impl ConnectionSettingsView {
         ]);
         if self.presentation.active.is_some() {
             controls.push(Control::Field(Field::Name));
-            controls.extend(Field::ALL.into_iter().skip(1).map(Control::Field));
+            controls.extend(
+                Field::ALL
+                    .into_iter()
+                    .skip(1)
+                    .filter(|field| {
+                        *field != Field::CatalogSearch
+                            && (*field != Field::CatalogUrl || self.presentation.mode.is_fixture())
+                    })
+                    .map(Control::Field),
+            );
+            if self.presentation.mode.is_fixture() {
+                controls.push(Control::Intent(Intent::BrowseCatalog));
+            }
+            if let Some(form) = &self.presentation.active
+                && self.presentation.mode.is_fixture()
+                && form.catalog.opened
+            {
+                controls.extend([
+                    Control::Field(Field::CatalogSearch),
+                    Control::Intent(Intent::RefreshCatalog),
+                    Control::Intent(Intent::CloseCatalog),
+                ]);
+                if form.catalog.page > 0 {
+                    controls.push(Control::Intent(Intent::CatalogPage(form.catalog.page - 1)));
+                }
+                if form.catalog.page + 1 < form.catalog.pages {
+                    controls.push(Control::Intent(Intent::CatalogPage(form.catalog.page + 1)));
+                }
+                controls.extend(form.catalog.models.iter().map(|model| {
+                    Control::Intent(Intent::ChooseCatalog {
+                        id: model.id.clone(),
+                        generation: form.catalog.generation,
+                    })
+                }));
+            }
         }
         match self.presentation.confirmation {
             ConnectionConfirmation::None => {
@@ -882,8 +993,12 @@ impl ConnectionSettingsView {
     fn control_enabled(&self, control: &Control) -> bool {
         match control {
             Control::Intent(intent) => self.enabled(intent),
-            Control::Field(_) => {
-                self.open && self.pending_revision.is_none() && self.presentation.editable()
+            Control::Field(field) => {
+                self.open
+                    && self.pending_revision.is_none()
+                    && self.presentation.editable()
+                    && (!matches!(field, Field::CatalogUrl | Field::CatalogSearch)
+                        || self.presentation.mode.is_fixture())
             }
         }
     }
@@ -928,7 +1043,17 @@ impl ConnectionSettingsView {
                     }
                     retained
                 } else {
-                    let in_body = matches!(control, Control::Field(_));
+                    let in_body = matches!(
+                        control,
+                        Control::Field(_)
+                            | Control::Intent(
+                                ConnectionSettingsIntent::BrowseCatalog
+                                    | ConnectionSettingsIntent::RefreshCatalog
+                                    | ConnectionSettingsIntent::CloseCatalog
+                                    | ConnectionSettingsIntent::CatalogPage(_)
+                                    | ConnectionSettingsIntent::ChooseCatalog { .. }
+                            )
+                    );
                     ControlFocus {
                         control,
                         focus: field_focus.unwrap_or_else(|| cx.focus_handle()),
@@ -1059,6 +1184,139 @@ impl ConnectionSettingsView {
                 .absolute()
                 .inset_0(),
             )
+    }
+
+    fn catalog_panel(&self, form: &ConnectionForm, cx: &mut Context<Self>) -> AnyElement {
+        let p = self.palette;
+        let catalog = &form.catalog;
+        let mut panel = div().id("settings-model-catalog").debug_selector(|| "settings-model-catalog".into())
+            .border_t_1().border_color(p.hairline()).flex().flex_col().gap(px(8.)).p(px(14.))
+            .child(div().text_size(px(12.)).font_weight(FontWeight::MEDIUM).child(format!("{} · {}", catalog.source, if catalog.loading { "Loading…" } else { "Model suggestions" })))
+            .child(div().text_size(px(11.)).text_color(rgb(p.secondary)).child("Choosing only edits this form. Save separately, then send explicitly from a chat. Catalog image labels do not enable attachments."))
+            .child(self.field_row(Field::CatalogSearch, "Search models", "Search name, alias or description.", "Filter models…", cx))
+            .child(div().flex().gap(px(8.)).child(self.button("settings-refresh-models", "Refresh", ConnectionSettingsIntent::RefreshCatalog, false, false, cx))
+                .child(self.button("settings-close-models", "Close list", ConnectionSettingsIntent::CloseCatalog, false, false, cx)));
+        if let Some(error) = &catalog.error {
+            panel = panel.child(
+                div()
+                    .id("settings-catalog-error")
+                    .text_size(px(11.5))
+                    .text_color(rgb(p.danger))
+                    .child(error.clone()),
+            );
+        }
+        if catalog.models.is_empty() && !catalog.loading {
+            panel = panel.child(
+                div()
+                    .text_size(px(12.))
+                    .child("No matching models. You can still type a model alias above."),
+            );
+        }
+        let mut rows = div()
+            .id("settings-catalog-results")
+            .flex()
+            .flex_col()
+            .gap(px(6.));
+        for (index, model) in catalog.models.iter().enumerate() {
+            let mut badges = Vec::new();
+            if let Some(n) = model.context_window {
+                badges.push(format!("{n} context"));
+            }
+            if let Some(n) = model.max_output_tokens {
+                badges.push(format!("{n} output ceiling"));
+            }
+            if model.deprecated {
+                badges.push("Deprecated".into());
+            }
+            if model
+                .input
+                .as_ref()
+                .is_some_and(|input| input.iter().any(|kind| kind == "image"))
+            {
+                badges.push("Catalog says image; capability unchanged".into());
+            }
+            rows = rows.child(
+                div()
+                    .p(px(8.))
+                    .border_1()
+                    .border_color(p.hairline())
+                    .rounded(px(6.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.))
+                    .child(self.button(
+                        ("settings-catalog-choice", index),
+                        format!(
+                            "{}{} · {}",
+                            if model.id == form.fields.model {
+                                "✓ "
+                            } else {
+                                ""
+                            },
+                            if model.name.is_empty() {
+                                &model.id
+                            } else {
+                                &model.name
+                            },
+                            model.id
+                        ),
+                        ConnectionSettingsIntent::ChooseCatalog {
+                            id: model.id.clone(),
+                            generation: catalog.generation,
+                        },
+                        false,
+                        false,
+                        cx,
+                    ))
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .text_color(rgb(p.secondary))
+                            .child(badges.join(" · ")),
+                    )
+                    .when(!model.description.is_empty(), |row| {
+                        row.child(
+                            div()
+                                .text_size(px(11.))
+                                .text_color(rgb(p.secondary))
+                                .child(model.description.clone()),
+                        )
+                    }),
+            );
+        }
+        panel = panel.child(rows);
+        let mut paging = div()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .text_size(px(11.))
+            .child(format!(
+                "{} matches · page {} of {}",
+                catalog.total,
+                catalog.page + 1,
+                catalog.pages.max(1)
+            ));
+        if catalog.page > 0 {
+            paging = paging.child(self.button(
+                "settings-catalog-previous",
+                "Previous",
+                ConnectionSettingsIntent::CatalogPage(catalog.page - 1),
+                false,
+                false,
+                cx,
+            ));
+        }
+        if catalog.page + 1 < catalog.pages {
+            paging = paging.child(self.button(
+                "settings-catalog-next",
+                "Next",
+                ConnectionSettingsIntent::CatalogPage(catalog.page + 1),
+                false,
+                false,
+                cx,
+            ));
+        }
+        panel.child(paging).into_any_element()
     }
 
     fn field_row(
@@ -1394,7 +1652,7 @@ impl Render for ConnectionSettingsView {
                     Field::Model,
                     "Requested model / router alias",
                     if presentation.mode.is_fixture() {
-                        "Type the fixture model alias. Changing it saves a new connection for new chats."
+                        "Choose from the catalog or type an alias. Typing a different alias clears catalog limits; Save forks a new connection."
                     } else {
                         "Type your model or router alias. Changing it saves a new connection for new chats."
                     },
@@ -1403,6 +1661,12 @@ impl Render for ConnectionSettingsView {
                     } else {
                         "Model or router alias"
                     },
+                ),
+                (
+                    Field::CatalogUrl,
+                    "Custom catalog URL (optional)",
+                    "An unchanged URL keeps a linked saved catalog, if any. Otherwise blank uses the bundled Bello list. Custom URLs replace the list. Fixture: numeric loopback only.",
+                    "Optional catalog URL",
                 ),
                 (
                     Field::ContextWindow,
@@ -1417,7 +1681,43 @@ impl Render for ConnectionSettingsView {
                     "4096",
                 ),
             ] {
+                if field == Field::CatalogUrl && !presentation.mode.is_fixture() {
+                    continue;
+                }
                 fields = fields.child(self.field_row(field, label, detail, placeholder, cx));
+            }
+            if presentation.mode.is_fixture() {
+                fields = fields.child(
+                    div()
+                        .px(px(14.))
+                        .py(px(12.))
+                        .border_t_1()
+                        .border_color(p.hairline())
+                        .flex()
+                        .flex_col()
+                        .gap(px(8.))
+                        .child(self.button(
+                            "settings-browse-models",
+                            "Choose model…",
+                            ConnectionSettingsIntent::BrowseCatalog,
+                            false,
+                            false,
+                            cx,
+                        ))
+                        .child(
+                            div()
+                                .text_size(px(11.5))
+                                .text_color(rgb(p.secondary))
+                                .child(form.model_metadata.clone()),
+                        ),
+                );
+                if let Some(name) = &form.inherited_catalog_name {
+                    fields = fields.child(div().px(px(14.)).py(px(10.)).text_size(px(11.5)).text_color(rgb(p.secondary))
+                    .child(format!("Model list follows saved connection “{name}”. This affects the catalog only; this connection keeps its own request route.")));
+                }
+                if form.catalog.opened {
+                    fields = fields.child(self.catalog_panel(form, cx));
+                }
             }
             body = body.child(div().flex_shrink_0().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD)
                 .child(if form.saved { "Connection" } else { "New connection" })).child(fields)

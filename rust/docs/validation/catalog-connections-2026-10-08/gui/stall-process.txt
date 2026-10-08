@@ -1,0 +1,104 @@
+Thu Oct  8 05:13:52 UTC 2026
+ 640773    3591 S+    0.0  0.0 do_wait                        bash /workspace/shared/catalog-native-evidence/gui/launch.sh light 1180x812
+ 640775  640773 S+    0.1  0.1 do_sys_poll                    python3 /workspace/shared/catalog-native-integrated-stage/rust/fixtures/catalog_workflow_gateway.py --port 47891 --log /workspace/shared/catalog-native-evidence/gui/light/same-origin.jsonl --mode-file /workspace/shared/catalog-native-evidence/gui/light/mode
+ 640776  640773 S+    0.1  0.1 do_sys_poll                    python3 /workspace/shared/catalog-native-integrated-stage/rust/fixtures/catalog_workflow_gateway.py --port 47892 --log /workspace/shared/catalog-native-evidence/gui/light/external-origin.jsonl
+ 640777  640773 Rl+  41.4  0.6 -                              /workspace/shared/catalog-native-evidence/gui/bello-agent-catalog-native-integrated --synthetic-connections --project /workspace/shared/catalog-native-evidence/gui/light/project --session /workspace/shared/catalog-native-evidence/gui/light/data/session.json
+PID=640777
+Name:	bello-agent-cat
+Umask:	0077
+State:	D (disk sleep)
+Tgid:	640777
+Ngid:	0
+Pid:	640777
+PPid:	640773
+TracerPid:	0
+Uid:	1000	1000	1000	1000
+Gid:	1000	1000	1000	1000
+FDSize:	256
+Groups:	 
+NStgid:	640777
+NSpid:	640777
+NSpgid:	640773
+NSsid:	3591
+Kthread:	0
+VmPeak:	 3216644 kB
+VmSize:	 3154284 kB
+VmLck:	       0 kB
+VmPin:	       0 kB
+VmHWM:	  174568 kB
+VmRSS:	   67076 kB
+RssAnon:	   47772 kB
+RssFile:	    1788 kB
+RssShmem:	   17516 kB
+VmData:	  297620 kB
+VmStk:	     644 kB
+VmExe:	   49320 kB
+VmLib:	  154228 kB
+VmPTE:	     928 kB
+VmSwap:	       0 kB
+HugetlbPages:	       0 kB
+CoreDumping:	0
+THP_enabled:	1
+untag_mask:	0xffffffffffffffff
+Threads:	38
+SigQ:	70/39792
+SigPnd:	0000000000000000
+ShdPnd:	0000000000000000
+SigBlk:	0000000000000000
+SigIgn:	0000000000001000
+SigCgt:	0000000100000440
+CapInh:	0000000000000000
+CapPrm:	0000000000000000
+CapEff:	0000000000000000
+CapBnd:	00000000800405fb
+CapAmb:	0000000000000000
+NoNewPrivs:	0
+Seccomp:	0
+Seccomp_filters:	0
+Speculation_Store_Bypass:	vulnerable
+SpeculationIndirectBranch:	always enabled
+Cpus_allowed:	1ff
+Cpus_allowed_list:	0-8
+Mems_allowed:	00000000,00000001
+Mems_allowed_list:	0
+voluntary_ctxt_switches:	144422
+nonvoluntary_ctxt_switches:	139406
+    PID     TID STAT %CPU WCHAN                          COMMAND
+ 640777  640777 Dl+   8.1 folio_wait_bit_common          bello-agent-cat
+ 640777  640778 Sl+   0.0 do_epoll_wait                  tokio-rt-worker
+ 640777  640779 Sl+   0.0 futex_wait                     tokio-rt-worker
+ 640777  640780 Sl+   0.0 futex_wait                     Worker-0
+ 640777  640781 Sl+   0.0 futex_wait                     Worker-1
+ 640777  640782 Sl+   0.0 futex_wait                     Worker-2
+ 640777  640783 Sl+   0.0 futex_wait                     Worker-3
+ 640777  640784 Sl+   0.0 futex_wait                     Worker-4
+ 640777  640785 Sl+   0.0 futex_wait                     Worker-5
+ 640777  640786 Sl+   0.0 futex_wait                     Worker-6
+ 640777  640787 Sl+   0.0 futex_wait                     Worker-7
+ 640777  640788 Sl+   0.0 do_epoll_wait                  Timer
+ 640777  640789 Sl+   0.3 futex_wait                     bello-agent-cat
+ 640777  640790 Sl+   3.5 futex_wait                     llvmpipe-0
+ 640777  640791 Sl+   3.5 futex_wait                     llvmpipe-1
+ 640777  640792 Sl+   3.7 futex_wait                     llvmpipe-2
+ 640777  640793 Sl+   3.5 futex_wait                     llvmpipe-3
+ 640777  640794 Sl+   3.5 futex_wait                     llvmpipe-4
+ 640777  640795 Sl+   3.6 futex_wait                     llvmpipe-5
+ 640777  640796 Sl+   3.7 futex_wait                     llvmpipe-6
+ 640777  640797 Sl+   3.7 futex_wait                     llvmpipe-7
+ 640777  640798 Sl+   3.6 futex_wait                     llvmpipe-8
+ 640777  640799 Sl+   0.0 futex_wait                     bello-agent-cat
+ 640777  640800 Sl+   0.0 futex_wait                     bello-agent-cat
+ 640777  640801 Sl+   0.0 futex_wait                     bello-agent-cat
+ 640777  640802 Sl+   0.0 futex_wait                     bello-agent-cat
+ 640777  640803 Sl+   0.0 futex_wait                     bello-agent-cat
+ 640777  640804 Sl+   0.0 futex_wait                     bello-agent-cat
+ 640777  640805 Sl+   0.0 futex_wait                     bello-agent-cat
+ 640777  640806 Sl+   0.0 futex_wait                     bello-agent-cat
+ 640777  640807 Sl+   0.0 futex_wait                     bello-agent-cat
+ 640777  640808 SNl+  0.0 futex_wait                     bello-a:disk$0
+ 640777  640809 Sl+   0.0 do_sys_poll                    Clipboard
+ 640777  640810 Sl+   0.1 futex_wait                     blocking-1
+ 640777  640811 Sl+   0.0 futex_wait                     async-io
+ 640777  640812 Sl+   0.0 do_epoll_wait                  zbus::Connectio
+ 640777  640813 Sl+   0.2 futex_wait                     WSI swapchain q
+ 640777  640814 Sl+   0.0 futex_wait                     WSI swapchain e

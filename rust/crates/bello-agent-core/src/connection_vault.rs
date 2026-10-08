@@ -4,7 +4,10 @@
 use super::{
     AuthorityError, AuthorityResult, Fields, LoadedProjects, ProjectAuthority, parse, raw,
 };
-use crate::Profile;
+use crate::{
+    Credential, Profile,
+    model_catalog::{CatalogRequest, CatalogUrl},
+};
 use std::{
     collections::{BTreeMap, HashSet},
     sync::Arc,
@@ -36,6 +39,8 @@ pub struct SavedConnection {
     pub name: String,
     pub revision: String,
     pub available: bool,
+    /// Metadata only. Never part of the runtime Profile or provider route.
+    pub catalog_url: Option<CatalogUrl>,
 }
 
 #[derive(Clone)]
@@ -44,6 +49,7 @@ pub struct LoadedConnections {
     envelope: LoadedProjects,
     entries: Vec<Fields>,
     profiles: Vec<SavedConnection>,
+    catalog_sources: BTreeMap<String, String>,
 }
 impl LoadedConnections {
     fn decode(authority: &ProjectAuthority, envelope: LoadedProjects) -> AuthorityResult<Self> {
@@ -66,7 +72,9 @@ impl LoadedConnections {
             }
             profiles.push(metadata);
         }
+        let catalog_sources = decode_catalog_sources(&envelope.fields, &profiles)?;
         Ok(Self {
+            catalog_sources,
             authority: authority.clone(),
             envelope,
             entries,
@@ -79,12 +87,31 @@ impl LoadedConnections {
     pub fn profiles(&self) -> &[SavedConnection] {
         &self.profiles
     }
+    pub fn catalog_sources(&self) -> &BTreeMap<String, String> {
+        &self.catalog_sources
+    }
+    /// Resolves model-list metadata only, never a runtime dispatch profile.
+    pub fn catalog_source(&self, id: &str) -> AuthorityResult<&SavedConnection> {
+        self.index(id)?;
+        let source = self
+            .catalog_sources
+            .get(id)
+            .map(String::as_str)
+            .unwrap_or(id);
+        Ok(&self.profiles[self.index(source)?])
+    }
     pub fn edit(&self, id: &str) -> AuthorityResult<ConnectionDraft> {
         let index = self.index(id)?;
         let saved = &self.profiles[index];
         Ok(ConnectionDraft {
             profile: saved.profile.clone(),
             name: saved.name.clone(),
+            catalog_url: saved
+                .catalog_url
+                .as_ref()
+                .map(|url| url.as_str().to_owned())
+                .unwrap_or_default(),
+            baseline_catalog_url: saved.catalog_url.clone(),
             key_input: String::new(),
             headers_input: String::new(),
             baseline: Some(self.entries[index].clone()),
@@ -110,6 +137,9 @@ pub struct ConnectionDraft {
     pub name: String,
     pub key_input: String,
     pub headers_input: String,
+    /// Unvalidated editing value; validation happens at fetch/save boundaries.
+    pub catalog_url: String,
+    baseline_catalog_url: Option<CatalogUrl>,
     baseline: Option<Fields>,
     baseline_profile: Profile,
     baseline_name: String,
@@ -124,6 +154,8 @@ impl ConnectionDraft {
             name,
             key_input: String::new(),
             headers_input: String::new(),
+            catalog_url: String::new(),
+            baseline_catalog_url: None,
             baseline: None,
         }
     }
@@ -131,6 +163,12 @@ impl ConnectionDraft {
         !self.key_input.is_empty()
             || !self.headers_input.is_empty()
             || self.name != self.baseline_name
+            || self.catalog_url
+                != self
+                    .baseline_catalog_url
+                    .as_ref()
+                    .map(CatalogUrl::as_str)
+                    .unwrap_or("")
             || serde_json::to_vec(&self.profile).ok()
                 != serde_json::to_vec(&self.baseline_profile).ok()
     }
@@ -153,8 +191,64 @@ impl ConfirmedConnection {
     }
 }
 
+#[cfg(test)]
+thread_local! { static CATALOG_TEST_KEY_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 fn field<T: for<'de> serde::Deserialize<'de>>(fields: &Fields, name: &str) -> AuthorityResult<T> {
+    #[cfg(test)]
+    if name == "apiKey" {
+        CATALOG_TEST_KEY_READS.with(|reads| reads.set(reads.get() + 1));
+    }
     parse(fields.0.get(name).ok_or(AuthorityError::Corrupt)?)
+}
+fn decode_catalog_sources(
+    fields: &Fields,
+    profiles: &[SavedConnection],
+) -> AuthorityResult<BTreeMap<String, String>> {
+    let links: Fields = fields
+        .0
+        .get("catalogSources")
+        .filter(|value| value.get() != "null")
+        .map(|value| parse(value))
+        .transpose()?
+        .unwrap_or_else(|| Fields(BTreeMap::new()));
+    if links.0.len() > MAX_CONNECTIONS {
+        return Err(AuthorityError::Corrupt);
+    }
+    let sources: BTreeMap<String, String> = parse(&raw(&links)?)?;
+    for (route, source) in &sources {
+        if route == source
+            || sources.contains_key(source)
+            || !profiles
+                .iter()
+                .any(|p| p.profile.id == *route && p.profile.api == "openai-responses")
+            || !profiles
+                .iter()
+                .any(|p| p.profile.id == *source && p.profile.api == "openai-responses")
+        {
+            return Err(AuthorityError::Corrupt);
+        }
+    }
+    Ok(sources)
+}
+fn catalog_url(value: &str) -> AuthorityResult<Option<CatalogUrl>> {
+    if value.trim().is_empty() {
+        return Ok(None);
+    }
+    CatalogUrl::parse(value)
+        .map(Some)
+        .map_err(|_| AuthorityError::InvalidConnection)
+}
+fn store_catalog_sources(current: &mut LoadedConnections) -> AuthorityResult<()> {
+    if current.catalog_sources.is_empty() {
+        current.envelope.fields.0.remove("catalogSources");
+    } else {
+        current
+            .envelope
+            .fields
+            .0
+            .insert("catalogSources".into(), raw(&current.catalog_sources)?);
+    }
+    Ok(())
 }
 fn metadata(authority: &ProjectAuthority, entry: &Fields) -> AuthorityResult<SavedConnection> {
     let fields: Fields = field(entry, "profile")?;
@@ -174,6 +268,15 @@ fn metadata(authority: &ProjectAuthority, entry: &Fields) -> AuthorityResult<Sav
         .map(|v| parse(v))
         .transpose()?
         .unwrap_or_default();
+    let catalog_value: Option<String> = fields
+        .0
+        .get("catalogUrl")
+        .map(|v| parse(v))
+        .transpose()?
+        .flatten();
+    let parsed_catalog = catalog_url(catalog_value.as_deref().unwrap_or(""));
+    let catalog_valid = parsed_catalog.is_ok();
+    let catalog_url = parsed_catalog.unwrap_or_default();
     let known = Fields(
         fields
             .0
@@ -184,7 +287,8 @@ fn metadata(authority: &ProjectAuthority, entry: &Fields) -> AuthorityResult<Sav
     );
     let decoded: AuthorityResult<Profile> = parse(&raw(&known)?);
     let known_fields = fields.0.keys().all(|key| {
-        PROFILE_FIELDS.contains(&key.as_str()) || ["name", "revision"].contains(&key.as_str())
+        PROFILE_FIELDS.contains(&key.as_str())
+            || ["name", "revision", "catalogUrl"].contains(&key.as_str())
     }) && entry
         .0
         .keys()
@@ -213,6 +317,7 @@ fn metadata(authority: &ProjectAuthority, entry: &Fields) -> AuthorityResult<Sav
         ),
     };
     let available = parsed
+        && catalog_valid
         && known_fields
         && secrets(entry).is_ok_and(|(key, headers)| {
             let mut configured = profile.clone();
@@ -230,6 +335,7 @@ fn metadata(authority: &ProjectAuthority, entry: &Fields) -> AuthorityResult<Sav
         name,
         revision,
         available,
+        catalog_url,
     })
 }
 fn secrets(entry: &Fields) -> AuthorityResult<(String, BTreeMap<String, String>)> {
@@ -346,6 +452,7 @@ impl ProjectAuthority {
         draft: &ConnectionDraft,
     ) -> AuthorityResult<ConnectionSave> {
         let mut current = self.current_connections(expected)?;
+        let next_catalog = catalog_url(&draft.catalog_url)?;
         if !draft.profile.headers.is_empty() {
             return Err(AuthorityError::InvalidConnection);
         }
@@ -413,6 +520,13 @@ impl ProjectAuthority {
                 profile_fields.0.insert(key, value);
             }
         }
+        if let Some(url) = &next_catalog {
+            profile_fields
+                .0
+                .insert("catalogUrl".into(), raw(&url.as_str())?);
+        } else {
+            profile_fields.0.remove("catalogUrl");
+        }
         profile_fields.0.insert("name".into(), raw(&draft.name)?);
         profile_fields
             .0
@@ -420,48 +534,44 @@ impl ProjectAuthority {
         entry.0.insert("profile".into(), raw(&profile_fields)?);
         entry.0.insert("apiKey".into(), raw(&key)?);
         entry.0.insert("headers".into(), raw(&profile.headers)?);
-        // Source catalog inheritance for model-only forks of the same route
-        // authority. No model discovery or unrelated raw catalog field is read.
-        if forked && let Some(index) = previous {
-            let old = &current.profiles[index].profile;
-            let (old_key, old_headers) = secrets(&current.entries[index])?;
-            if old.api == profile.api
-                && old.base_url == profile.base_url
-                && old_key == key
-                && old_headers == profile.headers
-            {
-                let mut links: Fields = current
-                    .envelope
-                    .fields
-                    .0
-                    .get("catalogSources")
-                    .filter(|value| value.get() != "null")
-                    .map(|value| parse(value))
-                    .transpose()?
-                    .unwrap_or_else(|| Fields(BTreeMap::new()));
-                let authority = links
-                    .0
-                    .get(&old.id)
-                    .map(|value| parse::<String>(value))
-                    .transpose()?
-                    .unwrap_or_else(|| old.id.clone());
-                if authority != old.id {
-                    links.0.insert(profile.id.clone(), raw(&authority)?);
-                } else {
-                    for value in links.0.values_mut() {
-                        if parse::<String>(value).ok().as_deref() == Some(old.id.as_str()) {
-                            *value = raw(&profile.id)?;
-                        }
-                    }
-                    links.0.insert(old.id.clone(), raw(&profile.id)?);
-                    links.0.remove(&profile.id);
+        // Only a fork made here establishes lineage. Similar legacy routes do
+        // not justify sharing a model list. URL edits detach a follower.
+        if let Some(index) = previous {
+            let old = &current.profiles[index];
+            let old_id = old.profile.id.clone();
+            let edited_catalog = old.catalog_url != next_catalog;
+            if !forked {
+                if edited_catalog {
+                    current.catalog_sources.remove(&old_id);
                 }
-                current
-                    .envelope
-                    .fields
-                    .0
-                    .insert("catalogSources".into(), raw(&links)?);
+            } else {
+                let (old_key, old_headers) = secrets(&current.entries[index])?;
+                if old.profile.api == profile.api
+                    && old.profile.base_url == profile.base_url
+                    && old_key == key
+                    && old_headers == profile.headers
+                {
+                    let source = current
+                        .catalog_sources
+                        .get(&old_id)
+                        .cloned()
+                        .unwrap_or_else(|| old_id.clone());
+                    if source != old_id && !edited_catalog {
+                        current.catalog_sources.insert(profile.id.clone(), source);
+                    } else if source == old_id {
+                        for target in current.catalog_sources.values_mut() {
+                            if *target == old_id {
+                                target.clone_from(&profile.id);
+                            }
+                        }
+                        current.catalog_sources.insert(old_id, profile.id.clone());
+                        current.catalog_sources.remove(&profile.id);
+                    } else {
+                        current.catalog_sources.insert(old_id, profile.id.clone());
+                    }
+                }
             }
+            store_catalog_sources(&mut current)?;
         }
         let mut entries = current.entries.clone();
         if let Some(index) = previous.filter(|_| !forked) {
@@ -486,21 +596,140 @@ impl ProjectAuthority {
         let index = current.index(id)?;
         let mut entries = current.entries.clone();
         entries.remove(index);
-        // Source forgetCatalogLinks: preserve every unrelated link as its raw value.
-        if let Some(value) = current.envelope.fields.0.get("catalogSources")
-            && value.get() != "null"
-        {
-            let mut links: Fields = parse(value)?;
-            links.0.retain(|key, value| {
-                key != id && parse::<String>(value).ok().as_deref() != Some(id)
-            });
-            current
-                .envelope
-                .fields
-                .0
-                .insert("catalogSources".into(), raw(&links)?);
-        }
+        current
+            .catalog_sources
+            .retain(|route, source| route != id && source != id);
+        store_catalog_sources(&mut current)?;
         self.replace_connections(current, entries)
+    }
+    /// One exact whole-envelope CAS, changing catalog metadata links only.
+    pub fn use_catalog_source(
+        &self,
+        expected: &LoadedConnections,
+        route_id: &str,
+        source_id: &str,
+    ) -> AuthorityResult<LoadedConnections> {
+        let mut current = self.current_connections(expected)?;
+        let route = &current.profiles[current.index(route_id)?];
+        let source = &current.profiles[current.index(source_id)?];
+        if !route.available
+            || !source.available
+            || route.profile.api != "openai-responses"
+            || source.profile.api != "openai-responses"
+        {
+            return Err(AuthorityError::UnsupportedConnection);
+        }
+        let source = if source_id == route_id {
+            route_id.to_owned()
+        } else {
+            current
+                .catalog_sources
+                .get(source_id)
+                .cloned()
+                .unwrap_or_else(|| source_id.to_owned())
+        };
+        if source == route_id {
+            current.catalog_sources.remove(route_id);
+        } else {
+            for target in current.catalog_sources.values_mut() {
+                if target == route_id {
+                    target.clone_from(&source);
+                }
+            }
+            current.catalog_sources.insert(route_id.to_owned(), source);
+        }
+        store_catalog_sources(&mut current)?;
+        let entries = current.entries.clone();
+        self.replace_connections(current, entries)
+    }
+    /// Prepare catalog-only metadata. A saved form must still exactly match its
+    /// authority snapshot. Public/bundled catalogs never decode a saved key or
+    /// provider headers; a gateway key is resolved only after same-origin proof.
+    pub fn prepare_catalog(
+        &self,
+        expected: &LoadedConnections,
+        draft: &ConnectionDraft,
+    ) -> AuthorityResult<CatalogRequest> {
+        let mut source_id = None;
+        let mut source_profile = &draft.profile;
+        let mut selected_url = catalog_url(&draft.catalog_url)?;
+        let mut source_entry = None;
+        let mut use_draft_key = true;
+        if let Some(baseline) = &draft.baseline {
+            if !expected.same_authority(self) {
+                return Err(AuthorityError::Conflict);
+            }
+            // Do not call load_connections here: metadata validation would
+            // unnecessarily decode every record's key and provider headers.
+            let current = self.load()?;
+            if current.previous != expected.envelope.previous
+                || current.revision() != expected.revision()
+            {
+                return Err(AuthorityError::Conflict);
+            }
+            let index = expected.index(&draft.profile.id)?;
+            if raw(baseline)?.get() != raw(&expected.entries[index])?.get() {
+                return Err(AuthorityError::Conflict);
+            }
+            if !expected.profiles[index].available {
+                return Err(AuthorityError::UnsupportedConnection);
+            }
+            source_id = Some(draft.profile.id.clone());
+            source_entry = Some(&expected.entries[index]);
+            if selected_url == draft.baseline_catalog_url
+                && draft.profile.api == draft.baseline_profile.api
+                && draft.profile.base_url == draft.baseline_profile.base_url
+                && draft.key_input.is_empty()
+                && let Some(source) = expected.catalog_sources.get(&draft.profile.id)
+            {
+                let source_index = expected.index(source)?;
+                let saved = &expected.profiles[source_index];
+                if !saved.available {
+                    return Err(AuthorityError::UnsupportedConnection);
+                }
+                source_id = Some(source.clone());
+                source_profile = &saved.profile;
+                selected_url = saved.catalog_url.clone();
+                source_entry = Some(&expected.entries[source_index]);
+                use_draft_key = false;
+            }
+        } else if expected
+            .profiles
+            .iter()
+            .any(|p| p.profile.id == draft.profile.id)
+        {
+            return Err(AuthorityError::Conflict);
+        }
+        let Some(url) = selected_url else {
+            return Ok(CatalogRequest::bundled(source_id));
+        };
+        // This slice never enables production catalog networking, including on
+        // a production connection that happens to name a local endpoint.
+        let fixture = match self.provenance {
+            #[cfg(feature = "synthetic-authority")]
+            super::AuthorityProvenance::Fixture => true,
+            _ => false,
+        };
+        if !fixture || !url.numeric_loopback() {
+            return Err(AuthorityError::Unavailable);
+        }
+        let key = if url.uses_gateway_credential(source_profile) {
+            let value = if use_draft_key && !draft.key_input.is_empty() {
+                draft.key_input.clone()
+            } else {
+                source_entry
+                    .map(|entry| field::<String>(entry, "apiKey"))
+                    .transpose()?
+                    .unwrap_or_default()
+            };
+            if value != SYNTHETIC_KEY {
+                return Err(AuthorityError::InvalidConnection);
+            }
+            Some(Credential::new(value).map_err(|_| AuthorityError::InvalidConnection)?)
+        } else {
+            None
+        };
+        CatalogRequest::fixture(source_id, url, key).map_err(|_| AuthorityError::InvalidConnection)
     }
     pub fn confirm_connection(
         &self,
@@ -534,6 +763,10 @@ pub use synthetic_runtime::SyntheticConnectionRuntime;
 #[cfg(all(test, feature = "synthetic-authority"))]
 #[path = "connection_vault_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "connection_catalog_tests.rs"]
+mod catalog_tests;
 
 #[cfg(test)]
 mod production_contract_tests {

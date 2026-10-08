@@ -92,7 +92,7 @@ fn fixture_with_mode(
     cx.run_until_parked();
     (dir, control, window, root)
 }
-fn fixture(
+pub(super) fn fixture(
     cx: &mut TestAppContext,
 ) -> (
     tempfile::TempDir,
@@ -103,7 +103,7 @@ fn fixture(
     fixture_with_trust(cx, true)
 }
 
-fn act(window: WindowHandle<AgentView>, intent: Intent, cx: &mut TestAppContext) {
+pub(super) fn act(window: WindowHandle<AgentView>, intent: Intent, cx: &mut TestAppContext) {
     window
         .update(cx, |view, window, cx| {
             let revision = view.connections.presentation.revision;
@@ -117,7 +117,7 @@ fn act(window: WindowHandle<AgentView>, intent: Intent, cx: &mut TestAppContext)
         .unwrap();
     cx.run_until_parked();
 }
-fn edit(
+pub(super) fn edit(
     root: &Entity<AgentView>,
     cx: &mut TestAppContext,
     f: impl FnOnce(&mut super::ConnectionFields),
@@ -128,7 +128,7 @@ fn edit(
         view.connections.publish(cx);
     });
 }
-fn save_fixture(
+pub(super) fn save_fixture(
     window: WindowHandle<AgentView>,
     root: &Entity<AgentView>,
     cx: &mut TestAppContext,
@@ -150,7 +150,7 @@ fn save_fixture(
             .clone()
     })
 }
-fn wait(cx: &mut TestAppContext, mut done: impl FnMut(&mut TestAppContext) -> bool) {
+pub(super) fn wait(cx: &mut TestAppContext, mut done: impl FnMut(&mut TestAppContext) -> bool) {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         cx.run_until_parked();
@@ -624,6 +624,145 @@ fn uncertain_save_retains_form_and_reload_does_not_reopen_admission(cx: &mut Tes
     root.update(cx, |view, cx| view.reload_connections(false, cx));
     cx.run_until_parked();
     cx.read(|cx| assert!(root.read(cx).connections.uncertain));
+}
+
+fn stage_catalog_selection_notice(
+    root: &Entity<AgentView>,
+    window: WindowHandle<AgentView>,
+    cx: &mut TestAppContext,
+) {
+    act(window, Intent::BrowseCatalog, cx);
+    wait(cx, |cx| {
+        cx.read(|cx| {
+            !root
+                .read(cx)
+                .connections
+                .presentation
+                .active
+                .as_ref()
+                .unwrap()
+                .catalog
+                .loading
+        })
+    });
+    let generation = cx.read(|cx| {
+        root.read(cx)
+            .connections
+            .presentation
+            .active
+            .as_ref()
+            .unwrap()
+            .catalog
+            .generation
+    });
+    act(
+        window,
+        Intent::ChooseCatalog {
+            id: "deepseek-v4.1-flash".into(),
+            generation,
+        },
+        cx,
+    );
+    cx.read(|cx| {
+        let state = &root.read(cx).connections;
+        assert!(
+            state
+                .presentation
+                .notice
+                .as_ref()
+                .unwrap()
+                .text
+                .contains("Model metadata applied")
+        );
+        assert_eq!(
+            state.forms[state.active.as_ref().unwrap()]
+                .capture()
+                .unwrap()
+                .profile
+                .model_output_limit,
+            Some(393216)
+        );
+    });
+}
+
+#[gpui::test]
+fn save_errors_survive_discard_reopen_and_uncertainty_still_blocks_admission(
+    cx: &mut TestAppContext,
+) {
+    for error in [AuthorityError::Conflict, AuthorityError::Unconfirmed] {
+        for confirm_close in [false, true] {
+            let (_dir, control, window, root) = fixture(cx);
+            let before = control.snapshot_bytes().unwrap();
+            edit(&root, cx, |f| {
+                f.name = "Failed save draft".into();
+                f.key = SYNTHETIC_KEY.into();
+            });
+            stage_catalog_selection_notice(&root, window, cx);
+            control.fail_next_write(error.clone()).unwrap();
+            act(window, Intent::SaveAll, cx);
+            // Unconfirmed writes may commit. Discard must not mutate the
+            // post-failure bytes or turn uncertainty into confirmed admission.
+            let failed_bytes = control.snapshot_bytes().unwrap();
+            if error == AuthorityError::Conflict {
+                assert_eq!(failed_bytes, before);
+            }
+            let warning = cx.read(|cx| {
+                let state = &root.read(cx).connections;
+                let warning = state.presentation.notice.clone().unwrap();
+                assert!(warning.is_error);
+                assert_eq!(state.uncertain, error == AuthorityError::Unconfirmed);
+                warning
+            });
+            if confirm_close {
+                act(window, Intent::RequestClose, cx);
+                act(window, Intent::DiscardAndClose, cx);
+            } else {
+                act(window, Intent::Cancel, cx);
+            }
+            window
+                .update(cx, |view, window, cx| view.open_connections(window, cx))
+                .unwrap();
+            cx.read(|cx| {
+                let view = root.read(cx);
+                assert_eq!(
+                    view.connections.presentation.notice.as_ref(),
+                    Some(&warning)
+                );
+                assert!(!view.connections.presentation.dirty);
+                assert!(!view.controller.configured());
+                if error == AuthorityError::Unconfirmed {
+                    assert!(view.connections.uncertain);
+                    assert!(matches!(
+                        view.connections.presentation.availability,
+                        super::ConnectionSettingsAvailability::Unconfirmed(_)
+                    ));
+                    assert!(!view.connections.presentation.allows(&Intent::SaveAll));
+                    assert!(view.connection_switch_blocker().is_some());
+                }
+            });
+            assert_eq!(control.snapshot_bytes().unwrap(), failed_bytes);
+        }
+    }
+}
+
+#[gpui::test]
+fn non_error_recovery_notice_survives_discard_reopen(cx: &mut TestAppContext) {
+    let (_dir, _control, window, root) = fixture(cx);
+    edit(&root, cx, |f| f.name = "Discard this draft".into());
+    stage_catalog_selection_notice(&root, window, cx);
+    root.update(cx, |view, cx| {
+        view.connections.notice(
+            "Settings were saved, but a chat could not apply them. Explicit recovery is required.",
+            false,
+        );
+        view.connections.publish(cx);
+    });
+    let notice = cx.read(|cx| root.read(cx).connections.presentation.notice.clone());
+    act(window, Intent::Cancel, cx);
+    window
+        .update(cx, |view, window, cx| view.open_connections(window, cx))
+        .unwrap();
+    cx.read(|cx| assert_eq!(root.read(cx).connections.presentation.notice, notice));
 }
 
 #[gpui::test]
@@ -2051,4 +2190,42 @@ fn unavailable_receipt_non_not_found_metadata_error_is_not_absence(cx: &mut Test
         );
         assert!(view.load_failed && !view.busy);
     });
+}
+
+#[path = "connection_catalog_workflow_tests.rs"]
+mod catalog_workflow;
+
+#[gpui::test]
+fn native_catalog_intents_never_read_vault_or_create_catalog_work(cx: &mut TestAppContext) {
+    let (_dir, control, window, root, _id) = native_mode_saved_fixture(cx);
+    window
+        .update(cx, |view, window, cx| view.open_connections(window, cx))
+        .unwrap();
+    control.fail_next_read(AuthorityError::Denied).unwrap();
+    root.update(cx, |view, cx| {
+        assert!(view.connections.presentation.mode.editable());
+        assert!(!view.connections.presentation.mode.is_fixture());
+        view.load_connection_catalog(false, cx);
+        view.load_connection_catalog(true, cx);
+        view.choose_connection_model("must-not-apply", uuid::Uuid::new_v4());
+        assert!(view.connections.catalogs.is_empty());
+        assert!(!view.connections.presentation.dirty);
+        assert!(view.connections.operation.is_none());
+    });
+    cx.run_until_parked();
+    assert!(
+        matches!(
+            control.authority().load_connections(),
+            Err(AuthorityError::Denied)
+        ),
+        "catalog actions must leave the pending read failure untouched"
+    );
+}
+
+#[test]
+fn untouched_native_new_form_is_clean_with_blank_manual_fields() {
+    let form = new_form(crate::launch_authority::AuthorityMode::Native);
+    assert!(form.fields.base_url.is_empty() && form.fields.model.is_empty());
+    assert!(!form.dirty());
+    assert!(!form.draft.has_changes());
 }

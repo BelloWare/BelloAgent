@@ -1,0 +1,6 @@
+Verified 716 copied files.
+Excluded 63 unrelated test modules in 40 source files.
+Every edited file reconstructs byte-for-byte to its canonical input by reversing only listed cfg guard substitutions.
+All production declarations and test-support hooks preserved.
+All workspace manifests, Cargo.lock, app files and catalog bytes unchanged.
+No Cargo command, compiler, or test executed.

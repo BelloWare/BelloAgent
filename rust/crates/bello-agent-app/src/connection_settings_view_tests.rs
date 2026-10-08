@@ -27,11 +27,16 @@ fn ready() -> ConnectionSettingsPresentation {
         active: Some(ConnectionForm {
             id: "one".into(),
             saved: true,
+            catalog: Default::default(),
+            model_metadata: "Model output ceiling: unknown".into(),
+            inherited_catalog_name: None,
             fields: ConnectionFields {
                 name: "Fixture router".into(),
                 api: "openai-responses".into(),
                 base_url: "http://127.0.0.1:9".into(),
                 model: "fixture-model".into(),
+                catalog_url: String::new(),
+                catalog_search: String::new(),
                 context_window: "32000".into(),
                 output_budget: "4096".into(),
                 key: String::new(),
@@ -961,4 +966,96 @@ fn tab_traversal_uses_secure_entity_focus_without_changing_replacements(cx: &mut
             });
         })
         .unwrap();
+}
+
+#[test]
+fn catalog_controls_reject_old_generation_and_refresh_while_loading() {
+    let mut p = ready();
+    let rows = bello_agent_core::model_catalog::bundled().unwrap();
+    let id = rows[0].id.clone();
+    let generation = uuid::Uuid::new_v4();
+    let catalog = &mut p.active.as_mut().unwrap().catalog;
+    catalog.opened = true;
+    catalog.generation = generation;
+    catalog.models = rows;
+    catalog.pages = 1;
+    assert!(p.allows(&ConnectionSettingsIntent::ChooseCatalog {
+        id: id.clone(),
+        generation
+    }));
+    assert!(!p.allows(&ConnectionSettingsIntent::ChooseCatalog {
+        id: id.clone(),
+        generation: uuid::Uuid::new_v4()
+    }));
+    p.active.as_mut().unwrap().catalog.loading = true;
+    assert!(!p.allows(&ConnectionSettingsIntent::RefreshCatalog));
+    assert!(p.allows(&ConnectionSettingsIntent::CloseCatalog));
+    // Previous same-source rows remain explicitly selectable during refresh.
+    assert!(p.allows(&ConnectionSettingsIntent::ChooseCatalog { id, generation }));
+    p.mode = crate::launch_authority::AuthorityMode::Unavailable;
+    for intent in [
+        ConnectionSettingsIntent::BrowseCatalog,
+        ConnectionSettingsIntent::RefreshCatalog,
+        ConnectionSettingsIntent::CloseCatalog,
+    ] {
+        assert!(!p.allows(&intent));
+    }
+}
+
+#[test]
+fn catalog_query_values_are_redacted_in_form_event_and_presentation_debug() {
+    let mut p = ready();
+    p.active.as_mut().unwrap().fields.catalog_url =
+        "http://127.0.0.1:8/catalog?token=private-query-fixture".into();
+    let text = format!("{p:?}");
+    assert!(!text.contains("private-query-fixture"));
+    assert!(!text.contains("127.0.0.1"));
+    let event = ConnectionSettingsEvent::Intent {
+        revision: p.revision,
+        active_id: Some("one".into()),
+        fields: p.active.map(|f| Box::new(f.fields)),
+        intent: ConnectionSettingsIntent::RefreshCatalog,
+    };
+    assert!(!format!("{event:?}").contains("private-query-fixture"));
+}
+
+#[gpui::test]
+fn native_form_keeps_manual_controls_without_hidden_catalog_focus_targets(cx: &mut TestAppContext) {
+    let mut p = ready();
+    p.mode = crate::launch_authority::AuthorityMode::Native;
+    p.active.as_mut().unwrap().catalog.opened = true;
+    let (window, root, events) = fixture(cx, p);
+    root.update(cx, |host, cx| {
+        host.panel.update(cx, |panel, cx| {
+            let controls = panel.current_controls();
+            for field in [Field::CatalogUrl, Field::CatalogSearch] {
+                assert!(!controls.contains(&Control::Field(field)));
+                assert!(!panel.control_enabled(&Control::Field(field)));
+            }
+            for intent in [
+                ConnectionSettingsIntent::BrowseCatalog,
+                ConnectionSettingsIntent::RefreshCatalog,
+                ConnectionSettingsIntent::CloseCatalog,
+                ConnectionSettingsIntent::CatalogPage(0),
+                ConnectionSettingsIntent::ChooseCatalog {
+                    id: "model".into(),
+                    generation: uuid::Uuid::new_v4(),
+                },
+            ] {
+                assert!(!panel.presentation.allows(&intent));
+                panel.dispatch(panel.token(), intent, cx);
+            }
+            assert!(controls.contains(&Control::Field(Field::Model)));
+            assert!(
+                panel
+                    .presentation
+                    .allows(&ConnectionSettingsIntent::SaveAll)
+            );
+        })
+    });
+    cx.run_until_parked();
+    assert!(events.borrow().is_empty());
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    assert!(visual.debug_bounds("settings-catalog-url").is_none());
+    assert!(visual.debug_bounds("settings-browse-models").is_none());
 }

@@ -1,0 +1,4 @@
+{"accept_json": true, "any_authorization": false, "custom_header_present": false, "fixture_authorization": false, "kind": "catalog", "method": "GET", "no_cache": true}
+{"accept_json": true, "any_authorization": false, "custom_header_present": false, "fixture_authorization": false, "kind": "redirect", "method": "GET", "no_cache": true}
+{"accept_json": true, "any_authorization": false, "custom_header_present": false, "fixture_authorization": false, "kind": "malformed", "method": "GET", "no_cache": true}
+{"accept_json": true, "any_authorization": false, "custom_header_present": false, "fixture_authorization": false, "kind": "delayed", "method": "GET", "no_cache": true}
