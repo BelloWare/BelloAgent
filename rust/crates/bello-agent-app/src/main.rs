@@ -43,6 +43,8 @@ mod sidebar_actions;
 mod stop_shortcut;
 mod theme;
 mod tool_timing_presentation;
+mod topics;
+mod topics_view;
 mod transcript_actions;
 #[cfg(test)]
 #[path = "../../../benches/transcript.rs"]
@@ -132,6 +134,11 @@ struct AgentView {
     skill_picker: Option<project_skills_view::SkillPicker>,
     inactive: BTreeMap<String, ChatState>,
     records: Vec<ChatRecord>,
+    topics: Vec<bello_agent_core::workspace::TopicRecord>,
+    topics_revision: u64,
+    launch_topic_reveal: Option<String>,
+    topic_write: Option<topics::TopicWrite>,
+    topic_panel: Option<topics_view::TopicPanel>,
     workspace: Arc<Mutex<WorkspaceStore>>,
     selection_revision: u64,
     shutting_down: bool,
@@ -215,7 +222,10 @@ impl AgentView {
             pending,
         } = launch;
         let palette = current_palette(window);
-        let state = workspace.lock().expect("workspace lock").snapshot();
+        let mut state = workspace.lock().expect("workspace lock").snapshot();
+        state
+            .topics
+            .sort_by(bello_agent_core::workspace::TopicRecord::sidebar_cmp);
         #[cfg(test)]
         let chat_directory = workspace
             .lock()
@@ -370,12 +380,18 @@ impl AgentView {
             root_focus.focus(window);
         }
         let launch_archive_reveal = chat.record.archived_at.is_some() && !state.show_archived;
+        let launch_topic_reveal = state.effective_topic_id(&chat.record).map(str::to_owned);
         let mut view = Self {
             attachment_picker: None,
             skill_picker: None,
             chat,
             inactive: BTreeMap::new(),
             records,
+            topics: state.topics.clone(),
+            topics_revision: state.revision,
+            launch_topic_reveal,
+            topic_write: None,
+            topic_panel: None,
             #[cfg(test)]
             chat_directory,
             unloaded_drafts: state.drafts,
@@ -442,6 +458,7 @@ impl AgentView {
     }
     fn bind_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.close_context_inspectors(cx);
+        self.topic_panel = None;
         self.attachment_picker = None;
         self.skill_picker = None;
         self.cancel_queue_drag(window, cx);
@@ -920,6 +937,10 @@ impl AgentView {
             }
             // A different fresh key must not rearm a still-held confirmation.
             self.cancelled_prompt_key = None;
+        }
+        if self.topic_panel.is_some() {
+            self.topics_key(event, window, cx);
+            return;
         }
         if self.connections.view.read(cx).is_open() {
             if self
@@ -2645,6 +2666,13 @@ impl AgentView {
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(name),
                     )
+                    .child(
+                        self.button("project-topics", "Topics")
+                            .on_click(cx.listener(|view, _, window, cx| {
+                                let id = view.record.id.clone();
+                                view.open_topics(&id, window, cx);
+                            })),
+                    )
                     .child(self.icon_button("project-changes", "branch", 22.).on_click(
                         cx.listener(|v, _, _, cx| {
                             v.open_changes(cx);
@@ -2659,13 +2687,53 @@ impl AgentView {
                     )),
             );
         let visible = self.visible_sidebar_records(cx);
-        let archived_count = visible
-            .iter()
-            .filter(|record| record.archived_at.is_some())
-            .count();
         let mut archive_heading = false;
-        for record in visible {
+        for entry in self.sidebar_entries(cx) {
+            let record = match entry {
+                sidebar_actions::SidebarEntry::Root => {
+                    archive_heading = false;
+                    list = list.child(
+                        div()
+                            .px(px(10.))
+                            .text_size(px(12.))
+                            .child("Project top level"),
+                    );
+                    continue;
+                }
+                sidebar_actions::SidebarEntry::Topic(topic) => {
+                    archive_heading = false;
+                    let id = topic.id.clone();
+                    let revision = topic.revision;
+                    let expanded = !self.filter.read(cx).text().trim().is_empty()
+                        || topic.expanded
+                        || self.launch_topic_reveal.as_deref() == Some(topic.id.as_str());
+                    list = list.child(
+                        self.button(
+                            SharedString::from(format!("topic-header-{id}")),
+                            format!("{} {}", if expanded { "▾" } else { "▸" }, topic.title),
+                        )
+                        .on_click(cx.listener(move |view, _, _, cx| {
+                            if view.launch_topic_reveal.as_deref() == Some(id.as_str()) {
+                                view.launch_topic_reveal = None;
+                            }
+                            view.apply_topic_action(
+                                topics::TopicAction::Expand(id.clone(), !expanded, revision),
+                                cx,
+                            );
+                        })),
+                    );
+                    continue;
+                }
+                sidebar_actions::SidebarEntry::Chat(record) => record,
+            };
             if record.archived_at.is_some() && !archive_heading {
+                let archived_count = visible
+                    .iter()
+                    .filter(|candidate| {
+                        candidate.archived_at.is_some()
+                            && self.effective_topic_id(candidate) == self.effective_topic_id(record)
+                    })
+                    .count();
                 archive_heading = true;
                 list = list.child(
                     div()
@@ -2686,6 +2754,7 @@ impl AgentView {
             let title = self.sidebar_title(record);
             let id = record.id.clone();
             let selected = id == self.record.id;
+            let move_id = id.clone();
             let menu_id = id.clone();
             let status = chat
                 .map(|chat| {
@@ -2722,6 +2791,18 @@ impl AgentView {
                             view.open_sidebar_menu(&menu_id, event.position, window, cx);
                             cx.stop_propagation();
                         }),
+                    )
+                    .child(
+                        self.button(
+                            SharedString::from(format!("chat-topics-{}", record.id)),
+                            "Move",
+                        )
+                        .on_click(cx.listener(
+                            move |view, _, window, cx| {
+                                cx.stop_propagation();
+                                view.open_topics(&move_id, window, cx);
+                            },
+                        )),
                     )
                     .child(self.icon(
                         if record.archived_at.is_some() {
@@ -3135,6 +3216,9 @@ impl Render for AgentView {
         }
         if let Some(menu) = self.sidebar_menu_element(cx) {
             element = element.child(menu);
+        }
+        if let Some(panel) = self.topics_element(window, cx) {
+            element = element.child(panel);
         }
         if let Some(picker) = self.skill_picker_element(window, cx) {
             element = element.child(picker);

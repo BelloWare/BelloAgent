@@ -16,6 +16,8 @@ fn record(root: &Path, order: u64, title: &str) -> ChatRecord {
         sidebar_order: Some(order),
         pinned_at: None,
         archived_at: None,
+        topic_id: None,
+        topic_revision: 0,
     }
 }
 fn fixture() -> (tempfile::TempDir, PathBuf, WorkspaceStore) {
@@ -217,15 +219,15 @@ fn new_organization_format_is_explicit_and_mislabeled_v1_is_preserved() {
     store
         .register(chat.clone(), DraftRecord::default())
         .unwrap();
-    assert_eq!(store.snapshot().version, 9);
+    assert_eq!(store.snapshot().version, 10);
     store
         .set_pinned(chat.clone(), DraftRecord::default(), true, 4)
         .unwrap();
-    assert_eq!(store.snapshot().version, 9);
+    assert_eq!(store.snapshot().version, 10);
     store
         .set_pinned(chat.clone(), DraftRecord::default(), false, 5)
         .unwrap();
-    assert_eq!(store.snapshot().version, 9); // Never downgrade after metadata use.
+    assert_eq!(store.snapshot().version, 10); // Never downgrade after metadata use.
     store
         .set_pinned(chat, DraftRecord::default(), true, 6)
         .unwrap();

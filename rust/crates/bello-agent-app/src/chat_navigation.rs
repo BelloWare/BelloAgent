@@ -134,6 +134,7 @@ impl AgentView {
         if outgoing.pending
             && !outgoing.busy
             && !self.organization_operations.contains_key(&id)
+            && !self.topic_owns_chat(&id)
             && outgoing.inflight_submission.is_none()
             && !self.picker_owns_chat(&id)
             && !outgoing.skill_catalog.loading()
@@ -157,6 +158,7 @@ impl AgentView {
             && !self.controller.is_retired()
             && !self.busy
             && !self.organization_operations.contains_key(&self.record.id)
+            && !self.topic_owns_chat(&self.record.id)
             && !self.picker_owns_chat(&self.record.id)
             && self.skill_picker.is_none()
             && !self.skill_catalog.loading()
@@ -1046,6 +1048,7 @@ impl AgentView {
         if !self.chat_mode_operations.is_empty()
             || !self.organization_operations.is_empty()
             || self.archive_visibility_writes != 0
+            || self.topic_write.is_some()
             || self.busy
             || self.loading
             || self.queue_operation.is_some()

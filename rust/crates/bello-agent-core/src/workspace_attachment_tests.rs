@@ -52,7 +52,7 @@ fn image_only_receipt_and_draft_clear_have_one_owner_at_each_rename_boundary() {
         }
         drop(store);
         let restored = WorkspaceStore::open(&path, d.path()).unwrap().snapshot();
-        assert_eq!(restored.version, 9);
+        assert_eq!(restored.version, CURRENT_VERSION);
         assert_eq!(restored.intents.contains_key(&intent.id), committed);
         if committed {
             assert!(restored.drafts[&chat.id].is_empty());

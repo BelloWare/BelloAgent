@@ -12,7 +12,14 @@ use uuid::Uuid;
 const MAX_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CHATS: usize = 512;
 const MAX_DRAFT_BYTES: usize = 262_144;
-const CURRENT_VERSION: u32 = 9;
+const CURRENT_VERSION: u32 = 10;
+
+#[path = "workspace_topics.rs"]
+mod topics;
+pub use topics::TopicRecord;
+#[cfg(test)]
+#[path = "workspace_topics_tests.rs"]
+mod topics_tests;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct QueuedDraft {
@@ -156,6 +163,10 @@ pub struct ChatRecord {
     pub pinned_at: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archived_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topic_id: Option<String>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub topic_revision: u64,
 }
 impl ChatRecord {
     pub fn new(id: String, title: String, snapshot: PathBuf) -> Self {
@@ -169,6 +180,8 @@ impl ChatRecord {
             sidebar_order: Some(organization_timestamp()),
             pinned_at: None,
             archived_at: None,
+            topic_id: None,
+            topic_revision: 0,
         }
     }
     /// Source ChatRecord.sidebarPrecedes, without the unported manual drag order.
@@ -298,6 +311,8 @@ pub struct WorkspaceSnapshot {
     pub project_id: Option<String>,
     pub revision: u64,
     pub chats: Vec<ChatRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub topics: Vec<TopicRecord>,
     pub drafts: BTreeMap<String, DraftRecord>,
     pub intents: BTreeMap<String, SubmissionIntent>,
     pub selected: Option<String>,
@@ -327,6 +342,8 @@ impl<'de> Deserialize<'de> for WorkspaceSnapshot {
             project_id: Option<String>,
             revision: u64,
             chats: Vec<Box<serde_json::value::RawValue>>,
+            #[serde(default, deserialize_with = "present_topics")]
+            topics: Option<Box<serde_json::value::RawValue>>,
             drafts: BTreeMap<String, Box<serde_json::value::RawValue>>,
             intents: BTreeMap<String, Box<serde_json::value::RawValue>>,
             selected: Option<String>,
@@ -391,6 +408,28 @@ impl<'de> Deserialize<'de> for WorkspaceSnapshot {
                 "Unsupported Rust workspace catalog version",
             ));
         }
+        if record.version < 10 {
+            if record.topics.is_some() {
+                return Err(serde::de::Error::custom(
+                    "Topics require Rust workspace catalog version 10",
+                ));
+            }
+            for raw in &record.chats {
+                let fields: BTreeMap<String, Box<serde_json::value::RawValue>> =
+                    serde_json::from_str(raw.get()).map_err(serde::de::Error::custom)?;
+                if fields.contains_key("topic_id") || fields.contains_key("topic_revision") {
+                    return Err(serde::de::Error::custom(
+                        "Topic membership requires Rust workspace catalog version 10",
+                    ));
+                }
+            }
+        }
+        let topics = record
+            .topics
+            .map(|raw| serde_json::from_str::<Vec<TopicRecord>>(raw.get()))
+            .transpose()
+            .map_err(serde::de::Error::custom)?
+            .unwrap_or_default();
         let chats = record
             .chats
             .into_iter()
@@ -408,6 +447,8 @@ impl<'de> Deserialize<'de> for WorkspaceSnapshot {
                         sidebar_order: chat.sidebar_order,
                         pinned_at: chat.pinned_at,
                         archived_at: chat.archived_at,
+                        topic_id: None,
+                        topic_revision: 0,
                     })
                 } else if record.version == 5 {
                     serde_json::from_str::<V5Chat>(raw.get()).map(|chat| ChatRecord {
@@ -420,6 +461,8 @@ impl<'de> Deserialize<'de> for WorkspaceSnapshot {
                         sidebar_order: chat.sidebar_order,
                         pinned_at: chat.pinned_at,
                         archived_at: chat.archived_at,
+                        topic_id: None,
+                        topic_revision: 0,
                     })
                 } else {
                     serde_json::from_str::<LegacyChat>(raw.get()).map(|chat| ChatRecord {
@@ -432,6 +475,8 @@ impl<'de> Deserialize<'de> for WorkspaceSnapshot {
                         sidebar_order: chat.sidebar_order,
                         pinned_at: chat.pinned_at,
                         archived_at: chat.archived_at,
+                        topic_id: None,
+                        topic_revision: 0,
                     })
                 }
             })
@@ -470,6 +515,7 @@ impl<'de> Deserialize<'de> for WorkspaceSnapshot {
             project_id: record.project_id,
             revision: record.revision,
             chats,
+            topics,
             drafts,
             intents,
             selected: record.selected,
@@ -480,6 +526,14 @@ impl<'de> Deserialize<'de> for WorkspaceSnapshot {
             queued_cancellations: record.queued_cancellations,
         })
     }
+}
+fn present_topics<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<Box<serde_json::value::RawValue>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Box::<serde_json::value::RawValue>::deserialize(deserializer).map(Some)
 }
 fn present_connection_id<'de, D>(deserializer: D) -> std::result::Result<Option<String>, D::Error>
 where
@@ -503,6 +557,7 @@ impl WorkspaceSnapshot {
             project_id: None,
             revision: 0,
             chats: Vec::new(),
+            topics: Vec::new(),
             drafts: BTreeMap::new(),
             intents: BTreeMap::new(),
             selected: None,
@@ -514,6 +569,7 @@ impl WorkspaceSnapshot {
         }
     }
     fn validate(&self) -> Result<()> {
+        self.validate_topics()?;
         if !(1..=CURRENT_VERSION).contains(&self.version)
             || self.chats.len() > MAX_CHATS
             || self.intents.len() > MAX_CHATS
@@ -1606,6 +1662,8 @@ mod tests {
             sidebar_order: None,
             pinned_at: None,
             archived_at: None,
+            topic_id: None,
+            topic_revision: 0,
             snapshot: store.chat_path(&id).unwrap(),
             id,
             title: "New chat".into(),

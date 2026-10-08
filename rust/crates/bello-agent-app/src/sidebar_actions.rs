@@ -4,6 +4,12 @@ use bello_agent_core::workspace::ChatRecord;
 use gpui::{prelude::*, *};
 use std::path::PathBuf;
 
+pub(crate) enum SidebarEntry<'a> {
+    Root,
+    Topic(&'a bello_agent_core::workspace::TopicRecord),
+    Chat(&'a ChatRecord),
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SidebarAction {
     TogglePinned,
@@ -51,18 +57,72 @@ impl AgentView {
             .records
             .iter()
             .filter(|record| {
-                (record.archived_at.is_none() || self.effective_archive_visibility())
+                (!filter.is_empty()
+                    || self.effective_topic_id(record).is_none_or(|id| {
+                        self.topics.iter().any(|topic| {
+                            topic.id == id
+                                && (topic.expanded
+                                    || self.launch_topic_reveal.as_deref() == Some(id))
+                        })
+                    }))
+                    && (record.archived_at.is_none() || self.effective_archive_visibility())
                     && (filter.is_empty()
-                        || self.sidebar_title(record).to_lowercase().contains(&filter))
+                        || self.sidebar_title(record).to_lowercase().contains(&filter)
+                        || self.effective_topic_id(record).is_some_and(|id| {
+                            self.topics.iter().any(|topic| {
+                                topic.id == id && topic.title.to_lowercase().contains(&filter)
+                            })
+                        }))
             })
             .collect();
         records.sort_by(|a, b| {
-            a.archived_at
-                .is_some()
-                .cmp(&b.archived_at.is_some())
-                .then_with(|| a.sidebar_cmp(b))
+            self.topic_sort_index(a)
+                .cmp(&self.topic_sort_index(b))
+                .then_with(|| {
+                    a.archived_at
+                        .is_some()
+                        .cmp(&b.archived_at.is_some())
+                        .then_with(|| a.sidebar_cmp(b))
+                })
         });
         records
+    }
+
+    fn topic_sort_index(&self, record: &ChatRecord) -> usize {
+        self.effective_topic_id(record)
+            .and_then(|id| self.topics.iter().position(|topic| topic.id == id))
+            .unwrap_or(usize::MAX)
+    }
+    pub(super) fn sidebar_entries(&self, cx: &App) -> Vec<SidebarEntry<'_>> {
+        let records = self.visible_sidebar_records(cx);
+        let mut entries = Vec::new();
+        let query = self.filter.read(cx).text().trim().to_lowercase();
+        for topic in &self.topics {
+            if !query.is_empty()
+                && !topic.title.to_lowercase().contains(&query)
+                && !records
+                    .iter()
+                    .any(|record| self.effective_topic_id(record) == Some(topic.id.as_str()))
+            {
+                continue;
+            }
+            entries.push(SidebarEntry::Topic(topic));
+            entries.extend(
+                records
+                    .iter()
+                    .filter(|record| self.effective_topic_id(record) == Some(topic.id.as_str()))
+                    .map(|record| SidebarEntry::Chat(record)),
+            );
+        }
+        let roots = records
+            .iter()
+            .filter(|record| self.effective_topic_id(record).is_none())
+            .collect::<Vec<_>>();
+        if !roots.is_empty() && !self.topics.is_empty() {
+            entries.push(SidebarEntry::Root);
+        }
+        entries.extend(roots.into_iter().map(|record| SidebarEntry::Chat(record)));
+        entries
     }
 
     pub(super) fn open_sidebar_menu(

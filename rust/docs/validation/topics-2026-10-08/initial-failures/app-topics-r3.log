@@ -1,0 +1,70 @@
+   Compiling bello-agent-app v0.1.0 (/workspace/shared/agent-topics/rust/crates/bello-agent-app)
+error[E0422]: cannot find struct, variant or union type `KeyDownEvent` in this scope
+   --> crates/bello-agent-app/src/topics_tests.rs:506:18
+    |
+506 |                 &KeyDownEvent {
+    |                  ^^^^^^^^^^^^ not found in this scope
+
+error[E0422]: cannot find struct, variant or union type `KeyDownEvent` in this scope
+   --> crates/bello-agent-app/src/topics_tests.rs:528:18
+    |
+528 |                 &KeyDownEvent {
+    |                  ^^^^^^^^^^^^ not found in this scope
+
+error[E0599]: no method named `replace_and_mark_text_in_range` found for mutable reference `&mut EditorView` in the current scope
+   --> crates/bello-agent-app/src/topics_tests.rs:503:28
+    |
+503 |                     editor.replace_and_mark_text_in_range(None, "漢字", Some(0..2), window, cx)
+    |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: items from traits can only be used if the trait is in scope
+help: there is a method `replace_text_in_range` with a similar name, but with different arguments
+   --> /workspace/shared/build-recovery/cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/gpui-0.2.2/src/input.rs:39:5
+    |
+ 39 | /     fn replace_text_in_range(
+ 40 | |         &mut self,
+ 41 | |         range: Option<Range<usize>>,
+ 42 | |         text: &str,
+ 43 | |         window: &mut Window,
+ 44 | |         cx: &mut Context<Self>,
+ 45 | |     );
+    | |______^
+help: trait `EntityInputHandler` which provides `replace_and_mark_text_in_range` is implemented but not in scope; perhaps you want to import it
+    |
+  2 + use gpui::EntityInputHandler;
+    |
+
+error[E0433]: cannot find type `Keystroke` in this scope
+   --> crates/bello-agent-app/src/topics_tests.rs:507:32
+    |
+507 |                     keystroke: Keystroke::parse("enter").unwrap(),
+    |                                ^^^^^^^^^ use of undeclared type `Keystroke`
+
+error[E0433]: cannot find type `Keystroke` in this scope
+   --> crates/bello-agent-app/src/topics_tests.rs:529:32
+    |
+529 |                     keystroke: Keystroke::parse("enter").unwrap(),
+    |                                ^^^^^^^^^ use of undeclared type `Keystroke`
+
+error[E0599]: no method named `focus_handle` found for reference `&EditorView` in the current scope
+   --> crates/bello-agent-app/src/topics_tests.rs:555:22
+    |
+550 | /                 view.topic_panel
+551 | |                     .as_ref()
+552 | |                     .unwrap()
+553 | |                     .editor
+554 | |                     .read(cx)
+555 | |                     .focus_handle(cx)
+    | |                     -^^^^^^^^^^^^ method not found in `&EditorView`
+    | |_____________________|
+    |
+    |
+    = help: items from traits can only be used if the trait is in scope
+help: trait `Focusable` which provides `focus_handle` is implemented but not in scope; perhaps you want to import it
+    |
+  2 + use gpui::Focusable;
+    |
+
+Some errors have detailed explanations: E0422, E0433, E0599.
+For more information about an error, try `rustc --explain E0422`.
+error: could not compile `bello-agent-app` (bin "bello-agent" test) due to 6 previous errors

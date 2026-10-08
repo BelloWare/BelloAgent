@@ -721,7 +721,8 @@ impl AgentView {
         }
     }
     fn connection_change_busy(&self, ids: &BTreeSet<String>) -> Option<String> {
-        if !self.connections.switches.is_empty()
+        if self.topic_write.is_some()
+            || !self.connections.switches.is_empty()
             || self.projects.operation.is_some()
             || !self.chat_mode_operations.is_empty()
         {
@@ -879,7 +880,8 @@ struct ConnectionSwitchResult {
 }
 impl AgentView {
     pub(crate) fn connection_switch_blocker(&self) -> Option<String> {
-        if self.shutting_down
+        if self.topic_write.is_some()
+            || self.shutting_down
             || self.connections.operation.is_some()
             || self.projects.operation.is_some()
         {

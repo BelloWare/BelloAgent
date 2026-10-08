@@ -1,0 +1,58 @@
+   Compiling bello-agent-core v0.1.0 (/workspace/shared/agent-topics/rust/crates/bello-agent-core)
+    Checking bello-agent-app v0.1.0 (/workspace/shared/agent-topics/rust/crates/bello-agent-app)
+error: expression can be simplified using `Option::unwrap_or()`
+  --> crates/bello-agent-app/src/sidebar_actions.rs:92:9
+   |
+92 | /         self.effective_topic_id(record)
+93 | |             .and_then(|id| self.topics.iter().position(|topic| topic.id == id))
+94 | |             .map_or(usize::MAX, |index| index)
+   | |______________________________________________^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#map_or_identity
+   = note: `-D clippy::map-or-identity` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::map_or_identity)]`
+help: consider using `unwrap_or`
+   |
+94 -             .map_or(usize::MAX, |index| index)
+94 +             .unwrap_or(usize::MAX)
+   |
+
+error: deref which would be done by auto-deref
+   --> crates/bello-agent-app/src/sidebar_actions.rs:114:54
+    |
+114 |                     .map(|record| SidebarEntry::Chat(*record)),
+    |                                                      ^^^^^^^ help: try: `record`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#explicit_auto_deref
+    = note: `-D clippy::explicit-auto-deref` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::explicit_auto_deref)]`
+
+error: deref which would be done by auto-deref
+   --> crates/bello-agent-app/src/sidebar_actions.rs:124:74
+    |
+124 |         entries.extend(roots.into_iter().map(|record| SidebarEntry::Chat(*record)));
+    |                                                                          ^^^^^^^ help: try: `record`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#explicit_auto_deref
+
+error: could not compile `bello-agent-app` (bin "bello-agent") due to 3 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: unnecessary use of `clone` to create a slice from a reference
+   --> crates/bello-agent-core/src/workspace_topics_tests.rs:165:9
+    |
+165 |         assert_eq!(store.snapshot().topics, [topic.clone()]);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#cloned_ref_to_slice_refs
+    = note: `-D clippy::cloned-ref-to-slice-refs` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::cloned_ref_to_slice_refs)]`
+
+error: unnecessary use of `clone` to create a slice from a reference
+   --> crates/bello-agent-core/src/workspace_topics_tests.rs:166:9
+    |
+166 |         assert_eq!(store.snapshot().chats, [moved.clone()]);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#cloned_ref_to_slice_refs
+
+error: could not compile `bello-agent-core` (lib test) due to 2 previous errors

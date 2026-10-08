@@ -316,6 +316,8 @@ mod tests {
                 archived_at: None,
                 tool_mode: Default::default(),
                 connection_id: None,
+                topic_id: None,
+                topic_revision: 0,
                 id: snapshot.id,
                 title: snapshot.title,
                 snapshot: path,

@@ -39,6 +39,8 @@ fn fixture(retain_rewrite: bool) -> Fixture {
         sidebar_order: Some(1),
         pinned_at: None,
         archived_at: None,
+        topic_id: None,
+        topic_revision: 0,
     };
     let draft = DraftRecord {
         skills: Vec::new(),

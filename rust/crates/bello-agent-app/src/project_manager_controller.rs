@@ -588,6 +588,7 @@ impl AgentView {
             || !self.chat_mode_blocked.is_empty()
             || !self.organization_operations.is_empty()
             || self.archive_visibility_writes != 0
+            || self.topic_write.is_some()
             || self.known_catalog_uncertainty
             || !self.recoveries.is_empty()
             || self

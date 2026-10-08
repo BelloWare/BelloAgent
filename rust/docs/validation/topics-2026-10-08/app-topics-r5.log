@@ -1,0 +1,24 @@
+   Compiling bello-agent-app v0.1.0 (/workspace/shared/agent-topics/rust/crates/bello-agent-app)
+    Finished `test` profile [unoptimized] target(s) in 14.55s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running unittests src/main.rs (/workspace/shared/build-recovery/target/debug/deps/bello_agent-9a0476a84d7aa869)
+
+running 14 tests
+test topics::tests::close_reopen_during_save_preserves_new_panel_and_blocks_shutdown ... ok
+test topics::tests::rebind_invalidates_old_topic_panel_callbacks ... ok
+test topics::tests::delayed_topic_completion_merges_only_membership_and_rejects_old_tokens ... ok
+test topics::tests::failed_create_preserves_editor_and_catalog_state ... ok
+test topics::tests::rendered_sheet_mouse_create_move_and_keyboard_close ... ok
+test topics::tests::topic_keyboard_preserves_marked_text_and_held_enter_never_sends ... ok
+test topics::tests::topic_and_connection_switch_admission_are_symmetric ... ok
+test topics::tests::stale_panel_controls_and_membership_cannot_overwrite_current_state ... ok
+test topics::tests::cancelled_or_replaced_delete_confirmation_cannot_delete_old_target ... ok
+test topics::tests::configured_loopback_provider_observes_zero_requests_for_topics ... ok
+test topics::tests::create_move_rename_delete_reopen_is_metadata_only ... ok
+test topics::tests::uncertain_topic_completion_keeps_catalog_admission_fenced ... ok
+test topics::tests::collapse_filter_archive_and_pin_keep_one_visible_order ... ok
+test topics::tests::topic_title_filter_reveals_children_and_hides_unrelated_headers ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 455 filtered out; finished in 0.37s
+
