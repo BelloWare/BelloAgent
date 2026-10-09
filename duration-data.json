@@ -3,7 +3,7 @@
   "evidence_cutoff_utc": "2026-10-09T06:00:00Z",
   "schema_version": 1,
   "repository": "BelloWare/BelloAgent",
-  "as_of_utc": "2026-10-09T15:17:00Z",
+  "as_of_utc": "2026-10-09T15:37:00Z",
   "source_commit": "885a5bcf6e608361692e877d7c77941b0db2f4d8",
   "summary": {
     "window_start_utc": "2026-10-04T05:13:30Z",
@@ -63029,6 +63029,818 @@
       "operation_method": "get_blob",
       "operation_target": "BelloWare/BelloAgent/git/blobs/731449782f61dd55089272d7599733a70e96d379",
       "operation_content_hash": "731449782f61dd55089272d7599733a70e96d379"
+    },
+    {
+      "id": "20261009-1537-prior-timing-publication",
+      "repository_assignment": "BelloAgent",
+      "activity": "Root verification and paired 15:17 timing publication (shared once)",
+      "category": "publication (mixed)",
+      "start_utc": "2026-10-09T15:29:18.274Z",
+      "end_utc": "2026-10-09T15:29:45.373Z",
+      "duration_seconds": 27.099,
+      "source": [
+        {
+          "receipt_sha256": "47c5186d6572ca71bc2c17fcd88615df84689b3032d2144577b74d4f55edcaa3",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "completed",
+      "accounting_group": "task_window",
+      "include_in_totals": false,
+      "resource": "mixed task window",
+      "duration_basis": "Observed mixed task/workflow interval includes tools, coordination and waiting; overlaps command resources and other workers",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1537",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time."
+    },
+    {
+      "id": "20261009-1537-timing-audit-publication-observer",
+      "repository_assignment": "BelloAgent",
+      "activity": "Partial timing audit, focused controls, immutable upload, coordination and readback window (shared once)",
+      "category": "review/publication/waiting (mixed)",
+      "start_utc": "2026-10-09T15:25:40Z",
+      "end_utc": "2026-10-09T15:30:12Z",
+      "duration_seconds": 272.0,
+      "source": [
+        {
+          "receipt_sha256": "0a960bc03ee3a3b267e7b4c4694e4f3c1f971f23df48af46e1ec59e0940a54c7",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "completed",
+      "accounting_group": "task_window",
+      "include_in_totals": false,
+      "resource": "mixed task window",
+      "duration_basis": "Observed mixed task/workflow interval includes tools, coordination and waiting; overlaps command resources and other workers",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1537",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time."
+    },
+    {
+      "id": "20261009-1537-ordinary-history-0",
+      "repository_assignment": "BelloAgent",
+      "activity": "Ordinary selected-history startup control incomplete copy",
+      "category": "interactive GUI validation",
+      "start_utc": "2026-10-09T15:18:30.737095387+00:00",
+      "end_utc": "2026-10-09T15:19:51.604971606+00:00",
+      "duration_seconds": 80.867876,
+      "source": [
+        {
+          "receipt_sha256": "72f80b11421ddf006fdde4c61fb4eaf733cda4edf46d57a39e9fc93de1318435",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "incomplete-copy checkpoint unavailable; not matched workload; normal exit0",
+      "accounting_group": "catchup_gui_process",
+      "include_in_totals": true,
+      "resource": "GUI process lifetime",
+      "duration_basis": "Observed application process lifetime includes diagnosis and interaction; no latency benchmark or inference",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1537",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "binary_sha256": "299596d2294791ee990118a405896361723fe83ae874656a90a84dd46b621bb0"
+    },
+    {
+      "id": "20261009-1537-ordinary-history-1",
+      "repository_assignment": "BelloAgent",
+      "activity": "Ordinary selected-history startup control corrected copy",
+      "category": "interactive GUI validation",
+      "start_utc": "2026-10-09T15:20:36.799522625+00:00",
+      "end_utc": "2026-10-09T15:21:23.047126016+00:00",
+      "duration_seconds": 46.247604,
+      "source": [
+        {
+          "receipt_sha256": "72f80b11421ddf006fdde4c61fb4eaf733cda4edf46d57a39e9fc93de1318435",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "painted initial capture with actual selected101 transcript; ordinary content-search gate visibly closed; normal exit0",
+      "accounting_group": "catchup_gui_process",
+      "include_in_totals": true,
+      "resource": "GUI process lifetime",
+      "duration_basis": "Observed application process lifetime includes diagnosis and interaction; no latency benchmark or inference",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1537",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "binary_sha256": "299596d2294791ee990118a405896361723fe83ae874656a90a84dd46b621bb0"
+    },
+    {
+      "id": "20261009-1537-root-timing-audit-0",
+      "repository_assignment": "BelloAgent",
+      "activity": "Independent timing operation-identity audit and controls",
+      "category": "automated accounting validation",
+      "start_utc": "2026-10-09T15:27:01.387137+00:00",
+      "end_utc": "2026-10-09T15:27:01.770148+00:00",
+      "duration_seconds": 0.3830147870030487,
+      "source": [
+        {
+          "receipt_sha256": "a0c0275774e1eaf2771c69091011abdbfeffb08ab8904fe04d312d3e2f4030a1",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "completed",
+      "accounting_group": "catchup_command",
+      "include_in_totals": true,
+      "resource": "cloud command process",
+      "duration_basis": "Measured command/resource elapsed; not active labor or inference",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1537",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time."
+    },
+    {
+      "id": "20261009-1537-evidence-preupload",
+      "repository_assignment": "BelloAgent",
+      "activity": "Curated immutable evidence upload and readback batch",
+      "category": "publication (mixed)",
+      "start_utc": "2026-10-09T15:25:30.027Z",
+      "end_utc": "2026-10-09T15:26:20.671Z",
+      "duration_seconds": 50.644,
+      "source": [
+        {
+          "receipt_sha256": "6ca8057d57f2a3dcf8279788ef30d0b8f62410b03ee5e707322d671d4d2da148",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "completed",
+      "accounting_group": "task_window",
+      "include_in_totals": false,
+      "resource": "mixed task window",
+      "duration_basis": "Observed mixed task/workflow interval includes tools, coordination and waiting; overlaps command resources and other workers",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1537",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time."
+    },
+    {
+      "id": "20261009-1537-agent-evidence-create-42ded098743aa2589054489614a89491bfb47537@2026-10-09T15:25:30.376Z",
+      "repository_assignment": "BelloAgent",
+      "activity": "Create curated evidence blob: rust/docs/validation/sidebar-content-workflow-2026-10-09/README.md",
+      "category": "publication",
+      "start_utc": "2026-10-09T15:25:30.376Z",
+      "end_utc": "2026-10-09T15:25:52.552Z",
+      "duration_seconds": 22.176,
+      "source": [
+        {
+          "receipt_sha256": "6ca8057d57f2a3dcf8279788ef30d0b8f62410b03ee5e707322d671d4d2da148",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "SHA/full readback verified",
+      "accounting_group": "catchup_api",
+      "include_in_totals": true,
+      "resource": "observed API/client operation",
+      "duration_basis": "Observed client operation interval; parallel calls overlap",
+      "parent_id": "20261009-1537-evidence-preupload",
+      "prospective": true,
+      "checkpoint": "20261009-1537",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "operation_identity": "agent-evidence-create-42ded098743aa2589054489614a89491bfb47537@2026-10-09T15:25:30.376Z",
+      "operation_method": "create_blob",
+      "operation_target": "BelloWare/BelloAgent/git/blobs/42ded098743aa2589054489614a89491bfb47537",
+      "operation_content_hash": "42ded098743aa2589054489614a89491bfb47537"
+    },
+    {
+      "id": "20261009-1537-agent-evidence-read-42ded098743aa2589054489614a89491bfb47537@2026-10-09T15:25:52.552Z",
+      "repository_assignment": "BelloAgent",
+      "activity": "Read curated evidence blob: rust/docs/validation/sidebar-content-workflow-2026-10-09/README.md",
+      "category": "publication",
+      "start_utc": "2026-10-09T15:25:52.552Z",
+      "end_utc": "2026-10-09T15:25:52.996Z",
+      "duration_seconds": 0.444,
+      "source": [
+        {
+          "receipt_sha256": "6ca8057d57f2a3dcf8279788ef30d0b8f62410b03ee5e707322d671d4d2da148",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "SHA/full readback verified",
+      "accounting_group": "catchup_api",
+      "include_in_totals": true,
+      "resource": "observed API/client operation",
+      "duration_basis": "Observed client operation interval; parallel calls overlap",
+      "parent_id": "20261009-1537-evidence-preupload",
+      "prospective": true,
+      "checkpoint": "20261009-1537",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "operation_identity": "agent-evidence-read-42ded098743aa2589054489614a89491bfb47537@2026-10-09T15:25:52.552Z",
+      "operation_method": "get_blob",
+      "operation_target": "BelloWare/BelloAgent/git/blobs/42ded098743aa2589054489614a89491bfb47537",
+      "operation_content_hash": "42ded098743aa2589054489614a89491bfb47537"
+    },
+    {
+      "id": "20261009-1537-agent-evidence-create-5c3ecd96a6be26c4410dfbe57aa85ac7316f6f87@2026-10-09T15:25:30.355Z",
+      "repository_assignment": "BelloAgent",
+      "activity": "Create curated evidence blob: rust/docs/validation/sidebar-content-workflow-2026-10-09/gui.md",
+      "category": "publication",
+      "start_utc": "2026-10-09T15:25:30.355Z",
+      "end_utc": "2026-10-09T15:25:38.965Z",
+      "duration_seconds": 8.61,
+      "source": [
+        {
+          "receipt_sha256": "6ca8057d57f2a3dcf8279788ef30d0b8f62410b03ee5e707322d671d4d2da148",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "SHA/full readback verified",
+      "accounting_group": "catchup_api",
+      "include_in_totals": true,
+      "resource": "observed API/client operation",
+      "duration_basis": "Observed client operation interval; parallel calls overlap",
+      "parent_id": "20261009-1537-evidence-preupload",
+      "prospective": true,
+      "checkpoint": "20261009-1537",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "operation_identity": "agent-evidence-create-5c3ecd96a6be26c4410dfbe57aa85ac7316f6f87@2026-10-09T15:25:30.355Z",
+      "operation_method": "create_blob",
+      "operation_target": "BelloWare/BelloAgent/git/blobs/5c3ecd96a6be26c4410dfbe57aa85ac7316f6f87",
+      "operation_content_hash": "5c3ecd96a6be26c4410dfbe57aa85ac7316f6f87"
+    },
+    {
+      "id": "20261009-1537-agent-evidence-read-5c3ecd96a6be26c4410dfbe57aa85ac7316f6f87@2026-10-09T15:25:38.965Z",
+      "repository_assignment": "BelloAgent",
+      "activity": "Read curated evidence blob: rust/docs/validation/sidebar-content-workflow-2026-10-09/gui.md",
+      "category": "publication",
+      "start_utc": "2026-10-09T15:25:38.965Z",
+      "end_utc": "2026-10-09T15:25:39.332Z",
+      "duration_seconds": 0.367,
+      "source": [
+        {
+          "receipt_sha256": "6ca8057d57f2a3dcf8279788ef30d0b8f62410b03ee5e707322d671d4d2da148",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "SHA/full readback verified",
+      "accounting_group": "catchup_api",
+      "include_in_totals": true,
+      "resource": "observed API/client operation",
+      "duration_basis": "Observed client operation interval; parallel calls overlap",
+      "parent_id": "20261009-1537-evidence-preupload",
+      "prospective": true,
+      "checkpoint": "20261009-1537",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "operation_identity": "agent-evidence-read-5c3ecd96a6be26c4410dfbe57aa85ac7316f6f87@2026-10-09T15:25:38.965Z",
+      "operation_method": "get_blob",
+      "operation_target": "BelloWare/BelloAgent/git/blobs/5c3ecd96a6be26c4410dfbe57aa85ac7316f6f87",
+      "operation_content_hash": "5c3ecd96a6be26c4410dfbe57aa85ac7316f6f87"
+    },
+    {
+      "id": "20261009-1537-agent-evidence-create-6f9df33a1e8c590baa1dc6973cb178272ab0e9a8@2026-10-09T15:25:30.376Z",
+      "repository_assignment": "BelloAgent",
+      "activity": "Create curated evidence blob: rust/docs/validation/sidebar-content-workflow-2026-10-09/loc-controls.json",
+      "category": "publication",
+      "start_utc": "2026-10-09T15:25:30.376Z",
+      "end_utc": "2026-10-09T15:25:46.670Z",
+      "duration_seconds": 16.294,
+      "source": [
+        {
+          "receipt_sha256": "6ca8057d57f2a3dcf8279788ef30d0b8f62410b03ee5e707322d671d4d2da148",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "SHA/full readback verified",
+      "accounting_group": "catchup_api",
+      "include_in_totals": true,
+      "resource": "observed API/client operation",
+      "duration_basis": "Observed client operation interval; parallel calls overlap",
+      "parent_id": "20261009-1537-evidence-preupload",
+      "prospective": true,
+      "checkpoint": "20261009-1537",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "operation_identity": "agent-evidence-create-6f9df33a1e8c590baa1dc6973cb178272ab0e9a8@2026-10-09T15:25:30.376Z",
+      "operation_method": "create_blob",
+      "operation_target": "BelloWare/BelloAgent/git/blobs/6f9df33a1e8c590baa1dc6973cb178272ab0e9a8",
+      "operation_content_hash": "6f9df33a1e8c590baa1dc6973cb178272ab0e9a8"
+    },
+    {
+      "id": "20261009-1537-agent-evidence-read-6f9df33a1e8c590baa1dc6973cb178272ab0e9a8@2026-10-09T15:25:46.671Z",
+      "repository_assignment": "BelloAgent",
+      "activity": "Read curated evidence blob: rust/docs/validation/sidebar-content-workflow-2026-10-09/loc-controls.json",
+      "category": "publication",
+      "start_utc": "2026-10-09T15:25:46.671Z",
+      "end_utc": "2026-10-09T15:25:47.016Z",
+      "duration_seconds": 0.345,
+      "source": [
+        {
+          "receipt_sha256": "6ca8057d57f2a3dcf8279788ef30d0b8f62410b03ee5e707322d671d4d2da148",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "SHA/full readback verified",
+      "accounting_group": "catchup_api",
+      "include_in_totals": true,
+      "resource": "observed API/client operation",
+      "duration_basis": "Observed client operation interval; parallel calls overlap",
+      "parent_id": "20261009-1537-evidence-preupload",
+      "prospective": true,
+      "checkpoint": "20261009-1537",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "operation_identity": "agent-evidence-read-6f9df33a1e8c590baa1dc6973cb178272ab0e9a8@2026-10-09T15:25:46.671Z",
+      "operation_method": "get_blob",
+      "operation_target": "BelloWare/BelloAgent/git/blobs/6f9df33a1e8c590baa1dc6973cb178272ab0e9a8",
+      "operation_content_hash": "6f9df33a1e8c590baa1dc6973cb178272ab0e9a8"
+    },
+    {
+      "id": "20261009-1537-agent-evidence-create-e4716f8abb335bd54ddf4f011c88f0692136044c@2026-10-09T15:25:30.376Z",
+      "repository_assignment": "BelloAgent",
+      "activity": "Create curated evidence blob: rust/docs/validation/sidebar-content-workflow-2026-10-09/loc-verifier.py",
+      "category": "publication",
+      "start_utc": "2026-10-09T15:25:30.376Z",
+      "end_utc": "2026-10-09T15:25:59.562Z",
+      "duration_seconds": 29.186,
+      "source": [
+        {
+          "receipt_sha256": "6ca8057d57f2a3dcf8279788ef30d0b8f62410b03ee5e707322d671d4d2da148",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "SHA/full readback verified",
+      "accounting_group": "catchup_api",
+      "include_in_totals": true,
+      "resource": "observed API/client operation",
+      "duration_basis": "Observed client operation interval; parallel calls overlap",
+      "parent_id": "20261009-1537-evidence-preupload",
+      "prospective": true,
+      "checkpoint": "20261009-1537",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "operation_identity": "agent-evidence-create-e4716f8abb335bd54ddf4f011c88f0692136044c@2026-10-09T15:25:30.376Z",
+      "operation_method": "create_blob",
+      "operation_target": "BelloWare/BelloAgent/git/blobs/e4716f8abb335bd54ddf4f011c88f0692136044c",
+      "operation_content_hash": "e4716f8abb335bd54ddf4f011c88f0692136044c"
+    },
+    {
+      "id": "20261009-1537-agent-evidence-read-e4716f8abb335bd54ddf4f011c88f0692136044c@2026-10-09T15:25:59.562Z",
+      "repository_assignment": "BelloAgent",
+      "activity": "Read curated evidence blob: rust/docs/validation/sidebar-content-workflow-2026-10-09/loc-verifier.py",
+      "category": "publication",
+      "start_utc": "2026-10-09T15:25:59.562Z",
+      "end_utc": "2026-10-09T15:26:00.048Z",
+      "duration_seconds": 0.486,
+      "source": [
+        {
+          "receipt_sha256": "6ca8057d57f2a3dcf8279788ef30d0b8f62410b03ee5e707322d671d4d2da148",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "SHA/full readback verified",
+      "accounting_group": "catchup_api",
+      "include_in_totals": true,
+      "resource": "observed API/client operation",
+      "duration_basis": "Observed client operation interval; parallel calls overlap",
+      "parent_id": "20261009-1537-evidence-preupload",
+      "prospective": true,
+      "checkpoint": "20261009-1537",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "operation_identity": "agent-evidence-read-e4716f8abb335bd54ddf4f011c88f0692136044c@2026-10-09T15:25:59.562Z",
+      "operation_method": "get_blob",
+      "operation_target": "BelloWare/BelloAgent/git/blobs/e4716f8abb335bd54ddf4f011c88f0692136044c",
+      "operation_content_hash": "e4716f8abb335bd54ddf4f011c88f0692136044c"
+    },
+    {
+      "id": "20261009-1537-agent-evidence-create-abfec97d0bddc385c661d9e12c305931d19d3630@2026-10-09T15:26:12.827Z",
+      "repository_assignment": "BelloAgent",
+      "activity": "Create curated evidence blob: rust/docs/validation/sidebar-content-workflow-2026-10-09/loc.json",
+      "category": "publication",
+      "start_utc": "2026-10-09T15:26:12.827Z",
+      "end_utc": "2026-10-09T15:26:20.671Z",
+      "duration_seconds": 7.844,
+      "source": [
+        {
+          "receipt_sha256": "6ca8057d57f2a3dcf8279788ef30d0b8f62410b03ee5e707322d671d4d2da148",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "Failed initial upload (denied); authorized unchanged retry later verified",
+      "accounting_group": "catchup_api",
+      "include_in_totals": true,
+      "resource": "observed API/client operation",
+      "duration_basis": "Observed client operation interval; parallel calls overlap",
+      "parent_id": "20261009-1537-evidence-preupload",
+      "prospective": true,
+      "checkpoint": "20261009-1537",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "operation_identity": "agent-evidence-create-abfec97d0bddc385c661d9e12c305931d19d3630@2026-10-09T15:26:12.827Z",
+      "operation_method": "create_blob",
+      "operation_target": "BelloWare/BelloAgent/git/blobs/abfec97d0bddc385c661d9e12c305931d19d3630",
+      "operation_content_hash": "abfec97d0bddc385c661d9e12c305931d19d3630"
+    },
+    {
+      "id": "20261009-1537-agent-evidence-create-057c4702f96be4ec2365452c61e01502d92ea6ca@2026-10-09T15:26:01.793Z",
+      "repository_assignment": "BelloAgent",
+      "activity": "Create curated evidence blob: rust/docs/validation/sidebar-content-workflow-2026-10-09/verification.json",
+      "category": "publication",
+      "start_utc": "2026-10-09T15:26:01.793Z",
+      "end_utc": "2026-10-09T15:26:11.375Z",
+      "duration_seconds": 9.582,
+      "source": [
+        {
+          "receipt_sha256": "6ca8057d57f2a3dcf8279788ef30d0b8f62410b03ee5e707322d671d4d2da148",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "SHA/full readback verified",
+      "accounting_group": "catchup_api",
+      "include_in_totals": true,
+      "resource": "observed API/client operation",
+      "duration_basis": "Observed client operation interval; parallel calls overlap",
+      "parent_id": "20261009-1537-evidence-preupload",
+      "prospective": true,
+      "checkpoint": "20261009-1537",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "operation_identity": "agent-evidence-create-057c4702f96be4ec2365452c61e01502d92ea6ca@2026-10-09T15:26:01.793Z",
+      "operation_method": "create_blob",
+      "operation_target": "BelloWare/BelloAgent/git/blobs/057c4702f96be4ec2365452c61e01502d92ea6ca",
+      "operation_content_hash": "057c4702f96be4ec2365452c61e01502d92ea6ca"
+    },
+    {
+      "id": "20261009-1537-agent-evidence-read-057c4702f96be4ec2365452c61e01502d92ea6ca@2026-10-09T15:26:11.375Z",
+      "repository_assignment": "BelloAgent",
+      "activity": "Read curated evidence blob: rust/docs/validation/sidebar-content-workflow-2026-10-09/verification.json",
+      "category": "publication",
+      "start_utc": "2026-10-09T15:26:11.375Z",
+      "end_utc": "2026-10-09T15:26:11.768Z",
+      "duration_seconds": 0.393,
+      "source": [
+        {
+          "receipt_sha256": "6ca8057d57f2a3dcf8279788ef30d0b8f62410b03ee5e707322d671d4d2da148",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "SHA/full readback verified",
+      "accounting_group": "catchup_api",
+      "include_in_totals": true,
+      "resource": "observed API/client operation",
+      "duration_basis": "Observed client operation interval; parallel calls overlap",
+      "parent_id": "20261009-1537-evidence-preupload",
+      "prospective": true,
+      "checkpoint": "20261009-1537",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "operation_identity": "agent-evidence-read-057c4702f96be4ec2365452c61e01502d92ea6ca@2026-10-09T15:26:11.375Z",
+      "operation_method": "get_blob",
+      "operation_target": "BelloWare/BelloAgent/git/blobs/057c4702f96be4ec2365452c61e01502d92ea6ca",
+      "operation_content_hash": "057c4702f96be4ec2365452c61e01502d92ea6ca"
+    },
+    {
+      "id": "20261009-1537-agent-evidence-create-abfec97d0bddc385c661d9e12c305931d19d3630@2026-10-09T15:27:36.972Z",
+      "repository_assignment": "BelloAgent",
+      "activity": "Create curated evidence blob: rust/docs/validation/sidebar-content-workflow-2026-10-09/loc.json",
+      "category": "publication",
+      "start_utc": "2026-10-09T15:27:36.972Z",
+      "end_utc": "2026-10-09T15:27:48.240Z",
+      "duration_seconds": 11.268,
+      "source": [
+        {
+          "receipt_sha256": "23e3512f0adaca3f97f2ec4d5efd1b78937f9605d5bb28356685d0ddff7ed640",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "SHA/full readback verified",
+      "accounting_group": "catchup_api",
+      "include_in_totals": true,
+      "resource": "observed API/client operation",
+      "duration_basis": "Observed client operation interval; parallel calls overlap",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1537",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "operation_identity": "agent-evidence-create-abfec97d0bddc385c661d9e12c305931d19d3630@2026-10-09T15:27:36.972Z",
+      "operation_method": "create_blob",
+      "operation_target": "BelloWare/BelloAgent/git/blobs/abfec97d0bddc385c661d9e12c305931d19d3630",
+      "operation_content_hash": "abfec97d0bddc385c661d9e12c305931d19d3630"
+    },
+    {
+      "id": "20261009-1537-agent-evidence-read-abfec97d0bddc385c661d9e12c305931d19d3630@2026-10-09T15:28:17.064Z",
+      "repository_assignment": "BelloAgent",
+      "activity": "Read curated evidence blob: rust/docs/validation/sidebar-content-workflow-2026-10-09/loc.json",
+      "category": "publication",
+      "start_utc": "2026-10-09T15:28:17.064Z",
+      "end_utc": "2026-10-09T15:28:17.652Z",
+      "duration_seconds": 0.588,
+      "source": [
+        {
+          "receipt_sha256": "23e3512f0adaca3f97f2ec4d5efd1b78937f9605d5bb28356685d0ddff7ed640",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "SHA/full readback verified",
+      "accounting_group": "catchup_api",
+      "include_in_totals": true,
+      "resource": "observed API/client operation",
+      "duration_basis": "Observed client operation interval; parallel calls overlap",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1537",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "operation_identity": "agent-evidence-read-abfec97d0bddc385c661d9e12c305931d19d3630@2026-10-09T15:28:17.064Z",
+      "operation_method": "get_blob",
+      "operation_target": "BelloWare/BelloAgent/git/blobs/abfec97d0bddc385c661d9e12c305931d19d3630",
+      "operation_content_hash": "abfec97d0bddc385c661d9e12c305931d19d3630"
+    },
+    {
+      "id": "20261009-1537-agent-candidate-parent_ref-aa611c07abe2424eb3565434c84ad23d37fc2f3c@2026-10-09T15:30:37.008Z",
+      "repository_assignment": "BelloAgent",
+      "activity": "Immutable Agent candidate parent ref",
+      "category": "publication",
+      "start_utc": "2026-10-09T15:30:37.008Z",
+      "end_utc": "2026-10-09T15:30:37.340Z",
+      "duration_seconds": 0.332,
+      "source": [
+        {
+          "receipt_sha256": "275c4fbc32eebbf17480204459bb0e19fa49b4f32c1aa072c2fa00e7152f61fa",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "Verified immutable candidate; no worker ref movement",
+      "accounting_group": "catchup_api",
+      "include_in_totals": true,
+      "resource": "observed API/client operation",
+      "duration_basis": "Observed connector interval; no isolated server processing or inference",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1537",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "operation_identity": "agent-candidate-parent_ref-aa611c07abe2424eb3565434c84ad23d37fc2f3c@2026-10-09T15:30:37.008Z",
+      "operation_method": "get_ref",
+      "operation_target": "BelloWare/BelloAgent/git/ref/heads/rust",
+      "operation_content_hash": "aa611c07abe2424eb3565434c84ad23d37fc2f3c"
+    },
+    {
+      "id": "20261009-1537-agent-candidate-tree_create-16a3b02312b4551c5047fb180b33774ffc4f2740@2026-10-09T15:33:18.777Z",
+      "repository_assignment": "BelloAgent",
+      "activity": "Immutable Agent candidate tree create",
+      "category": "publication",
+      "start_utc": "2026-10-09T15:33:18.777Z",
+      "end_utc": "2026-10-09T15:33:30.272Z",
+      "duration_seconds": 11.495,
+      "source": [
+        {
+          "receipt_sha256": "275c4fbc32eebbf17480204459bb0e19fa49b4f32c1aa072c2fa00e7152f61fa",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "Verified immutable candidate; no worker ref movement",
+      "accounting_group": "catchup_api",
+      "include_in_totals": true,
+      "resource": "observed API/client operation",
+      "duration_basis": "Observed connector interval; no isolated server processing or inference",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1537",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "operation_identity": "agent-candidate-tree_create-16a3b02312b4551c5047fb180b33774ffc4f2740@2026-10-09T15:33:18.777Z",
+      "operation_method": "create_tree",
+      "operation_target": "BelloWare/BelloAgent/git/trees/16a3b02312b4551c5047fb180b33774ffc4f2740",
+      "operation_content_hash": "16a3b02312b4551c5047fb180b33774ffc4f2740"
+    },
+    {
+      "id": "20261009-1537-agent-candidate-tree_read-16a3b02312b4551c5047fb180b33774ffc4f2740@2026-10-09T15:33:43.473Z",
+      "repository_assignment": "BelloAgent",
+      "activity": "Immutable Agent candidate tree read",
+      "category": "publication",
+      "start_utc": "2026-10-09T15:33:43.473Z",
+      "end_utc": "2026-10-09T15:33:44.073Z",
+      "duration_seconds": 0.6,
+      "source": [
+        {
+          "receipt_sha256": "275c4fbc32eebbf17480204459bb0e19fa49b4f32c1aa072c2fa00e7152f61fa",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "Verified immutable candidate; no worker ref movement",
+      "accounting_group": "catchup_api",
+      "include_in_totals": true,
+      "resource": "observed API/client operation",
+      "duration_basis": "Observed connector interval; no isolated server processing or inference",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1537",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "operation_identity": "agent-candidate-tree_read-16a3b02312b4551c5047fb180b33774ffc4f2740@2026-10-09T15:33:43.473Z",
+      "operation_method": "get_tree",
+      "operation_target": "BelloWare/BelloAgent/git/trees/16a3b02312b4551c5047fb180b33774ffc4f2740",
+      "operation_content_hash": "16a3b02312b4551c5047fb180b33774ffc4f2740"
+    },
+    {
+      "id": "20261009-1537-agent-candidate-precommit_ref-aa611c07abe2424eb3565434c84ad23d37fc2f3c@2026-10-09T15:33:44.086Z",
+      "repository_assignment": "BelloAgent",
+      "activity": "Immutable Agent candidate precommit ref",
+      "category": "publication",
+      "start_utc": "2026-10-09T15:33:44.086Z",
+      "end_utc": "2026-10-09T15:33:44.469Z",
+      "duration_seconds": 0.383,
+      "source": [
+        {
+          "receipt_sha256": "275c4fbc32eebbf17480204459bb0e19fa49b4f32c1aa072c2fa00e7152f61fa",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "Verified immutable candidate; no worker ref movement",
+      "accounting_group": "catchup_api",
+      "include_in_totals": true,
+      "resource": "observed API/client operation",
+      "duration_basis": "Observed connector interval; no isolated server processing or inference",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1537",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "operation_identity": "agent-candidate-precommit_ref-aa611c07abe2424eb3565434c84ad23d37fc2f3c@2026-10-09T15:33:44.086Z",
+      "operation_method": "get_ref",
+      "operation_target": "BelloWare/BelloAgent/git/ref/heads/rust",
+      "operation_content_hash": "aa611c07abe2424eb3565434c84ad23d37fc2f3c"
+    },
+    {
+      "id": "20261009-1537-agent-candidate-commit_create-b6e0e31d50fc99d949740b24a35311baadd15324@2026-10-09T15:33:50.989Z",
+      "repository_assignment": "BelloAgent",
+      "activity": "Immutable Agent candidate commit create",
+      "category": "publication",
+      "start_utc": "2026-10-09T15:33:50.989Z",
+      "end_utc": "2026-10-09T15:34:00.288Z",
+      "duration_seconds": 9.299,
+      "source": [
+        {
+          "receipt_sha256": "275c4fbc32eebbf17480204459bb0e19fa49b4f32c1aa072c2fa00e7152f61fa",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "Verified immutable candidate; no worker ref movement",
+      "accounting_group": "catchup_api",
+      "include_in_totals": true,
+      "resource": "observed API/client operation",
+      "duration_basis": "Observed connector interval; no isolated server processing or inference",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1537",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "operation_identity": "agent-candidate-commit_create-b6e0e31d50fc99d949740b24a35311baadd15324@2026-10-09T15:33:50.989Z",
+      "operation_method": "create_commit",
+      "operation_target": "BelloWare/BelloAgent/git/commits/b6e0e31d50fc99d949740b24a35311baadd15324",
+      "operation_content_hash": "b6e0e31d50fc99d949740b24a35311baadd15324"
+    },
+    {
+      "id": "20261009-1537-agent-candidate-commit_read-b6e0e31d50fc99d949740b24a35311baadd15324@2026-10-09T15:34:22.344Z",
+      "repository_assignment": "BelloAgent",
+      "activity": "Immutable Agent candidate commit read",
+      "category": "publication",
+      "start_utc": "2026-10-09T15:34:22.344Z",
+      "end_utc": "2026-10-09T15:34:22.761Z",
+      "duration_seconds": 0.417,
+      "source": [
+        {
+          "receipt_sha256": "275c4fbc32eebbf17480204459bb0e19fa49b4f32c1aa072c2fa00e7152f61fa",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "Verified immutable candidate; no worker ref movement",
+      "accounting_group": "catchup_api",
+      "include_in_totals": true,
+      "resource": "observed API/client operation",
+      "duration_basis": "Observed connector interval; no isolated server processing or inference",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1537",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "operation_identity": "agent-candidate-commit_read-b6e0e31d50fc99d949740b24a35311baadd15324@2026-10-09T15:34:22.344Z",
+      "operation_method": "get_commit",
+      "operation_target": "BelloWare/BelloAgent/git/commits/b6e0e31d50fc99d949740b24a35311baadd15324",
+      "operation_content_hash": "b6e0e31d50fc99d949740b24a35311baadd15324"
+    },
+    {
+      "id": "20261009-1537-sidebar-source-publication",
+      "repository_assignment": "BelloAgent",
+      "activity": "Root integrated sidebar source verification and normal publication",
+      "category": "publication (mixed)",
+      "start_utc": "2026-10-09T15:35:09.264Z",
+      "end_utc": "2026-10-09T15:35:30.049Z",
+      "duration_seconds": 20.785,
+      "source": [
+        {
+          "receipt_sha256": "c62c81cd83631df1f5b79534dbb21a18a0fde00775e0ecd4a905e6a9c7a78a4a",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "completed",
+      "accounting_group": "task_window",
+      "include_in_totals": false,
+      "resource": "mixed task window",
+      "duration_basis": "Observed mixed task/workflow interval includes tools, coordination and waiting; overlaps command resources and other workers",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1537",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time."
+    },
+    {
+      "id": "20261009-1537-sidebar-open-ci-37952876654",
+      "repository_assignment": "BelloAgent",
+      "activity": "Integrated sidebar Rust macOS native checks CI status",
+      "category": "ci",
+      "start_utc": null,
+      "end_utc": null,
+      "duration_seconds": null,
+      "source": [
+        {
+          "receipt_sha256": "ea15da2895d8f54fb887dbd7895e3c961ef5c53895f3865f8499f14242ce6dca",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated",
+          "url": "https://github.com/BelloWare/BelloAgent/actions/runs/37952876654"
+        }
+      ],
+      "outcome": "in_progress at 2026-10-09T15:36:08.502Z; final duration unavailable",
+      "accounting_group": "status_only",
+      "include_in_totals": false,
+      "resource": "mixed task window",
+      "duration_basis": "Open run status only; no job execution duration inferred",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1537",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "run_id": 37952876654,
+      "source_commit": "b6e0e31d50fc99d949740b24a35311baadd15324"
+    },
+    {
+      "id": "20261009-1537-sidebar-open-ci-37952876647",
+      "repository_assignment": "BelloAgent",
+      "activity": "Integrated sidebar Rust Linux checks CI status",
+      "category": "ci",
+      "start_utc": null,
+      "end_utc": null,
+      "duration_seconds": null,
+      "source": [
+        {
+          "receipt_sha256": "ea15da2895d8f54fb887dbd7895e3c961ef5c53895f3865f8499f14242ce6dca",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated",
+          "url": "https://github.com/BelloWare/BelloAgent/actions/runs/37952876647"
+        }
+      ],
+      "outcome": "in_progress at 2026-10-09T15:36:08.502Z; final duration unavailable",
+      "accounting_group": "status_only",
+      "include_in_totals": false,
+      "resource": "mixed task window",
+      "duration_basis": "Open run status only; no job execution duration inferred",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1537",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "run_id": 37952876647,
+      "source_commit": "b6e0e31d50fc99d949740b24a35311baadd15324"
     }
   ],
   "unattributed_ci_gaps": [
@@ -66761,10 +67573,10 @@
         }
       },
       "catchup_command": {
-        "count": 183,
-        "known_duration_count": 183,
-        "resource_seconds_sum": 4487.8556413006545,
-        "wall_coverage_seconds": 2412.795184,
+        "count": 184,
+        "known_duration_count": 184,
+        "resource_seconds_sum": 4488.238656087658,
+        "wall_coverage_seconds": 2413.178195,
         "category_seconds": {
           "build + test/check (combined)": 3075.1683825696864,
           "automated lint/check": 479.6459922344409,
@@ -66772,7 +67584,7 @@
           "build": 145.8937306289673,
           "build/test/rework (combined)": 48.565,
           "automated negative-control validation": 0.011169794990564696,
-          "automated accounting validation": 4.95776293000381,
+          "automated accounting validation": 5.340777717006858,
           "implementation tool execution": 0.0012905570038128644,
           "implementation + structural validation tool execution": 0.018711002005147748,
           "automated configuration validation": 0.7915431989822537,
@@ -66782,32 +67594,33 @@
           "test execution (existing binary)": 0.004658502992242575
         },
         "resource_seconds": {
-          "cloud command process": 4487.8556413006545
+          "cloud command process": 4488.238656087658
         }
       },
       "catchup_api": {
-        "count": 99,
-        "known_duration_count": 99,
-        "resource_seconds_sum": 958.3380000000001,
-        "wall_coverage_seconds": 342.109,
+        "count": 118,
+        "known_duration_count": 118,
+        "resource_seconds_sum": 1088.4470000000001,
+        "wall_coverage_seconds": 424.003,
         "category_seconds": {
-          "publication": 958.3380000000001
+          "publication": 1088.4470000000001
         },
         "resource_seconds": {
-          "pending API/client operation": 958.3380000000001
+          "pending API/client operation": 958.3380000000001,
+          "observed API/client operation": 130.10899999999998
         }
       },
       "catchup_gui_process": {
-        "count": 7,
-        "known_duration_count": 7,
-        "resource_seconds_sum": 1566.0056200000001,
-        "wall_coverage_seconds": 1566.0056200000001,
+        "count": 9,
+        "known_duration_count": 9,
+        "resource_seconds_sum": 1693.1211,
+        "wall_coverage_seconds": 1693.1211,
         "category_seconds": {
           "interactive GUI diagnostics": 1035.1873280000002,
-          "interactive GUI validation": 530.8182919999999
+          "interactive GUI validation": 657.933772
         },
         "resource_seconds": {
-          "GUI process lifetime": 1566.0056200000001
+          "GUI process lifetime": 1693.1211
         }
       }
     }
@@ -67561,6 +68374,61 @@
           },
           "known_endpoint_items": 56,
           "known_endpoint_resource_seconds": 372.21299999999997
+        }
+      },
+      "ci_coverage_within_window_seconds": 0,
+      "window_seconds": 1200.0,
+      "outside_selected_ci_job_intervals_seconds": 1200.0,
+      "warning": "Outside selected CI intervals includes other productive work and unobserved periods; never classify as idle or inference. Selected receipt coverage remains incomplete.",
+      "nested_ci_step_seconds": {}
+    },
+    {
+      "checkpoint": "20261009-1537",
+      "through_utc": "2026-10-09T15:37:00Z",
+      "coverage_window_start_utc": "2026-10-09T15:17:00Z",
+      "new_items": 28,
+      "groups": {
+        "catchup_gui_process": {
+          "count": 2,
+          "known_duration_count": 2,
+          "resource_seconds_sum": 127.11547999999999,
+          "wall_coverage_seconds": 127.11547999999999,
+          "category_seconds": {
+            "interactive GUI validation": 127.11547999999999
+          },
+          "resource_seconds": {
+            "GUI process lifetime": 127.11547999999999
+          },
+          "known_endpoint_items": 2,
+          "known_endpoint_resource_seconds": 127.11547999999999
+        },
+        "catchup_command": {
+          "count": 1,
+          "known_duration_count": 1,
+          "resource_seconds_sum": 0.3830147870030487,
+          "wall_coverage_seconds": 0.383011,
+          "category_seconds": {
+            "automated accounting validation": 0.3830147870030487
+          },
+          "resource_seconds": {
+            "cloud command process": 0.3830147870030487
+          },
+          "known_endpoint_items": 1,
+          "known_endpoint_resource_seconds": 0.3830147870030487
+        },
+        "catchup_api": {
+          "count": 19,
+          "known_duration_count": 19,
+          "resource_seconds_sum": 130.10899999999998,
+          "wall_coverage_seconds": 81.894,
+          "category_seconds": {
+            "publication": 130.10899999999998
+          },
+          "resource_seconds": {
+            "observed API/client operation": 130.10899999999998
+          },
+          "known_endpoint_items": 19,
+          "known_endpoint_resource_seconds": 130.109
         }
       },
       "ci_coverage_within_window_seconds": 0,
