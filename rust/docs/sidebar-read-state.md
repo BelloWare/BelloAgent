@@ -69,7 +69,12 @@ transcript presentation, and the actual final projected row end inside the
 post-layout viewport. Overdraw, materialization, a long reply's first line,
 bottom-follow intent, older replies and pending scroll/layout are insufficient.
 A deferred callback rechecks identity, generation, current revision and scroll
-position before acknowledging.
+position before acknowledging. Cached transcript paint is explicitly invalidated
+for accepted attention changes and when the in-app reading surface is revealed
+again. The latter invalidation runs after parent render and rechecks workspace,
+window and Controller identity. Unchanged parent redraws retain normal caching.
+The pinned GPUI activation handler calls Window.refresh, which also invalidates
+view caches; actual native activation/occlusion event delivery remains unaccepted.
 
 On macOS, read-only queries use the existing exact-window AppKit bridge:
 application active, key and visible window, not miniaturized, visible occlusion

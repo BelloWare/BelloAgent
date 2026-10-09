@@ -169,6 +169,7 @@ struct AgentView {
     sidebar_run_states: sidebar_run_state::SidebarRunStates,
     read_states: sidebar_read_state::SharedReadStates,
     read_write_inflight: bool,
+    read_surface_ready: bool,
     read_manual_operations: BTreeMap<String, uuid::Uuid>,
     compaction_menu: Option<compaction_actions::CompactionMenu>,
     conversation_content: Option<conversation_content_view::ContentSheet>,
@@ -439,6 +440,7 @@ impl AgentView {
             sidebar_run_states: Default::default(),
             read_states,
             read_write_inflight: false,
+            read_surface_ready: false,
             read_manual_operations: BTreeMap::new(),
             compaction_menu: None,
             conversation_content: None,
@@ -481,6 +483,7 @@ impl AgentView {
         view
     }
     fn bind_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.read_surface_ready = false;
         self.close_context_inspectors(cx);
         self.topic_panel = None;
         self.attachment_picker = None;
@@ -3098,6 +3101,7 @@ impl AgentView {
 impl Render for AgentView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let started = Instant::now();
+        self.refresh_read_geometry_route(cx);
         self.refresh_sidebar_run_states(cx);
         let palette = current_palette(window);
         if self.palette != palette {

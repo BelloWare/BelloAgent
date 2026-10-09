@@ -1387,3 +1387,93 @@ fn chained_catalog_uncertainty_rejects_same_project_replacement_workspace(cx: &m
         assert_eq!(view.composer.read(cx).text(), draft);
     });
 }
+
+#[gpui::test]
+fn grace_timer_replacement_and_manual_read_are_generation_fenced_without_writes(
+    cx: &mut TestAppContext,
+) {
+    let (dir, _window, root) = fixture(cx);
+    let generation = cx.read(|cx| root.read(cx).controller.read_observation().generation);
+    root.update(cx, |view, cx| {
+        let record = view.record.clone();
+        view.read_states
+            .lock()
+            .unwrap()
+            .observe(&record, &observation(&generation, 1, 1, 0, false), true)
+            .unwrap();
+        view.schedule_read_grace(&record, cx);
+    });
+    cx.run_until_parked();
+    cx.executor().advance_clock(Duration::from_millis(300));
+    root.update(cx, |view, cx| {
+        let record = view.record.clone();
+        view.read_states
+            .lock()
+            .unwrap()
+            .observe(&record, &observation(&generation, 2, 2, 0, false), true)
+            .unwrap();
+        view.schedule_read_grace(&record, cx);
+        view.flush_read_states(cx);
+    });
+    cx.run_until_parked();
+    let latest = cx.read(|cx| {
+        root.read(cx)
+            .read_states
+            .lock()
+            .unwrap()
+            .entry(&root.read(cx).record)
+            .unwrap()
+            .hold
+            .unwrap()
+            .0
+    });
+    let bytes = fs::read(dir.path().join("catalog.json")).unwrap();
+    cx.executor().advance_clock(Duration::from_millis(400));
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let view = root.read(cx);
+        let states = view.read_states.lock().unwrap();
+        let entry = states.entry(&view.record).unwrap();
+        assert_eq!(
+            entry.hold.unwrap().0,
+            latest,
+            "old timer cannot release a newer hold"
+        );
+        assert_eq!(entry.state.unread_count, 2);
+    });
+    assert_eq!(fs::read(dir.path().join("catalog.json")).unwrap(), bytes);
+    cx.executor().advance_clock(Duration::from_millis(400));
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let view = root.read(cx);
+        let states = view.read_states.lock().unwrap();
+        assert!(states.entry(&view.record).unwrap().hold.is_none());
+        assert_eq!(states.entry(&view.record).unwrap().state.unread_count, 2);
+    });
+    assert_eq!(
+        fs::read(dir.path().join("catalog.json")).unwrap(),
+        bytes,
+        "timer reveal is presentation-only"
+    );
+    root.update(cx, |view, cx| {
+        let record = view.record.clone();
+        view.read_states
+            .lock()
+            .unwrap()
+            .observe(&record, &observation(&generation, 3, 3, 0, false), true)
+            .unwrap();
+        view.schedule_read_grace(&record, cx);
+        view.mark_chat_read_state(&record.id, false, cx);
+    });
+    cx.run_until_parked();
+    let cleared = fs::read(dir.path().join("catalog.json")).unwrap();
+    cx.executor().advance_clock(Duration::from_secs(1));
+    cx.run_until_parked();
+    assert_eq!(fs::read(dir.path().join("catalog.json")).unwrap(), cleared);
+    cx.read(|cx| {
+        assert_eq!(
+            root.read(cx).read_attention(&root.read(cx).record),
+            (0, false, false)
+        )
+    });
+}

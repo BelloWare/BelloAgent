@@ -435,6 +435,9 @@ impl AgentView {
         );
         match changed {
             Ok(true) => {
+                if self.record.id == record.id {
+                    self.invalidate_read_geometry(cx);
+                }
                 self.flush_read_states(cx);
                 self.schedule_read_grace(record, cx);
                 cx.notify();
@@ -467,17 +470,22 @@ impl AgentView {
                 if !Arc::ptr_eq(&workspace, &view.workspace) {
                     return;
                 }
-                if let Some(entry) =
-                    states
-                        .lock()
-                        .unwrap()
-                        .entries
-                        .get_mut(&record.id)
-                        .filter(|e| {
-                            e.path == record.snapshot && e.hold.is_some_and(|(t, _, _)| t == token)
-                        })
-                {
-                    entry.hold = None;
+                let released = {
+                    let mut states = states.lock().unwrap();
+                    if let Some(entry) = states.entries.get_mut(&record.id).filter(|entry| {
+                        entry.path == record.snapshot
+                            && entry.hold.is_some_and(|(held, _, _)| held == token)
+                    }) {
+                        entry.hold = None;
+                        true
+                    } else {
+                        false
+                    }
+                };
+                if released {
+                    if view.record.id == record.id {
+                        view.invalidate_read_geometry(cx);
+                    }
                     cx.notify();
                 }
             });
@@ -523,6 +531,8 @@ impl AgentView {
                     drop(states);
                     view.error = Some(format!("Read state could not be saved: {error}"));
                     cx.notify();
+                } else {
+                    view.invalidate_read_geometry(cx);
                 }
                 cx.notify();
                 view.flush_read_states(cx);
@@ -568,6 +578,9 @@ impl AgentView {
         }
     }
     pub(crate) fn reader_opened(&mut self, id: &str, changed_focus: bool, cx: &mut Context<Self>) {
+        if self.record.id == id {
+            self.invalidate_read_geometry(cx);
+        }
         let Some(record) = self.records.iter().find(|r| r.id == id).cloned() else {
             return;
         };
@@ -827,6 +840,46 @@ impl AgentView {
             }
         }
     }
+    fn invalidate_read_geometry(&self, cx: &mut Context<Self>) {
+        let needs_proof = self
+            .read_states
+            .lock()
+            .unwrap()
+            .entry(&self.record)
+            .is_some_and(|entry| entry.state.unread_count > 0 || entry.state.unread_failure);
+        if needs_proof && let Some(transcript) = self.transcript.clone() {
+            // Parent notification alone may reuse this cached child's paint.
+            // Request a real post-layout proof, never infer visibility here.
+            transcript.update(cx, |_, cx| cx.notify());
+        }
+    }
+    pub(crate) fn refresh_read_geometry_route(&mut self, cx: &mut Context<Self>) {
+        let ready = self.reading_route_ready(cx);
+        let revealed = ready && !self.read_surface_ready;
+        self.read_surface_ready = ready;
+        if revealed {
+            // Notifications issued inside parent render can be absorbed by the
+            // current draw before the cached child's dirty set is consumed.
+            // Invalidate after that render, with the exact surface identity.
+            let owner = cx.weak_entity();
+            let workspace = self.workspace.clone();
+            let binding = self.window_binding;
+            let id = self.record.id.clone();
+            let source = Arc::downgrade(&self.controller);
+            cx.defer(move |cx| {
+                let _ = owner.update(cx, |view, cx| {
+                    if Arc::ptr_eq(&view.workspace, &workspace)
+                        && view.window_binding == binding
+                        && view.record.id == id
+                        && source.ptr_eq(&Arc::downgrade(&view.controller))
+                        && view.reading_route_ready(cx)
+                    {
+                        view.invalidate_read_geometry(cx);
+                    }
+                });
+            });
+        }
+    }
     #[cfg(all(test, not(target_os = "macos")))]
     pub(crate) fn failure_reader_present(&self, cx: &App) -> bool {
         failure_reader_evidence(
@@ -839,8 +892,10 @@ impl AgentView {
         window.is_window_active() && self.current_reader_present(cx)
     }
     fn current_reader_present(&self, cx: &App) -> bool {
-        native_readable(self.organization_window, cx)
-            && !self.known_catalog_uncertainty
+        native_readable(self.organization_window, cx) && self.reading_route_ready(cx)
+    }
+    fn reading_route_ready(&self, cx: &App) -> bool {
+        !self.known_catalog_uncertainty
             && !self.read_states.lock().unwrap().fenced
             && self.record.archived_at.is_none()
             && !self.shutting_down

@@ -2636,3 +2636,61 @@ fn unread_reply_end_rechecks_current_geometry_after_height_only_resize(cx: &mut 
         "deferred acknowledgement must reject the current offscreen end"
     );
 }
+
+#[gpui::test]
+fn unread_geometry_repaints_cached_child_on_late_observation_and_surface_reveal(
+    cx: &mut TestAppContext,
+) {
+    let mut reply = message("existing-output", "assistant", "Existing completed output");
+    reply.state = "completed".into();
+    let (_dir, _window, root) = fixture(cx, vec![reply], 0);
+    let child = transcript(&root, cx);
+    let before = renders(&child, cx);
+    root.update(cx, |view, cx| {
+        let record = view.record.clone();
+        let workspace = view.workspace.clone();
+        let source = Arc::downgrade(&view.controller);
+        let mut observation = view.controller.read_observation();
+        observation.source_revision += 1;
+        observation.history = bello_agent_core::read_observation::OutputProjection::Known(
+            bello_agent_core::read_observation::OutputSummary {
+                count: 2,
+                latest_id: Some("next-output".into()),
+            },
+        );
+        observation.terminal = Some(bello_agent_core::read_observation::AcceptedTerminal {
+            sequence: 1,
+            source_revision: observation.source_revision,
+            history: observation.history.clone(),
+        });
+        view.receive_read_observation(&workspace, &record, &source, observation, cx);
+    });
+    cx.run_until_parked();
+    assert!(
+        renders(&child, cx) > before,
+        "accepted metadata must not reuse cached paint indefinitely"
+    );
+    root.update(cx, |view, cx| {
+        view.close_dialog = true;
+        cx.notify();
+    });
+    cx.run_until_parked();
+    let covered = renders(&child, cx);
+    root.update(cx, |view, cx| {
+        view.close_dialog = false;
+        cx.notify();
+    });
+    cx.run_until_parked();
+    assert!(
+        renders(&child, cx) > covered,
+        "uncovering must request fresh geometry without asserting native visibility"
+    );
+    let unchanged = renders(&child, cx);
+    root.update(cx, |_, cx| cx.notify());
+    cx.run_until_parked();
+    assert_eq!(
+        renders(&child, cx),
+        unchanged,
+        "ordinary unchanged parent paints still use caching"
+    );
+}
