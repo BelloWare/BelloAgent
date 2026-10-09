@@ -1,0 +1,10 @@
+{
+  "checked_at": "2026-10-09T04:27:10.235721+00:00",
+  "candidate": "eba8565c9fd4b01ad9875b338db47125fc2710dd",
+  "source_files": 33,
+  "all_source_blobs_match_manifest": true,
+  "all_source_path_hash_pairs_match_sealed_binary_manifest": true,
+  "all_sealed_log_hashes_verified": true,
+  "binary_sha256": "b8413d11c04639a0772177ee69bb104e210f702813137c290d130a33ecfbec3f",
+  "scope": "Local immutable Git bytes, source manifests and sealed binary/log hashes; no Cargo, native execution or publication."
+}

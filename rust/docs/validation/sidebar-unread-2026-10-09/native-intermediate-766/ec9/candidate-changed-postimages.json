@@ -1,0 +1,200 @@
+[
+  {
+    "path": "rust/crates/bello-agent-app/src/chat.rs",
+    "mode": "100644",
+    "git_blob": "03152ed1f87bc1b5a8a3032eb25e1bff0e90000e",
+    "sha256": "324981898103579fde3c380d6dce1ec2685c7ad1824869453ad1b18250cd799a"
+  },
+  {
+    "path": "rust/crates/bello-agent-app/src/chat_navigation.rs",
+    "mode": "100644",
+    "git_blob": "f06a42e2bf5a279d49a7e40611787a0fe3618150",
+    "sha256": "1437105f3de7fe6c351e3f38210e446448ed7652c41ef91aebb4c35ff9c3d473"
+  },
+  {
+    "path": "rust/crates/bello-agent-app/src/chat_organization_tests.rs",
+    "mode": "100644",
+    "git_blob": "5748d8eb786ad2f469b6b053cc658af6fd88862b",
+    "sha256": "5926542842b4912c51a00cb08b50eada6cf6dc055fca2cc770b0b65c1874716a"
+  },
+  {
+    "path": "rust/crates/bello-agent-app/src/composer_attachments_tests.rs",
+    "mode": "100644",
+    "git_blob": "b826e75652440efde3bd5a9fb9864c8ea5d67f42",
+    "sha256": "3f95ff6eea2848a29eb0cdc8accb6277f32668a80dc6cb236ed435fa3db146c1"
+  },
+  {
+    "path": "rust/crates/bello-agent-app/src/main.rs",
+    "mode": "100644",
+    "git_blob": "8c217b9eb2cd3fdfa4f33507c1ba4aeeb8890cf1",
+    "sha256": "c72aaa11df647cce1533c09419430120921eb9e4b684ba26cffb2976178d804d"
+  },
+  {
+    "path": "rust/crates/bello-agent-app/src/native_menu.rs",
+    "mode": "100644",
+    "git_blob": "191fc713358cc52f55d5175586c9b4da9fabfeb9",
+    "sha256": "6c44e6f2f94b4946f7413953b91c5c3722002a8dd74d6fdd16583c2c2f261b2a"
+  },
+  {
+    "path": "rust/crates/bello-agent-app/src/project_manager_controller_tests.rs",
+    "mode": "100644",
+    "git_blob": "97540f93426ddc2633f904bc7abc0dad64b35d73",
+    "sha256": "9d4be6672d43700aad316cb6c540ed523f5640d961e290bded73657c8361ca80"
+  },
+  {
+    "path": "rust/crates/bello-agent-app/src/queue_actions.rs",
+    "mode": "100644",
+    "git_blob": "e31ef18998910eca49f1174e72f6ab76a2a469eb",
+    "sha256": "7fbd6aa96e1ee6c8f11344645db28b7b5b95b0a58674a8d7361dc51ec9752ba8"
+  },
+  {
+    "path": "rust/crates/bello-agent-app/src/queue_cancel.rs",
+    "mode": "100644",
+    "git_blob": "064bbb6d6182237b0baa9e14943be7bf0935f529",
+    "sha256": "1a58d261f8caa67770a35bf07dd239c7fae03124c1bf49feb40262c44af2ac3a"
+  },
+  {
+    "path": "rust/crates/bello-agent-app/src/shutdown_barrier.rs",
+    "mode": "100644",
+    "git_blob": "b2b58fce0f933ab81adc70009d47d30df212773c",
+    "sha256": "8bf1689333576ecc2691e6a83004365e9c062a0e2bf78cc343251933312905d5"
+  },
+  {
+    "path": "rust/crates/bello-agent-app/src/shutdown_barrier_tests.rs",
+    "mode": "100644",
+    "git_blob": "df02b5e82a6819c8efd0c78fa291e7de3035fab6",
+    "sha256": "192f75fc2f6ab9c73f860f0190fa9d69897db519664440e70620cd106910040b"
+  },
+  {
+    "path": "rust/crates/bello-agent-app/src/sidebar_actions.rs",
+    "mode": "100644",
+    "git_blob": "606ecdfe60155bcbf50fa2b2fd99f405674f4b0b",
+    "sha256": "066523f826740e5384b7bded1f1ba1dc7402c938b02834dac9db0513482a31c5"
+  },
+  {
+    "path": "rust/crates/bello-agent-app/src/sidebar_actions_tests.rs",
+    "mode": "100644",
+    "git_blob": "5bd9f6fb1f6e38affcd7f51cd9a23f915a1ec574",
+    "sha256": "5909139f2fc54af5a6310fc63b402c93e42e457558fd55768afa1b4ec847c238"
+  },
+  {
+    "path": "rust/crates/bello-agent-app/src/sidebar_read_state.rs",
+    "mode": "100644",
+    "git_blob": "1f0a6f7769a0974866d9f2d18a53d656656d6f03",
+    "sha256": "6b1bba077b0fa5281f6aae157b2a769a1f1d39a6d5c4bd3e87d7e91249a86bc4"
+  },
+  {
+    "path": "rust/crates/bello-agent-app/src/sidebar_read_state_tests.rs",
+    "mode": "100644",
+    "git_blob": "c5708184194d3aafc37ee0c3385851d584735279",
+    "sha256": "5e395fe1dcb701027d731f808a175ab56fefdd1490be1854d78806259fb701c4"
+  },
+  {
+    "path": "rust/crates/bello-agent-app/src/sidebar_run_state.rs",
+    "mode": "100644",
+    "git_blob": "30e0560927a7598b37088cd7d860c3cabd56e18b",
+    "sha256": "1361ec277dd3254e40811e7f23ac7276c122c1dbc66805b5faae39a7e85d6ee8"
+  },
+  {
+    "path": "rust/crates/bello-agent-app/src/sidebar_run_state_tests.rs",
+    "mode": "100644",
+    "git_blob": "21a0ce5860d2b014a8137bebe198cfae02aa3047",
+    "sha256": "80449d8f5b2d8a5e58f1541def0b3cbcf8e91e97abb0081a870dc82f9be47900"
+  },
+  {
+    "path": "rust/crates/bello-agent-app/src/transcript_view.rs",
+    "mode": "100644",
+    "git_blob": "500f80f5e5ed2be8b55757cbaf042309c7ff3057",
+    "sha256": "796e81adf41316992ce2d93161bae8047e7f3c52f880ccdd589e0d8dd491c642"
+  },
+  {
+    "path": "rust/crates/bello-agent-app/src/transcript_view_tests.rs",
+    "mode": "100644",
+    "git_blob": "8b860524f76684edc7ed20be2867a4de4523d064",
+    "sha256": "10fdc8b9adef3b91779a0894a776dc2f7b65fd6e88f99e16e955f5bbebbb1836"
+  },
+  {
+    "path": "rust/crates/bello-agent-app/src/workspace_lifetime_tests.rs",
+    "mode": "100644",
+    "git_blob": "24b21fab79abcefde3fa0ffb1a8ef0fc6599d44d",
+    "sha256": "126ce8420854211b427e84c0118d72d0b3f6f5d62c84bd672d2df0b0931feeae"
+  },
+  {
+    "path": "rust/crates/bello-agent-core/src/lib.rs",
+    "mode": "100644",
+    "git_blob": "a7a5a4b4cccb17a1a077db462eb44554528d3f9e",
+    "sha256": "9ac68ac95d8868a543086fbc29054344e9de9a1694c45b4b88ff9cf260ec3214"
+  },
+  {
+    "path": "rust/crates/bello-agent-core/src/read_observation.rs",
+    "mode": "100644",
+    "git_blob": "9d49555e9277b746369cd1d42cce5b20bab039bc",
+    "sha256": "65bd8c42fa160d0fdd9519bfef0ee6890a26545d064345d7dcc7f963e5600ec2"
+  },
+  {
+    "path": "rust/crates/bello-agent-core/src/read_observation_tests.rs",
+    "mode": "100644",
+    "git_blob": "a5aedbbfc1fa540556ea6d65ad0457c0f5cbaf9e",
+    "sha256": "b24ad963eb2c6012f7f28b71568adc26366bbb6f3044cdffdde7f99f407b265e"
+  },
+  {
+    "path": "rust/crates/bello-agent-core/src/runtime.rs",
+    "mode": "100644",
+    "git_blob": "af01e78aabcad9371c508158618786269bc57864",
+    "sha256": "252c4895a544f8e43336e7eefd5fbc04c6cd2b2d3489ad234a5e391fc08d5ff8"
+  },
+  {
+    "path": "rust/crates/bello-agent-core/src/runtime_read_observation_tests.rs",
+    "mode": "100644",
+    "git_blob": "c2812424d36bd087071286731049cd2f3cc6dab8",
+    "sha256": "bde197b0932983b448ec8b66937fdb78740226dd1080484ef7cbfb549ebf1ec5"
+  },
+  {
+    "path": "rust/crates/bello-agent-core/src/session.rs",
+    "mode": "100644",
+    "git_blob": "f6f85b9e393d2e791363a3ffc3ab9c68c97ed199",
+    "sha256": "27f098de9640755571f31c1bfb2f415b88612a3ffc7fdc7558e33ab85caeb828"
+  },
+  {
+    "path": "rust/crates/bello-agent-core/src/workspace.rs",
+    "mode": "100644",
+    "git_blob": "d576a18233c574e6bcba347518273af0c5f318e7",
+    "sha256": "ff9f127e79c4c34fadfc10031fa2cadcb4adb21b572d2a843ef4726cd3ac4e7f"
+  },
+  {
+    "path": "rust/crates/bello-agent-core/src/workspace_activity_tests.rs",
+    "mode": "100644",
+    "git_blob": "07498287241ba22295b2bf01f1af43f149410e2f",
+    "sha256": "b302033a2bea5832dcda297f302b1e92ae62a196acbbae0068809d9d0b9d885b"
+  },
+  {
+    "path": "rust/crates/bello-agent-core/src/workspace_read_catalog_tests.rs",
+    "mode": "100644",
+    "git_blob": "5f372b4716cfdf5f5f2da00805d381562d42a138",
+    "sha256": "e8dd4dbc60d3e51a84fc730b1c1e68f7d50300879d17766516e88e7bedf90119"
+  },
+  {
+    "path": "rust/crates/bello-agent-core/src/workspace_read_state.rs",
+    "mode": "100644",
+    "git_blob": "dc0797c5fa474ab285dac25c0e1ec79bfdc70707",
+    "sha256": "5447a40f6b50c41945dc45fdfe7d147ccf27ab4f886ea79ae74126011305cee5"
+  },
+  {
+    "path": "rust/crates/bello-agent-core/src/workspace_read_state_tests.rs",
+    "mode": "100644",
+    "git_blob": "34f6ddcaa9c58269a4a9b8eff47d5079eda3f49c",
+    "sha256": "5f4b95151a202e124aeb919b64af3b71c34a57aa3c8d17f08194649482f833f2"
+  },
+  {
+    "path": "rust/crates/bello-agent-core/tests/sidebar_organization.rs",
+    "mode": "100644",
+    "git_blob": "b65ad7c77310da3ad16aa59d24223b8d3e744d72",
+    "sha256": "12da8a27d3235c53acb1a552ee2f6078459031d1b21db970a8cc04147051620a"
+  },
+  {
+    "path": "rust/docs/sidebar-read-state.md",
+    "mode": "100644",
+    "git_blob": "90f3946255c852811d17da00b2f7c0d16d844bec",
+    "sha256": "9c1d24fa72686c3a401ff9279d6d8ace08f8d553505ad0c48cdf19a2cfe9bb93"
+  }
+]

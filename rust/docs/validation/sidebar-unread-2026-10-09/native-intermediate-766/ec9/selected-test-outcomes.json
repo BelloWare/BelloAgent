@@ -1,0 +1,88 @@
+[
+  {
+    "name": "core-read-projection",
+    "all_selected_names_executed_exactly_once": true,
+    "passed": 21,
+    "failed": 0,
+    "ignored": 0,
+    "cfg_excluded_tests": []
+  },
+  {
+    "name": "core-read-watch",
+    "all_selected_names_executed_exactly_once": true,
+    "passed": 6,
+    "failed": 0,
+    "ignored": 0,
+    "cfg_excluded_tests": []
+  },
+  {
+    "name": "core-read-reducer",
+    "all_selected_names_executed_exactly_once": true,
+    "passed": 12,
+    "failed": 0,
+    "ignored": 0,
+    "cfg_excluded_tests": []
+  },
+  {
+    "name": "core-read-catalog",
+    "all_selected_names_executed_exactly_once": true,
+    "passed": 9,
+    "failed": 0,
+    "ignored": 0,
+    "cfg_excluded_tests": []
+  },
+  {
+    "name": "app-read-default",
+    "all_selected_names_executed_exactly_once": true,
+    "passed": 27,
+    "failed": 0,
+    "ignored": 0,
+    "cfg_excluded_tests": [
+      {
+        "name": "sidebar_read_state::tests::linux_native_evidence_gate_cannot_acknowledge_even_exact_target",
+        "reason": "non-macOS cfg excludes this test; not an ignored native test"
+      },
+      {
+        "name": "sidebar_read_state::tests::linux_platform_failure_attention_distinguishes_foreground_background_and_other_pages",
+        "reason": "non-macOS cfg excludes this test; not an ignored native test"
+      },
+      {
+        "name": "sidebar_read_state::tests::real_after_rename_baseline_uncertainty_preserves_input_and_blocks_dispatch",
+        "reason": "synthetic-authority disabled in default feature test build"
+      }
+    ]
+  },
+  {
+    "name": "app-read-all-features",
+    "all_selected_names_executed_exactly_once": true,
+    "passed": 28,
+    "failed": 0,
+    "ignored": 0,
+    "cfg_excluded_tests": [
+      {
+        "name": "sidebar_read_state::tests::linux_native_evidence_gate_cannot_acknowledge_even_exact_target",
+        "reason": "non-macOS cfg excludes this test; not an ignored native test"
+      },
+      {
+        "name": "sidebar_read_state::tests::linux_platform_failure_attention_distinguishes_foreground_background_and_other_pages",
+        "reason": "non-macOS cfg excludes this test; not an ignored native test"
+      }
+    ]
+  },
+  {
+    "name": "app-reply-geometry",
+    "all_selected_names_executed_exactly_once": true,
+    "passed": 3,
+    "failed": 0,
+    "ignored": 0,
+    "cfg_excluded_tests": []
+  },
+  {
+    "name": "app-native-menu",
+    "all_selected_names_executed_exactly_once": true,
+    "passed": 14,
+    "failed": 0,
+    "ignored": 0,
+    "cfg_excluded_tests": []
+  }
+]

@@ -1,0 +1,32 @@
+[
+  {
+    "name": "candidate-build-default",
+    "reason": "Shared Cargo target reused baseline ordinary binary after snapshot switch; no candidate package compilation occurred. Excluded from candidate native compilation acceptance and warning comparison.",
+    "baseline_binary": {
+      "path": "/Users/admin/Library/Caches/BelloRustWork/agent-target/debug/bello-agent",
+      "sha256": "473129e11643dc8db7b50c2f0a3b99bea05ecd097b37059063814aa01e92ff52",
+      "file": "/Users/admin/Library/Caches/BelloRustWork/agent-target/debug/bello-agent: Mach-O 64-bit executable arm64"
+    },
+    "trial_binary": {
+      "path": "/Users/admin/Library/Caches/BelloRustWork/agent-target/debug/bello-agent",
+      "sha256": "473129e11643dc8db7b50c2f0a3b99bea05ecd097b37059063814aa01e92ff52",
+      "file": "/Users/admin/Library/Caches/BelloRustWork/agent-target/debug/bello-agent: Mach-O 64-bit executable arm64"
+    },
+    "log_sha256": "6f2f1b36eba73a8441a3eb944467cda9a61c159ef00aa82476061402f129881b"
+  },
+  {
+    "name": "candidate-build-all-features",
+    "reason": "Shared Cargo target reused baseline ordinary binary after snapshot switch; no candidate package compilation occurred. Excluded from candidate native compilation acceptance and warning comparison.",
+    "baseline_binary": {
+      "path": "/Users/admin/Library/Caches/BelloRustWork/agent-target/debug/bello-agent",
+      "sha256": "5fa7140d763ba3f961cffa8713f5e0494dfb74292afac66de63882f83df024c7",
+      "file": "/Users/admin/Library/Caches/BelloRustWork/agent-target/debug/bello-agent: Mach-O 64-bit executable arm64"
+    },
+    "trial_binary": {
+      "path": "/Users/admin/Library/Caches/BelloRustWork/agent-target/debug/bello-agent",
+      "sha256": "5fa7140d763ba3f961cffa8713f5e0494dfb74292afac66de63882f83df024c7",
+      "file": "/Users/admin/Library/Caches/BelloRustWork/agent-target/debug/bello-agent: Mach-O 64-bit executable arm64"
+    },
+    "log_sha256": "99ba5879e1b488bf645b3535c29ac6d09248810211ed908c3abed6f1c2742c8c"
+  }
+]

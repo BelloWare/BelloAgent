@@ -1,0 +1,78 @@
+[
+  {
+    "name": "candidate-build-default",
+    "required_packages": [
+      "bello-agent-core",
+      "bello-agent-app"
+    ],
+    "exact_source_compiled": true,
+    "compile_and_test_lines": [
+      "   Compiling bello-agent-core v0.1.0 (/Users/admin/Library/Caches/BelloRustWork/agent-eba-cached-paint-5ljf0v2p/source/rust/crates/bello-agent-core)",
+      "   Compiling bello-agent-app v0.1.0 (/Users/admin/Library/Caches/BelloRustWork/agent-eba-cached-paint-5ljf0v2p/source/rust/crates/bello-agent-app)"
+    ],
+    "binaries": [
+      {
+        "path": "/Users/admin/Library/Caches/BelloRustWork/agent-target/debug/bello-agent",
+        "sha256": "c641b4aceb86b088fc315479b66149974ab05e287b52927a08034c5b1d3db2eb",
+        "file": "/Users/admin/Library/Caches/BelloRustWork/agent-target/debug/bello-agent: Mach-O 64-bit executable arm64"
+      }
+    ]
+  },
+  {
+    "name": "candidate-build-all-features",
+    "required_packages": [
+      "bello-agent-core",
+      "bello-agent-app"
+    ],
+    "exact_source_compiled": true,
+    "compile_and_test_lines": [
+      "   Compiling bello-agent-core v0.1.0 (/Users/admin/Library/Caches/BelloRustWork/agent-eba-cached-paint-5ljf0v2p/source/rust/crates/bello-agent-core)",
+      "   Compiling bello-agent-app v0.1.0 (/Users/admin/Library/Caches/BelloRustWork/agent-eba-cached-paint-5ljf0v2p/source/rust/crates/bello-agent-app)"
+    ],
+    "binaries": [
+      {
+        "path": "/Users/admin/Library/Caches/BelloRustWork/agent-target/debug/bello-agent",
+        "sha256": "56fbaa8ebec7d280aa45a99d82c0e1fbd75d5eb440ead777ae6f9ca228570873",
+        "file": "/Users/admin/Library/Caches/BelloRustWork/agent-target/debug/bello-agent: Mach-O 64-bit executable arm64"
+      }
+    ]
+  },
+  {
+    "name": "app-read-default",
+    "required_packages": [
+      "bello-agent-app"
+    ],
+    "exact_source_compiled": true,
+    "compile_and_test_lines": [
+      "   Compiling bello-agent-core v0.1.0 (/Users/admin/Library/Caches/BelloRustWork/agent-eba-cached-paint-5ljf0v2p/source/rust/crates/bello-agent-core)",
+      "   Compiling bello-agent-app v0.1.0 (/Users/admin/Library/Caches/BelloRustWork/agent-eba-cached-paint-5ljf0v2p/source/rust/crates/bello-agent-app)",
+      "     Running unittests src/main.rs (/Users/admin/Library/Caches/BelloRustWork/agent-target/debug/deps/bello_agent-4246dd6a71a88067)"
+    ],
+    "binaries": [
+      {
+        "path": "/Users/admin/Library/Caches/BelloRustWork/agent-target/debug/deps/bello_agent-4246dd6a71a88067",
+        "sha256": "5b67029d01aec542def133086750d7b5c0ee090681e6a8e760c1b24fdfc75179",
+        "file": "/Users/admin/Library/Caches/BelloRustWork/agent-target/debug/deps/bello_agent-4246dd6a71a88067: Mach-O 64-bit executable arm64"
+      }
+    ]
+  },
+  {
+    "name": "app-read-all-features",
+    "required_packages": [
+      "bello-agent-app"
+    ],
+    "exact_source_compiled": true,
+    "compile_and_test_lines": [
+      "   Compiling bello-agent-core v0.1.0 (/Users/admin/Library/Caches/BelloRustWork/agent-eba-cached-paint-5ljf0v2p/source/rust/crates/bello-agent-core)",
+      "   Compiling bello-agent-app v0.1.0 (/Users/admin/Library/Caches/BelloRustWork/agent-eba-cached-paint-5ljf0v2p/source/rust/crates/bello-agent-app)",
+      "     Running unittests src/main.rs (/Users/admin/Library/Caches/BelloRustWork/agent-target/debug/deps/bello_agent-31b28a398534a82b)"
+    ],
+    "binaries": [
+      {
+        "path": "/Users/admin/Library/Caches/BelloRustWork/agent-target/debug/deps/bello_agent-31b28a398534a82b",
+        "sha256": "f656caf6929d9a8a6ae7221243bfa5f10cd349d98f697189ce21c9f27d90ab0d",
+        "file": "/Users/admin/Library/Caches/BelloRustWork/agent-target/debug/deps/bello_agent-31b28a398534a82b: Mach-O 64-bit executable arm64"
+      }
+    ]
+  }
+]

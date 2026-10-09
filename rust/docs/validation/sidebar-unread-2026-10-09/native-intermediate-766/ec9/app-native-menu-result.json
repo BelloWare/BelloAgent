@@ -1,0 +1,120 @@
+{
+  "name": "app-native-menu",
+  "kind": "test",
+  "source": "source",
+  "command": [
+    "/opt/homebrew/bin/cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "bello-agent-app",
+    "--all-features",
+    "--bin",
+    "bello-agent",
+    "native_menu::tests::",
+    "--",
+    "--test-threads=1"
+  ],
+  "expected_tests": [
+    "native_menu::tests::anchor_uses_view_coordinates_without_retina_scaling",
+    "native_menu::tests::archive_commands_match_source_labels_symbols_and_activation_intent",
+    "native_menu::tests::closed_window_discards_and_releases_the_callback",
+    "native_menu::tests::closed_window_discards_fresh_pointer_alongside_selection",
+    "native_menu::tests::completion_pointer_inverts_anchor_in_points_for_both_axes",
+    "native_menu::tests::completion_pointer_preserves_outside_coordinates_without_clamping",
+    "native_menu::tests::gpui_child_must_be_unique_direct_and_attached_to_expected_window",
+    "native_menu::tests::invalid_completion_pointer_remains_unknown_not_a_synthetic_exit",
+    "native_menu::tests::invalid_or_no_longer_visible_positions_do_not_open_a_menu",
+    "native_menu::tests::nested_request_cannot_reset_the_active_tracking_guard",
+    "native_menu::tests::pin_commands_match_source_labels_symbols_and_desired_state",
+    "native_menu::tests::pinned_gpui_contract_uses_child_of_appkit_content_container",
+    "native_menu::tests::selection_and_cancel_deliver_once_and_release_the_callback",
+    "native_menu::tests::sidebar_copy_id_label_symbol_and_selection_are_source_exact"
+  ],
+  "expected_passed": 14,
+  "expected_ignored": 0,
+  "cfg_excluded_tests": [],
+  "started_at": "2026-10-09T04:02:38.612240+00:00",
+  "cwd": "/Users/admin/Library/Caches/BelloRustWork/agent-ec9-unread-f3r4htxy/source/rust",
+  "log": "/Users/admin/Library/Caches/BelloRustWork/agent-ec9-unread-f3r4htxy/evidence/app-native-menu.log",
+  "ended_at": "2026-10-09T04:02:39.176536+00:00",
+  "elapsed_seconds": 0.5639933749334887,
+  "exit_code": 0,
+  "log_sha256": "c661b945aa82a81b872c1e73bc978d9ca900b66c5886b6dfb8f9e9644f5ae2f2",
+  "counts": [
+    {
+      "passed": 14,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 697
+    }
+  ],
+  "binaries": [
+    {
+      "path": "/Users/admin/Library/Caches/BelloRustWork/agent-target/debug/deps/bello_agent-31b28a398534a82b",
+      "sha256": "bb9cbfeaaa3d5e086eee4e429c67704b746d71e5a553acb325b79c631665618c",
+      "file": "/Users/admin/Library/Caches/BelloRustWork/agent-target/debug/deps/bello_agent-31b28a398534a82b: Mach-O 64-bit executable arm64"
+    }
+  ],
+  "tests": [
+    [
+      "native_menu::tests::anchor_uses_view_coordinates_without_retina_scaling",
+      "ok"
+    ],
+    [
+      "native_menu::tests::archive_commands_match_source_labels_symbols_and_activation_intent",
+      "ok"
+    ],
+    [
+      "native_menu::tests::closed_window_discards_and_releases_the_callback",
+      "ok"
+    ],
+    [
+      "native_menu::tests::closed_window_discards_fresh_pointer_alongside_selection",
+      "ok"
+    ],
+    [
+      "native_menu::tests::completion_pointer_inverts_anchor_in_points_for_both_axes",
+      "ok"
+    ],
+    [
+      "native_menu::tests::completion_pointer_preserves_outside_coordinates_without_clamping",
+      "ok"
+    ],
+    [
+      "native_menu::tests::gpui_child_must_be_unique_direct_and_attached_to_expected_window",
+      "ok"
+    ],
+    [
+      "native_menu::tests::invalid_completion_pointer_remains_unknown_not_a_synthetic_exit",
+      "ok"
+    ],
+    [
+      "native_menu::tests::invalid_or_no_longer_visible_positions_do_not_open_a_menu",
+      "ok"
+    ],
+    [
+      "native_menu::tests::nested_request_cannot_reset_the_active_tracking_guard",
+      "ok"
+    ],
+    [
+      "native_menu::tests::pin_commands_match_source_labels_symbols_and_desired_state",
+      "ok"
+    ],
+    [
+      "native_menu::tests::pinned_gpui_contract_uses_child_of_appkit_content_container",
+      "ok"
+    ],
+    [
+      "native_menu::tests::selection_and_cancel_deliver_once_and_release_the_callback",
+      "ok"
+    ],
+    [
+      "native_menu::tests::sidebar_copy_id_label_symbol_and_selection_are_source_exact",
+      "ok"
+    ]
+  ],
+  "expected_name_set_matches": true
+}

@@ -1,0 +1,17 @@
+{
+  "repo": "/Users/admin/.codex/worktrees/rust-native-integration/pi-app",
+  "repository_head": "4ca6bcb048e9671c52e1950a2ff383089f5d5bfa",
+  "repository_status": "",
+  "root": "/Users/admin/Library/Caches/BelloRustWork/agent-eba-cached-paint-5ljf0v2p",
+  "commit": "eba8565c9fd4b01ad9875b338db47125fc2710dd",
+  "tree": "90434aee2c85187765b629ab017218941dd5b8ce",
+  "parent": "76649be3adef49cc4054ea4d479cd1b144780c33",
+  "published_baseline": "464222b4b72ccb684d501a6301be1f1479591554",
+  "checked_at": "2026-10-09T04:21:58.674057+00:00",
+  "tracked_files": 2636,
+  "source_manifest_sha256": "a216c5d321d74f3b014c0fa81191a4ecb4461f14e7e49c35bb4f3fa29be9468d",
+  "archive_sha256": "68650064c9efb1e3d88b6dc0b27eeb9da9447fd23492693f347f016d5dfe26c8",
+  "exact_source_verified": true,
+  "retained_baseline_build_evidence_root": "/Users/admin/Library/Caches/BelloRustWork/agent-ec9-unread-f3r4htxy",
+  "source_edits_allowed": false
+}

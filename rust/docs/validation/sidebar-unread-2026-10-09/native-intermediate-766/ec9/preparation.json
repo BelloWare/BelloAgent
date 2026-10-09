@@ -1,0 +1,40 @@
+{
+  "repo": "/Users/admin/.codex/worktrees/rust-native-integration/pi-app",
+  "repository_head": "4ca6bcb048e9671c52e1950a2ff383089f5d5bfa",
+  "repository_status": "",
+  "root": "/Users/admin/Library/Caches/BelloRustWork/agent-ec9-unread-f3r4htxy",
+  "evidence": "/Users/admin/Library/Caches/BelloRustWork/agent-ec9-unread-f3r4htxy/evidence",
+  "commit": "ec9ed1fdeba091095c41237701c741d19366a6a2",
+  "tree": "ba5df4f36aae18a6e9c27db2240ad6f304269b1e",
+  "parent": "ba3bbce87aafbe141f1563f729105e513d59cdd1",
+  "published_baseline": "464222b4b72ccb684d501a6301be1f1479591554",
+  "source_chain": [
+    "af5d548cab548a43b3b3a122111cac76c436ed07",
+    "d40dd93b16fd4782cd68fd9b218986938aa843e1",
+    "ba3bbce87aafbe141f1563f729105e513d59cdd1",
+    "ec9ed1fdeba091095c41237701c741d19366a6a2"
+  ],
+  "checked_at": "2026-10-09T03:59:01.019925+00:00",
+  "snapshots": [
+    {
+      "label": "source",
+      "commit": "ec9ed1fdeba091095c41237701c741d19366a6a2",
+      "tree": "ba5df4f36aae18a6e9c27db2240ad6f304269b1e",
+      "source": "/Users/admin/Library/Caches/BelloRustWork/agent-ec9-unread-f3r4htxy/source",
+      "tracked_files": 2636,
+      "source_manifest_sha256": "c3bbdf302dfd02263d1b091d5f576a2461bd7f71ac79fc6014ea80d35db72504",
+      "archive_sha256": "35ee63ae010b9309df668658f47ad68c50d7b7894a38223793cc4719aaa12e92",
+      "exact_source_verified": true
+    },
+    {
+      "label": "baseline-source",
+      "commit": "464222b4b72ccb684d501a6301be1f1479591554",
+      "tree": "599a0d9413603668e1e449538eb0dcfcfbbb1fb2",
+      "source": "/Users/admin/Library/Caches/BelloRustWork/agent-ec9-unread-f3r4htxy/baseline-source",
+      "tracked_files": 2627,
+      "source_manifest_sha256": "94b4afa2006b4b79979f131456eefe93a7dad474a5a4998f32b9a75653ae5c5e",
+      "archive_sha256": "33898f21ae40157d8ec4e9c7f527c7b02493470be4b08f5484c424ae14e06764",
+      "exact_source_verified": true
+    }
+  ]
+}

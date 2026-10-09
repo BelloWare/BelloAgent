@@ -1,0 +1,27 @@
+{
+  "name": "clean-before-fresh-candidate-builds",
+  "kind": "cache-clean",
+  "source": "source",
+  "command": [
+    "/opt/homebrew/bin/cargo",
+    "clean",
+    "--offline",
+    "--locked",
+    "-p",
+    "bello-agent-core",
+    "-p",
+    "bello-agent-app"
+  ],
+  "started_at": "2026-10-09T04:03:41.274739+00:00",
+  "cwd": "/Users/admin/Library/Caches/BelloRustWork/agent-ec9-unread-f3r4htxy/source/rust",
+  "log": "/Users/admin/Library/Caches/BelloRustWork/agent-ec9-unread-f3r4htxy/evidence/clean-before-fresh-candidate-builds.log",
+  "ended_at": "2026-10-09T04:03:42.632952+00:00",
+  "elapsed_seconds": 1.3582418750738725,
+  "exit_code": 0,
+  "log_sha256": "c1804ce537c7ef68f4fba7181eb98beee132055760dd4efce296f7418faf57db",
+  "counts": [],
+  "tests": [],
+  "expected_name_set_matches": null,
+  "binaries": [],
+  "candidate_packages_compiled_from_exact_snapshot": null
+}

@@ -1,0 +1,25 @@
+[
+  {
+    "name": "core-read-projection",
+    "compile_and_test_lines": [
+      "   Compiling bello-agent-core v0.1.0 (/Users/admin/Library/Caches/BelloRustWork/agent-766-unread-final-ffsy0dl5/source/rust/crates/bello-agent-core)",
+      "     Running unittests src/lib.rs (/Users/admin/Library/Caches/BelloRustWork/agent-target/debug/deps/bello_agent_core-86e44b232987605f)"
+    ]
+  },
+  {
+    "name": "app-read-default",
+    "compile_and_test_lines": [
+      "   Compiling bello-agent-core v0.1.0 (/Users/admin/Library/Caches/BelloRustWork/agent-766-unread-final-ffsy0dl5/source/rust/crates/bello-agent-core)",
+      "   Compiling bello-agent-app v0.1.0 (/Users/admin/Library/Caches/BelloRustWork/agent-766-unread-final-ffsy0dl5/source/rust/crates/bello-agent-app)",
+      "     Running unittests src/main.rs (/Users/admin/Library/Caches/BelloRustWork/agent-target/debug/deps/bello_agent-4246dd6a71a88067)"
+    ]
+  },
+  {
+    "name": "app-read-all-features",
+    "compile_and_test_lines": [
+      "   Compiling bello-agent-core v0.1.0 (/Users/admin/Library/Caches/BelloRustWork/agent-766-unread-final-ffsy0dl5/source/rust/crates/bello-agent-core)",
+      "   Compiling bello-agent-app v0.1.0 (/Users/admin/Library/Caches/BelloRustWork/agent-766-unread-final-ffsy0dl5/source/rust/crates/bello-agent-app)",
+      "     Running unittests src/main.rs (/Users/admin/Library/Caches/BelloRustWork/agent-target/debug/deps/bello_agent-31b28a398534a82b)"
+    ]
+  }
+]

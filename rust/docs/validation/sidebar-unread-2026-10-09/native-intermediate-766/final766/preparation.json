@@ -1,0 +1,18 @@
+{
+  "repo": "/Users/admin/.codex/worktrees/rust-native-integration/pi-app",
+  "repository_head": "4ca6bcb048e9671c52e1950a2ff383089f5d5bfa",
+  "repository_status": "",
+  "root": "/Users/admin/Library/Caches/BelloRustWork/agent-766-unread-final-ffsy0dl5",
+  "commit": "76649be3adef49cc4054ea4d479cd1b144780c33",
+  "tree": "85bbad707f1c11b1693bb7d89a5ba6d19e3d9a97",
+  "parent": "ec9ed1fdeba091095c41237701c741d19366a6a2",
+  "published_baseline": "464222b4b72ccb684d501a6301be1f1479591554",
+  "checked_at": "2026-10-09T04:06:05.743377+00:00",
+  "tracked_files": 2636,
+  "source_manifest_sha256": "baea31238417b5a1de618d098c867f2fcef8dbddc51ee5843774fefe93a9a02b",
+  "archive_sha256": "982952e6018c037035195591ef6d2864cb1cca99c166ffd9cd1fc4a9b826a82c",
+  "exact_source_verified": true,
+  "ordinary_native_build_source": "ec9ed1fdeba091095c41237701c741d19366a6a2",
+  "ordinary_native_build_evidence_root": "/Users/admin/Library/Caches/BelloRustWork/agent-ec9-unread-f3r4htxy",
+  "final_candidate_ordinary_build_not_rerun": true
+}

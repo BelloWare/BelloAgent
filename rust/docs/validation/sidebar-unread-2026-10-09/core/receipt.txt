@@ -1,0 +1,41 @@
+Core accepted-read observation deliverable, 2026-10-09.
+Base: 464222b4b72ccb684d501a6301be1f1479591554 (verified exact shared HEAD).
+Source specification: Swift6319e368c6ddb7c3ef18605e78f23b1a5b69e63a SessionRun/WorkspaceReadState; complete immutable bd4e6ebb handoff; shared implementation contract.
+Changed owned files: read_observation.rs, read_observation_tests.rs, runtime_read_observation_tests.rs, runtime.rs, session.rs, lib.rs. lib.rs also exports catalog owner's workspace_read_state module by agreement.
+
+APIs: read_observation::project_outputs(&Session), OutputSummary, OutputProjection,
+AcceptedReadObservation, AcceptedTerminal. Controller read_observation() is direct
+actor current capture for admission/final-after-join; published_read_observation()
+is nonblocking last publication for paint; subscribe_read_observation() is watch.
+
+Capture is inside SessionStore after write succeeds and before next state is
+installed. Projection runs on initialization/checkpoints, never stream deltas.
+Retained terminal sequence/history and cumulative failure sequence survive next
+start/Retry/watch coalescence. BeforeRename accepts nothing; AfterRename uncertainty
+returns Unknown and cannot fabricate an accepted failure/terminal. Display fatal
+is independent. Retirement retains accepted evidence for final capture.
+
+Typed production grammar narrowed with root approval: Completion::Complete plus
+completed/replay=true, or later interrupted/replay=false. begin_tools original v3
+writer12e67f22 used completed; Session::finish(Error/Cancelled), including image
+failure handling, can retain typed identity but set interrupted. Nonexecuting
+foundation validator4a9732bc accepts additional inert shapes; these lack production
+acceptance evidence and are Unknown. No storage validation/migration was widened.
+
+Validation on final hash set:
+cargo test --locked -p bello-agent-core --lib read_observation -- --nocapture
+  PASS 27/27 (21 projector/store, 6 Controller).
+cargo clippy --locked -p bello-agent-core --all-targets -- -D warnings
+  PASS.
+git diff --check
+  PASS at source receipt capture.
+Earlier reducer12 passed; catalog owner owns final catalog/integration evidence.
+Raw final outputs: final-focused.log, final-clippy.log.
+Retained earlier results: early-gates.txt (factual summary), typed-fixture-failure.log.
+Source identity: source-sha256.txt.
+
+Limits: no crash-durable historical failure sequence; discarded timeline/tool-only
+failed partials cannot be reconstructed. No per-token catalog or activity mutation,
+no new Session schema, no authority/tool/replay/storage gates changed. Full aggregate,
+GPUI/native/macOS and publication acceptance remain parent-owned separate gates.
+Cargo lane released to root/App owner at03:08UTC; root priority QR then App.

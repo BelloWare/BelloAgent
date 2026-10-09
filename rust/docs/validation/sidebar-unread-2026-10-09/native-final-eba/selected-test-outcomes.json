@@ -1,0 +1,54 @@
+[
+  {
+    "name": "app-read-default",
+    "all_expected_names_executed_once": true,
+    "passed": 28,
+    "failed": 0,
+    "ignored": 0,
+    "measured": 0,
+    "filtered_out": 538,
+    "cfg_excluded_tests": [
+      {
+        "name": "sidebar_read_state::tests::linux_native_evidence_gate_cannot_acknowledge_even_exact_target",
+        "reason": "non-macOS cfg excludes this test; not an ignored native test"
+      },
+      {
+        "name": "sidebar_read_state::tests::linux_platform_failure_attention_distinguishes_foreground_background_and_other_pages",
+        "reason": "non-macOS cfg excludes this test; not an ignored native test"
+      },
+      {
+        "name": "sidebar_read_state::tests::real_after_rename_baseline_uncertainty_preserves_input_and_blocks_dispatch",
+        "reason": "synthetic-authority disabled in default feature test build"
+      }
+    ]
+  },
+  {
+    "name": "app-read-all-features",
+    "all_expected_names_executed_once": true,
+    "passed": 29,
+    "failed": 0,
+    "ignored": 0,
+    "measured": 0,
+    "filtered_out": 684,
+    "cfg_excluded_tests": [
+      {
+        "name": "sidebar_read_state::tests::linux_native_evidence_gate_cannot_acknowledge_even_exact_target",
+        "reason": "non-macOS cfg excludes this test; not an ignored native test"
+      },
+      {
+        "name": "sidebar_read_state::tests::linux_platform_failure_attention_distinguishes_foreground_background_and_other_pages",
+        "reason": "non-macOS cfg excludes this test; not an ignored native test"
+      }
+    ]
+  },
+  {
+    "name": "app-cache-and-reply-geometry",
+    "all_expected_names_executed_once": true,
+    "passed": 4,
+    "failed": 0,
+    "ignored": 0,
+    "measured": 0,
+    "filtered_out": 709,
+    "cfg_excluded_tests": []
+  }
+]

@@ -1,0 +1,392 @@
+{
+  "ordinary_native_builds": [
+    {
+      "variant": "default",
+      "candidate_commit": "eba8565c9fd4b01ad9875b338db47125fc2710dd",
+      "baseline_commit": "464222b4b72ccb684d501a6301be1f1479591554",
+      "baseline_build_retained_from": "/Users/admin/Library/Caches/BelloRustWork/agent-ec9-unread-f3r4htxy",
+      "baseline_result": "baseline-build-default",
+      "baseline_log_sha256": "6bfd45e8ed70f5b09323149f94bf51ed900d78a71a49cb5289b5ebb64133b459",
+      "candidate_exit_code": 0,
+      "baseline_exit_code": 0,
+      "versus_464": {
+        "candidate_count": 83,
+        "baseline_count": 64,
+        "same_source_anchor_multiset": false,
+        "added_or_edited": [
+          {
+            "diagnostic": [
+              null,
+              "unexpected `cfg` condition value: `cargo-clippy`",
+              "crates/bello-agent-app/src/native_menu.rs",
+              "let app: id = msg_send![class!(NSApplication), sharedApplication];"
+            ],
+            "count": 4
+          },
+          {
+            "diagnostic": [
+              null,
+              "unexpected `cfg` condition value: `cargo-clippy`",
+              "crates/bello-agent-app/src/native_menu.rs",
+              "let active: BOOL = msg_send![app, isActive];"
+            ],
+            "count": 2
+          },
+          {
+            "diagnostic": [
+              null,
+              "unexpected `cfg` condition value: `cargo-clippy`",
+              "crates/bello-agent-app/src/native_menu.rs",
+              "let Some(_pool) = OwnedObject::from_owned(msg_send![class!(NSAutoreleasePool), new])"
+            ],
+            "count": 2
+          },
+          {
+            "diagnostic": [
+              null,
+              "unexpected `cfg` condition value: `cargo-clippy`",
+              "crates/bello-agent-app/src/native_menu.rs",
+              "let hidden: BOOL = msg_send![view.0, isHiddenOrHasHiddenAncestor];"
+            ],
+            "count": 1
+          },
+          {
+            "diagnostic": [
+              null,
+              "unexpected `cfg` condition value: `cargo-clippy`",
+              "crates/bello-agent-app/src/native_menu.rs",
+              "let rect: NSRect = msg_send![view.0, visibleRect];"
+            ],
+            "count": 1
+          },
+          {
+            "diagnostic": [
+              null,
+              "unexpected `cfg` condition value: `cargo-clippy`",
+              "crates/bello-agent-app/src/native_menu.rs",
+              "let key: BOOL = msg_send![native.0, isKeyWindow];"
+            ],
+            "count": 1
+          },
+          {
+            "diagnostic": [
+              null,
+              "unexpected `cfg` condition value: `cargo-clippy`",
+              "crates/bello-agent-app/src/native_menu.rs",
+              "let visible: BOOL = msg_send![native.0, isVisible];"
+            ],
+            "count": 1
+          },
+          {
+            "diagnostic": [
+              null,
+              "unexpected `cfg` condition value: `cargo-clippy`",
+              "crates/bello-agent-app/src/native_menu.rs",
+              "let minimized: BOOL = msg_send![native.0, isMiniaturized];"
+            ],
+            "count": 1
+          },
+          {
+            "diagnostic": [
+              null,
+              "unexpected `cfg` condition value: `cargo-clippy`",
+              "crates/bello-agent-app/src/native_menu.rs",
+              "let occlusion: usize = msg_send![native.0, occlusionState];"
+            ],
+            "count": 1
+          },
+          {
+            "diagnostic": [
+              null,
+              "unexpected `cfg` condition value: `cargo-clippy`",
+              "crates/bello-agent-app/src/native_menu.rs",
+              "let sheet: id = msg_send![native.0, attachedSheet];"
+            ],
+            "count": 1
+          },
+          {
+            "diagnostic": [
+              null,
+              "unexpected `cfg` condition value: `cargo-clippy`",
+              "crates/bello-agent-app/src/native_menu.rs",
+              "sel!(selectMarkRead:),"
+            ],
+            "count": 1
+          },
+          {
+            "diagnostic": [
+              null,
+              "unexpected `cfg` condition value: `cargo-clippy`",
+              "crates/bello-agent-app/src/native_menu.rs",
+              "sel!(selectMarkUnread:),"
+            ],
+            "count": 1
+          },
+          {
+            "diagnostic": [
+              null,
+              "unexpected `cfg` condition value: `cargo-clippy`",
+              "crates/bello-agent-app/src/native_menu.rs",
+              "SidebarAction::MarkRead => sel!(selectMarkRead:),"
+            ],
+            "count": 1
+          },
+          {
+            "diagnostic": [
+              null,
+              "unexpected `cfg` condition value: `cargo-clippy`",
+              "crates/bello-agent-app/src/native_menu.rs",
+              "SidebarAction::MarkUnread => sel!(selectMarkUnread:),"
+            ],
+            "count": 1
+          },
+          {
+            "diagnostic": [
+              null,
+              "unexpected `cfg` condition value: `cargo-clippy`",
+              "crates/bello-agent-app/src/native_menu.rs",
+              "let _: () = msg_send![item.0, setEnabled: if enabled { YES } else { NO }];"
+            ],
+            "count": 1
+          }
+        ],
+        "removed_or_edited": [
+          {
+            "diagnostic": [
+              null,
+              "unexpected `cfg` condition value: `cargo-clippy`",
+              "crates/bello-agent-app/src/native_menu.rs",
+              "let _: () = msg_send![item.0, setEnabled: YES];"
+            ],
+            "count": 1
+          }
+        ],
+        "new_warning_kinds": []
+      },
+      "versus_ec9_production": {
+        "candidate_count": 83,
+        "baseline_count": 83,
+        "same_source_anchor_multiset": true,
+        "added_or_edited": [],
+        "removed_or_edited": [],
+        "new_warning_kinds": []
+      }
+    },
+    {
+      "variant": "all-features",
+      "candidate_commit": "eba8565c9fd4b01ad9875b338db47125fc2710dd",
+      "baseline_commit": "464222b4b72ccb684d501a6301be1f1479591554",
+      "baseline_build_retained_from": "/Users/admin/Library/Caches/BelloRustWork/agent-ec9-unread-f3r4htxy",
+      "baseline_result": "baseline-build-all-features",
+      "baseline_log_sha256": "0242a859b9f33d3ea34f08a44b0eb1284b71c1a8e0e2c8c20448ada03173c6be",
+      "candidate_exit_code": 0,
+      "baseline_exit_code": 0,
+      "versus_464": {
+        "candidate_count": 103,
+        "baseline_count": 84,
+        "same_source_anchor_multiset": false,
+        "added_or_edited": [
+          {
+            "diagnostic": [
+              null,
+              "unexpected `cfg` condition value: `cargo-clippy`",
+              "crates/bello-agent-app/src/native_menu.rs",
+              "let app: id = msg_send![class!(NSApplication), sharedApplication];"
+            ],
+            "count": 4
+          },
+          {
+            "diagnostic": [
+              null,
+              "unexpected `cfg` condition value: `cargo-clippy`",
+              "crates/bello-agent-app/src/native_menu.rs",
+              "let active: BOOL = msg_send![app, isActive];"
+            ],
+            "count": 2
+          },
+          {
+            "diagnostic": [
+              null,
+              "unexpected `cfg` condition value: `cargo-clippy`",
+              "crates/bello-agent-app/src/native_menu.rs",
+              "let Some(_pool) = OwnedObject::from_owned(msg_send![class!(NSAutoreleasePool), new])"
+            ],
+            "count": 2
+          },
+          {
+            "diagnostic": [
+              null,
+              "unexpected `cfg` condition value: `cargo-clippy`",
+              "crates/bello-agent-app/src/native_menu.rs",
+              "let hidden: BOOL = msg_send![view.0, isHiddenOrHasHiddenAncestor];"
+            ],
+            "count": 1
+          },
+          {
+            "diagnostic": [
+              null,
+              "unexpected `cfg` condition value: `cargo-clippy`",
+              "crates/bello-agent-app/src/native_menu.rs",
+              "let rect: NSRect = msg_send![view.0, visibleRect];"
+            ],
+            "count": 1
+          },
+          {
+            "diagnostic": [
+              null,
+              "unexpected `cfg` condition value: `cargo-clippy`",
+              "crates/bello-agent-app/src/native_menu.rs",
+              "let key: BOOL = msg_send![native.0, isKeyWindow];"
+            ],
+            "count": 1
+          },
+          {
+            "diagnostic": [
+              null,
+              "unexpected `cfg` condition value: `cargo-clippy`",
+              "crates/bello-agent-app/src/native_menu.rs",
+              "let visible: BOOL = msg_send![native.0, isVisible];"
+            ],
+            "count": 1
+          },
+          {
+            "diagnostic": [
+              null,
+              "unexpected `cfg` condition value: `cargo-clippy`",
+              "crates/bello-agent-app/src/native_menu.rs",
+              "let minimized: BOOL = msg_send![native.0, isMiniaturized];"
+            ],
+            "count": 1
+          },
+          {
+            "diagnostic": [
+              null,
+              "unexpected `cfg` condition value: `cargo-clippy`",
+              "crates/bello-agent-app/src/native_menu.rs",
+              "let occlusion: usize = msg_send![native.0, occlusionState];"
+            ],
+            "count": 1
+          },
+          {
+            "diagnostic": [
+              null,
+              "unexpected `cfg` condition value: `cargo-clippy`",
+              "crates/bello-agent-app/src/native_menu.rs",
+              "let sheet: id = msg_send![native.0, attachedSheet];"
+            ],
+            "count": 1
+          },
+          {
+            "diagnostic": [
+              null,
+              "unexpected `cfg` condition value: `cargo-clippy`",
+              "crates/bello-agent-app/src/native_menu.rs",
+              "sel!(selectMarkRead:),"
+            ],
+            "count": 1
+          },
+          {
+            "diagnostic": [
+              null,
+              "unexpected `cfg` condition value: `cargo-clippy`",
+              "crates/bello-agent-app/src/native_menu.rs",
+              "sel!(selectMarkUnread:),"
+            ],
+            "count": 1
+          },
+          {
+            "diagnostic": [
+              null,
+              "unexpected `cfg` condition value: `cargo-clippy`",
+              "crates/bello-agent-app/src/native_menu.rs",
+              "SidebarAction::MarkRead => sel!(selectMarkRead:),"
+            ],
+            "count": 1
+          },
+          {
+            "diagnostic": [
+              null,
+              "unexpected `cfg` condition value: `cargo-clippy`",
+              "crates/bello-agent-app/src/native_menu.rs",
+              "SidebarAction::MarkUnread => sel!(selectMarkUnread:),"
+            ],
+            "count": 1
+          },
+          {
+            "diagnostic": [
+              null,
+              "unexpected `cfg` condition value: `cargo-clippy`",
+              "crates/bello-agent-app/src/native_menu.rs",
+              "let _: () = msg_send![item.0, setEnabled: if enabled { YES } else { NO }];"
+            ],
+            "count": 1
+          }
+        ],
+        "removed_or_edited": [
+          {
+            "diagnostic": [
+              null,
+              "unexpected `cfg` condition value: `cargo-clippy`",
+              "crates/bello-agent-app/src/native_menu.rs",
+              "let _: () = msg_send![item.0, setEnabled: YES];"
+            ],
+            "count": 1
+          }
+        ],
+        "new_warning_kinds": []
+      },
+      "versus_ec9_production": {
+        "candidate_count": 103,
+        "baseline_count": 103,
+        "same_source_anchor_multiset": true,
+        "added_or_edited": [],
+        "removed_or_edited": [],
+        "new_warning_kinds": []
+      }
+    }
+  ],
+  "test_warnings_vs_766": [
+    {
+      "name": "app-read-default",
+      "prior_command": "app-read-default",
+      "prior_commit": "76649be3adef49cc4054ea4d479cd1b144780c33",
+      "candidate_count": 68,
+      "baseline_count": 68,
+      "same_source_anchor_multiset": true,
+      "added_or_edited": [],
+      "removed_or_edited": [],
+      "new_warning_kinds": []
+    },
+    {
+      "name": "app-read-all-features",
+      "prior_command": "app-read-all-features",
+      "prior_commit": "76649be3adef49cc4054ea4d479cd1b144780c33",
+      "candidate_count": 88,
+      "baseline_count": 88,
+      "same_source_anchor_multiset": true,
+      "added_or_edited": [],
+      "removed_or_edited": [],
+      "new_warning_kinds": []
+    },
+    {
+      "name": "app-cache-and-reply-geometry",
+      "prior_command": "app-reply-geometry",
+      "prior_commit": "76649be3adef49cc4054ea4d479cd1b144780c33",
+      "candidate_count": 88,
+      "baseline_count": 88,
+      "same_source_anchor_multiset": true,
+      "added_or_edited": [],
+      "removed_or_edited": [],
+      "new_warning_kinds": []
+    }
+  ],
+  "per_command_warning_counts": {
+    "candidate-build-default": 83,
+    "candidate-build-all-features": 103,
+    "app-read-default": 68,
+    "app-read-all-features": 88,
+    "app-cache-and-reply-geometry": 88,
+    "format": 0
+  },
+  "no_warnings_suppressed": true
+}

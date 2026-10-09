@@ -1,0 +1,39 @@
+   Compiling bello-agent-app v0.1.0 (/workspace/shared/agent-unread-workflow/rust/crates/bello-agent-app)
+    Finished `test` profile [unoptimized] target(s) in 19.02s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running unittests src/main.rs (/workspace/shared/build-recovery/target/debug/deps/bello_agent-9a0476a84d7aa869)
+
+running 29 tests
+test sidebar_read_state::tests::admission_rejects_unregistered_path_replacement_and_foreign_controller ... ok
+test sidebar_read_state::tests::authoritative_ack_target_revision_and_generation_must_all_match ... ok
+test sidebar_read_state::tests::baseline_write_failure_retains_draft_and_never_reaches_dispatch ... ok
+test sidebar_read_state::tests::cancel_edit_cannot_release_held_queue_when_baseline_is_fenced ... ok
+test sidebar_read_state::tests::catalog_lock_failure_has_bounded_read_writer_retries ... ok
+test sidebar_read_state::tests::chained_catalog_uncertainty_rejects_same_project_replacement_workspace ... ok
+test sidebar_read_state::tests::completed_batch_receipt_cannot_acknowledge_same_id_replacement_path ... ok
+test sidebar_read_state::tests::completed_old_batch_receipt_does_not_clear_newer_live_mutation ... ok
+test sidebar_read_state::tests::durable_manual_restore_precedes_startup_and_real_reader_open ... ok
+test sidebar_read_state::tests::explicit_failure_reader_evidence_requires_selected_conversation_and_active_application ... ok
+test sidebar_read_state::tests::explicit_same_row_and_changed_focus_have_distinct_manual_semantics ... ok
+test sidebar_read_state::tests::failure_retry_coalescence_clears_once_and_rejects_old_observation ... ok
+test sidebar_read_state::tests::grace_hides_only_new_delta_and_relaunch_recovers_entire_obligation ... ok
+test sidebar_read_state::tests::initial_baseline_is_byte_preserving_until_admission_and_does_not_touch_session ... ok
+test sidebar_read_state::tests::linux_native_evidence_gate_cannot_acknowledge_even_exact_target ... ok
+test sidebar_read_state::tests::linux_platform_failure_attention_distinguishes_foreground_background_and_other_pages ... ok
+test sidebar_read_state::tests::manual_action_exclusions_cover_loading_failed_pending_archived_and_missing ... ok
+test sidebar_read_state::tests::manual_actions_preserve_activity_draft_controller_and_checkpoint ... ok
+test sidebar_read_state::tests::native_read_evidence_predicate_requires_every_independent_visibility_fact ... ok
+test sidebar_read_state::tests::quit_during_grace_flushes_unloaded_dirty_entry_without_draft_record ... ok
+test sidebar_read_state::tests::send_retry_command_and_resume_routes_stop_at_failed_baseline ... ok
+test sidebar_read_state::tests::shutdown_joins_real_partial_worker_then_captures_without_foreground_watch ... ok
+test sidebar_read_state::tests::stale_catalog_revision_cannot_clear_newer_dirty_state ... ok
+test sidebar_read_state::tests::stale_controller_path_and_workspace_callbacks_cannot_create_attention ... ok
+test sidebar_read_state::tests::uncertain_batch_receipt_preserves_newer_dirty_state_and_admission_fence ... ok
+test sidebar_read_state::tests::uncertain_read_notice_preserves_live_drafts_without_reopen_advice ... ok
+test sidebar_read_state::tests::undispatched_uncertain_send_merges_newer_typing_and_keeps_durable_input ... ok
+test sidebar_read_state::tests::unknown_history_preserves_manual_baseline_until_known_observation ... ok
+test sidebar_read_state::tests::unloaded_manual_action_rechecks_missing_and_replaced_checkpoint_after_scan ... ok
+
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 544 filtered out; finished in 1.33s
+

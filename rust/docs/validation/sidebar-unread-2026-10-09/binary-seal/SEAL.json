@@ -1,0 +1,41 @@
+{
+  "created_at": "2026-10-09T04:16:05.988853+00:00",
+  "binary": "/workspace/shared/unread-app-candidate/r5/bello-agent",
+  "binary_sha256": "b8413d11c04639a0772177ee69bb104e210f702813137c290d130a33ecfbec3f",
+  "source_manifest_sha256": "2f4acc3d00ce73fbc7145f652df10181aaca9b51640065e17052cfecaa4ca87a",
+  "source_base": "464222b4b72ccb684d501a6301be1f1479591554",
+  "features": [],
+  "clean_command": "cargo clean -p bello-agent-app",
+  "build_command": "cargo build --locked --offline --workspace",
+  "platform": "Linux x86_64; ordinary default dev binary; no native or actual desktop acceptance implied",
+  "logs": [
+    {
+      "path": "rust/docs/validation/sidebar-unread-2026-10-09/app/r5-all-features-app-tests.log",
+      "sha256": "e79abaadbbcce5933c1f1ec236c0b828a5dff874f9487c07d7d9cf527ac67d2a"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-unread-2026-10-09/app/r5-all-features-clippy.log",
+      "sha256": "3c28df01cc92d3783ea79976162bfe62d1f1753168b550941b6ac770544201b6"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-unread-2026-10-09/app/r5-clean.log",
+      "sha256": "2199b9a4060a108bc222150e5e9fd956708a7fd7f21691706be4ff165a55077e"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-unread-2026-10-09/app/r5-default-app-tests.log",
+      "sha256": "32793c55b8368b33a893e425174d3b450e0080da4a4cbee868aafbaa9e274954"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-unread-2026-10-09/app/r5-default-build.log",
+      "sha256": "9ed58d91f472437981145a00a87958d83ed45c8acfa8dfeee474042541a2d769"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-unread-2026-10-09/app/r5-default-clippy.log",
+      "sha256": "ff761316a3dc60e1b50cf897e7e9baaa23f7921d92a52cde361ef1436e8f0306"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-unread-2026-10-09/app/r5-format.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ]
+}

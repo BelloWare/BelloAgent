@@ -1,0 +1,65 @@
+{
+  "name": "app-reply-geometry",
+  "kind": "test",
+  "source": "source",
+  "command": [
+    "/opt/homebrew/bin/cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "bello-agent-app",
+    "--all-features",
+    "--bin",
+    "bello-agent",
+    "transcript_view_tests::unread_reply_end_",
+    "--",
+    "--test-threads=1"
+  ],
+  "expected_tests": [
+    "transcript_view_tests::unread_reply_end_rechecks_current_geometry_after_height_only_resize",
+    "transcript_view_tests::unread_reply_end_requires_real_finite_viewport_not_first_line_or_overdraw",
+    "transcript_view_tests::unread_reply_end_uses_postlayout_measured_long_reply_and_rejects_overdraw"
+  ],
+  "expected_passed": 3,
+  "expected_ignored": 0,
+  "cfg_excluded_tests": [],
+  "started_at": "2026-10-09T04:08:04.149753+00:00",
+  "cwd": "/Users/admin/Library/Caches/BelloRustWork/agent-766-unread-final-ffsy0dl5/source/rust",
+  "log": "/Users/admin/Library/Caches/BelloRustWork/agent-766-unread-final-ffsy0dl5/evidence/app-reply-geometry.log",
+  "ended_at": "2026-10-09T04:08:05.899871+00:00",
+  "elapsed_seconds": 1.7496833748882636,
+  "exit_code": 0,
+  "log_sha256": "781932cb492541fac713f062a5d3c8ae65e3d426d5e74500a839001f1de9e6fc",
+  "counts": [
+    {
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 708
+    }
+  ],
+  "binaries": [
+    {
+      "path": "/Users/admin/Library/Caches/BelloRustWork/agent-target/debug/deps/bello_agent-31b28a398534a82b",
+      "sha256": "a1aabfba5931dca308b73d684735f4d2867c3bd2970d6c15ed8e1c6537f31fb8",
+      "file": "/Users/admin/Library/Caches/BelloRustWork/agent-target/debug/deps/bello_agent-31b28a398534a82b: Mach-O 64-bit executable arm64"
+    }
+  ],
+  "tests": [
+    [
+      "transcript_view_tests::unread_reply_end_rechecks_current_geometry_after_height_only_resize",
+      "ok"
+    ],
+    [
+      "transcript_view_tests::unread_reply_end_requires_real_finite_viewport_not_first_line_or_overdraw",
+      "ok"
+    ],
+    [
+      "transcript_view_tests::unread_reply_end_uses_postlayout_measured_long_reply_and_rejects_overdraw",
+      "ok"
+    ]
+  ],
+  "expected_name_set_matches": true
+}

@@ -1,0 +1,16 @@
+    Finished `test` profile [unoptimized] target(s) in 0.11s
+     Running unittests src/lib.rs (/workspace/shared/build-recovery/target/debug/deps/bello_agent_core-8bfe315c8d6b13f3)
+
+running 9 tests
+test workspace::read_catalog_tests::read_metadata_rejects_unknown_chats_ids_bad_counts_revisions_and_shapes ... ok
+test workspace::read_catalog_tests::exact_workspace_chat_path_and_revision_are_required_without_materializing ... ok
+test workspace::read_catalog_tests::catalog_overflow_is_atomic_and_read_revision_cannot_wrap_or_move_backwards ... ok
+test workspace::read_catalog_tests::baseline_and_full_unread_obligation_commit_together_and_reopen_intact ... ok
+test workspace::read_catalog_tests::old_version_read_field_presence_rejects_null_empty_and_every_value ... ok
+test workspace::read_catalog_tests::before_and_after_rename_failures_preserve_memory_and_uncertainty_fences_noops ... ok
+test workspace::read_catalog_tests::catalog_mutex_serializes_read_activity_and_organization_without_stale_row_overwrite ... ok
+test workspace::read_catalog_tests::read_receipts_and_other_writers_preserve_all_unrelated_columns ... ok
+test workspace::read_catalog_tests::all_old_versions_remain_byte_identical_until_first_real_read_mutation ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 542 filtered out; finished in 0.01s
+

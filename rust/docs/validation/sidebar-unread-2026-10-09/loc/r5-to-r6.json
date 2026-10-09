@@ -1,0 +1,52 @@
+{
+  "r5_candidate": "76649be3adef49cc4054ea4d479cd1b144780c33",
+  "r5_manifest": "ceae3b3d4b7e8b75fdad40f40e409227647982b1316a9a60c1924c1953a7df25",
+  "r6_manifest": "2f4acc3d00ce73fbc7145f652df10181aaca9b51640065e17052cfecaa4ca87a",
+  "files": [
+    {
+      "path": "rust/crates/bello-agent-app/src/main.rs",
+      "r5_sha256": "c72aaa11df647cce1533c09419430120921eb9e4b684ba26cffb2976178d804d",
+      "r6_sha256": "72fba505737ae8f6d4b81e90821d8a78bbe3185ea5c65c0e92d1e42accb9cd09",
+      "delta": {
+        "production": 4,
+        "tests_and_test_support": 0,
+        "benchmark_example": 0
+      }
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/sidebar_read_state.rs",
+      "r5_sha256": "6b1bba077b0fa5281f6aae157b2a769a1f1d39a6d5c4bd3e87d7e91249a86bc4",
+      "r6_sha256": "06e1f70a9f1ea82ab62fe0a52799711b1cf4336e4152e8f080c11b507dcf098f",
+      "delta": {
+        "production": 55,
+        "tests_and_test_support": 0,
+        "benchmark_example": 0
+      }
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/sidebar_read_state_tests.rs",
+      "r5_sha256": "5e395fe1dcb701027d731f808a175ab56fefdd1490be1854d78806259fb701c4",
+      "r6_sha256": "2196231d52e6b308b9e18cb37ca114cb22861238a99243c6e47b9dff216cf317",
+      "delta": {
+        "production": 0,
+        "tests_and_test_support": 89,
+        "benchmark_example": 0
+      }
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/transcript_view_tests.rs",
+      "r5_sha256": "4c02d866b25b98d660407357d7a15cd870dd560c36a6c07989fc0e71b6c180e5",
+      "r6_sha256": "ba813a527056b2bf453d12f53726186bcf79bcc8e6804868463acd75eaef3ac4",
+      "delta": {
+        "production": 0,
+        "tests_and_test_support": 57,
+        "benchmark_example": 0
+      }
+    }
+  ],
+  "delta": {
+    "production": 59,
+    "tests_and_test_support": 146,
+    "benchmark_example": 0
+  }
+}

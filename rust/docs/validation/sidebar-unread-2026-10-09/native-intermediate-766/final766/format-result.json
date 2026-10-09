@@ -1,0 +1,23 @@
+{
+  "name": "format",
+  "kind": "format",
+  "source": "source",
+  "command": [
+    "/opt/homebrew/bin/cargo",
+    "fmt",
+    "--all",
+    "--",
+    "--check"
+  ],
+  "started_at": "2026-10-09T04:08:06.477283+00:00",
+  "cwd": "/Users/admin/Library/Caches/BelloRustWork/agent-766-unread-final-ffsy0dl5/source/rust",
+  "log": "/Users/admin/Library/Caches/BelloRustWork/agent-766-unread-final-ffsy0dl5/evidence/format.log",
+  "ended_at": "2026-10-09T04:08:08.789450+00:00",
+  "elapsed_seconds": 2.311904458911158,
+  "exit_code": 0,
+  "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "counts": [],
+  "binaries": [],
+  "tests": [],
+  "expected_name_set_matches": null
+}

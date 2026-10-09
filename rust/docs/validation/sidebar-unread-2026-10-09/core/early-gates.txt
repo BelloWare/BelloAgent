@@ -1,0 +1,27 @@
+Exact source base: 464222b4b72ccb684d501a6301be1f1479591554
+Core source task: accepted read-output observations, 2026-10-09 UTC.
+Earlier gate results retained as a factual console-result summary (not a full raw log):
+1. cargo test --locked -p bello-agent-core read_observation -- --nocapture
+   Compile blocked by catalog owner's not-yet-written workspace_read_catalog_tests.rs.
+2. Same command: catalog fixture assert_eq!(WorkspaceSnapshot, WorkspaceSnapshot)
+   failed compilation because WorkspaceSnapshot does not implement PartialEq.
+   Owner changed tests to compare serde_json Values, no production derive change.
+3. Same command: 25 tests, 23 passed, 2 failed:
+   legacy_plain_production_shape_remains_projectable -> Unknown because fixture
+   changed version to1 but incorrectly retained modern task_root_id metadata.
+   receipt_owned_context_partial_counts_but_progress_and_summary_do_not ->
+   Invalid("Compaction retained references do not match the active context") because
+   fixture had no older history to remove while protecting current user turn.
+   Fixed fixtures only; classifier accepted states were not widened.
+4. cargo test --locked -p bello-agent-core --lib read_observation -- --nocapture:
+   25 passed, 0 failed (19 projector/store + 6 Controller tests).
+5. cargo test --locked -p bello-agent-core workspace_read -- --nocapture:
+   12 reducer tests passed, 0 failed.
+6. cargo test --locked -p bello-agent-core --lib read_catalog_tests -- --nocapture:
+   7 passed, 1 failed; catalog owner corrected fixture settled cancellation revision.
+7. cargo clippy --locked -p bello-agent-core --all-targets -- -D warnings:
+   blocked only by catalog test single_element_loop at read_states null test;
+   handed back to catalog owner. No core-observation diagnostic observed.
+Commands used source /workspace/shared/build-recovery/env.sh, cwd project/rust.
+Root requested final typed-state narrowing after these gates; final run separately logged.
+No App/native/manual UI/remote publication acceptance is claimed by these results.

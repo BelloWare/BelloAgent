@@ -1,0 +1,19 @@
+    Finished `test` profile [unoptimized] target(s) in 0.18s
+     Running unittests src/lib.rs (/Users/admin/Library/Caches/BelloRustWork/agent-target/debug/deps/bello_agent_core-86e44b232987605f)
+
+running 12 tests
+test workspace_read_state::tests::attention_matrix_archives_failures_manual_and_automatic ... ok
+test workspace_read_state::tests::changed_focus_and_same_row_semantics_preserve_automatic_obligations ... ok
+test workspace_read_state::tests::exact_latest_ack_only_and_mark_read_clears_abandoned_target ... ok
+test workspace_read_state::tests::failure_retry_coalescing_and_clear_does_not_recreate_old_failure ... ok
+test workspace_read_state::tests::grace_is_presentation_only_and_full_obligation_survives_serialization ... ok
+test workspace_read_state::tests::historical_baseline_is_not_unread_and_unknown_never_baselines ... ok
+test workspace_read_state::tests::malformed_and_overflow_transitions_are_atomic_and_noop_can_keep_max_revision ... ok
+test workspace_read_state::tests::manual_action_eligibility_matches_for_saved_pending_archived_and_unrestored ... ok
+test workspace_read_state::tests::manual_before_busy_observation_baselines_without_inventing_replies ... ok
+test workspace_read_state::tests::reopen_baseline_keeps_unread_and_does_not_infer_past_failures ... ok
+test workspace_read_state::tests::stale_and_unknown_observations_preserve_every_field ... ok
+test workspace_read_state::tests::tool_rounds_wait_for_terminal_and_completion_start_coalescing_is_lossless ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 742 filtered out; finished in 0.00s
+

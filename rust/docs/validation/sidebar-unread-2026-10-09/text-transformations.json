@@ -1,0 +1,56 @@
+[
+  {
+    "path": "rust/docs/validation/sidebar-unread-2026-10-09/native-intermediate-766/ec9/warning-comparison.json",
+    "origin": "/workspace/shared/migration-issue-watch/unread-native-766/ec9/warning-comparison.json",
+    "original_size": 115356,
+    "original_sha256": "a8421367c22e7767b1b0debcaaa80ae979b4da4648dc847e3a466c1d17602385",
+    "staged_size": 81565,
+    "staged_sha256": "e36f31f2a265d089838de97bdd5ec28c3eb85aaf197a6680f415179084572f4c",
+    "transformation": "Lossless JSON minification; parsed-data equality checked."
+  },
+  {
+    "path": "rust/docs/validation/sidebar-unread-2026-10-09/native-intermediate-766/final766/validation.json",
+    "origin": "/workspace/shared/migration-issue-watch/unread-native-766/final766/validation.json",
+    "original_size": 360385,
+    "original_sha256": "8a50387ad0fb78d0e7e8aae365e88a1a70e91cdc1d7094f4a10747206b6a47ba",
+    "staged_size": 259480,
+    "staged_sha256": "bbe0f85e9725ced7431a16c60f597819d18121ec8dde9b5edc8e234ab5b84b8e",
+    "transformation": "Lossless JSON minification; parsed-data equality checked."
+  },
+  {
+    "path": "rust/docs/validation/sidebar-unread-2026-10-09/native-intermediate-766/final766/warning-comparison.json",
+    "origin": "/workspace/shared/migration-issue-watch/unread-native-766/final766/warning-comparison.json",
+    "original_size": 116775,
+    "original_sha256": "7594e495b78ce8932c5e0f1a8b5e7528b7f785eed193c46b4abaf0ce0a5e4045",
+    "staged_size": 82428,
+    "staged_sha256": "8453cda568b808d26f82e977871c235467f2f695d08ee96682aae3e3eac1001e",
+    "transformation": "Lossless JSON minification; parsed-data equality checked."
+  },
+  {
+    "path": "rust/docs/validation/sidebar-unread-2026-10-09/loc/loc-audit.json",
+    "origin": "/workspace/shared/unread-loc-audit/loc-audit.json",
+    "original_size": 285011,
+    "original_sha256": "c0f75396c72300553feea267471b304d106e7b48e7fd76892d0898376c011bc7",
+    "staged_size": 188248,
+    "staged_sha256": "7f18a68d74385c80fde5a7ea9de7ee243d92e900cd8a6741c0641a3f05433428",
+    "transformation": "Lossless JSON minification; parsed-data equality checked."
+  },
+  {
+    "path": "rust/docs/validation/sidebar-unread-2026-10-09/loc/integrity.json",
+    "origin": "/workspace/shared/unread-loc-audit/integrity.json",
+    "original_size": 102918,
+    "original_sha256": "e55a9b757998eba39e9788ce9f97209153a03bbd4bf45187df23d27c6a4010fb",
+    "staged_size": 99797,
+    "staged_sha256": "7f7b498ce1a1c8df00efa68859da9c2dec77f47a0523ce52b1d3f5eecd42b41c",
+    "transformation": "Lossless JSON minification; parsed-data equality checked."
+  },
+  {
+    "path": "rust/docs/validation/sidebar-unread-2026-10-09/native-final-eba/validation.json",
+    "origin": "/workspace/shared/migration-issue-watch/unread-native-eba/eba/validation.json",
+    "original_size": 196837,
+    "original_sha256": "3d3c8afbea6275ac5ee95d9b10fb7503b3caad2cd2fbd72cf944f7d0de1bade0",
+    "staged_size": 143824,
+    "staged_sha256": "fd616853ad78658141103f01d12b2fb554bad3751b3dd7f8641e974d53cdb511",
+    "transformation": "Lossless JSON minification; parsed-data equality checked."
+  }
+]

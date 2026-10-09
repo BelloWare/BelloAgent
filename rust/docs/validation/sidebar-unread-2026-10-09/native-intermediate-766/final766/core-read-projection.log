@@ -1,0 +1,29 @@
+   Compiling bello-agent-core v0.1.0 (/Users/admin/Library/Caches/BelloRustWork/agent-766-unread-final-ffsy0dl5/source/rust/crates/bello-agent-core)
+    Finished `test` profile [unoptimized] target(s) in 24.75s
+     Running unittests src/lib.rs (/Users/admin/Library/Caches/BelloRustWork/agent-target/debug/deps/bello_agent_core-86e44b232987605f)
+
+running 21 tests
+test read_observation::tests::accepted_terminal_survives_completion_then_next_start_without_observation ... ok
+test read_observation::tests::accepted_tool_round_remains_output_after_terminal_error_or_cancellation ... ok
+test read_observation::tests::discarded_tool_timeline_only_failure_has_no_retained_output_evidence ... ok
+test read_observation::tests::empty_success_and_output_limited_success_are_outputs ... ok
+test read_observation::tests::exhausted_sequences_never_wrap_or_resume_known_observations ... ok
+test read_observation::tests::failed_and_uncertain_checkpoints_never_accept_a_terminal ... ok
+test read_observation::tests::failed_retry_preserves_each_retained_partial_and_failure_occurrence ... ok
+test read_observation::tests::failure_retry_and_success_do_not_erase_failure_occurrence ... ok
+test read_observation::tests::journal_tokens_do_not_advance_observation_or_projection ... ok
+test read_observation::tests::legacy_plain_production_shape_remains_projectable ... ok
+test read_observation::tests::materialization_preserves_empty_lifetime_without_regressing_accepted_events ... ok
+test read_observation::tests::multiple_tool_rounds_and_final_reply_have_distinct_identities ... ok
+test read_observation::tests::original_v3_tool_writer_shape_is_supported_but_inert_or_contradictory_shapes_are_unknown ... ok
+test read_observation::tests::receipt_owned_context_partial_counts_but_progress_and_summary_do_not ... ok
+test read_observation::tests::receipt_owned_manual_compaction_progress_is_excluded_even_with_partial_content ... ok
+test read_observation::tests::reopen_baselines_retained_history_and_resets_lifetime_sequences ... ok
+test read_observation::tests::retained_interrupted_partial_uses_nonempty_not_trimmed ... ok
+test read_observation::tests::startup_recovery_counts_retained_partial_without_inventing_terminal_events ... ok
+test read_observation::tests::successful_manual_compaction_retains_output_count_and_latest_identity ... ok
+test read_observation::tests::tool_only_accepted_round_counts_once_after_stop ... ok
+test read_observation::tests::unknown_contradictory_and_duplicate_representations_refuse_projection ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 733 filtered out; finished in 1.02s
+

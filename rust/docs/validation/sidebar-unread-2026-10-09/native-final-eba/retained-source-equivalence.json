@@ -1,0 +1,20 @@
+{
+  "parent": "76649be3adef49cc4054ea4d479cd1b144780c33",
+  "candidate": "eba8565c9fd4b01ad9875b338db47125fc2710dd",
+  "unchanged_paths": [
+    "rust/crates/bello-agent-core",
+    "rust/crates/bello-agent-app/src/native_menu.rs",
+    "rust/crates/bello-agent-app/src/native_smoke.rs"
+  ],
+  "delta": [
+    "rust/crates/bello-agent-app/src/main.rs",
+    "rust/crates/bello-agent-app/src/sidebar_read_state.rs",
+    "rust/crates/bello-agent-app/src/sidebar_read_state_tests.rs",
+    "rust/crates/bello-agent-app/src/transcript_view_tests.rs",
+    "rust/docs/sidebar-read-state.md"
+  ],
+  "prior_766_tests_separately_attributed": {
+    "core_catalog_test_executions": 48,
+    "native_menu_test_executions": 14
+  }
+}

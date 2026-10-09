@@ -1,0 +1,59 @@
+{
+  "result": "PASS within actual cloud Linux ordinary-default legacy-loopback scope",
+  "fixture": {
+    "binary": "/workspace/shared/unread-app-candidate/r5/bello-agent",
+    "binary_sha256": "b8413d11c04639a0772177ee69bb104e210f702813137c290d130a33ecfbec3f",
+    "source_commit": "eba8565c9fd4b01ad9875b338db47125fc2710dd",
+    "source_tree": "90434aee2c85187765b629ab017218941dd5b8ce",
+    "source_manifest_sha256": "2f4acc3d00ce73fbc7145f652df10181aaca9b51640065e17052cfecaa4ca87a",
+    "default_features": true,
+    "desktop_lane_granted": true,
+    "port": 47849
+  },
+  "binary_seal_sha256": "a860fa51d37f9db61e2ff18bb381070601b355c93b677799dfb65164cef8542d",
+  "requests": {
+    "accepted": 4,
+    "completed": 4,
+    "new_posts_during_read_archive_restore_restart": 0,
+    "request_log_sha256": "63a472e769a7867ff7fb7058e4d5258e768ad9cedcf92fb90433dba75f1216bf",
+    "delayed_background_seconds": 30,
+    "input_correction": "Uppercase keysyms yielded lowercase first delay token; corrected explicit Shift chords. One additional immediate normal output was accepted before the genuine delayed case."
+  },
+  "normal_close_exit_codes": [
+    0,
+    0,
+    0,
+    0
+  ],
+  "preserved_across_read_archive_restore_restart": [
+    "activity timestamps",
+    "both composer draft texts",
+    "both exact checkpoint hashes",
+    "session file set with no journal additions",
+    "exact provider request log bytes"
+  ],
+  "session_hashes": {
+    "chats/5b4bb794-38fd-4cfc-9b6b-cc7f73ea243e.json": "35274c479384da91e0f52840ead33b8dd8c9a97cd1a9ac633d5e1f588727e614",
+    "session.json": "dc8d792628021c124d57c0c5dab7159da12dae6f932877f5e6abaf9fd8b3bf38"
+  },
+  "gui_gates": [
+    "Normal UI-created two chats; unsent pending selected action disabled.",
+    "Accepted completions accumulated3 and1 automatic unread; background delayed completion adds one only at completion while older2 remain during Working.",
+    "Fully visible selected output conservatively stays unread onLinux; genuine focus changes do not clear automatic debt.",
+    "Row context menu and selected action share truthful inverse enablement; explicit Mark as Read clears automatic debt.",
+    "Manual-only Ready \u00b7 Unread wording and left attention accent; same-row selection keeps manual; genuine changed focus clears manual.",
+    "Background row action works without changing selected chat/draft.",
+    "Archive hides row/project attention, archived row exposes disabled read actions, retains manual metadata across normal close/restart; Restore returns manual attention.",
+    "Automatic debt and selected manual marker survive normal application restart; startup does not count as reader opening.",
+    "Final explicit Mark as Read clears all attention; project aggregate Attention removes."
+  ],
+  "limits": [
+    "Linux X11 Mesa lavapipe only; no macOS AppKit occlusion, Dock delivery, AX/VoiceOver, native menus, Keychain, signing or release acceptance.",
+    "Linux auto acknowledgement intentionally unavailable;600ms native-visible grace is not tested.",
+    "Collapsed project/topic presentation not established: project header/chevron clicks did not collapse; no topic creation in this scope.",
+    "No synthetic failure, persistence fault injection, missing-checkpoint replacement or uncertain-storage case in this GUI run.",
+    "No user Mac, source edits, Cargo, state/catalog seeding, authority flags, real credentials, paid service, remote publication or screenshots publication.",
+    "Data receipts read/copied only after normal shutdown; no application state mutation except ordinary UI workflows."
+  ],
+  "cleanup": "All four application sessions closed normally; verified isolated gateway process terminated via cloud Terminal. Disposable state retained."
+}

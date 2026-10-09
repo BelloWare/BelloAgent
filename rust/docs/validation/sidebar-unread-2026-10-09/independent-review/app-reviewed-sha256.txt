@@ -1,0 +1,11 @@
+9cf1a9dc7c6e1e315dce36426f7e385a37f21664bad64b42f4b120bd147d0746  rust/crates/bello-agent-app/src/sidebar_read_state.rs
+1361ec277dd3254e40811e7f23ac7276c122c1dbc66805b5faae39a7e85d6ee8  rust/crates/bello-agent-app/src/sidebar_run_state.rs
+c43d4dfa390603b7e81238c3ce8901380aadd8214fcd018636f94343b6a82fda  rust/crates/bello-agent-app/src/sidebar_read_state_tests.rs
+8bf1689333576ecc2691e6a83004365e9c062a0e2bf78cc343251933312905d5  rust/crates/bello-agent-app/src/shutdown_barrier.rs
+8f66b8bfcdbcda31b3d3820ba07d1b654a968e0a54ac441b156415363786d67a  rust/crates/bello-agent-app/src/transcript_view.rs
+79c43f6fc2939c8302cadad1a3fc2f370da4832194542e307c61c66a8243a456  rust/crates/bello-agent-app/src/chat_navigation.rs
+e4624cea8e19678ba9aa90502750509acf399c4589be016dbabc3a71eca67db4  rust/crates/bello-agent-app/src/queue_actions.rs
+1b61e048a89953d4ec2982af0df5bf4610cc132154bd200b4acf7fa1e538eba1  rust/crates/bello-agent-app/src/queue_cancel.rs
+dfdaa4b5ac821eb7c45670ff8616955395197f2fa064defe91c0816d55fe46c3  rust/crates/bello-agent-app/src/chat.rs
+b9d81b966143a7501d7da44649f523b9b1b0c37b7a9ace48b30b60460bf553dc  rust/crates/bello-agent-app/src/main.rs
+255930fcdcbd25844c6b5a5c0db4461c1d8a96930ccfeb2368314a3cdda1c9a3  rust/crates/bello-agent-app/src/native_menu.rs

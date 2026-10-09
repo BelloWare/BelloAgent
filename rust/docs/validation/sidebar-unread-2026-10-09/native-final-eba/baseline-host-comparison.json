@@ -1,0 +1,68 @@
+{
+  "retained_baseline_commit": "464222b4b72ccb684d501a6301be1f1479591554",
+  "retained_baseline_host_record": "/Users/admin/Library/Caches/BelloRustWork/agent-ec9-unread-f3r4htxy/evidence/host-toolchain.json",
+  "retained_baseline_host_sha256": "86f0a897e4973d847f03e04706be42f46e44a3edf8d2997f9866912d82d22504",
+  "toolchain_commands_identical": [
+    {
+      "command": [
+        "/usr/bin/sw_vers"
+      ],
+      "stdout_matches": true,
+      "stderr_matches": true
+    },
+    {
+      "command": [
+        "/usr/bin/uname",
+        "-m"
+      ],
+      "stdout_matches": true,
+      "stderr_matches": true
+    },
+    {
+      "command": [
+        "/opt/homebrew/bin/rustc",
+        "-vV"
+      ],
+      "stdout_matches": true,
+      "stderr_matches": true
+    },
+    {
+      "command": [
+        "/opt/homebrew/bin/rustc",
+        "--print",
+        "cfg"
+      ],
+      "stdout_matches": true,
+      "stderr_matches": true
+    },
+    {
+      "command": [
+        "/opt/homebrew/bin/cargo",
+        "-V"
+      ],
+      "stdout_matches": true,
+      "stderr_matches": true
+    },
+    {
+      "command": [
+        "/usr/bin/xcrun",
+        "swiftc",
+        "--version"
+      ],
+      "stdout_matches": true,
+      "stderr_matches": true
+    },
+    {
+      "command": [
+        "/usr/bin/xcrun",
+        "--sdk",
+        "macosx",
+        "--show-sdk-version"
+      ],
+      "stdout_matches": true,
+      "stderr_matches": true
+    }
+  ],
+  "relevant_native_build_environment_identical": true,
+  "isolated_config_paths_differ_by_design": true
+}

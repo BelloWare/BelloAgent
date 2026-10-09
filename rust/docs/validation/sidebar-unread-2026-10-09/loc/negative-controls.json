@@ -1,0 +1,65 @@
+{
+  "all_rejected": true,
+  "controls": [
+    {
+      "case": "production_total_tamper",
+      "rejected": true,
+      "exit_code": 1,
+      "reason": "AssertionError"
+    },
+    {
+      "case": "support_range_tamper",
+      "rejected": true,
+      "exit_code": 1,
+      "reason": "AssertionError"
+    },
+    {
+      "case": "candidate_source_drift",
+      "rejected": true,
+      "exit_code": 1,
+      "reason": "AssertionError: ('rust/crates/bello-agent-core/src/read_observation.rs', 'after', 'hash')"
+    },
+    {
+      "case": "manifest_tamper",
+      "rejected": true,
+      "exit_code": 1,
+      "reason": "AssertionError"
+    },
+    {
+      "case": "base_tree_tamper",
+      "rejected": true,
+      "exit_code": 1,
+      "reason": "AssertionError"
+    },
+    {
+      "case": "missing_rust_inventory_entry",
+      "rejected": true,
+      "exit_code": 1,
+      "reason": "AssertionError"
+    },
+    {
+      "case": "freeze_tamper",
+      "rejected": true,
+      "exit_code": 1,
+      "reason": "AssertionError"
+    },
+    {
+      "case": "seal_tamper",
+      "rejected": true,
+      "exit_code": 1,
+      "reason": "AssertionError"
+    },
+    {
+      "case": "synthetic_helper_as_production",
+      "rejected": true,
+      "exit_code": 1,
+      "reason": "AssertionError: ('rust/crates/bello-agent-core/src/workspace.rs', 'after', 'category count')"
+    },
+    {
+      "case": "native_code_as_support",
+      "rejected": true,
+      "exit_code": 1,
+      "reason": "AssertionError"
+    }
+  ]
+}

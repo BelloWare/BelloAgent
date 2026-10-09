@@ -1,0 +1,33 @@
+{
+  "name": "baseline-build-all-features",
+  "kind": "build",
+  "source": "baseline-source",
+  "command": [
+    "/opt/homebrew/bin/cargo",
+    "build",
+    "--offline",
+    "--locked",
+    "-p",
+    "bello-agent-app",
+    "--all-features",
+    "--bin",
+    "bello-agent"
+  ],
+  "started_at": "2026-10-09T04:00:52.514606+00:00",
+  "cwd": "/Users/admin/Library/Caches/BelloRustWork/agent-ec9-unread-f3r4htxy/baseline-source/rust",
+  "log": "/Users/admin/Library/Caches/BelloRustWork/agent-ec9-unread-f3r4htxy/evidence/baseline-build-all-features.log",
+  "ended_at": "2026-10-09T04:01:10.631762+00:00",
+  "elapsed_seconds": 18.117041417048313,
+  "exit_code": 0,
+  "log_sha256": "0242a859b9f33d3ea34f08a44b0eb1284b71c1a8e0e2c8c20448ada03173c6be",
+  "counts": [],
+  "binaries": [
+    {
+      "path": "/Users/admin/Library/Caches/BelloRustWork/agent-target/debug/bello-agent",
+      "sha256": "5fa7140d763ba3f961cffa8713f5e0494dfb74292afac66de63882f83df024c7",
+      "file": "/Users/admin/Library/Caches/BelloRustWork/agent-target/debug/bello-agent: Mach-O 64-bit executable arm64"
+    }
+  ],
+  "tests": [],
+  "expected_name_set_matches": null
+}

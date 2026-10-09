@@ -1,0 +1,79 @@
+{
+  "name": "core-read-watch",
+  "kind": "test",
+  "source": "source",
+  "command": [
+    "/opt/homebrew/bin/cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "bello-agent-core",
+    "--all-features",
+    "--lib",
+    "runtime::read_observation_tests::",
+    "--",
+    "--test-threads=1"
+  ],
+  "expected_tests": [
+    "runtime::read_observation_tests::completion_before_subscription_and_start_coalescence_retain_terminal",
+    "runtime::read_observation_tests::direct_final_capture_does_not_require_queued_publication",
+    "runtime::read_observation_tests::display_fatal_is_not_an_accepted_failure",
+    "runtime::read_observation_tests::failure_retry_before_watch_read_retains_occurrence",
+    "runtime::read_observation_tests::streamed_tokens_and_live_tool_publications_do_not_notify_read_watch",
+    "runtime::read_observation_tests::uncertain_checkpoint_invalidates_current_and_published_projection"
+  ],
+  "expected_passed": 6,
+  "expected_ignored": 0,
+  "cfg_excluded_tests": [],
+  "started_at": "2026-10-09T04:01:37.673905+00:00",
+  "cwd": "/Users/admin/Library/Caches/BelloRustWork/agent-ec9-unread-f3r4htxy/source/rust",
+  "log": "/Users/admin/Library/Caches/BelloRustWork/agent-ec9-unread-f3r4htxy/evidence/core-read-watch.log",
+  "ended_at": "2026-10-09T04:01:38.723503+00:00",
+  "elapsed_seconds": 1.049326749984175,
+  "exit_code": 0,
+  "log_sha256": "0fd96c3b97a144ebefb1952859d7d0f5ad87e7646a316d23fbe26c0dfbd56acd",
+  "counts": [
+    {
+      "passed": 6,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 748
+    }
+  ],
+  "binaries": [
+    {
+      "path": "/Users/admin/Library/Caches/BelloRustWork/agent-target/debug/deps/bello_agent_core-86e44b232987605f",
+      "sha256": "bb2e5ff6367f5190e55802aec58b5964f5af9052c7961f54988a41ed151e4d2b",
+      "file": "/Users/admin/Library/Caches/BelloRustWork/agent-target/debug/deps/bello_agent_core-86e44b232987605f: Mach-O 64-bit executable arm64"
+    }
+  ],
+  "tests": [
+    [
+      "runtime::read_observation_tests::completion_before_subscription_and_start_coalescence_retain_terminal",
+      "ok"
+    ],
+    [
+      "runtime::read_observation_tests::direct_final_capture_does_not_require_queued_publication",
+      "ok"
+    ],
+    [
+      "runtime::read_observation_tests::display_fatal_is_not_an_accepted_failure",
+      "ok"
+    ],
+    [
+      "runtime::read_observation_tests::failure_retry_before_watch_read_retains_occurrence",
+      "ok"
+    ],
+    [
+      "runtime::read_observation_tests::streamed_tokens_and_live_tool_publications_do_not_notify_read_watch",
+      "ok"
+    ],
+    [
+      "runtime::read_observation_tests::uncertain_checkpoint_invalidates_current_and_published_projection",
+      "ok"
+    ]
+  ],
+  "expected_name_set_matches": true
+}

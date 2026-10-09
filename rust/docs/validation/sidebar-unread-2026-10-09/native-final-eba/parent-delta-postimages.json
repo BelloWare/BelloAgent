@@ -1,0 +1,32 @@
+[
+  {
+    "path": "rust/crates/bello-agent-app/src/main.rs",
+    "mode": "100644",
+    "git_blob": "c508e39ad25f87f3bd0c89eef5a3521de2755711",
+    "sha256": "72fba505737ae8f6d4b81e90821d8a78bbe3185ea5c65c0e92d1e42accb9cd09"
+  },
+  {
+    "path": "rust/crates/bello-agent-app/src/sidebar_read_state.rs",
+    "mode": "100644",
+    "git_blob": "98316b7a45192392041b098d52d0679d22d870c7",
+    "sha256": "06e1f70a9f1ea82ab62fe0a52799711b1cf4336e4152e8f080c11b507dcf098f"
+  },
+  {
+    "path": "rust/crates/bello-agent-app/src/sidebar_read_state_tests.rs",
+    "mode": "100644",
+    "git_blob": "37f5a85a1dde5126559f564e9eb347174946c989",
+    "sha256": "2196231d52e6b308b9e18cb37ca114cb22861238a99243c6e47b9dff216cf317"
+  },
+  {
+    "path": "rust/crates/bello-agent-app/src/transcript_view_tests.rs",
+    "mode": "100644",
+    "git_blob": "62c55cf26da034e63bf3b24f8806d95211d558d8",
+    "sha256": "ba813a527056b2bf453d12f53726186bcf79bcc8e6804868463acd75eaef3ac4"
+  },
+  {
+    "path": "rust/docs/sidebar-read-state.md",
+    "mode": "100644",
+    "git_blob": "b54af2b69ebfd01fc3c518a3d5796596c1df4869",
+    "sha256": "bc44b0986db9390178ada1dc209d568063f15197a315d8688b67a0462183268a"
+  }
+]

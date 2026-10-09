@@ -1,0 +1,13 @@
+    Finished `test` profile [unoptimized] target(s) in 0.64s
+     Running unittests src/lib.rs (/Users/admin/Library/Caches/BelloRustWork/agent-target/debug/deps/bello_agent_core-86e44b232987605f)
+
+running 6 tests
+test runtime::read_observation_tests::completion_before_subscription_and_start_coalescence_retain_terminal ... ok
+test runtime::read_observation_tests::direct_final_capture_does_not_require_queued_publication ... ok
+test runtime::read_observation_tests::display_fatal_is_not_an_accepted_failure ... ok
+test runtime::read_observation_tests::failure_retry_before_watch_read_retains_occurrence ... ok
+test runtime::read_observation_tests::streamed_tokens_and_live_tool_publications_do_not_notify_read_watch ... ok
+test runtime::read_observation_tests::uncertain_checkpoint_invalidates_current_and_published_projection ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 748 filtered out; finished in 0.44s
+

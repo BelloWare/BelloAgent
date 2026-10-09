@@ -1,0 +1,10 @@
+{
+  "final_commit": "76649be3adef49cc4054ea4d479cd1b144780c33",
+  "compiled_production_commit": "ec9ed1fdeba091095c41237701c741d19366a6a2",
+  "only_changed_path": "rust/crates/bello-agent-app/src/transcript_view_tests.rs",
+  "test_module_cfg": "#[cfg(test)] mod transcript_view_tests;",
+  "test_module_cfg_verified_in_unchanged_main": true,
+  "all_other_git_files_and_modes_identical": true,
+  "test_only_delta": "remove unused mut from VisualTestContext binding in height-only resize regression",
+  "ordinary_native_builds_remain_attributed_to_ec9": true
+}

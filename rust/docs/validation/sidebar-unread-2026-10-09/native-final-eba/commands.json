@@ -1,0 +1,198 @@
+{
+  "target": "/Users/admin/Library/Caches/BelloRustWork/agent-target",
+  "steps": [
+    {
+      "name": "candidate-build-default",
+      "kind": "build",
+      "source": "source",
+      "command": [
+        "/opt/homebrew/bin/cargo",
+        "build",
+        "--offline",
+        "--locked",
+        "-p",
+        "bello-agent-app"
+      ]
+    },
+    {
+      "name": "candidate-build-all-features",
+      "kind": "build",
+      "source": "source",
+      "command": [
+        "/opt/homebrew/bin/cargo",
+        "build",
+        "--offline",
+        "--locked",
+        "-p",
+        "bello-agent-app",
+        "--all-features"
+      ]
+    },
+    {
+      "name": "app-read-default",
+      "kind": "test",
+      "source": "source",
+      "command": [
+        "/opt/homebrew/bin/cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "-p",
+        "bello-agent-app",
+        "--bin",
+        "bello-agent",
+        "sidebar_read_state::tests::",
+        "--",
+        "--test-threads=1"
+      ],
+      "expected_tests": [
+        "sidebar_read_state::tests::admission_rejects_unregistered_path_replacement_and_foreign_controller",
+        "sidebar_read_state::tests::authoritative_ack_target_revision_and_generation_must_all_match",
+        "sidebar_read_state::tests::baseline_write_failure_retains_draft_and_never_reaches_dispatch",
+        "sidebar_read_state::tests::cancel_edit_cannot_release_held_queue_when_baseline_is_fenced",
+        "sidebar_read_state::tests::catalog_lock_failure_has_bounded_read_writer_retries",
+        "sidebar_read_state::tests::chained_catalog_uncertainty_rejects_same_project_replacement_workspace",
+        "sidebar_read_state::tests::completed_batch_receipt_cannot_acknowledge_same_id_replacement_path",
+        "sidebar_read_state::tests::completed_old_batch_receipt_does_not_clear_newer_live_mutation",
+        "sidebar_read_state::tests::durable_manual_restore_precedes_startup_and_real_reader_open",
+        "sidebar_read_state::tests::explicit_failure_reader_evidence_requires_selected_conversation_and_active_application",
+        "sidebar_read_state::tests::explicit_same_row_and_changed_focus_have_distinct_manual_semantics",
+        "sidebar_read_state::tests::failure_retry_coalescence_clears_once_and_rejects_old_observation",
+        "sidebar_read_state::tests::grace_hides_only_new_delta_and_relaunch_recovers_entire_obligation",
+        "sidebar_read_state::tests::grace_timer_replacement_and_manual_read_are_generation_fenced_without_writes",
+        "sidebar_read_state::tests::initial_baseline_is_byte_preserving_until_admission_and_does_not_touch_session",
+        "sidebar_read_state::tests::manual_action_exclusions_cover_loading_failed_pending_archived_and_missing",
+        "sidebar_read_state::tests::manual_actions_preserve_activity_draft_controller_and_checkpoint",
+        "sidebar_read_state::tests::native_read_evidence_predicate_requires_every_independent_visibility_fact",
+        "sidebar_read_state::tests::quit_during_grace_flushes_unloaded_dirty_entry_without_draft_record",
+        "sidebar_read_state::tests::send_retry_command_and_resume_routes_stop_at_failed_baseline",
+        "sidebar_read_state::tests::shutdown_joins_real_partial_worker_then_captures_without_foreground_watch",
+        "sidebar_read_state::tests::stale_catalog_revision_cannot_clear_newer_dirty_state",
+        "sidebar_read_state::tests::stale_controller_path_and_workspace_callbacks_cannot_create_attention",
+        "sidebar_read_state::tests::uncertain_batch_receipt_preserves_newer_dirty_state_and_admission_fence",
+        "sidebar_read_state::tests::uncertain_read_notice_preserves_live_drafts_without_reopen_advice",
+        "sidebar_read_state::tests::undispatched_uncertain_send_merges_newer_typing_and_keeps_durable_input",
+        "sidebar_read_state::tests::unknown_history_preserves_manual_baseline_until_known_observation",
+        "sidebar_read_state::tests::unloaded_manual_action_rechecks_missing_and_replaced_checkpoint_after_scan"
+      ],
+      "expected_passed": 28,
+      "expected_ignored": 0,
+      "cfg_excluded_tests": [
+        {
+          "name": "sidebar_read_state::tests::linux_native_evidence_gate_cannot_acknowledge_even_exact_target",
+          "reason": "non-macOS cfg excludes this test; not an ignored native test"
+        },
+        {
+          "name": "sidebar_read_state::tests::linux_platform_failure_attention_distinguishes_foreground_background_and_other_pages",
+          "reason": "non-macOS cfg excludes this test; not an ignored native test"
+        },
+        {
+          "name": "sidebar_read_state::tests::real_after_rename_baseline_uncertainty_preserves_input_and_blocks_dispatch",
+          "reason": "synthetic-authority disabled in default feature test build"
+        }
+      ]
+    },
+    {
+      "name": "app-read-all-features",
+      "kind": "test",
+      "source": "source",
+      "command": [
+        "/opt/homebrew/bin/cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "-p",
+        "bello-agent-app",
+        "--all-features",
+        "--bin",
+        "bello-agent",
+        "sidebar_read_state::tests::",
+        "--",
+        "--test-threads=1"
+      ],
+      "expected_tests": [
+        "sidebar_read_state::tests::admission_rejects_unregistered_path_replacement_and_foreign_controller",
+        "sidebar_read_state::tests::authoritative_ack_target_revision_and_generation_must_all_match",
+        "sidebar_read_state::tests::baseline_write_failure_retains_draft_and_never_reaches_dispatch",
+        "sidebar_read_state::tests::cancel_edit_cannot_release_held_queue_when_baseline_is_fenced",
+        "sidebar_read_state::tests::catalog_lock_failure_has_bounded_read_writer_retries",
+        "sidebar_read_state::tests::chained_catalog_uncertainty_rejects_same_project_replacement_workspace",
+        "sidebar_read_state::tests::completed_batch_receipt_cannot_acknowledge_same_id_replacement_path",
+        "sidebar_read_state::tests::completed_old_batch_receipt_does_not_clear_newer_live_mutation",
+        "sidebar_read_state::tests::durable_manual_restore_precedes_startup_and_real_reader_open",
+        "sidebar_read_state::tests::explicit_failure_reader_evidence_requires_selected_conversation_and_active_application",
+        "sidebar_read_state::tests::explicit_same_row_and_changed_focus_have_distinct_manual_semantics",
+        "sidebar_read_state::tests::failure_retry_coalescence_clears_once_and_rejects_old_observation",
+        "sidebar_read_state::tests::grace_hides_only_new_delta_and_relaunch_recovers_entire_obligation",
+        "sidebar_read_state::tests::grace_timer_replacement_and_manual_read_are_generation_fenced_without_writes",
+        "sidebar_read_state::tests::initial_baseline_is_byte_preserving_until_admission_and_does_not_touch_session",
+        "sidebar_read_state::tests::manual_action_exclusions_cover_loading_failed_pending_archived_and_missing",
+        "sidebar_read_state::tests::manual_actions_preserve_activity_draft_controller_and_checkpoint",
+        "sidebar_read_state::tests::native_read_evidence_predicate_requires_every_independent_visibility_fact",
+        "sidebar_read_state::tests::quit_during_grace_flushes_unloaded_dirty_entry_without_draft_record",
+        "sidebar_read_state::tests::real_after_rename_baseline_uncertainty_preserves_input_and_blocks_dispatch",
+        "sidebar_read_state::tests::send_retry_command_and_resume_routes_stop_at_failed_baseline",
+        "sidebar_read_state::tests::shutdown_joins_real_partial_worker_then_captures_without_foreground_watch",
+        "sidebar_read_state::tests::stale_catalog_revision_cannot_clear_newer_dirty_state",
+        "sidebar_read_state::tests::stale_controller_path_and_workspace_callbacks_cannot_create_attention",
+        "sidebar_read_state::tests::uncertain_batch_receipt_preserves_newer_dirty_state_and_admission_fence",
+        "sidebar_read_state::tests::uncertain_read_notice_preserves_live_drafts_without_reopen_advice",
+        "sidebar_read_state::tests::undispatched_uncertain_send_merges_newer_typing_and_keeps_durable_input",
+        "sidebar_read_state::tests::unknown_history_preserves_manual_baseline_until_known_observation",
+        "sidebar_read_state::tests::unloaded_manual_action_rechecks_missing_and_replaced_checkpoint_after_scan"
+      ],
+      "expected_passed": 29,
+      "expected_ignored": 0,
+      "cfg_excluded_tests": [
+        {
+          "name": "sidebar_read_state::tests::linux_native_evidence_gate_cannot_acknowledge_even_exact_target",
+          "reason": "non-macOS cfg excludes this test; not an ignored native test"
+        },
+        {
+          "name": "sidebar_read_state::tests::linux_platform_failure_attention_distinguishes_foreground_background_and_other_pages",
+          "reason": "non-macOS cfg excludes this test; not an ignored native test"
+        }
+      ]
+    },
+    {
+      "name": "app-cache-and-reply-geometry",
+      "kind": "test",
+      "source": "source",
+      "command": [
+        "/opt/homebrew/bin/cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "-p",
+        "bello-agent-app",
+        "--all-features",
+        "--bin",
+        "bello-agent",
+        "transcript_view_tests::unread_",
+        "--",
+        "--test-threads=1"
+      ],
+      "expected_tests": [
+        "transcript_view_tests::unread_geometry_repaints_cached_child_on_late_observation_and_surface_reveal",
+        "transcript_view_tests::unread_reply_end_rechecks_current_geometry_after_height_only_resize",
+        "transcript_view_tests::unread_reply_end_requires_real_finite_viewport_not_first_line_or_overdraw",
+        "transcript_view_tests::unread_reply_end_uses_postlayout_measured_long_reply_and_rejects_overdraw"
+      ],
+      "expected_passed": 4,
+      "expected_ignored": 0,
+      "cfg_excluded_tests": []
+    },
+    {
+      "name": "format",
+      "kind": "format",
+      "source": "source",
+      "command": [
+        "/opt/homebrew/bin/cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ]
+    }
+  ]
+}

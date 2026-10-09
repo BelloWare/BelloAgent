@@ -1,0 +1,14 @@
+{
+  "command": [
+    "/opt/homebrew/bin/cargo",
+    "clean",
+    "--offline",
+    "--locked",
+    "-p",
+    "bello-agent-core",
+    "-p",
+    "bello-agent-app"
+  ],
+  "exit_code": 0,
+  "log_sha256": "e0d1f28acda4a0f56241c27758b6ec15ceda829e8b6733dfcb3966840f21090c"
+}

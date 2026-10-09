@@ -1,0 +1,454 @@
+{
+  "target": "/Users/admin/Library/Caches/BelloRustWork/agent-target",
+  "steps": [
+    {
+      "name": "baseline-build-default",
+      "kind": "build",
+      "source": "baseline-source",
+      "command": [
+        "/opt/homebrew/bin/cargo",
+        "build",
+        "--offline",
+        "--locked",
+        "-p",
+        "bello-agent-app",
+        "--bin",
+        "bello-agent"
+      ]
+    },
+    {
+      "name": "baseline-build-all-features",
+      "kind": "build",
+      "source": "baseline-source",
+      "command": [
+        "/opt/homebrew/bin/cargo",
+        "build",
+        "--offline",
+        "--locked",
+        "-p",
+        "bello-agent-app",
+        "--all-features",
+        "--bin",
+        "bello-agent"
+      ]
+    },
+    {
+      "name": "candidate-build-default",
+      "kind": "build",
+      "source": "source",
+      "command": [
+        "/opt/homebrew/bin/cargo",
+        "build",
+        "--offline",
+        "--locked",
+        "-p",
+        "bello-agent-app",
+        "--bin",
+        "bello-agent"
+      ]
+    },
+    {
+      "name": "candidate-build-all-features",
+      "kind": "build",
+      "source": "source",
+      "command": [
+        "/opt/homebrew/bin/cargo",
+        "build",
+        "--offline",
+        "--locked",
+        "-p",
+        "bello-agent-app",
+        "--all-features",
+        "--bin",
+        "bello-agent"
+      ]
+    },
+    {
+      "name": "core-read-projection",
+      "kind": "test",
+      "source": "source",
+      "command": [
+        "/opt/homebrew/bin/cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "-p",
+        "bello-agent-core",
+        "--all-features",
+        "--lib",
+        "read_observation::tests::",
+        "--",
+        "--test-threads=1"
+      ],
+      "expected_tests": [
+        "read_observation::tests::accepted_terminal_survives_completion_then_next_start_without_observation",
+        "read_observation::tests::accepted_tool_round_remains_output_after_terminal_error_or_cancellation",
+        "read_observation::tests::discarded_tool_timeline_only_failure_has_no_retained_output_evidence",
+        "read_observation::tests::empty_success_and_output_limited_success_are_outputs",
+        "read_observation::tests::exhausted_sequences_never_wrap_or_resume_known_observations",
+        "read_observation::tests::failed_and_uncertain_checkpoints_never_accept_a_terminal",
+        "read_observation::tests::failed_retry_preserves_each_retained_partial_and_failure_occurrence",
+        "read_observation::tests::failure_retry_and_success_do_not_erase_failure_occurrence",
+        "read_observation::tests::journal_tokens_do_not_advance_observation_or_projection",
+        "read_observation::tests::legacy_plain_production_shape_remains_projectable",
+        "read_observation::tests::materialization_preserves_empty_lifetime_without_regressing_accepted_events",
+        "read_observation::tests::multiple_tool_rounds_and_final_reply_have_distinct_identities",
+        "read_observation::tests::original_v3_tool_writer_shape_is_supported_but_inert_or_contradictory_shapes_are_unknown",
+        "read_observation::tests::receipt_owned_context_partial_counts_but_progress_and_summary_do_not",
+        "read_observation::tests::receipt_owned_manual_compaction_progress_is_excluded_even_with_partial_content",
+        "read_observation::tests::reopen_baselines_retained_history_and_resets_lifetime_sequences",
+        "read_observation::tests::retained_interrupted_partial_uses_nonempty_not_trimmed",
+        "read_observation::tests::startup_recovery_counts_retained_partial_without_inventing_terminal_events",
+        "read_observation::tests::successful_manual_compaction_retains_output_count_and_latest_identity",
+        "read_observation::tests::tool_only_accepted_round_counts_once_after_stop",
+        "read_observation::tests::unknown_contradictory_and_duplicate_representations_refuse_projection"
+      ],
+      "expected_passed": 21,
+      "expected_ignored": 0,
+      "cfg_excluded_tests": []
+    },
+    {
+      "name": "core-read-watch",
+      "kind": "test",
+      "source": "source",
+      "command": [
+        "/opt/homebrew/bin/cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "-p",
+        "bello-agent-core",
+        "--all-features",
+        "--lib",
+        "runtime::read_observation_tests::",
+        "--",
+        "--test-threads=1"
+      ],
+      "expected_tests": [
+        "runtime::read_observation_tests::completion_before_subscription_and_start_coalescence_retain_terminal",
+        "runtime::read_observation_tests::direct_final_capture_does_not_require_queued_publication",
+        "runtime::read_observation_tests::display_fatal_is_not_an_accepted_failure",
+        "runtime::read_observation_tests::failure_retry_before_watch_read_retains_occurrence",
+        "runtime::read_observation_tests::streamed_tokens_and_live_tool_publications_do_not_notify_read_watch",
+        "runtime::read_observation_tests::uncertain_checkpoint_invalidates_current_and_published_projection"
+      ],
+      "expected_passed": 6,
+      "expected_ignored": 0,
+      "cfg_excluded_tests": []
+    },
+    {
+      "name": "core-read-reducer",
+      "kind": "test",
+      "source": "source",
+      "command": [
+        "/opt/homebrew/bin/cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "-p",
+        "bello-agent-core",
+        "--all-features",
+        "--lib",
+        "workspace_read_state::tests::",
+        "--",
+        "--test-threads=1"
+      ],
+      "expected_tests": [
+        "workspace_read_state::tests::attention_matrix_archives_failures_manual_and_automatic",
+        "workspace_read_state::tests::changed_focus_and_same_row_semantics_preserve_automatic_obligations",
+        "workspace_read_state::tests::exact_latest_ack_only_and_mark_read_clears_abandoned_target",
+        "workspace_read_state::tests::failure_retry_coalescing_and_clear_does_not_recreate_old_failure",
+        "workspace_read_state::tests::grace_is_presentation_only_and_full_obligation_survives_serialization",
+        "workspace_read_state::tests::historical_baseline_is_not_unread_and_unknown_never_baselines",
+        "workspace_read_state::tests::malformed_and_overflow_transitions_are_atomic_and_noop_can_keep_max_revision",
+        "workspace_read_state::tests::manual_action_eligibility_matches_for_saved_pending_archived_and_unrestored",
+        "workspace_read_state::tests::manual_before_busy_observation_baselines_without_inventing_replies",
+        "workspace_read_state::tests::reopen_baseline_keeps_unread_and_does_not_infer_past_failures",
+        "workspace_read_state::tests::stale_and_unknown_observations_preserve_every_field",
+        "workspace_read_state::tests::tool_rounds_wait_for_terminal_and_completion_start_coalescing_is_lossless"
+      ],
+      "expected_passed": 12,
+      "expected_ignored": 0,
+      "cfg_excluded_tests": []
+    },
+    {
+      "name": "core-read-catalog",
+      "kind": "test",
+      "source": "source",
+      "command": [
+        "/opt/homebrew/bin/cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "-p",
+        "bello-agent-core",
+        "--all-features",
+        "--lib",
+        "workspace::read_catalog_tests::",
+        "--",
+        "--test-threads=1"
+      ],
+      "expected_tests": [
+        "workspace::read_catalog_tests::all_old_versions_remain_byte_identical_until_first_real_read_mutation",
+        "workspace::read_catalog_tests::baseline_and_full_unread_obligation_commit_together_and_reopen_intact",
+        "workspace::read_catalog_tests::before_and_after_rename_failures_preserve_memory_and_uncertainty_fences_noops",
+        "workspace::read_catalog_tests::catalog_mutex_serializes_read_activity_and_organization_without_stale_row_overwrite",
+        "workspace::read_catalog_tests::catalog_overflow_is_atomic_and_read_revision_cannot_wrap_or_move_backwards",
+        "workspace::read_catalog_tests::exact_workspace_chat_path_and_revision_are_required_without_materializing",
+        "workspace::read_catalog_tests::old_version_read_field_presence_rejects_null_empty_and_every_value",
+        "workspace::read_catalog_tests::read_metadata_rejects_unknown_chats_ids_bad_counts_revisions_and_shapes",
+        "workspace::read_catalog_tests::read_receipts_and_other_writers_preserve_all_unrelated_columns"
+      ],
+      "expected_passed": 9,
+      "expected_ignored": 0,
+      "cfg_excluded_tests": []
+    },
+    {
+      "name": "app-read-default",
+      "kind": "test",
+      "source": "source",
+      "command": [
+        "/opt/homebrew/bin/cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "-p",
+        "bello-agent-app",
+        "--bin",
+        "bello-agent",
+        "sidebar_read_state::tests::",
+        "--",
+        "--test-threads=1"
+      ],
+      "expected_tests": [
+        "sidebar_read_state::tests::admission_rejects_unregistered_path_replacement_and_foreign_controller",
+        "sidebar_read_state::tests::authoritative_ack_target_revision_and_generation_must_all_match",
+        "sidebar_read_state::tests::baseline_write_failure_retains_draft_and_never_reaches_dispatch",
+        "sidebar_read_state::tests::cancel_edit_cannot_release_held_queue_when_baseline_is_fenced",
+        "sidebar_read_state::tests::catalog_lock_failure_has_bounded_read_writer_retries",
+        "sidebar_read_state::tests::chained_catalog_uncertainty_rejects_same_project_replacement_workspace",
+        "sidebar_read_state::tests::completed_batch_receipt_cannot_acknowledge_same_id_replacement_path",
+        "sidebar_read_state::tests::completed_old_batch_receipt_does_not_clear_newer_live_mutation",
+        "sidebar_read_state::tests::durable_manual_restore_precedes_startup_and_real_reader_open",
+        "sidebar_read_state::tests::explicit_failure_reader_evidence_requires_selected_conversation_and_active_application",
+        "sidebar_read_state::tests::explicit_same_row_and_changed_focus_have_distinct_manual_semantics",
+        "sidebar_read_state::tests::failure_retry_coalescence_clears_once_and_rejects_old_observation",
+        "sidebar_read_state::tests::grace_hides_only_new_delta_and_relaunch_recovers_entire_obligation",
+        "sidebar_read_state::tests::initial_baseline_is_byte_preserving_until_admission_and_does_not_touch_session",
+        "sidebar_read_state::tests::manual_action_exclusions_cover_loading_failed_pending_archived_and_missing",
+        "sidebar_read_state::tests::manual_actions_preserve_activity_draft_controller_and_checkpoint",
+        "sidebar_read_state::tests::native_read_evidence_predicate_requires_every_independent_visibility_fact",
+        "sidebar_read_state::tests::quit_during_grace_flushes_unloaded_dirty_entry_without_draft_record",
+        "sidebar_read_state::tests::send_retry_command_and_resume_routes_stop_at_failed_baseline",
+        "sidebar_read_state::tests::shutdown_joins_real_partial_worker_then_captures_without_foreground_watch",
+        "sidebar_read_state::tests::stale_catalog_revision_cannot_clear_newer_dirty_state",
+        "sidebar_read_state::tests::stale_controller_path_and_workspace_callbacks_cannot_create_attention",
+        "sidebar_read_state::tests::uncertain_batch_receipt_preserves_newer_dirty_state_and_admission_fence",
+        "sidebar_read_state::tests::uncertain_read_notice_preserves_live_drafts_without_reopen_advice",
+        "sidebar_read_state::tests::undispatched_uncertain_send_merges_newer_typing_and_keeps_durable_input",
+        "sidebar_read_state::tests::unknown_history_preserves_manual_baseline_until_known_observation",
+        "sidebar_read_state::tests::unloaded_manual_action_rechecks_missing_and_replaced_checkpoint_after_scan"
+      ],
+      "expected_passed": 27,
+      "expected_ignored": 0,
+      "cfg_excluded_tests": [
+        {
+          "name": "sidebar_read_state::tests::linux_native_evidence_gate_cannot_acknowledge_even_exact_target",
+          "reason": "non-macOS cfg excludes this test; not an ignored native test"
+        },
+        {
+          "name": "sidebar_read_state::tests::linux_platform_failure_attention_distinguishes_foreground_background_and_other_pages",
+          "reason": "non-macOS cfg excludes this test; not an ignored native test"
+        },
+        {
+          "name": "sidebar_read_state::tests::real_after_rename_baseline_uncertainty_preserves_input_and_blocks_dispatch",
+          "reason": "synthetic-authority disabled in default feature test build"
+        }
+      ]
+    },
+    {
+      "name": "app-read-all-features",
+      "kind": "test",
+      "source": "source",
+      "command": [
+        "/opt/homebrew/bin/cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "-p",
+        "bello-agent-app",
+        "--all-features",
+        "--bin",
+        "bello-agent",
+        "sidebar_read_state::tests::",
+        "--",
+        "--test-threads=1"
+      ],
+      "expected_tests": [
+        "sidebar_read_state::tests::admission_rejects_unregistered_path_replacement_and_foreign_controller",
+        "sidebar_read_state::tests::authoritative_ack_target_revision_and_generation_must_all_match",
+        "sidebar_read_state::tests::baseline_write_failure_retains_draft_and_never_reaches_dispatch",
+        "sidebar_read_state::tests::cancel_edit_cannot_release_held_queue_when_baseline_is_fenced",
+        "sidebar_read_state::tests::catalog_lock_failure_has_bounded_read_writer_retries",
+        "sidebar_read_state::tests::chained_catalog_uncertainty_rejects_same_project_replacement_workspace",
+        "sidebar_read_state::tests::completed_batch_receipt_cannot_acknowledge_same_id_replacement_path",
+        "sidebar_read_state::tests::completed_old_batch_receipt_does_not_clear_newer_live_mutation",
+        "sidebar_read_state::tests::durable_manual_restore_precedes_startup_and_real_reader_open",
+        "sidebar_read_state::tests::explicit_failure_reader_evidence_requires_selected_conversation_and_active_application",
+        "sidebar_read_state::tests::explicit_same_row_and_changed_focus_have_distinct_manual_semantics",
+        "sidebar_read_state::tests::failure_retry_coalescence_clears_once_and_rejects_old_observation",
+        "sidebar_read_state::tests::grace_hides_only_new_delta_and_relaunch_recovers_entire_obligation",
+        "sidebar_read_state::tests::initial_baseline_is_byte_preserving_until_admission_and_does_not_touch_session",
+        "sidebar_read_state::tests::manual_action_exclusions_cover_loading_failed_pending_archived_and_missing",
+        "sidebar_read_state::tests::manual_actions_preserve_activity_draft_controller_and_checkpoint",
+        "sidebar_read_state::tests::native_read_evidence_predicate_requires_every_independent_visibility_fact",
+        "sidebar_read_state::tests::quit_during_grace_flushes_unloaded_dirty_entry_without_draft_record",
+        "sidebar_read_state::tests::real_after_rename_baseline_uncertainty_preserves_input_and_blocks_dispatch",
+        "sidebar_read_state::tests::send_retry_command_and_resume_routes_stop_at_failed_baseline",
+        "sidebar_read_state::tests::shutdown_joins_real_partial_worker_then_captures_without_foreground_watch",
+        "sidebar_read_state::tests::stale_catalog_revision_cannot_clear_newer_dirty_state",
+        "sidebar_read_state::tests::stale_controller_path_and_workspace_callbacks_cannot_create_attention",
+        "sidebar_read_state::tests::uncertain_batch_receipt_preserves_newer_dirty_state_and_admission_fence",
+        "sidebar_read_state::tests::uncertain_read_notice_preserves_live_drafts_without_reopen_advice",
+        "sidebar_read_state::tests::undispatched_uncertain_send_merges_newer_typing_and_keeps_durable_input",
+        "sidebar_read_state::tests::unknown_history_preserves_manual_baseline_until_known_observation",
+        "sidebar_read_state::tests::unloaded_manual_action_rechecks_missing_and_replaced_checkpoint_after_scan"
+      ],
+      "expected_passed": 28,
+      "expected_ignored": 0,
+      "cfg_excluded_tests": [
+        {
+          "name": "sidebar_read_state::tests::linux_native_evidence_gate_cannot_acknowledge_even_exact_target",
+          "reason": "non-macOS cfg excludes this test; not an ignored native test"
+        },
+        {
+          "name": "sidebar_read_state::tests::linux_platform_failure_attention_distinguishes_foreground_background_and_other_pages",
+          "reason": "non-macOS cfg excludes this test; not an ignored native test"
+        }
+      ]
+    },
+    {
+      "name": "app-reply-geometry",
+      "kind": "test",
+      "source": "source",
+      "command": [
+        "/opt/homebrew/bin/cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "-p",
+        "bello-agent-app",
+        "--all-features",
+        "--bin",
+        "bello-agent",
+        "transcript_view_tests::unread_reply_end_",
+        "--",
+        "--test-threads=1"
+      ],
+      "expected_tests": [
+        "transcript_view_tests::unread_reply_end_rechecks_current_geometry_after_height_only_resize",
+        "transcript_view_tests::unread_reply_end_requires_real_finite_viewport_not_first_line_or_overdraw",
+        "transcript_view_tests::unread_reply_end_uses_postlayout_measured_long_reply_and_rejects_overdraw"
+      ],
+      "expected_passed": 3,
+      "expected_ignored": 0,
+      "cfg_excluded_tests": []
+    },
+    {
+      "name": "app-native-menu",
+      "kind": "test",
+      "source": "source",
+      "command": [
+        "/opt/homebrew/bin/cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "-p",
+        "bello-agent-app",
+        "--all-features",
+        "--bin",
+        "bello-agent",
+        "native_menu::tests::",
+        "--",
+        "--test-threads=1"
+      ],
+      "expected_tests": [
+        "native_menu::tests::anchor_uses_view_coordinates_without_retina_scaling",
+        "native_menu::tests::archive_commands_match_source_labels_symbols_and_activation_intent",
+        "native_menu::tests::closed_window_discards_and_releases_the_callback",
+        "native_menu::tests::closed_window_discards_fresh_pointer_alongside_selection",
+        "native_menu::tests::completion_pointer_inverts_anchor_in_points_for_both_axes",
+        "native_menu::tests::completion_pointer_preserves_outside_coordinates_without_clamping",
+        "native_menu::tests::gpui_child_must_be_unique_direct_and_attached_to_expected_window",
+        "native_menu::tests::invalid_completion_pointer_remains_unknown_not_a_synthetic_exit",
+        "native_menu::tests::invalid_or_no_longer_visible_positions_do_not_open_a_menu",
+        "native_menu::tests::nested_request_cannot_reset_the_active_tracking_guard",
+        "native_menu::tests::pin_commands_match_source_labels_symbols_and_desired_state",
+        "native_menu::tests::pinned_gpui_contract_uses_child_of_appkit_content_container",
+        "native_menu::tests::selection_and_cancel_deliver_once_and_release_the_callback",
+        "native_menu::tests::sidebar_copy_id_label_symbol_and_selection_are_source_exact"
+      ],
+      "expected_passed": 14,
+      "expected_ignored": 0,
+      "cfg_excluded_tests": []
+    },
+    {
+      "name": "format",
+      "kind": "format",
+      "source": "source",
+      "command": [
+        "/opt/homebrew/bin/cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ]
+    },
+    {
+      "name": "clean-before-fresh-candidate-builds",
+      "kind": "cache-clean",
+      "source": "source",
+      "command": [
+        "/opt/homebrew/bin/cargo",
+        "clean",
+        "--offline",
+        "--locked",
+        "-p",
+        "bello-agent-core",
+        "-p",
+        "bello-agent-app"
+      ]
+    },
+    {
+      "name": "candidate-fresh-build-default",
+      "kind": "build",
+      "source": "source",
+      "command": [
+        "/opt/homebrew/bin/cargo",
+        "build",
+        "--offline",
+        "--locked",
+        "-p",
+        "bello-agent-app",
+        "--bin",
+        "bello-agent"
+      ]
+    },
+    {
+      "name": "candidate-fresh-build-all-features",
+      "kind": "build",
+      "source": "source",
+      "command": [
+        "/opt/homebrew/bin/cargo",
+        "build",
+        "--offline",
+        "--locked",
+        "-p",
+        "bello-agent-app",
+        "--all-features",
+        "--bin",
+        "bello-agent"
+      ]
+    }
+  ]
+}

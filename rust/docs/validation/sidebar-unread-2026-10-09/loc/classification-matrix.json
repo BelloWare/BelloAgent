@@ -1,0 +1,108 @@
+[
+  {
+    "path": "rust/crates/bello-agent-app/src/sidebar_read_state.rs",
+    "ranges": [
+      [
+        159,
+        166
+      ],
+      [
+        883,
+        890
+      ],
+      [
+        984,
+        989
+      ],
+      [
+        1012,
+        1014
+      ]
+    ],
+    "category": "tests_and_test_support",
+    "reason": "Positive test-only helper/adapters/declaration; macOS TestAppContext lacks native evidence."
+  },
+  {
+    "path": "rust/crates/bello-agent-app/src/sidebar_read_state.rs",
+    "ranges": [
+      [
+        948,
+        983
+      ],
+      [
+        990,
+        1009
+      ]
+    ],
+    "category": "production",
+    "reason": "macOS visibility model and native calls; actual non-macOS fail-closed product path. cfg(any(nonmacOS,test)) is not positive-test-only."
+  },
+  {
+    "path": "rust/crates/bello-agent-app/src/native_menu.rs",
+    "ranges": [
+      [
+        1,
+        666
+      ]
+    ],
+    "category": "production",
+    "reason": "Real macOS native implementation, pure coordinate/command helpers and visibility bridge; independent of platform execution coverage."
+  },
+  {
+    "path": "rust/crates/bello-agent-core/src/workspace.rs",
+    "ranges": [
+      [
+        842,
+        845
+      ],
+      [
+        847,
+        855
+      ],
+      [
+        912,
+        915
+      ],
+      [
+        935,
+        940
+      ],
+      [
+        1103,
+        1105
+      ],
+      [
+        1113,
+        1116
+      ],
+      [
+        1787,
+        1792
+      ]
+    ],
+    "category": "tests_and_test_support",
+    "reason": "Explicit synthetic-authority/test-only one-shot AfterRename fault hook. No ordinary production activation."
+  },
+  {
+    "path": "rust/crates/bello-agent-core/src/workspace.rs",
+    "ranges": [
+      [
+        932,
+        934
+      ]
+    ],
+    "category": "production",
+    "reason": "Preceding comments retain production classification; cfg-owned spans start at cfg attribute under immutable handoff methodology."
+  },
+  {
+    "path": "rust/crates/bello-agent-app/src/transcript_view.rs",
+    "ranges": [
+      [
+        1134,
+        1137
+      ]
+    ],
+    "category": "tests_and_test_support",
+    "reason": "Positive cfg(test) presentation identity probe for resize regression. Production deferred acceptance rechecks current viewport, window size and presentation."
+  }
+]

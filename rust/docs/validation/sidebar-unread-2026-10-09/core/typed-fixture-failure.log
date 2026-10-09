@@ -1,0 +1,45 @@
+   Compiling bello-agent-core v0.1.0 (/workspace/shared/agent-unread-workflow/rust/crates/bello-agent-core)
+    Finished `test` profile [unoptimized] target(s) in 15.11s
+     Running unittests src/lib.rs (/workspace/shared/build-recovery/target/debug/deps/bello_agent_core-8bfe315c8d6b13f3)
+
+running 27 tests
+test read_observation::tests::exhausted_sequences_never_wrap_or_resume_known_observations ... ok
+test read_observation::tests::empty_success_and_output_limited_success_are_outputs ... ok
+test read_observation::tests::accepted_terminal_survives_completion_then_next_start_without_observation ... ok
+test read_observation::tests::accepted_tool_round_remains_output_after_terminal_error_or_cancellation ... ok
+test read_observation::tests::failure_retry_and_success_do_not_erase_failure_occurrence ... ok
+test read_observation::tests::failed_and_uncertain_checkpoints_never_accept_a_terminal ... ok
+test read_observation::tests::discarded_tool_timeline_only_failure_has_no_retained_output_evidence ... ok
+test read_observation::tests::journal_tokens_do_not_advance_observation_or_projection ... ok
+test read_observation::tests::legacy_plain_production_shape_remains_projectable ... ok
+test read_observation::tests::failed_retry_preserves_each_retained_partial_and_failure_occurrence ... ok
+test read_observation::tests::materialization_preserves_empty_lifetime_without_regressing_accepted_events ... ok
+
+thread 'read_observation::tests::original_v3_tool_writer_shape_is_supported_but_inert_or_contradictory_shapes_are_unknown' (60) panicked at crates/bello-agent-core/src/read_observation_tests.rs:596:9:
+assertion failed: crate::tool_history::validate(&invalid.messages).is_ok()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test read_observation::tests::multiple_tool_rounds_and_final_reply_have_distinct_identities ... ok
+test read_observation::tests::receipt_owned_context_partial_counts_but_progress_and_summary_do_not ... ok
+test read_observation::tests::receipt_owned_manual_compaction_progress_is_excluded_even_with_partial_content ... ok
+test read_observation::tests::unknown_contradictory_and_duplicate_representations_refuse_projection ... ok
+test read_observation::tests::tool_only_accepted_round_counts_once_after_stop ... ok
+test read_observation::tests::retained_interrupted_partial_uses_nonempty_not_trimmed ... ok
+test read_observation::tests::reopen_baselines_retained_history_and_resets_lifetime_sequences ... ok
+test read_observation::tests::startup_recovery_counts_retained_partial_without_inventing_terminal_events ... ok
+test read_observation::tests::original_v3_tool_writer_shape_is_supported_but_inert_or_contradictory_shapes_are_unknown ... FAILED
+test read_observation::tests::successful_manual_compaction_retains_output_count_and_latest_identity ... ok
+test runtime::read_observation_tests::display_fatal_is_not_an_accepted_failure ... ok
+test runtime::read_observation_tests::direct_final_capture_does_not_require_queued_publication ... ok
+test runtime::read_observation_tests::completion_before_subscription_and_start_coalescence_retain_terminal ... ok
+test runtime::read_observation_tests::failure_retry_before_watch_read_retains_occurrence ... ok
+test runtime::read_observation_tests::uncertain_checkpoint_invalidates_current_and_published_projection ... ok
+test runtime::read_observation_tests::streamed_tokens_and_live_tool_publications_do_not_notify_read_watch ... ok
+
+failures:
+
+failures:
+    read_observation::tests::original_v3_tool_writer_shape_is_supported_but_inert_or_contradictory_shapes_are_unknown
+
+test result: FAILED. 26 passed; 1 failed; 0 ignored; 0 measured; 524 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p bello-agent-core --lib`

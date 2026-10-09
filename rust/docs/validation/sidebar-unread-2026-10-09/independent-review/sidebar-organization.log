@@ -1,0 +1,15 @@
+   Compiling bello-agent-core v0.1.0 (/workspace/shared/agent-unread-workflow/rust/crates/bello-agent-core)
+    Finished `test` profile [unoptimized] target(s) in 7.20s
+     Running tests/sidebar_organization.rs (/workspace/shared/build-recovery/target/debug/deps/sidebar_organization-b81e469bcfb4727f)
+
+running 7 tests
+test failed_pending_pin_is_not_materialized_and_can_retry ... ok
+test legacy_catalog_without_organization_fields_opens_without_rewrite ... ok
+test pending_chat_pin_atomically_materializes_draft_without_a_transcript ... ok
+test wrong_identity_and_project_are_rejected_without_overwriting_catalog ... ok
+test new_organization_format_is_explicit_and_mislabeled_v1_is_preserved ... ok
+test pin_patches_only_organization_not_newer_title_draft_receipt_or_selection ... ok
+test source_order_and_repeated_pin_keep_original_timestamp ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
