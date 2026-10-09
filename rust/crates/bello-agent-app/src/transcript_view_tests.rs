@@ -2607,7 +2607,7 @@ fn unread_reply_end_rechecks_current_geometry_after_height_only_resize(cx: &mut 
     let painted_window_size = window
         .update(cx, |_, window, _| window.viewport_size())
         .unwrap();
-    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let visual = VisualTestContext::from_window(window.into(), cx);
     visual.simulate_resize(size(px(1180.), px(600.)));
     cx.run_until_parked();
     assert_eq!(
