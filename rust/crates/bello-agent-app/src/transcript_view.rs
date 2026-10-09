@@ -1132,6 +1132,10 @@ impl TranscriptView {
         self.materialized.borrow().texts.clone()
     }
     #[cfg(test)]
+    pub(crate) fn presentation_identity(&self) -> usize {
+        Rc::as_ptr(&self.presentation) as usize
+    }
+    #[cfg(test)]
     pub(crate) fn logical_row_ids(&self) -> Vec<String> {
         self.viewport
             .borrow()
@@ -1511,23 +1515,25 @@ impl Element for ViewportList {
                 row.message_index
                     .is_some_and(|i| self.presentation.input.session.messages[i].id == target)
             })
-            && let Some(row) = list.bounds_for_item(index)
-            && reply_end_visible(row, list.viewport_bounds())
+            && measured_reply_end_visible(&list, index)
         {
             let parent = self.parent.clone();
             let child = self.child.clone();
             let presentation = self.presentation.clone();
             let offset = list.logical_scroll_top();
+            let painted_window_size = window.viewport_size();
             let viewport = self.viewport.clone();
             window.defer(cx, move |window, cx| {
-                let current = child
-                    .upgrade()
-                    .is_some_and(|child| Rc::ptr_eq(&child.read(cx).presentation, &presentation))
+                let current = window.viewport_size() == painted_window_size
+                    && child.upgrade().is_some_and(|child| {
+                        Rc::ptr_eq(&child.read(cx).presentation, &presentation)
+                    })
                     && viewport.borrow().pending_scroll.is_none()
                     && {
                         let now = viewport.borrow().list.logical_scroll_top();
                         now.item_ix == offset.item_ix && now.offset_in_item == offset.offset_in_item
-                    };
+                    }
+                    && measured_reply_end_visible(&viewport.borrow().list, index);
                 let _ = parent.update(cx, |view, cx| {
                     view.acknowledge_reply_end(
                         &presentation.input.chat_id,
@@ -1569,6 +1575,11 @@ impl Element for ViewportList {
             self.focus.focus(window);
         }
     }
+}
+
+pub(crate) fn measured_reply_end_visible(list: &ListState, index: usize) -> bool {
+    list.bounds_for_item(index)
+        .is_some_and(|row| reply_end_visible(row, list.viewport_bounds()))
 }
 
 /// Measured/painted overdraw alone is insufficient; require a finite real

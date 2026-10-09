@@ -95,8 +95,13 @@ is “Unread.” Failure attention is separate from the existing run-status labe
 Collapsed topic/project headings aggregate attention. Archived rows hide all
 attention while retaining metadata for restore. The pure Dock predicate counts
 one chat for manual unread, or automatic unread without failure; failure alone
-and automatic-plus-failure do not count. Actual native Dock delivery, bounce,
-VoiceOver, native menus and native focus/occlusion acceptance remain separate.
+and automatic-plus-failure do not count. Native Dock badge and bounce delivery are **not implemented** in this slice; only
+the pure count predicate is present. Native row context-menu actions are wired
+through the existing AppKit menu bridge, but their actual native interaction is
+unaccepted. Native application menu-bar Mark as Read/Unread commands are not
+wired; the application-level action here is the selected-chat button. VoiceOver
+parity is not claimed and no new accessibility implementation was added. Actual
+native focus/occlusion behavior also remains unaccepted.
 
 The classifier is exact only for output representations actually retained by
 this Rust implementation. It does not reconstruct discarded timeline-only

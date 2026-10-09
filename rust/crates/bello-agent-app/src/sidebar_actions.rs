@@ -417,7 +417,7 @@ impl AgentView {
                 (
                     SidebarAction::MarkRead,
                     "sidebar-mark-read",
-                    "check",
+                    "chat",
                     "Mark as Read",
                 ),
                 (

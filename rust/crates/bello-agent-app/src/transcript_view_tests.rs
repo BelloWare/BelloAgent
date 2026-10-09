@@ -2577,3 +2577,62 @@ fn unread_reply_end_uses_postlayout_measured_long_reply_and_rejects_overdraw(
         list.viewport_bounds()
     ));
 }
+
+#[gpui::test]
+fn unread_reply_end_rechecks_current_geometry_after_height_only_resize(cx: &mut TestAppContext) {
+    let mut rows = messages(25);
+    rows[0] = message(
+        "resize-long",
+        "assistant",
+        &("A long readable line\n".repeat(100)),
+    );
+    let (_dir, window, root) = fixture_with_visible(cx, rows, 0, Some(usize::MAX));
+    let child = transcript(&root, cx);
+    jump_to(&child, 0, 0., cx);
+    let old = scroll(&child, cx);
+    let height = old.bounds_for_item(0).unwrap().size.height;
+    let viewport = old.viewport_bounds();
+    jump_to(
+        &child,
+        0,
+        (height - viewport.size.height + px(15.)).to_f64() as f32,
+        cx,
+    );
+    let list = scroll(&child, cx);
+    let old_row = list.bounds_for_item(0).unwrap();
+    let old_viewport = list.viewport_bounds();
+    assert!(crate::transcript_view::measured_reply_end_visible(&list, 0));
+    let old_anchor = anchor(&child, cx);
+    let presentation = cx.read(|cx| child.read(cx).presentation_identity());
+    let painted_window_size = window
+        .update(cx, |_, window, _| window.viewport_size())
+        .unwrap();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    visual.simulate_resize(size(px(1180.), px(600.)));
+    cx.run_until_parked();
+    assert_eq!(
+        anchor(&child, cx),
+        old_anchor,
+        "scroll offset intentionally unchanged"
+    );
+    assert_eq!(
+        cx.read(|cx| child.read(cx).presentation_identity()),
+        presentation,
+        "presentation identity intentionally unchanged"
+    );
+    assert_ne!(
+        window
+            .update(cx, |_, window, _| window.viewport_size())
+            .unwrap(),
+        painted_window_size,
+        "a pending window resize invalidates the captured frame even before list relayout"
+    );
+    assert!(
+        crate::transcript_view::reply_end_visible(old_row, old_viewport),
+        "captured old evidence was positive"
+    );
+    assert!(
+        !crate::transcript_view::measured_reply_end_visible(&scroll(&child, cx), 0),
+        "deferred acknowledgement must reject the current offscreen end"
+    );
+}
