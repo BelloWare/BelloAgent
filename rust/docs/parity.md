@@ -2312,3 +2312,29 @@ It does not enable catalog/project membership admission, App search UI, the sepa
 pure projection, unloaded search or persistent indexing. Raw Session includes private
 containers that a future reviewed projection must exclude. No new actual-GUI or
 native acceptance is claimed; earlier navigation evidence remains prior evidence.
+
+## Catalog membership search certainty prerequisite (2026-10-09)
+
+Core now captures bounded membership-only rows paired with workspace incarnation,
+absolute catalog path, canonical project path, existing optional project UUID,
+accepted catalog revision and revocable epoch. Transaction guards revoke through
+early errors, definite/uncertain commit failures and unwind. Drop, exact shared
+owner binding and observed poison fence escaped receipts; notifications expose no
+borrow guard. The public-Mutex poison-reset limitation is explicit in the
+[contract](search-membership-admission.md).
+
+This supersedes only the catalog membership certainty gap above. No App search,
+projection, unloaded acquisition, cache or tool authority is activated. Core
+644 default/829 all-feature unit tests plus integration/doctest targets and App
+637 default/782 all-feature tests passed; existing intentional App ignores remain.
+Strict all-target Core/App Clippy passed in both configurations, with formatting
+and diff checks. Nine deliberate mutants were caught and exactly restored.
+Independent final source review accepted the bounded slice. See the
+[validation receipt](validation/search-membership-admission-2026-10-09.json).
+
+The [reviewed LOC delta](validation/loc-search-membership-2026-10-09-delta.json)
+is +454 production/+570 support/zero benchmark, yielding 58,142/80,622/1,192
+nonblank Rust lines. Shared Box and 366 documentation/evidence Rust lines remain
+excluded; five negative controls reject incorrect totals, hashes, exclusions or
+test ownership. LOC and command durations do not measure completion or performance.
+No new actual-GUI, native macOS, signing, Keychain or owner-Mac acceptance is claimed.

@@ -28,6 +28,10 @@ mod read_catalog_tests;
 #[path = "workspace_topics_tests.rs"]
 mod topics_tests;
 
+#[cfg(test)]
+#[path = "workspace_membership_tests.rs"]
+mod membership_tests;
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct QueuedDraft {
     pub edit_id: String,
@@ -833,6 +837,7 @@ impl Drop for WorkspaceLock {
 /// Single writer, atomic small-file transactions. Revision receipts reject stale
 /// debounce work independently of wall-clock changes and task cancellation.
 pub struct WorkspaceStore {
+    membership_witness: crate::workspace_membership::MembershipWitness,
     inspection_coordinator: crate::inspection::InspectionCoordinator,
     pub(crate) mcp_manager: Option<std::sync::Arc<crate::mcp::McpManager>>,
     pub(crate) mcp_creation_gate: std::sync::Arc<std::sync::Mutex<()>>,
@@ -904,6 +909,7 @@ impl WorkspaceStore {
             WorkspaceSnapshot::new(project)
         };
         Ok(Self {
+            membership_witness: crate::workspace_membership::MembershipWitness::new(&state, &path),
             inspection_coordinator: crate::inspection::InspectionCoordinator::default(),
             mcp_manager: None,
             mcp_creation_gate: std::sync::Arc::new(std::sync::Mutex::new(())),
@@ -916,6 +922,58 @@ impl WorkspaceStore {
             #[cfg(feature = "synthetic-authority")]
             synthetic_read_state_after_rename: false,
         })
+    }
+
+    /// Acquire on a background worker: this locks the catalog and may wait for
+    /// persistence. Members and stamp come from the same certain boundary. The
+    /// supplied Arc is the permanent owner once a membership receipt escapes.
+    pub fn search_membership_snapshot(
+        owner: &std::sync::Arc<std::sync::Mutex<Self>>,
+    ) -> std::result::Result<
+        crate::workspace_membership::MembershipSnapshot,
+        crate::workspace_membership::MembershipUnavailable,
+    > {
+        use crate::workspace_membership::MembershipUnavailable;
+        let snapshot = {
+            let store = owner.lock().map_err(|error| {
+                // Only revoke through a poisoned guard; never admit its contents.
+                error.get_ref().membership_witness.unavailable();
+                MembershipUnavailable
+            })?;
+            store.membership_witness.bind_owner(owner)?;
+            if store.uncertain {
+                return Err(MembershipUnavailable);
+            }
+            store.membership_witness.capture(&store.state)?
+        };
+        #[cfg(test)]
+        membership_tests::CAPTURE_HOOK.with(|hook| {
+            if let Some(hook) = hook.borrow_mut().as_mut() {
+                hook();
+            }
+        });
+        if !snapshot.is_current() {
+            return Err(MembershipUnavailable);
+        }
+        Ok(snapshot)
+    }
+
+    /// Initial witness acquisition also locks the catalog; run on a background
+    /// worker. Subsequent witness checks never lock the catalog or its actor.
+    pub fn search_membership_witness(
+        owner: &std::sync::Arc<std::sync::Mutex<Self>>,
+    ) -> std::result::Result<
+        crate::workspace_membership::MembershipWitness,
+        crate::workspace_membership::MembershipUnavailable,
+    > {
+        use crate::workspace_membership::MembershipUnavailable;
+        let store = owner.lock().map_err(|error| {
+            // Only revoke through a poisoned guard; never admit its contents.
+            error.get_ref().membership_witness.unavailable();
+            MembershipUnavailable
+        })?;
+        store.membership_witness.bind_owner(owner)?;
+        Ok(store.membership_witness.clone())
     }
 
     /// All factories/windows sharing this catalog owner share one parse lane.
@@ -1739,6 +1797,23 @@ impl WorkspaceStore {
         &mut self,
         change: impl FnOnce(&mut WorkspaceSnapshot) -> Result<T>,
     ) -> Result<T> {
+        let mutation = self.membership_witness.begin();
+        let result = self.transact_inner(change);
+        mutation.finish(
+            &self.state,
+            &self.path,
+            if self.uncertain {
+                crate::workspace_membership::MembershipStatus::Uncertain
+            } else {
+                crate::workspace_membership::MembershipStatus::Certain
+            },
+        );
+        result
+    }
+    fn transact_inner<T>(
+        &mut self,
+        change: impl FnOnce(&mut WorkspaceSnapshot) -> Result<T>,
+    ) -> Result<T> {
         if self.uncertain {
             return Err(invalid(
                 "Workspace persistence is uncertain. Reopen before continuing.",
@@ -1812,6 +1887,11 @@ impl WorkspaceStore {
         }
         self.state = state;
         Ok(result)
+    }
+}
+impl Drop for WorkspaceStore {
+    fn drop(&mut self) {
+        self.membership_witness.retire();
     }
 }
 fn is_false(value: &bool) -> bool {

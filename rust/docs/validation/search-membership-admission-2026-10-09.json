@@ -1,0 +1,342 @@
+{
+  "schema": 1,
+  "scope": "Core catalog membership certainty prerequisite only; no App search, cache, projection, tool authority or native activation",
+  "base_commit": "977e6b1fd6492b40eebb170812f2ede39fe6aafe",
+  "base_tree": "42f54d1f145accd0fda5762073a49a5d2ba147fa",
+  "source_files": {
+    "rust/crates/bello-agent-core/src/lib.rs": {
+      "sha256": "70a10659f45dada1248e0546c2cec3c448f25059fb1b2384afc07155a80aa309",
+      "bytes": 2116
+    },
+    "rust/crates/bello-agent-core/src/workspace.rs": {
+      "sha256": "ad5b4fd018d3f849087c18e936b7a4029f0d7dcd75feffd23d553ffbc35472f9",
+      "bytes": 164184
+    },
+    "rust/crates/bello-agent-core/src/workspace_membership.rs": {
+      "sha256": "614919e357a14adeb24ce1d195dbc066ef2ed372bb3dddc592771211ec99b4c8",
+      "bytes": 17014
+    },
+    "rust/crates/bello-agent-core/src/workspace_membership_tests.rs": {
+      "sha256": "738627d0b2a44198980aa5e8d551a37915ee5c229f483935239143eed5c7f10d",
+      "bytes": 16260
+    },
+    "rust/docs/search-membership-admission.md": {
+      "sha256": "abcce77fc3b97156a68e0c7f09a40585ac6e2db84fde3cc29101b31fd87d9960",
+      "bytes": 6858
+    }
+  },
+  "verification_utc": "2026-10-09T10:55:31.377416+00:00",
+  "toolchain": "Rust 1.99.0; existing approved toolchain and dependency closure; locked Cargo; jobs=2",
+  "new_tests": 22,
+  "focused_matching_tests": 30,
+  "core_unit_tests": {
+    "default": 644,
+    "all_features": 829
+  },
+  "core_integration_targets": "All passed in default and all-feature commands, including inspection compile-fail doctest",
+  "app_tests": {
+    "default": {
+      "passed": 637,
+      "ignored": 1
+    },
+    "all_features": {
+      "passed": 782,
+      "ignored": 3
+    }
+  },
+  "gates": [
+    {
+      "name": "core-default",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "bello-agent-core"
+      ],
+      "exit": 0,
+      "start": "2026-10-09T10:50:54.577813+00:00",
+      "seconds": 40.401
+    },
+    {
+      "name": "core-all-features",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "bello-agent-core",
+        "--all-features"
+      ],
+      "exit": 0,
+      "start": "2026-10-09T10:51:34.978936+00:00",
+      "seconds": 57.189
+    },
+    {
+      "name": "core-clippy-default",
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "-p",
+        "bello-agent-core",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit": 0,
+      "start": "2026-10-09T10:52:32.168917+00:00",
+      "seconds": 9.577
+    },
+    {
+      "name": "core-clippy-all",
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "-p",
+        "bello-agent-core",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit": 0,
+      "start": "2026-10-09T10:52:41.746451+00:00",
+      "seconds": 11.462
+    },
+    {
+      "name": "format",
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit": 0,
+      "start": "2026-10-09T10:52:53.208320+00:00",
+      "seconds": 2.148
+    },
+    {
+      "name": "app-default",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "bello-agent-app"
+      ],
+      "exit": 0,
+      "start": "2026-10-09T10:52:58.345758+00:00",
+      "seconds": 48.834
+    },
+    {
+      "name": "app-all-features",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "bello-agent-app",
+        "--all-features"
+      ],
+      "exit": 0,
+      "start": "2026-10-09T10:53:47.180621+00:00",
+      "seconds": 55.061
+    },
+    {
+      "name": "app-clippy-default",
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "-p",
+        "bello-agent-app",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit": 0,
+      "start": "2026-10-09T10:54:42.242288+00:00",
+      "seconds": 13.367
+    },
+    {
+      "name": "app-clippy-all",
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "-p",
+        "bello-agent-app",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit": 0,
+      "start": "2026-10-09T10:54:55.609914+00:00",
+      "seconds": 14.857
+    }
+  ],
+  "negative_controls": [
+    {
+      "name": "omit_uncertainty",
+      "test": "after_rename_error_immediately_revokes_without_accepted_revision_change",
+      "exit": 101,
+      "caught": true,
+      "seconds": 17.368
+    },
+    {
+      "name": "omit_poison_check",
+      "test": "external_owner_poison_rejects_retained_receipt_before_any_capture",
+      "exit": 101,
+      "caught": true,
+      "seconds": 18.054
+    },
+    {
+      "name": "reuse_incarnation",
+      "test": "drop_and_reopen_same_revision_get_new_incarnation",
+      "exit": 101,
+      "caught": true,
+      "seconds": 17.196
+    },
+    {
+      "name": "omit_unwind_fence",
+      "test": "unwind_with_mutex_remaining_healthy_still_revokes_forever",
+      "exit": 101,
+      "caught": true,
+      "seconds": 17.33
+    },
+    {
+      "name": "permit_rebinding",
+      "test": "repeated_same_owner_binding_and_different_owner_refusal",
+      "exit": 101,
+      "caught": true,
+      "seconds": 17.803
+    },
+    {
+      "name": "omit_final_recheck",
+      "test": "capture_rechecks_after_releasing_catalog_mutex",
+      "exit": 101,
+      "caught": true,
+      "seconds": 17.141
+    },
+    {
+      "name": "wrap_epoch",
+      "test": "epoch_exhaustion_is_permanent_search_only_failure",
+      "exit": 101,
+      "caught": true,
+      "seconds": 17.001
+    },
+    {
+      "name": "omit_drop_retirement",
+      "test": "replacing_store_revokes_old_witness_while_owner_mutex_remains_healthy",
+      "exit": 101,
+      "caught": true,
+      "seconds": 17.372
+    },
+    {
+      "name": "reuse_epoch",
+      "test": "definite_before_rename_error_keeps_old_state_under_fresh_epoch",
+      "exit": 101,
+      "caught": true,
+      "seconds": 17.247
+    }
+  ],
+  "exact_restoration": {
+    "workspace.rs": {
+      "sha256": "ad5b4fd018d3f849087c18e936b7a4029f0d7dcd75feffd23d553ffbc35472f9",
+      "restored": true
+    },
+    "workspace_membership.rs": {
+      "sha256": "614919e357a14adeb24ce1d195dbc066ef2ed372bb3dddc592771211ec99b4c8",
+      "restored": true
+    }
+  },
+  "log_sha256": {
+    "app-all-features.log": "b59a019825956428c3dccb7002ed7cdaee3ceb0dc4ba56dacba1bae98de822ea",
+    "app-clippy-all.log": "fd5c5391ce7a7e08a04ba434a0ff7dc62a0a4b49697575fded1237abd94aeffb",
+    "app-clippy-default.log": "e5b3a49e9807704c378b4a17be32abb10b7be832361e9d3af863fea5a2487275",
+    "app-default.log": "03ca0fd500f411b9268d92fd3993eb11e845941f70d9b0984dd7a1daed6b07f9",
+    "core-all-features.log": "e33a0abf07604c215276b3023d67a0262ec03ba6eaeec50ad532eb87d30e359a",
+    "core-clippy-all.log": "1fe4175ef44c4b28b08edb9e5e6c5b02937580396c454bb789404e61410e59f7",
+    "core-clippy-default.log": "f210918717c83276c388b1385ef0b4c8a2c9cc3ac908a0dace2c51151369ea88",
+    "core-default.log": "7a77fe37dfb515120ff276b03376a861c512b15ab81e915d5d9f02d222ce4a22",
+    "focused-final.log": "f757abbab510e08ebc825b2ff1055ba8f515e0b640a9f9f0b836e98ebf7449e1",
+    "focused.log": "dfbd9b9d11a355fe6bdaa7e7f37d43ca6c4399f6684476743909830b1d39b2d7",
+    "format.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "omit_drop_retirement.log": "89b255896c07eb61603bb0f808de9c9a192e810830de95407e78d5b4b0e47efe",
+    "omit_final_recheck.log": "9d30ff01133bc33a4accdc9428d97663a00cd387ba906306f108e37680b267c1",
+    "omit_poison_check.log": "2e14cf57d4162c3d4f28c5986552b3494971b209509854cbbb35168f4b55a54a",
+    "omit_uncertainty.log": "a0e27d60cad2d10fb387ef4243f4916c5d12edf0586df47eb7f172d66b8c93f3",
+    "omit_unwind_fence.log": "0c9eb6e9c84e486cce8a656afad47e4c1f2edc6cb39cf4c50e8010c574fd3892",
+    "permit_rebinding.log": "52d73700dfeb87cfaef9f29dd0fb774805f5343f59b7d981942524764d12ec02",
+    "reuse_epoch.log": "c07ffb6b3added4f6d05e8f9c471b915c86d68c2d166123e9b9f056f2cfc375f",
+    "reuse_incarnation.log": "a017a0d41199c01961c798808df8dccbc4b04bd3f0220477f61e2988d5ff41a9",
+    "wrap_epoch.log": "ffd296768a5ddeec6e04ccb7004ea843cc644948a73321daf450675e1f26bb5a"
+  },
+  "review": "Root and independent final review accepted frozen source and all nine mutant assertions on 2026-10-09. See companion contract for scope and public-Mutex limitation.",
+  "limitations": [
+    "Shared public std::Mutex ownership must not be moved or poison-cleared as recovery after binding. Observed poison revocation is terminal; poison cleared before any observation is not retrospectively detectable.",
+    "Membership stamp binds absolute catalog path and canonical project path. It is not a filesystem canonical-catalog identity or a checkpoint durability receipt.",
+    "Empty new catalog membership does not assert an on-disk catalog file exists. Optional project UUID is never created by capture.",
+    "No actual GUI/native behavior, performance, signing, Keychain, owner-Mac or full sidebar search acceptance is claimed.",
+    "Existing proc-macro-error2 v2.0.1 future-incompatibility advisory remains in App command output; strict Clippy itself passed.",
+    "Initial zero-test compile probe was compilation only; focused final and complete restored suites supply actual execution evidence."
+  ],
+  "timing": {
+    "task_received_utc": "2026-10-09T10:40:01Z",
+    "meaning": "Command seconds are observed local wall time, not application performance or isolated inference time"
+  },
+  "publication": {
+    "uploaded": false,
+    "refs_changed": false,
+    "note": "Local detached candidate for root review; initial exact-SHA fetch populated Git objects/FETCH_HEAD only, not a branch ref."
+  },
+  "loc": {
+    "ledger": "loc-search-membership-2026-10-09-delta.json",
+    "delta": {
+      "production": 454,
+      "support": 570,
+      "benchmark": 0
+    },
+    "cumulative_counts": {
+      "production": 58142,
+      "support": 80622,
+      "benchmark": 1192
+    },
+    "classification_negative_controls": [
+      {
+        "control": "wrong-production-total",
+        "rejected": true,
+        "exit": 1
+      },
+      {
+        "control": "wrong-source-hash",
+        "rejected": true,
+        "exit": 1
+      },
+      {
+        "control": "lost-shared-exclusion",
+        "rejected": true,
+        "exit": 1
+      },
+      {
+        "control": "test-file-counted-production",
+        "rejected": true,
+        "exit": 1
+      },
+      {
+        "control": "lost-positive-test-cfg-span",
+        "rejected": true,
+        "exit": 1
+      }
+    ],
+    "method": "Nonblank physical Rust lines including comments. Exact 977e6b1 baseline inventory and category totals inherited; no unchanged source recount/reclassification. Four changed files, explicit before/after positive cfg(test) spans and fully test-owned files. Catalog membership backend counts as production code, not feature completion. No benchmark delta; 366 documentation/evidence lines and shared Box excluded."
+  }
+}

@@ -33,6 +33,7 @@ pub mod tool_timing;
 pub mod tools;
 pub mod user_content;
 pub mod workspace;
+pub mod workspace_membership;
 pub mod workspace_read_state;
 
 pub use profile::{Credential, Profile};
