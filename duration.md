@@ -1,5 +1,216 @@
 # BelloAgent Rust migration: where the time went
 
+## Current accounting checkpoint: 2026-10-09T12:20:16Z
+
+This catch-up incorporates selected verified receipts through the stated cutoff, including late-added earlier observations. Every earlier item and checkpoint remains preserved below. It is not a complete timesheet. Model inference duration remains unavailable, not zero. Shared coordination/publication appears once; local receipt hashes establish provenance without claiming independent public timing verification.
+
+### At a glance
+
+These top totals cover only this catch-up receipt cohort, including late-added earlier observations; they are not whole-migration cumulative totals. These are overlapping accounting views, not shares of one total. Mixed windows do not measure active labor.
+
+| Where time went | What is actually measured |
+|---|---|
+| Implementation | Active effort unavailable; mixed source/test windows recorded below |
+| Review | Active effort unavailable; only review-focused observations: 1 mixed windows; 1 with endpoints, 2m 28.0s union |
+| Mixed implementation/review/validation windows | 2 mixed windows; 2 with endpoints, 3h 16m 52.3s union; scopes overlap resources and do not measure Review alone |
+| Builds | 3m 31.8s measured command resource time |
+| Tests | Unavailable separately from compilation in these command receipts |
+| Build + test/check (combined) | 20m 29.9s measured command resource time |
+| CI | 2h 57m 0.0s runner time across 10 jobs; 1h 59m 14.0s wall union |
+| Dependency/environment setup | 36.2s measured resource time |
+| Retries/rework | 2m 4.6s across 10 failed command receipts; total rework effort unavailable |
+| Publication | 4m 37.8s measured API/client time; 7 mixed windows; 6 with endpoints, 5m 59.0s union |
+| Waiting | 3h 24m 14.9s enclosing blocked/cancelled orchestration; pure waiting unavailable, productive work overlapped |
+| Model inference | Unavailable; no timing telemetry |
+
+### Separate measured resource groups
+
+| Group | Timed items | Resource/client seconds | Known-endpoint items | Endpoint-subset seconds | Endpoint union seconds |
+|---|---:|---:|---:|---:|---:|
+| catchup_ci_job | 10 | 10620.000 | 10 | 10620.000 | 7154.000 |
+| catchup_native_command | 36 | 718.272 | 36 | 718.272 | 718.281 |
+| catchup_command | 52 | 1063.556 | 0 | 0.000 | unavailable |
+| catchup_api | 24 | 277.836 | 0 | 0.000 | unavailable |
+
+Groups overlap each other and mixed work windows; never add them into project elapsed or active-work time. Derived endpoints are excluded from unions. Monotonic timers and separately recorded UTC clocks can differ slightly. Whole-second 0s means below receipt resolution. CI steps and native subcommands are nested within job durations, not extra runner time.
+
+| Resource group / category | Seconds |
+|---|---:|
+| catchup_ci_job: CI runner | 10620.000 |
+| catchup_native_command: automated lint/check | 124.977 |
+| catchup_native_command: build + test/check (combined) | 399.327 |
+| catchup_native_command: build | 191.288 |
+| catchup_native_command: dependency/environment or verification | 2.679 |
+| catchup_command: build + test/check (combined) | 830.615 |
+| catchup_command: automated lint/check | 178.863 |
+| catchup_command: dependency/environment or verification | 33.565 |
+| catchup_command: build | 20.513 |
+| catchup_api: publication | 277.836 |
+
+### Nested CI phases (already included in CI jobs)
+
+| Phase class | Runner step time |
+|---|---:|
+| CI orchestration | 1m 20.0s |
+| dependency/environment setup | 4m 19.0s |
+| build + automated lint/check | 1m 7.0s |
+| build/test/check (combined) | 2h 45m 27.0s |
+| build | 4m 18.0s |
+| CI reporting | 0.0s |
+
+These conservative phase groups can include compilation and execution together; do not add them to the CI job totals.
+
+Within 2026-10-09T08:43:00Z–2026-10-09T12:20:16Z, the selected CI jobs cover 6440.000 overlap-safe wall seconds; 6596.000 seconds are outside those jobs. This remainder includes implementation, tests, review, publication, waiting and unknown time; it is neither proven idle nor model inference.
+
+### Mixed workflows and waits (excluded from resource totals)
+
+| Activity | Start UTC | End UTC | Seconds | Outcome |
+|---|---|---|---:|---|
+| Native validation and oracle coordination (shared coordination once) | 2026-10-09T06:33:10Z | 2026-10-09T08:55:04Z | 8514.0 | completed |
+| Coordinated inspection and safe selected opening | 2026-10-09T08:50:31+00:00 | 2026-10-09T09:50:02.336775+00:00 | 3571.336775 | completed |
+| Coordinated inspection actual GUI workflow | unknown | unknown | 279.137925 | completed |
+| inspection source publication and verified branch readback | 2026-10-09T09:49:34Z | 2026-10-09T09:49:51Z | 17.0 | completed |
+| witness source publication and verified branch readback | 2026-10-09T10:27:52Z | 2026-10-09T10:28:11Z | 19.0 | completed |
+| membership source publication and verified branch readback | 2026-10-09T11:01:00Z | 2026-10-09T11:01:24Z | 24.0 | completed |
+| loaded source publication and verified branch readback | 2026-10-09T11:41:23Z | 2026-10-09T11:41:47Z | 24.0 | completed |
+| Cross-repository source and validation review (shared once) | 2026-10-09T11:56:23Z | 2026-10-09T11:58:51Z | 148 | completed |
+| Timing publication orchestration blocked then cancelled | unknown | unknown | 12254.9 | cancelled; same ledger action retried successfully |
+| Reconcile cancelled upload, retry exact action and verify source-preserving candidates | 2026-10-09T12:15:03Z | 2026-10-09T12:19:11Z | 248.0 | completed |
+| Publish both reviewed timing checkpoints (shared once) | 2026-10-09T12:19:49Z | 2026-10-09T12:20:16Z | 27 | completed |
+
+The 12,254.9-second cancelled orchestration includes a preceding successful Markdown upload plus transport and the blocked ledger operation; it is not isolated approval time or idle time. Independent implementation and CI continued during this interval. Individual retry duration remains unknown.
+
+### Measured items
+
+| Activity | Category | Start UTC | End UTC | Seconds | Outcome |
+|---|---|---|---|---:|---|
+| Rust Linux checks / linux | CI runner | 2026-10-09T08:31:06Z | 2026-10-09T08:40:23Z | 557.0 | success |
+| Rust macOS native checks / apple-silicon | CI runner | 2026-10-09T08:31:13Z | 2026-10-09T08:53:37Z | 1344.0 | success |
+| Rust Linux checks / linux | CI runner | 2026-10-09T09:49:56Z | 2026-10-09T10:01:06Z | 670.0 | success |
+| Rust macOS native checks / apple-silicon | CI runner | 2026-10-09T09:50:04Z | 2026-10-09T10:12:24Z | 1340.0 | success |
+| Rust Linux checks / linux | CI runner | 2026-10-09T10:28:14Z | 2026-10-09T10:41:39Z | 805.0 | success |
+| Rust macOS native checks / apple-silicon | CI runner | 2026-10-09T10:28:19Z | 2026-10-09T10:53:47Z | 1528.0 | success |
+| Rust macOS native checks / apple-silicon | CI runner | 2026-10-09T11:01:34Z | 2026-10-09T11:27:14Z | 1540.0 | success |
+| Rust Linux checks / linux | CI runner | 2026-10-09T11:01:29Z | 2026-10-09T11:12:38Z | 669.0 | success |
+| Rust Linux checks / linux | CI runner | 2026-10-09T11:41:51Z | 2026-10-09T11:55:09Z | 798.0 | success |
+| Rust macOS native checks / apple-silicon | CI runner | 2026-10-09T11:41:59Z | 2026-10-09T12:04:48Z | 1369.0 | success |
+| 885a-clippy-all-features-result.json | automated lint/check | 2026-10-09T07:02:25.488711+00:00 | 2026-10-09T07:02:37.940638+00:00 | 12.451724417041987 | 101 |
+| 885a-clippy-default-result.json | automated lint/check | 2026-10-09T07:02:17.215470+00:00 | 2026-10-09T07:02:25.487056+00:00 | 8.271056625060737 | 101 |
+| clippy-all-features-result.json | automated lint/check | 2026-10-09T06:56:17.249637+00:00 | 2026-10-09T06:56:30.664268+00:00 | 13.4144726669183 | 101 |
+| clippy-default-result.json | automated lint/check | 2026-10-09T06:55:27.306222+00:00 | 2026-10-09T06:56:17.248863+00:00 | 49.94234704202972 | 101 |
+| fmt-result.json | automated lint/check | 2026-10-09T06:51:38.754352+00:00 | 2026-10-09T06:51:41.095534+00:00 | 2.3407308340538293 | 0 |
+| inventory-all-features-result.json | build + test/check (combined) | 2026-10-09T06:54:15.724041+00:00 | 2026-10-09T06:54:43.768246+00:00 | 28.043927707942203 | 0 |
+| inventory-default-result.json | build + test/check (combined) | 2026-10-09T06:51:41.096472+00:00 | 2026-10-09T06:54:15.720471+00:00 | 154.62375462497585 | 0 |
+| metadata-all-features-result.json | automated lint/check | 2026-10-09T06:51:14.499961+00:00 | 2026-10-09T06:51:14.821645+00:00 | 0.32169274997431785 | 0 |
+| metadata-default-result.json | automated lint/check | 2026-10-09T06:51:04.924637+00:00 | 2026-10-09T06:51:14.438165+00:00 | 9.513539583072998 | 0 |
+| ordinary-build-result.json | build | 2026-10-09T06:56:42.531273+00:00 | 2026-10-09T06:58:48.615450+00:00 | 126.08401512494311 | 0 |
+| tests-all-features-result.json | build + test/check (combined) | 2026-10-09T06:55:02.672654+00:00 | 2026-10-09T06:55:27.303621+00:00 | 24.630764749948867 | 0 |
+| tests-default-result.json | build + test/check (combined) | 2026-10-09T06:54:43.771160+00:00 | 2026-10-09T06:55:02.670237+00:00 | 18.898862833040766 | 0 |
+| clean-before-matrix-result.json | dependency/environment or verification | 2026-10-09T07:15:09.151098+00:00 | 2026-10-09T07:15:09.871905+00:00 | 0.7206422080053017 | 0 |
+| clean-before-ordinary-result.json | dependency/environment or verification | 2026-10-09T07:18:27.560457+00:00 | 2026-10-09T07:18:27.873372+00:00 | 0.31268533295951784 | 0 |
+| clippy-all-features-result.json | automated lint/check | 2026-10-09T07:17:01.282653+00:00 | 2026-10-09T07:17:14.816061+00:00 | 13.53322029102128 | 101 |
+| clippy-default-result.json | automated lint/check | 2026-10-09T07:16:53.780909+00:00 | 2026-10-09T07:17:01.281848+00:00 | 7.500563791021705 | 101 |
+| fmt-result.json | automated lint/check | 2026-10-09T07:15:09.872678+00:00 | 2026-10-09T07:15:12.317864+00:00 | 2.4450896669877693 | 0 |
+| inventory-all-features-result.json | build + test/check (combined) | 2026-10-09T07:15:43.087889+00:00 | 2026-10-09T07:16:11.365232+00:00 | 28.277206417056732 | 0 |
+| inventory-default-result.json | build + test/check (combined) | 2026-10-09T07:15:12.498968+00:00 | 2026-10-09T07:15:43.084515+00:00 | 30.5847326250514 | 0 |
+| metadata-all-features-result.json | automated lint/check | 2026-10-09T07:14:53.597517+00:00 | 2026-10-09T07:14:53.918570+00:00 | 0.3211063330527395 | 0 |
+| metadata-default-result.json | automated lint/check | 2026-10-09T07:14:52.123114+00:00 | 2026-10-09T07:14:53.512633+00:00 | 1.3895663330331445 | 0 |
+| ordinary-build-result.json | build | 2026-10-09T07:18:27.874199+00:00 | 2026-10-09T07:18:48.823373+00:00 | 20.948914667009376 | 0 |
+| post-repair-clean-before-ordinary-result.json | dependency/environment or verification | 2026-10-09T07:22:19.714809+00:00 | 2026-10-09T07:22:20.383673+00:00 | 0.6686066669644788 | 0 |
+| post-repair-ordinary-build-result.json | build | 2026-10-09T07:22:20.384359+00:00 | 2026-10-09T07:22:44.409473+00:00 | 24.024727333919145 | 0 |
+| tests-all-features-result.json | build + test/check (combined) | 2026-10-09T07:16:30.023886+00:00 | 2026-10-09T07:16:53.778460+00:00 | 23.754435040988028 | 0 |
+| tests-default-result.json | build + test/check (combined) | 2026-10-09T07:16:11.369101+00:00 | 2026-10-09T07:16:30.021530+00:00 | 18.652258833986707 | 0 |
+| clean-before-ordinary-result.json | dependency/environment or verification | 2026-10-09T07:33:03.584713+00:00 | 2026-10-09T07:33:04.077602+00:00 | 0.49271195800974965 | 0 |
+| clean-before-scoped-result.json | dependency/environment or verification | 2026-10-09T07:31:48.949289+00:00 | 2026-10-09T07:31:49.434341+00:00 | 0.4847132909344509 | 0 |
+| fmt-result.json | automated lint/check | 2026-10-09T07:31:49.435115+00:00 | 2026-10-09T07:31:51.677034+00:00 | 2.2416474159108475 | 0 |
+| inventory-all-features-result.json | build + test/check (combined) | 2026-10-09T07:32:23.129722+00:00 | 2026-10-09T07:32:55.185319+00:00 | 32.05443037499208 | 0 |
+| inventory-default-result.json | build + test/check (combined) | 2026-10-09T07:31:51.677783+00:00 | 2026-10-09T07:32:23.128068+00:00 | 31.449994000024162 | 0 |
+| metadata-all-features-result.json | automated lint/check | 2026-10-09T07:31:48.534008+00:00 | 2026-10-09T07:31:48.849605+00:00 | 0.3156405830522999 | 0 |
+| metadata-default-result.json | automated lint/check | 2026-10-09T07:31:47.492947+00:00 | 2026-10-09T07:31:48.467953+00:00 | 0.975042040925473 | 0 |
+| ordinary-build-result.json | build | 2026-10-09T07:33:04.078280+00:00 | 2026-10-09T07:33:24.309149+00:00 | 20.230756832985207 | 0 |
+| tests-all-features-result.json | build + test/check (combined) | 2026-10-09T07:32:59.979076+00:00 | 2026-10-09T07:33:03.545269+00:00 | 3.5659863330656663 | 0 |
+| tests-default-result.json | build + test/check (combined) | 2026-10-09T07:32:55.186704+00:00 | 2026-10-09T07:32:59.977610+00:00 | 4.7903036249335855 | 0 |
+| FINAL-CORE | build + test/check (combined) | unknown | unknown | 30.339 | 0 |
+| FINAL-APP | build + test/check (combined) | unknown | unknown | 33.518 | 0 |
+| FINAL-STRICT | automated lint/check | unknown | unknown | 16.417 | 0 |
+| FINAL-FMT | automated lint/check | unknown | unknown | 2.111 | 0 |
+| ALL-FEATURES-TESTS | build + test/check (combined) | unknown | unknown | 88.246 | 0 |
+| ALL-FEATURES-STRICT | automated lint/check | unknown | unknown | 24.834 | 0 |
+| PACKAGE-CLEAN | dependency/environment or verification | unknown | unknown | 0.28 | 0 |
+| ORDINARY-BUILD | build | unknown | unknown | 20.513 | 0 |
+| Create source blob rust/crates/bello-agent-app/src/chat.rs | publication | unknown | unknown | 6.735 | completed |
+| Create source blob rust/crates/bello-agent-app/src/chat_load.rs | publication | unknown | unknown | 5.775 | completed |
+| Create source blob rust/crates/bello-agent-app/src/chat_load_tests.rs | publication | unknown | unknown | 12.381 | completed |
+| Create source blob rust/crates/bello-agent-app/src/chat_navigation.rs | publication | unknown | unknown | 17.786 | completed |
+| Create source blob rust/crates/bello-agent-app/src/chat_organization.rs | publication | unknown | unknown | 5.966 | completed |
+| Create source blob rust/crates/bello-agent-app/src/main.rs | publication | unknown | unknown | 14.882 | completed |
+| Create source blob rust/crates/bello-agent-app/src/project_manager_controller.rs | publication | unknown | unknown | 10.05 | completed |
+| Create source blob rust/crates/bello-agent-app/src/shutdown_barrier.rs | publication | unknown | unknown | 9.971 | completed |
+| Create source blob rust/crates/bello-agent-app/src/shutdown_barrier_tests.rs | publication | unknown | unknown | 5.012 | completed |
+| Create source blob rust/crates/bello-agent-app/src/sidebar_read_state_tests.rs | publication | unknown | unknown | 38.555 | completed |
+| Create source blob rust/crates/bello-agent-app/src/sidebar_run_state.rs | publication | unknown | unknown | 5.786 | completed |
+| Create source blob rust/crates/bello-agent-app/src/sidebar_run_state_tests.rs | publication | unknown | unknown | 12.749 | completed |
+| Create source blob rust/crates/bello-agent-core/src/context_recovery.rs | publication | unknown | unknown | 19.159 | completed |
+| Create source blob rust/crates/bello-agent-core/src/inspection.rs | publication | unknown | unknown | 5.195 | completed |
+| Create source blob rust/crates/bello-agent-core/src/inspection_tests.rs | publication | unknown | unknown | 10.201 | completed |
+| Create source blob rust/crates/bello-agent-core/src/lib.rs | publication | unknown | unknown | 14.375 | completed |
+| Create source blob rust/crates/bello-agent-core/src/session.rs | publication | unknown | unknown | 22.124 | completed |
+| Create source blob rust/crates/bello-agent-core/src/skill_schema.rs | publication | unknown | unknown | 4.242 | completed |
+| Create source blob rust/crates/bello-agent-core/src/stream_journal.rs | publication | unknown | unknown | 8.466 | completed |
+| Create source blob rust/crates/bello-agent-core/src/workspace.rs | publication | unknown | unknown | 4.638 | completed |
+| Create source blob rust/docs/coordinated-session-inspection.md | publication | unknown | unknown | 8.824 | completed |
+| Create source blob rust/docs/parity.md | publication | unknown | unknown | 14.624 | completed |
+| tree_create_seconds | publication | unknown | unknown | 15.314 | completed |
+| commit_create_seconds | publication | unknown | unknown | 5.026 | completed |
+| core-default | build + test/check (combined) | 2026-10-09T10:50:54.577813+00:00 | unknown | 40.401 | 0 |
+| core-all-features | build + test/check (combined) | 2026-10-09T10:51:34.978936+00:00 | unknown | 57.189 | 0 |
+| core-clippy-default | automated lint/check | 2026-10-09T10:52:32.168917+00:00 | unknown | 9.577 | 0 |
+| core-clippy-all | automated lint/check | 2026-10-09T10:52:41.746451+00:00 | unknown | 11.462 | 0 |
+| format | automated lint/check | 2026-10-09T10:52:53.208320+00:00 | unknown | 2.148 | 0 |
+| app-default | build + test/check (combined) | 2026-10-09T10:52:58.345758+00:00 | unknown | 48.834 | 0 |
+| app-all-features | build + test/check (combined) | 2026-10-09T10:53:47.180621+00:00 | unknown | 55.061 | 0 |
+| app-clippy-default | automated lint/check | 2026-10-09T10:54:42.242288+00:00 | unknown | 13.367 | 0 |
+| app-clippy-all | automated lint/check | 2026-10-09T10:54:55.609914+00:00 | unknown | 14.857 | 0 |
+| omit_uncertainty | build + test/check (combined) | unknown | unknown | 17.368 | Expected negative-control failure; source restored |
+| omit_poison_check | build + test/check (combined) | unknown | unknown | 18.054 | Expected negative-control failure; source restored |
+| reuse_incarnation | build + test/check (combined) | unknown | unknown | 17.196 | Expected negative-control failure; source restored |
+| omit_unwind_fence | build + test/check (combined) | unknown | unknown | 17.33 | Expected negative-control failure; source restored |
+| permit_rebinding | build + test/check (combined) | unknown | unknown | 17.803 | Expected negative-control failure; source restored |
+| omit_final_recheck | build + test/check (combined) | unknown | unknown | 17.141 | Expected negative-control failure; source restored |
+| wrap_epoch | build + test/check (combined) | unknown | unknown | 17.001 | Expected negative-control failure; source restored |
+| omit_drop_retirement | build + test/check (combined) | unknown | unknown | 17.372 | Expected negative-control failure; source restored |
+| reuse_epoch | build + test/check (combined) | unknown | unknown | 17.247 | Expected negative-control failure; source restored |
+| initial-focused | build + test/check (combined) | 2026-10-09T11:05:30.422733+00:00 | unknown | 19.342222 | 0 |
+| guarded-focused | build + test/check (combined) | 2026-10-09T11:09:30.552932+00:00 | unknown | 9.105983 | 101 |
+| guarded-focused-fixed | build + test/check (combined) | 2026-10-09T11:10:03.617526+00:00 | unknown | 18.640265 | 0 |
+| pure-projection | build + test/check (combined) | 2026-10-09T11:10:35.247515+00:00 | unknown | 12.272778 | 0 |
+| final-focused-before-controls | build + test/check (combined) | 2026-10-09T11:14:53.452229+00:00 | unknown | 19.934243 | 0 |
+| strict-core-before-controls | automated lint/check | 2026-10-09T11:15:13.428623+00:00 | unknown | 9.702933 | 101 |
+| strict-core-fixed | automated lint/check | 2026-10-09T11:15:54.078660+00:00 | unknown | 0.372263 | 101 |
+| strict-core-final | automated lint/check | 2026-10-09T11:16:04.737550+00:00 | unknown | 10.557313 | 0 |
+| workspace-format | automated lint/check | 2026-10-09T11:17:12.103575+00:00 | unknown | 2.310065 | 0 |
+| source-whitespace | build + test/check (combined) | 2026-10-09T11:17:14.447877+00:00 | unknown | 0.013395 | 0 |
+| restored-focused | build + test/check (combined) | 2026-10-09T11:20:03.765796+00:00 | unknown | 0.268485 | 101 |
+| clean-core-after-mutants | dependency/environment or verification | 2026-10-09T11:20:29.318743+00:00 | unknown | 0.212498 | 0 |
+| clean-restored-focused | dependency/environment or verification | 2026-10-09T11:20:29.560998+00:00 | unknown | 19.740731 | 0 |
+| clean-restored-pure | dependency/environment or verification | 2026-10-09T11:20:49.337161+00:00 | unknown | 13.185227 | 0 |
+| loc-verifier | build + test/check (combined) | 2026-10-09T11:21:52.685010+00:00 | unknown | 1.565317 | 0 |
+| final-core-default | build + test/check (combined) | 2026-10-09T11:28:00.770043+00:00 | unknown | 25.417021 | 0 |
+| final-core-all-features | build + test/check (combined) | 2026-10-09T11:28:26.226821+00:00 | unknown | 82.724481 | 0 |
+| final-core-clippy-default | automated lint/check | 2026-10-09T11:29:48.979461+00:00 | unknown | 9.989475 | 0 |
+| final-core-clippy-all-features | automated lint/check | 2026-10-09T11:29:58.995985+00:00 | unknown | 12.827144 | 0 |
+| clean-app-final | dependency/environment or verification | 2026-10-09T11:30:11.855840+00:00 | unknown | 0.146464 | 0 |
+| final-app-default | build + test/check (combined) | 2026-10-09T11:30:12.034290+00:00 | unknown | 65.083309 | 0 |
+| final-app-all-features | build + test/check (combined) | 2026-10-09T11:31:17.146727+00:00 | unknown | 66.124266 | 0 |
+| final-app-clippy-default | automated lint/check | 2026-10-09T11:32:23.303562+00:00 | unknown | 20.4253 | 0 |
+| final-app-clippy-all-features | automated lint/check | 2026-10-09T11:32:43.760535+00:00 | unknown | 15.824093 | 0 |
+| final-workspace-format | automated lint/check | 2026-10-09T11:32:59.612092+00:00 | unknown | 2.081215 | 0 |
+| final-source-whitespace | build + test/check (combined) | 2026-10-09T11:33:01.720291+00:00 | unknown | 0.023249 | 0 |
+
+Full source hashes, source URLs, nested job steps and timing limitations are in duration-data.json. Native macOS full logs were unavailable for some Agent runs; verified job/step metadata is retained without a full-log claim. Later source CI may be running and is not silently promoted to success by this snapshot.
+
+### Earlier accounting (unchanged)
+
 ## Checkpoint: 2026-10-09T08:43:00Z
 
 This adds selected newly obtained receipts, including earlier intervals not present in the 08:08 snapshot. Historical records and previous checkpoint coverage remain unchanged. Unknown inference stays unavailable. Source/receipt hashes identify evidence; local observer timing is not independently verified merely by a source commit link.
