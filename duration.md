@@ -1,5 +1,115 @@
 # BelloAgent Rust migration: where the time went
 
+## Incremental checkpoint: 2026-10-09T08:08:00Z
+
+Historical audit below and its original CI cutoff remain unchanged. This update covers selected newly recorded work, not every intervening run or task. Unknown durations and inference remain unavailable. Local timing observations below are source records supported by retained receipt hashes; public commit links identify source or outcome, not independent timing verification.
+
+### Separate resource totals
+
+| Group | All timed items | All resource/client seconds | Known-endpoint items | Known-endpoint resource seconds | Known-endpoint union seconds |
+|---|---:|---:|---:|---:|---:|
+| incremental_api | 58 | 427.621 | 50 | 389.193 | 254.901 |
+| incremental_command | 64 | 956.457 | 39 | 517.000 | 517.000 |
+| incremental_ci_job | 2 | 2171.000 | 2 | 2171.000 | 1424.000 |
+
+| Resource group / category | Seconds |
+|---|---:|
+| incremental_api: publication / verification | 427.621 |
+| incremental_command: dependency/environment or verification | 67.239 |
+| incremental_command: build + test/check (combined) | 707.268 |
+| incremental_command: automated lint/check | 112.846 |
+| incremental_command: build | 69.104 |
+| incremental_ci_job: CI | 2171.000 |
+
+API elapsed sums include overlapping pending calls and client/service waiting; they are not server compute or active work. Command sums include build/test mixtures. Whole-second 0s observations mean below the receipt counter resolution, not zero effort. Missing or arithmetically derived end timestamps are excluded from known-endpoint unions. CI steps are nested and excluded from job sums. These groups must not be added to mixed task windows or treated as project elapsed time.
+
+### Where newly observed task time went
+
+15 mixed task windows; union of closed observed intervals: 7889.000 seconds. This includes overlap and waiting; it is not an active-work, CPU or inference total. Unfinished waits keep an unknown final duration.
+
+| Activity | Category | Start UTC | End UTC | Seconds | Outcome |
+|---|---|---|---|---:|---|
+| Timing-report GitHub blob publication waiting for platform confirmation | waiting | 2026-10-09T06:08:37Z | 2026-10-09T07:49:53Z | 6076.0 | approval_resolved_blob_created |
+| Selected-chat Find waits for shared Box dependency publication after local candidate matrix | waiting | 2026-10-09T05:41:15Z | 2026-10-09T07:00:39Z | 4764 | publication_gate_satisfied_ci_pending |
+| Immutable selected-chat Find source candidate preparation and verification | publication/preparation (mixed) | 2026-10-09T06:25:09Z | 2026-10-09T06:30:09Z | 300.0 | completed |
+| Actual Git-pinned source-before | dependency/environment or verification | 2026-10-09T06:27:57Z | 2026-10-09T06:27:57Z | 0.0 | completed |
+| Actual Git-pinned toolchain | dependency/environment or verification | 2026-10-09T06:27:57Z | 2026-10-09T06:27:57Z | 0.0 | completed |
+| Actual Git-pinned fetch | dependency/environment or verification | 2026-10-09T06:27:57Z | 2026-10-09T06:28:21Z | 24.0 | completed |
+| Actual Git-pinned metadata | dependency/environment or verification | 2026-10-09T06:28:21Z | 2026-10-09T06:28:22Z | 1.0 | completed |
+| Actual Git-pinned app-default | build + test/check (combined) | 2026-10-09T06:28:22Z | 2026-10-09T06:29:15Z | 53.0 | completed |
+| Actual Git-pinned app-all-features | build + test/check (combined) | 2026-10-09T06:29:15Z | 2026-10-09T06:30:25Z | 70.0 | completed |
+| Actual Git-pinned clippy-default | automated lint/check | 2026-10-09T06:30:25Z | 2026-10-09T06:30:34Z | 9.0 | completed |
+| Actual Git-pinned clippy-all-features | automated lint/check | 2026-10-09T06:30:34Z | 2026-10-09T06:30:44Z | 10.0 | completed |
+| Actual Git-pinned fmt | automated lint/check | 2026-10-09T06:30:44Z | 2026-10-09T06:30:46Z | 2.0 | completed |
+| Actual Git-pinned diff-check | automated lint/check | 2026-10-09T06:30:46Z | 2026-10-09T06:30:46Z | 0.0 | completed |
+| Actual Git-pinned package-clean | dependency/environment or verification | 2026-10-09T06:30:46Z | 2026-10-09T06:30:46Z | 0.0 | completed |
+| Actual Git-pinned ordinary-build | build | 2026-10-09T06:30:46Z | 2026-10-09T06:31:03Z | 17.0 | completed |
+| Actual Git-pinned source-after | dependency/environment or verification | 2026-10-09T06:31:03Z | 2026-10-09T06:31:03Z | 0.0 | completed |
+| Ordinary Linux Find GUI acceptance: short chat and seeded history; overlay occlusion found | validation (mixed) | 2026-10-09T06:33:52Z | 2026-10-09T06:43:04Z | 552 | failed_with_independent_passes |
+| Sidebar search architecture and acceptance design | review/documentation (mixed) | 2026-10-09T06:37:38+00:00 | 2026-10-09T06:42:49.201430+00:00 | 311.20143 | completed |
+| Independent sidebar index and privacy review | review/documentation (mixed) | 2026-10-09T06:43:21Z | 2026-10-09T06:45:55Z | 154.0 | completed |
+| Official dependency research, isolated probes and enforcement addendum | dependency/environment (mixed) | 2026-10-09T06:46:43Z | 2026-10-09T06:55:21.950025+00:00 | 518.950025 | completed |
+| Isolated official dependency resolve | dependency/environment or verification | 2026-10-09T06:50:51.470064+00:00 | unknown | 17.92824319600186 | completed |
+| Isolated official dependency metadata | dependency/environment or verification | 2026-10-09T06:51:18.161061+00:00 | unknown | 5.449316037003882 | completed |
+| Isolated official dependency probe189 | dependency/environment or verification | 2026-10-09T06:52:16.662576+00:00 | unknown | 8.207819590999861 | failed_assertion |
+| Isolated official dependency probe189-refined | dependency/environment or verification | 2026-10-09T06:52:36.625088+00:00 | unknown | 0.3228246350045083 | completed |
+| Isolated official dependency probe199 | dependency/environment or verification | 2026-10-09T06:52:41.405380+00:00 | unknown | 8.109944761999941 | completed |
+| Observed official-download poll cancellation and authorized retry note | design_and_review | 2026-10-09T06:49:02Z | unknown | unknown | cancellation_observed_retry_success_reported |
+| upload_blob | publication / verification | 2026-10-09T07:04:33.940Z | 2026-10-09T07:04:40.251Z | 6.311 | completed |
+| upload_blob | publication / verification | 2026-10-09T07:04:33.942Z | 2026-10-09T07:04:46.543Z | 12.601 | completed |
+| upload_blob | publication / verification | 2026-10-09T07:04:33.943Z | 2026-10-09T07:04:51.395Z | 17.452 | completed |
+| upload_blob | publication / verification | 2026-10-09T07:04:33.943Z | 2026-10-09T07:04:56.092Z | 22.149 | completed |
+| upload_blob | publication / verification | 2026-10-09T07:04:33.943Z | 2026-10-09T07:05:03.099Z | 29.156 | completed |
+| upload_blob | publication / verification | 2026-10-09T07:04:33.945Z | 2026-10-09T07:05:10.071Z | 36.126 | completed |
+| upload_blob | publication / verification | 2026-10-09T07:04:33.944Z | 2026-10-09T07:05:15.217Z | 41.273 | completed |
+| upload_tree | publication / verification | 2026-10-09T07:05:20.560Z | 2026-10-09T07:05:31.680Z | 11.12 | completed |
+| upload_commit | publication / verification | 2026-10-09T07:05:36.988Z | 2026-10-09T07:05:42.624Z | 5.636 | completed |
+| remote_readback | publication / verification | 2026-10-09T07:05:53.730Z | 2026-10-09T07:05:54.023Z | 0.293 | completed |
+| remote_readback | publication / verification | 2026-10-09T07:05:53.730Z | 2026-10-09T07:05:54.068Z | 0.338 | completed |
+| remote_readback | publication / verification | 2026-10-09T07:05:53.730Z | 2026-10-09T07:05:54.125Z | 0.395 | completed |
+| remote_readback | publication / verification | 2026-10-09T07:05:53.730Z | 2026-10-09T07:05:54.131Z | 0.401 | completed |
+| remote_readback | publication / verification | 2026-10-09T07:05:53.730Z | 2026-10-09T07:05:54.178Z | 0.448 | completed |
+| remote_readback | publication / verification | 2026-10-09T07:05:53.730Z | 2026-10-09T07:05:54.226Z | 0.496 | completed |
+| remote_readback | publication / verification | 2026-10-09T07:05:53.730Z | 2026-10-09T07:05:54.232Z | 0.502 | completed |
+| public_fetch | publication / verification | 2026-10-09T07:06:13.337905+00:00 | 2026-10-09T07:06:27.573858+00:00 | 14.23594502400374 | completed |
+| Frozen landing final matrix and clean build | validation (mixed) | 2026-10-09T07:02:33Z | 2026-10-09T07:05:18Z | 165.0 | completed |
+| upload_blob | publication / verification | 2026-10-09T07:23:19.717Z | 2026-10-09T07:23:27.451Z | 7.734 | completed |
+| upload_blob | publication / verification | 2026-10-09T07:23:19.718Z | 2026-10-09T07:23:38.214Z | 18.496 | completed |
+| upload_tree | publication / verification | 2026-10-09T07:23:45.948Z | 2026-10-09T07:23:52.663Z | 6.715 | completed |
+| upload_commit | publication / verification | 2026-10-09T07:23:52.663Z | 2026-10-09T07:23:58.048Z | 5.385 | completed |
+| remote_readback | publication / verification | 2026-10-09T07:24:12.911Z | 2026-10-09T07:24:13.308Z | 0.397 | completed |
+| remote_readback | publication / verification | 2026-10-09T07:24:12.911Z | 2026-10-09T07:24:13.481Z | 0.57 | completed |
+| public_fetch | publication / verification | 2026-10-09T07:24:13.885281+00:00 | 2026-10-09T07:24:23.309522+00:00 | 9.424232270001085 | completed |
+| Notice final frozen matrix and clean build | validation (mixed) | 2026-10-09T07:21:36Z | 2026-10-09T07:24:24Z | 168.0 | completed |
+| B27 actual Linux GUI retest with residual notice observations | validation (mixed) | 2026-10-09T07:07:24+00:00 | 2026-10-09T07:17:47+00:00 | 623 | completed |
+| Final 570 focused actual Linux Find notice GUI acceptance | validation (mixed) | 2026-10-09T07:26:13+00:00 | 2026-10-09T07:31:58+00:00 | 345.0 | completed |
+| Final Find source publication and branch readback | publication/preparation (mixed) | 2026-10-09T07:40:22Z | 2026-10-09T07:40:57Z | 35 | completed |
+| Separate multiline title-layout implementation and source validation | implementation/rework + validation (mixed) | 2026-10-09T07:28:11+00:00 | 2026-10-09T07:39:13.277693+00:00 | 662.277693 | completed |
+| Separate title immutable source preparation measured API resources | source_publication_resources | unknown | unknown | 38.428000000000004 | completed |
+| Separate title multiline layout and ASCII derivation actual Linux GUI | validation (mixed) | 2026-10-09T07:40:56.765267+00:00 | 2026-10-09T07:44:00.600154+00:00 | 183.834887 | completed |
+| Exact Find570 Linux CI job | CI | 2026-10-09T07:41:02Z | 2026-10-09T07:53:31Z | 749.0 | completed_success |
+| Exact Find570 apple-silicon CI job | CI | 2026-10-09T07:41:04Z | 2026-10-09T08:04:46Z | 1422.0 | completed_success |
+| Exact Find570 two-job elapsed CI coverage | ci_interval_union | 2026-10-09T07:41:02+00:00 | 2026-10-09T08:04:46+00:00 | 1424.0 | completed_success |
+| Publish both initial migration timing reports and verify readbacks | publication | 2026-10-09T06:07:44Z | 2026-10-09T07:52:44Z | 6300.0 | Both initial timing reports published |
+
+### Mixed-window groups (not resource totals)
+
+| Category | All windows | Closed windows with endpoints | Closed interval union (seconds) |
+|---|---:|---:|---:|
+| dependency/environment (mixed) | 1 | 1 | 518.950 |
+| implementation/rework + validation (mixed) | 1 | 1 | 662.278 |
+| publication | 1 | 1 | 6300.000 |
+| publication/preparation (mixed) | 2 | 2 | 335.000 |
+| review/documentation (mixed) | 2 | 2 | 465.201 |
+| validation (mixed) | 6 | 6 | 2036.835 |
+| waiting | 2 | 2 | 7718.000 |
+
+Categories can overlap each other and include productive parallel work during waits. Do not sum category unions or interpret any category as active labor.
+
+Per-command and API child records, nested CI steps, source hashes and uncertainty are retained in duration-data.json. Nested child resource totals are counted once in their separate group; their parent windows remain excluded. Shared editor work is assigned to BelloBox; shared initial timing-publication wait is represented once in BelloAgent.
+
+## Historical audit (original coverage below)
+
 Generated: 2026-10-09T06:06:30.663402Z. CI evidence cutoff: 2026-10-09T06:00:00Z. Source checkpoint: [`885a5bcf`](https://github.com/BelloWare/BelloAgent/commit/885a5bcf6e608361692e877d7c77941b0db2f4d8). All dates below are UTC.
 
 ## Honest summary
