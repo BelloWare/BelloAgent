@@ -3,7 +3,7 @@
   "evidence_cutoff_utc": "2026-10-09T06:00:00Z",
   "schema_version": 1,
   "repository": "BelloWare/BelloAgent",
-  "as_of_utc": "2026-10-09T16:22:00Z",
+  "as_of_utc": "2026-10-09T16:37:00Z",
   "source_commit": "885a5bcf6e608361692e877d7c77941b0db2f4d8",
   "summary": {
     "window_start_utc": "2026-10-04T05:13:30Z",
@@ -66067,6 +66067,525 @@
       "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
       "job_id": 113911717281,
       "run_id": 37957524331
+    },
+    {
+      "id": "20261009-1637-previous-timing-publication",
+      "repository_assignment": "BelloAgent",
+      "activity": "Root paired timing verification and normal publication (shared once)",
+      "category": "publication (mixed)",
+      "start_utc": "2026-10-09T16:24:55.180Z",
+      "end_utc": "2026-10-09T16:25:55.425Z",
+      "duration_seconds": 60.245,
+      "source": [
+        {
+          "receipt_sha256": "f085b61c92834a87910ea8741f84e222e7aa724c21b8fb53df8adac099582184",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "completed",
+      "accounting_group": "task_window",
+      "include_in_totals": false,
+      "resource": "mixed task window",
+      "duration_basis": "Observed mixed task/workflow interval includes tools, coordination and waiting; overlaps command resources and other workers",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1637",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time."
+    },
+    {
+      "id": "20261009-1637-root-duration-audit-0",
+      "repository_assignment": "BelloAgent",
+      "activity": "Independent duration audit and historical-prefix verification",
+      "category": "automated accounting validation",
+      "start_utc": "2026-10-09T16:23:38.513477+00:00",
+      "end_utc": "2026-10-09T16:23:38.667288+00:00",
+      "duration_seconds": 0.1538214720058022,
+      "source": [
+        {
+          "receipt_sha256": "48248610ecd440338e807340576fffe09fb6dab47500a09be39cda198830b07a",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "0",
+      "accounting_group": "catchup_command",
+      "include_in_totals": true,
+      "resource": "cloud command process",
+      "duration_basis": "Measured command/resource elapsed; not active labor or inference",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1637",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time."
+    },
+    {
+      "id": "20261009-1637-title-acl-ci-113911717281",
+      "repository_assignment": "BelloAgent",
+      "activity": "Exact title/ACL follow-on apple-silicon CI job",
+      "category": "ci",
+      "start_utc": "2026-10-09T16:13:26Z",
+      "end_utc": "2026-10-09T16:25:47Z",
+      "duration_seconds": 741.0,
+      "source": [
+        {
+          "receipt_sha256": "0332d57a8ff142300f0874a917fcd7d85b7c1c9b805fc10b13db338fc821a693",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated",
+          "url": "https://github.com/BelloWare/BelloAgent/actions/runs/37957524331/job/113911717281"
+        }
+      ],
+      "outcome": "failure",
+      "accounting_group": "catchup_ci_job",
+      "include_in_totals": true,
+      "resource": "CI runner",
+      "duration_basis": "Official GitHub execution endpoints; Linux job already counted previously, only new native job added",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1637",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "job_id": 113911717281,
+      "run_id": 37957524331,
+      "source_commit": "b50a00fd84c0f8289a5daf73c2d4c792096871d2",
+      "nested_steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-10-09T16:13:26Z",
+          "completed_at": "2026-10-09T16:13:27Z",
+          "include_in_totals": false
+        },
+        {
+          "name": "Run actions/checkout@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-10-09T16:13:27Z",
+          "completed_at": "2026-10-09T16:13:31Z",
+          "include_in_totals": false
+        },
+        {
+          "name": "Verify native Apple toolchain",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-10-09T16:13:31Z",
+          "completed_at": "2026-10-09T16:13:38Z",
+          "include_in_totals": false
+        },
+        {
+          "name": "Install pinned Rust toolchain",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-10-09T16:13:38Z",
+          "completed_at": "2026-10-09T16:13:48Z",
+          "include_in_totals": false
+        },
+        {
+          "name": "Compile and link all native test targets",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-10-09T16:13:48Z",
+          "completed_at": "2026-10-09T16:18:50Z",
+          "include_in_totals": false
+        },
+        {
+          "name": "Verify and transport same-build UTF-8 decoder bundle",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-10-09T16:18:50Z",
+          "completed_at": "2026-10-09T16:24:05Z",
+          "include_in_totals": false
+        },
+        {
+          "name": "Run pure domain and filesystem tests",
+          "status": "completed",
+          "conclusion": "failure",
+          "number": 7,
+          "started_at": "2026-10-09T16:24:05Z",
+          "completed_at": "2026-10-09T16:25:42Z",
+          "include_in_totals": false
+        },
+        {
+          "name": "Bound native Core diagnostic text",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8,
+          "started_at": "2026-10-09T16:25:42Z",
+          "completed_at": "2026-10-09T16:25:42Z",
+          "include_in_totals": false
+        },
+        {
+          "name": "Retain bounded native Core diagnostic text",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9,
+          "started_at": "2026-10-09T16:25:42Z",
+          "completed_at": "2026-10-09T16:25:43Z",
+          "include_in_totals": false
+        },
+        {
+          "name": "Verify pinned sidebar SQLite and synthetic privacy fixtures",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 10,
+          "started_at": "2026-10-09T16:25:43Z",
+          "completed_at": "2026-10-09T16:25:43Z",
+          "include_in_totals": false
+        },
+        {
+          "name": "Retain project skill source and Darwin alias characterization",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 11,
+          "started_at": "2026-10-09T16:25:43Z",
+          "completed_at": "2026-10-09T16:25:43Z",
+          "include_in_totals": false
+        },
+        {
+          "name": "Trusted Bash full feature suites and exact Swift process oracle",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 12,
+          "started_at": "2026-10-09T16:25:43Z",
+          "completed_at": "2026-10-09T16:25:43Z",
+          "include_in_totals": false
+        },
+        {
+          "name": "Project authority fixture contracts and native type checks",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 13,
+          "started_at": "2026-10-09T16:25:43Z",
+          "completed_at": "2026-10-09T16:25:43Z",
+          "include_in_totals": false
+        },
+        {
+          "name": "Synthetic native file tools through fake-platform transcript",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 14,
+          "started_at": "2026-10-09T16:25:43Z",
+          "completed_at": "2026-10-09T16:25:43Z",
+          "include_in_totals": false
+        },
+        {
+          "name": "Explicit native authority host with fake storage",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 15,
+          "started_at": "2026-10-09T16:25:43Z",
+          "completed_at": "2026-10-09T16:25:43Z",
+          "include_in_totals": false
+        },
+        {
+          "name": "Build native applications without launching",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 16,
+          "started_at": "2026-10-09T16:25:43Z",
+          "completed_at": "2026-10-09T16:25:43Z",
+          "include_in_totals": false
+        },
+        {
+          "name": "Test native lifecycle harness policy",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 17,
+          "started_at": "2026-10-09T16:25:43Z",
+          "completed_at": "2026-10-09T16:25:43Z",
+          "include_in_totals": false
+        },
+        {
+          "name": "Build explicitly enabled native lifecycle probe",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 18,
+          "started_at": "2026-10-09T16:25:43Z",
+          "completed_at": "2026-10-09T16:25:43Z",
+          "include_in_totals": false
+        },
+        {
+          "name": "Observe isolated native own-window lifecycle",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 19,
+          "started_at": "2026-10-09T16:25:43Z",
+          "completed_at": "2026-10-09T16:25:43Z",
+          "include_in_totals": false
+        },
+        {
+          "name": "Post Run actions/checkout@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 38,
+          "started_at": "2026-10-09T16:25:43Z",
+          "completed_at": "2026-10-09T16:25:44Z",
+          "include_in_totals": false
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 39,
+          "started_at": "2026-10-09T16:25:44Z",
+          "completed_at": "2026-10-09T16:25:45Z",
+          "include_in_totals": false
+        }
+      ],
+      "log_limitation": "Native error artifact metadata exists but bytes not retrieved; no native root-cause claim",
+      "coverage_note": "Late-added earlier evidence, deduplicated against all prior timed intervals."
+    },
+    {
+      "id": "20261009-1637-root-shared-review",
+      "repository_assignment": "BelloAgent",
+      "activity": "Root cross-repository package review, publication, failure investigation, coordination and waits (shared once)",
+      "category": "review/coordination/waiting (mixed)",
+      "start_utc": "2026-10-09T16:21:26Z",
+      "end_utc": "2026-10-09T16:33:22.579839+00:00",
+      "duration_seconds": 716.579839,
+      "source": [
+        {
+          "receipt_sha256": "678922614619df888e291e757981a904416e93188d9518ed1a90be5b7c5e0fef",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "completed",
+      "accounting_group": "task_window",
+      "include_in_totals": false,
+      "resource": "mixed task window",
+      "duration_basis": "Observed mixed task/workflow interval includes tools, coordination and waiting; overlaps command resources and other workers",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1637",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "coverage_note": "Late-added earlier evidence, deduplicated against all prior timed intervals.",
+      "nested_observations_additive": false
+    },
+    {
+      "id": "20261009-1637-ci-fixture-repair-0",
+      "repository_assignment": "BelloAgent",
+      "activity": "CI fixture repair script-controls",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T16:30:25.585434+00:00",
+      "end_utc": "2026-10-09T16:30:25.700512+00:00",
+      "duration_seconds": 0.1150884689996019,
+      "source": [
+        {
+          "receipt_sha256": "a3265dd4fc70c32e33edafef30bebdb19c0519af12e1174fe81abecc689f9541",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "0",
+      "accounting_group": "catchup_command",
+      "include_in_totals": true,
+      "resource": "cloud command process",
+      "duration_basis": "Measured command/resource elapsed; not active labor or inference",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1637",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "scope": "Source-bound local repair validation; native rerun and production acceptance remain separate"
+    },
+    {
+      "id": "20261009-1637-ci-fixture-repair-1",
+      "repository_assignment": "BelloAgent",
+      "activity": "CI fixture repair package-clean",
+      "category": "dependency/environment or verification",
+      "start_utc": "2026-10-09T16:30:25.701040+00:00",
+      "end_utc": "2026-10-09T16:30:25.978529+00:00",
+      "duration_seconds": 0.277506327998708,
+      "source": [
+        {
+          "receipt_sha256": "a3265dd4fc70c32e33edafef30bebdb19c0519af12e1174fe81abecc689f9541",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "0",
+      "accounting_group": "catchup_command",
+      "include_in_totals": true,
+      "resource": "cloud command process",
+      "duration_basis": "Measured command/resource elapsed; not active labor or inference",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1637",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "scope": "Source-bound local repair validation; native rerun and production acceptance remain separate"
+    },
+    {
+      "id": "20261009-1637-ci-fixture-repair-2",
+      "repository_assignment": "BelloAgent",
+      "activity": "CI fixture repair focused",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T16:30:25.979108+00:00",
+      "end_utc": "2026-10-09T16:31:24.382027+00:00",
+      "duration_seconds": 58.40293668699451,
+      "source": [
+        {
+          "receipt_sha256": "a3265dd4fc70c32e33edafef30bebdb19c0519af12e1174fe81abecc689f9541",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "0",
+      "accounting_group": "catchup_command",
+      "include_in_totals": true,
+      "resource": "cloud command process",
+      "duration_basis": "Measured command/resource elapsed; not active labor or inference",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1637",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "scope": "Source-bound local repair validation; native rerun and production acceptance remain separate"
+    },
+    {
+      "id": "20261009-1637-ci-fixture-repair-3",
+      "repository_assignment": "BelloAgent",
+      "activity": "CI fixture repair allfeatures",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T16:31:24.384158+00:00",
+      "end_utc": "2026-10-09T16:32:41.864600+00:00",
+      "duration_seconds": 77.48045678100607,
+      "source": [
+        {
+          "receipt_sha256": "a3265dd4fc70c32e33edafef30bebdb19c0519af12e1174fe81abecc689f9541",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "0",
+      "accounting_group": "catchup_command",
+      "include_in_totals": true,
+      "resource": "cloud command process",
+      "duration_basis": "Measured command/resource elapsed; not active labor or inference",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1637",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "scope": "Source-bound local repair validation; native rerun and production acceptance remain separate"
+    },
+    {
+      "id": "20261009-1637-ci-fixture-repair-4",
+      "repository_assignment": "BelloAgent",
+      "activity": "CI fixture repair default",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T16:32:41.866208+00:00",
+      "end_utc": "2026-10-09T16:33:43.868016+00:00",
+      "duration_seconds": 62.00182438199408,
+      "source": [
+        {
+          "receipt_sha256": "a3265dd4fc70c32e33edafef30bebdb19c0519af12e1174fe81abecc689f9541",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "0",
+      "accounting_group": "catchup_command",
+      "include_in_totals": true,
+      "resource": "cloud command process",
+      "duration_basis": "Measured command/resource elapsed; not active labor or inference",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1637",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "scope": "Source-bound local repair validation; native rerun and production acceptance remain separate"
+    },
+    {
+      "id": "20261009-1637-ci-fixture-repair-5",
+      "repository_assignment": "BelloAgent",
+      "activity": "CI fixture repair strictall",
+      "category": "automated lint/check",
+      "start_utc": "2026-10-09T16:33:43.870456+00:00",
+      "end_utc": "2026-10-09T16:34:05.780661+00:00",
+      "duration_seconds": 21.9102432540094,
+      "source": [
+        {
+          "receipt_sha256": "a3265dd4fc70c32e33edafef30bebdb19c0519af12e1174fe81abecc689f9541",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "0",
+      "accounting_group": "catchup_command",
+      "include_in_totals": true,
+      "resource": "cloud command process",
+      "duration_basis": "Measured command/resource elapsed; not active labor or inference",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1637",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "scope": "Source-bound local repair validation; native rerun and production acceptance remain separate"
+    },
+    {
+      "id": "20261009-1637-ci-fixture-repair-6",
+      "repository_assignment": "BelloAgent",
+      "activity": "CI fixture repair strictdefault",
+      "category": "automated lint/check",
+      "start_utc": "2026-10-09T16:34:05.781501+00:00",
+      "end_utc": "2026-10-09T16:34:22.774708+00:00",
+      "duration_seconds": 16.993223752011545,
+      "source": [
+        {
+          "receipt_sha256": "a3265dd4fc70c32e33edafef30bebdb19c0519af12e1174fe81abecc689f9541",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "0",
+      "accounting_group": "catchup_command",
+      "include_in_totals": true,
+      "resource": "cloud command process",
+      "duration_basis": "Measured command/resource elapsed; not active labor or inference",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1637",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "scope": "Source-bound local repair validation; native rerun and production acceptance remain separate"
+    },
+    {
+      "id": "20261009-1637-ci-fixture-repair-7",
+      "repository_assignment": "BelloAgent",
+      "activity": "CI fixture repair fmt",
+      "category": "automated lint/check",
+      "start_utc": "2026-10-09T16:34:22.775663+00:00",
+      "end_utc": "2026-10-09T16:34:25.252763+00:00",
+      "duration_seconds": 2.477112577005755,
+      "source": [
+        {
+          "receipt_sha256": "a3265dd4fc70c32e33edafef30bebdb19c0519af12e1174fe81abecc689f9541",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "0",
+      "accounting_group": "catchup_command",
+      "include_in_totals": true,
+      "resource": "cloud command process",
+      "duration_basis": "Measured command/resource elapsed; not active labor or inference",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1637",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "scope": "Source-bound local repair validation; native rerun and production acceptance remain separate"
     }
   ],
   "unattributed_ci_gaps": [
@@ -69772,16 +70291,16 @@
         }
       },
       "catchup_ci_job": {
-        "count": 15,
-        "known_duration_count": 15,
-        "resource_seconds_sum": 14100.0,
-        "wall_coverage_seconds": 9666.0,
+        "count": 16,
+        "known_duration_count": 16,
+        "resource_seconds_sum": 14841.0,
+        "wall_coverage_seconds": 9974.0,
         "category_seconds": {
           "CI runner": 12690.0,
-          "ci": 1410.0
+          "ci": 2151.0
         },
         "resource_seconds": {
-          "CI runner": 14100.0
+          "CI runner": 14841.0
         }
       },
       "catchup_native_command": {
@@ -69800,18 +70319,18 @@
         }
       },
       "catchup_command": {
-        "count": 220,
-        "known_duration_count": 220,
-        "resource_seconds_sum": 5316.363740968687,
-        "wall_coverage_seconds": 3221.160412,
+        "count": 229,
+        "known_duration_count": 229,
+        "resource_seconds_sum": 5556.175954670713,
+        "wall_coverage_seconds": 3460.972471,
         "category_seconds": {
-          "build + test/check (combined)": 3481.2907521136854,
-          "automated lint/check": 573.9264512344411,
-          "dependency/environment or verification": 37.94442364559293,
+          "build + test/check (combined)": 3679.2910584326796,
+          "automated lint/check": 615.3070308174678,
+          "dependency/environment or verification": 38.221929973591635,
           "build": 321.2369446289673,
           "build/test/rework (combined)": 48.565,
           "automated negative-control validation": 0.011169794990564696,
-          "automated accounting validation": 5.972905742033618,
+          "automated accounting validation": 6.12672721403942,
           "implementation tool execution": 0.0012905570038128644,
           "implementation + structural validation tool execution": 0.018711002005147748,
           "automated configuration validation": 0.7915431989822537,
@@ -69823,7 +70342,7 @@
           "remote evidence retrieval": 17.599489358006394
         },
         "resource_seconds": {
-          "cloud command process": 5316.363740968687
+          "cloud command process": 5556.175954670713
         }
       },
       "catchup_api": {
@@ -70829,6 +71348,55 @@
         "build/test/check (combined)": 403.0,
         "build": 0.0,
         "CI reporting": 0.0
+      }
+    },
+    {
+      "checkpoint": "20261009-1637",
+      "through_utc": "2026-10-09T16:37:00Z",
+      "coverage_window_start_utc": "2026-10-09T16:22:00Z",
+      "new_items": 12,
+      "groups": {
+        "catchup_command": {
+          "count": 9,
+          "known_duration_count": 9,
+          "resource_seconds_sum": 239.81221370202547,
+          "wall_coverage_seconds": 239.812059,
+          "category_seconds": {
+            "automated accounting validation": 0.1538214720058022,
+            "build + test/check (combined)": 198.00030631899426,
+            "dependency/environment or verification": 0.277506327998708,
+            "automated lint/check": 41.3805795830267
+          },
+          "resource_seconds": {
+            "cloud command process": 239.81221370202547
+          },
+          "known_endpoint_items": 9,
+          "known_endpoint_resource_seconds": 239.81221370202547
+        },
+        "catchup_ci_job": {
+          "count": 1,
+          "known_duration_count": 1,
+          "resource_seconds_sum": 741.0,
+          "wall_coverage_seconds": 741.0,
+          "category_seconds": {
+            "ci": 741.0
+          },
+          "resource_seconds": {
+            "CI runner": 741.0
+          },
+          "known_endpoint_items": 1,
+          "known_endpoint_resource_seconds": 741.0
+        }
+      },
+      "ci_coverage_within_window_seconds": 227.0,
+      "window_seconds": 900.0,
+      "outside_selected_ci_job_intervals_seconds": 673.0,
+      "warning": "Outside selected CI intervals includes other productive work and unobserved periods; never classify as idle or inference. Selected receipt coverage remains incomplete.",
+      "nested_ci_step_seconds": {
+        "CI orchestration": 7.0,
+        "dependency/environment setup": 17.0,
+        "build/test/check (combined)": 715.0,
+        "build": 0.0
       }
     }
   ]
