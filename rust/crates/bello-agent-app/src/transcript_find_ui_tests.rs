@@ -1052,3 +1052,130 @@ fn find_multiline_span_fits_adaptive_padding_and_oversized_notice_keeps_first_li
     assert_eq!(before.offset_in_item, after.offset_in_item);
     assert_find_outside_measured_bar(window, &root, &child, cx);
 }
+
+#[gpui::test]
+fn find_notice_belongs_to_current_destination_and_stale_receipts_cannot_restore_it(
+    cx: &mut TestAppContext,
+) {
+    let mut rows = vec![message("exact", "assistant", "needle")];
+    rows.extend(retained_tool_rows(
+        1,
+        &format!("{} needle", "x".repeat(9000)),
+    ));
+    let (_dir, window, root) = fixture(cx, rows, 0);
+    search(window, "needle", cx);
+    root.update(cx, |v, cx| v.step_transcript_find(false, cx));
+    cx.run_until_parked();
+    let old = cx.read(|cx| {
+        let bar = root.read(cx).transcript_find.as_ref().unwrap();
+        assert_eq!(bar.state.ordinal(), Some(1));
+        assert!(bar.notice.as_deref().is_some_and(|n| n.contains("preview")));
+        bar.destination.clone().unwrap()
+    });
+    root.update(cx, |v, cx| {
+        v.step_transcript_find(true, cx);
+        assert!(v.transcript_find.as_ref().unwrap().notice.is_none());
+        v.find_landing_notice(&old, "stale unavailable preview".into(), cx);
+        assert!(v.transcript_find.as_ref().unwrap().notice.is_none());
+    });
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let bar = root.read(cx).transcript_find.as_ref().unwrap();
+        assert_eq!(bar.state.ordinal(), Some(0));
+        assert!(bar.notice.is_none(), "{:?}", bar.notice);
+    });
+    root.update(cx, |v, cx| v.step_transcript_find(false, cx));
+    cx.run_until_parked();
+    cx.read(|cx| {
+        assert!(
+            root.read(cx)
+                .transcript_find
+                .as_ref()
+                .unwrap()
+                .notice
+                .as_deref()
+                .is_some_and(|n| n.contains("preview"))
+        )
+    });
+}
+
+#[gpui::test]
+fn find_oversized_notice_clears_for_short_query_and_old_result_cannot_restore_it(
+    cx: &mut TestAppContext,
+) {
+    let text = format!("{}END\nshortneedle", "z\n".repeat(100));
+    let (_dir, window, root) = fixture(cx, vec![message("long", "assistant", &text)], 0);
+    search(window, &format!("{}END", "z\n".repeat(80)), cx);
+    let old = cx.read(|cx| {
+        let bar = root.read(cx).transcript_find.as_ref().unwrap();
+        assert!(
+            bar.notice
+                .as_deref()
+                .is_some_and(|n| n.contains("only its first line"))
+        );
+        bar.destination.clone().unwrap()
+    });
+    search(window, "shortneedle", cx);
+    root.update(cx, |v, cx| {
+        v.find_landing_notice(&old, "stale oversized notice".into(), cx)
+    });
+    cx.run_until_parked();
+    cx.read(|cx| {
+        assert!(
+            root.read(cx)
+                .transcript_find
+                .as_ref()
+                .unwrap()
+                .notice
+                .is_none()
+        )
+    });
+    let child = transcript(&root, cx);
+    assert_find_outside_measured_bar(window, &root, &child, cx);
+}
+
+#[gpui::test]
+fn find_same_tool_output_omitted_to_prefix_replaces_only_old_result_notice(
+    cx: &mut TestAppContext,
+) {
+    let output = format!("needle {} needle", "x".repeat(9000));
+    let (_dir, window, root) = fixture(cx, retained_tool_rows(1, &output), 0);
+    search(window, "needle", cx);
+    root.update(cx, |v, cx| v.step_transcript_find(false, cx));
+    cx.run_until_parked();
+    let old = cx.read(|cx| {
+        let bar = root.read(cx).transcript_find.as_ref().unwrap();
+        assert!(bar.notice.as_deref().is_some_and(|n| n.contains("outside")));
+        bar.destination.clone().unwrap()
+    });
+    root.update(cx, |v, cx| {
+        v.step_transcript_find(true, cx);
+        assert!(v.transcript_find.as_ref().unwrap().notice.is_none());
+        v.find_landing_notice(&old, "old unavailable geometry".into(), cx);
+    });
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let bar = root.read(cx).transcript_find.as_ref().unwrap();
+        assert_eq!(bar.state.ordinal(), Some(0));
+        assert!(
+            !bar.notice
+                .as_deref()
+                .is_some_and(|n| n.contains("outside") || n.contains("old unavailable")),
+            "{:?}",
+            bar.notice
+        );
+    });
+    root.update(cx, |v, cx| v.step_transcript_find(false, cx));
+    cx.run_until_parked();
+    cx.read(|cx| {
+        assert!(
+            root.read(cx)
+                .transcript_find
+                .as_ref()
+                .unwrap()
+                .notice
+                .as_deref()
+                .is_some_and(|n| n.contains("outside"))
+        )
+    });
+}

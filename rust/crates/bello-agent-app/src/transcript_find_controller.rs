@@ -394,6 +394,9 @@ impl AgentView {
         let navigate = destination.is_some() || bar.pending_navigation;
         bar.pending_navigation = navigate;
         if let Some(destination) = destination {
+            // Notices describe one navigation result. A fresh destination must
+            // earn its own notice; viewport-only refreshes retain the current one.
+            bar.notice = None;
             bar.serial = bar.serial.saturating_add(1);
             bar.destination = Some(destination);
         }
