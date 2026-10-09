@@ -1,0 +1,13 @@
+Native pointer-completion proposal static review, 2026-10-09 UTC.
+Source: /tmp/sidebar-native-menu-proposed.rs, SHA-256 49c21bb88ea6b486814f6acb4307d3114b6b540174899cf16a5417f38cf65571.
+No blocking static API, lifetime or coordinate finding. No code edits or tests run by this reviewer.
+
+The retained exact NSWindow, content view and GPUIView outlive menu tracking and pointer sampling. Application/window borrows finish before entering nested native menu tracking. Final completion checks GPUI window liveness; caller must validate its request token before applying either selected action or pointer sample.
+
+NSWindow.mouseLocationOutsideOfEventStream supplies fresh window-base coordinates independently of event queue. NSView convertPoint:fromView:nil converts those into the content view. Conversion into GPUI top-left logical units reverses the anchor mapping, handles bounds origin and flipped coordinates, deliberately preserves outside points and does not apply Retina scale. Nonfinite values, overflow to nonfinite f32, zero/negative dimensions, detached/replaced content, background or non-main window, and unexpected transforms yield unknown rather than a fabricated exit.
+
+Source corroboration: pinned gpui-0.2.2/src/platform/mac/window.rs mouse_position and convert_mouse_position use the same current-pointer selector and content height in logical pixels. Apple documentation: https://developer.apple.com/documentation/appkit/nswindow/mouselocationoutsideofeventstream and https://developer.apple.com/documentation/appkit/nsevent/locationinwindow confirm selector and nil-view conversion semantics.
+
+Acceptance limits: dependency-free tests reported by owner are not AppKit execution. Actual cfg(target_os=macos) compilation, menu lifecycle and pointer/focus behavior on native macOS remain unverified. This review does not authorize edits or publication; root owns the gate.
+
+Follow-up: verified proposal SHA-256 3acf0eb8dbf0025ce3fb86b35f9e75759ff83ce8a6755207a9ad2a2279ad0c7d after addition of activation/main-window explanatory comment. Same static result applies.

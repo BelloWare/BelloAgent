@@ -1,0 +1,30 @@
+Independent activity-ordering review — final frozen integration
+
+Decision: no blocking defect found in the reviewed implementation. This is source and Linux synthetic/fake-platform acceptance only; it is not full native or interactive workflow acceptance.
+
+Bound source: baseline 1f351cd828ec878e5c0f40b861af5a3a1337c184. All 28 files match final-freeze.json, whose SHA-256 is 7bfcf42da633f8c0444992fb5e3c643a06ee622038b546277bae9cb5145fb3b6. Integrated tree and isolated restored copy both verified exactly. No integrated source edits, remote actions, Mac access, real credentials, paid requests or publication performed by this reviewer.
+
+Review findings closed
+- Initial watch loss: capture_current followed by discarding subscribed baseline could lose a concurrent event. Exact initial watch delivery now passes through workspace/actor/id/snapshot guards. Direct no-constructor-capture regression and negative control prove the fix is necessary.
+- Workspace binding is captured explicitly at ChatState construction rather than inferred after scheduling.
+- Pointer cache/geometry: pinned GPUI creation samples the platform pointer, but later Window::mouse_position is cached and activation does not refresh it. Implementation now uses explicit Unknown, fresh MouseMove/native samples, measured list bounds, activation/resize invalidation and stale-painted-bounds rejection. Native query reuses retained exact window/content/unique GPUIView identities. No cached position is treated as fresh after activation/rebind/tracking.
+- Fatal persistence boundary: actual loopback worker test exercises terminal BeforeRename and AfterRename failures. A live failure activity signal does not acknowledge failed session state; fatal and uncertain gates continue rejecting send/Save/Retry/Resume. Duplicate publication adds no activity.
+
+Catalog and concurrency review
+- Optional v11 raw-field gate rejects last_activity_at presence, including null, in v1-v10. Read/sort/no-op paths do not promote or rewrite older catalogs; real activity is max-only and never creates an absent row.
+- Comparator groups by pin presence, then descending max(activity, creation fallback), then ID. Pin timestamp magnitude is irrelevant.
+- Activity receipts patch only that column. Organization/topic merges retain their narrow ownership; connection whole-row results preserve matching activity maxima. Same-identity replacement carries pending tokens and outgoing watermark; changed identity resets state. Workspace uncertainty is observed before actor liveness rejection.
+- Holds freeze only activity keys. Token ownership prevents stale menu dismissal, overlapping reasons retain held keys, explicit pin/archive/topic/new rows stay live, and keyboard navigation uses displayed ordering.
+- Shutdown retains existing draft/selection policy, joins workers, then writes captured/final activity maxima. Untouched pending chats are not materialized. Activity failures prevent successful closure. Read-only status hydration is neutral, and loaded actors are excluded from unloaded journal scans.
+
+Independent executions
+Commands used official preinstalled toolchain and offline locked Cargo, all features, single test thread. Isolated copy: /workspace/shared/agent-sidebar-activity-review-mutant. Separate disposable compiler cache: /workspace/shared/agent-sidebar-run-state-mutant-target. Production target untouched. Disk had 11 GiB free before and after.
+1. Baseline sidebar_activity::tests: 17 passed.
+2. Mutant suppressing initial watch timestamp: receiver_baseline_delivers_event_without_constructor_capture_or_later_event failed with catalog None versus expected timestamp; Cargo exit 101. Compile succeeded.
+3. Restored baseline source, then mutant removing stale menu-token check: holds_only_activity_keys_and_requires_final_reason_release failed at premature pointer release assertion; Cargo exit 101. Compile succeeded.
+4. Exact original source restored and all 28 hashes verified: sidebar_activity::tests 17 passed.
+Evidence: baseline.log, mutant-baseline.{patch,sha256,log,exit}, mutant-menu.{patch,sha256,log,exit}, restored.log, restored-source-verification.json.
+
+Additional owner evidence inspected: app-all-sealed.log 685 passed/0 failed/3 preexisting native-only ignored; app-clippy-sealed.log completed; fmt-sealed.log empty success output; default semantic suite 10 passed, including actual worker terminal fault. Owner also reports semantic all-feature10 and strict core clippy.
+
+Open acceptance gates outside this review: default App build/strict checks after any cfg-only cleanup; immutable macOS compilation; native menu/pointer/focus/IME runtime acceptance; interactive two-chat loopback and restart durability/zero-replay checks. Three ignored native tests are not accepted. Any source changes beyond the frozen manifest require delta review/rebinding.

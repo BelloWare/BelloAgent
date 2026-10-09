@@ -1,0 +1,10 @@
+{
+  "path": "rust/crates/bello-agent-app/src/sidebar_activity.rs",
+  "old_sha256": "53ae5bca14b037762547b60e548bcf625eda5b5b3d8a049b8a7015eef5d2cf9f",
+  "new_sha256": "3a415b1ec86b1938e6b7c5744b30afbde640099322277ca6068de8494df493ca",
+  "delta": "activity-r2-default-test-cfg.patch",
+  "delta_sha256": "f8aff6b4a8c101158aeb1c31bec1622f0052dff48ec740202b824d7db006a5b1",
+  "r1_manifest_sha256": "7bfcf42da633f8c0444992fb5e3c643a06ee622038b546277bae9cb5145fb3b6",
+  "r2_manifest_sha256": "6796ed5bd63f7066b8a5538ddbc12337bb8a0456635ab5dfabdd794966a7e9e4",
+  "scope": "Match test helper cfg to its synthetic-authority-only callers; no production behavior change."
+}

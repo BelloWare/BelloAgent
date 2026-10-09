@@ -1,0 +1,26 @@
+   Compiling bello-agent-app v0.1.0 (/workspace/shared/agent-sidebar-activity-review-mutant/rust/crates/bello-agent-app)
+    Finished `test` profile [unoptimized] target(s) in 20.24s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running unittests src/main.rs (/workspace/shared/agent-sidebar-run-state-mutant-target/debug/deps/bello_agent-a54be717f3dcc926)
+
+running 1 test
+test sidebar_activity::tests::receiver_baseline_delivers_event_without_constructor_capture_or_later_event ... FAILED
+
+failures:
+
+---- sidebar_activity::tests::receiver_baseline_delivers_event_without_constructor_capture_or_later_event stdout ----
+
+thread 'sidebar_activity::tests::receiver_baseline_delivers_event_without_constructor_capture_or_later_event' (45) panicked at crates/bello-agent-app/src/sidebar_activity_tests.rs:472:5:
+assertion `left == right` failed
+  left: None
+ right: Some(1791512101328121)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    sidebar_activity::tests::receiver_baseline_delivers_event_without_constructor_capture_or_later_event
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 687 filtered out; finished in 0.07s
+
+error: test failed, to rerun pass `-p bello-agent-app --bin bello-agent`

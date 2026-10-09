@@ -1,0 +1,7 @@
+Narrow r2 cfg review, 2026-10-09 UTC. No Cargo run or source edits.
+
+Approved delta verified exactly against the isolated restored r1 source: only #[cfg(test)] above the test_activity_event impl becomes #[cfg(all(test, feature = "synthetic-authority"))]. Old sidebar_activity.rs SHA-256 53ae5bca14b037762547b60e548bcf625eda5b5b3d8a049b8a7015eef5d2cf9f; new 3a415b1ec86b1938e6b7c5744b30afbde640099322277ca6068de8494df493ca. Its only two callers are in connection_settings_controller_tests, included under the matching test + synthetic-authority condition.
+
+No production code or all-feature test behavior changes. Default tests omit an otherwise unused helper; pending default validation remains the owner's responsibility. Original r1 source, manifest, tests and negative-control artifacts remain untouched. The all-feature baseline/mutant/restoration controls remain applicable to unchanged functional code; no claim is made that those controls were executed on r2.
+
+Verified r2 manifest SHA-256 6796ed5bd63f7066b8a5538ddbc12337bb8a0456635ab5dfabdd794966a7e9e4. Exactly one of 28 file hashes differs from r1, matching the cfg delta; all 28 integrated files match r2. Rebind prior static no-blocking-defect conclusion to this r2 manifest, preserving all prior native/interactive acceptance limitations. No blocking finding in the approved delta.

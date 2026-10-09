@@ -1,0 +1,17 @@
+    Finished `test` profile [unoptimized] target(s) in 0.57s
+     Running unittests src/lib.rs (/Users/admin/Library/Caches/BelloRustWork/agent-target/debug/deps/bello_agent_core-86e44b232987605f)
+
+running 10 tests
+test runtime::semantic_activity::tests::accepted_followup_and_steering_signal_but_duplicate_and_rejected_input_do_not ... ok
+test runtime::semantic_activity::tests::accepted_unchanged_save_counts_once_but_open_cancel_and_duplicate_do_not ... ok
+test runtime::semantic_activity::tests::clock_rollback_and_sequence_exhaustion_do_not_regress_or_wrap ... ok
+test runtime::semantic_activity::tests::coalesced_start_finish_retains_latest_semantic_boundary ... ok
+test runtime::semantic_activity::tests::failed_save_never_emits_an_accepted_activity_event ... ok
+test runtime::semantic_activity::tests::paused_without_queue_is_a_hold_but_idle_empty_queue_flag_is_not ... ok
+test runtime::semantic_activity::tests::real_worker_terminal_checkpoint_fault_emits_failure_without_accepting_state_or_commands ... ok
+test runtime::semantic_activity::tests::reopened_baseline_and_noop_stop_retry_are_activity_neutral ... ok
+test runtime::semantic_activity::tests::stop_request_is_neutral_until_the_committed_pause_and_failure_changes_hold ... ok
+test runtime::semantic_activity::tests::thousand_stream_updates_and_inspection_have_no_activity ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 696 filtered out; finished in 7.18s
+

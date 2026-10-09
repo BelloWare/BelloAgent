@@ -1,0 +1,43 @@
+{
+  "result": "PASS within actual Linux legacy loopback scope",
+  "binary": "/workspace/shared/agent-sidebar-activity-evidence/bello-agent-default-activity-r2",
+  "binary_sha256": "bcacca7acaf4e17d03119ab999173769f77f238ccdfbc7632cc4c946c385b5a5",
+  "seal": {
+    "path": "/workspace/shared/agent-sidebar-activity-evidence/default-gui-seal-r2.json",
+    "sha256": "b982c6c6979d0651d827fac9855e51b3d66e4171bfd225d9ed4b57ce50fbbcb6"
+  },
+  "requests": {
+    "accepted": 3,
+    "completed": 3,
+    "new_posts_on_restart": 0,
+    "before_after_log_sha256": "12b5b14cc5e3fb7db88d956d2de19bb9f8204dabb5bb35c4d1f0a06bfc955d45",
+    "delayed_seconds": 45
+  },
+  "activity_after_completion": {
+    "activity alpha": 1791512683682491,
+    "activity beta": 1791512626087854
+  },
+  "drafts_preserved": true,
+  "ordinary_close_exit_codes": [
+    0,
+    0
+  ],
+  "observations": [
+    "Two chats created only through ordinary composer and plus button; both first sends completed.",
+    "Beta was first after its newer initial send. Alpha delayed send accepted while actual pointer stayed inside sidebar list. Beta remained first during Working and after Ready despite persisted newer Alpha timestamp.",
+    "Actual pointer move from list to transcript released hold, showing Alpha first.",
+    "Actual Linux right-click menu Pin Chat placed older Beta first while pointer remained in list.",
+    "Normal window close/relaunch restored pinned Beta first and selected Beta draft. Selecting Alpha visibly restored Alpha draft.",
+    "Linux Unpin Chat restored Alpha-first activity order after restart. Draft changes, selection, pin/unpin and restart did not modify activity timestamps."
+  ],
+  "limits": [
+    "Cloud Linux X11 with Mesa lavapipe software rendering only.",
+    "No native macOS/AppKit menu, focus, pointer, IME, native authority, saved connection, or test-platform acceptance is claimed.",
+    "Fresh actual mouse events resolved pointer state; conservative Linux Unknown keyboard-only activation fallback was not independently tested.",
+    "Pointer hover hold tested, not mouse-button-down drag.",
+    "Screenshots are original local inspection captures only, not published or attached. Capture 05 was taken before pin settled; 06 is the settled pin evidence.",
+    "AT-SPI text paste/type routes were unavailable. Standard desktop key presses supplied all text; these failed paste routes are not claimed as passing.",
+    "No source/Git/Cargo work, authority flags, JSON seeding or direct app-state mutation. Catalogs were read or copied solely for receipts."
+  ],
+  "cleanup": "App closed normally twice; isolated gateway stopped after verifying its process command. Disposable state and drafts retained."
+}

@@ -1,0 +1,11 @@
+--- /workspace/shared/agent-sidebar-activity-integrated/rust/crates/bello-agent-app/src/sidebar_activity.rs	2026-10-08 19:11:36.015956297 -0700
++++ /workspace/shared/agent-sidebar-activity-review-mutant/rust/crates/bello-agent-app/src/sidebar_activity.rs	2026-10-08 19:15:11.668740206 -0700
+@@ -28,7 +28,7 @@
+         self.menu = Some(token);
+     }
+     pub(crate) fn end_menu(&mut self, token: uuid::Uuid) -> bool {
+-        if self.menu != Some(token) {
++        if false && self.menu != Some(token) {
+             return false;
+         }
+         self.menu = None;

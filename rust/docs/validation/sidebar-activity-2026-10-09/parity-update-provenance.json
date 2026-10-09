@@ -1,0 +1,11 @@
+{
+  "path": "rust/docs/LATEST-MAIN-0.1.122-PARITY.md",
+  "source_commit": "6aad4189ff7ee494c837055ae5b3ebe38948cb9c",
+  "source_sha256": "e7569ec24c161fdfc237b0690984f591b5d1d792c3958f162734b11c1d127b31",
+  "source_size": 25671,
+  "staged_sha256": "ec8fc21744cb308ac6602816bd36ab4ddaf59edb2281ed74e50310081c9dc1e6",
+  "staged_size": 30024,
+  "transformation": "Prepend current checkpoint and frozen-history label; historical body byte-for-byte preserved.",
+  "main_recheck_provenance": "Integration coordinator supplied 2026-10-09 02:45 UTC unchanged main 6319e368/tree43ed6d88.",
+  "historical_suffix_verified": true
+}

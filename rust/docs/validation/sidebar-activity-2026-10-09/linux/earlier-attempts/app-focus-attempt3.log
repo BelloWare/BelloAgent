@@ -1,0 +1,23 @@
+   Compiling bello-agent-app v0.1.0 (/workspace/shared/agent-sidebar-activity-integrated/rust/crates/bello-agent-app)
+    Finished `test` profile [unoptimized] target(s) in 18.48s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running unittests src/main.rs (/workspace/shared/build-recovery/target/debug/deps/bello_agent-a54be717f3dcc926)
+
+running 13 tests
+test sidebar_activity::tests::actual_list_hover_menu_topic_background_and_detach_release ... ok
+test sidebar_activity::tests::already_active_constructor_captures_watermark_without_a_later_event ... ok
+test sidebar_activity::tests::background_detach_and_identity_replacement_release_held_keys ... ok
+test sidebar_activity::tests::connection_result_preserves_late_activity_only_for_matching_snapshot ... ok
+test sidebar_activity::tests::definite_failure_retries_are_bounded_and_uncertainty_never_retries ... ok
+test sidebar_activity::tests::holds_only_activity_keys_and_requires_final_reason_release ... ok
+test sidebar_activity::tests::newer_dirty_stamp_survives_old_receipt_and_registration ... ok
+test sidebar_activity::tests::pending_activity_never_materializes_and_newer_registration_race_drains ... ok
+test sidebar_activity::tests::receiver_baseline_delivers_event_without_constructor_capture_or_later_event ... ok
+test sidebar_activity::tests::snapshot_replacement_cannot_settle_old_write_or_inherit_dirty_activity ... ok
+test sidebar_activity::tests::stale_actor_snapshot_and_workspace_cannot_promote_activity ... ok
+test sidebar_activity::tests::stale_uncertain_completion_fences_even_without_matching_write_token ... ok
+test sidebar_activity::tests::visible_order_uses_held_keys_but_keeps_pin_archive_and_new_rows_live ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 671 filtered out; finished in 0.30s
+

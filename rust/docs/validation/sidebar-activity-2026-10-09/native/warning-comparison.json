@@ -1,0 +1,2604 @@
+{
+  "baseline_log": "app-sidebar.log at exact parent 1f351cd",
+  "baseline_count": 68,
+  "candidate_log": "build-all-features.log at exact 6aad4189",
+  "candidate_count": 84,
+  "baseline": [
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 251,
+      "column": 35
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 251,
+      "column": 45
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 252,
+      "column": 38
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 287,
+      "column": 29
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 300,
+      "column": 37
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 309,
+      "column": 75
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 313,
+      "column": 21
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 317,
+      "column": 21
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 321,
+      "column": 21
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 346,
+      "column": 49
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 346,
+      "column": 59
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 347,
+      "column": 27
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 347,
+      "column": 37
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 348,
+      "column": 35
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 353,
+      "column": 37
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 354,
+      "column": 33
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 355,
+      "column": 30
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 361,
+      "column": 31
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 363,
+      "column": 39
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 364,
+      "column": 32
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 372,
+      "column": 39
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 373,
+      "column": 40
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 374,
+      "column": 37
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 388,
+      "column": 34
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 389,
+      "column": 33
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 396,
+      "column": 35
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 404,
+      "column": 48
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 404,
+      "column": 58
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 405,
+      "column": 25
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 406,
+      "column": 50
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 417,
+      "column": 41
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 417,
+      "column": 51
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 418,
+      "column": 33
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 424,
+      "column": 52
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 425,
+      "column": 54
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 426,
+      "column": 53
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 428,
+      "column": 32
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 428,
+      "column": 42
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 429,
+      "column": 52
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 434,
+      "column": 29
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 435,
+      "column": 29
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 436,
+      "column": 29
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 437,
+      "column": 33
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 437,
+      "column": 43
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 440,
+      "column": 29
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 441,
+      "column": 29
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 444,
+      "column": 27
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 213,
+      "column": 31
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 213,
+      "column": 41
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 221,
+      "column": 25
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 283,
+      "column": 27
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 283,
+      "column": 37
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 284,
+      "column": 31
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 293,
+      "column": 33
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 294,
+      "column": 44
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 295,
+      "column": 41
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 295,
+      "column": 74
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 296,
+      "column": 40
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 296,
+      "column": 73
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 297,
+      "column": 37
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 298,
+      "column": 34
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 299,
+      "column": 33
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 309,
+      "column": 25
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 340,
+      "column": 35
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 344,
+      "column": 30
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 345,
+      "column": 28
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 349,
+      "column": 34
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 361,
+      "column": 25
+    }
+  ],
+  "candidate": [
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 303,
+      "column": 49
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 303,
+      "column": 59
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 321,
+      "column": 27
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 321,
+      "column": 37
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 322,
+      "column": 30
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 333,
+      "column": 29
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 346,
+      "column": 37
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 355,
+      "column": 75
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 359,
+      "column": 21
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 363,
+      "column": 21
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 367,
+      "column": 21
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 392,
+      "column": 49
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 392,
+      "column": 59
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 399,
+      "column": 34
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 400,
+      "column": 33
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 407,
+      "column": 35
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 415,
+      "column": 48
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 415,
+      "column": 58
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 416,
+      "column": 25
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 417,
+      "column": 50
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 428,
+      "column": 41
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 428,
+      "column": 51
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 429,
+      "column": 33
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 435,
+      "column": 52
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 436,
+      "column": 54
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 437,
+      "column": 53
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 439,
+      "column": 32
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 439,
+      "column": 42
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 440,
+      "column": 52
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 445,
+      "column": 29
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 446,
+      "column": 29
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 447,
+      "column": 29
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 448,
+      "column": 33
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 448,
+      "column": 43
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 451,
+      "column": 29
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 452,
+      "column": 29
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 455,
+      "column": 27
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 469,
+      "column": 27
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 469,
+      "column": 37
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 470,
+      "column": 35
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 475,
+      "column": 37
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 476,
+      "column": 33
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 477,
+      "column": 30
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 483,
+      "column": 31
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 485,
+      "column": 39
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 486,
+      "column": 32
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 494,
+      "column": 39
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 495,
+      "column": 40
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 496,
+      "column": 37
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 519,
+      "column": 27
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 519,
+      "column": 37
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 524,
+      "column": 32
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 525,
+      "column": 28
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 526,
+      "column": 33
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 527,
+      "column": 39
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 528,
+      "column": 32
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 529,
+      "column": 35
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 530,
+      "column": 30
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 545,
+      "column": 37
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 552,
+      "column": 33
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 554,
+      "column": 34
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 555,
+      "column": 34
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 556,
+      "column": 33
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 213,
+      "column": 31
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 213,
+      "column": 41
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 221,
+      "column": 25
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 283,
+      "column": 27
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 283,
+      "column": 37
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 284,
+      "column": 31
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 293,
+      "column": 33
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 294,
+      "column": 44
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 295,
+      "column": 41
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 295,
+      "column": 74
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 296,
+      "column": 40
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 296,
+      "column": 73
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 297,
+      "column": 37
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 298,
+      "column": 34
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 299,
+      "column": 33
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 309,
+      "column": 25
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 340,
+      "column": 35
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 344,
+      "column": 30
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 345,
+      "column": 28
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 349,
+      "column": 34
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 361,
+      "column": 25
+    }
+  ],
+  "new_or_changed_locations": [
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 303,
+      "column": 49,
+      "count": 1,
+      "source": "            let _pool = OwnedObject::from_owned(msg_send![class!(NSAutoreleasePool), new])?;"
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 303,
+      "column": 59,
+      "count": 1,
+      "source": "            let _pool = OwnedObject::from_owned(msg_send![class!(NSAutoreleasePool), new])?;"
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 321,
+      "column": 27,
+      "count": 1,
+      "source": "            let app: id = msg_send![class!(NSApplication), sharedApplication];"
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 321,
+      "column": 37,
+      "count": 1,
+      "source": "            let app: id = msg_send![class!(NSApplication), sharedApplication];"
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 322,
+      "column": 30,
+      "count": 1,
+      "source": "            let window: id = msg_send![app, mainWindow];"
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 469,
+      "column": 27,
+      "count": 1,
+      "source": "            let app: id = msg_send![class!(NSApplication), sharedApplication];"
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 469,
+      "column": 37,
+      "count": 1,
+      "source": "            let app: id = msg_send![class!(NSApplication), sharedApplication];"
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 470,
+      "column": 35,
+      "count": 1,
+      "source": "            let main_window: id = msg_send![app, mainWindow];"
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 475,
+      "column": 37,
+      "count": 1,
+      "source": "            let gpui_window: BOOL = msg_send![window.0, isKindOfClass: gpui_class];"
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 476,
+      "column": 33,
+      "count": 1,
+      "source": "            let visible: BOOL = msg_send![window.0, isVisible];"
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 477,
+      "column": 30,
+      "count": 1,
+      "source": "            let main: BOOL = msg_send![window.0, isMainWindow];"
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 483,
+      "column": 31,
+      "count": 1,
+      "source": "            let content: id = msg_send![window.0, contentView];"
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 485,
+      "column": 39,
+      "count": 1,
+      "source": "            let attached_window: id = msg_send![content.0, window];"
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 486,
+      "column": 32,
+      "count": 1,
+      "source": "            let subviews: id = msg_send![content.0, subviews];"
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 494,
+      "column": 39,
+      "count": 1,
+      "source": "                let gpui_view: BOOL = msg_send![child, isKindOfClass: view_class];"
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 495,
+      "column": 40,
+      "count": 1,
+      "source": "                let child_window: id = msg_send![child, window];"
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 496,
+      "column": 37,
+      "count": 1,
+      "source": "                let superview: id = msg_send![child, superview];"
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 519,
+      "column": 27,
+      "count": 1,
+      "source": "            let app: id = msg_send![class!(NSApplication), sharedApplication];"
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 519,
+      "column": 37,
+      "count": 1,
+      "source": "            let app: id = msg_send![class!(NSApplication), sharedApplication];"
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 524,
+      "column": 32,
+      "count": 1,
+      "source": "            let active: BOOL = msg_send![app, isActive];"
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 525,
+      "column": 28,
+      "count": 1,
+      "source": "            let main: id = msg_send![app, mainWindow];"
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 526,
+      "column": 33,
+      "count": 1,
+      "source": "            let visible: BOOL = msg_send![window.0, isVisible];"
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 527,
+      "column": 39,
+      "count": 1,
+      "source": "            let current_content: id = msg_send![window.0, contentView];"
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 528,
+      "column": 32,
+      "count": 1,
+      "source": "            let attached: id = msg_send![content.0, window];"
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 529,
+      "column": 35,
+      "count": 1,
+      "source": "            let view_window: id = msg_send![view.0, window];"
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 530,
+      "column": 30,
+      "count": 1,
+      "source": "            let parent: id = msg_send![view.0, superview];"
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 545,
+      "column": 37,
+      "count": 1,
+      "source": "            let transformed: BOOL = msg_send![content.0, isRotatedOrScaledFromBase];"
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 552,
+      "column": 33,
+      "count": 1,
+      "source": "            let base: NSPoint = msg_send![window.0, mouseLocationOutsideOfEventStream];"
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 554,
+      "column": 34,
+      "count": 1,
+      "source": "            let local: NSPoint = msg_send![content.0, convertPoint: base fromView: nil];"
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 555,
+      "column": 34,
+      "count": 1,
+      "source": "            let bounds: NSRect = msg_send![content.0, bounds];"
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 556,
+      "column": 33,
+      "count": 1,
+      "source": "            let flipped: BOOL = msg_send![content.0, isFlipped];"
+    }
+  ],
+  "unmapped_or_removed_baseline_locations": [
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "mapped_line": -251,
+      "column": 35,
+      "count": 1
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "mapped_line": -251,
+      "column": 45,
+      "count": 1
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "mapped_line": -252,
+      "column": 38,
+      "count": 1
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "mapped_line": -347,
+      "column": 27,
+      "count": 1
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "mapped_line": -347,
+      "column": 37,
+      "count": 1
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "mapped_line": -348,
+      "column": 35,
+      "count": 1
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "mapped_line": -353,
+      "column": 37,
+      "count": 1
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "mapped_line": -354,
+      "column": 33,
+      "count": 1
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "mapped_line": -355,
+      "column": 30,
+      "count": 1
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "mapped_line": -361,
+      "column": 31,
+      "count": 1
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "mapped_line": -363,
+      "column": 39,
+      "count": 1
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "mapped_line": -364,
+      "column": 32,
+      "count": 1
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "mapped_line": -372,
+      "column": 39,
+      "count": 1
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "mapped_line": -373,
+      "column": 40,
+      "count": 1
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "mapped_line": -374,
+      "column": 37,
+      "count": 1
+    }
+  ],
+  "new_warning_messages": [],
+  "line_mapping": "SequenceMatcher exact unchanged source-line blocks, autojunk false; edited call sites reported separately",
+  "source_anchor_multiset_comparison": {
+    "method": "identical source line after stripping indentation, same diagnostic column relative to indentation; accounts for moved unchanged call sites, without assuming that edited call sites match",
+    "added_or_edited": [
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "source_anchor": "let _pool = OwnedObject::from_owned(msg_send![class!(NSAutoreleasePool), new])?;",
+        "column_from_indent": 37,
+        "count": 1
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "source_anchor": "let _pool = OwnedObject::from_owned(msg_send![class!(NSAutoreleasePool), new])?;",
+        "column_from_indent": 47,
+        "count": 1
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "source_anchor": "let app: id = msg_send![class!(NSApplication), sharedApplication];",
+        "column_from_indent": 15,
+        "count": 1
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "source_anchor": "let app: id = msg_send![class!(NSApplication), sharedApplication];",
+        "column_from_indent": 25,
+        "count": 1
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "source_anchor": "let bounds: NSRect = msg_send![content.0, bounds];",
+        "column_from_indent": 22,
+        "count": 1
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "source_anchor": "let flipped: BOOL = msg_send![content.0, isFlipped];",
+        "column_from_indent": 21,
+        "count": 1
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "source_anchor": "let visible: BOOL = msg_send![window.0, isVisible];",
+        "column_from_indent": 21,
+        "count": 1
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "source_anchor": "let active: BOOL = msg_send![app, isActive];",
+        "column_from_indent": 20,
+        "count": 1
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "source_anchor": "let main: id = msg_send![app, mainWindow];",
+        "column_from_indent": 16,
+        "count": 1
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "source_anchor": "let current_content: id = msg_send![window.0, contentView];",
+        "column_from_indent": 27,
+        "count": 1
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "source_anchor": "let attached: id = msg_send![content.0, window];",
+        "column_from_indent": 20,
+        "count": 1
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "source_anchor": "let view_window: id = msg_send![view.0, window];",
+        "column_from_indent": 23,
+        "count": 1
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "source_anchor": "let parent: id = msg_send![view.0, superview];",
+        "column_from_indent": 18,
+        "count": 1
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "source_anchor": "let transformed: BOOL = msg_send![content.0, isRotatedOrScaledFromBase];",
+        "column_from_indent": 25,
+        "count": 1
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "source_anchor": "let base: NSPoint = msg_send![window.0, mouseLocationOutsideOfEventStream];",
+        "column_from_indent": 21,
+        "count": 1
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "source_anchor": "let local: NSPoint = msg_send![content.0, convertPoint: base fromView: nil];",
+        "column_from_indent": 22,
+        "count": 1
+      }
+    ],
+    "removed_or_edited": []
+  },
+  "default_baseline_build": {
+    "name": "baseline-default",
+    "command": [
+      "/opt/homebrew/bin/cargo",
+      "build",
+      "--offline",
+      "--locked",
+      "-p",
+      "bello-agent-app",
+      "--bin",
+      "bello-agent"
+    ],
+    "cwd": "/Users/admin/Library/Caches/BelloRustWork/agent-1f-sidebar-yyn3_th4/source/rust",
+    "commit": "1f351cd828ec878e5c0f40b861af5a3a1337c184",
+    "verified_source_files": 2541,
+    "source_manifest_sha256": "8f1a2bf8c4aa63c6d5addf9f8e3864aa7c00060537a41a53fb0b42baccff4379",
+    "started_at": "2026-10-09T02:28:54.148340+00:00",
+    "ended_at": "2026-10-09T02:29:10.195995+00:00",
+    "exit_code": 0,
+    "log": "/Users/admin/Library/Caches/BelloRustWork/agent-6aad-activity-xkb4k81_/evidence/baseline-default.log",
+    "log_sha256": "28717dff80b9f013561e5dc85762cc6cae27d544f18a69f286e6ed9ee6d2c454",
+    "warnings": [
+      {
+        "message": "variant `Production` is never constructed",
+        "file": "crates/bello-agent-core/src/project_authority.rs",
+        "line": 335,
+        "column": 5
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "line": 251,
+        "column": 35
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "line": 251,
+        "column": 45
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "line": 252,
+        "column": 38
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "line": 287,
+        "column": 29
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "line": 300,
+        "column": 37
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "line": 309,
+        "column": 75
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "line": 313,
+        "column": 21
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "line": 317,
+        "column": 21
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "line": 321,
+        "column": 21
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "line": 346,
+        "column": 49
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "line": 346,
+        "column": 59
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "line": 347,
+        "column": 27
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "line": 347,
+        "column": 37
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "line": 348,
+        "column": 35
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "line": 353,
+        "column": 37
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "line": 354,
+        "column": 33
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "line": 355,
+        "column": 30
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "line": 361,
+        "column": 31
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "line": 363,
+        "column": 39
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "line": 364,
+        "column": 32
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "line": 372,
+        "column": 39
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "line": 373,
+        "column": 40
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "line": 374,
+        "column": 37
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "line": 388,
+        "column": 34
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "line": 389,
+        "column": 33
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "line": 396,
+        "column": 35
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "line": 404,
+        "column": 48
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "line": 404,
+        "column": 58
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "line": 405,
+        "column": 25
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "line": 406,
+        "column": 50
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "line": 417,
+        "column": 41
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "line": 417,
+        "column": 51
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "line": 418,
+        "column": 33
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "line": 424,
+        "column": 52
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "line": 425,
+        "column": 54
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "line": 426,
+        "column": 53
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "line": 428,
+        "column": 32
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "line": 428,
+        "column": 42
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "line": 429,
+        "column": 52
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "line": 434,
+        "column": 29
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "line": 435,
+        "column": 29
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "line": 436,
+        "column": 29
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "line": 437,
+        "column": 33
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "line": 437,
+        "column": 43
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "line": 440,
+        "column": 29
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "line": 441,
+        "column": 29
+      },
+      {
+        "message": "unexpected `cfg` condition value: `cargo-clippy`",
+        "file": "crates/bello-agent-app/src/native_menu.rs",
+        "line": 444,
+        "column": 27
+      }
+    ]
+  },
+  "candidate_default_warnings": [
+    {
+      "message": "variant `Production` is never constructed",
+      "file": "crates/bello-agent-core/src/project_authority.rs",
+      "line": 335,
+      "column": 5
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 303,
+      "column": 49
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 303,
+      "column": 59
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 321,
+      "column": 27
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 321,
+      "column": 37
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 322,
+      "column": 30
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 333,
+      "column": 29
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 346,
+      "column": 37
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 355,
+      "column": 75
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 359,
+      "column": 21
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 363,
+      "column": 21
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 367,
+      "column": 21
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 392,
+      "column": 49
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 392,
+      "column": 59
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 399,
+      "column": 34
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 400,
+      "column": 33
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 407,
+      "column": 35
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 415,
+      "column": 48
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 415,
+      "column": 58
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 416,
+      "column": 25
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 417,
+      "column": 50
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 428,
+      "column": 41
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 428,
+      "column": 51
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 429,
+      "column": 33
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 435,
+      "column": 52
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 436,
+      "column": 54
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 437,
+      "column": 53
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 439,
+      "column": 32
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 439,
+      "column": 42
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 440,
+      "column": 52
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 445,
+      "column": 29
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 446,
+      "column": 29
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 447,
+      "column": 29
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 448,
+      "column": 33
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 448,
+      "column": 43
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 451,
+      "column": 29
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 452,
+      "column": 29
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 455,
+      "column": 27
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 469,
+      "column": 27
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 469,
+      "column": 37
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 470,
+      "column": 35
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 475,
+      "column": 37
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 476,
+      "column": 33
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 477,
+      "column": 30
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 483,
+      "column": 31
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 485,
+      "column": 39
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 486,
+      "column": 32
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 494,
+      "column": 39
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 495,
+      "column": 40
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 496,
+      "column": 37
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 519,
+      "column": 27
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 519,
+      "column": 37
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 524,
+      "column": 32
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 525,
+      "column": 28
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 526,
+      "column": 33
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 527,
+      "column": 39
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 528,
+      "column": 32
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 529,
+      "column": 35
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 530,
+      "column": 30
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 545,
+      "column": 37
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 552,
+      "column": 33
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 554,
+      "column": 34
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 555,
+      "column": 34
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 556,
+      "column": 33
+    }
+  ],
+  "candidate_all_feature_warnings": [
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 303,
+      "column": 49
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 303,
+      "column": 59
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 321,
+      "column": 27
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 321,
+      "column": 37
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 322,
+      "column": 30
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 333,
+      "column": 29
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 346,
+      "column": 37
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 355,
+      "column": 75
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 359,
+      "column": 21
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 363,
+      "column": 21
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 367,
+      "column": 21
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 392,
+      "column": 49
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 392,
+      "column": 59
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 399,
+      "column": 34
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 400,
+      "column": 33
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 407,
+      "column": 35
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 415,
+      "column": 48
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 415,
+      "column": 58
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 416,
+      "column": 25
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 417,
+      "column": 50
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 428,
+      "column": 41
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 428,
+      "column": 51
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 429,
+      "column": 33
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 435,
+      "column": 52
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 436,
+      "column": 54
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 437,
+      "column": 53
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 439,
+      "column": 32
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 439,
+      "column": 42
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 440,
+      "column": 52
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 445,
+      "column": 29
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 446,
+      "column": 29
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 447,
+      "column": 29
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 448,
+      "column": 33
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 448,
+      "column": 43
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 451,
+      "column": 29
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 452,
+      "column": 29
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 455,
+      "column": 27
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 469,
+      "column": 27
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 469,
+      "column": 37
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 470,
+      "column": 35
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 475,
+      "column": 37
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 476,
+      "column": 33
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 477,
+      "column": 30
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 483,
+      "column": 31
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 485,
+      "column": 39
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 486,
+      "column": 32
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 494,
+      "column": 39
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 495,
+      "column": 40
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 496,
+      "column": 37
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 519,
+      "column": 27
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 519,
+      "column": 37
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 524,
+      "column": 32
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 525,
+      "column": 28
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 526,
+      "column": 33
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 527,
+      "column": 39
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 528,
+      "column": 32
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 529,
+      "column": 35
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 530,
+      "column": 30
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 545,
+      "column": 37
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 552,
+      "column": 33
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 554,
+      "column": 34
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 555,
+      "column": 34
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_menu.rs",
+      "line": 556,
+      "column": 33
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 213,
+      "column": 31
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 213,
+      "column": 41
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 221,
+      "column": 25
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 283,
+      "column": 27
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 283,
+      "column": 37
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 284,
+      "column": 31
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 293,
+      "column": 33
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 294,
+      "column": 44
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 295,
+      "column": 41
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 295,
+      "column": 74
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 296,
+      "column": 40
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 296,
+      "column": 73
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 297,
+      "column": 37
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 298,
+      "column": 34
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 299,
+      "column": 33
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 309,
+      "column": 25
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 340,
+      "column": 35
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 344,
+      "column": 30
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 345,
+      "column": 28
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 349,
+      "column": 34
+    },
+    {
+      "message": "unexpected `cfg` condition value: `cargo-clippy`",
+      "file": "crates/bello-agent-app/src/native_smoke.rs",
+      "line": 361,
+      "column": 25
+    }
+  ],
+  "default_core_warning_file_unchanged_sha256": "296793aa592830cc2006989ef168d2a4d40208641112450914a7abfc1caf1142"
+}

@@ -1,0 +1,6 @@
+{"event": "accepted", "request": 1, "utc": 1791512612.3691149, "path": "/v1/responses", "body_sha256": "51076e8e93d243991a15fcfa340f8348c6ebe878948d25a1cfabfe3affbd299c", "model": "local-test-fixture", "delayed": false}
+{"event": "completed", "request": 1, "utc": 1791512612.369517, "path": "/v1/responses", "body_sha256": "51076e8e93d243991a15fcfa340f8348c6ebe878948d25a1cfabfe3affbd299c", "model": "local-test-fixture", "delayed": false}
+{"event": "accepted", "request": 2, "utc": 1791512626.0860486, "path": "/v1/responses", "body_sha256": "d4d13dad659a32d65e0ccfb00be3629f8250a4bc6a561b85cb8fac5a862a7cc5", "model": "local-test-fixture", "delayed": false}
+{"event": "completed", "request": 2, "utc": 1791512626.0873685, "path": "/v1/responses", "body_sha256": "d4d13dad659a32d65e0ccfb00be3629f8250a4bc6a561b85cb8fac5a862a7cc5", "model": "local-test-fixture", "delayed": false}
+{"event": "accepted", "request": 3, "utc": 1791512638.6804469, "path": "/v1/responses", "body_sha256": "f0c7f442ec92f64ec3fd9c915c8fd2ef1391c221750d01bf6c841a5fcb1b9215", "model": "local-test-fixture", "delayed": true}
+{"event": "completed", "request": 3, "utc": 1791512683.6814656, "path": "/v1/responses", "body_sha256": "f0c7f442ec92f64ec3fd9c915c8fd2ef1391c221750d01bf6c841a5fcb1b9215", "model": "local-test-fixture", "delayed": true}

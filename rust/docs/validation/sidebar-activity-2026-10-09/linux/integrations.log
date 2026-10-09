@@ -1,0 +1,41 @@
+    Finished `test` profile [unoptimized] target(s) in 0.15s
+     Running tests/chat_workspace.rs (/workspace/shared/build-recovery/target/debug/deps/chat_workspace-91d1db406cd742e1)
+
+running 10 tests
+test failed_queue_edit_reconciliation_keeps_the_entire_original_draft ... ok
+test submission_receipt_and_draft_clear_persist_together_without_overwriting_newer_input ... ok
+test submitted_receipt_cannot_clear_a_held_edit_or_a_different_same_revision_draft ... ok
+test typed_edit_status_reconciliation_preserves_identity_conflicts_and_unknown_rewrites ... ok
+test concurrent_chat_debounces_keep_independent_revisions_after_interleaved_saves ... ok
+test resolved_queue_edit_recovery_preserves_only_unsaved_rewriting_and_is_idempotent ... ok
+test hidden_chat_keeps_streaming_while_visible_chat_queues_and_stops ... ok
+test pending_controller_rejects_submission_until_materialized_with_same_identity ... ok
+test cancelled_and_retained_submissions_never_automatically_resubmit_on_reopen ... ok
+test held_edit_preserves_rewrite_and_displaced_drafts_across_reopen ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.21s
+
+     Running tests/queued_cancellation.rs (/workspace/shared/build-recovery/target/debug/deps/queued_cancellation-fc0a984a6509fe56)
+
+running 5 tests
+test owned_live_cancel_discards_its_rewrite_but_keeps_the_ordinary_draft ... ok
+test cancelling_an_abandoned_identity_does_not_erase_a_different_held_edit ... ok
+test exact_flush_blocks_save_or_remove_with_same_revision_different_contents ... ok
+test unowned_cancel_has_durable_identity_without_inventing_a_queued_draft ... ok
+test prepared_cancel_reopens_and_retries_cancel_at_each_actor_and_settlement_crash_cut ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/sidebar_organization.rs (/workspace/shared/build-recovery/target/debug/deps/sidebar_organization-b81e469bcfb4727f)
+
+running 7 tests
+test failed_pending_pin_is_not_materialized_and_can_retry ... ok
+test pending_chat_pin_atomically_materializes_draft_without_a_transcript ... ok
+test legacy_catalog_without_organization_fields_opens_without_rewrite ... ok
+test wrong_identity_and_project_are_rejected_without_overwriting_catalog ... ok
+test pin_patches_only_organization_not_newer_title_draft_receipt_or_selection ... ok
+test new_organization_format_is_explicit_and_mislabeled_v1_is_preserved ... ok
+test source_order_and_repeated_pin_keep_original_timestamp ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

@@ -1,0 +1,24 @@
+   Compiling bello-agent-app v0.1.0 (/workspace/shared/agent-sidebar-activity-review-mutant/rust/crates/bello-agent-app)
+    Finished `test` profile [unoptimized] target(s) in 19.60s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running unittests src/main.rs (/workspace/shared/agent-sidebar-run-state-mutant-target/debug/deps/bello_agent-a54be717f3dcc926)
+
+running 1 test
+test sidebar_activity::tests::holds_only_activity_keys_and_requires_final_reason_release ... FAILED
+
+failures:
+
+---- sidebar_activity::tests::holds_only_activity_keys_and_requires_final_reason_release stdout ----
+
+thread 'sidebar_activity::tests::holds_only_activity_keys_and_requires_final_reason_release' (48) panicked at crates/bello-agent-app/src/sidebar_activity_tests.rs:22:5:
+assertion failed: !hold.set_pointer(false)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    sidebar_activity::tests::holds_only_activity_keys_and_requires_final_reason_release
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 687 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p bello-agent-app --bin bello-agent`

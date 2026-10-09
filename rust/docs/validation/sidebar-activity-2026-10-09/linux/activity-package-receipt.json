@@ -1,0 +1,20 @@
+{
+  "base": "1f351cd828ec878e5c0f40b861af5a3a1337c184",
+  "path_count": 28,
+  "native_menu_sha256": "5a4e288a939b86b91b092dce5ad333e5c1c07dcd3645d790e1ae6a3e3d3ad05d",
+  "artifacts": {
+    "app-integration-freeze.json": "7bfcf42da633f8c0444992fb5e3c643a06ee622038b546277bae9cb5145fb3b6",
+    "activity-complete-28paths.patch": "01acd2cfd44faf0b7e0c7c8b3669169d23ae26f2467a8a2b4a0015ec6e562471",
+    "activity-complete-28paths.tar.gz": "eb4cba2689121e9d00c62cf902b11c482d92ee8fd869d75b2b92e77ee608bae2"
+  },
+  "validation": {
+    "app_all": "685 passed, 0 failed, 3 preexisting native-only ignored",
+    "strict_app_clippy": "passed",
+    "fmt": "passed",
+    "logs": [
+      "app-all-sealed.log",
+      "app-clippy-sealed.log",
+      "fmt-sealed.log"
+    ]
+  }
+}

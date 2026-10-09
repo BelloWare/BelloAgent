@@ -1,3 +1,23 @@
+# Current checkpoint — 2026-10-09 02:45 UTC
+
+This checkpoint supersedes only the stale current-status wording in the frozen historical audit below. The original audit body is preserved byte-for-byte, including its then-pending SearchCopy publication, unopened-status and activity-ordering statements; those are historical findings, not the current implementation state.
+
+- Main was freshly rechecked by the integration coordinator at 02:45 UTC and remains `6319e368c6ddb7c3ef18605e78f23b1a5b69e63a`, tree `43ed6d8843a09b58fe00d436dd0e0c1a56c76972` (0.1.122). This is the pinned Swift comparison source, not proof of full Rust parity.
+- Loaded SearchCopy r2 is published at `e2a67c855442a22a24d71a26707df425c5fe277f`. Its retained-text search/copy and bounded portable occurrence-count contract do not provide whole-chat Find, rendered-occurrence navigation, unopened-history search or the sidebar content index. Foundation locale-matching equivalence remains unclaimed.
+- Truthful unopened sidebar run status is published at `1f351cd828ec878e5c0f40b861af5a3a1337c184`. The old recommendation to implement that initial correction is historical. Read-only status hydration must retain unknown/unreadable/uncertain distinctions, current-loaded-state precedence and zero replay/provider calls; it does not authorize recovery mutations.
+- Activity ordering has exact source candidate `6aad4189ff7ee494c837055ae5b3ebe38948cb9c`, tree `16f6dd01132a4a6384769eb3d37502ec8b29f707`, parent `1f351cd828ec878e5c0f40b861af5a3a1337c184`. This identifies the validated source independently of its eventual evidence/publication commit. It adds monotonic semantic activity, pinned-first recency ordering, interaction holds and durable preservation across lifecycle changes. No final-commit publication or CI result is asserted by this staged checkpoint.
+- Activity Linux validation: ordinary default app 541 passed/0 failed/1 preexisting ignored; frozen all-feature functional implementation 685 passed/0 failed/3 preexisting ignored; strict Linux app checks passed. Independent negative controls caught initial-watch loss and stale-menu dismissal, then exact restoration passed. The r2 cfg-only delta has an explicit independent review addendum.
+- Actual sealed default Linux GUI interaction passed hover freeze through request completion and release on pointer exit, explicit Pin/Unpin, independent drafts, ordinary close/restart and zero request replay. The 45-second held synthetic loopback fixture is not a speed measurement; mouse-button dragging and keyboard-only Unknown-pointer fallback were not independently accepted.
+- Exact-candidate native Apple Silicon macOS default/all-feature compilation and 49 focused tests passed (catalog 8, semantic activity 10, sidebar 17, native-menu helper 14). Native adds 16 objc macro `cargo-clippy` cfg warnings (all-feature 84 vs parent 68). Native strict `-D warnings` has not passed. Actual AppKit pointer/menu interaction, focus/IME, accessibility, signing/Keychain and production authority acceptance remain unverified.
+
+Current gaps remain: complete manual-unread/read-state and Dock/badge semantics; whole-chat Find and exact occurrence reveal; privacy-preserving sidebar content index/search; durable draft marker and recency tint; complete latest-source long-chat navigation/scroll behavior; and broader existing application parity obligations. These completed bounded slices are not full latest-main parity. Native same-hardware behavior and performance acceptance remain separate from compilation, synthetic tests and LOC.
+
+Activity evidence and caveats: [publication report](validation/sidebar-activity-2026-10-09/REPORT.md), [native receipt](validation/sidebar-activity-2026-10-09/native/validation.json), [GUI acceptance](validation/sidebar-activity-2026-10-09/gui/acceptance.json), [LOC audit](validation/sidebar-activity-2026-10-09/loc/LOC.md). Activity totals are 51,704 production / 71,896 tests-support / 1,192 benchmark-example; 366 existing validation lines remain excluded. No screenshots or standalone Rust validation copies are added.
+
+# Frozen historical audit follows
+
+The entire original document below is retained unchanged. Its pending-language and source line references describe its original checkpoint; use the current checkpoint above and subsequent immutable evidence for present status.
+
 # BelloAgent 0.1.122 latest-main delta audit
 
 Source audit of the changes from BelloAgent 0.1.121 to 0.1.122, dated 2026-10-09. Status below means source coverage, not runtime or native acceptance. No new builds or runtime checks were performed for this audit.

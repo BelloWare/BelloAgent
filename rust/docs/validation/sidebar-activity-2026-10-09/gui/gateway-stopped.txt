@@ -1,0 +1,1 @@
+Terminated only verified isolated fixture gateway after GUI acceptance.

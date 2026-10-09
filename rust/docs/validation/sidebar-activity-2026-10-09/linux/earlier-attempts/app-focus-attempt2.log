@@ -1,0 +1,40 @@
+   Compiling bello-agent-app v0.1.0 (/workspace/shared/agent-sidebar-activity-integrated/rust/crates/bello-agent-app)
+warning: unused import: `AppContext`
+   --> crates/bello-agent-app/src/sidebar_activity.rs:177:12
+    |
+177 | use gpui::{AppContext, Context, Div, IntoElement, Pixels, Point, Task, Window, canvas};
+    |            ^^^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `recheck_sidebar_pointer` is never used
+   --> crates/bello-agent-app/src/sidebar_activity.rs:425:19
+    |
+386 | impl AgentView {
+    | -------------- method in this implementation
+...
+425 |     pub(crate) fn recheck_sidebar_pointer(&mut self, fresh: Option<Point<Pixels>>) {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `bello-agent-app` (bin "bello-agent" test) generated 2 warnings
+    Finished `test` profile [unoptimized] target(s) in 19.34s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running unittests src/main.rs (/workspace/shared/build-recovery/target/debug/deps/bello_agent-a54be717f3dcc926)
+
+running 10 tests
+test sidebar_activity::tests::already_active_constructor_captures_watermark_without_a_later_event ... ok
+test sidebar_activity::tests::background_detach_and_identity_replacement_release_held_keys ... ok
+test sidebar_activity::tests::definite_failure_retries_are_bounded_and_uncertainty_never_retries ... ok
+test sidebar_activity::tests::holds_only_activity_keys_and_requires_final_reason_release ... ok
+test sidebar_activity::tests::newer_dirty_stamp_survives_old_receipt_and_registration ... ok
+test sidebar_activity::tests::pending_activity_never_materializes_and_newer_registration_race_drains ... ok
+test sidebar_activity::tests::snapshot_replacement_cannot_settle_old_write_or_inherit_dirty_activity ... ok
+test sidebar_activity::tests::stale_actor_snapshot_and_workspace_cannot_promote_activity ... ok
+test sidebar_activity::tests::stale_uncertain_completion_fences_even_without_matching_write_token ... ok
+test sidebar_activity::tests::visible_order_uses_held_keys_but_keeps_pin_archive_and_new_rows_live ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 670 filtered out; finished in 0.16s
+

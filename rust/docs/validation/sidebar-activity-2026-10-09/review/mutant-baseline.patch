@@ -1,0 +1,11 @@
+--- /workspace/shared/agent-sidebar-activity-integrated/rust/crates/bello-agent-app/src/sidebar_activity.rs	2026-10-08 19:11:36.015956297 -0700
++++ /workspace/shared/agent-sidebar-activity-review-mutant/rust/crates/bello-agent-app/src/sidebar_activity.rs	2026-10-08 19:14:40.973435382 -0700
+@@ -217,7 +217,7 @@
+         // value would lose that event if no later publication occurs.
+         if owner
+             .update(cx, |view, cx| {
+-                view.receive_activity(&workspace, &id, &snapshot, &source, initial, cx);
++                view.receive_activity(&workspace, &id, &snapshot, &source, SemanticActivity { timestamp_micros: None, ..initial }, cx);
+             })
+             .is_err()
+         {

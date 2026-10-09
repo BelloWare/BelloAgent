@@ -1,0 +1,20 @@
+{
+  "activity_watermarks_unchanged_across_pin_drafts_selection_restart_unpin": true,
+  "draft_content_equal_before_restart_after_restart_final": true,
+  "draft_revisions": "Advance on normal saves; initial whole-object equality assertion failed because revisions change. Content and queued-edit payload are unchanged.",
+  "pin_then_unpin_observed_in_catalog": true,
+  "request_bytes_equal_restart": true,
+  "normal_exits": [
+    0,
+    0
+  ],
+  "scope": "Independent receipt consistency check, not a new GUI interaction run",
+  "files": {
+    "after-pointer-release.catalog.json": "e711b3962a48e49ef42fb3c7900fdfb5600194c6155b94d575b3e999a12ac0c9",
+    "after-pin.catalog.json": "7f6884f33b72639ec8365be146aaf3d9bbc57491bd9d380ea8138dc8d22ff02f",
+    "before-restart.catalog.json": "a1feb63b407adb553fbb46e5b409eedf6e1d7c2a75b3cfb1fcab0ee5cda789e0",
+    "after-restart.catalog.json": "ea718d912e60dabd01d09552d7f93f9504f7012236aba17f6b0ec786fee30d82",
+    "after-unpin.catalog.json": "ef0b480c0e04530edc595f488c991ae25cedfaff97d82f351500471413042a3c",
+    "final.catalog.json": "e0abba05ec0410f42795b509f0c6397e441a1c8044402c13e18dd59f7c873f1c"
+  }
+}

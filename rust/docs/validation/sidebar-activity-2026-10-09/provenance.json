@@ -1,0 +1,707 @@
+{
+  "candidate": "6aad4189ff7ee494c837055ae5b3ebe38948cb9c",
+  "candidate_tree": "16f6dd01132a4a6384769eb3d37502ec8b29f707",
+  "published_parent": "1f351cd828ec878e5c0f40b861af5a3a1337c184",
+  "immutable_handoff": {
+    "commit": "bd4e6ebb1fcf235a6d96701e8e56d620fd0864c0",
+    "path": "rust/docs/MIGRATION-HANDOFF-2026-10-07.md",
+    "sha256": "fb54b9ab20d576c834c41708f119c427fb39e42c66b149b38326dd363cd98e79",
+    "read_completely": true
+  },
+  "scope": "Selected text evidence only; no publication, Cargo invocation, screenshots, executable, standalone Rust source copies or production edits performed by this packager. Original receipt paths describe their original validation environments. Historical receipts may reference artifacts deliberately not bundled.",
+  "files": [
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/source/manifest-r2.json",
+      "source": "/workspace/shared/activity-native-candidate/manifest-r2.json",
+      "source_sha256": "c5c1500c5bf3fe546f901a72de7e738add46ac37348aa88af70b39099387aae7",
+      "source_size": 9996,
+      "sha256": "c5c1500c5bf3fe546f901a72de7e738add46ac37348aa88af70b39099387aae7",
+      "size": 9996,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/source/verified-r2.json",
+      "source": "/workspace/shared/activity-native-candidate/verified-r2.json",
+      "source_sha256": "3ae87fa0c3a49f37e93775763095405727423459fd7f5280860409be17260f03",
+      "source_size": 244,
+      "sha256": "3ae87fa0c3a49f37e93775763095405727423459fd7f5280860409be17260f03",
+      "size": 244,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/linux/app-integration-freeze.json",
+      "source": "/workspace/shared/agent-sidebar-activity-evidence/app-integration-freeze.json",
+      "source_sha256": "7bfcf42da633f8c0444992fb5e3c643a06ee622038b546277bae9cb5145fb3b6",
+      "source_size": 3699,
+      "sha256": "7bfcf42da633f8c0444992fb5e3c643a06ee622038b546277bae9cb5145fb3b6",
+      "size": 3699,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/linux/app-integration-freeze-r2.json",
+      "source": "/workspace/shared/agent-sidebar-activity-evidence/app-integration-freeze-r2.json",
+      "source_sha256": "6796ed5bd63f7066b8a5538ddbc12337bb8a0456635ab5dfabdd794966a7e9e4",
+      "source_size": 3799,
+      "sha256": "6796ed5bd63f7066b8a5538ddbc12337bb8a0456635ab5dfabdd794966a7e9e4",
+      "size": 3799,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/linux/activity-package-receipt.json",
+      "source": "/workspace/shared/agent-sidebar-activity-evidence/activity-package-receipt.json",
+      "source_sha256": "495d94395846db1d5498a61b25a602a466bd78c5eb768f55b7bc3575c9b4f414",
+      "source_size": 763,
+      "sha256": "495d94395846db1d5498a61b25a602a466bd78c5eb768f55b7bc3575c9b4f414",
+      "size": 763,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/linux/activity-r2-addendum.json",
+      "source": "/workspace/shared/agent-sidebar-activity-evidence/activity-r2-addendum.json",
+      "source_sha256": "b084ba1418815f15f7f19f1100cef156b55122d635b52ba04abab89c0cda4a88",
+      "source_size": 663,
+      "sha256": "b084ba1418815f15f7f19f1100cef156b55122d635b52ba04abab89c0cda4a88",
+      "size": 663,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/linux/default-gui-seal-r2.json",
+      "source": "/workspace/shared/agent-sidebar-activity-evidence/default-gui-seal-r2.json",
+      "source_sha256": "b982c6c6979d0651d827fac9855e51b3d66e4171bfd225d9ed4b57ce50fbbcb6",
+      "source_size": 1570,
+      "sha256": "b982c6c6979d0651d827fac9855e51b3d66e4171bfd225d9ed4b57ce50fbbcb6",
+      "size": 1570,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/linux/app-default-sealed-r2.log",
+      "source": "/workspace/shared/agent-sidebar-activity-evidence/app-default-sealed-r2.log",
+      "source_sha256": "b1db45738c91c3c4506bb4264faae2b691df622ca8e4e9c9694f12ac70e69b67",
+      "source_size": 57023,
+      "sha256": "b1db45738c91c3c4506bb4264faae2b691df622ca8e4e9c9694f12ac70e69b67",
+      "size": 57023,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/linux/app-default-build-sealed-r2.log",
+      "source": "/workspace/shared/agent-sidebar-activity-evidence/app-default-build-sealed-r2.log",
+      "source_sha256": "ae72d39aa91d5509f59be27d6811aabf0c8efcfa8992c7771d0d7803f9995998",
+      "source_size": 554,
+      "sha256": "ae72d39aa91d5509f59be27d6811aabf0c8efcfa8992c7771d0d7803f9995998",
+      "size": 554,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/linux/app-default-clippy-sealed-r2.log",
+      "source": "/workspace/shared/agent-sidebar-activity-evidence/app-default-clippy-sealed-r2.log",
+      "source_sha256": "8a012517324abd51745cddc6ebed73074f9c5000ff8afabd205012885eeb27a6",
+      "source_size": 315,
+      "sha256": "8a012517324abd51745cddc6ebed73074f9c5000ff8afabd205012885eeb27a6",
+      "size": 315,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/linux/app-all-sealed.log",
+      "source": "/workspace/shared/agent-sidebar-activity-evidence/app-all-sealed.log",
+      "source_sha256": "9edb38f72f0dfb9114b2b0b38bb70675a1934d11336adcbfc8f36bf8f2aafcdd",
+      "source_size": 73788,
+      "sha256": "9edb38f72f0dfb9114b2b0b38bb70675a1934d11336adcbfc8f36bf8f2aafcdd",
+      "size": 73788,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/linux/app-clippy-sealed.log",
+      "source": "/workspace/shared/agent-sidebar-activity-evidence/app-clippy-sealed.log",
+      "source_sha256": "2bc57c1852e9462e6c75d166f0b9d930455c67681ba3ec0fae241702f92f6535",
+      "source_size": 433,
+      "sha256": "2bc57c1852e9462e6c75d166f0b9d930455c67681ba3ec0fae241702f92f6535",
+      "size": 433,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/linux/fmt-sealed.log",
+      "source": "/workspace/shared/agent-sidebar-activity-evidence/fmt-sealed.log",
+      "source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source_size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/linux/core-default.log",
+      "source": "/workspace/shared/agent-sidebar-activity-evidence/core-default.log",
+      "source_sha256": "aa34618dc07c823ddb7e6c2b112a70ae970e09cfa626dbf953d00d5eb2ec6f74",
+      "source_size": 65630,
+      "sha256": "aa34618dc07c823ddb7e6c2b112a70ae970e09cfa626dbf953d00d5eb2ec6f74",
+      "size": 65630,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/linux/core-all-features.log",
+      "source": "/workspace/shared/agent-sidebar-activity-evidence/core-all-features.log",
+      "source_sha256": "3fbc5bf7ccf09ea2cfdccad60e1d89fd411bdd4e9c5cdad13b098a658557d52a",
+      "source_size": 86464,
+      "sha256": "3fbc5bf7ccf09ea2cfdccad60e1d89fd411bdd4e9c5cdad13b098a658557d52a",
+      "size": 86464,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/linux/workspace.log",
+      "source": "/workspace/shared/agent-sidebar-activity-evidence/workspace.log",
+      "source_sha256": "1e2626e343fb950bd6ff0e850384a3358ad59805e7862f8bea2a523a3ebc3c0e",
+      "source_size": 12404,
+      "sha256": "1e2626e343fb950bd6ff0e850384a3358ad59805e7862f8bea2a523a3ebc3c0e",
+      "size": 12404,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/linux/integrations.log",
+      "source": "/workspace/shared/agent-sidebar-activity-evidence/integrations.log",
+      "source_sha256": "85b9a6b5859e9afc9269de6a966616b87825509deb4e184f93c4779d47348eda",
+      "source_size": 2607,
+      "sha256": "85b9a6b5859e9afc9269de6a966616b87825509deb4e184f93c4779d47348eda",
+      "size": 2607,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/linux/semantic-terminal-default.log",
+      "source": "/workspace/shared/agent-sidebar-activity-evidence/semantic-terminal-default.log",
+      "source_sha256": "60cb080d773e08caa0d316e8736ab81c0b7bd55f82284116206b4ffdeb218501",
+      "source_size": 1552,
+      "sha256": "60cb080d773e08caa0d316e8736ab81c0b7bd55f82284116206b4ffdeb218501",
+      "size": 1552,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/linux/semantic-terminal-all-features.log",
+      "source": "/workspace/shared/agent-sidebar-activity-evidence/semantic-terminal-all-features.log",
+      "source_sha256": "488d540697df5fe27c99c4c018faf2bfedea70002e485603490ba807e95e57ab",
+      "source_size": 1552,
+      "sha256": "488d540697df5fe27c99c4c018faf2bfedea70002e485603490ba807e95e57ab",
+      "size": 1552,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/linux/semantic-terminal-clippy.log",
+      "source": "/workspace/shared/agent-sidebar-activity-evidence/semantic-terminal-clippy.log",
+      "source_sha256": "820b9aaa5e365926b2631f1086ca9adbf64a95c62a6b6de7259e6cc261d798e0",
+      "source_size": 181,
+      "sha256": "820b9aaa5e365926b2631f1086ca9adbf64a95c62a6b6de7259e6cc261d798e0",
+      "size": 181,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/linux/app-focus-final.log",
+      "source": "/workspace/shared/agent-sidebar-activity-evidence/app-focus-final.log",
+      "source_sha256": "81cbe68c943864ff8642b7d93960d1dbfad64a1013c4f4b48886f08da6814a78",
+      "source_size": 2304,
+      "sha256": "81cbe68c943864ff8642b7d93960d1dbfad64a1013c4f4b48886f08da6814a78",
+      "size": 2304,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/linux/earlier-attempts/app-clippy-attempt1.log",
+      "source": "/workspace/shared/agent-sidebar-activity-evidence/app-clippy-attempt1.log",
+      "source_sha256": "4605ff56efef9c3fa46fbf8398ac4cffb8d553a405b2f9dc1d6056555b21d6bc",
+      "source_size": 2823,
+      "sha256": "4605ff56efef9c3fa46fbf8398ac4cffb8d553a405b2f9dc1d6056555b21d6bc",
+      "size": 2823,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/linux/earlier-attempts/app-focus-attempt1.log",
+      "source": "/workspace/shared/agent-sidebar-activity-evidence/app-focus-attempt1.log",
+      "source_sha256": "5beea76b79e36a132f79ac94c863a3c7cbafe5acfb9f8c84a9b7f22d5538c6b9",
+      "source_size": 739,
+      "sha256": "5beea76b79e36a132f79ac94c863a3c7cbafe5acfb9f8c84a9b7f22d5538c6b9",
+      "size": 739,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/linux/earlier-attempts/app-focus-attempt2.log",
+      "source": "/workspace/shared/agent-sidebar-activity-evidence/app-focus-attempt2.log",
+      "source_sha256": "bd93118c9e2a91751e0a7aaec04bdc93b44dd4c3a08153759550f95755c7fc05",
+      "source_size": 2496,
+      "sha256": "bd93118c9e2a91751e0a7aaec04bdc93b44dd4c3a08153759550f95755c7fc05",
+      "size": 2496,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/linux/earlier-attempts/app-focus-attempt3.log",
+      "source": "/workspace/shared/agent-sidebar-activity-evidence/app-focus-attempt3.log",
+      "source_sha256": "ada5793f9c9f15423899aebb04e8df714522036208adf8855a9ade3d38e51889",
+      "source_size": 2003,
+      "sha256": "ada5793f9c9f15423899aebb04e8df714522036208adf8855a9ade3d38e51889",
+      "size": 2003,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/linux/earlier-attempts/app-focus-attempt4.log",
+      "source": "/workspace/shared/agent-sidebar-activity-evidence/app-focus-attempt4.log",
+      "source_sha256": "396d6fcacad58d3950691c7db14163f32d0bca403e60785d3cfa8661a3c210c5",
+      "source_size": 2881,
+      "sha256": "396d6fcacad58d3950691c7db14163f32d0bca403e60785d3cfa8661a3c210c5",
+      "size": 2881,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/linux/earlier-attempts/app-focus-attempt5.log",
+      "source": "/workspace/shared/agent-sidebar-activity-evidence/app-focus-attempt5.log",
+      "source_sha256": "3f1eb96a076e7e8e23823f302abfb2847995bf5aad042f010bb5ff0a22daa6a9",
+      "source_size": 2975,
+      "sha256": "3f1eb96a076e7e8e23823f302abfb2847995bf5aad042f010bb5ff0a22daa6a9",
+      "size": 2975,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/linux/earlier-attempts/app-default-attempt1.log",
+      "source": "/workspace/shared/agent-sidebar-activity-evidence/app-default-attempt1.log",
+      "source_sha256": "8e00cd9916bef393b08b1ef036f8fd58958e249c135d87370a70b2f31c2e7a16",
+      "source_size": 57637,
+      "sha256": "8e00cd9916bef393b08b1ef036f8fd58958e249c135d87370a70b2f31c2e7a16",
+      "size": 57637,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/review/FINAL-REVIEW.txt",
+      "source": "/workspace/shared/agent-sidebar-activity-independent-review/FINAL-REVIEW.txt",
+      "source_sha256": "21928c11499edacd3ac66e7387ec67beae4361c3bfb57f1ea50571e52f947224",
+      "source_size": 4849,
+      "sha256": "21928c11499edacd3ac66e7387ec67beae4361c3bfb57f1ea50571e52f947224",
+      "size": 4849,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/review/R2-REVIEW-ADDENDUM.txt",
+      "source": "/workspace/shared/agent-sidebar-activity-independent-review/R2-REVIEW-ADDENDUM.txt",
+      "source_sha256": "06cf735ce66ee0fee78bf828e299369ee199732daaeac639c39896af8c258170",
+      "source_size": 1346,
+      "sha256": "06cf735ce66ee0fee78bf828e299369ee199732daaeac639c39896af8c258170",
+      "size": 1346,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/review/R2-REVIEW-SHA256.json",
+      "source": "/workspace/shared/agent-sidebar-activity-independent-review/R2-REVIEW-SHA256.json",
+      "source_sha256": "3a92a7433b58dd35e46258c25f499d87b1673836979e9431f3eb0ef957610ad8",
+      "source_size": 193,
+      "sha256": "3a92a7433b58dd35e46258c25f499d87b1673836979e9431f3eb0ef957610ad8",
+      "size": 193,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/review/EVIDENCE-SHA256.json",
+      "source": "/workspace/shared/agent-sidebar-activity-independent-review/EVIDENCE-SHA256.json",
+      "source_sha256": "19f24a22959542944aa795110a352cb44e5e1a82acb6cd7dfa2ecfebd81f6d38",
+      "source_size": 1610,
+      "sha256": "19f24a22959542944aa795110a352cb44e5e1a82acb6cd7dfa2ecfebd81f6d38",
+      "size": 1610,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/review/baseline.log",
+      "source": "/workspace/shared/agent-sidebar-activity-independent-review/baseline.log",
+      "source_sha256": "5786d00e39ac55b73ae9cc970e0554d82ffa7b00318ca1f1c82a8195372c2c20",
+      "source_size": 2550,
+      "sha256": "5786d00e39ac55b73ae9cc970e0554d82ffa7b00318ca1f1c82a8195372c2c20",
+      "size": 2550,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/review/restored.log",
+      "source": "/workspace/shared/agent-sidebar-activity-independent-review/restored.log",
+      "source_sha256": "8aea0799c35b0623271250fab39bf45cbf9f642c5e61780329c16be492119b29",
+      "source_size": 2427,
+      "sha256": "8aea0799c35b0623271250fab39bf45cbf9f642c5e61780329c16be492119b29",
+      "size": 2427,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/review/mutant-baseline.log",
+      "source": "/workspace/shared/agent-sidebar-activity-independent-review/mutant-baseline.log",
+      "source_sha256": "7b04f29c0fbdbc6844283faa28e8272a8b35c78163a3b6344fdcb2e907b730fa",
+      "source_size": 1469,
+      "sha256": "7b04f29c0fbdbc6844283faa28e8272a8b35c78163a3b6344fdcb2e907b730fa",
+      "size": 1469,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/review/mutant-menu.log",
+      "source": "/workspace/shared/agent-sidebar-activity-independent-review/mutant-menu.log",
+      "source_sha256": "d5c06017afc8e2801db55df6d0c9734cd6af4a866294036aaf00d9ab0d3da9cb",
+      "source_size": 1366,
+      "sha256": "d5c06017afc8e2801db55df6d0c9734cd6af4a866294036aaf00d9ab0d3da9cb",
+      "size": 1366,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/review/mutant-baseline.exit",
+      "source": "/workspace/shared/agent-sidebar-activity-independent-review/mutant-baseline.exit",
+      "source_sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c",
+      "source_size": 4,
+      "sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c",
+      "size": 4,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/review/mutant-menu.exit",
+      "source": "/workspace/shared/agent-sidebar-activity-independent-review/mutant-menu.exit",
+      "source_sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c",
+      "source_size": 4,
+      "sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c",
+      "size": 4,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/review/mutant-baseline.patch",
+      "source": "/workspace/shared/agent-sidebar-activity-independent-review/mutant-baseline.patch",
+      "source_sha256": "0eed428430a1561673b3bc4caff7b5f931989d0e9568035b235b6337e4d3a7fd",
+      "source_size": 716,
+      "sha256": "0eed428430a1561673b3bc4caff7b5f931989d0e9568035b235b6337e4d3a7fd",
+      "size": 716,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/review/mutant-menu.patch",
+      "source": "/workspace/shared/agent-sidebar-activity-independent-review/mutant-menu.patch",
+      "source_sha256": "f4ce4240755f3d537200da927693a1bd980a1db24d975d0e6dfdcae4bb4d8c75",
+      "source_size": 570,
+      "sha256": "f4ce4240755f3d537200da927693a1bd980a1db24d975d0e6dfdcae4bb4d8c75",
+      "size": 570,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/review/restored-source-verification.json",
+      "source": "/workspace/shared/agent-sidebar-activity-independent-review/restored-source-verification.json",
+      "source_sha256": "54ebe4771e1c0237c9a382b0c17c263f5e8ad0cb5f6d7f76e3ff2ce4b8026631",
+      "source_size": 174,
+      "sha256": "54ebe4771e1c0237c9a382b0c17c263f5e8ad0cb5f6d7f76e3ff2ce4b8026631",
+      "size": 174,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/review/native-pointer-proposal-review.txt",
+      "source": "/workspace/shared/agent-sidebar-activity-independent-review/native-pointer-proposal-review.txt",
+      "source_sha256": "050213dd7e3db4c45e23a55164186dbb719442b93995418a664ed0252d2f6e37",
+      "source_size": 2083,
+      "sha256": "050213dd7e3db4c45e23a55164186dbb719442b93995418a664ed0252d2f6e37",
+      "size": 2083,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/gui/acceptance.json",
+      "source": "/workspace/shared/activity-order-gui/evidence/acceptance.json",
+      "source_sha256": "ef09a85f08f978aaf28dad2d2d5d293ba04f052f8d820c4196f5e0e148ec09dd",
+      "source_size": 2711,
+      "sha256": "ef09a85f08f978aaf28dad2d2d5d293ba04f052f8d820c4196f5e0e148ec09dd",
+      "size": 2711,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/gui/requests.jsonl",
+      "source": "/workspace/shared/activity-order-gui/evidence/requests.jsonl",
+      "source_sha256": "12b5b14cc5e3fb7db88d956d2de19bb9f8204dabb5bb35c4d1f0a06bfc955d45",
+      "source_size": 1320,
+      "sha256": "12b5b14cc5e3fb7db88d956d2de19bb9f8204dabb5bb35c4d1f0a06bfc955d45",
+      "size": 1320,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/gui/before-restart.requests.jsonl",
+      "source": "/workspace/shared/activity-order-gui/evidence/before-restart.requests.jsonl",
+      "source_sha256": "12b5b14cc5e3fb7db88d956d2de19bb9f8204dabb5bb35c4d1f0a06bfc955d45",
+      "source_size": 1320,
+      "sha256": "12b5b14cc5e3fb7db88d956d2de19bb9f8204dabb5bb35c4d1f0a06bfc955d45",
+      "size": 1320,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/gui/during-held-request.catalog.json",
+      "source": "/workspace/shared/activity-order-gui/evidence/during-held-request.catalog.json",
+      "source_sha256": "eaa840b417d063ef5c57fedea6fc00b656650396fbc1600b65c7789565b81364",
+      "source_size": 1113,
+      "sha256": "eaa840b417d063ef5c57fedea6fc00b656650396fbc1600b65c7789565b81364",
+      "size": 1113,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/gui/after-pointer-release.catalog.json",
+      "source": "/workspace/shared/activity-order-gui/evidence/after-pointer-release.catalog.json",
+      "source_sha256": "e711b3962a48e49ef42fb3c7900fdfb5600194c6155b94d575b3e999a12ac0c9",
+      "source_size": 1113,
+      "sha256": "e711b3962a48e49ef42fb3c7900fdfb5600194c6155b94d575b3e999a12ac0c9",
+      "size": 1113,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/gui/after-pin.catalog.json",
+      "source": "/workspace/shared/activity-order-gui/evidence/after-pin.catalog.json",
+      "source_sha256": "7f6884f33b72639ec8365be146aaf3d9bbc57491bd9d380ea8138dc8d22ff02f",
+      "source_size": 1142,
+      "sha256": "7f6884f33b72639ec8365be146aaf3d9bbc57491bd9d380ea8138dc8d22ff02f",
+      "size": 1142,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/gui/before-restart.catalog.json",
+      "source": "/workspace/shared/activity-order-gui/evidence/before-restart.catalog.json",
+      "source_sha256": "a1feb63b407adb553fbb46e5b409eedf6e1d7c2a75b3cfb1fcab0ee5cda789e0",
+      "source_size": 1177,
+      "sha256": "a1feb63b407adb553fbb46e5b409eedf6e1d7c2a75b3cfb1fcab0ee5cda789e0",
+      "size": 1177,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/gui/after-close.catalog.json",
+      "source": "/workspace/shared/activity-order-gui/evidence/after-close.catalog.json",
+      "source_sha256": "ea718d912e60dabd01d09552d7f93f9504f7012236aba17f6b0ec786fee30d82",
+      "source_size": 1177,
+      "sha256": "ea718d912e60dabd01d09552d7f93f9504f7012236aba17f6b0ec786fee30d82",
+      "size": 1177,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/gui/after-restart.catalog.json",
+      "source": "/workspace/shared/activity-order-gui/evidence/after-restart.catalog.json",
+      "source_sha256": "ea718d912e60dabd01d09552d7f93f9504f7012236aba17f6b0ec786fee30d82",
+      "source_size": 1177,
+      "sha256": "ea718d912e60dabd01d09552d7f93f9504f7012236aba17f6b0ec786fee30d82",
+      "size": 1177,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/gui/after-unpin.catalog.json",
+      "source": "/workspace/shared/activity-order-gui/evidence/after-unpin.catalog.json",
+      "source_sha256": "ef0b480c0e04530edc595f488c991ae25cedfaff97d82f351500471413042a3c",
+      "source_size": 1148,
+      "sha256": "ef0b480c0e04530edc595f488c991ae25cedfaff97d82f351500471413042a3c",
+      "size": 1148,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/gui/final.catalog.json",
+      "source": "/workspace/shared/activity-order-gui/evidence/final.catalog.json",
+      "source_sha256": "e0abba05ec0410f42795b509f0c6397e441a1c8044402c13e18dd59f7c873f1c",
+      "source_size": 1148,
+      "sha256": "e0abba05ec0410f42795b509f0c6397e441a1c8044402c13e18dd59f7c873f1c",
+      "size": 1148,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/gui/first.exit",
+      "source": "/workspace/shared/activity-order-gui/evidence/first.exit",
+      "source_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "source_size": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "size": 2,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/gui/second.exit",
+      "source": "/workspace/shared/activity-order-gui/evidence/second.exit",
+      "source_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "source_size": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "size": 2,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/gui/desktop-environment.txt",
+      "source": "/workspace/shared/activity-order-gui/evidence/desktop-environment.txt",
+      "source_sha256": "6507e5b11a45b8c59429014967b214c308750c8839b461acc5eff0f7838f7e49",
+      "source_size": 11,
+      "sha256": "6507e5b11a45b8c59429014967b214c308750c8839b461acc5eff0f7838f7e49",
+      "size": 11,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/gui/gateway-stopped.txt",
+      "source": "/workspace/shared/activity-order-gui/evidence/gateway-stopped.txt",
+      "source_sha256": "4d193b2c4797ad743080ea1ee6e0d71cd8a270d9091cd7289dac9218527eae3a",
+      "source_size": 72,
+      "sha256": "4d193b2c4797ad743080ea1ee6e0d71cd8a270d9091cd7289dac9218527eae3a",
+      "size": 72,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/loc/LOC.md",
+      "source": "/workspace/shared/sidebar-activity-loc-audit/LOC.md",
+      "source_sha256": "1d4e765ca616729e0c71678be7efc0dfe7aca1359d2682cb17827fbf5e607737",
+      "source_size": 5303,
+      "sha256": "1d4e765ca616729e0c71678be7efc0dfe7aca1359d2682cb17827fbf5e607737",
+      "size": 5303,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/loc/REVIEW.md",
+      "source": "/workspace/shared/sidebar-activity-loc-audit/REVIEW.md",
+      "source_sha256": "3664b44c503c7bfc3f87aad2adfe672597b4ca5b3dd2675f4f103b5ffeecc5d8",
+      "source_size": 22172,
+      "sha256": "3664b44c503c7bfc3f87aad2adfe672597b4ca5b3dd2675f4f103b5ffeecc5d8",
+      "size": 22172,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/loc/verification.json",
+      "source": "/workspace/shared/sidebar-activity-loc-audit/verification.json",
+      "source_sha256": "cddb47c987f5b8575a95fd09483cf56f376a6a75df2ace219a1d9f3a4c2c3003",
+      "source_size": 494,
+      "sha256": "cddb47c987f5b8575a95fd09483cf56f376a6a75df2ace219a1d9f3a4c2c3003",
+      "size": 494,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/loc/live-verification.json",
+      "source": "/workspace/shared/sidebar-activity-loc-audit/live-verification.json",
+      "source_sha256": "08569f73f327316543c5cbbc08cd57a944b267860a6c29edd67b7b2cc6acd49a",
+      "source_size": 492,
+      "sha256": "08569f73f327316543c5cbbc08cd57a944b267860a6c29edd67b7b2cc6acd49a",
+      "size": 492,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/loc/negative-controls.json",
+      "source": "/workspace/shared/sidebar-activity-loc-audit/negative-controls.json",
+      "source_sha256": "b1310546c3f44ede68a89ac65de0ef3086983912f3ab93ba358a989d4b3a55f4",
+      "source_size": 1501,
+      "sha256": "b1310546c3f44ede68a89ac65de0ef3086983912f3ab93ba358a989d4b3a55f4",
+      "size": 1501,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/loc/source-r1-manifest.json",
+      "source": "/workspace/shared/sidebar-activity-loc-audit/source-r1-manifest.json",
+      "source_sha256": "d1422a5cf830efe015612af778371128ce4a5c435993c7f86e556c5ff9bdd665",
+      "source_size": 5378,
+      "sha256": "d1422a5cf830efe015612af778371128ce4a5c435993c7f86e556c5ff9bdd665",
+      "size": 5378,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/loc/baseline-commit.txt",
+      "source": "/workspace/shared/sidebar-activity-loc-audit/baseline-commit.txt",
+      "source_sha256": "4b39146c60885afb257d715c3d51c3787edf99acff1a7f9cf8892cece570e711",
+      "source_size": 278,
+      "sha256": "4b39146c60885afb257d715c3d51c3787edf99acff1a7f9cf8892cece570e711",
+      "size": 278,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/loc/loc-audit.json",
+      "source": "/workspace/shared/sidebar-activity-loc-audit/loc-audit.json",
+      "source_sha256": "edde84a1fc9d4bb9a68b1039649e594431df38c21620a50806732af03dddf684",
+      "source_size": 223654,
+      "sha256": "7a4b22898193587d51ea72a0f52b3ad3d567e360211e4db7a864d368cbccee14",
+      "size": 154706,
+      "transform": "lossless JSON whitespace compaction"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/loc/baseline-loc-audit.json",
+      "source": "/workspace/shared/sidebar-activity-loc-audit/baseline-loc-audit.json",
+      "source_sha256": "acc35a6a4cf945a47a4f6c3cbd0fdcebb525e77e02b75f9c9f3f6b0ceba036b0",
+      "source_size": 120086,
+      "sha256": "a48e4c632a38e7aeb60f4f63505c1dcae93500ab7e9526db62e7f04e6a6832af",
+      "size": 93114,
+      "transform": "lossless JSON whitespace compaction"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/native/validation.json",
+      "source": "/workspace/shared/migration-issue-watch/activity-native-6aad/validation.json",
+      "source_sha256": "89899eb9fb54c60494a0b362b0f2bd1392529e244a4af8bb00738b438678bf63",
+      "source_size": 98510,
+      "sha256": "89899eb9fb54c60494a0b362b0f2bd1392529e244a4af8bb00738b438678bf63",
+      "size": 98510,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/native/warning-comparison.json",
+      "source": "/workspace/shared/migration-issue-watch/activity-native-6aad/warning-comparison.json",
+      "source_sha256": "2d83256029d84565028051604b570fb2548edb0bd68745de8d4e05b8779660c1",
+      "source_size": 81416,
+      "sha256": "2d83256029d84565028051604b570fb2548edb0bd68745de8d4e05b8779660c1",
+      "size": 81416,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/native/candidate-changed-postimages.json",
+      "source": "/workspace/shared/migration-issue-watch/activity-native-6aad/candidate-changed-postimages.json",
+      "source_sha256": "8cccaa8ec275e4567570d76bf8ccee49bce154c2b3ba71bd2d63ebb5ee1e318d",
+      "source_size": 7296,
+      "sha256": "8cccaa8ec275e4567570d76bf8ccee49bce154c2b3ba71bd2d63ebb5ee1e318d",
+      "size": 7296,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/native/build-default.log",
+      "source": "/workspace/shared/migration-issue-watch/activity-native-6aad/build-default.log",
+      "source_sha256": "90bd01a89c5bcc0be3a8d5fa1334abfcba7f9a74281ef5a4ee9352a886049f1b",
+      "source_size": 69716,
+      "sha256": "90bd01a89c5bcc0be3a8d5fa1334abfcba7f9a74281ef5a4ee9352a886049f1b",
+      "size": 69716,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/native/build-all-features.log",
+      "source": "/workspace/shared/migration-issue-watch/activity-native-6aad/build-all-features.log",
+      "source_sha256": "b3a76d641e7e4a6741065340a27c03443e02695a839df14c27e43736d77a18fd",
+      "source_size": 91891,
+      "sha256": "b3a76d641e7e4a6741065340a27c03443e02695a839df14c27e43736d77a18fd",
+      "size": 91891,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/native/baseline-default.log",
+      "source": "/workspace/shared/migration-issue-watch/activity-native-6aad/baseline-default.log",
+      "source_sha256": "28717dff80b9f013561e5dc85762cc6cae27d544f18a69f286e6ed9ee6d2c454",
+      "source_size": 52310,
+      "sha256": "28717dff80b9f013561e5dc85762cc6cae27d544f18a69f286e6ed9ee6d2c454",
+      "size": 52310,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/native/catalog-activity.log",
+      "source": "/workspace/shared/migration-issue-watch/activity-native-6aad/catalog-activity.log",
+      "source_sha256": "3807387cc843db87e08b664bff1cfc31c9cedd2b2a864e11a55bffbd2b893dc7",
+      "source_size": 1365,
+      "sha256": "3807387cc843db87e08b664bff1cfc31c9cedd2b2a864e11a55bffbd2b893dc7",
+      "size": 1365,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/native/semantic-activity.log",
+      "source": "/workspace/shared/migration-issue-watch/activity-native-6aad/semantic-activity.log",
+      "source_sha256": "67350441f1756cc6a8e5aeb317d25df2e41a93e6686a3616932956f98df24213",
+      "source_size": 1446,
+      "sha256": "67350441f1756cc6a8e5aeb317d25df2e41a93e6686a3616932956f98df24213",
+      "size": 1446,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/native/sidebar-activity.log",
+      "source": "/workspace/shared/migration-issue-watch/activity-native-6aad/sidebar-activity.log",
+      "source_sha256": "ec2cc4ecb951fd119070c1e07bf92a17fd5c95d4c9a7f8f483407943db31cbb4",
+      "source_size": 93885,
+      "sha256": "ec2cc4ecb951fd119070c1e07bf92a17fd5c95d4c9a7f8f483407943db31cbb4",
+      "size": 93885,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/native/native-menu.log",
+      "source": "/workspace/shared/migration-issue-watch/activity-native-6aad/native-menu.log",
+      "source_sha256": "ac4da60e0ee60877c5be567d52d5b15122bd19239ea8b749681b40b21322fb54",
+      "source_size": 93131,
+      "sha256": "ac4da60e0ee60877c5be567d52d5b15122bd19239ea8b749681b40b21322fb54",
+      "size": 93131,
+      "transform": "byte-for-byte copy"
+    },
+    {
+      "path": "rust/docs/validation/sidebar-activity-2026-10-09/gui/root-gui-receipt-check.json",
+      "source": "/workspace/shared/activity-native-candidate/root-gui-receipt-check.json",
+      "source_sha256": "7bdd055d5e185b8214e8c7e177eb7d9841ab42d7e26028a10724c2afa3b622d2",
+      "source_size": 1150,
+      "sha256": "7bdd055d5e185b8214e8c7e177eb7d9841ab42d7e26028a10724c2afa3b622d2",
+      "size": 1150,
+      "transform": "byte-for-byte copy"
+    }
+  ]
+}

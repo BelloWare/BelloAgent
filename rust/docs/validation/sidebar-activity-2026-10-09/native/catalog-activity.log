@@ -1,0 +1,16 @@
+   Compiling bello-agent-core v0.1.0 (/Users/admin/Library/Caches/BelloRustWork/agent-6aad-activity-xkb4k81_/source/rust/crates/bello-agent-core)
+    Finished `test` profile [unoptimized] target(s) in 23.62s
+     Running unittests src/lib.rs (/Users/admin/Library/Caches/BelloRustWork/agent-target/debug/deps/bello_agent_core-86e44b232987605f)
+
+running 8 tests
+test workspace::activity_tests::activity_all_old_versions_read_sort_and_noop_without_rewrite_then_promote ... ok
+test workspace::activity_tests::activity_and_stale_organization_topic_operations_preserve_each_others_columns ... ok
+test workspace::activity_tests::activity_faults_preserve_memory_and_uncertain_commit_fences_even_noops ... ok
+test workspace::activity_tests::activity_max_semantics_do_not_create_rows_or_manufacture_clock_ticks ... ok
+test workspace::activity_tests::activity_mutex_serialization_keeps_concurrent_topic_and_organization_changes ... ok
+test workspace::activity_tests::activity_order_uses_pin_boolean_recency_creation_fallback_and_id_ties ... ok
+test workspace::activity_tests::activity_registration_preserves_captured_event_then_accepts_only_newer_activity ... ok
+test workspace::activity_tests::activity_version_gate_rejects_presence_including_null_and_malformed_values ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 698 filtered out; finished in 0.88s
+

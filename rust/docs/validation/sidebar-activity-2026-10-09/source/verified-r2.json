@@ -1,0 +1,8 @@
+{
+  "commit": "6aad4189ff7ee494c837055ae5b3ebe38948cb9c",
+  "parent": "1f351cd828ec878e5c0f40b861af5a3a1337c184",
+  "tree": "16f6dd01132a4a6384769eb3d37502ec8b29f707",
+  "paths": 28,
+  "all_bytes_verified": true,
+  "rust_ref_not_moved": true
+}

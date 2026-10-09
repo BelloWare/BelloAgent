@@ -1,0 +1,12 @@
+   Compiling bello-agent-core v0.1.0 (/workspace/shared/agent-sidebar-activity-integrated/rust/crates/bello-agent-core)
+   Compiling bello-agent-app v0.1.0 (/workspace/shared/agent-sidebar-activity-integrated/rust/crates/bello-agent-app)
+error: recursion limit reached while expanding `#[test]`
+ --> crates/bello-agent-app/src/sidebar_activity_tests.rs:9:1
+  |
+9 | #[test]
+  | ^^^^^^^
+  |
+  = help: consider increasing the recursion limit by adding a `#![recursion_limit = "256"]` attribute to your crate (`bello_agent`)
+  = note: this error originates in the attribute macro `test` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: could not compile `bello-agent-app` (bin "bello-agent" test) due to 1 previous error

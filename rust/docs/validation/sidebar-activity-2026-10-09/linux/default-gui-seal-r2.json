@@ -1,0 +1,25 @@
+{
+  "source_base": "1f351cd828ec878e5c0f40b861af5a3a1337c184",
+  "source_manifest": "/workspace/shared/agent-sidebar-activity-evidence/app-integration-freeze-r2.json",
+  "source_manifest_sha256": "6796ed5bd63f7066b8a5538ddbc12337bb8a0456635ab5dfabdd794966a7e9e4",
+  "source_files_verified": 28,
+  "binary": "/workspace/shared/agent-sidebar-activity-evidence/bello-agent-default-activity-r2",
+  "binary_sha256": "bcacca7acaf4e17d03119ab999173769f77f238ccdfbc7632cc4c946c385b5a5",
+  "binary_bytes": 135640568,
+  "build_command": "cargo build --locked -p bello-agent-app",
+  "features": [],
+  "artifact_kind": "ordinary non-test debug Linux GUI executable",
+  "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)\nbinary: rustc\ncommit-hash: b940084d7eb6a299eb4bfeb8e34901bc051e7ac4\ncommit-date: 2026-09-28\nhost: x86_64-unknown-linux-gnu\nrelease: 1.99.0\nLLVM version: 23.1.1",
+  "cargo": "cargo 1.99.0 (5f94df478 2026-08-27)",
+  "validation": {
+    "default_app": "541 passed, 0 failed, 1 preexisting ignored",
+    "strict_default_app_clippy": "passed",
+    "build": "passed"
+  },
+  "logs": {
+    "app-default-sealed-r2.log": "b1db45738c91c3c4506bb4264faae2b691df622ca8e4e9c9694f12ac70e69b67",
+    "app-default-clippy-sealed-r2.log": "8a012517324abd51745cddc6ebed73074f9c5000ff8afabd205012885eeb27a6",
+    "app-default-build-sealed-r2.log": "ae72d39aa91d5509f59be27d6811aabf0c8efcfa8992c7771d0d7803f9995998"
+  },
+  "limits": "Build and synthetic tests only. No GUI launch, native macOS acceptance, real credentials, provider spend, or screenshots performed by this worker."
+}
