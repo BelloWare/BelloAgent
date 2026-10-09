@@ -703,12 +703,64 @@ mod tests {
         os::unix::fs::{PermissionsExt, symlink},
         path::Path,
     };
+    // Test-only location selection. It cannot change production launch admission.
+    fn configured_fixture_parent(path: &Path) -> super::Result<std::path::PathBuf> {
+        super::lexical_absolute(path)?;
+        // SAFETY: fixed root descriptor, no borrowed memory or output buffer.
+        let mut parent = super::checked(unsafe {
+            libc::open(
+                c"/".as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+            )
+        })?;
+        super::validate(&parent, true, false, "configured test root ancestor /")?;
+        let parts: Vec<_> = path
+            .components()
+            .filter_map(|part| match part {
+                std::path::Component::Normal(name) => Some(name),
+                _ => None,
+            })
+            .collect();
+        for (index, name) in parts.iter().enumerate() {
+            let private = index + 1 == parts.len();
+            parent = super::directory_at(&parent, name, private, false)?;
+        }
+        if path.canonicalize()? != path {
+            return Err("Configured test fixture parent is not canonical".into());
+        }
+        // Keep the verified descriptor live through final path identity check.
+        use std::os::unix::fs::MetadataExt;
+        let by_path = fs::symlink_metadata(path)?;
+        let by_fd = parent.metadata()?;
+        if by_path.dev() != by_fd.dev() || by_path.ino() != by_fd.ino() {
+            return Err("Configured test fixture parent changed during admission".into());
+        }
+        Ok(path.to_owned())
+    }
     fn empty() -> tempfile::TempDir {
+        let parent = match std::env::var_os("BELLO_SYNTHETIC_TEST_FIXTURE_PARENT") {
+            Some(path) => configured_fixture_parent(Path::new(&path)).unwrap(),
+            None => std::env::current_dir().unwrap(),
+        };
         tempfile::Builder::new()
             .prefix("synthetic-sidebar-test-")
             .permissions(fs::Permissions::from_mode(0o700))
-            .tempdir_in(std::env::current_dir().unwrap())
+            .tempdir_in(parent)
             .unwrap()
+    }
+    #[test]
+    fn configured_fixture_parent_refuses_unsafe_or_aliased_paths() {
+        let safe = empty();
+        assert_eq!(configured_fixture_parent(safe.path()).unwrap(), safe.path());
+        let alias = safe.path().join("alias");
+        symlink(safe.path(), &alias).unwrap();
+        assert!(configured_fixture_parent(&alias).is_err());
+        assert!(configured_fixture_parent(Path::new("relative")).is_err());
+        assert!(configured_fixture_parent(Path::new("/")).is_err());
+        assert!(configured_fixture_parent(&safe.path().join("missing")).is_err());
+        assert!(!safe.path().join("missing").exists());
+        fs::set_permissions(safe.path(), fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(configured_fixture_parent(safe.path()).is_err());
     }
     #[test]
     fn acl_probe_retries_only_interruption_with_a_fixed_bound() {
@@ -782,6 +834,36 @@ mod tests {
             .is_err()
         );
         assert_eq!(calls, 2);
+    }
+    #[test]
+    fn configured_fixture_parent_rejects_actual_default_acl() {
+        use std::os::fd::AsRawFd;
+        let safe = empty();
+        assert!(configured_fixture_parent(safe.path()).is_ok());
+        let mut acl = 2u32.to_le_bytes().to_vec();
+        for (tag, permission) in [(1u16, 7u16), (4, 0), (32, 0)] {
+            acl.extend_from_slice(&tag.to_le_bytes());
+            acl.extend_from_slice(&permission.to_le_bytes());
+            acl.extend_from_slice(&u32::MAX.to_le_bytes());
+        }
+        let directory = fs::File::open(safe.path()).unwrap();
+        // SAFETY: valid owned fixture descriptor and bounded bytes; modifies only
+        // the new disposable test directory, never an existing runner ancestor.
+        let result = unsafe {
+            libc::fsetxattr(
+                directory.as_raw_fd(),
+                c"system.posix_acl_default".as_ptr(),
+                acl.as_ptr().cast(),
+                acl.len(),
+                0,
+            )
+        };
+        assert_eq!(result, 0, "{}", std::io::Error::last_os_error());
+        let error = configured_fixture_parent(safe.path())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("system.posix_acl_default"));
+        assert!(error.contains("result=28"));
     }
     fn args(args: &[&str]) -> Vec<OsString> {
         args.iter().map(OsString::from).collect()

@@ -31,6 +31,12 @@ jobs:
         run: |
           rustup toolchain install 1.99.0 --profile minimal --component rustfmt --component clippy
           rustup override set 1.99.0
+      - name: Prepare private synthetic fixture parent
+        # Create only a fresh task-owned directory; never change existing runner ACLs.
+        run: |
+          fixture="$(sudo python3 scripts/sidebar-ci-fixture.py create --uid "$(id -u)" --gid "$(id -g)" --run-id "$GITHUB_RUN_ID" --attempt "$GITHUB_RUN_ATTEMPT")"
+          echo "BELLO_SYNTHETIC_TEST_FIXTURE_PARENT=$fixture" >> "$GITHUB_ENV"
+          python3 scripts/sidebar-ci-fixture.py self-test --test-parent "$fixture"
       - name: Formatting
         run: cargo fmt --all -- --check
       - name: Core and integration tests
@@ -104,3 +110,7 @@ jobs:
           else
             echo 'Linux UI smoke did not produce a report; inspect earlier failed steps.' >> "$GITHUB_STEP_SUMMARY"
           fi
+      - name: Clean private synthetic fixture parent
+        if: always() && env.BELLO_SYNTHETIC_TEST_FIXTURE_PARENT != ''
+        run: |
+          sudo python3 scripts/sidebar-ci-fixture.py cleanup --root "$BELLO_SYNTHETIC_TEST_FIXTURE_PARENT" --uid "$(id -u)" --gid "$(id -g)" --run-id "$GITHUB_RUN_ID" --attempt "$GITHUB_RUN_ATTEMPT"
