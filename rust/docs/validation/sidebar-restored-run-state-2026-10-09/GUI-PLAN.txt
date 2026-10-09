@@ -1,0 +1,7 @@
+Normal legacy-profile cold-restart validation only. Do not use synthetic/native authority flags, saved connection IDs, real credentials, or state seeding.
+
+1. After binary seal, prepare a NEW fixture root with prepare-gui-fixture.py. The session/state folder is empty. Assign its private display, then run python3 -u ROOT/run-gateway.py > ROOT/evidence/gateway.log and ROOT/launch-app.sh. Launcher unsets all proxy variables and sets NO_PROXY=* plus disposable HOME/XDG paths.
+2. In the normal UI, submit a prompt identifying chat A. Stop its streamed response. Confirm Paused. Click New Chat, submit a prompt identifying B, let its response complete. Leave B selected and Ready. No Resume or Retry.
+3. Close the app normally and wait for exit. Record checkpoint/journal hashes and mtime/inode for A, plus the number of POST request metadata lines. Do not modify any persisted file. Record the catalog's selected ID and A path by read-only inspection.
+4. Relaunch the same script. Observe B as the selected loaded row and A displaying Paused before opening A. Record text observations/OCR plus request-count delta 0 and unchanged A checkpoint/journal bytes and mtime/inode. Reselect B to refresh without opening A; repeat assertions. Do not deliver screenshots.
+5. Close normally. Return text receipts/logs and exact binary hash. Reading arbitrary external changes, Interrupted recovery or busy-writer behavior is covered by focused tests, not this GUI scenario. This is not saved-connection, project-trust, native Mac, credential-vault or performance acceptance.

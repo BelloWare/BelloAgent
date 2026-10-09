@@ -43,6 +43,7 @@ mod quick_open;
 mod saved_runtime_adapter;
 mod shutdown_barrier;
 mod sidebar_actions;
+mod sidebar_run_state;
 mod stop_shortcut;
 mod theme;
 mod tool_timing_presentation;
@@ -162,6 +163,7 @@ struct AgentView {
     archive_visibility_errors: BTreeMap<String, String>,
     cancelled_prompt_key: Option<String>,
     sidebar_menu: Option<sidebar_actions::SidebarMenu>,
+    sidebar_run_states: sidebar_run_state::SidebarRunStates,
     compaction_menu: Option<compaction_actions::CompactionMenu>,
     conversation_content: Option<conversation_content_view::ContentSheet>,
     #[cfg(not(target_os = "macos"))]
@@ -421,6 +423,7 @@ impl AgentView {
             archive_visibility_errors: BTreeMap::new(),
             cancelled_prompt_key: None,
             sidebar_menu: None,
+            sidebar_run_states: Default::default(),
             compaction_menu: None,
             conversation_content: None,
             #[cfg(not(target_os = "macos"))]
@@ -2780,26 +2783,12 @@ impl AgentView {
                         .child(div().flex_1().h(px(1.)).bg(p.hairline())),
                 );
             }
-            let chat = self.chat_ref(&record.id);
             let title = self.sidebar_title(record);
             let id = record.id.clone();
             let selected = id == self.record.id;
             let move_id = id.clone();
             let menu_id = id.clone();
-            let status = chat
-                .map(|chat| {
-                    if chat.loading {
-                        "Preparing…"
-                    } else {
-                        match chat.session.state {
-                            RunState::Idle => "Ready",
-                            RunState::Running => "Working",
-                            RunState::Paused => "Paused",
-                            RunState::Error => "Failed",
-                        }
-                    }
-                })
-                .unwrap_or("Ready");
+            let status = self.sidebar_run_status(record);
             list = list.child(
                 div()
                     .id(SharedString::from(format!("chat-row-{id}")))
@@ -2812,9 +2801,13 @@ impl AgentView {
                     .gap(px(8.))
                     .items_center()
                     .cursor_pointer()
-                    .on_click(
-                        cx.listener(move |view, _, window, cx| view.select_chat(&id, window, cx)),
-                    )
+                    .on_click(cx.listener(move |view, _, window, cx| {
+                        view.select_chat(&id, window, cx);
+                        // Reselecting the focused row also refreshes saved
+                        // status without opening any unloaded controller.
+                        view.refresh_sidebar_run_states(cx);
+                        cx.notify();
+                    }))
                     .on_mouse_down(
                         MouseButton::Right,
                         cx.listener(move |view, event: &MouseDownEvent, window, cx| {
@@ -3017,6 +3010,7 @@ impl AgentView {
 impl Render for AgentView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let started = Instant::now();
+        self.refresh_sidebar_run_states(cx);
         let palette = current_palette(window);
         if self.palette != palette {
             self.palette = palette;

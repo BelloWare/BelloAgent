@@ -1,0 +1,45 @@
+{
+  "review": "Final narrow sidebar restoration review addendum",
+  "base": "e2a67c855442a22a24d71a26707df425c5fe277f",
+  "historical_receipt": {
+    "path": "/workspace/shared/agent-sidebar-run-state-evidence/independent-review.json",
+    "sha256": "bda993db7316263df4f0bfb628aaf5068c10e490a0f6f33d995465c569d1b53a",
+    "preserved": true
+  },
+  "manifest": {
+    "path": "/workspace/shared/agent-sidebar-run-state-evidence/changed-files.json",
+    "sha256": "d43c411f8084f6bb0976d9a72d32d8d476bc877d3ad95776556b0bb848dd5840"
+  },
+  "postimages": {
+    "rust/crates/bello-agent-app/src/main.rs": "4ddfec61ab59204d4a0031eee8da3fd18b8f8a0beec54ec0258c8061c4eb2661",
+    "rust/crates/bello-agent-app/src/sidebar_run_state.rs": "31487f24603546ec99cce65c7c55c3e004259984a1cfee8de09305294db70dd6",
+    "rust/crates/bello-agent-app/src/sidebar_run_state_tests.rs": "f4ed6611c60ea0f023128713b689592528237e65183db639919e906b6a6c60aa",
+    "rust/crates/bello-agent-core/src/session.rs": "32a952b14c378eb24f698f1e9771bb4597485af777ff469b0744f9002d94e52e",
+    "rust/crates/bello-agent-core/src/stream_journal.rs": "7af23416aa06f908dbac61ec16f922f0aa47c8f3f46675f3b86a4c8b6862e5f6",
+    "rust/crates/bello-agent-core/src/stream_journal_inspection_tests.rs": "6916d96328afa9894943e7ef1ec59df479a18785a7898f3c47668c9d8608944f",
+    "rust/docs/sidebar-restored-run-state.md": "d59b8d31aa4ee554f56f3ad9cf10ac8fa25fee5d051495f1194f30852c39df22"
+  },
+  "verification": "All seven local postimages independently rehashed against frozen manifest; all production hashes match prior review.",
+  "test_delta": {
+    "sha256": "f4ed6611c60ea0f023128713b689592528237e65183db639919e906b6a6c60aa",
+    "scope": "Only appended cold_view_reads_catalog_rows_without_opening_or_recovering_saved_chats; removing appended test reproduces prior a3035dc9da4e9ca65504d9e9bad3e360f735280c1a5ae1b97dab9ac4e74b1a1c exactly.",
+    "assessment": "Fresh AgentView receives real saved catalog with paused, active, idle and writer-held records; render-driven inspection must finish all four, show expected labels, keep all unloaded, retain no inactive controllers/inflight job, and preserve directory bytes, inode, length and modification time. No direct refresh or adoption call substitutes for constructor integration. No blocker found."
+  },
+  "documentation": "Final document describes exact current test gates and bounded point-in-time scope; obsolete integration-pending claim removed. Native Mac and general IO timeout acceptance remain explicitly unclaimed.",
+  "logs_independently_inspected": {
+    "app-sidebar-focused": "12 passed",
+    "app-default-final": "519 passed, 1 ignored",
+    "app-combined-features-final": "656 passed, 3 ignored",
+    "app-all-features-final": "663 passed, 3 ignored",
+    "workspace-default-clippy-final": "completed",
+    "app-combined-clippy-final": "completed",
+    "app-all-features-clippy-final": "completed",
+    "workspace-build-final": "completed"
+  },
+  "gui_report_inspected": {
+    "path": "/workspace/shared/sidebar-restore-gui/evidence/REPORT.txt",
+    "result": "Cloud Linux normal legacy CLI cold restart passed according to owner text receipts: A unopened Paused, selected B Ready, 2 total POSTs with zero restart/reselection/close delta, unchanged A checkpoint hash/length/mtime/inode/device, journal absent, both exits zero.",
+    "limits": "Reviewer did not independently operate GUI or inspect screenshots. Report explicitly limits acceptance to legacy-profile case, not saved connections/trust/vault/native Mac/performance/nonempty journal. Initial window needed titlebar motion for repaint; later selected B click refreshed normally."
+  },
+  "verdict": "No remaining source/spec safety blocker at seven frozen postimages. Prior review plus this test/doc-only addendum supports publication, subject to parent publication checks. No source edits or Cargo runs performed for addendum."
+}

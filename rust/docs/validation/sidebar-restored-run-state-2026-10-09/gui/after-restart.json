@@ -1,0 +1,25 @@
+{
+  "observed_utc": "2026-10-09T01:41:46.762421+00:00",
+  "stage": "after-restart",
+  "selected": "784fc774-a998-458d-b630-cc89e820476f",
+  "b_id": "784fc774-a998-458d-b630-cc89e820476f",
+  "a_id": "80c54d31-779f-4a8c-b1ae-4d01123d0f29",
+  "a_state": "paused",
+  "a_checkpoint": {
+    "path": "/workspace/shared/sidebar-restore-gui/state/session.json",
+    "exists": true,
+    "size": 934,
+    "mtime_ns": 1791509984890059169,
+    "inode": 1332299,
+    "device": 27,
+    "sha256": "690972efd5f0c234ce02bbf2abffbea34a5a3208b6958209367aa2b709747081"
+  },
+  "a_journal": {
+    "path": "/workspace/shared/sidebar-restore-gui/state/session.json.37381e1a-0540-4b49-9f7f-5941ee425ac5.stream.jsonl",
+    "exists": false
+  },
+  "all_stream_journals": [],
+  "post_count": 2,
+  "a_unchanged": true,
+  "post_delta": 0
+}

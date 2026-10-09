@@ -81,6 +81,21 @@ pub(crate) fn replay_read_only(snapshot: &Path, session: &mut Session) -> Result
     replay_with_confirmation(snapshot, session, false)
 }
 
+fn open_after_metadata(
+    path: &Path,
+    metadata: &fs::Metadata,
+    confirm_durability: bool,
+) -> Result<File> {
+    if confirm_durability {
+        // Preserve the writer's existing recovery/durability path.
+        Ok(OpenOptions::new().read(true).write(true).open(path)?)
+    } else {
+        // Reuse the same nonblocking, regular-file and identity checks as the
+        // inspection checkpoint/lock. A FIFO swap after stat must not hang.
+        crate::session::open_inspection_file_with_metadata(path, false, metadata)
+    }
+}
+
 fn replay_with_confirmation(
     snapshot: &Path,
     session: &mut Session,
@@ -98,13 +113,7 @@ fn replay_with_confirmation(
     if metadata.len() > MAX_JOURNAL_BYTES {
         return Err(invalid("Stream journal exceeds its 512 MiB recovery limit"));
     }
-    let file = OpenOptions::new()
-        .read(true)
-        .write(confirm_durability)
-        .open(&path)?;
-    if !confirm_durability {
-        crate::session::verify_inspection_file(&path, &file, &metadata)?;
-    }
+    let file = open_after_metadata(&path, &metadata, confirm_durability)?;
     let mut reader = BufReader::with_capacity(64 * 1024, file);
     let mut outcome = Replay {
         exists: true,
@@ -224,3 +233,7 @@ mod tests {
         assert!(path(Path::new("session.json"), "../../outside").is_err());
     }
 }
+
+#[cfg(test)]
+#[path = "stream_journal_inspection_tests.rs"]
+mod inspection_tests;

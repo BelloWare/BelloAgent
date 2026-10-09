@@ -1,0 +1,54 @@
+{
+  "base": "e2a67c855442a22a24d71a26707df425c5fe277f",
+  "files": [
+    {
+      "path": "rust/crates/bello-agent-app/src/main.rs",
+      "size": 146801,
+      "preimage_sha256": "e46f4eaf4488e731a518627d80d1aebacc89a85d8c58ca08d1a83496b06b14cd",
+      "sha256": "4ddfec61ab59204d4a0031eee8da3fd18b8f8a0beec54ec0258c8061c4eb2661",
+      "local": "/workspace/shared/agent-sidebar-run-state/rust/crates/bello-agent-app/src/main.rs"
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/sidebar_run_state.rs",
+      "size": 9805,
+      "preimage_sha256": null,
+      "sha256": "31487f24603546ec99cce65c7c55c3e004259984a1cfee8de09305294db70dd6",
+      "local": "/workspace/shared/agent-sidebar-run-state/rust/crates/bello-agent-app/src/sidebar_run_state.rs"
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/sidebar_run_state_tests.rs",
+      "size": 18251,
+      "preimage_sha256": null,
+      "sha256": "f4ed6611c60ea0f023128713b689592528237e65183db639919e906b6a6c60aa",
+      "local": "/workspace/shared/agent-sidebar-run-state/rust/crates/bello-agent-app/src/sidebar_run_state_tests.rs"
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/session.rs",
+      "size": 124895,
+      "preimage_sha256": "38a20b3a21dfa9a7f13ca4951e24ece49c0d7f3d75524d8053375c7ed0e31edd",
+      "sha256": "32a952b14c378eb24f698f1e9771bb4597485af777ff469b0744f9002d94e52e",
+      "local": "/workspace/shared/agent-sidebar-run-state/rust/crates/bello-agent-core/src/session.rs"
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/stream_journal.rs",
+      "size": 8839,
+      "preimage_sha256": "e2abe2339f573ec690158927630df28f9af19c8c0a994c465817777109120ed1",
+      "sha256": "7af23416aa06f908dbac61ec16f922f0aa47c8f3f46675f3b86a4c8b6862e5f6",
+      "local": "/workspace/shared/agent-sidebar-run-state/rust/crates/bello-agent-core/src/stream_journal.rs"
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/stream_journal_inspection_tests.rs",
+      "size": 4726,
+      "preimage_sha256": null,
+      "sha256": "6916d96328afa9894943e7ef1ec59df479a18785a7898f3c47668c9d8608944f",
+      "local": "/workspace/shared/agent-sidebar-run-state/rust/crates/bello-agent-core/src/stream_journal_inspection_tests.rs"
+    },
+    {
+      "path": "rust/docs/sidebar-restored-run-state.md",
+      "size": 5152,
+      "preimage_sha256": null,
+      "sha256": "d59b8d31aa4ee554f56f3ad9cf10ac8fa25fee5d051495f1194f30852c39df22",
+      "local": "/workspace/shared/agent-sidebar-run-state/rust/docs/sidebar-restored-run-state.md"
+    }
+  ]
+}

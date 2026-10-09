@@ -1,0 +1,10 @@
+{
+  "base": "e2a67c855442a22a24d71a26707df425c5fe277f",
+  "binary": "/workspace/shared/agent-sidebar-run-state-evidence/bello-agent-sealed",
+  "binary_sha256": "222173280c9d25378c7d8955206197c89a84aa25980ad5f8a964158953a62de0",
+  "build": "cargo build --locked --workspace (default features)",
+  "target": "x86_64-unknown-linux-gnu",
+  "source_manifest_sha256": "d84091553845df0ce04f68bb758163ac85a75410f73e653849bea75f95d8fd8a",
+  "changed_files_manifest_sha256": "d43c411f8084f6bb0976d9a72d32d8d476bc877d3ad95776556b0bb848dd5840",
+  "notes": "Default non-native, non-synthetic authority binary; safe legacy CLI GUI fixture route only. No actual Mac/vault acceptance."
+}

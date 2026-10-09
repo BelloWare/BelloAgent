@@ -1,0 +1,13 @@
+   Compiling bello-agent-core v0.1.0 (/workspace/shared/agent-sidebar-run-state-mutant/rust/crates/bello-agent-core)
+    Finished `test` profile [unoptimized] target(s) in 15.28s
+     Running unittests src/lib.rs (/workspace/shared/agent-sidebar-run-state-mutant-target/debug/deps/bello_agent_core-8bfe315c8d6b13f3)
+
+running 5 tests
+test stream_journal::inspection_tests::fifo_substitution_child ... ok
+test stream_journal::inspection_tests::same_length_mtime_replacement_after_stat_is_rejected_by_identity ... ok
+test stream_journal::inspection_tests::regular_journal_read_only_open_preserves_bytes_and_metadata ... ok
+test stream_journal::inspection_tests::symlink_substitution_after_stat_is_rejected_without_mutating_target ... ok
+test stream_journal::inspection_tests::fifo_substitution_after_stat_is_rejected_without_waiting_for_a_peer ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 480 filtered out; finished in 0.01s
+

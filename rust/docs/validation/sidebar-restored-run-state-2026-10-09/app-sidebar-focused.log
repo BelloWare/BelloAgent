@@ -1,0 +1,22 @@
+   Compiling bello-agent-app v0.1.0 (/workspace/shared/agent-sidebar-run-state/rust/crates/bello-agent-app)
+    Finished `test` profile [unoptimized] target(s) in 15.21s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running unittests src/main.rs (/workspace/shared/build-recovery/target/debug/deps/bello_agent-9a0476a84d7aa869)
+
+running 12 tests
+test sidebar_run_state::tests::same_length_checkpoint_replacement_after_inspection_is_unknown ... ok
+test sidebar_run_state::tests::held_writer_missing_checkpoint_and_foreign_identity_never_claim_ready ... ok
+test sidebar_run_state::tests::incomplete_or_damaged_journal_is_unknown_and_byte_preserved ... ok
+test sidebar_run_state::tests::swift_hold_projection_keeps_stopped_empty_and_pending_work_paused ... ok
+test sidebar_run_state::tests::active_checkpoint_and_journal_are_observed_without_recovery_replay_or_writes ... ok
+test sidebar_run_state::tests::paused_failed_and_legacy_idle_states_are_inspected_without_migration ... ok
+test sidebar_run_state::tests::loaded_controller_always_wins_over_saved_ready_and_stale_completion ... ok
+test sidebar_run_state::tests::older_request_cannot_clear_new_in_flight_or_overwrite_newer_observation ... ok
+test sidebar_run_state::tests::navigation_retries_unknown_storage_without_opening_its_controller ... ok
+test sidebar_run_state::tests::unloaded_rows_restore_sequentially_without_loading_controllers ... ok
+test sidebar_run_state::tests::cold_view_reads_catalog_rows_without_opening_or_recovering_saved_chats ... ok
+test sidebar_run_state::tests::stale_completions_cannot_publish_across_identity_or_lifecycle_changes ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 508 filtered out; finished in 0.31s
+

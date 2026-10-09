@@ -1,0 +1,38 @@
+   Compiling bello-agent-core v0.1.0 (/workspace/shared/agent-sidebar-run-state-mutant/rust/crates/bello-agent-core)
+warning: unused import: `std::os::unix::fs::OpenOptionsExt`
+    --> crates/bello-agent-core/src/session.rs:1049:13
+     |
+1049 |         use std::os::unix::fs::OpenOptionsExt;
+     |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: constant `O_NONBLOCK` is never used
+    --> crates/bello-agent-core/src/session.rs:1051:15
+     |
+1051 |         const O_NONBLOCK: i32 = 0x800;
+     |               ^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `bello-agent-core` (lib test) generated 2 warnings (run `cargo fix --lib -p bello-agent-core --tests` to apply 1 suggestion)
+    Finished `test` profile [unoptimized] target(s) in 15.88s
+     Running unittests src/lib.rs (/workspace/shared/agent-sidebar-run-state-mutant-target/debug/deps/bello_agent_core-8bfe315c8d6b13f3)
+
+running 1 test
+
+thread 'stream_journal::inspection_tests::fifo_substitution_after_stat_is_rejected_without_waiting_for_a_peer' (46) panicked at crates/bello-agent-core/src/stream_journal_inspection_tests.rs:53:13:
+journal inspection blocked after FIFO substitution: 
+running 1 test
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test stream_journal::inspection_tests::fifo_substitution_after_stat_is_rejected_without_waiting_for_a_peer ... FAILED
+
+failures:
+
+failures:
+    stream_journal::inspection_tests::fifo_substitution_after_stat_is_rejected_without_waiting_for_a_peer
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 484 filtered out; finished in 5.00s
+
+error: test failed, to rerun pass `-p bello-agent-core --lib`

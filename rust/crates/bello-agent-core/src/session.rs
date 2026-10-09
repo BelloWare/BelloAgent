@@ -1024,6 +1024,17 @@ impl SessionInspectionLease {
 
 fn open_inspection_file(path: &Path, writable: bool) -> Result<File> {
     let before = fs::symlink_metadata(path)?;
+    open_inspection_file_with_metadata(path, writable, &before)
+}
+
+/// Open the exact regular-file observation without waiting if the path was
+/// replaced by a FIFO. Callers may reuse metadata already checked for size.
+/// The supplied identity is validated against both descriptor and path.
+pub(crate) fn open_inspection_file_with_metadata(
+    path: &Path,
+    writable: bool,
+    before: &fs::Metadata,
+) -> Result<File> {
     if !before.is_file() || before.file_type().is_symlink() {
         return Err(invalid(
             "Session inspection requires existing regular files",
@@ -1043,7 +1054,7 @@ fn open_inspection_file(path: &Path, writable: bool) -> Result<File> {
         options.custom_flags(O_NONBLOCK);
     }
     let file = options.open(path)?;
-    verify_inspection_file(path, &file, &before)?;
+    verify_inspection_file(path, &file, before)?;
     Ok(file)
 }
 

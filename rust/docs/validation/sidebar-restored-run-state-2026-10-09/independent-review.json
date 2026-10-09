@@ -1,0 +1,45 @@
+{
+  "review": "Independent sidebar restored run-state safety/spec review",
+  "base": "e2a67c855442a22a24d71a26707df425c5fe277f",
+  "swift_spec": "6319e368c6ddb7c3ef18605e78f23b1a5b69e63a",
+  "handoff": "bd4e6ebb:rust/docs/MIGRATION-HANDOFF-2026-10-07.md",
+  "verdict": "No remaining source-review blocker at these hashes; aggregate checks, final documentation and remote CI remain separate gates.",
+  "sha256": {
+    "rust/crates/bello-agent-app/src/main.rs": "4ddfec61ab59204d4a0031eee8da3fd18b8f8a0beec54ec0258c8061c4eb2661",
+    "rust/crates/bello-agent-app/src/sidebar_run_state.rs": "31487f24603546ec99cce65c7c55c3e004259984a1cfee8de09305294db70dd6",
+    "rust/crates/bello-agent-app/src/sidebar_run_state_tests.rs": "a3035dc9da4e9ca65504d9e9bad3e360f735280c1a5ae1b97dab9ac4e74b1a1c",
+    "rust/crates/bello-agent-core/src/session.rs": "32a952b14c378eb24f698f1e9771bb4597485af777ff469b0744f9002d94e52e",
+    "rust/crates/bello-agent-core/src/stream_journal.rs": "7af23416aa06f908dbac61ec16f922f0aa47c8f3f46675f3b86a4c8b6862e5f6",
+    "rust/crates/bello-agent-core/src/stream_journal_inspection_tests.rs": "6916d96328afa9894943e7ef1ec59df479a18785a7898f3c47668c9d8608944f"
+  },
+  "reviewed_contracts": [
+    "Persisted Running/active projects to Interrupted, Error to Failed, paused/queue_paused/pending/held-edit to Paused, validated idle to Ready; unknown stays Unavailable.",
+    "Loaded controller presentation always precedes saved observations, including loading/load failure and published fatal Error; no lease clears live uncertainty.",
+    "SessionInspectionLease performs bounded schema/UUID/checkpoint/read-only journal validation, no controller creation, provider/tool execution, credentials, writes, recovery or resume.",
+    "One in-flight session per view survives scope invalidation until completion; parsed history and writer lease dropped promptly. Unknown attempts cached, no repeated render-loop retry.",
+    "Project path/workspace identity/window binding/navigation/load generation/epoch and exact ChatRecord reject stale completion. Loaded ownership rejects adoption and removes observations.",
+    "Same-length/mtime snapshot replacement is rejected by Unix inode/device fence; journal opener and final read validate identity.",
+    "Main module/state/render/label integration is narrow. Actual row-click handler selects then refreshes and notifies, enabling current-row reselection freshness."
+  ],
+  "resolved_finding": {
+    "severity": "blocking before fix",
+    "problem": "Read-only journal stat/open FIFO substitution could block indefinitely while retaining sole scan slot/writer lease.",
+    "fix": "Reused metadata-taking nonblocking regular-file inspection opener for read-only replay only; writable recovery remains unchanged.",
+    "evidence": "fifo-negative-control.log compiled mutant lacking O_NONBLOCK then failed exact regression at 5.00s. fifo-restored.log passed all five tests after exact helper restoration."
+  },
+  "inspected_evidence": [
+    "app-sidebar-focused.log: 11 passed, including 5 GPUI tests",
+    "core-all.log: 485 unit plus 127 integration tests passed",
+    "core-all-features.log: 670 unit plus integration suites passed",
+    "core-clippy-all-features.log: completed successfully",
+    "fifo-negative-control.log: expected timed failure",
+    "fifo-restored.log: 5 passed"
+  ],
+  "limits": [
+    "Point-in-time observations, refreshed by selection/load/window/record changes; no filesystem watching or automatic timer.",
+    "Memory/record bounds use existing 256 MiB checkpoint and 512 MiB journal; no general regular-file IO timeout/cancellation guarantee.",
+    "No macOS native UI, input, accessibility, same-hardware performance or production credential acceptance claimed.",
+    "No independent Cargo run was performed; existing owner logs were inspected.",
+    "Document verification section is still implementation-stage and must be updated to final evidence."
+  ]
+}

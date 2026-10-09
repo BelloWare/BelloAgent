@@ -1,0 +1,16 @@
+PASS: cloud Linux BelloAgent normal legacy CLI cold restart, 2026-10-09 UTC.
+
+Sealed default binary SHA256: 222173280c9d25378c7d8955206197c89a84aa25980ad5f8a964158953a62de0
+Binary, source manifest, and changed-files manifest hashes matched sealed-build.json before execution. Binary hash matched again after closure.
+
+Normal UI sequence: Send "Restore Chat A"; while Working and partial fixture output rendered, click Stop; observe A Paused. Create New Chat and Send "Restore Chat B"; observe complete fixture response, B selected Ready, A Paused. Close using window close button; first.exit=0. Only after closure record before-restart.json.
+Relaunch identical CLI/profile/HOME/state. Without selecting A, observe B selected Ready and A Paused. Initial window was not repainted; moving its titlebar refreshed presentation without chat navigation. Record after-restart.json. Click selected B row; observe B Ready/A Paused again, A never opened. Record after-reselect.json. Close normally; second.exit=0, final-closed.json passes. Local fixture gateway terminated by relaunch wrapper.
+
+POST count 2 total throughout; restart/reselection/final close delta 0.
+A checkpoint SHA256 690972efd5f0c234ce02bbf2abffbea34a5a3208b6958209367aa2b709747081; 934 bytes; mtime_ns 1791509984890059169; inode 1332299; device 27. All unchanged after restart, B reselection, and final close.
+A stream journal was absent after graceful shutdown and remained absent; no stream journals in state. No claim of nonempty journal GUI coverage. Catalog/B files are allowed to change through ordinary recovery; no unchanged claim for those.
+
+Fixture only: disposable project/session/HOME, numeric 127.0.0.1:47836, proxy env removed and NO_PROXY=*, fixed non-secret stdin fixture key, connection_id=null, provider-only legacy route, Tools unavailable. No saved authority/connection or session/catalog seeding, native/synthetic flags, real credentials, Mac, paid provider, or source/Git edits.
+Preparation adjustments only in disposable files: source existing inspected gui-runtime-env.sh rather than missing gui-env.sh; A-only word delay 2s instead of 0.14s for deterministic Stop. No app binary modification. CUA Sky keyboard and clicks used; type_text/Paste failed so official press_key sent text. UI captures used for observation only; no screenshots delivered or published.
+
+Scope: legacy-profile cold restart only. Not saved-connection, trust, vault, native Mac, performance, nonempty journal, or broader acceptance. Text receipts and logs accompany this report.
