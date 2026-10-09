@@ -3,7 +3,7 @@
   "evidence_cutoff_utc": "2026-10-09T06:00:00Z",
   "schema_version": 1,
   "repository": "BelloWare/BelloAgent",
-  "as_of_utc": "2026-10-09T08:08:00Z",
+  "as_of_utc": "2026-10-09T08:43:00Z",
   "source_commit": "885a5bcf6e608361692e877d7c77941b0db2f4d8",
   "summary": {
     "window_start_utc": "2026-10-04T05:13:30Z",
@@ -47034,6 +47034,2668 @@
       "checkpoint": "2026-10-09-follow-on",
       "inference_duration_seconds": null,
       "inference_status": "unavailable"
+    },
+    {
+      "id": "20261009-0843-integrated-linux-0",
+      "repository_assignment": "BelloAgent",
+      "activity": "fmt",
+      "category": "automated lint/check",
+      "start_utc": "2026-10-09T08:03:25.860880+00:00",
+      "end_utc": "2026-10-09T08:03:28.041967+00:00",
+      "duration_seconds": 2.1810742410016246,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "9aca1c2eaefb8f45b36dab11814d8c72d9163e030e9b2eb646d2453c1d7cebe2"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_local_command",
+      "include_in_totals": true,
+      "resource": "cloud command process",
+      "duration_basis": "Measured command elapsed; compilation/execution may be combined, not active labor or inference",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "source_commit": "e4d25eb626b0caf7ae3222a277bbbf7dd33f0e89",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-integrated-linux-1",
+      "repository_assignment": "BelloAgent",
+      "activity": "focused-restored-app",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T08:03:28.042296+00:00",
+      "end_utc": "2026-10-09T08:03:57.797400+00:00",
+      "duration_seconds": 29.755095814995002,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "9aca1c2eaefb8f45b36dab11814d8c72d9163e030e9b2eb646d2453c1d7cebe2"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_local_command",
+      "include_in_totals": true,
+      "resource": "cloud command process",
+      "duration_basis": "Measured command elapsed; compilation/execution may be combined, not active labor or inference",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "source_commit": "e4d25eb626b0caf7ae3222a277bbbf7dd33f0e89",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-integrated-linux-2",
+      "repository_assignment": "BelloAgent",
+      "activity": "workspace-default",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T08:03:57.798025+00:00",
+      "end_utc": "2026-10-09T08:04:45.723458+00:00",
+      "duration_seconds": 47.925424418994226,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "9aca1c2eaefb8f45b36dab11814d8c72d9163e030e9b2eb646d2453c1d7cebe2"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_local_command",
+      "include_in_totals": true,
+      "resource": "cloud command process",
+      "duration_basis": "Measured command elapsed; compilation/execution may be combined, not active labor or inference",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "source_commit": "e4d25eb626b0caf7ae3222a277bbbf7dd33f0e89",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-integrated-linux-3",
+      "repository_assignment": "BelloAgent",
+      "activity": "workspace-all-features",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T08:04:45.723876+00:00",
+      "end_utc": "2026-10-09T08:06:03.839629+00:00",
+      "duration_seconds": 78.11574400600512,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "9aca1c2eaefb8f45b36dab11814d8c72d9163e030e9b2eb646d2453c1d7cebe2"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_local_command",
+      "include_in_totals": true,
+      "resource": "cloud command process",
+      "duration_basis": "Measured command elapsed; compilation/execution may be combined, not active labor or inference",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "source_commit": "e4d25eb626b0caf7ae3222a277bbbf7dd33f0e89",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-integrated-linux-4",
+      "repository_assignment": "BelloAgent",
+      "activity": "clippy-default",
+      "category": "automated lint/check",
+      "start_utc": "2026-10-09T08:06:03.840457+00:00",
+      "end_utc": "2026-10-09T08:06:21.814358+00:00",
+      "duration_seconds": 17.973891509995156,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "9aca1c2eaefb8f45b36dab11814d8c72d9163e030e9b2eb646d2453c1d7cebe2"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_local_command",
+      "include_in_totals": true,
+      "resource": "cloud command process",
+      "duration_basis": "Measured command elapsed; compilation/execution may be combined, not active labor or inference",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "source_commit": "e4d25eb626b0caf7ae3222a277bbbf7dd33f0e89",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-integrated-linux-5",
+      "repository_assignment": "BelloAgent",
+      "activity": "clippy-all-features",
+      "category": "automated lint/check",
+      "start_utc": "2026-10-09T08:06:21.814729+00:00",
+      "end_utc": "2026-10-09T08:06:37.562881+00:00",
+      "duration_seconds": 15.748145714998827,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "9aca1c2eaefb8f45b36dab11814d8c72d9163e030e9b2eb646d2453c1d7cebe2"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_local_command",
+      "include_in_totals": true,
+      "resource": "cloud command process",
+      "duration_basis": "Measured command elapsed; compilation/execution may be combined, not active labor or inference",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "source_commit": "e4d25eb626b0caf7ae3222a277bbbf7dd33f0e89",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-integrated-linux-6",
+      "repository_assignment": "BelloAgent",
+      "activity": "package-clean",
+      "category": "dependency/environment or source verification",
+      "start_utc": "2026-10-09T08:06:47.997387+00:00",
+      "end_utc": "2026-10-09T08:06:48.291130+00:00",
+      "duration_seconds": 0.29374756300239824,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "9aca1c2eaefb8f45b36dab11814d8c72d9163e030e9b2eb646d2453c1d7cebe2"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_local_command",
+      "include_in_totals": true,
+      "resource": "cloud command process",
+      "duration_basis": "Measured command elapsed; compilation/execution may be combined, not active labor or inference",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "source_commit": "e4d25eb626b0caf7ae3222a277bbbf7dd33f0e89",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-integrated-linux-7",
+      "repository_assignment": "BelloAgent",
+      "activity": "ordinary-build",
+      "category": "build",
+      "start_utc": "2026-10-09T08:06:48.291463+00:00",
+      "end_utc": "2026-10-09T08:07:05.600623+00:00",
+      "duration_seconds": 17.309179434996622,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "9aca1c2eaefb8f45b36dab11814d8c72d9163e030e9b2eb646d2453c1d7cebe2"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_local_command",
+      "include_in_totals": true,
+      "resource": "cloud command process",
+      "duration_basis": "Measured command elapsed; compilation/execution may be combined, not active labor or inference",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "source_commit": "e4d25eb626b0caf7ae3222a277bbbf7dd33f0e89",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-composed-api-0",
+      "repository_assignment": "BelloAgent",
+      "activity": "initial blob denied",
+      "category": "publication / retry",
+      "start_utc": null,
+      "end_utc": null,
+      "duration_seconds": 10.324,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "0d202d3b2b0c74147e390502fc5d2605a6aa6d47bec128caf7e0c128ec6c1a6b",
+          "url": "https://github.com/BelloWare/BelloAgent/commit/381de39def43717972cf882c535e768b305bc586"
+        }
+      ],
+      "outcome": "denied",
+      "accounting_group": "new_api_operation",
+      "include_in_totals": true,
+      "resource": "pending API/client operation",
+      "duration_basis": "Observed individual API call elapsed; interval endpoints unavailable, excludes unmeasured gaps",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget."
+    },
+    {
+      "id": "20261009-0843-composed-api-1",
+      "repository_assignment": "BelloAgent",
+      "activity": "same blob authorized retry",
+      "category": "publication / retry",
+      "start_utc": null,
+      "end_utc": null,
+      "duration_seconds": 8.462,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "0d202d3b2b0c74147e390502fc5d2605a6aa6d47bec128caf7e0c128ec6c1a6b",
+          "url": "https://github.com/BelloWare/BelloAgent/commit/381de39def43717972cf882c535e768b305bc586"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_api_operation",
+      "include_in_totals": true,
+      "resource": "pending API/client operation",
+      "duration_basis": "Observed individual API call elapsed; interval endpoints unavailable, excludes unmeasured gaps",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget."
+    },
+    {
+      "id": "20261009-0843-composed-api-2",
+      "repository_assignment": "BelloAgent",
+      "activity": "authority blob",
+      "category": "publication / retry",
+      "start_utc": null,
+      "end_utc": null,
+      "duration_seconds": 9.271,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "0d202d3b2b0c74147e390502fc5d2605a6aa6d47bec128caf7e0c128ec6c1a6b",
+          "url": "https://github.com/BelloWare/BelloAgent/commit/381de39def43717972cf882c535e768b305bc586"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_api_operation",
+      "include_in_totals": true,
+      "resource": "pending API/client operation",
+      "duration_basis": "Observed individual API call elapsed; interval endpoints unavailable, excludes unmeasured gaps",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget."
+    },
+    {
+      "id": "20261009-0843-composed-api-3",
+      "repository_assignment": "BelloAgent",
+      "activity": "tree create",
+      "category": "publication / retry",
+      "start_utc": null,
+      "end_utc": null,
+      "duration_seconds": 9.183,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "0d202d3b2b0c74147e390502fc5d2605a6aa6d47bec128caf7e0c128ec6c1a6b",
+          "url": "https://github.com/BelloWare/BelloAgent/commit/381de39def43717972cf882c535e768b305bc586"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_api_operation",
+      "include_in_totals": true,
+      "resource": "pending API/client operation",
+      "duration_basis": "Observed individual API call elapsed; interval endpoints unavailable, excludes unmeasured gaps",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget."
+    },
+    {
+      "id": "20261009-0843-composed-api-4",
+      "repository_assignment": "BelloAgent",
+      "activity": "commit create",
+      "category": "publication / retry",
+      "start_utc": null,
+      "end_utc": null,
+      "duration_seconds": 7.329,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "0d202d3b2b0c74147e390502fc5d2605a6aa6d47bec128caf7e0c128ec6c1a6b",
+          "url": "https://github.com/BelloWare/BelloAgent/commit/381de39def43717972cf882c535e768b305bc586"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_api_operation",
+      "include_in_totals": true,
+      "resource": "pending API/client operation",
+      "duration_basis": "Observed individual API call elapsed; interval endpoints unavailable, excludes unmeasured gaps",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget."
+    },
+    {
+      "id": "20261009-0843-composed-api-5",
+      "repository_assignment": "BelloAgent",
+      "activity": "commit_seconds",
+      "category": "publication / retry",
+      "start_utc": null,
+      "end_utc": null,
+      "duration_seconds": 0.334,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "0d202d3b2b0c74147e390502fc5d2605a6aa6d47bec128caf7e0c128ec6c1a6b",
+          "url": "https://github.com/BelloWare/BelloAgent/commit/381de39def43717972cf882c535e768b305bc586"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_api_operation",
+      "include_in_totals": true,
+      "resource": "pending API/client operation",
+      "duration_basis": "Observed individual API call elapsed; interval endpoints unavailable, excludes unmeasured gaps",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget."
+    },
+    {
+      "id": "20261009-0843-composed-api-6",
+      "repository_assignment": "BelloAgent",
+      "activity": "tree_seconds",
+      "category": "publication / retry",
+      "start_utc": null,
+      "end_utc": null,
+      "duration_seconds": 0.75,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "0d202d3b2b0c74147e390502fc5d2605a6aa6d47bec128caf7e0c128ec6c1a6b",
+          "url": "https://github.com/BelloWare/BelloAgent/commit/381de39def43717972cf882c535e768b305bc586"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_api_operation",
+      "include_in_totals": true,
+      "resource": "pending API/client operation",
+      "duration_basis": "Observed individual API call elapsed; interval endpoints unavailable, excludes unmeasured gaps",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget."
+    },
+    {
+      "id": "20261009-0843-e4d-publication",
+      "repository_assignment": "BelloAgent",
+      "activity": "Composed source publication and readback",
+      "category": "publication (mixed)",
+      "start_utc": "2026-10-09T08:30:40Z",
+      "end_utc": "2026-10-09T08:31:02Z",
+      "duration_seconds": 22,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "d3eabb8c0fa4af35b7ed0deb3413c4ee8370ecbe32e0a676b16e264d9b7e4c8f",
+          "url": "https://github.com/BelloWare/BelloAgent/commit/e4d25eb626b0caf7ae3222a277bbbf7dd33f0e89"
+        }
+      ],
+      "outcome": "completed",
+      "accounting_group": "task_window",
+      "include_in_totals": false,
+      "resource": "mixed observation",
+      "duration_basis": "Original observer interval; includes tools and coordination, not model time",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget."
+    },
+    {
+      "id": "20261009-0843-integrated-gui",
+      "repository_assignment": "BelloAgent",
+      "activity": "integrated-gui",
+      "category": "interactive validation (mixed)",
+      "start_utc": "2026-10-09T08:09:33.018701+00:00",
+      "end_utc": "2026-10-09T08:12:57.543153+00:00",
+      "duration_seconds": 204.524452,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "7b211fc096724f57ef4b225ef426d6adae00b3c710d80f63de9562a83bdf7fe5"
+        }
+      ],
+      "outcome": "completed",
+      "accounting_group": "task_window",
+      "include_in_totals": false,
+      "resource": "mixed observation",
+      "duration_basis": "Measured preparation/actions/checks/cleanup workflow window; not app latency, active labor or inference",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget."
+    },
+    {
+      "id": "20261009-0843-native-lint-receipt-actual-compiler-cfg-all-features",
+      "repository_assignment": "BelloAgent",
+      "activity": "actual-compiler-cfg-all-features",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T07:50:22.327462+00:00",
+      "end_utc": "2026-10-09T07:50:32.794480+00:00",
+      "duration_seconds": 10.46686275000684,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "6a84cc0e6d5f33be0e4f230629e4bf9b7e341a36494de9d1dd6a7cd159592a4d",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6076961061",
+          "record_sha256": "7b8b3242e3c3a89a40115df0531bafb07663523b368432e23a688d79ac5fdfa5"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-native-lint-receipt-actual-compiler-cfg-default",
+      "repository_assignment": "BelloAgent",
+      "activity": "actual-compiler-cfg-default",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T07:50:06.889163+00:00",
+      "end_utc": "2026-10-09T07:50:22.299328+00:00",
+      "duration_seconds": 15.409974584006704,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "6a84cc0e6d5f33be0e4f230629e4bf9b7e341a36494de9d1dd6a7cd159592a4d",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6076961061",
+          "record_sha256": "4cd89344d6b392560fdb1ef053526efd54d5a1cf5a6e770ae7cacdc889875007"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-native-lint-receipt-actual-core-correction-reverted",
+      "repository_assignment": "BelloAgent",
+      "activity": "actual-core-correction-reverted",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T07:50:38.868287+00:00",
+      "end_utc": "2026-10-09T07:50:47.428489+00:00",
+      "duration_seconds": 8.56000270799268,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "6a84cc0e6d5f33be0e4f230629e4bf9b7e341a36494de9d1dd6a7cd159592a4d",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6076961061",
+          "record_sha256": "ff94e9b5700afe56b5752fdc271cc2f4b68e9b23f97de4e5df379760f8b04ae7"
+        }
+      ],
+      "outcome": "expected negative-control failure",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-native-lint-receipt-actual-manifest-expectation-omitted-all-features",
+      "repository_assignment": "BelloAgent",
+      "activity": "actual-manifest-expectation-omitted-all-features",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T07:50:57.919944+00:00",
+      "end_utc": "2026-10-09T07:51:11.880997+00:00",
+      "duration_seconds": 13.960888999979943,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "6a84cc0e6d5f33be0e4f230629e4bf9b7e341a36494de9d1dd6a7cd159592a4d",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6076961061",
+          "record_sha256": "6f62cc64b554deaadb6e1dbff358a86d1840b8e2505d68f7247a8f67ca1533b4"
+        }
+      ],
+      "outcome": "expected negative-control failure",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-native-lint-receipt-actual-manifest-expectation-omitted-default",
+      "repository_assignment": "BelloAgent",
+      "activity": "actual-manifest-expectation-omitted-default",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T07:50:47.620863+00:00",
+      "end_utc": "2026-10-09T07:50:57.918637+00:00",
+      "duration_seconds": 10.297562415944412,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "6a84cc0e6d5f33be0e4f230629e4bf9b7e341a36494de9d1dd6a7cd159592a4d",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6076961061",
+          "record_sha256": "5760fdb3d32ffee5bbedbc27ab55a3e1240b0a17747f23bbe3b1a36b47e6f419"
+        }
+      ],
+      "outcome": "expected negative-control failure",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-native-lint-receipt-actual-reject-legacy-feature-all-features",
+      "repository_assignment": "BelloAgent",
+      "activity": "actual-reject-legacy-feature-all-features",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T07:50:22.301540+00:00",
+      "end_utc": "2026-10-09T07:50:22.326774+00:00",
+      "duration_seconds": 0.025055459002032876,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "6a84cc0e6d5f33be0e4f230629e4bf9b7e341a36494de9d1dd6a7cd159592a4d",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6076961061",
+          "record_sha256": "9b7e06542f42c9c510c2c15d6738630d10d2289d436ee4462adddf4593412e92"
+        }
+      ],
+      "outcome": "expected negative-control failure",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-native-lint-receipt-actual-reject-legacy-feature-default",
+      "repository_assignment": "BelloAgent",
+      "activity": "actual-reject-legacy-feature-default",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T07:50:06.841712+00:00",
+      "end_utc": "2026-10-09T07:50:06.888420+00:00",
+      "duration_seconds": 0.04649849992711097,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "6a84cc0e6d5f33be0e4f230629e4bf9b7e341a36494de9d1dd6a7cd159592a4d",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6076961061",
+          "record_sha256": "1ec288e3092a25c01418320c19143c44766f855056ffcbec65c7694b66222868"
+        }
+      ],
+      "outcome": "expected negative-control failure",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-native-lint-receipt-control-worktree-create",
+      "repository_assignment": "BelloAgent",
+      "activity": "control-worktree-create",
+      "category": "dependency/environment or source verification",
+      "start_utc": "2026-10-09T07:50:32.795570+00:00",
+      "end_utc": "2026-10-09T07:50:38.738230+00:00",
+      "duration_seconds": 5.94269658299163,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "6a84cc0e6d5f33be0e4f230629e4bf9b7e341a36494de9d1dd6a7cd159592a4d",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6076961061",
+          "record_sha256": "abb744d99b817c77b2c2d2199c3f157b0cf34da4b64eeb9e88ce10e789282602"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-native-lint-receipt-control-worktree-remove",
+      "repository_assignment": "BelloAgent",
+      "activity": "control-worktree-remove",
+      "category": "dependency/environment or source verification",
+      "start_utc": "2026-10-09T07:51:12.031487+00:00",
+      "end_utc": "2026-10-09T07:51:12.338462+00:00",
+      "duration_seconds": 0.30704483401495963,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "6a84cc0e6d5f33be0e4f230629e4bf9b7e341a36494de9d1dd6a7cd159592a4d",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6076961061",
+          "record_sha256": "64f6fd67333e5bc02ffb1e129fb33c2424781e770ccea12839422e8a9da61be2"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-native-lint-receipt-core-authority-tests-all",
+      "repository_assignment": "BelloAgent",
+      "activity": "core-authority-tests-all",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T07:53:03.708009+00:00",
+      "end_utc": "2026-10-09T07:53:39.805964+00:00",
+      "duration_seconds": 36.0976893750485,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "6a84cc0e6d5f33be0e4f230629e4bf9b7e341a36494de9d1dd6a7cd159592a4d",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6076961061",
+          "record_sha256": "39ea5c07b695d898aef61d2d9b65875659293f139045238cb01b7c16f65ef151"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-native-lint-receipt-core-authority-tests-default",
+      "repository_assignment": "BelloAgent",
+      "activity": "core-authority-tests-default",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T07:52:34.510049+00:00",
+      "end_utc": "2026-10-09T07:53:03.706231+00:00",
+      "duration_seconds": 29.1959380840417,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "6a84cc0e6d5f33be0e4f230629e4bf9b7e341a36494de9d1dd6a7cd159592a4d",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6076961061",
+          "record_sha256": "fa9bfb1a23dd0c376843fd70f6963ba7915adc28021fa4e1ff0f4618570bb2fa"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-native-lint-receipt-core-lib-clippy-all",
+      "repository_assignment": "BelloAgent",
+      "activity": "core-lib-clippy-all",
+      "category": "automated lint/check",
+      "start_utc": "2026-10-09T07:52:28.136368+00:00",
+      "end_utc": "2026-10-09T07:52:34.509079+00:00",
+      "duration_seconds": 6.372626958065666,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "6a84cc0e6d5f33be0e4f230629e4bf9b7e341a36494de9d1dd6a7cd159592a4d",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6076961061",
+          "record_sha256": "8bdd8c676bc5d93c760f6272c9afe199e3fb4452d6ce9916c7a9239688ae3e48"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-native-lint-receipt-core-lib-clippy-default",
+      "repository_assignment": "BelloAgent",
+      "activity": "core-lib-clippy-default",
+      "category": "automated lint/check",
+      "start_utc": "2026-10-09T07:52:00.446635+00:00",
+      "end_utc": "2026-10-09T07:52:14.835363+00:00",
+      "duration_seconds": 14.388524667010643,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "6a84cc0e6d5f33be0e4f230629e4bf9b7e341a36494de9d1dd6a7cd159592a4d",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6076961061",
+          "record_sha256": "7ea672f83e1394fca03439d492f4226f37ca22d0a8da1db3bdf7c930b06854da"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-native-lint-receipt-core-lib-clippy-native",
+      "repository_assignment": "BelloAgent",
+      "activity": "core-lib-clippy-native",
+      "category": "automated lint/check",
+      "start_utc": "2026-10-09T07:52:14.836193+00:00",
+      "end_utc": "2026-10-09T07:52:21.899889+00:00",
+      "duration_seconds": 7.063586708973162,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "6a84cc0e6d5f33be0e4f230629e4bf9b7e341a36494de9d1dd6a7cd159592a4d",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6076961061",
+          "record_sha256": "bfba65bb836aa37ea5c645275866d68d7b6c6ed93804f3bd0744e3789b7a2137"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-native-lint-receipt-core-lib-clippy-synthetic",
+      "repository_assignment": "BelloAgent",
+      "activity": "core-lib-clippy-synthetic",
+      "category": "automated lint/check",
+      "start_utc": "2026-10-09T07:52:21.901171+00:00",
+      "end_utc": "2026-10-09T07:52:28.135696+00:00",
+      "duration_seconds": 6.23438683396671,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "6a84cc0e6d5f33be0e4f230629e4bf9b7e341a36494de9d1dd6a7cd159592a4d",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6076961061",
+          "record_sha256": "7a35e97bc8aa7ca712dcf74fc64e924e82799bfadc7e42777015f1da1f5a72b4"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-native-lint-receipt-final-app-clippy-all-features",
+      "repository_assignment": "BelloAgent",
+      "activity": "final-app-clippy-all-features",
+      "category": "automated lint/check",
+      "start_utc": "2026-10-09T07:51:48.356652+00:00",
+      "end_utc": "2026-10-09T07:52:00.445147+00:00",
+      "duration_seconds": 12.088319333968684,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "6a84cc0e6d5f33be0e4f230629e4bf9b7e341a36494de9d1dd6a7cd159592a4d",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6076961061",
+          "record_sha256": "a888cbeeb1798704d025331ace28609ba3f6ee8523cbb3c5d6a42173be436ece"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-native-lint-receipt-final-app-clippy-default",
+      "repository_assignment": "BelloAgent",
+      "activity": "final-app-clippy-default",
+      "category": "automated lint/check",
+      "start_utc": "2026-10-09T07:51:37.178515+00:00",
+      "end_utc": "2026-10-09T07:51:48.355647+00:00",
+      "duration_seconds": 11.176776958978735,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "6a84cc0e6d5f33be0e4f230629e4bf9b7e341a36494de9d1dd6a7cd159592a4d",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6076961061",
+          "record_sha256": "677e5dfcf3c9b630f58dfde0f739ae1c47693d45bf9e99814d4c90ca1b8af683"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-native-lint-receipt-final-clean-ordinary-app-core",
+      "repository_assignment": "BelloAgent",
+      "activity": "final-clean-ordinary-app-core",
+      "category": "dependency/environment or source verification",
+      "start_utc": "2026-10-09T07:53:42.307493+00:00",
+      "end_utc": "2026-10-09T07:53:42.737108+00:00",
+      "duration_seconds": 0.42939100007060915,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "6a84cc0e6d5f33be0e4f230629e4bf9b7e341a36494de9d1dd6a7cd159592a4d",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6076961061",
+          "record_sha256": "8d1a7abf5903a718b1f457acb3731b0a60af71d5ee07472fb45798b069c694f9"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-native-lint-receipt-fixture-generate-lock",
+      "repository_assignment": "BelloAgent",
+      "activity": "fixture-generate-lock",
+      "category": "dependency/environment or source verification",
+      "start_utc": "2026-10-09T07:47:57.150927+00:00",
+      "end_utc": "2026-10-09T07:47:57.176407+00:00",
+      "duration_seconds": 0.025309916934929788,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "6a84cc0e6d5f33be0e4f230629e4bf9b7e341a36494de9d1dd6a7cd159592a4d",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6076961061",
+          "record_sha256": "a1e3593b43eddef5874d4f6cc3d0e029ed2ee044f86c95a4a0e926b1fb3b8625"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-native-lint-receipt-fixture-legacy-default-inactive",
+      "repository_assignment": "BelloAgent",
+      "activity": "fixture-legacy-default-inactive",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T07:47:57.177465+00:00",
+      "end_utc": "2026-10-09T07:47:57.622080+00:00",
+      "duration_seconds": 0.4442865001037717,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "6a84cc0e6d5f33be0e4f230629e4bf9b7e341a36494de9d1dd6a7cd159592a4d",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6076961061",
+          "record_sha256": "2c71014e6767c48a0127cff8c14bac5a6be397bd3fe745a9c19b3daa64ddbcbc"
+        }
+      ],
+      "outcome": "failed fixture; corrected in later separate receipt",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-native-lint-receipt-fmt",
+      "repository_assignment": "BelloAgent",
+      "activity": "fmt",
+      "category": "automated lint/check",
+      "start_utc": "2026-10-09T07:53:39.806851+00:00",
+      "end_utc": "2026-10-09T07:53:42.173232+00:00",
+      "duration_seconds": 2.3662612499902025,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "6a84cc0e6d5f33be0e4f230629e4bf9b7e341a36494de9d1dd6a7cd159592a4d",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6076961061",
+          "record_sha256": "c8e26b1dce9338d156ab5bc7e410b07e881bd9c1a6598b1a08af40b9cba81149"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-native-lint-receipt-git-diff-check",
+      "repository_assignment": "BelloAgent",
+      "activity": "git-diff-check",
+      "category": "automated lint/check",
+      "start_utc": "2026-10-09T07:53:42.173931+00:00",
+      "end_utc": "2026-10-09T07:53:42.265019+00:00",
+      "duration_seconds": 0.09111591696273535,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "6a84cc0e6d5f33be0e4f230629e4bf9b7e341a36494de9d1dd6a7cd159592a4d",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6076961061",
+          "record_sha256": "8942f2129faff1b3c0fcb3c7e6e65278ecbdbc83c2455f5d45dd72a89c26b6d5"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-native-lint-receipt-initial-clean-ordinary-app-core",
+      "repository_assignment": "BelloAgent",
+      "activity": "initial-clean-ordinary-app-core",
+      "category": "dependency/environment or source verification",
+      "start_utc": "2026-10-09T07:47:26.029670+00:00",
+      "end_utc": "2026-10-09T07:47:26.874708+00:00",
+      "duration_seconds": 0.8444503330392763,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "6a84cc0e6d5f33be0e4f230629e4bf9b7e341a36494de9d1dd6a7cd159592a4d",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6076961061",
+          "record_sha256": "b6fd5d2196395a07ec65bdcb1151251d9705c388c57dbfa755b213e80f664454"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-native-lint-receipt-initial-clean-test-app-core",
+      "repository_assignment": "BelloAgent",
+      "activity": "initial-clean-test-app-core",
+      "category": "dependency/environment or source verification",
+      "start_utc": "2026-10-09T07:47:25.015889+00:00",
+      "end_utc": "2026-10-09T07:47:26.028825+00:00",
+      "duration_seconds": 1.0127002079971135,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "6a84cc0e6d5f33be0e4f230629e4bf9b7e341a36494de9d1dd6a7cd159592a4d",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6076961061",
+          "record_sha256": "736aa7e0e53fff8651c524ffb664451b49d26110c08568bd435ea094c240c621"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-native-lint-receipt-metadata-all-features",
+      "repository_assignment": "BelloAgent",
+      "activity": "metadata-all-features",
+      "category": "dependency/environment or source verification",
+      "start_utc": "2026-10-09T07:47:24.583089+00:00",
+      "end_utc": "2026-10-09T07:47:24.901935+00:00",
+      "duration_seconds": 0.31890641595236957,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "6a84cc0e6d5f33be0e4f230629e4bf9b7e341a36494de9d1dd6a7cd159592a4d",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6076961061",
+          "record_sha256": "c0b28e00b0852f03228b3ccd1a853284b74c665025d5b730d91d4ef39e06848e"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-native-lint-receipt-metadata-default",
+      "repository_assignment": "BelloAgent",
+      "activity": "metadata-default",
+      "category": "dependency/environment or source verification",
+      "start_utc": "2026-10-09T07:47:23.223543+00:00",
+      "end_utc": "2026-10-09T07:47:24.528346+00:00",
+      "duration_seconds": 1.3048370409524068,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "6a84cc0e6d5f33be0e4f230629e4bf9b7e341a36494de9d1dd6a7cd159592a4d",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6076961061",
+          "record_sha256": "e691069083fb01486aeb94fd6305b0d657ab1c33be3cefd3b33a2e9a49680688"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-native-lint-receipt-ordinary-build",
+      "repository_assignment": "BelloAgent",
+      "activity": "ordinary-build",
+      "category": "build",
+      "start_utc": "2026-10-09T07:53:42.737903+00:00",
+      "end_utc": "2026-10-09T07:54:05.433071+00:00",
+      "duration_seconds": 22.695008042035624,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "6a84cc0e6d5f33be0e4f230629e4bf9b7e341a36494de9d1dd6a7cd159592a4d",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6076961061",
+          "record_sha256": "12576c2d06a11dc5529cf67a145fccba0d4554054909715ce828c5862446d66d"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-native-lint-receipt-patch-pristine-apply-check",
+      "repository_assignment": "BelloAgent",
+      "activity": "patch-pristine-apply-check",
+      "category": "dependency/environment or source verification",
+      "start_utc": "2026-10-09T07:51:11.956643+00:00",
+      "end_utc": "2026-10-09T07:51:11.982011+00:00",
+      "duration_seconds": 0.02541550004389137,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "6a84cc0e6d5f33be0e4f230629e4bf9b7e341a36494de9d1dd6a7cd159592a4d",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6076961061",
+          "record_sha256": "af1edaa483b1017aab412d7cade21740f0c764ab6745a94e4bd968eed779734b"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-native-lint-receipt-patch-pristine-apply",
+      "repository_assignment": "BelloAgent",
+      "activity": "patch-pristine-apply",
+      "category": "dependency/environment or source verification",
+      "start_utc": "2026-10-09T07:51:11.982534+00:00",
+      "end_utc": "2026-10-09T07:51:12.007407+00:00",
+      "duration_seconds": 0.024920459021814167,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "6a84cc0e6d5f33be0e4f230629e4bf9b7e341a36494de9d1dd6a7cd159592a4d",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6076961061",
+          "record_sha256": "ba294b5ea6326da82a36a2b0ea098a71a1d5404669cff146ba8388a52b38eb41"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-native-lint-receipt-v2-fixture-generate-lock",
+      "repository_assignment": "BelloAgent",
+      "activity": "v2-fixture-generate-lock",
+      "category": "dependency/environment or source verification",
+      "start_utc": "2026-10-09T07:49:40.499450+00:00",
+      "end_utc": "2026-10-09T07:49:40.547131+00:00",
+      "duration_seconds": 0.04747270804364234,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "6a84cc0e6d5f33be0e4f230629e4bf9b7e341a36494de9d1dd6a7cd159592a4d",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6076961061",
+          "record_sha256": "b194fe9b8a2da27ad19eaed96a6f1b1597b7373a4ca70e5aa6d4a8ac24fd795c"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-native-lint-receipt-v2-fixture-legacy-all-inactive",
+      "repository_assignment": "BelloAgent",
+      "activity": "v2-fixture-legacy-all-inactive",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T07:49:40.869370+00:00",
+      "end_utc": "2026-10-09T07:49:40.955050+00:00",
+      "duration_seconds": 0.08558229100890458,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "6a84cc0e6d5f33be0e4f230629e4bf9b7e341a36494de9d1dd6a7cd159592a4d",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6076961061",
+          "record_sha256": "d86ff4d569729709a1842d311e91cc5d2e79b316af436b74c31ab503084dba32"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-native-lint-receipt-v2-fixture-legacy-default-inactive",
+      "repository_assignment": "BelloAgent",
+      "activity": "v2-fixture-legacy-default-inactive",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T07:49:40.548056+00:00",
+      "end_utc": "2026-10-09T07:49:40.868375+00:00",
+      "duration_seconds": 0.32024858403019607,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "6a84cc0e6d5f33be0e4f230629e4bf9b7e341a36494de9d1dd6a7cd159592a4d",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6076961061",
+          "record_sha256": "a3246fd2af6981960e6ab79836a01bf6602009060cbad6a2381f17dfebb6d203"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-native-lint-receipt-v2-fixture-legacy-runtime-all",
+      "repository_assignment": "BelloAgent",
+      "activity": "v2-fixture-legacy-runtime-all",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T07:49:41.807942+00:00",
+      "end_utc": "2026-10-09T07:49:41.962536+00:00",
+      "duration_seconds": 0.1539502500090748,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "6a84cc0e6d5f33be0e4f230629e4bf9b7e341a36494de9d1dd6a7cd159592a4d",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6076961061",
+          "record_sha256": "78ebee585e8a74bdb96d01700418a6016b431df4060cf44a3e11597c78465b6c"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-native-lint-receipt-v2-fixture-legacy-runtime-default",
+      "repository_assignment": "BelloAgent",
+      "activity": "v2-fixture-legacy-runtime-default",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T07:49:40.956062+00:00",
+      "end_utc": "2026-10-09T07:49:41.807035+00:00",
+      "duration_seconds": 0.8507163330214098,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "6a84cc0e6d5f33be0e4f230629e4bf9b7e341a36494de9d1dd6a7cd159592a4d",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6076961061",
+          "record_sha256": "1dea04ae3801e1b419ba52364f11d7a5dff64f45b5d595b4ca9a523ee9b44d94"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-native-lint-receipt-v2-fixture-macos-native-constructor-removed",
+      "repository_assignment": "BelloAgent",
+      "activity": "v2-fixture-macos-native-constructor-removed",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T07:49:43.207940+00:00",
+      "end_utc": "2026-10-09T07:49:43.298349+00:00",
+      "duration_seconds": 0.09029429196380079,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "6a84cc0e6d5f33be0e4f230629e4bf9b7e341a36494de9d1dd6a7cd159592a4d",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6076961061",
+          "record_sha256": "b92efae4bb5ca7e4dab868a2aa925dbbb4de39af7bb7f0cd75e651571dcc8a58"
+        }
+      ],
+      "outcome": "expected negative-control failure",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-native-lint-receipt-v2-fixture-misspelled-cfg",
+      "repository_assignment": "BelloAgent",
+      "activity": "v2-fixture-misspelled-cfg",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T07:49:42.113105+00:00",
+      "end_utc": "2026-10-09T07:49:42.199626+00:00",
+      "duration_seconds": 0.0862996670184657,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "6a84cc0e6d5f33be0e4f230629e4bf9b7e341a36494de9d1dd6a7cd159592a4d",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6076961061",
+          "record_sha256": "1b5e8d2e552e70cd2d26dc426d07bf4072c0af83003e28921b83655c97a0625c"
+        }
+      ],
+      "outcome": "expected negative-control failure",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-native-lint-receipt-v2-fixture-misspelled-feature",
+      "repository_assignment": "BelloAgent",
+      "activity": "v2-fixture-misspelled-feature",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T07:49:41.963573+00:00",
+      "end_utc": "2026-10-09T07:49:42.111795+00:00",
+      "duration_seconds": 0.14793195901438594,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "6a84cc0e6d5f33be0e4f230629e4bf9b7e341a36494de9d1dd6a7cd159592a4d",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6076961061",
+          "record_sha256": "5a509f3e34c3b4a35712b19ca9d2eb7a83114c84b98224d9806bfc230e619944"
+        }
+      ],
+      "outcome": "expected negative-control failure",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-native-lint-receipt-v2-fixture-production-lib-all",
+      "repository_assignment": "BelloAgent",
+      "activity": "v2-fixture-production-lib-all",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T07:49:43.033906+00:00",
+      "end_utc": "2026-10-09T07:49:43.120542+00:00",
+      "duration_seconds": 0.08644287497736514,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "6a84cc0e6d5f33be0e4f230629e4bf9b7e341a36494de9d1dd6a7cd159592a4d",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6076961061",
+          "record_sha256": "e859e4c2536a2ea083936a33a80411b0d2ac5ef2c31f6f27dcf7aeac5b3e8083"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-native-lint-receipt-v2-fixture-production-lib-default",
+      "repository_assignment": "BelloAgent",
+      "activity": "v2-fixture-production-lib-default",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T07:49:42.382980+00:00",
+      "end_utc": "2026-10-09T07:49:42.578538+00:00",
+      "duration_seconds": 0.19543529197108,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "6a84cc0e6d5f33be0e4f230629e4bf9b7e341a36494de9d1dd6a7cd159592a4d",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6076961061",
+          "record_sha256": "898257d18d2731ac866d6d5a421a20229e0d0585e63c6c2ed332006bd5518020"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-native-lint-receipt-v2-fixture-production-lib-native",
+      "repository_assignment": "BelloAgent",
+      "activity": "v2-fixture-production-lib-native",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T07:49:42.669165+00:00",
+      "end_utc": "2026-10-09T07:49:42.760583+00:00",
+      "duration_seconds": 0.09128912503365427,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "6a84cc0e6d5f33be0e4f230629e4bf9b7e341a36494de9d1dd6a7cd159592a4d",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6076961061",
+          "record_sha256": "42f0c4b96bcc9a6061095baa407a275163b5f982ae3793dc28e4bf312b42834a"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-native-lint-receipt-v2-fixture-production-lib-synthetic",
+      "repository_assignment": "BelloAgent",
+      "activity": "v2-fixture-production-lib-synthetic",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T07:49:42.854642+00:00",
+      "end_utc": "2026-10-09T07:49:42.945174+00:00",
+      "duration_seconds": 0.09044083394110203,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "6a84cc0e6d5f33be0e4f230629e4bf9b7e341a36494de9d1dd6a7cd159592a4d",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6076961061",
+          "record_sha256": "f48e3facdcc2aecf5f3992c6380eebd7046221e7d7b1829bca133b58299588a0"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-native-lint-receipt-v2-fixture-production-test-all",
+      "repository_assignment": "BelloAgent",
+      "activity": "v2-fixture-production-test-all",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T07:49:43.122045+00:00",
+      "end_utc": "2026-10-09T07:49:43.206709+00:00",
+      "duration_seconds": 0.08440599997993559,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "6a84cc0e6d5f33be0e4f230629e4bf9b7e341a36494de9d1dd6a7cd159592a4d",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6076961061",
+          "record_sha256": "93aa0e2b29899ef884df09ae380995dde038fea7049751840174f0b594625122"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-native-lint-receipt-v2-fixture-production-test-default",
+      "repository_assignment": "BelloAgent",
+      "activity": "v2-fixture-production-test-default",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T07:49:42.579733+00:00",
+      "end_utc": "2026-10-09T07:49:42.668343+00:00",
+      "duration_seconds": 0.08845999999903142,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "6a84cc0e6d5f33be0e4f230629e4bf9b7e341a36494de9d1dd6a7cd159592a4d",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6076961061",
+          "record_sha256": "8f6704fa249d8923ef033717269a7bafc54259d044449dcdc590774fce882eca"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-native-lint-receipt-v2-fixture-production-test-native",
+      "repository_assignment": "BelloAgent",
+      "activity": "v2-fixture-production-test-native",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T07:49:42.761974+00:00",
+      "end_utc": "2026-10-09T07:49:42.853621+00:00",
+      "duration_seconds": 0.09152554103638977,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "6a84cc0e6d5f33be0e4f230629e4bf9b7e341a36494de9d1dd6a7cd159592a4d",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6076961061",
+          "record_sha256": "2421a41228eb88d124de8c460209c7716f52a1b839025e82f65d6a0537158eb3"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-native-lint-receipt-v2-fixture-production-test-synthetic",
+      "repository_assignment": "BelloAgent",
+      "activity": "v2-fixture-production-test-synthetic",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T07:49:42.946406+00:00",
+      "end_utc": "2026-10-09T07:49:43.033095+00:00",
+      "duration_seconds": 0.08653887500986457,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "6a84cc0e6d5f33be0e4f230629e4bf9b7e341a36494de9d1dd6a7cd159592a4d",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6076961061",
+          "record_sha256": "ba5dd7749e9a4257ce3018a7b514926f8083404f8ab0fcac175776c1eef9b4e5"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-native-lint-receipt-v2-fixture-test-constructor-removed",
+      "repository_assignment": "BelloAgent",
+      "activity": "v2-fixture-test-constructor-removed",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T07:49:43.299351+00:00",
+      "end_utc": "2026-10-09T07:49:43.378505+00:00",
+      "duration_seconds": 0.07904691598378122,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "6a84cc0e6d5f33be0e4f230629e4bf9b7e341a36494de9d1dd6a7cd159592a4d",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6076961061",
+          "record_sha256": "7a1416c4e9e2e00b14ba94a69912019b3103361bff14fb153e28158b378b321d"
+        }
+      ],
+      "outcome": "expected negative-control failure",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-native-lint-receipt-v2-fixture-unconstructed-enum",
+      "repository_assignment": "BelloAgent",
+      "activity": "v2-fixture-unconstructed-enum",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T07:49:42.287091+00:00",
+      "end_utc": "2026-10-09T07:49:42.381644+00:00",
+      "duration_seconds": 0.08861570793669671,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "6a84cc0e6d5f33be0e4f230629e4bf9b7e341a36494de9d1dd6a7cd159592a4d",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6076961061",
+          "record_sha256": "42d64c1a40e48674968265aef96c861262c84e0d8fff14023592e017feb9c3db"
+        }
+      ],
+      "outcome": "expected negative-control failure",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-native-lint-receipt-v2-fixture-unused-local",
+      "repository_assignment": "BelloAgent",
+      "activity": "v2-fixture-unused-local",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T07:49:42.200917+00:00",
+      "end_utc": "2026-10-09T07:49:42.285367+00:00",
+      "duration_seconds": 0.08428779104724526,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "6a84cc0e6d5f33be0e4f230629e4bf9b7e341a36494de9d1dd6a7cd159592a4d",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6076961061",
+          "record_sha256": "36d9782059704b47b07f4bc3429cef48a09a2e3f5cc8113ef7782f2facbfd832"
+        }
+      ],
+      "outcome": "expected negative-control failure",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-native-composed-receipt-cache-space-recovery.json",
+      "repository_assignment": "BelloAgent",
+      "activity": "APFS copy-on-write deduplication of 562 byte-identical cache files",
+      "category": "dependency/environment recovery",
+      "start_utc": null,
+      "end_utc": null,
+      "duration_seconds": 5.924546291935258,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "2fb4ece9bd992ab03c172f02f6c8a556170e78eaa899f536eb392142197c1e9f",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6077333425",
+          "record_sha256": "a205f427a3907d669cdd96524eefa1bda7d8e198148126ee8b23cc0b4e7de3d6"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "recovery_method": "APFS copy-on-write clones, not hardlinks"
+    },
+    {
+      "id": "20261009-0843-native-composed-receipt-clean-before-all-feature-retry",
+      "repository_assignment": "BelloAgent",
+      "activity": "clean-before-all-feature-retry",
+      "category": "dependency/environment or source verification",
+      "start_utc": "2026-10-09T08:16:46.370355+00:00",
+      "end_utc": "2026-10-09T08:16:47.101777+00:00",
+      "duration_seconds": 0.7311118750367314,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "2fb4ece9bd992ab03c172f02f6c8a556170e78eaa899f536eb392142197c1e9f",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6077333425",
+          "record_sha256": "24938878b6186535ce368e894b7da0c29ff9612f3727244d09a1d9f5da7ace1d"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget."
+    },
+    {
+      "id": "20261009-0843-native-composed-receipt-clean-before-ordinary",
+      "repository_assignment": "BelloAgent",
+      "activity": "clean-before-ordinary",
+      "category": "dependency/environment or source verification",
+      "start_utc": "2026-10-09T08:23:43.100725+00:00",
+      "end_utc": "2026-10-09T08:23:43.488840+00:00",
+      "duration_seconds": 0.3879264580318704,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "2fb4ece9bd992ab03c172f02f6c8a556170e78eaa899f536eb392142197c1e9f",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6077333425",
+          "record_sha256": "00d0589a3068279a252da98a7f295b2c883641b19d2e7bd986b4863da59d1175"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget."
+    },
+    {
+      "id": "20261009-0843-native-composed-receipt-clippy-all-features",
+      "repository_assignment": "BelloAgent",
+      "activity": "clippy-all-features",
+      "category": "automated lint/check",
+      "start_utc": "2026-10-09T08:22:46.199901+00:00",
+      "end_utc": "2026-10-09T08:23:42.214353+00:00",
+      "duration_seconds": 56.01429945894051,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "2fb4ece9bd992ab03c172f02f6c8a556170e78eaa899f536eb392142197c1e9f",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6077333425",
+          "record_sha256": "c31ea5495be3330282f7e727aba8c077c8bc743c693134c75ce54cbc846b4ccf"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget."
+    },
+    {
+      "id": "20261009-0843-native-composed-receipt-clippy-default",
+      "repository_assignment": "BelloAgent",
+      "activity": "clippy-default",
+      "category": "automated lint/check",
+      "start_utc": "2026-10-09T08:12:08.510101+00:00",
+      "end_utc": "2026-10-09T08:12:22.396653+00:00",
+      "duration_seconds": 13.885679875034839,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "2fb4ece9bd992ab03c172f02f6c8a556170e78eaa899f536eb392142197c1e9f",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6077333425",
+          "record_sha256": "e884276d93529430bf83618c7cc95448b8f2126ac1b1c1de4cb400a0f69cde2f"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget."
+    },
+    {
+      "id": "20261009-0843-native-composed-receipt-diff-check",
+      "repository_assignment": "BelloAgent",
+      "activity": "diff-check",
+      "category": "automated lint/check",
+      "start_utc": "2026-10-09T08:11:10.362899+00:00",
+      "end_utc": "2026-10-09T08:11:10.464939+00:00",
+      "duration_seconds": 0.10204837506171316,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "2fb4ece9bd992ab03c172f02f6c8a556170e78eaa899f536eb392142197c1e9f",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6077333425",
+          "record_sha256": "20a99c38a05c82d21528f584e4ce7727ec64a2fe7ce8014f14b05d8eed7b50d7"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget."
+    },
+    {
+      "id": "20261009-0843-native-composed-receipt-fmt",
+      "repository_assignment": "BelloAgent",
+      "activity": "fmt",
+      "category": "automated lint/check",
+      "start_utc": "2026-10-09T08:11:07.586896+00:00",
+      "end_utc": "2026-10-09T08:11:10.362184+00:00",
+      "duration_seconds": 2.7749705830356106,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "2fb4ece9bd992ab03c172f02f6c8a556170e78eaa899f536eb392142197c1e9f",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6077333425",
+          "record_sha256": "a8bd3a21491c175f0baa468cd1ffe2ad092998fff2ab246b5f27d402ce178ae7"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget."
+    },
+    {
+      "id": "20261009-0843-native-composed-receipt-inventory-app-all-features-after-cache-recovery",
+      "repository_assignment": "BelloAgent",
+      "activity": "inventory-app-all-features-after-cache-recovery",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T08:16:47.102489+00:00",
+      "end_utc": "2026-10-09T08:17:25.905583+00:00",
+      "duration_seconds": 38.80265187495388,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "2fb4ece9bd992ab03c172f02f6c8a556170e78eaa899f536eb392142197c1e9f",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6077333425",
+          "record_sha256": "43cb1440bb915ed962a256a131ffa8336efc1e03f6dc5705cbc8b593edddff7c"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget."
+    },
+    {
+      "id": "20261009-0843-native-composed-receipt-inventory-app-all-features",
+      "repository_assignment": "BelloAgent",
+      "activity": "inventory-app-all-features",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T08:12:22.756222+00:00",
+      "end_utc": "2026-10-09T08:12:57.157745+00:00",
+      "duration_seconds": 34.401384124998,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "2fb4ece9bd992ab03c172f02f6c8a556170e78eaa899f536eb392142197c1e9f",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6077333425",
+          "record_sha256": "daa182e577abc63b78b8d79524fca07ea5d9f0901cc0671bacde1a664ff4b05a"
+        }
+      ],
+      "outcome": "failed: ENOSPC; original failure preserved; exact later retry is separate",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget."
+    },
+    {
+      "id": "20261009-0843-native-composed-receipt-inventory-app-default",
+      "repository_assignment": "BelloAgent",
+      "activity": "inventory-app-default",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T08:11:10.513353+00:00",
+      "end_utc": "2026-10-09T08:11:45.769955+00:00",
+      "duration_seconds": 35.25637795799412,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "2fb4ece9bd992ab03c172f02f6c8a556170e78eaa899f536eb392142197c1e9f",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6077333425",
+          "record_sha256": "fc42494ec342040f6d62524cc2bcfacd8d58229b72793076de73bae6ab703a5c"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget."
+    },
+    {
+      "id": "20261009-0843-native-composed-receipt-inventory-core-existing-all-features",
+      "repository_assignment": "BelloAgent",
+      "activity": "inventory-core-existing-all-features",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T08:22:45.595832+00:00",
+      "end_utc": "2026-10-09T08:22:45.840448+00:00",
+      "duration_seconds": 0.2444106669863686,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "2fb4ece9bd992ab03c172f02f6c8a556170e78eaa899f536eb392142197c1e9f",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6077333425",
+          "record_sha256": "6a8f842f9d8febe781b14722773a5df68a533c9c438298fd0bf0ba1977f0d104"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget."
+    },
+    {
+      "id": "20261009-0843-native-composed-receipt-inventory-core-existing-default",
+      "repository_assignment": "BelloAgent",
+      "activity": "inventory-core-existing-default",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T08:12:07.904166+00:00",
+      "end_utc": "2026-10-09T08:12:08.136263+00:00",
+      "duration_seconds": 0.23175629100296646,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "2fb4ece9bd992ab03c172f02f6c8a556170e78eaa899f536eb392142197c1e9f",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6077333425",
+          "record_sha256": "92aee9eabb8b85bae1fd70ecdfdba651eeab53a3f5503383b06ee2cd9e6245a1"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget."
+    },
+    {
+      "id": "20261009-0843-native-composed-receipt-inventory-core-initial-all-features-after-metadata-recovery",
+      "repository_assignment": "BelloAgent",
+      "activity": "inventory-core-initial-all-features-after-metadata-recovery",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T08:22:21.226655+00:00",
+      "end_utc": "2026-10-09T08:22:44.645732+00:00",
+      "duration_seconds": 23.418913415982388,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "2fb4ece9bd992ab03c172f02f6c8a556170e78eaa899f536eb392142197c1e9f",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6077333425",
+          "record_sha256": "d8c03625d4aa6063caf847515310f4096171ade264ff0503f9be2e9722e9a41b"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget."
+    },
+    {
+      "id": "20261009-0843-native-composed-receipt-inventory-core-initial-all-features",
+      "repository_assignment": "BelloAgent",
+      "activity": "inventory-core-initial-all-features",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T08:17:29.431273+00:00",
+      "end_utc": "2026-10-09T08:17:52.518060+00:00",
+      "duration_seconds": 23.08656570909079,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "2fb4ece9bd992ab03c172f02f6c8a556170e78eaa899f536eb392142197c1e9f",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6077333425",
+          "record_sha256": "70f1511f82d27b956e1bc2da37798328f54abb3f599511078265d016d3fc0e6d"
+        }
+      ],
+      "outcome": "failed: ENOSPC; original failure preserved; exact later retry is separate",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget."
+    },
+    {
+      "id": "20261009-0843-native-composed-receipt-inventory-core-initial-default",
+      "repository_assignment": "BelloAgent",
+      "activity": "inventory-core-initial-default",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T08:11:48.780169+00:00",
+      "end_utc": "2026-10-09T08:12:06.955567+00:00",
+      "duration_seconds": 18.175217333016917,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "2fb4ece9bd992ab03c172f02f6c8a556170e78eaa899f536eb392142197c1e9f",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6077333425",
+          "record_sha256": "d8d86fe7c1e9ef118660ea7f0fc045bb3ef1c60328c6d5b1b540d1827c2dc25e"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget."
+    },
+    {
+      "id": "20261009-0843-native-composed-receipt-metadata-all-features",
+      "repository_assignment": "BelloAgent",
+      "activity": "metadata-all-features",
+      "category": "dependency/environment or source verification",
+      "start_utc": "2026-10-09T08:11:07.049166+00:00",
+      "end_utc": "2026-10-09T08:11:07.515945+00:00",
+      "duration_seconds": 0.46681291598360986,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "2fb4ece9bd992ab03c172f02f6c8a556170e78eaa899f536eb392142197c1e9f",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6077333425",
+          "record_sha256": "6bdab7d3aed755b7f80a1dda9662f55af2b5356b2d465c33f231dc29f64849e6"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget."
+    },
+    {
+      "id": "20261009-0843-native-composed-receipt-metadata-default",
+      "repository_assignment": "BelloAgent",
+      "activity": "metadata-default",
+      "category": "dependency/environment or source verification",
+      "start_utc": "2026-10-09T08:11:05.307776+00:00",
+      "end_utc": "2026-10-09T08:11:06.984784+00:00",
+      "duration_seconds": 1.6770502079743892,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "2fb4ece9bd992ab03c172f02f6c8a556170e78eaa899f536eb392142197c1e9f",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6077333425",
+          "record_sha256": "1e37b532a39fb18d11865ba678617b93d0fc118e4bcd308b42e639825ad3e6c6"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget."
+    },
+    {
+      "id": "20261009-0843-native-composed-receipt-ordinary-build",
+      "repository_assignment": "BelloAgent",
+      "activity": "ordinary-build",
+      "category": "build",
+      "start_utc": "2026-10-09T08:23:43.489479+00:00",
+      "end_utc": "2026-10-09T08:24:03.320434+00:00",
+      "duration_seconds": 19.830512124928646,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "2fb4ece9bd992ab03c172f02f6c8a556170e78eaa899f536eb392142197c1e9f",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6077333425",
+          "record_sha256": "2b9944acbe66aa6b585d7ca4dee43bae281db0bcebf1e250c37f20d529e1cb97"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget."
+    },
+    {
+      "id": "20261009-0843-native-composed-receipt-reclaim-after-default",
+      "repository_assignment": "BelloAgent",
+      "activity": "reclaim-after-default",
+      "category": "dependency/environment or source verification",
+      "start_utc": "2026-10-09T08:12:22.446034+00:00",
+      "end_utc": "2026-10-09T08:12:22.719750+00:00",
+      "duration_seconds": 0.27335841697640717,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "2fb4ece9bd992ab03c172f02f6c8a556170e78eaa899f536eb392142197c1e9f",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6077333425",
+          "record_sha256": "5ea5f4c27682d527fb20740ab7fd2c76de21c6d899d3668ea855facb7fcd4fcb"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget."
+    },
+    {
+      "id": "20261009-0843-native-composed-receipt-reclaim-check-metadata-after-strict",
+      "repository_assignment": "BelloAgent",
+      "activity": "reclaim-check-metadata-after-strict",
+      "category": "dependency/environment recovery",
+      "start_utc": null,
+      "end_utc": null,
+      "duration_seconds": null,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "2fb4ece9bd992ab03c172f02f6c8a556170e78eaa899f536eb392142197c1e9f",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6077333425",
+          "record_sha256": "b2702f21d154fd78a714d174c484c0a18a238f0ed88783569470ecc78c88b72f"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "unknown",
+      "include_in_totals": false,
+      "resource": "mixed observation",
+      "duration_basis": "Recovery inventory is evidenced; start/end and elapsed timer absent, so duration remains unknown",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget."
+    },
+    {
+      "id": "20261009-0843-native-composed-receipt-reclaim-inventoried-check-metadata",
+      "repository_assignment": "BelloAgent",
+      "activity": "reclaim-inventoried-check-metadata",
+      "category": "dependency/environment recovery",
+      "start_utc": null,
+      "end_utc": null,
+      "duration_seconds": null,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "2fb4ece9bd992ab03c172f02f6c8a556170e78eaa899f536eb392142197c1e9f",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6077333425",
+          "record_sha256": "3d96199fca4fa5808cf03dbc6516934c627d9dc29c4ae9e3214d0bc250d37b2c"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "unknown",
+      "include_in_totals": false,
+      "resource": "mixed observation",
+      "duration_basis": "Recovery inventory is evidenced; start/end and elapsed timer absent, so duration remains unknown",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget."
+    },
+    {
+      "id": "20261009-0843-native-composed-receipt-reclaim-ordinary-app-core",
+      "repository_assignment": "BelloAgent",
+      "activity": "reclaim-ordinary-app-core",
+      "category": "dependency/environment or source verification",
+      "start_utc": "2026-10-09T08:08:28.238754+00:00",
+      "end_utc": "2026-10-09T08:08:28.728706+00:00",
+      "duration_seconds": 0.4898728330153972,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "2fb4ece9bd992ab03c172f02f6c8a556170e78eaa899f536eb392142197c1e9f",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6077333425",
+          "record_sha256": "6e4e9022b9ad86372bfff3dd38d5baebc20b72f92d52844fed7fcc5f98b71887"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget."
+    },
+    {
+      "id": "20261009-0843-native-composed-receipt-reclaim-test-app-core",
+      "repository_assignment": "BelloAgent",
+      "activity": "reclaim-test-app-core",
+      "category": "dependency/environment or source verification",
+      "start_utc": "2026-10-09T08:08:26.114271+00:00",
+      "end_utc": "2026-10-09T08:08:28.238096+00:00",
+      "duration_seconds": 2.1236145000439137,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "2fb4ece9bd992ab03c172f02f6c8a556170e78eaa899f536eb392142197c1e9f",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6077333425",
+          "record_sha256": "18381099db195bfec129b5e631f13821c537adea324f4495efb0d0a7ee9e20eb"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget."
+    },
+    {
+      "id": "20261009-0843-native-composed-receipt-tests-app-all-features",
+      "repository_assignment": "BelloAgent",
+      "activity": "tests-app-all-features",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T08:17:25.907655+00:00",
+      "end_utc": "2026-10-09T08:17:28.783584+00:00",
+      "duration_seconds": 2.87565399997402,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "2fb4ece9bd992ab03c172f02f6c8a556170e78eaa899f536eb392142197c1e9f",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6077333425",
+          "record_sha256": "76f81ba2ed76f68dc87267817c9b60c97d16824c151a79d02378b8d2e9a57ee3"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget."
+    },
+    {
+      "id": "20261009-0843-native-composed-receipt-tests-app-default",
+      "repository_assignment": "BelloAgent",
+      "activity": "tests-app-default",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T08:11:45.771280+00:00",
+      "end_utc": "2026-10-09T08:11:48.337768+00:00",
+      "duration_seconds": 2.566163167008199,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "2fb4ece9bd992ab03c172f02f6c8a556170e78eaa899f536eb392142197c1e9f",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6077333425",
+          "record_sha256": "37b7fb150903e6e9e28636247494b72261340d3cd3d0066d29ce64cbd6b20a9b"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget."
+    },
+    {
+      "id": "20261009-0843-native-composed-receipt-tests-core-existing-all-features",
+      "repository_assignment": "BelloAgent",
+      "activity": "tests-core-existing-all-features",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T08:22:45.841475+00:00",
+      "end_utc": "2026-10-09T08:22:46.199065+00:00",
+      "duration_seconds": 0.35743554192595184,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "2fb4ece9bd992ab03c172f02f6c8a556170e78eaa899f536eb392142197c1e9f",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6077333425",
+          "record_sha256": "c56dffd40d4aa048022e36211216e3954365a7dbff5682c1e9fb416aabe3ae91"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget."
+    },
+    {
+      "id": "20261009-0843-native-composed-receipt-tests-core-existing-default",
+      "repository_assignment": "BelloAgent",
+      "activity": "tests-core-existing-default",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T08:12:08.137678+00:00",
+      "end_utc": "2026-10-09T08:12:08.493167+00:00",
+      "duration_seconds": 0.3553724579978734,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "2fb4ece9bd992ab03c172f02f6c8a556170e78eaa899f536eb392142197c1e9f",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6077333425",
+          "record_sha256": "a2612696e1c1eb0ecc8c11ce1a4f5a689ebae24d6df68c1ecda57018a347688e"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget."
+    },
+    {
+      "id": "20261009-0843-native-composed-receipt-tests-core-initial-all-features",
+      "repository_assignment": "BelloAgent",
+      "activity": "tests-core-initial-all-features",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T08:22:44.646702+00:00",
+      "end_utc": "2026-10-09T08:22:45.467267+00:00",
+      "duration_seconds": 0.8204687499674037,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "2fb4ece9bd992ab03c172f02f6c8a556170e78eaa899f536eb392142197c1e9f",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6077333425",
+          "record_sha256": "afa901a98aa51fcaa333a368fbaab1b81340a6a89ef2c7471a09bd67cdf7dd60"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget."
+    },
+    {
+      "id": "20261009-0843-native-composed-receipt-tests-core-initial-default",
+      "repository_assignment": "BelloAgent",
+      "activity": "tests-core-initial-default",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T08:12:06.958158+00:00",
+      "end_utc": "2026-10-09T08:12:07.767506+00:00",
+      "duration_seconds": 0.8086569999577478,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "2fb4ece9bd992ab03c172f02f6c8a556170e78eaa899f536eb392142197c1e9f",
+          "url": "https://github.com/BelloWare/BelloAgent/issues/1#issuecomment-6077333425",
+          "record_sha256": "8a68e5ce8a0273f28428f28bf87780220ee2fa3be25c1225f017244dd3d4f947"
+        }
+      ],
+      "outcome": "passed",
+      "accounting_group": "new_native_command",
+      "include_in_totals": true,
+      "resource": "native command process",
+      "duration_basis": "Native command receipt; compile/test/inventory combined when command requires it.",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget."
+    },
+    {
+      "id": "20261009-0843-previous-duration-checkpoint",
+      "repository_assignment": "BelloAgent",
+      "activity": "Prepare, review and publish previous timing checkpoint",
+      "category": "review/publication/waiting (mixed)",
+      "start_utc": "2026-10-09T07:53:14Z",
+      "end_utc": "2026-10-09T08:12:33Z",
+      "duration_seconds": 1159,
+      "source": [
+        {
+          "provenance": "Original assignment/final verification observer timestamps",
+          "url": "https://github.com/BelloWare/BelloAgent/commit/5496f08e404bcaa619548820cda6869db697d9b7"
+        },
+        {
+          "url": "https://github.com/BelloWare/BelloBox/commit/bc77dac089457c96696e7c9a98b0dbe085a23395"
+        }
+      ],
+      "outcome": "completed",
+      "accounting_group": "task_window",
+      "include_in_totals": false,
+      "resource": "mixed observation",
+      "duration_basis": "Includes waiting for terminal source CI, preparation, review and publication; shared work assigned once to Agent",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "coverage_note": "Late-added evidence of an earlier interval, not previously counted in the 08:08 snapshot."
+    },
+    {
+      "id": "20261009-0843-e4d-ci-status-37905437391",
+      "repository_assignment": "BelloAgent",
+      "activity": "Rust Linux checks",
+      "category": "CI status",
+      "start_utc": null,
+      "end_utc": null,
+      "duration_seconds": null,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "8163d351711ce0bbc4fab8bd8073350f19ce10a5dfac6b1e2bd4eadddda3532e",
+          "url": "https://github.com/BelloWare/BelloAgent/actions/runs/37905437391"
+        }
+      ],
+      "outcome": "success",
+      "accounting_group": "status_only",
+      "include_in_totals": false,
+      "resource": "mixed observation",
+      "duration_basis": "Status-only snapshot; terminal job timing will be added at a later reviewed checkpoint",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "observed_utc": "2026-10-09T08:41:35Z",
+      "source_commit": "e4d25eb626b0caf7ae3222a277bbbf7dd33f0e89"
+    },
+    {
+      "id": "20261009-0843-e4d-ci-status-37905437367",
+      "repository_assignment": "BelloAgent",
+      "activity": "Rust macOS native checks",
+      "category": "CI status",
+      "start_utc": null,
+      "end_utc": null,
+      "duration_seconds": null,
+      "source": [
+        {
+          "provenance": "Retained timing receipt; public source link, when present, identifies delivered evidence or source outcome, not a new command execution",
+          "receipt_sha256": "8163d351711ce0bbc4fab8bd8073350f19ce10a5dfac6b1e2bd4eadddda3532e",
+          "url": "https://github.com/BelloWare/BelloAgent/actions/runs/37905437367"
+        }
+      ],
+      "outcome": "in_progress",
+      "accounting_group": "status_only",
+      "include_in_totals": false,
+      "resource": "mixed observation",
+      "duration_basis": "Status-only snapshot; terminal job timing will be added at a later reviewed checkpoint",
+      "prospective": true,
+      "checkpoint": "20261009-0843",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Separate groups, mixed windows and nested phases may overlap; never sum as a complete time budget.",
+      "observed_utc": "2026-10-09T08:41:35Z",
+      "source_commit": "e4d25eb626b0caf7ae3222a277bbbf7dd33f0e89"
     }
   ],
   "unattributed_ci_gaps": [
@@ -50694,6 +53356,49 @@
         "resource_seconds": {
           "CI runner": 2171.0
         }
+      },
+      "new_local_command": {
+        "count": 8,
+        "known_duration_count": 8,
+        "resource_seconds_sum": 209.30230270398897,
+        "wall_coverage_seconds": 209.302333,
+        "category_seconds": {
+          "automated lint/check": 35.90311146599561,
+          "build + test/check (combined)": 155.79626423999434,
+          "dependency/environment or source verification": 0.29374756300239824,
+          "build": 17.309179434996622
+        },
+        "resource_seconds": {
+          "cloud command process": 209.30230270398897
+        }
+      },
+      "new_api_operation": {
+        "count": 7,
+        "known_duration_count": 7,
+        "resource_seconds_sum": 45.653000000000006,
+        "wall_coverage_seconds": 0,
+        "category_seconds": {
+          "publication / retry": 45.653000000000006
+        },
+        "resource_seconds": {
+          "pending API/client operation": 45.653000000000006
+        }
+      },
+      "new_native_command": {
+        "count": 75,
+        "known_duration_count": 75,
+        "resource_seconds_sum": 506.1488555849064,
+        "wall_coverage_seconds": 500.244441,
+        "category_seconds": {
+          "build + test/check (combined)": 308.7072999998927,
+          "dependency/environment or source verification": 16.43289220612496,
+          "automated lint/check": 132.5585969199892,
+          "build": 42.52552016696427,
+          "dependency/environment recovery": 5.924546291935258
+        },
+        "resource_seconds": {
+          "native command process": 506.1488555849064
+        }
       }
     }
   },
@@ -50765,6 +53470,64 @@
       "new_observation_start_utc": "2026-10-09T05:41:15Z",
       "historical_cutoff_unchanged": "2026-10-09T06:00:00Z",
       "scope": "Selected checkpoint receipts, not exhaustive coverage of every intervening CI run or local task. Local receipt hashes identify retained evidence but are not independent public verification."
+    },
+    {
+      "checkpoint": "20261009-0843",
+      "as_of_utc": "2026-10-09T08:43:00Z",
+      "new_items": 97,
+      "groups": {
+        "new_local_command": {
+          "count": 8,
+          "known_duration_count": 8,
+          "resource_seconds_sum": 209.30230270398897,
+          "wall_coverage_seconds": 209.302333,
+          "category_seconds": {
+            "automated lint/check": 35.90311146599561,
+            "build + test/check (combined)": 155.79626423999434,
+            "dependency/environment or source verification": 0.29374756300239824,
+            "build": 17.309179434996622
+          },
+          "resource_seconds": {
+            "cloud command process": 209.30230270398897
+          },
+          "known_endpoint_items": 8,
+          "known_endpoint_resource_seconds": 209.30230270398897
+        },
+        "new_api_operation": {
+          "count": 7,
+          "known_duration_count": 7,
+          "resource_seconds_sum": 45.653000000000006,
+          "wall_coverage_seconds": 0,
+          "category_seconds": {
+            "publication / retry": 45.653000000000006
+          },
+          "resource_seconds": {
+            "pending API/client operation": 45.653000000000006
+          },
+          "known_endpoint_items": 0,
+          "known_endpoint_resource_seconds": 0
+        },
+        "new_native_command": {
+          "count": 75,
+          "known_duration_count": 75,
+          "resource_seconds_sum": 506.1488555849064,
+          "wall_coverage_seconds": 500.244441,
+          "category_seconds": {
+            "build + test/check (combined)": 308.7072999998927,
+            "dependency/environment or source verification": 16.43289220612496,
+            "automated lint/check": 132.5585969199892,
+            "build": 42.52552016696427,
+            "dependency/environment recovery": 5.924546291935258
+          },
+          "resource_seconds": {
+            "native command process": 506.1488555849064
+          },
+          "known_endpoint_items": 74,
+          "known_endpoint_resource_seconds": 500.22430929297116
+        }
+      },
+      "late_added_items": 57,
+      "coverage": "Selected new receipts plus explicitly late-added earlier evidence. No complete time-budget or all-intervening-CI claim; original records are unchanged."
     }
   ]
 }

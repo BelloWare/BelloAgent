@@ -1,5 +1,144 @@
 # BelloAgent Rust migration: where the time went
 
+## Checkpoint: 2026-10-09T08:43:00Z
+
+This adds selected newly obtained receipts, including earlier intervals not present in the 08:08 snapshot. Historical records and previous checkpoint coverage remain unchanged. Unknown inference stays unavailable. Source/receipt hashes identify evidence; local observer timing is not independently verified merely by a source commit link.
+
+| Group | Timed items | Resource/client seconds | Exact-endpoint items | Endpoint-subset seconds | Endpoint union seconds |
+|---|---:|---:|---:|---:|---:|
+| new_local_command | 8 | 209.302 | 8 | 209.302 | 209.302 |
+| new_api_operation | 7 | 45.653 | 0 | 0.000 | unavailable |
+| new_native_command | 75 | 506.149 | 74 | 500.224 | 500.244 |
+
+Resource sums, interval unions, mixed windows and nested Cargo phase subtotals are separate accounting views. Do not add them into a total time budget. Parallel client/API durations include waiting, not server compute. Whole-second 0s means below receipt resolution, not zero effort. Absent endpoints exclude items from wall unions.
+
+| Group / category | Seconds |
+|---|---:|
+| new_local_command: automated lint/check | 35.903 |
+| new_local_command: build + test/check (combined) | 155.796 |
+| new_local_command: dependency/environment or source verification | 0.294 |
+| new_local_command: build | 17.309 |
+| new_api_operation: publication / retry | 45.653 |
+| new_native_command: build + test/check (combined) | 308.707 |
+| new_native_command: dependency/environment or source verification | 16.433 |
+| new_native_command: automated lint/check | 132.559 |
+| new_native_command: build | 42.526 |
+| new_native_command: dependency/environment recovery | 5.925 |
+
+### Per-item observations
+
+| Activity | Category | Start UTC | End UTC | Seconds | Outcome |
+|---|---|---|---|---:|---|
+| fmt | automated lint/check | 2026-10-09T08:03:25.860880+00:00 | 2026-10-09T08:03:28.041967+00:00 | 2.1810742410016246 | passed |
+| focused-restored-app | build + test/check (combined) | 2026-10-09T08:03:28.042296+00:00 | 2026-10-09T08:03:57.797400+00:00 | 29.755095814995002 | passed |
+| workspace-default | build + test/check (combined) | 2026-10-09T08:03:57.798025+00:00 | 2026-10-09T08:04:45.723458+00:00 | 47.925424418994226 | passed |
+| workspace-all-features | build + test/check (combined) | 2026-10-09T08:04:45.723876+00:00 | 2026-10-09T08:06:03.839629+00:00 | 78.11574400600512 | passed |
+| clippy-default | automated lint/check | 2026-10-09T08:06:03.840457+00:00 | 2026-10-09T08:06:21.814358+00:00 | 17.973891509995156 | passed |
+| clippy-all-features | automated lint/check | 2026-10-09T08:06:21.814729+00:00 | 2026-10-09T08:06:37.562881+00:00 | 15.748145714998827 | passed |
+| package-clean | dependency/environment or source verification | 2026-10-09T08:06:47.997387+00:00 | 2026-10-09T08:06:48.291130+00:00 | 0.29374756300239824 | passed |
+| ordinary-build | build | 2026-10-09T08:06:48.291463+00:00 | 2026-10-09T08:07:05.600623+00:00 | 17.309179434996622 | passed |
+| initial blob denied | publication / retry | unknown | unknown | 10.324 | denied |
+| same blob authorized retry | publication / retry | unknown | unknown | 8.462 | passed |
+| authority blob | publication / retry | unknown | unknown | 9.271 | passed |
+| tree create | publication / retry | unknown | unknown | 9.183 | passed |
+| commit create | publication / retry | unknown | unknown | 7.329 | passed |
+| commit_seconds | publication / retry | unknown | unknown | 0.334 | passed |
+| tree_seconds | publication / retry | unknown | unknown | 0.75 | passed |
+| Composed source publication and readback | publication (mixed) | 2026-10-09T08:30:40Z | 2026-10-09T08:31:02Z | 22 | completed |
+| integrated-gui | interactive validation (mixed) | 2026-10-09T08:09:33.018701+00:00 | 2026-10-09T08:12:57.543153+00:00 | 204.524452 | completed |
+| actual-compiler-cfg-all-features | build + test/check (combined) | 2026-10-09T07:50:22.327462+00:00 | 2026-10-09T07:50:32.794480+00:00 | 10.46686275000684 | passed |
+| actual-compiler-cfg-default | build + test/check (combined) | 2026-10-09T07:50:06.889163+00:00 | 2026-10-09T07:50:22.299328+00:00 | 15.409974584006704 | passed |
+| actual-core-correction-reverted | build + test/check (combined) | 2026-10-09T07:50:38.868287+00:00 | 2026-10-09T07:50:47.428489+00:00 | 8.56000270799268 | expected negative-control failure |
+| actual-manifest-expectation-omitted-all-features | build + test/check (combined) | 2026-10-09T07:50:57.919944+00:00 | 2026-10-09T07:51:11.880997+00:00 | 13.960888999979943 | expected negative-control failure |
+| actual-manifest-expectation-omitted-default | build + test/check (combined) | 2026-10-09T07:50:47.620863+00:00 | 2026-10-09T07:50:57.918637+00:00 | 10.297562415944412 | expected negative-control failure |
+| actual-reject-legacy-feature-all-features | build + test/check (combined) | 2026-10-09T07:50:22.301540+00:00 | 2026-10-09T07:50:22.326774+00:00 | 0.025055459002032876 | expected negative-control failure |
+| actual-reject-legacy-feature-default | build + test/check (combined) | 2026-10-09T07:50:06.841712+00:00 | 2026-10-09T07:50:06.888420+00:00 | 0.04649849992711097 | expected negative-control failure |
+| control-worktree-create | dependency/environment or source verification | 2026-10-09T07:50:32.795570+00:00 | 2026-10-09T07:50:38.738230+00:00 | 5.94269658299163 | passed |
+| control-worktree-remove | dependency/environment or source verification | 2026-10-09T07:51:12.031487+00:00 | 2026-10-09T07:51:12.338462+00:00 | 0.30704483401495963 | passed |
+| core-authority-tests-all | build + test/check (combined) | 2026-10-09T07:53:03.708009+00:00 | 2026-10-09T07:53:39.805964+00:00 | 36.0976893750485 | passed |
+| core-authority-tests-default | build + test/check (combined) | 2026-10-09T07:52:34.510049+00:00 | 2026-10-09T07:53:03.706231+00:00 | 29.1959380840417 | passed |
+| core-lib-clippy-all | automated lint/check | 2026-10-09T07:52:28.136368+00:00 | 2026-10-09T07:52:34.509079+00:00 | 6.372626958065666 | passed |
+| core-lib-clippy-default | automated lint/check | 2026-10-09T07:52:00.446635+00:00 | 2026-10-09T07:52:14.835363+00:00 | 14.388524667010643 | passed |
+| core-lib-clippy-native | automated lint/check | 2026-10-09T07:52:14.836193+00:00 | 2026-10-09T07:52:21.899889+00:00 | 7.063586708973162 | passed |
+| core-lib-clippy-synthetic | automated lint/check | 2026-10-09T07:52:21.901171+00:00 | 2026-10-09T07:52:28.135696+00:00 | 6.23438683396671 | passed |
+| final-app-clippy-all-features | automated lint/check | 2026-10-09T07:51:48.356652+00:00 | 2026-10-09T07:52:00.445147+00:00 | 12.088319333968684 | passed |
+| final-app-clippy-default | automated lint/check | 2026-10-09T07:51:37.178515+00:00 | 2026-10-09T07:51:48.355647+00:00 | 11.176776958978735 | passed |
+| final-clean-ordinary-app-core | dependency/environment or source verification | 2026-10-09T07:53:42.307493+00:00 | 2026-10-09T07:53:42.737108+00:00 | 0.42939100007060915 | passed |
+| fixture-generate-lock | dependency/environment or source verification | 2026-10-09T07:47:57.150927+00:00 | 2026-10-09T07:47:57.176407+00:00 | 0.025309916934929788 | passed |
+| fixture-legacy-default-inactive | build + test/check (combined) | 2026-10-09T07:47:57.177465+00:00 | 2026-10-09T07:47:57.622080+00:00 | 0.4442865001037717 | failed fixture; corrected in later separate receipt |
+| fmt | automated lint/check | 2026-10-09T07:53:39.806851+00:00 | 2026-10-09T07:53:42.173232+00:00 | 2.3662612499902025 | passed |
+| git-diff-check | automated lint/check | 2026-10-09T07:53:42.173931+00:00 | 2026-10-09T07:53:42.265019+00:00 | 0.09111591696273535 | passed |
+| initial-clean-ordinary-app-core | dependency/environment or source verification | 2026-10-09T07:47:26.029670+00:00 | 2026-10-09T07:47:26.874708+00:00 | 0.8444503330392763 | passed |
+| initial-clean-test-app-core | dependency/environment or source verification | 2026-10-09T07:47:25.015889+00:00 | 2026-10-09T07:47:26.028825+00:00 | 1.0127002079971135 | passed |
+| metadata-all-features | dependency/environment or source verification | 2026-10-09T07:47:24.583089+00:00 | 2026-10-09T07:47:24.901935+00:00 | 0.31890641595236957 | passed |
+| metadata-default | dependency/environment or source verification | 2026-10-09T07:47:23.223543+00:00 | 2026-10-09T07:47:24.528346+00:00 | 1.3048370409524068 | passed |
+| ordinary-build | build | 2026-10-09T07:53:42.737903+00:00 | 2026-10-09T07:54:05.433071+00:00 | 22.695008042035624 | passed |
+| patch-pristine-apply-check | dependency/environment or source verification | 2026-10-09T07:51:11.956643+00:00 | 2026-10-09T07:51:11.982011+00:00 | 0.02541550004389137 | passed |
+| patch-pristine-apply | dependency/environment or source verification | 2026-10-09T07:51:11.982534+00:00 | 2026-10-09T07:51:12.007407+00:00 | 0.024920459021814167 | passed |
+| v2-fixture-generate-lock | dependency/environment or source verification | 2026-10-09T07:49:40.499450+00:00 | 2026-10-09T07:49:40.547131+00:00 | 0.04747270804364234 | passed |
+| v2-fixture-legacy-all-inactive | build + test/check (combined) | 2026-10-09T07:49:40.869370+00:00 | 2026-10-09T07:49:40.955050+00:00 | 0.08558229100890458 | passed |
+| v2-fixture-legacy-default-inactive | build + test/check (combined) | 2026-10-09T07:49:40.548056+00:00 | 2026-10-09T07:49:40.868375+00:00 | 0.32024858403019607 | passed |
+| v2-fixture-legacy-runtime-all | build + test/check (combined) | 2026-10-09T07:49:41.807942+00:00 | 2026-10-09T07:49:41.962536+00:00 | 0.1539502500090748 | passed |
+| v2-fixture-legacy-runtime-default | build + test/check (combined) | 2026-10-09T07:49:40.956062+00:00 | 2026-10-09T07:49:41.807035+00:00 | 0.8507163330214098 | passed |
+| v2-fixture-macos-native-constructor-removed | build + test/check (combined) | 2026-10-09T07:49:43.207940+00:00 | 2026-10-09T07:49:43.298349+00:00 | 0.09029429196380079 | expected negative-control failure |
+| v2-fixture-misspelled-cfg | build + test/check (combined) | 2026-10-09T07:49:42.113105+00:00 | 2026-10-09T07:49:42.199626+00:00 | 0.0862996670184657 | expected negative-control failure |
+| v2-fixture-misspelled-feature | build + test/check (combined) | 2026-10-09T07:49:41.963573+00:00 | 2026-10-09T07:49:42.111795+00:00 | 0.14793195901438594 | expected negative-control failure |
+| v2-fixture-production-lib-all | build + test/check (combined) | 2026-10-09T07:49:43.033906+00:00 | 2026-10-09T07:49:43.120542+00:00 | 0.08644287497736514 | passed |
+| v2-fixture-production-lib-default | build + test/check (combined) | 2026-10-09T07:49:42.382980+00:00 | 2026-10-09T07:49:42.578538+00:00 | 0.19543529197108 | passed |
+| v2-fixture-production-lib-native | build + test/check (combined) | 2026-10-09T07:49:42.669165+00:00 | 2026-10-09T07:49:42.760583+00:00 | 0.09128912503365427 | passed |
+| v2-fixture-production-lib-synthetic | build + test/check (combined) | 2026-10-09T07:49:42.854642+00:00 | 2026-10-09T07:49:42.945174+00:00 | 0.09044083394110203 | passed |
+| v2-fixture-production-test-all | build + test/check (combined) | 2026-10-09T07:49:43.122045+00:00 | 2026-10-09T07:49:43.206709+00:00 | 0.08440599997993559 | passed |
+| v2-fixture-production-test-default | build + test/check (combined) | 2026-10-09T07:49:42.579733+00:00 | 2026-10-09T07:49:42.668343+00:00 | 0.08845999999903142 | passed |
+| v2-fixture-production-test-native | build + test/check (combined) | 2026-10-09T07:49:42.761974+00:00 | 2026-10-09T07:49:42.853621+00:00 | 0.09152554103638977 | passed |
+| v2-fixture-production-test-synthetic | build + test/check (combined) | 2026-10-09T07:49:42.946406+00:00 | 2026-10-09T07:49:43.033095+00:00 | 0.08653887500986457 | passed |
+| v2-fixture-test-constructor-removed | build + test/check (combined) | 2026-10-09T07:49:43.299351+00:00 | 2026-10-09T07:49:43.378505+00:00 | 0.07904691598378122 | expected negative-control failure |
+| v2-fixture-unconstructed-enum | build + test/check (combined) | 2026-10-09T07:49:42.287091+00:00 | 2026-10-09T07:49:42.381644+00:00 | 0.08861570793669671 | expected negative-control failure |
+| v2-fixture-unused-local | build + test/check (combined) | 2026-10-09T07:49:42.200917+00:00 | 2026-10-09T07:49:42.285367+00:00 | 0.08428779104724526 | expected negative-control failure |
+| APFS copy-on-write deduplication of 562 byte-identical cache files | dependency/environment recovery | unknown | unknown | 5.924546291935258 | passed |
+| clean-before-all-feature-retry | dependency/environment or source verification | 2026-10-09T08:16:46.370355+00:00 | 2026-10-09T08:16:47.101777+00:00 | 0.7311118750367314 | passed |
+| clean-before-ordinary | dependency/environment or source verification | 2026-10-09T08:23:43.100725+00:00 | 2026-10-09T08:23:43.488840+00:00 | 0.3879264580318704 | passed |
+| clippy-all-features | automated lint/check | 2026-10-09T08:22:46.199901+00:00 | 2026-10-09T08:23:42.214353+00:00 | 56.01429945894051 | passed |
+| clippy-default | automated lint/check | 2026-10-09T08:12:08.510101+00:00 | 2026-10-09T08:12:22.396653+00:00 | 13.885679875034839 | passed |
+| diff-check | automated lint/check | 2026-10-09T08:11:10.362899+00:00 | 2026-10-09T08:11:10.464939+00:00 | 0.10204837506171316 | passed |
+| fmt | automated lint/check | 2026-10-09T08:11:07.586896+00:00 | 2026-10-09T08:11:10.362184+00:00 | 2.7749705830356106 | passed |
+| inventory-app-all-features-after-cache-recovery | build + test/check (combined) | 2026-10-09T08:16:47.102489+00:00 | 2026-10-09T08:17:25.905583+00:00 | 38.80265187495388 | passed |
+| inventory-app-all-features | build + test/check (combined) | 2026-10-09T08:12:22.756222+00:00 | 2026-10-09T08:12:57.157745+00:00 | 34.401384124998 | failed: ENOSPC; original failure preserved; exact later retry is separate |
+| inventory-app-default | build + test/check (combined) | 2026-10-09T08:11:10.513353+00:00 | 2026-10-09T08:11:45.769955+00:00 | 35.25637795799412 | passed |
+| inventory-core-existing-all-features | build + test/check (combined) | 2026-10-09T08:22:45.595832+00:00 | 2026-10-09T08:22:45.840448+00:00 | 0.2444106669863686 | passed |
+| inventory-core-existing-default | build + test/check (combined) | 2026-10-09T08:12:07.904166+00:00 | 2026-10-09T08:12:08.136263+00:00 | 0.23175629100296646 | passed |
+| inventory-core-initial-all-features-after-metadata-recovery | build + test/check (combined) | 2026-10-09T08:22:21.226655+00:00 | 2026-10-09T08:22:44.645732+00:00 | 23.418913415982388 | passed |
+| inventory-core-initial-all-features | build + test/check (combined) | 2026-10-09T08:17:29.431273+00:00 | 2026-10-09T08:17:52.518060+00:00 | 23.08656570909079 | failed: ENOSPC; original failure preserved; exact later retry is separate |
+| inventory-core-initial-default | build + test/check (combined) | 2026-10-09T08:11:48.780169+00:00 | 2026-10-09T08:12:06.955567+00:00 | 18.175217333016917 | passed |
+| metadata-all-features | dependency/environment or source verification | 2026-10-09T08:11:07.049166+00:00 | 2026-10-09T08:11:07.515945+00:00 | 0.46681291598360986 | passed |
+| metadata-default | dependency/environment or source verification | 2026-10-09T08:11:05.307776+00:00 | 2026-10-09T08:11:06.984784+00:00 | 1.6770502079743892 | passed |
+| ordinary-build | build | 2026-10-09T08:23:43.489479+00:00 | 2026-10-09T08:24:03.320434+00:00 | 19.830512124928646 | passed |
+| reclaim-after-default | dependency/environment or source verification | 2026-10-09T08:12:22.446034+00:00 | 2026-10-09T08:12:22.719750+00:00 | 0.27335841697640717 | passed |
+| reclaim-check-metadata-after-strict | dependency/environment recovery | unknown | unknown | unknown | passed |
+| reclaim-inventoried-check-metadata | dependency/environment recovery | unknown | unknown | unknown | passed |
+| reclaim-ordinary-app-core | dependency/environment or source verification | 2026-10-09T08:08:28.238754+00:00 | 2026-10-09T08:08:28.728706+00:00 | 0.4898728330153972 | passed |
+| reclaim-test-app-core | dependency/environment or source verification | 2026-10-09T08:08:26.114271+00:00 | 2026-10-09T08:08:28.238096+00:00 | 2.1236145000439137 | passed |
+| tests-app-all-features | build + test/check (combined) | 2026-10-09T08:17:25.907655+00:00 | 2026-10-09T08:17:28.783584+00:00 | 2.87565399997402 | passed |
+| tests-app-default | build + test/check (combined) | 2026-10-09T08:11:45.771280+00:00 | 2026-10-09T08:11:48.337768+00:00 | 2.566163167008199 | passed |
+| tests-core-existing-all-features | build + test/check (combined) | 2026-10-09T08:22:45.841475+00:00 | 2026-10-09T08:22:46.199065+00:00 | 0.35743554192595184 | passed |
+| tests-core-existing-default | build + test/check (combined) | 2026-10-09T08:12:08.137678+00:00 | 2026-10-09T08:12:08.493167+00:00 | 0.3553724579978734 | passed |
+| tests-core-initial-all-features | build + test/check (combined) | 2026-10-09T08:22:44.646702+00:00 | 2026-10-09T08:22:45.467267+00:00 | 0.8204687499674037 | passed |
+| tests-core-initial-default | build + test/check (combined) | 2026-10-09T08:12:06.958158+00:00 | 2026-10-09T08:12:07.767506+00:00 | 0.8086569999577478 | passed |
+| Prepare, review and publish previous timing checkpoint | review/publication/waiting (mixed) | 2026-10-09T07:53:14Z | 2026-10-09T08:12:33Z | 1159 | completed |
+| Rust Linux checks | CI status | unknown | unknown | unknown | success |
+| Rust macOS native checks | CI status | unknown | unknown | unknown | in_progress |
+
+### Mixed-window groups (not resource totals)
+
+| Category | Windows | Known-endpoint union seconds |
+|---|---:|---:|
+| interactive validation (mixed) | 1 | 204.524 |
+| publication (mixed) | 1 | 22.000 |
+| review/publication/waiting (mixed) | 1 | 1159.000 |
+
+Mixed work windows overlap commands and each other; no active implementation, review or inference time is inferred. Native final-receipt aggregates duplicate individual results and are excluded. Original failed native ENOSPC attempts and exact retries remain separate; APFS copy-on-write recovery timing is measured where available, but metadata removal lacks a timer and stays unknown. Independently verified delivery is not a new native execution. CI rows here are status observations only. No full native suite or GUI claim is added.
+
+### Earlier checkpoints (preserved)
+
 ## Incremental checkpoint: 2026-10-09T08:08:00Z
 
 Historical audit below and its original CI cutoff remain unchanged. This update covers selected newly recorded work, not every intervening run or task. Unknown durations and inference remain unavailable. Local timing observations below are source records supported by retained receipt hashes; public commit links identify source or outcome, not independent timing verification.
