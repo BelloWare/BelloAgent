@@ -45,13 +45,18 @@ mod saved_runtime_adapter;
 mod shutdown_barrier;
 mod sidebar_actions;
 mod sidebar_activity;
+mod sidebar_cache_cleanup;
 mod sidebar_inspection;
 mod sidebar_read_state;
 mod sidebar_run_state;
+mod sidebar_search_controller;
+mod sidebar_search_reveal;
 mod sidebar_search_state;
 #[cfg(test)]
 mod sidebar_title_tests;
 mod stop_shortcut;
+#[cfg(all(debug_assertions, target_os = "linux", feature = "synthetic-authority"))]
+mod synthetic_sidebar_fixture;
 mod theme;
 mod tool_timing_presentation;
 mod topics;
@@ -157,6 +162,7 @@ struct AgentView {
     topic_panel: Option<topics_view::TopicPanel>,
     workspace: Arc<Mutex<WorkspaceStore>>,
     selection_revision: u64,
+    sidebar_selection_pending: Option<u64>,
     shutting_down: bool,
     close_ready: bool,
     shutdown_operation: Option<uuid::Uuid>,
@@ -177,6 +183,8 @@ struct AgentView {
     sidebar_menu: Option<sidebar_actions::SidebarMenu>,
     sidebar_activity_hold: sidebar_activity::SidebarActivityHold,
     sidebar_run_states: sidebar_run_state::SidebarRunStates,
+    sidebar_search: sidebar_search_controller::SidebarSearch,
+    sidebar_search_reveal: Option<sidebar_search_reveal::PendingReveal>,
     load_retirement: chat_load::LoadRetirementOwner,
     read_states: sidebar_read_state::SharedReadStates,
     read_write_inflight: bool,
@@ -332,7 +340,16 @@ impl AgentView {
             view
         });
         let editor_events = vec![
-            cx.subscribe(&filter, |_, _, _, cx| cx.notify()),
+            // IME unmark can notify without emitting an EditorEvent. Observe
+            // the retained filter so identical committed bytes still debounce.
+            cx.observe(&filter, |view, _, cx| {
+                view.refresh_sidebar_search(cx);
+                cx.notify();
+            }),
+            cx.subscribe(&filter, |view, _, _, cx| {
+                view.refresh_sidebar_search(cx);
+                cx.notify();
+            }),
             // Notify the retained transcript before GPUI starts drawing. A
             // notify issued from Render is too late for that frame's cache key.
             cx.observe_self(|view, cx| view.sync_transcript_inputs(cx)),
@@ -430,6 +447,7 @@ impl AgentView {
             queued_cancellations: state.queued_cancellations,
             workspace,
             selection_revision: state.selection_revision,
+            sidebar_selection_pending: None,
             shutting_down: false,
             close_ready: false,
             shutdown_operation: None,
@@ -450,6 +468,8 @@ impl AgentView {
             sidebar_menu: None,
             sidebar_activity_hold: Default::default(),
             sidebar_run_states: Default::default(),
+            sidebar_search: Default::default(),
+            sidebar_search_reveal: None,
             load_retirement: Default::default(),
             read_states,
             read_write_inflight: false,
@@ -497,6 +517,8 @@ impl AgentView {
         view
     }
     fn bind_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sidebar_search.cancel();
+        self.sidebar_search_reveal = None;
         self.read_surface_ready = false;
         self.close_context_inspectors(cx);
         self.topic_panel = None;
@@ -2805,6 +2827,10 @@ impl AgentView {
                     )),
             );
         let visible = self.visible_sidebar_records(cx);
+        let displayed_first = visible
+            .first()
+            .map(|record| (record.id.clone(), self.sidebar_search_ticket(&record.id)));
+        let displayed_query = self.filter.read(cx).text().to_owned();
         let mut archive_heading = false;
         for entry in self.sidebar_entries(cx) {
             let record = match entry {
@@ -2887,6 +2913,24 @@ impl AgentView {
             let selected = id == self.record.id;
             let move_id = id.clone();
             let menu_id = id.clone();
+            let ticket = self.sidebar_search_ticket(&record.id);
+            let snippet = self.sidebar_content_hit(&record.id).map(|hit| {
+                use bello_agent_core::sidebar_search::projection::PieceKind;
+                let role = match hit.key().kind {
+                    PieceKind::User => "You",
+                    PieceKind::Assistant => "Assistant",
+                    PieceKind::ToolInput => "Tool input",
+                    PieceKind::ToolOutput => "Tool output",
+                };
+                let prefix = format!("{role}: ");
+                let range = hit
+                    .highlight()
+                    .map(|range| range.start + prefix.len()..range.end + prefix.len());
+                (
+                    format!("{prefix}{}", hit.excerpt().replace('\n', " ")),
+                    range,
+                )
+            });
             let status = self.sidebar_run_status(record);
             let attention = self.read_status(record);
             list = list.child(
@@ -2909,7 +2953,7 @@ impl AgentView {
                     .items_center()
                     .cursor_pointer()
                     .on_click(cx.listener(move |view, _, window, cx| {
-                        view.select_chat(&id, window, cx);
+                        view.open_sidebar_result(&id, ticket.clone(), window, cx);
                         // Reselecting the focused row also refreshes saved
                         // status without opening any unloaded controller.
                         view.refresh_sidebar_run_states(cx);
@@ -2971,6 +3015,25 @@ impl AgentView {
                                         row.child(self.icon("pin", 9.).text_color(rgb(p.tertiary)))
                                     }),
                             )
+                            .when_some(snippet, |row, (text, range)| {
+                                row.child(
+                                    div()
+                                        .text_size(px(11.))
+                                        .text_color(rgb(p.secondary))
+                                        .truncate()
+                                        .child(StyledText::new(text).with_highlights(
+                                            range.into_iter().map(|range| {
+                                                (
+                                                    range,
+                                                    HighlightStyle {
+                                                        background_color: Some(p.accent_soft()),
+                                                        ..Default::default()
+                                                    },
+                                                )
+                                            }),
+                                        )),
+                                )
+                            })
                             .child(
                                 div()
                                     .text_size(px(10.5))
@@ -3123,11 +3186,24 @@ impl AgentView {
                                     view.filter.read(cx).focus(window)
                                 }),
                             )
-                            .capture_key_down(cx.listener(|_, event: &KeyDownEvent, _, cx| {
-                                if event.keystroke.key == "enter" {
-                                    cx.stop_propagation();
-                                }
-                            }))
+                            .capture_key_down(cx.listener(
+                                move |view, event: &KeyDownEvent, window, cx| {
+                                    if event.keystroke.key == "enter"
+                                        && !view.filter.read(cx).has_marked_text()
+                                        && view.filter.read(cx).text() == displayed_query
+                                    {
+                                        if let Some((id, ticket)) = &displayed_first {
+                                            view.open_sidebar_result(
+                                                id,
+                                                ticket.clone(),
+                                                window,
+                                                cx,
+                                            );
+                                        }
+                                        cx.stop_propagation();
+                                    }
+                                },
+                            ))
                             .child(self.filter.clone())
                             .when(self.filter.read(cx).text().is_empty(), |d| {
                                 d.child(
@@ -3142,6 +3218,26 @@ impl AgentView {
                             }),
                     ),
             )
+            .when(!self.filter.read(cx).text().trim().is_empty(), |sidebar| {
+                sidebar.child(
+                    div()
+                        .px(px(12.))
+                        .py(px(3.))
+                        .text_size(px(10.5))
+                        .text_color(rgb(p.secondary))
+                        .child(self.sidebar_search.status)
+                        .when(self.sidebar_search.can_refresh(), |row| {
+                            row.child(
+                                self.button("sidebar-content-refresh", "Check again")
+                                    .on_click(
+                                        cx.listener(|view, _, _, cx| {
+                                            view.refresh_saved_content(cx)
+                                        }),
+                                    ),
+                            )
+                        }),
+                )
+            })
             .child(self.activity_held_sidebar_list(list, cx))
             .child(read_action)
             .child(footer)
@@ -3151,6 +3247,8 @@ impl Render for AgentView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let started = Instant::now();
         self.refresh_read_geometry_route(cx);
+        self.resume_sidebar_reveal(cx);
+        self.refresh_sidebar_search(cx);
         self.refresh_sidebar_run_states(cx);
         let palette = current_palette(window);
         if self.palette != palette {
@@ -3568,6 +3666,12 @@ fn open_startup_chat(
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     START.set(Instant::now()).ok();
+    #[cfg(all(debug_assertions, target_os = "linux", feature = "synthetic-authority"))]
+    if let Some(root) =
+        synthetic_sidebar_fixture::requested(&std::env::args_os().skip(1).collect::<Vec<_>>())?
+    {
+        return synthetic_sidebar_fixture::run(root);
+    }
     #[cfg(feature = "native-lifecycle-smoke")]
     native_smoke::validate_launch()?;
     let mut args = std::env::args().skip(1);
@@ -3613,6 +3717,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--help" | "-h" => {
                 println!(
                     "BelloAgent Rust GPUI preview\n  --project DIR\n  --session FILE    isolated Rust snapshot (never a Swift journal)\n  --profile FILE    explicit non-secret LiteLLM Responses JSON\n  --credential-stdin  read an in-memory key until EOF; never stored\n  BELLO_PERF_LOG=FILE  optional real CPU callback JSONL telemetry"
+                );
+                #[cfg(all(debug_assertions, target_os = "linux", feature = "synthetic-authority"))]
+                println!(
+                    "  --synthetic-sidebar-search-fixture ROOT  isolated synthetic Linux GUI validation; exact arguments only; private disposable root; no provider"
                 );
                 #[cfg(feature = "native-authority")]
                 println!(

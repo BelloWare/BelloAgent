@@ -1,6 +1,7 @@
 //! Worker-side loaded acceptance and unloaded as-of observation with bounded outputs.
 //! No content UI, persistent cache or runtime authority is enabled.
 mod admission;
+pub mod cache;
 pub(crate) mod cancellation;
 pub mod identity;
 pub mod projection;

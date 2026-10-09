@@ -230,6 +230,8 @@ impl AgentView {
             );
     }
     pub(crate) fn open_mcp(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sidebar_search.cancel();
+        self.cancel_sidebar_reveal(cx);
         if self.shutting_down
             || self.close_dialog
             || self.projects.view.read(cx).is_open()

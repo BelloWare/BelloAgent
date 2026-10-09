@@ -20,9 +20,10 @@ impl SidebarActivityHold {
         self.pointer || self.pointer_unknown || self.menu.is_some()
     }
     pub(crate) fn set_pointer(&mut self, inside: bool) -> bool {
+        let was_active = self.active();
         self.pointer = inside;
         self.pointer_unknown = false;
-        self.release_if_idle()
+        self.release_if_idle(was_active)
     }
     pub(crate) fn begin_menu(&mut self, token: uuid::Uuid) {
         self.menu = Some(token);
@@ -31,17 +32,19 @@ impl SidebarActivityHold {
         if self.menu != Some(token) {
             return false;
         }
+        let was_active = self.active();
         self.menu = None;
-        self.release_if_idle()
+        self.release_if_idle(was_active)
     }
     pub(crate) fn release_all(&mut self) -> bool {
+        let was_active = self.active();
         self.pointer = false;
         self.pointer_unknown = false;
         self.menu = None;
-        self.release_if_idle()
+        self.release_if_idle(was_active)
     }
-    fn release_if_idle(&mut self) -> bool {
-        if self.active() || self.held.is_empty() {
+    fn release_if_idle(&mut self, was_active: bool) -> bool {
+        if self.active() || (!was_active && self.held.is_empty()) {
             return false;
         }
         self.held.clear();
@@ -397,6 +400,9 @@ impl AgentView {
                 view.sidebar_menu = None;
                 cx.notify();
             } else {
+                // External source writers may have changed old negative results
+                // while this window was inactive. Start a full fresh query pass.
+                view.sidebar_search.cancel();
                 // GPUI does not refresh its cached pointer on activation.
                 // Unknown is conservative, not a claim of list hover. Native
                 // queries or the next actual mouse event resolve it.
@@ -425,6 +431,12 @@ impl AgentView {
             }
             let _ = owner.update(cx, |view, cx| {
                 if view.window_binding == binding {
+                    view.window_binding = None;
+                    view.sidebar_search.cancel();
+                    view.cancel_sidebar_reveal(cx);
+                    // Cancellation does not release the in-flight owner; the
+                    // detached worker still owns its permit until it exits.
+                    view.sidebar_run_states.cancel_pending();
                     view.sidebar_activity_hold.release_all();
                     view.sidebar_activity_hold.bounds.set(None);
                     view.sidebar_menu = None;

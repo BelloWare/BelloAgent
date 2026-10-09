@@ -187,6 +187,8 @@ impl AgentView {
     }
 
     pub(crate) fn open_projects(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sidebar_search.cancel();
+        self.cancel_sidebar_reveal(cx);
         if self.shutting_down
             || self.close_dialog
             || self.mcp.open
@@ -684,6 +686,7 @@ impl AgentView {
         let record = record.expect("eligible saved record");
         let previous = self.chat_ref(id).map(|chat| chat.controller.clone());
         let operation = Uuid::new_v4();
+        self.sidebar_search.block(id);
         self.chat_mode_operations.insert(id.to_owned(), operation);
         self.chat_mode_blocked.insert(id.to_owned());
         if let Some(chat) = self.chat_mut(id) {
@@ -814,6 +817,9 @@ impl AgentView {
         }
         if !blocked {
             self.chat_mode_blocked.remove(id);
+            if self.chat_ref(id).is_some() {
+                self.sidebar_search.installed(id);
+            }
         }
         self.repair_retired_transcript_focus(handles, cx);
         cx.notify();
@@ -833,6 +839,7 @@ impl AgentView {
         };
         let operation = Uuid::new_v4();
         // This foreground admission fence precedes scheduling any worker.
+        let search_restore = self.sidebar_search.block_all();
         self.projects.operation = Some(operation);
         self.projects.admission_blocked = true;
         self.projects.presentation.availability =
@@ -866,7 +873,15 @@ impl AgentView {
         cx.spawn(async move |owner, cx| {
             let result = task.await;
             let _ = owner.update(cx, |view, cx| {
-                view.finish_project_change(operation, &project, result, cx)
+                let restore_allowed = result
+                    .as_ref()
+                    .map_or_else(|error| !error.keep_blocked, |_| true)
+                    && view.projects.operation == Some(operation)
+                    && view.project == project;
+                view.finish_project_change(operation, &project, result, cx);
+                if restore_allowed && !view.projects.admission_blocked {
+                    view.sidebar_search.restore_operation(search_restore, false);
+                }
             });
         })
         .detach();
@@ -913,6 +928,7 @@ impl AgentView {
                     if let Some(chat) = self.chat_mut(&replacement.id) {
                         chat.replace_controller(replacement.controller, cx);
                     }
+                    self.sidebar_search.installed(&replacement.id);
                 }
                 self.projects.install_loaded(
                     changed.loaded,

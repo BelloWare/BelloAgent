@@ -362,6 +362,10 @@ fn rejected_intents_cancel_and_picker_cancellation_consume_revision_without_auth
 #[gpui::test]
 fn failed_save_preserves_draft_and_current_controller_for_explicit_retry(cx: &mut TestAppContext) {
     let (_dir, window, root, control) = fixture(cx);
+    root.update(cx, |view, _| {
+        let id = view.record.id.clone();
+        view.sidebar_search.installed(&id);
+    });
     let old = cx.read(|cx| root.read(cx).controller.clone());
     control.fail_next_write(AuthorityError::Denied).unwrap();
     window
@@ -376,6 +380,10 @@ fn failed_save_preserves_draft_and_current_controller_for_explicit_retry(cx: &mu
         let view = root.read(cx);
         assert!(view.projects.operation.is_none());
         assert!(!view.projects.admission_blocked);
+        assert_eq!(
+            view.sidebar_search.test_route(&view.record.id),
+            Some(bello_agent_core::sidebar_search::reconciliation::SourceRoute::Loaded)
+        );
         assert!(matches!(
             view.projects.presentation.stage,
             Stage::TrustDraft { .. }
@@ -497,6 +505,10 @@ fn active_inactive_and_recovery_state_refuse_before_save(cx: &mut TestAppContext
 #[gpui::test]
 fn unconfirmed_save_retains_fence_across_reload_and_dismissal(cx: &mut TestAppContext) {
     let (_dir, window, root, control) = fixture(cx);
+    root.update(cx, |view, _| {
+        let id = view.record.id.clone();
+        view.sidebar_search.installed(&id);
+    });
     let old = cx.read(|cx| root.read(cx).controller.clone());
     control
         .fail_next_write(AuthorityError::Unconfirmed)
@@ -515,6 +527,10 @@ fn unconfirmed_save_retains_fence_across_reload_and_dismissal(cx: &mut TestAppCo
                 Availability::Unconfirmed(_)
             ));
             assert!(view.projects.admission_blocked);
+            assert_eq!(
+                view.sidebar_search.test_route(&view.record.id),
+                Some(bello_agent_core::sidebar_search::reconciliation::SourceRoute::Blocked)
+            );
             intent(view, Intent::Reload, window, cx);
             assert!(view.projects.load.is_some());
         })

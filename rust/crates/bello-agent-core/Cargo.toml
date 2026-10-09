@@ -17,6 +17,7 @@ serde = { workspace = true, features = ["rc"] }
 serde_json = { workspace = true, features = ["raw_value"] }
 uuid.workspace = true
 thiserror.workspace = true
+rusqlite.workspace = true
 url = "2"
 sha2 = "0.10"
 zeroize = "1"

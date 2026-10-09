@@ -570,3 +570,19 @@ fn observed_retained_uses_same_text_mapping_without_loaded_durability_semantics(
         accepted.newest_match(&query, &cancel).unwrap()
     );
 }
+
+#[test]
+fn cache_chunk_stream_retains_query_seam_and_exact_byte_offsets() {
+    let source = format!("{}{}", "界".repeat(32_767), "e\u{301}".repeat(256));
+    let expected = "é".repeat(256);
+    let mut offsets = Vec::new();
+    normalized_chunks::<projection::Error>(&source, &cancel(), |start, text| {
+        assert!(text.chars().count() <= 32_768);
+        if let Some(found) = text.find(&expected) {
+            offsets.push(start + found);
+        }
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(offsets, vec![32_767 * 3]);
+}

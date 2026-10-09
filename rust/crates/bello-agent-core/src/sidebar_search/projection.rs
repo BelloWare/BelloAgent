@@ -704,3 +704,42 @@ impl std::fmt::Debug for Query {
             .finish_non_exhaustive()
     }
 }
+
+/// Streams the exact sidebar representation into bounded 32,768-scalar chunks
+/// with 256-scalar overlap. Offsets are normalized UTF-8 bytes, matching Occurrence.
+/// It never retains the whole normalized piece or maps it a second time.
+pub fn normalized_chunks<E: From<Error>>(
+    text: &str,
+    cancel: &dyn CancellationProbe,
+    mut sink: impl FnMut(usize, &str) -> std::result::Result<(), E>,
+) -> std::result::Result<(), E> {
+    preflight(text, cancel)?;
+    let mut chunk = String::with_capacity(32_768 * 4);
+    let (mut scalars, mut offset, mut added) = (0usize, 0usize, 0usize);
+    for part in sidebar_mapped(text, cancel) {
+        if scalars % 1024 == 0 {
+            check_cancel(cancel)?;
+        }
+        chunk.push(part.ch);
+        scalars += 1;
+        added += 1;
+        if scalars == 32_768 {
+            sink(offset, &chunk)?;
+            let retain = chunk
+                .char_indices()
+                .rev()
+                .nth(255)
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+            offset += retain;
+            chunk.drain(..retain);
+            scalars = 256;
+            added = 0;
+        }
+    }
+    check_cancel(cancel)?;
+    if added > 0 {
+        sink(offset, &chunk)?;
+    }
+    Ok(())
+}

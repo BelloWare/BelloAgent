@@ -102,8 +102,12 @@ impl AgentView {
             return;
         };
         self.selection_revision = revision;
+        self.sidebar_selection_pending = Some(revision);
         let id = self.record.id.clone();
         let workspace = self.workspace.clone();
+        let owner = Arc::downgrade(&workspace);
+        let window_binding = self.window_binding;
+        let navigation = self.navigation_generation;
         let timer = cx.background_executor().timer(Duration::from_millis(250));
         let task = cx.background_executor().spawn(async move {
             timer.await;
@@ -112,6 +116,20 @@ impl AgentView {
         cx.spawn(async move |view, cx| {
             let outcome = task.await;
             let _ = view.update(cx, |view, cx| {
+                if !owner.ptr_eq(&Arc::downgrade(&view.workspace)) {
+                    return;
+                }
+                if view.sidebar_selection_pending == Some(revision) {
+                    view.sidebar_selection_pending = None;
+                    // This transaction revokes membership even when only selection
+                    // changed. Reconcile before consuming an explicit reveal.
+                    if view.window_binding == window_binding
+                        && view.navigation_generation == navigation
+                    {
+                        view.sidebar_search.cancel();
+                        cx.notify();
+                    }
+                }
                 view.observe_catalog_uncertainty(outcome.uncertain, cx);
                 if let Err(error) = outcome.display_result() {
                     view.error = Some(format!("Selection could not be saved: {error}"));
@@ -658,6 +676,10 @@ impl AgentView {
         {
             return;
         }
+        // Invalidate only this exact loaded source. Preserve the full pass and
+        // fair queued demand so an unrelated stream cannot starve saved members.
+        // Sticky retirement/map-gap blocks remain authoritative.
+        self.sidebar_search.source_changed(id);
         // Only the selected ordinary watch path adopts the atomic latest pair.
         // Inactive chat behavior and all lifecycle fences remain unchanged.
         let binding = (self.record.id == id)
@@ -1078,6 +1100,7 @@ impl AgentView {
             return;
         }
         self.connections.cancel_catalog_loads();
+        self.sidebar_search.block_all();
         self.shutting_down = true;
         self.sidebar_run_states.cancel_pending();
         self.close_dialog = false;

@@ -1,0 +1,1346 @@
+{
+  "baseline": "92fca5871240788f9da9c109fe451c76fb128480",
+  "source_identical_predecessor": "4bde7489a19974ca4d250209f8cc0b05d3afb340",
+  "swift_main": {
+    "checked_start": "2026-10-09T15:08:15.380Z",
+    "checked_end": "2026-10-09T15:08:15.818Z",
+    "repo": "BelloAgent",
+    "sha": "6319e368c6ddb7c3ef18605e78f23b1a5b69e63a",
+    "tree": "43ed6d8843a09b58fe00d436dd0e0c1a56c76972"
+  },
+  "compiled_source_leaf_count": 49,
+  "compiled_source_seal_sha256": "51004a4502096bb22f87106e8fa17c2093ef43861371c6ec465dfbd45576af6e",
+  "sources": [
+    {
+      "path": ".cargo/config.toml",
+      "sha256": "279a8ff27d5f55f4979c4592299497c243e9cd6b93caba6842b2de1c232bcec3",
+      "git_blob_sha": "e8bb6ba08fff72b6e92ac9d43c71bac3fdc6ee2c",
+      "bytes": 263,
+      "preuploaded": true,
+      "remote_blob_sha": "e8bb6ba08fff72b6e92ac9d43c71bac3fdc6ee2c",
+      "source_create_sha_verified": true,
+      "full_blob_readback_verified": false
+    },
+    {
+      "path": ".github/workflows/rust-macos.yml",
+      "sha256": "b730ddca1be76c76204ea151d4ac9120219e088580513fb6611a061817a46303",
+      "git_blob_sha": "2582f550272189261f32b3b84d2dce097f8cd472",
+      "bytes": 7368,
+      "preuploaded": false,
+      "remote_blob_sha": "2582f550272189261f32b3b84d2dce097f8cd472",
+      "source_create_sha_verified": true,
+      "full_blob_readback_verified": true
+    },
+    {
+      "path": ".github/workflows/rust.yml",
+      "sha256": "4948b53b38d088b96e60f0a016b70a7472bdc0d7f60ae758e09ff14350c6ef4d",
+      "git_blob_sha": "0ad5d4da176c2586a6f17832425ce9a2bdf48b2c",
+      "bytes": 6660,
+      "preuploaded": false,
+      "remote_blob_sha": "0ad5d4da176c2586a6f17832425ce9a2bdf48b2c",
+      "source_create_sha_verified": true,
+      "full_blob_readback_verified": true
+    },
+    {
+      "path": "rust/.cargo/config.toml",
+      "sha256": "279a8ff27d5f55f4979c4592299497c243e9cd6b93caba6842b2de1c232bcec3",
+      "git_blob_sha": "e8bb6ba08fff72b6e92ac9d43c71bac3fdc6ee2c",
+      "bytes": 263,
+      "preuploaded": true,
+      "remote_blob_sha": "e8bb6ba08fff72b6e92ac9d43c71bac3fdc6ee2c",
+      "source_create_sha_verified": true,
+      "full_blob_readback_verified": false
+    },
+    {
+      "path": "rust/Cargo.lock",
+      "sha256": "f3bef1b345ea64a5c94479034a9dca4e5e3c5202c78ceebfcab1691133bcaeca",
+      "git_blob_sha": "b85bfb71e9efdb1083f274fb18ba1707eee94651",
+      "bytes": 185518,
+      "preuploaded": true,
+      "remote_blob_sha": "b85bfb71e9efdb1083f274fb18ba1707eee94651",
+      "source_create_sha_verified": true,
+      "full_blob_readback_verified": false
+    },
+    {
+      "path": "rust/Cargo.toml",
+      "sha256": "bd9d47543db737eed0d9011786bfd0d89c0d13391089842940a2b8dbf6b28458",
+      "git_blob_sha": "798c23e3306e84a2f70da4a514b6ecdb6b87f0ae",
+      "bytes": 785,
+      "preuploaded": true,
+      "remote_blob_sha": "798c23e3306e84a2f70da4a514b6ecdb6b87f0ae",
+      "source_create_sha_verified": true,
+      "full_blob_readback_verified": false
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/chat_load.rs",
+      "sha256": "aa22a79b91ef60e6cb1fb5684c813cdb3170fe3b5f538baa621a95ae54bd1b7c",
+      "git_blob_sha": "13fd0df90b0a9b75fab81a619065c7bebd3989e1",
+      "bytes": 16799,
+      "preuploaded": false,
+      "remote_blob_sha": "13fd0df90b0a9b75fab81a619065c7bebd3989e1",
+      "source_create_sha_verified": true,
+      "full_blob_readback_verified": true
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/chat_navigation.rs",
+      "sha256": "0695e1fd2b888e27f0a346b542e8c81da6ad18b89e50b870b7ae0e984bbdaf9e",
+      "git_blob_sha": "7a36e712c3a3508312e287008d3d68ce705f90ed",
+      "bytes": 51708,
+      "preuploaded": false,
+      "remote_blob_sha": "7a36e712c3a3508312e287008d3d68ce705f90ed",
+      "source_create_sha_verified": true,
+      "full_blob_readback_verified": true
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/chat_organization.rs",
+      "sha256": "003724b07fd0a020d2a0dd631a0c033545f7b6aa5a57b0a5e0eb35275f0480db",
+      "git_blob_sha": "af31ed9b9bd1e9cbc8e6a7659ed3d0593fa0b5d6",
+      "bytes": 24555,
+      "preuploaded": false,
+      "remote_blob_sha": "af31ed9b9bd1e9cbc8e6a7659ed3d0593fa0b5d6",
+      "source_create_sha_verified": true,
+      "full_blob_readback_verified": true
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/connection_settings_controller.rs",
+      "sha256": "1be6a578e267a158cc5c5b50e5b034fe4e23bebd4a1e8772ea62f46ab75633fb",
+      "git_blob_sha": "9b3b944690264e16cb521178b60d25203a2443e9",
+      "bytes": 55460,
+      "preuploaded": false,
+      "remote_blob_sha": "9b3b944690264e16cb521178b60d25203a2443e9",
+      "source_create_sha_verified": true,
+      "full_blob_readback_verified": true
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/connection_settings_controller_tests.rs",
+      "sha256": "49e5e39e2df8752082b92f0a9d52ad602b69c370c97a2e52ca790fac9dfeb5c4",
+      "git_blob_sha": "d52409e84950aa891f5644d0c61e2b28c1edc68b",
+      "bytes": 86779,
+      "preuploaded": false,
+      "remote_blob_sha": "d52409e84950aa891f5644d0c61e2b28c1edc68b",
+      "source_create_sha_verified": true,
+      "full_blob_readback_verified": true
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/main.rs",
+      "sha256": "fb2b43c4d56d449b814f13c4c15af53f44084edde8d8119bef97e0ae531ff339",
+      "git_blob_sha": "663000a37851b9b827ea91f1bd0ce691d5d2be26",
+      "bytes": 158627,
+      "preuploaded": false,
+      "remote_blob_sha": "663000a37851b9b827ea91f1bd0ce691d5d2be26",
+      "source_create_sha_verified": true,
+      "full_blob_readback_verified": true
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/mcp_inspector_controller.rs",
+      "sha256": "de7587efa3296f12e6e78cf391462ba56ae6c22bd415e27f431d5c2b8f059d53",
+      "git_blob_sha": "f3a700c56018d572f2a9058d36970f2e98b048c5",
+      "bytes": 39485,
+      "preuploaded": false,
+      "remote_blob_sha": "f3a700c56018d572f2a9058d36970f2e98b048c5",
+      "source_create_sha_verified": true,
+      "full_blob_readback_verified": true
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/project_manager_controller.rs",
+      "sha256": "e50188912912d2e6c8c42b863c281aa202b4458f2e7382dc2bbad80213729d16",
+      "git_blob_sha": "85d26299f015755945d146cca02426880c4ede8b",
+      "bytes": 41736,
+      "preuploaded": false,
+      "remote_blob_sha": "85d26299f015755945d146cca02426880c4ede8b",
+      "source_create_sha_verified": true,
+      "full_blob_readback_verified": true
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/project_manager_controller_tests.rs",
+      "sha256": "fe6c56f7c846bb308af070b143a14800b337f0f16871017710a92a10fe9d1485",
+      "git_blob_sha": "f2c49cd4af96cdea81ec7a485faf05d80d1c4221",
+      "bytes": 50716,
+      "preuploaded": false,
+      "remote_blob_sha": "f2c49cd4af96cdea81ec7a485faf05d80d1c4221",
+      "source_create_sha_verified": true,
+      "full_blob_readback_verified": true
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/sidebar_actions.rs",
+      "sha256": "a23afc53576c8f77d5cefe98aea6983c27dcb3617d4b05938017260f6d6abb00",
+      "git_blob_sha": "a7dd2fafec039dff49e1af95ba0005fa79a45424",
+      "bytes": 19338,
+      "preuploaded": false,
+      "remote_blob_sha": "a7dd2fafec039dff49e1af95ba0005fa79a45424",
+      "source_create_sha_verified": true,
+      "full_blob_readback_verified": true
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/sidebar_activity.rs",
+      "sha256": "f46fd9f43d8c54cf442537a96f750f3556e0a2a426d8c688a1d59f9e96d6b10e",
+      "git_blob_sha": "e0481595ae721770cc52de3cca8aee027c5e071f",
+      "bytes": 23811,
+      "preuploaded": false,
+      "remote_blob_sha": "e0481595ae721770cc52de3cca8aee027c5e071f",
+      "source_create_sha_verified": true,
+      "full_blob_readback_verified": true
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/sidebar_cache_cleanup.rs",
+      "sha256": "d9be2b8bcdf6ca64cb29b4606cdc4cde2f9083be6365c8fc40abd1fa0d2778b9",
+      "git_blob_sha": "423c9c5a2565761e039600344eeef6db73a53536",
+      "bytes": 3812,
+      "preuploaded": false,
+      "remote_blob_sha": "423c9c5a2565761e039600344eeef6db73a53536",
+      "source_create_sha_verified": true,
+      "full_blob_readback_verified": true
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/sidebar_inspection.rs",
+      "sha256": "6195ffb9c20e15f48fac94660b14a26313d1b0e72f7fb47beb5051c411b09d68",
+      "git_blob_sha": "d342a2f07be4b4b43c68c6447b745ce0ee4a58a3",
+      "bytes": 6271,
+      "preuploaded": false,
+      "remote_blob_sha": "d342a2f07be4b4b43c68c6447b745ce0ee4a58a3",
+      "source_create_sha_verified": true,
+      "full_blob_readback_verified": true
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/sidebar_read_state.rs",
+      "sha256": "dbe714dd3b93158fd5b7b0c64ab78a9a83b16a5e0237c137f607b179598f773f",
+      "git_blob_sha": "4997da385e36c68959e623845d372636b36f1860",
+      "bytes": 36754,
+      "preuploaded": false,
+      "remote_blob_sha": "4997da385e36c68959e623845d372636b36f1860",
+      "source_create_sha_verified": true,
+      "full_blob_readback_verified": true
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/sidebar_run_state.rs",
+      "sha256": "893154857d19bcaf32c49939cd5033e6cd6b7f93c4be40e2d247304cb64550e0",
+      "git_blob_sha": "539eb0c1d06984bf04e21125b429b7f59d069ace",
+      "bytes": 22394,
+      "preuploaded": false,
+      "remote_blob_sha": "539eb0c1d06984bf04e21125b429b7f59d069ace",
+      "source_create_sha_verified": true,
+      "full_blob_readback_verified": true
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/sidebar_search_controller.rs",
+      "sha256": "1b2daa196ba489cec2ac7975e23f3daf84281334bf8969dc79c04ac560123878",
+      "git_blob_sha": "5afaa703648e48e0ff62161feb508eb0d41929d8",
+      "bytes": 30278,
+      "preuploaded": false,
+      "remote_blob_sha": "5afaa703648e48e0ff62161feb508eb0d41929d8",
+      "source_create_sha_verified": true,
+      "full_blob_readback_verified": true
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/sidebar_search_controller_tests.rs",
+      "sha256": "9a0ca051f134883f8c3870786d49b0cd615f62c3fb5ac24d114ac37a2959f022",
+      "git_blob_sha": "0d964921bd5630f3b01fe4bf71ecedcf320d2a86",
+      "bytes": 49607,
+      "preuploaded": false,
+      "remote_blob_sha": "0d964921bd5630f3b01fe4bf71ecedcf320d2a86",
+      "source_create_sha_verified": true,
+      "full_blob_readback_verified": true
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/sidebar_search_reveal.rs",
+      "sha256": "b50fe80805caf9be04830ca324a183b3fefdb16d8a1135a9af50fb7e1131579d",
+      "git_blob_sha": "17a9853378dd647a75c30f3ba60b100b83a567e8",
+      "bytes": 14608,
+      "preuploaded": false,
+      "remote_blob_sha": "17a9853378dd647a75c30f3ba60b100b83a567e8",
+      "source_create_sha_verified": true,
+      "full_blob_readback_verified": true
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/sidebar_search_state.rs",
+      "sha256": "12c42dda3e481e79eb0c0196566a6c1bcb0400e34b3b1b9636268e9a0b5cb2c9",
+      "git_blob_sha": "9965d92cd144ecbc144bb0243df42efb7cc9e5b5",
+      "bytes": 3083,
+      "preuploaded": false,
+      "remote_blob_sha": "9965d92cd144ecbc144bb0243df42efb7cc9e5b5",
+      "source_create_sha_verified": true,
+      "full_blob_readback_verified": true
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/synthetic_sidebar_fixture.rs",
+      "sha256": "0ad602627f5c3d8b45d1b320a09815232891a79cc7aeab0fd1f54056ae4ef42c",
+      "git_blob_sha": "b76fc4ecd0a4290f97a07b5396f3e5081be3e7d5",
+      "bytes": 33898,
+      "preuploaded": false,
+      "remote_blob_sha": "b76fc4ecd0a4290f97a07b5396f3e5081be3e7d5",
+      "source_create_sha_verified": true,
+      "full_blob_readback_verified": true
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/transcript_find_controller.rs",
+      "sha256": "3adbf87166fa4419c53486a069046a06f71f9db0f095acd4a9c1e8bced556d44",
+      "git_blob_sha": "28a25a5e7455105955e442b4d5c9b9fee4952cb0",
+      "bytes": 28318,
+      "preuploaded": false,
+      "remote_blob_sha": "28a25a5e7455105955e442b4d5c9b9fee4952cb0",
+      "source_create_sha_verified": true,
+      "full_blob_readback_verified": true
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/transcript_find_presentation.rs",
+      "sha256": "28bab62f3d52780dc36390fd3d959324e2ac69797c69c4b5d3fd4e5c020dd590",
+      "git_blob_sha": "985574d48dad53df4a2adfcce05bcb3c4312929d",
+      "bytes": 20741,
+      "preuploaded": false,
+      "remote_blob_sha": "985574d48dad53df4a2adfcce05bcb3c4312929d",
+      "source_create_sha_verified": true,
+      "full_blob_readback_verified": true
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/transcript_find_state.rs",
+      "sha256": "c717963fa8dcb8c73e442686d159ae2488af1dfd1d37921e0cb96ee82f54e586",
+      "git_blob_sha": "fa32e9c95680c7019a1fbff9a84876c4a0b70299",
+      "bytes": 10835,
+      "preuploaded": false,
+      "remote_blob_sha": "fa32e9c95680c7019a1fbff9a84876c4a0b70299",
+      "source_create_sha_verified": true,
+      "full_blob_readback_verified": true
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/transcript_view.rs",
+      "sha256": "a96ceff2464bbee2bfff3849864e12f210edf9b245870aabde466727a34b6eb9",
+      "git_blob_sha": "78a282e0f73fe13e00fcfe859f4d4e81d8777066",
+      "bytes": 127395,
+      "preuploaded": false,
+      "remote_blob_sha": "78a282e0f73fe13e00fcfe859f4d4e81d8777066",
+      "source_create_sha_verified": true,
+      "full_blob_readback_verified": true
+    },
+    {
+      "path": "rust/crates/bello-agent-app/src/transcript_view_tests.rs",
+      "sha256": "92bfcb4881994a06dac98056c32b07589134c48f97182eb15634e880640e17a3",
+      "git_blob_sha": "e0c180a6c7baac2c3aa14ef2a0db8a7b6cba0e9f",
+      "bytes": 103744,
+      "preuploaded": false,
+      "remote_blob_sha": "e0c180a6c7baac2c3aa14ef2a0db8a7b6cba0e9f",
+      "source_create_sha_verified": true,
+      "full_blob_readback_verified": true
+    },
+    {
+      "path": "rust/crates/bello-agent-core/Cargo.toml",
+      "sha256": "5efed3a6827b08672f652774a632ebbd4b7e9b2aa3f0ed81eaa1af78532c84ae",
+      "git_blob_sha": "0903eea5c579f6ce2bc4d1de7641fb5a0152ea3e",
+      "bytes": 2700,
+      "preuploaded": true,
+      "remote_blob_sha": "0903eea5c579f6ce2bc4d1de7641fb5a0152ea3e",
+      "source_create_sha_verified": true,
+      "full_blob_readback_verified": false
+    },
+    {
+      "path": "rust/crates/bello-agent-core/build.rs",
+      "sha256": "0b47c59a576a650c73e9467a46095155dd80a0a1c670535343bd0f2aed32de79",
+      "git_blob_sha": "4bc91161258c7d26dbecbe9f256ee7415f7ac277",
+      "bytes": 8944,
+      "preuploaded": true,
+      "remote_blob_sha": "4bc91161258c7d26dbecbe9f256ee7415f7ac277",
+      "source_create_sha_verified": true,
+      "full_blob_readback_verified": false
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/sidebar_search/admission.rs",
+      "sha256": "812e172bea318c3a59b59ea2ad6c9ecab080fd4a558b0172b66457fe96bd8830",
+      "git_blob_sha": "f6f1018f955d10f50280c2e9bc336a5188dfd96d",
+      "bytes": 23687,
+      "preuploaded": true,
+      "remote_blob_sha": "f6f1018f955d10f50280c2e9bc336a5188dfd96d",
+      "source_create_sha_verified": true,
+      "full_blob_readback_verified": false
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/sidebar_search/admission_tests.rs",
+      "sha256": "82d9b677f392a34adce5798a9786bd57d4af01db33d54e764844e6287dd436bb",
+      "git_blob_sha": "1cd8575ba1d9daea334c6112401e95f6ccedf27d",
+      "bytes": 30361,
+      "preuploaded": true,
+      "remote_blob_sha": "1cd8575ba1d9daea334c6112401e95f6ccedf27d",
+      "source_create_sha_verified": true,
+      "full_blob_readback_verified": false
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/sidebar_search/cache/mac_acl.rs",
+      "sha256": "ccd7010b50a300a32d2da2494b5a13484c2bc847179335971fbc6178a007444b",
+      "git_blob_sha": "d722131bd7bab279afb3cfd6fbfd9601290940f1",
+      "bytes": 6964,
+      "preuploaded": true,
+      "remote_blob_sha": "d722131bd7bab279afb3cfd6fbfd9601290940f1",
+      "source_create_sha_verified": true,
+      "full_blob_readback_verified": false
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/sidebar_search/cache/mod.rs",
+      "sha256": "a4be74b5d9373651e8c904a016a2c708f25c5fe42b9477a56668a00059aa0fc5",
+      "git_blob_sha": "66c9e24ae2076e4023afeccc0dc30e5128bdad36",
+      "bytes": 23570,
+      "preuploaded": true,
+      "remote_blob_sha": "66c9e24ae2076e4023afeccc0dc30e5128bdad36",
+      "source_create_sha_verified": true,
+      "full_blob_readback_verified": false
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/sidebar_search/cache/observer.rs",
+      "sha256": "7cb82c3ecca20271ceb4f5b58912328fb84ae9e1f8ad0fb9cd2e36b74e96c39e",
+      "git_blob_sha": "ad8b6ced541f0b983efea133a160af94e6171699",
+      "bytes": 13218,
+      "preuploaded": true,
+      "remote_blob_sha": "ad8b6ced541f0b983efea133a160af94e6171699",
+      "source_create_sha_verified": true,
+      "full_blob_readback_verified": false
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/sidebar_search/cache/privacy.rs",
+      "sha256": "ff4b859bf821b3dd839064c707d91e59bd7d5bfe002ecc191883bf56676d8c77",
+      "git_blob_sha": "922c500b9852b3af16a1c9f094bf2675bdcd4952",
+      "bytes": 9618,
+      "preuploaded": true,
+      "remote_blob_sha": "922c500b9852b3af16a1c9f094bf2675bdcd4952",
+      "source_create_sha_verified": true,
+      "full_blob_readback_verified": false
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/sidebar_search/cache/query.rs",
+      "sha256": "e00a2c8573298a1a641b99efd9dc3348cd0d97647011f7de4f3faa78f6757db5",
+      "git_blob_sha": "e7b4992dbf4b73cb85b98bd9cb1f7d228e9fd46d",
+      "bytes": 10932,
+      "preuploaded": true,
+      "remote_blob_sha": "e7b4992dbf4b73cb85b98bd9cb1f7d228e9fd46d",
+      "source_create_sha_verified": true,
+      "full_blob_readback_verified": false
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/sidebar_search/cache/runtime.rs",
+      "sha256": "6d815ef434cda24f14bbd27d0c53aa001ba1bbc144dccc66243032363802260d",
+      "git_blob_sha": "54255438e23b8e3d50be51d0db198a8002721d18",
+      "bytes": 4371,
+      "preuploaded": true,
+      "remote_blob_sha": "54255438e23b8e3d50be51d0db198a8002721d18",
+      "source_create_sha_verified": true,
+      "full_blob_readback_verified": false
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/sidebar_search/cache/tests.rs",
+      "sha256": "b199daed04392d5f9ccbca1d284db96b15a188d1cd5f40a6a2fb5b8e9c705632",
+      "git_blob_sha": "1526394cbfedaab3e3161a22d96e765f52f63e9b",
+      "bytes": 29374,
+      "preuploaded": true,
+      "remote_blob_sha": "1526394cbfedaab3e3161a22d96e765f52f63e9b",
+      "source_create_sha_verified": true,
+      "full_blob_readback_verified": false
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/sidebar_search/mod.rs",
+      "sha256": "d68f7d9983a1668096c64b8b0943c4e435139263e95b350128cef4c6f7509a9a",
+      "git_blob_sha": "a3f85c6c572ec0d01556dfef4d3833593bbf87d1",
+      "bytes": 424,
+      "preuploaded": true,
+      "remote_blob_sha": "a3f85c6c572ec0d01556dfef4d3833593bbf87d1",
+      "source_create_sha_verified": true,
+      "full_blob_readback_verified": false
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/sidebar_search/projection.rs",
+      "sha256": "c05748483a8435d562bd41c9f4f37e5c3a536b06211d3c91fe2cbf4a6adc4b2e",
+      "git_blob_sha": "b6b985cd4105fd251d2eb27eaf0ede32f6674496",
+      "bytes": 26148,
+      "preuploaded": true,
+      "remote_blob_sha": "b6b985cd4105fd251d2eb27eaf0ede32f6674496",
+      "source_create_sha_verified": true,
+      "full_blob_readback_verified": false
+    },
+    {
+      "path": "rust/crates/bello-agent-core/src/sidebar_search/unloaded.rs",
+      "sha256": "3f61373f7061c186cdf67d1fb06c8fdebc734998977c6bf36274de0d45a12387",
+      "git_blob_sha": "e051d0883f8d16633c447be3d000378f6522f38e",
+      "bytes": 4166,
+      "preuploaded": true,
+      "remote_blob_sha": "e051d0883f8d16633c447be3d000378f6522f38e",
+      "source_create_sha_verified": true,
+      "full_blob_readback_verified": false
+    },
+    {
+      "path": "rust/crates/bello-agent-core/tests/sidebar_search_projection.rs",
+      "sha256": "639a8e43c5340f5f0f7ad4be130a2dd376dea59e10943017f9b3bf2e16dab16b",
+      "git_blob_sha": "44cf4fe2d3955e10ba85b2e5e16e36c0c80b0b9a",
+      "bytes": 20007,
+      "preuploaded": true,
+      "remote_blob_sha": "44cf4fe2d3955e10ba85b2e5e16e36c0c80b0b9a",
+      "source_create_sha_verified": true,
+      "full_blob_readback_verified": false
+    },
+    {
+      "path": "rust/docs/sidebar-content-workflow.md",
+      "sha256": "e8d944f93bd570b0caea15640a70a089ae7b4711699e374fd934b3c7ce289fe0",
+      "git_blob_sha": "731449782f61dd55089272d7599733a70e96d379",
+      "bytes": 9910,
+      "preuploaded": false,
+      "remote_blob_sha": "731449782f61dd55089272d7599733a70e96d379",
+      "source_create_sha_verified": true,
+      "full_blob_readback_verified": true
+    },
+    {
+      "path": "rust/docs/sidebar-private-cache.md",
+      "sha256": "a3d5ea2181c0b8328f5468121ef3f51bd1be1925b0c7aac279ce28a9b64991ea",
+      "git_blob_sha": "1d409855f77986d638f88d849cffadfeef73d549",
+      "bytes": 11867,
+      "preuploaded": true,
+      "remote_blob_sha": "1d409855f77986d638f88d849cffadfeef73d549",
+      "source_create_sha_verified": true,
+      "full_blob_readback_verified": false
+    },
+    {
+      "path": "rust/scripts/check-sidebar-sqlite.py",
+      "sha256": "3dcfe0f8285d46314665612d437b75ba986fc834aa369ce00125c648d4480bbe",
+      "git_blob_sha": "ff2ab015dbac65080f62d7ebcf6a02b90f9074f1",
+      "bytes": 1528,
+      "preuploaded": true,
+      "remote_blob_sha": "ff2ab015dbac65080f62d7ebcf6a02b90f9074f1",
+      "source_create_sha_verified": true,
+      "full_blob_readback_verified": false
+    }
+  ],
+  "core_frozen_source_sha256": {
+    ".cargo/config.toml": "279a8ff27d5f55f4979c4592299497c243e9cd6b93caba6842b2de1c232bcec3",
+    "rust/.cargo/config.toml": "279a8ff27d5f55f4979c4592299497c243e9cd6b93caba6842b2de1c232bcec3",
+    "rust/Cargo.lock": "f3bef1b345ea64a5c94479034a9dca4e5e3c5202c78ceebfcab1691133bcaeca",
+    "rust/Cargo.toml": "bd9d47543db737eed0d9011786bfd0d89c0d13391089842940a2b8dbf6b28458",
+    "rust/crates/bello-agent-core/Cargo.toml": "5efed3a6827b08672f652774a632ebbd4b7e9b2aa3f0ed81eaa1af78532c84ae",
+    "rust/crates/bello-agent-core/build.rs": "0b47c59a576a650c73e9467a46095155dd80a0a1c670535343bd0f2aed32de79",
+    "rust/crates/bello-agent-core/src/sidebar_search/admission.rs": "812e172bea318c3a59b59ea2ad6c9ecab080fd4a558b0172b66457fe96bd8830",
+    "rust/crates/bello-agent-core/src/sidebar_search/admission_tests.rs": "82d9b677f392a34adce5798a9786bd57d4af01db33d54e764844e6287dd436bb",
+    "rust/crates/bello-agent-core/src/sidebar_search/cache/mac_acl.rs": "ccd7010b50a300a32d2da2494b5a13484c2bc847179335971fbc6178a007444b",
+    "rust/crates/bello-agent-core/src/sidebar_search/cache/mod.rs": "a4be74b5d9373651e8c904a016a2c708f25c5fe42b9477a56668a00059aa0fc5",
+    "rust/crates/bello-agent-core/src/sidebar_search/cache/observer.rs": "7cb82c3ecca20271ceb4f5b58912328fb84ae9e1f8ad0fb9cd2e36b74e96c39e",
+    "rust/crates/bello-agent-core/src/sidebar_search/cache/privacy.rs": "ff4b859bf821b3dd839064c707d91e59bd7d5bfe002ecc191883bf56676d8c77",
+    "rust/crates/bello-agent-core/src/sidebar_search/cache/query.rs": "e00a2c8573298a1a641b99efd9dc3348cd0d97647011f7de4f3faa78f6757db5",
+    "rust/crates/bello-agent-core/src/sidebar_search/cache/runtime.rs": "6d815ef434cda24f14bbd27d0c53aa001ba1bbc144dccc66243032363802260d",
+    "rust/crates/bello-agent-core/src/sidebar_search/cache/tests.rs": "b199daed04392d5f9ccbca1d284db96b15a188d1cd5f40a6a2fb5b8e9c705632",
+    "rust/crates/bello-agent-core/src/sidebar_search/cancellation.rs": "9820127913587edee02c4b5e0f6d8a1a7126f5f07d7a271dca7cbe78673090ac",
+    "rust/crates/bello-agent-core/src/sidebar_search/identity.rs": "6e87165c905761618119fb4d51ddb4394b9bf3fe919ae6f540578a9539911790",
+    "rust/crates/bello-agent-core/src/sidebar_search/mod.rs": "d68f7d9983a1668096c64b8b0943c4e435139263e95b350128cef4c6f7509a9a",
+    "rust/crates/bello-agent-core/src/sidebar_search/projection.rs": "c05748483a8435d562bd41c9f4f37e5c3a536b06211d3c91fe2cbf4a6adc4b2e",
+    "rust/crates/bello-agent-core/src/sidebar_search/reconciliation.rs": "c32c1a26199f4a1cc539e07f6c59ba7b1e721b1296d3b84770150ca973572ae8",
+    "rust/crates/bello-agent-core/src/sidebar_search/unloaded.rs": "3f61373f7061c186cdf67d1fb06c8fdebc734998977c6bf36274de0d45a12387",
+    "rust/crates/bello-agent-core/src/sidebar_search/unloaded_tests.rs": "bca84a1dbf9d68614bdc7d2c421b372ff327f73758912bb67a4bc0a33e7b9f12",
+    "rust/crates/bello-agent-core/tests/sidebar_search_projection.rs": "639a8e43c5340f5f0f7ad4be130a2dd376dea59e10943017f9b3bf2e16dab16b",
+    "rust/docs/sidebar-private-cache.md": "a3d5ea2181c0b8328f5468121ef3f51bd1be1925b0c7aac279ce28a9b64991ea",
+    "rust/scripts/check-sidebar-sqlite.py": "3dcfe0f8285d46314665612d437b75ba986fc834aa369ce00125c648d4480bbe"
+  },
+  "core_final_gates": {
+    "core-all-features-sealed": {
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "rust/Cargo.toml",
+        "-p",
+        "bello-agent-core",
+        "--locked",
+        "--offline",
+        "-j1",
+        "--all-features"
+      ],
+      "started_utc": "2026-10-09T13:45:49.583374+00:00",
+      "ended_utc": "2026-10-09T13:46:26.665701+00:00",
+      "elapsed_seconds": 37.08235764999699,
+      "exit_code": 0,
+      "build_jobs": 1,
+      "aggregate_test_counts": {
+        "passed": 1070,
+        "failed": 0,
+        "ignored": 0
+      }
+    },
+    "core-default-sealed": {
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "rust/Cargo.toml",
+        "-p",
+        "bello-agent-core",
+        "--locked",
+        "--offline",
+        "-j1"
+      ],
+      "started_utc": "2026-10-09T13:46:26.666221+00:00",
+      "ended_utc": "2026-10-09T13:47:49.090686+00:00",
+      "elapsed_seconds": 82.42449036700418,
+      "exit_code": 0,
+      "build_jobs": 1,
+      "aggregate_test_counts": {
+        "passed": 883,
+        "failed": 0,
+        "ignored": 0
+      }
+    },
+    "core-strict-sealed": {
+      "command": [
+        "cargo",
+        "clippy",
+        "--manifest-path",
+        "rust/Cargo.toml",
+        "-p",
+        "bello-agent-core",
+        "--all-features",
+        "--all-targets",
+        "--locked",
+        "--offline",
+        "-j1",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "started_utc": "2026-10-09T13:47:49.091126+00:00",
+      "ended_utc": "2026-10-09T13:48:10.479921+00:00",
+      "elapsed_seconds": 21.38881884100556,
+      "exit_code": 0,
+      "build_jobs": 1
+    },
+    "dependency-union-sealed": {
+      "command": [
+        "python3",
+        "rust/scripts/check-sidebar-sqlite.py",
+        "--all-features"
+      ],
+      "started_utc": "2026-10-09T13:48:10.480307+00:00",
+      "ended_utc": "2026-10-09T13:48:11.288812+00:00",
+      "elapsed_seconds": 0.808527746994514,
+      "exit_code": 0,
+      "build_jobs": 1
+    },
+    "core-fmt-sealed": {
+      "command": [
+        "cargo",
+        "fmt",
+        "--manifest-path",
+        "rust/Cargo.toml",
+        "-p",
+        "bello-agent-core",
+        "--",
+        "--check"
+      ],
+      "started_utc": "2026-10-09T13:48:11.289463+00:00",
+      "ended_utc": "2026-10-09T13:48:12.217556+00:00",
+      "elapsed_seconds": 0.9281179259996861,
+      "exit_code": 0,
+      "build_jobs": 1
+    }
+  },
+  "core_build_gate_controls": [
+    {
+      "case": "plain-compiler",
+      "elapsed_seconds": 0.001601342999492772,
+      "exit_code": 0,
+      "expected": 0
+    },
+    {
+      "case": "cc-embedded-define",
+      "elapsed_seconds": 0.0012881699949502945,
+      "exit_code": 101,
+      "expected": 101
+    },
+    {
+      "case": "host-cc-embedded-define",
+      "elapsed_seconds": 0.0011807699920609593,
+      "exit_code": 101,
+      "expected": 101
+    },
+    {
+      "case": "target-cc-embedded-define",
+      "elapsed_seconds": 0.0010886130039580166,
+      "exit_code": 101,
+      "expected": 101
+    },
+    {
+      "case": "target-underscore-cc-define",
+      "elapsed_seconds": 0.0012294519983697683,
+      "exit_code": 101,
+      "expected": 101
+    },
+    {
+      "case": "target-hyphen-cc-define",
+      "elapsed_seconds": 0.0011545609886525199,
+      "exit_code": 101,
+      "expected": 101
+    },
+    {
+      "case": "cflags-shm-define",
+      "elapsed_seconds": 0.0013320150028448552,
+      "exit_code": 101,
+      "expected": 101
+    },
+    {
+      "case": "missing-build-flags",
+      "elapsed_seconds": 0.0011438150104368106,
+      "exit_code": 101,
+      "expected": 101
+    },
+    {
+      "case": "system-link-override",
+      "elapsed_seconds": 0.0011510559997987002,
+      "exit_code": 101,
+      "expected": 101
+    }
+  ],
+  "app_final_gates": [
+    {
+      "phase": "app-timer-owner-r33",
+      "started_utc": "2026-10-09T14:52:57Z",
+      "finished_utc": "2026-10-09T14:54:03Z",
+      "exit_code": 0,
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "bello-agent-app",
+        "--features",
+        "synthetic-authority",
+        "sidebar_",
+        "--",
+        "--nocapture"
+      ],
+      "effective_jobs": 1,
+      "source_manifest_sha256": "c2431cd6f3eccf4bc8665e60cb33d7d4379e9a9d8f22a7cc5c68f02f6fc721de",
+      "log_sha256": "4c6d1fb3de66fc1dc810da84a066fee4a87101fcfded9a8d1e842df845b7596e",
+      "source_unchanged": true,
+      "test_summaries": [
+        {
+          "passed": 124,
+          "failed": 0,
+          "ignored": 0
+        }
+      ]
+    },
+    {
+      "phase": "app-strict-timer-r34",
+      "started_utc": "2026-10-09T14:54:12Z",
+      "finished_utc": "2026-10-09T14:54:29Z",
+      "exit_code": 0,
+      "argv": [
+        "cargo",
+        "clippy",
+        "-p",
+        "bello-agent-app",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "effective_jobs": 1,
+      "source_manifest_sha256": "57df1c7804813bba7df8a8dd947198050da4c3790b9561f20cd9e8bbf28ac09f",
+      "log_sha256": "31e9b194f97a33ce1cad20a0796cb753757c4b9c019a46b453e88731a74ba8ba",
+      "source_unchanged": true,
+      "test_summaries": []
+    },
+    {
+      "phase": "synthetic-build-timer-r35",
+      "started_utc": "2026-10-09T14:54:29Z",
+      "finished_utc": "2026-10-09T14:54:50Z",
+      "exit_code": 0,
+      "argv": [
+        "cargo",
+        "build",
+        "-p",
+        "bello-agent-app",
+        "--features",
+        "synthetic-authority"
+      ],
+      "effective_jobs": 1,
+      "source_manifest_sha256": "51004a4502096bb22f87106e8fa17c2093ef43861371c6ec465dfbd45576af6e",
+      "log_sha256": "ae9d7b4ac764250efe0e2fd5fb1bb9e21495bf79964c3febdf2e852d3304193b",
+      "source_unchanged": true,
+      "test_summaries": []
+    },
+    {
+      "phase": "app-restored-all-r36",
+      "started_utc": "2026-10-09T15:07:33Z",
+      "finished_utc": "2026-10-09T15:08:44Z",
+      "exit_code": 0,
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "bello-agent-app",
+        "--all-features"
+      ],
+      "effective_jobs": 1,
+      "source_manifest_sha256": "90cb3301a34c232eafb739a8d9cab8c0f7d4ea4bf276da0cb0b72792f33c0c42",
+      "log_sha256": "197370d99e4cc8d37e1f56ac72a3861373bd0d1c81893b30001902d946bdd74c",
+      "source_unchanged": true,
+      "test_summaries": [
+        {
+          "passed": 831,
+          "failed": 0,
+          "ignored": 3
+        }
+      ]
+    },
+    {
+      "phase": "app-restored-default-r37",
+      "started_utc": "2026-10-09T15:08:44Z",
+      "finished_utc": "2026-10-09T15:09:37Z",
+      "exit_code": 0,
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "bello-agent-app"
+      ],
+      "effective_jobs": 1,
+      "source_manifest_sha256": "c256df821312eb2e27aa587ada529b6e476d9765dd044ba78821baedfa617bf6",
+      "log_sha256": "b41b8de1686d714b7c1c39173dfad5462e6d3d3370aef23045e6668add0d28a8",
+      "source_unchanged": true,
+      "test_summaries": [
+        {
+          "passed": 651,
+          "failed": 0,
+          "ignored": 1
+        }
+      ]
+    },
+    {
+      "phase": "app-restored-strict-all-r38",
+      "started_utc": "2026-10-09T15:10:00Z",
+      "finished_utc": "2026-10-09T15:10:16Z",
+      "exit_code": 0,
+      "argv": [
+        "cargo",
+        "clippy",
+        "-p",
+        "bello-agent-app",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "effective_jobs": 1,
+      "source_manifest_sha256": "1aa98c5f9ace2c7d40972b6a3ad1306092263dd485d54ed70d9afc08148fe2c7",
+      "log_sha256": "c4984e1df7d394d5d471e9ad190ebe9b36f21e36b416a6f9007b2468c34addfa",
+      "source_unchanged": true,
+      "test_summaries": []
+    },
+    {
+      "phase": "app-restored-strict-default-r39",
+      "started_utc": "2026-10-09T15:10:17Z",
+      "finished_utc": "2026-10-09T15:10:30Z",
+      "exit_code": 0,
+      "argv": [
+        "cargo",
+        "clippy",
+        "-p",
+        "bello-agent-app",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "effective_jobs": 1,
+      "source_manifest_sha256": "b34366788550270482133491904247be972b6408b9fb3ea5d7fa517aadb73fae",
+      "log_sha256": "bdf8726a8ac3a11b3aeee439f9b179e3a2ab25a2d0ebe4d46462deb9a0f3d7df",
+      "source_unchanged": true,
+      "test_summaries": []
+    },
+    {
+      "phase": "app-final-fmt-r40",
+      "started_utc": "2026-10-09T15:10:30Z",
+      "finished_utc": "2026-10-09T15:10:32Z",
+      "exit_code": 0,
+      "argv": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "effective_jobs": 1,
+      "source_manifest_sha256": "8d339e9d77b0c3d940406650458369a25aa1513bd8bcd0858401df0a8390778a",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source_unchanged": true,
+      "test_summaries": []
+    },
+    {
+      "phase": "app-ordinary-build-r41",
+      "started_utc": "2026-10-09T15:10:32Z",
+      "finished_utc": "2026-10-09T15:11:02Z",
+      "exit_code": 0,
+      "argv": [
+        "cargo",
+        "build",
+        "-p",
+        "bello-agent-app"
+      ],
+      "effective_jobs": 1,
+      "source_manifest_sha256": "e42ac90bc0118b01d7e1ea791bb4d5cee5d58e52e9fbdce7f6f5d5ac3401bebf",
+      "log_sha256": "5d7a341df91a57fe6195547070fac4c6987f4a59faca56bda0c4432c42c33522",
+      "source_unchanged": true,
+      "test_summaries": []
+    }
+  ],
+  "semantic_controls": [
+    {
+      "name": "debounce-cancel",
+      "path": "rust/crates/bello-agent-app/src/sidebar_search_controller.rs",
+      "test_filter": "cancel_at_119ms_allows_unchanged_query_and_old_timer_cannot_reopen_new_query",
+      "started_utc": "2026-10-09T14:17:17.858789+00:00",
+      "finished_utc": "2026-10-09T14:18:24.699801+00:00",
+      "wall_seconds": 66.8410181329964,
+      "exit_code": 101,
+      "mutant_sha256": "1acd988985e6f289418beeccd09cd0634e0bcde2bafc9d487edaa754660a35ef",
+      "original_sha256": "0e545dd7136c711a5d121cfb0e72848602d30c6e5ab02b87ffcdc1fb99f85423",
+      "assertion_failure_observed": true,
+      "effective_jobs": 1,
+      "source_scope": "pre-GUI repair source: seven bounded controls",
+      "log_sha256": "2b62f6aa00113d7918466c4636653b00f018a92afe0e2a715ffaa8f4223310f6",
+      "assertion_excerpt": "assertion failed: view.sidebar_search.debounce.is_none()"
+    },
+    {
+      "name": "cleanup-intent-loss",
+      "path": "rust/crates/bello-agent-app/src/sidebar_cache_cleanup.rs",
+      "test_filter": "first_and_middle_failure_keep_exact_failed_intents_and_visit_later_ids",
+      "started_utc": "2026-10-09T14:18:24.700732+00:00",
+      "finished_utc": "2026-10-09T14:19:20.173351+00:00",
+      "wall_seconds": 55.47263274999568,
+      "exit_code": 101,
+      "mutant_sha256": "8c54ecb3e41e184d9c8bcf87f227d1c35ceb2201bd0f3fab9e549098aa666747",
+      "original_sha256": "d9be2b8bcdf6ca64cb29b4606cdc4cde2f9083be6365c8fc40abd1fa0d2778b9",
+      "assertion_failure_observed": true,
+      "effective_jobs": 1,
+      "source_scope": "pre-GUI repair source: seven bounded controls",
+      "log_sha256": "1d29417ac9698ec57b8cee6a8916e9c974712894f65f3317ec4730872fe3bf07",
+      "assertion_excerpt": "assertion failed: !queue.drain_with(|id, _|"
+    },
+    {
+      "name": "piece-digest-omitted",
+      "path": "rust/crates/bello-agent-app/src/sidebar_search_reveal.rs",
+      "test_filter": "changed_piece_with_same_owner_and_offsets_is_not_revealed",
+      "started_utc": "2026-10-09T14:19:20.174495+00:00",
+      "finished_utc": "2026-10-09T14:20:18.305889+00:00",
+      "wall_seconds": 58.13140206199023,
+      "exit_code": 101,
+      "mutant_sha256": "bf8b94798bd884726fa839b02063264532eaf107feed28f5c073bd75f19788cf",
+      "original_sha256": "413d6d47455c190242e08b419caa9355a18af964ee20b643349d99f62c0e3b69",
+      "assertion_failure_observed": true,
+      "effective_jobs": 1,
+      "source_scope": "pre-GUI repair source: seven bounded controls",
+      "log_sha256": "3f6fd817920165dd3af0b161ae9a8d85febe57eb36efa8da9f5fbe33eb680923",
+      "assertion_excerpt": "assertion failed: view.transcript.as_ref().unwrap().read(cx).sidebar_paint().is_none()"
+    },
+    {
+      "name": "geometry-source-omitted",
+      "path": "rust/crates/bello-agent-app/src/transcript_view.rs",
+      "test_filter": "delayed_tool_geometry_rechecks_source_receipt_before_scroll",
+      "started_utc": "2026-10-09T14:20:18.307413+00:00",
+      "finished_utc": "2026-10-09T14:21:12.272737+00:00",
+      "wall_seconds": 53.96533010000712,
+      "exit_code": 101,
+      "mutant_sha256": "203f5c535c20e71e46d927fde5b784fc161e0f81401a60a21c9c85340fae76ca",
+      "original_sha256": "a686818a4167789c0c7b8c393e91dce29b8196dc7fecd330073a232417e428fb",
+      "assertion_failure_observed": true,
+      "effective_jobs": 1,
+      "source_scope": "pre-GUI repair source: seven bounded controls",
+      "log_sha256": "d26962fb8c7644c1ac54732151aba723e7e3d123812bf76e0516e9067a0a2089",
+      "assertion_excerpt": "assertion failed: !paint.confirmed.get()"
+    },
+    {
+      "name": "old-find-navigation",
+      "path": "rust/crates/bello-agent-app/src/transcript_find_controller.rs",
+      "test_filter": "delayed_find_first_page_cannot_overtake_newer_sidebar_action",
+      "started_utc": "2026-10-09T14:21:12.274151+00:00",
+      "finished_utc": "2026-10-09T14:22:08.003951+00:00",
+      "wall_seconds": 55.729807583993534,
+      "exit_code": 101,
+      "mutant_sha256": "d1f111606cc1f209373b6411a35d1077d90d2260b96fc7ef09ca182703f5d821",
+      "original_sha256": "3adbf87166fa4419c53486a069046a06f71f9db0f095acd4a9c1e8bced556d44",
+      "assertion_failure_observed": true,
+      "effective_jobs": 1,
+      "source_scope": "pre-GUI repair source: seven bounded controls",
+      "log_sha256": "3c16882e9fc20c29dbf9665ed2534b9021aa78d100fdaec5cee8707219a05436",
+      "assertion_excerpt": "called `Option::unwrap()` on a `None` value"
+    },
+    {
+      "name": "stream-starvation",
+      "path": "rust/crates/bello-agent-app/src/sidebar_search_controller.rs",
+      "test_filter": "changing_loaded_member_yields_to_unvisited_saved_members",
+      "started_utc": "2026-10-09T14:22:08.005252+00:00",
+      "finished_utc": "2026-10-09T14:23:03.351551+00:00",
+      "wall_seconds": 55.346306799998274,
+      "exit_code": 101,
+      "mutant_sha256": "dc60cdc585360f351b8105f89cac924b7d2f26f5427a3712bed933e7301c57b8",
+      "original_sha256": "0e545dd7136c711a5d121cfb0e72848602d30c6e5ab02b87ffcdc1fb99f85423",
+      "assertion_failure_observed": true,
+      "effective_jobs": 1,
+      "source_scope": "pre-GUI repair source: seven bounded controls",
+      "log_sha256": "2d8b8282d99556fe13533cab9c73a1cc85833130c7b3d4c2f255ca96a1b4006a",
+      "assertion_excerpt": "assertion `left == right` failed"
+    },
+    {
+      "name": "live-cache-barrier-omitted",
+      "path": "rust/crates/bello-agent-app/src/sidebar_search_controller.rs",
+      "test_filter": "live_cache_barrier_suppresses_existing_hits_until_cleanup",
+      "started_utc": "2026-10-09T14:23:03.352856+00:00",
+      "finished_utc": "2026-10-09T14:24:00.026469+00:00",
+      "wall_seconds": 56.67362241099181,
+      "exit_code": 101,
+      "mutant_sha256": "544592c04a8e0f75a0ffab25d5fec1cd90b6626d674ef1c439716031b3c6ac60",
+      "original_sha256": "0e545dd7136c711a5d121cfb0e72848602d30c6e5ab02b87ffcdc1fb99f85423",
+      "assertion_failure_observed": true,
+      "effective_jobs": 1,
+      "source_scope": "pre-GUI repair source: seven bounded controls",
+      "log_sha256": "55f55f3b221326b01e2fb3c5313cb781d13eab4445e14e945b8ebbf9135184a7",
+      "assertion_excerpt": "live barrier must override copied readiness"
+    },
+    {
+      "name": "pending-hold-credit-erased",
+      "path": "rust/crates/bello-agent-app/src/sidebar_search_controller.rs",
+      "test_filter": "first_unopened_reveal_survives_selection_write_and_held_reconciliation",
+      "started_utc": "2026-10-09T14:42:02.487326+00:00",
+      "finished_utc": "2026-10-09T14:43:08.792324+00:00",
+      "wall_seconds": 66.3050045449927,
+      "exit_code": 101,
+      "mutant_sha256": "6159058db1d03768ffeccb690716ff561b40e2c86391c8f3a8f685dab65a6ad5",
+      "original_sha256": "1b2daa196ba489cec2ac7975e23f3daf84281334bf8969dc79c04ac560123878",
+      "assertion_failure_observed": true,
+      "effective_jobs": 1,
+      "source_scope": "v2 source: two killed, one genuine survivor retained",
+      "log_sha256": "e72bebf190f3879d4af00c428b0f8674224a138c886d2450da943812bd407173",
+      "assertion_excerpt": "assertion failed: view.sidebar_content_hit(&loaded).is_some()"
+    },
+    {
+      "name": "installation-consumes-navigation",
+      "path": "rust/crates/bello-agent-app/src/sidebar_search_reveal.rs",
+      "test_filter": "metadata_before_geometry_preserves_original_navigation_until_landing",
+      "started_utc": "2026-10-09T14:43:08.793460+00:00",
+      "finished_utc": "2026-10-09T14:44:06.195604+00:00",
+      "wall_seconds": 57.40215225699649,
+      "exit_code": 101,
+      "mutant_sha256": "0c3fea2326b536fdfa3f9c5d818200b3b3b8adfdbfbd21d57027c20dc301301d",
+      "original_sha256": "579b2d9d175608056b47ea31ed35635018c4bcc48e81d203eee0304f0754dba4",
+      "assertion_failure_observed": true,
+      "effective_jobs": 1,
+      "source_scope": "v2 source: two killed, one genuine survivor retained",
+      "log_sha256": "632990caf471adc40607326bc618334ea6a9142535bf08b6087ce7f52e3af92f",
+      "assertion_excerpt": "uncompleted original action remains eligible"
+    },
+    {
+      "name": "completed-decoration-renavigates",
+      "path": "rust/crates/bello-agent-app/src/sidebar_search_reveal.rs",
+      "test_filter": "first_unopened_reveal_survives_selection_write_and_held_reconciliation",
+      "started_utc": "2026-10-09T14:44:06.196995+00:00",
+      "finished_utc": "2026-10-09T14:45:04.931008+00:00",
+      "wall_seconds": 58.734018093004124,
+      "exit_code": 0,
+      "mutant_sha256": "a971e8c74206be48e946924d54522144453c11444d1374ed22df8a1b78c89a7f",
+      "original_sha256": "579b2d9d175608056b47ea31ed35635018c4bcc48e81d203eee0304f0754dba4",
+      "assertion_failure_observed": false,
+      "effective_jobs": 1,
+      "source_scope": "v2 source: two killed, one genuine survivor retained",
+      "log_sha256": "17711e065bb8ce08c3e6deeee15d3f4ff5d8032b391aec3c6128d18033e84c56",
+      "assertion_excerpt": null
+    },
+    {
+      "name": "completed-decoration-renavigates",
+      "path": "rust/crates/bello-agent-app/src/sidebar_search_reveal.rs",
+      "test_filter": "first_unopened_reveal_survives_selection_write_and_held_reconciliation",
+      "started_utc": "2026-10-09T15:05:27.840804+00:00",
+      "finished_utc": "2026-10-09T15:06:30.212429+00:00",
+      "wall_seconds": 62.371626684005605,
+      "exit_code": 101,
+      "mutant_sha256": "86ce00d52fac99bee7576339c3578d7a447b68a845023181a2cccc0972bb40c5",
+      "original_sha256": "b50fe80805caf9be04830ca324a183b3fefdb16d8a1135a9af50fb7e1131579d",
+      "assertion_failure_observed": true,
+      "effective_jobs": 1,
+      "source_scope": "final v3 source: strengthened cancellation and timer-owner controls",
+      "log_sha256": "0b23f12adcd8fa6dbe579d978c1622d46518f7d97a51c5b7475eee205b573b90",
+      "assertion_excerpt": "decoration refresh permanently cancels navigation, even after paint"
+    },
+    {
+      "name": "old-paint-owner-reused",
+      "path": "rust/crates/bello-agent-app/src/sidebar_search_reveal.rs",
+      "test_filter": "metadata_before_geometry_preserves_original_navigation_until_landing",
+      "started_utc": "2026-10-09T15:06:30.213367+00:00",
+      "finished_utc": "2026-10-09T15:07:17.885654+00:00",
+      "wall_seconds": 47.67228547100967,
+      "exit_code": 101,
+      "mutant_sha256": "d56eef3ac5116ec7379af3517335522945952ca5bec0d5001657d3145689e662",
+      "original_sha256": "b50fe80805caf9be04830ca324a183b3fefdb16d8a1135a9af50fb7e1131579d",
+      "assertion_failure_observed": true,
+      "effective_jobs": 1,
+      "source_scope": "final v3 source: strengthened cancellation and timer-owner controls",
+      "log_sha256": "a2d31f40c831c698d9386adfc88acb3164d9f57a47a70b01e75e5b0ff25b5178",
+      "assertion_excerpt": "assertion failed: fresh.measuring.get()"
+    }
+  ],
+  "earlier_failed_phase_receipts": [
+    {
+      "phase": "app-all-r15",
+      "started_utc": "2026-10-09T14:04:03Z",
+      "finished_utc": "2026-10-09T14:05:08Z",
+      "exit_code": 101,
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "bello-agent-app",
+        "--all-features"
+      ],
+      "receipt_sha256": "1b490223715eff3050bb0172eb2ccff307a9cec1c083a0d9eeccdbbc5f6a9343"
+    },
+    {
+      "phase": "app-focused-r11",
+      "started_utc": "2026-10-09T13:56:58Z",
+      "finished_utc": "2026-10-09T13:57:10Z",
+      "exit_code": 101,
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "bello-agent-app",
+        "--all-features",
+        "sidebar_",
+        "--",
+        "--nocapture"
+      ],
+      "receipt_sha256": "1733558597c27d2421c10fad44a4cad41e1fbf0bd802941e3b2199e15881b8d1"
+    },
+    {
+      "phase": "app-focused-r5",
+      "started_utc": "2026-10-09T13:32:28Z",
+      "finished_utc": "2026-10-09T13:33:20Z",
+      "exit_code": 101,
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "bello-agent-app",
+        "--features",
+        "synthetic-authority",
+        "sidebar_search_controller",
+        "--",
+        "--nocapture"
+      ],
+      "receipt_sha256": "de4053054f08e1f5861660f74116ad1cd0cfe316581052b03bad41a942c35f5c"
+    },
+    {
+      "phase": "app-focused-r7",
+      "started_utc": "2026-10-09T13:43:36Z",
+      "finished_utc": "2026-10-09T13:43:59Z",
+      "exit_code": 101,
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "bello-agent-app",
+        "--features",
+        "synthetic-authority",
+        "sidebar_",
+        "--",
+        "--nocapture"
+      ],
+      "receipt_sha256": "436e28b2c3d1ae3c18479c74a087ae591654b0dd2c66e8adcb8cffb2bbc84ad6"
+    },
+    {
+      "phase": "app-focused-r8",
+      "started_utc": "2026-10-09T13:44:12Z",
+      "finished_utc": "2026-10-09T13:44:59Z",
+      "exit_code": 101,
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "bello-agent-app",
+        "--features",
+        "synthetic-authority",
+        "sidebar_",
+        "--",
+        "--nocapture"
+      ],
+      "receipt_sha256": "f45a70fddf4d9131b670813369151606393a94496e4b9fceb26175b9ca8f4ed7"
+    },
+    {
+      "phase": "app-navigation-r28",
+      "started_utc": "2026-10-09T14:37:38Z",
+      "finished_utc": "2026-10-09T14:37:50Z",
+      "exit_code": 101,
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "bello-agent-app",
+        "--features",
+        "synthetic-authority",
+        "sidebar_",
+        "--",
+        "--nocapture"
+      ],
+      "receipt_sha256": "38a6a19c07f65d36354bbb4bdb56c972eb8e36b1f88df07cd5c80c6ff6c70ec5"
+    },
+    {
+      "phase": "app-repair-r24",
+      "started_utc": "2026-10-09T14:31:56Z",
+      "finished_utc": "2026-10-09T14:32:59Z",
+      "exit_code": 101,
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "bello-agent-app",
+        "--features",
+        "synthetic-authority",
+        "sidebar_",
+        "--",
+        "--nocapture"
+      ],
+      "receipt_sha256": "06e1c7410df17c51c09100e51413cecb0c2b06a89a432f61cacef09a5299b71e"
+    },
+    {
+      "phase": "app-strict-default-r21",
+      "started_utc": "2026-10-09T14:10:14Z",
+      "finished_utc": "2026-10-09T14:10:29Z",
+      "exit_code": 101,
+      "argv": [
+        "cargo",
+        "clippy",
+        "-p",
+        "bello-agent-app",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "receipt_sha256": "7d31b2b55f9402431ce5aae959d11b809ae4e66d6aed1a3a51c550e37aa56cd6"
+    },
+    {
+      "phase": "app-strict-r13",
+      "started_utc": "2026-10-09T13:59:11Z",
+      "finished_utc": "2026-10-09T13:59:32Z",
+      "exit_code": 101,
+      "argv": [
+        "cargo",
+        "clippy",
+        "-p",
+        "bello-agent-app",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "receipt_sha256": "462bbf249c6f63a75cfbe621a217d4540ed3a7d5ec504926ffbe983e6041824d"
+    }
+  ],
+  "earlier_attempt_scope": "Historical failures and the surviving control are not final-source passes. Seven original controls predate real GUI repair; final two controls bind v3.",
+  "synthetic_binary_sha256": "98dd555057adcb84528f08743a9e794a31983df9c8821c15f612c3db331d8401",
+  "ordinary_binary_sha256": "299596d2294791ee990118a405896361723fe83ae874656a90a84dd46b621bb0",
+  "gui_process_receipts": [
+    {
+      "run": "20261009T150441",
+      "start_utc": "2026-10-09T15:04:41,956622428+00:00",
+      "end_utc": "2026-10-09T15:09:14,727092744+00:00",
+      "elapsed_seconds": 272.77047,
+      "exit_code": 0,
+      "binary_sha256": "98dd555057adcb84528f08743a9e794a31983df9c8821c15f612c3db331d8401",
+      "scope": "synthetic-feature cloud Linux GUI process lifetime, not benchmark",
+      "inference_seconds": null
+    },
+    {
+      "run": "20261009T150954",
+      "start_utc": "2026-10-09T15:09:54,150255263+00:00",
+      "end_utc": "2026-10-09T15:13:19,254798796+00:00",
+      "elapsed_seconds": 205.104543,
+      "exit_code": 0,
+      "binary_sha256": "98dd555057adcb84528f08743a9e794a31983df9c8821c15f612c3db331d8401",
+      "scope": "synthetic-feature cloud Linux GUI process lifetime, not benchmark",
+      "inference_seconds": null
+    }
+  ],
+  "ordinary_control": {
+    "start_utc": "2026-10-09T15:15:24,953625988+00:00",
+    "end_utc": "2026-10-09T15:16:17,896904986+00:00",
+    "elapsed_seconds": 52.943279,
+    "exit_code": 0,
+    "binary_sha256": "299596d2294791ee990118a405896361723fe83ae874656a90a84dd46b621bb0",
+    "initial_capture_utc": "2026-10-09T15:15:48Z",
+    "first_capture": "painted, no expose/input",
+    "scope": "ordinary default binary; isolated empty pending session startup control",
+    "inference_seconds": null
+  },
+  "ordinary_synthetic_route_rejection": {
+    "start_utc": "2026-10-09T15:15:02.756272+00:00",
+    "end_utc": "2026-10-09T15:15:02.760938+00:00",
+    "elapsed_seconds": 0.004658502992242575,
+    "exit_code": 1,
+    "stdout": "",
+    "stderr": "Error: \"Unknown argument: --synthetic-sidebar-search-fixture\"\n",
+    "binary_sha256": "299596d2294791ee990118a405896361723fe83ae874656a90a84dd46b621bb0",
+    "fixture_created": false,
+    "inference_seconds": null
+  },
+  "storage_full_attempt": {
+    "attempts": [
+      {
+        "run": "20261009T145623",
+        "started_utc": "2026-10-09T14:56:23,265230068+00:00",
+        "finished_utc": "2026-10-09T14:56:23,271909516+00:00",
+        "elapsed_seconds": 0.006679,
+        "exit_code": 1,
+        "outcome": "StorageFull before window creation; interrupted fixture preserved",
+        "binary_sha256": "98dd555057adcb84528f08743a9e794a31983df9c8821c15f612c3db331d8401"
+      }
+    ],
+    "inference_timing": "unavailable"
+  },
+  "independent_review": {
+    "verdict": "No remaining established integration source defect; materialized-history initial paint and remaining acceptance gates stay open",
+    "review_summary_sha256": "176919ee86c054fcbde8c3753a1832c88b7eb999667dc2e70821abdf1c3688d0"
+  },
+  "production_acceptance_records": {
+    "linux": null,
+    "macos": null
+  },
+  "remaining_gates": [
+    "Synthetic/cache-enabled materialized-history initial black frame: post-expose workflow passes do not establish clean synthetic startup; ordinary matched-history initial capture painted, without diagnosing the synthetic cause",
+    "Dedicated independently cancellable concurrent SQL query worker: current query runs on serialized source job",
+    "Native privacy, UI, IME and accessibility acceptance; no production cache activation",
+    "Exact published-commit CI must be checked separately after integration"
+  ],
+  "source_blob_api_timing": {
+    "first_create_started": "2026-10-09T15:08:55.696Z",
+    "last_read_finished": "2026-10-09T15:14:24.947Z",
+    "union_of_observed_api_intervals_seconds": 220.52299976348877,
+    "summed_parallel_request_intervals_seconds": 372.21299862861633,
+    "note": "Intervals include tool/service wait; overlapping requests are not additive elapsed or inference effort",
+    "inference_seconds": null
+  },
+  "inference_seconds": null,
+  "artifact_scope": "Text-only curated evidence. No screenshots, binaries, raw large assertion logs, credentials or real-user fixtures. Added evidence files are outside the 49-leaf compiled-source seal.",
+  "ordinary_matched_history_controls": {
+    "binary_sha256": "299596d2294791ee990118a405896361723fe83ae874656a90a84dd46b621bb0",
+    "source_fixture_unchanged": true,
+    "runs": [
+      {
+        "run": "20261009T151830",
+        "start_utc": "2026-10-09T15:18:30,737095387+00:00",
+        "end_utc": "2026-10-09T15:19:51,604971606+00:00",
+        "elapsed_seconds": 80.867876,
+        "exit_code": 0,
+        "result": "incomplete-copy checkpoint unavailable; not matched workload",
+        "inference_seconds": null
+      },
+      {
+        "run": "20261009T152036",
+        "start_utc": "2026-10-09T15:20:36,799522625+00:00",
+        "end_utc": "2026-10-09T15:21:23,047126016+00:00",
+        "elapsed_seconds": 46.247604,
+        "exit_code": 0,
+        "result": "painted initial capture with actual selected101 transcript; ordinary content-search gate visibly closed",
+        "inference_seconds": null
+      }
+    ]
+  }
+}

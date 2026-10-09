@@ -434,6 +434,10 @@ impl AgentView {
     }
     pub(crate) fn observe_catalog_uncertainty(&mut self, uncertain: bool, cx: &mut Context<Self>) {
         if uncertain {
+            self.sidebar_search.block_all();
+            self.sidebar_search_reveal = None;
+        }
+        if uncertain {
             let changed = !self.known_catalog_uncertainty;
             let blocked_before = self.blocked_organization_count;
             self.known_catalog_uncertainty = true;

@@ -862,7 +862,7 @@ impl TranscriptView {
         cx: &mut Context<Self>,
     ) {
         let mut editors = self.tool_editors.borrow_mut();
-        if find.is_none() {
+        if find.is_none() && editors.sidebar.is_none() {
             self.viewport.borrow_mut().reveal = None;
             for entry in editors.entries.values_mut() {
                 entry.editor.update(cx, |e, cx| {
@@ -881,15 +881,77 @@ impl TranscriptView {
         navigate: bool,
         cx: &mut Context<Self>,
     ) -> bool {
+        self.reveal_paint(input, find, navigate, false, cx)
+    }
+    pub(crate) fn reveal_sidebar(
+        &mut self,
+        input: TranscriptInput,
+        paint: Rc<crate::transcript_find_presentation::FindPaint>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.reveal_paint(input, paint, true, true, cx)
+    }
+    #[cfg(all(test, target_os = "linux", feature = "synthetic-authority"))]
+    pub(crate) fn sidebar_decoration_current(&self) -> bool {
+        self.tool_editors
+            .borrow()
+            .sidebar
+            .as_ref()
+            .is_some_and(|paint| {
+                paint.matches_binding(self.presentation.input.find_binding.as_ref())
+            })
+    }
+    pub(crate) fn sidebar_decoration_owned(&self, owner: uuid::Uuid) -> bool {
+        self.tool_editors
+            .borrow()
+            .sidebar
+            .as_ref()
+            .is_some_and(|paint| {
+                paint.owner == owner
+                    && paint.matches_binding(self.presentation.input.find_binding.as_ref())
+            })
+    }
+    pub(crate) fn decorate_sidebar(
+        &mut self,
+        input: TranscriptInput,
+        paint: Rc<crate::transcript_find_presentation::FindPaint>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if let Some(destination) = &paint.destination {
+            destination.navigation.cancel();
+        }
+        paint.landed.set(true);
+        self.reveal_paint(input, paint, false, true, cx)
+    }
+    fn reveal_paint(
+        &mut self,
+        input: TranscriptInput,
+        find: Rc<crate::transcript_find_presentation::FindPaint>,
+        navigate: bool,
+        sidebar: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let target = find.destination.as_ref().map(|d| d.found.id.clone());
+        let input_target = find.sidebar_input().cloned();
         self.update_inputs(input, cx);
-        if !navigate && let Some(old) = &self.tool_editors.borrow().find {
+        if !navigate
+            && !sidebar
+            && let Some(old) = &self.tool_editors.borrow().find
+        {
             find.landed.set(old.landed.get());
             find.confirmed.set(old.confirmed.get());
             #[cfg(test)]
             find.confirmed_geometry.set(old.confirmed_geometry.get());
         }
-        self.set_find(Some(find), cx);
+        if sidebar {
+            self.tool_editors.borrow_mut().sidebar = Some(find);
+            self.rearm_find_geometry(cx);
+        } else {
+            if navigate {
+                self.tool_editors.borrow_mut().sidebar = None;
+            }
+            self.set_find(Some(find), cx);
+        }
         if !navigate {
             return true;
         }
@@ -919,8 +981,19 @@ impl TranscriptView {
             return false;
         };
         let Some(row) = self.presentation.rows.iter().find(|r| {
-            r.projected.and_then(|p| p.result()) == Some(source)
-                || (r.message_index == Some(source)
+            input_target.as_ref().is_some_and(|hit| match r.projected {
+                Some(ProjectedRow::Call {
+                    assistant, call, ..
+                }) => {
+                    let session = &self.presentation.input.session;
+                    let tool = tool_presentation::call_at(session, assistant, call);
+                    session.messages[assistant].id == hit.key().message_id
+                        && hit.key().call_id.as_deref() == Some(tool.id.as_str())
+                }
+                _ => false,
+            }) || (input_target.is_none() && r.projected.and_then(|p| p.result()) == Some(source))
+                || (input_target.is_none()
+                    && r.message_index == Some(source)
                     && matches!(r.projected, Some(ProjectedRow::Message(_))))
         }) else {
             return false;
@@ -949,11 +1022,14 @@ impl TranscriptView {
         line_height: Pixels,
         cx: &mut Context<Self>,
     ) {
+        if !find.matches_binding(self.presentation.input.find_binding.as_ref()) {
+            return;
+        }
         if !find.navigating()
             || !self
                 .tool_editors
                 .borrow()
-                .find
+                .active_find()
                 .as_ref()
                 .is_some_and(|own| Rc::ptr_eq(own, find))
         {
@@ -986,6 +1062,7 @@ impl TranscriptView {
             (bounds.size.height / 3.).min((bounds.size.height - visible_height).max(px(0.)) / 2.);
         let confirm = || {
             find.landed.set(true);
+            find.complete_navigation();
             find.confirmed.set(true);
             #[cfg(test)]
             find.confirmed_geometry.set(Some(Bounds {
@@ -1035,6 +1112,39 @@ impl TranscriptView {
         // and require another fresh painted receipt at the resulting origin.
         self.rearm_find_geometry(cx);
     }
+    fn invalidate_sidebar_geometry(&self, cx: &mut Context<Self>) {
+        if let Some(paint) = self.tool_editors.borrow().sidebar.clone() {
+            paint.confirmed.set(false);
+            paint.landed.set(false);
+            paint.measuring.set(false);
+            paint.attempts.set(0);
+            *paint.host_geometry.borrow_mut() = None;
+            paint.layouts.borrow_mut().clear();
+            for entry in self.tool_editors.borrow().entries.values() {
+                entry.editor.update(cx, |editor, cx| {
+                    editor.cancel_presentation_reveal(paint.serial, cx);
+                    editor.invalidate_presentation_geometry(cx);
+                });
+            }
+        }
+        self.rearm_find_geometry(cx);
+    }
+    pub(crate) fn finish_sidebar_wait(
+        &mut self,
+        owner: uuid::Uuid,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(paint) = self
+            .tool_editors
+            .borrow()
+            .sidebar
+            .clone()
+            .filter(|paint| paint.owner == owner)
+        else {
+            return false;
+        };
+        self.finish_paint_wait(paint, cx).is_some()
+    }
     fn rearm_find_geometry(&self, cx: &mut Context<Self>) {
         for entry in self.tool_editors.borrow_mut().entries.values_mut() {
             entry.find_installed = None;
@@ -1046,7 +1156,13 @@ impl TranscriptView {
     }
     pub(crate) fn cancel_find_navigation(&mut self, cx: &mut Context<Self>) {
         self.viewport.borrow_mut().reveal = None;
-        if let Some(find) = self.tool_editors.borrow().find.clone() {
+        if let Some(sidebar) = &self.tool_editors.borrow().sidebar {
+            sidebar.landed.set(true);
+            if let Some(destination) = &sidebar.destination {
+                destination.navigation.cancel();
+            }
+        }
+        if let Some(find) = self.tool_editors.borrow().active_find() {
             find.measuring.set(false);
             for entry in self.tool_editors.borrow().entries.values() {
                 entry
@@ -1061,19 +1177,57 @@ impl TranscriptView {
         cx: &mut Context<Self>,
     ) -> Option<crate::transcript_find_state::Destination> {
         let find = self.tool_editors.borrow().find.clone()?;
-        if find.serial != serial || !find.active_navigation() {
+        if find.serial != serial {
             return None;
         }
+        self.finish_paint_wait(find, cx)
+    }
+    fn finish_paint_wait(
+        &mut self,
+        find: Rc<crate::transcript_find_presentation::FindPaint>,
+        cx: &mut Context<Self>,
+    ) -> Option<crate::transcript_find_state::Destination> {
+        if !find.active_navigation()
+            || !find.matches_binding(self.presentation.input.find_binding.as_ref())
+        {
+            return None;
+        }
+        let serial = find.serial;
         find.landed.set(true);
+        find.complete_navigation();
         find.measuring.set(false);
-        for entry in self.tool_editors.borrow().entries.values() {
-            entry
-                .editor
-                .update(cx, |e, cx| e.cancel_presentation_reveal(serial, cx));
+        if self
+            .tool_editors
+            .borrow()
+            .active_find()
+            .is_some_and(|active| Rc::ptr_eq(&active, &find))
+        {
+            for entry in self.tool_editors.borrow().entries.values() {
+                entry
+                    .editor
+                    .update(cx, |e, cx| e.cancel_presentation_reveal(serial, cx));
+            }
         }
         find.destination.clone()
     }
+    pub(crate) fn clear_sidebar_search(&mut self, cx: &mut Context<Self>) {
+        let Some(paint) = self.tool_editors.borrow_mut().sidebar.take() else {
+            return;
+        };
+        paint.landed.set(true);
+        paint.measuring.set(false);
+        for entry in self.tool_editors.borrow_mut().entries.values_mut() {
+            entry.find_installed = None;
+            entry.editor.update(cx, |editor, cx| {
+                editor.cancel_presentation_reveal(paint.serial, cx);
+                let _ = editor.set_text_presentation(None, cx);
+            });
+        }
+        self.viewport.borrow_mut().reveal = None;
+        cx.notify();
+    }
     pub(crate) fn clear_content_reveal(&mut self) {
+        self.tool_editors.borrow_mut().sidebar = None;
         self.viewport.borrow_mut().reveal = None;
     }
 
@@ -1121,6 +1275,15 @@ impl TranscriptView {
     }
 
     pub(crate) fn update_inputs(&mut self, input: TranscriptInput, cx: &mut Context<Self>) {
+        if self
+            .tool_editors
+            .borrow()
+            .sidebar
+            .as_ref()
+            .is_some_and(|paint| !paint.matches_binding(input.find_binding.as_ref()))
+        {
+            self.clear_sidebar_search(cx);
+        }
         let old = &self.presentation.input;
         if Weak::ptr_eq(&old.controller, &input.controller)
             && old.chat_id == input.chat_id
@@ -1221,6 +1384,7 @@ impl TranscriptView {
             &self.collapsed,
             &self.expanded_reads,
         ));
+        self.invalidate_sidebar_geometry(cx);
         cx.notify();
     }
 
@@ -1282,6 +1446,7 @@ impl TranscriptView {
             &self.collapsed,
             &self.expanded_reads,
         ));
+        self.invalidate_sidebar_geometry(cx);
         cx.notify();
     }
 
@@ -1362,6 +1527,35 @@ impl TranscriptView {
         } else {
             false
         }
+    }
+
+    #[cfg(all(test, target_os = "linux", feature = "synthetic-authority"))]
+    pub(crate) fn sidebar_paint(
+        &self,
+    ) -> Option<Rc<crate::transcript_find_presentation::FindPaint>> {
+        self.tool_editors.borrow().sidebar.clone()
+    }
+    #[cfg(all(test, target_os = "linux", feature = "synthetic-authority"))]
+    pub(crate) fn toggle_first_tool_for_test(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let row = self
+            .presentation
+            .rows
+            .iter()
+            .find(|row| {
+                matches!(
+                    row.projected,
+                    Some(ProjectedRow::Call { .. } | ProjectedRow::Result(_))
+                )
+            })
+            .expect("tool fixture row");
+        let key = row.key.clone();
+        let chat = self.presentation.input.chat_id.clone();
+        let controller = self.presentation.input.controller.clone();
+        self.toggle_tool(key, &chat, &controller, window, cx);
     }
 
     #[cfg(test)]
@@ -1626,7 +1820,7 @@ impl Element for ViewportList {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
-        let current_find = self.tool_editors.borrow().find.clone();
+        let current_find = self.tool_editors.borrow().active_find();
         if let Some(find) = current_find {
             find.layouts.borrow_mut().clear();
             let changed = self.viewport.borrow().list.viewport_bounds() != bounds;
@@ -1861,7 +2055,7 @@ impl Element for ViewportList {
         });
         self.list
             .paint(id, inspector_id, bounds, state, &mut prepaint.0, window, cx);
-        if let Some(find) = self.tool_editors.borrow().find.clone()
+        if let Some(find) = self.tool_editors.borrow().active_find()
             && find.navigating()
         {
             if find.measuring.get()
@@ -1931,13 +2125,46 @@ impl Element for ViewportList {
                 });
             }
         }
-        if let Some(find) = self.tool_editors.borrow().find.clone()
+        if let Some(find) = self.tool_editors.borrow().active_find()
             && let Some(notice) = find.notice.borrow_mut().take()
             && let Some(destination) = find.destination.clone()
         {
             let parent = self.parent.clone();
+            let sidebar = self
+                .tool_editors
+                .borrow()
+                .sidebar
+                .as_ref()
+                .is_some_and(|paint| Rc::ptr_eq(paint, &find));
+            let notice_find = find.clone();
             window.defer(cx, move |_, cx| {
-                let _ = parent.update(cx, |v, cx| v.find_landing_notice(&destination, notice, cx));
+                let _ = parent.update(cx, |v, cx| {
+                    if sidebar {
+                        if v.sidebar_search_scope_blocked()
+                            || !v.sidebar_search.cache_ready()
+                            || v.filter.read(cx).text() != v.sidebar_search.query
+                            || v.filter.read(cx).has_marked_text()
+                            || !v.transcript.as_ref().is_some_and(|transcript| {
+                                let transcript = transcript.read(cx);
+                                transcript
+                                    .tool_editors
+                                    .borrow()
+                                    .sidebar
+                                    .as_ref()
+                                    .is_some_and(|current| Rc::ptr_eq(current, &notice_find))
+                                    && notice_find.matches_binding(
+                                        transcript.presentation.input.find_binding.as_ref(),
+                                    )
+                            })
+                        {
+                            return;
+                        }
+                        v.error = Some(notice);
+                        cx.notify();
+                    } else {
+                        v.find_landing_notice(&destination, notice, cx);
+                    }
+                });
             });
         }
         let list = self.viewport.borrow().list.clone();
@@ -2227,7 +2454,8 @@ fn render_row(
                                 crate::composer_attachments::message_label(message).into_owned();
                             if !ambiguous
                                 && text == message.text
-                                && let Some(find) = &tool_editors.borrow().find
+                                && let Some(find) = tool_editors.borrow().active_find()
+                                && find.prose_target(&message.id)
                                 && find.matches_binding(input.find_binding.as_ref())
                                 && find.scope_matches(message)
                             {
@@ -2313,6 +2541,7 @@ fn render_row(
 const TOOL_EDITOR_LIMIT: usize = 64;
 #[derive(Default)]
 struct ToolEditors {
+    sidebar: Option<Rc<crate::transcript_find_presentation::FindPaint>>,
     find: Option<Rc<crate::transcript_find_presentation::FindPaint>>,
     entries: HashMap<(RowKey, &'static str), ToolEditor>,
     edit_previews: edit_presentation::EditCache,
@@ -2331,6 +2560,9 @@ struct ToolEditorStyle {
     failed: bool,
 }
 impl ToolEditors {
+    fn active_find(&self) -> Option<Rc<crate::transcript_find_presentation::FindPaint>> {
+        self.sidebar.clone().or_else(|| self.find.clone())
+    }
     fn section(
         &mut self,
         key: (usize, RowKey, &'static str),
@@ -2416,6 +2648,51 @@ fn find_host_geometry_current(
         && viewport.list.bounds_for_item(index) == row
 }
 
+fn sidebar_input_matches(
+    presentation: &Presentation,
+    index: usize,
+    hit: &bello_agent_core::sidebar_search::OwnedHit,
+) -> bool {
+    match presentation.rows[index].projected {
+        Some(ProjectedRow::Call {
+            assistant, call, ..
+        }) => {
+            let session = &presentation.input.session;
+            session.messages[assistant].id == hit.key().message_id
+                && hit.key().call_id.as_deref()
+                    == Some(
+                        tool_presentation::call_at(session, assistant, call)
+                            .id
+                            .as_str(),
+                    )
+        }
+        _ => false,
+    }
+}
+fn sidebar_input_span(
+    shown: Option<&str>,
+    range: &std::ops::Range<usize>,
+    canonical: bool,
+) -> Result<std::ops::Range<usize>, &'static str> {
+    let Some(shown) = shown else {
+        return Err("This card omits the retained input preview; showing its owning card.");
+    };
+    if !canonical {
+        return Err(
+            "This card transforms its input preview; showing the owning card rather than an invented character range.",
+        );
+    }
+    if range.start <= range.end
+        && range.end <= shown.len()
+        && shown.is_char_boundary(range.start)
+        && shown.is_char_boundary(range.end)
+    {
+        Ok(range.clone())
+    } else {
+        Err("The input match is outside this card’s displayed preview; showing its owning card.")
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn decorate_find_tool(
     presentation: &Presentation,
@@ -2423,13 +2700,14 @@ fn decorate_find_tool(
     label: &'static str,
     shown: &str,
     numbered: Option<usize>,
+    canonical_input: bool,
     editor: &Entity<EditorView>,
     editors: &Rc<RefCell<ToolEditors>>,
     child: &WeakEntity<TranscriptView>,
     window: &mut Window,
     cx: &mut App,
 ) {
-    let find = editors.borrow().find.clone();
+    let find = editors.borrow().active_find();
     let Some(find) = find else {
         return;
     };
@@ -2469,6 +2747,18 @@ fn decorate_find_tool(
     }
     let mut selected = None;
     let mut decorations = vec![];
+    if label == "IN"
+        && let Some(hit) = find.sidebar_input()
+        && sidebar_input_matches(presentation, index, hit)
+        && let bello_agent_core::sidebar_search::projection::SourceTarget::ToolInput(range) =
+            hit.target()
+    {
+        match sidebar_input_span(Some(shown), range, canonical_input) {
+            Ok(range) => selected = Some(range),
+            Err(notice) => *find.notice.borrow_mut() = Some(notice.into()),
+        }
+    }
+
     if label == "OUT"
         && let Some(source) = source
         && let Some(ranges) = find.ranges(&source.id)
@@ -2551,6 +2841,7 @@ fn decorate_find_tool(
         }
         if find.attempts.get() >= 3 {
             find.landed.set(true);
+            find.complete_navigation();
             *find.notice.borrow_mut() = Some("The preview kept changing during navigation; showing its row. Choose the match again to retry.".into());
             return;
         }
@@ -2580,7 +2871,7 @@ fn decorate_find_tool(
                             let current = view
                                 .tool_editors
                                 .borrow()
-                                .find
+                                .active_find()
                                 .as_ref()
                                 .is_some_and(|f| Rc::ptr_eq(f, &callback_find));
                             if !current || !callback_find.navigating() {
@@ -2635,6 +2926,7 @@ fn decorate_find_tool(
         if let Err(error) = result {
             find.measuring.set(false);
             find.landed.set(true);
+            find.complete_navigation();
             *find.notice.borrow_mut() = Some(format!(
                 "Couldn’t reveal this preview: {error:?}. Showing its row."
             ));
@@ -2726,8 +3018,22 @@ fn render_tool_card(
                         .gap(px(3.))
                         .child(
                             div().text_size(px(12.)).text_color(rgb(p.ink)).child(
-                                edit_presentation::title(session, projected)
-                                    .unwrap_or_else(|| name.clone()),
+                                {
+                                    let shown = edit_presentation::title(session, projected).unwrap_or_else(|| name.clone());
+                                    let sidebar = editors.borrow().active_find();
+                                    if let Some(paint) = sidebar
+                                        && paint.matches_binding(presentation.input.find_binding.as_ref())
+                                        && let Some(hit) = paint.sidebar_input()
+                                        && sidebar_input_matches(presentation, index, hit)
+                                        && matches!(hit.target(), bello_agent_core::sidebar_search::projection::SourceTarget::ToolName(_)) {
+                                        if shown == name {
+                                            paint.prose(&hit.key().message_id, shown, index).into_any_element()
+                                        } else {
+                                            *paint.notice.borrow_mut() = Some("This card transforms the tool name; showing its owning card.".into());
+                                            shown.into_any_element()
+                                        }
+                                    } else { shown.into_any_element() }
+                                },
                             ),
                         )
                         .child(
@@ -2801,6 +3107,17 @@ fn render_tool_card(
     if read_window.is_some() {
         input = None;
     }
+    if input.is_none()
+        && let Some(paint) = editors.borrow().active_find()
+        && let Some(hit) = paint.sidebar_input()
+        && sidebar_input_matches(presentation, index, hit)
+        && let bello_agent_core::sidebar_search::projection::SourceTarget::ToolInput(range) =
+            hit.target()
+        && let Err(notice) = sidebar_input_span(None, range, true)
+    {
+        *paint.notice.borrow_mut() = Some(notice.into());
+    }
+
     let read_link = read_presentation::file_link(session, projected)
         .or_else(|| edit_presentation::file_link(session, projected));
     let output = shown_output
@@ -2910,6 +3227,7 @@ fn render_tool_card(
             label,
             &preview.text,
             read_window.as_ref().map(|r| r.first_line),
+            edit_preview.is_none() && read_window.is_none(),
             &editor,
             editors,
             child,
@@ -3046,4 +3364,36 @@ fn render_tool_card(
         );
     }
     card
+}
+
+#[cfg(test)]
+mod sidebar_preview_tests {
+    use super::sidebar_input_span;
+    #[test]
+    fn exact_input_mapping_rejects_transformed_omitted_and_truncated_previews() {
+        assert_eq!(
+            sidebar_input_span(Some("日本 needle"), &(7..13), true),
+            Ok(7..13)
+        );
+        assert!(
+            sidebar_input_span(Some("日本 needle"), &(1..4), true)
+                .unwrap_err()
+                .contains("outside")
+        );
+        assert!(
+            sidebar_input_span(Some("needle"), &(0..6), false)
+                .unwrap_err()
+                .contains("transforms")
+        );
+        assert!(
+            sidebar_input_span(None, &(0..6), true)
+                .unwrap_err()
+                .contains("omits")
+        );
+        assert!(
+            sidebar_input_span(Some("nee"), &(0..6), true)
+                .unwrap_err()
+                .contains("outside")
+        );
+    }
 }

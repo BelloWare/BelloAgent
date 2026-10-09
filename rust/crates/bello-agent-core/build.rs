@@ -19,6 +19,7 @@ fn run(program: &str, arguments: &[&str]) -> String {
 }
 
 fn main() {
+    private_sqlite_build_gate();
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=native/source_utf8.swift");
     // This precedes all Apple environment/path discovery, including OUT_DIR.
@@ -144,4 +145,89 @@ fn main() {
         serde_json::to_vec_pretty(&record).unwrap(),
     )
     .expect("write source UTF-8 build identity");
+}
+
+/// Cargo does not discover a manifest's configuration when invoked from an
+/// unrelated working directory. Refuse that unsupported build instead of silently
+/// compiling a spill-capable library. Use --config <repo>/.cargo/config.toml there.
+fn private_sqlite_build_gate() {
+    const FLAGS: &str = "-DSQLITE_STMTJRNL_SPILL=-1 -DSQLITE_TEMP_STORE=3";
+    println!("cargo:rerun-if-env-changed=LIBSQLITE3_FLAGS");
+    assert_eq!(
+        env::var("LIBSQLITE3_FLAGS").as_deref(),
+        Ok(FLAGS),
+        "private search requires the checked-in Cargo no-spill configuration"
+    );
+    for name in [
+        "LIBSQLITE3_SYS_USE_PKG_CONFIG",
+        "LIBSQLITE3_SYS_BUNDLING",
+        "SQLITE_MAX_VARIABLE_NUMBER",
+        "SQLITE_MAX_EXPR_DEPTH",
+        "SQLITE_MAX_COLUMN",
+        "SQLITE3_LIB_DIR",
+        "SQLITE3_INCLUDE_DIR",
+        "SQLITE3_STATIC",
+        "SQLCIPHER_LIB_DIR",
+        "SQLCIPHER_INCLUDE_DIR",
+        "SQLCIPHER_STATIC",
+    ] {
+        println!("cargo:rerun-if-env-changed={name}");
+        assert!(
+            env::var_os(name).is_none(),
+            "private search rejects SQLite linkage overrides"
+        );
+    }
+    // cc accepts target-specific CFLAGS as well as the generic spellings. Reject
+    // external C preprocessor overrides (including an unreported SHM directory).
+    // Compiler/sysroot selection remains supported through CC, SDKROOT and the
+    // documented build environment; flags inside reviewed build.rs are unchanged.
+    let mut names = vec![
+        "CFLAGS".to_owned(),
+        "CPPFLAGS".to_owned(),
+        "HOST_CFLAGS".to_owned(),
+        "TARGET_CFLAGS".to_owned(),
+    ];
+    for key in ["HOST", "TARGET"] {
+        if let Ok(target) = env::var(key) {
+            names.push(format!("CFLAGS_{target}"));
+            names.push(format!("CFLAGS_{}", target.replace('-', "_")));
+        }
+    }
+    for name in names {
+        println!("cargo:rerun-if-env-changed={name}");
+        assert!(
+            env::var_os(&name).is_none_or(|value| value.is_empty()),
+            "private search rejects external CFLAGS/CPPFLAGS overrides"
+        );
+    }
+    let mut compilers = vec![
+        "CC".to_owned(),
+        "HOST_CC".to_owned(),
+        "TARGET_CC".to_owned(),
+    ];
+    for key in ["HOST", "TARGET"] {
+        if let Ok(target) = env::var(key) {
+            compilers.push(format!("CC_{target}"));
+            compilers.push(format!("CC_{}", target.replace('-', "_")));
+        }
+    }
+    for name in compilers {
+        println!("cargo:rerun-if-env-changed={name}");
+        if let Some(value) = env::var_os(&name) {
+            let plain = value.to_str().is_some_and(|value| {
+                !value.is_empty()
+                    && !value.chars().any(char::is_whitespace)
+                    && !value.starts_with('-')
+            });
+            assert!(
+                plain || std::path::Path::new(&value).is_file(),
+                "private search requires a plain compiler name/path without embedded flags"
+            );
+        }
+    }
+    println!("cargo:rerun-if-env-changed=CC_KNOWN_WRAPPER_CUSTOM");
+    assert!(
+        env::var_os("CC_KNOWN_WRAPPER_CUSTOM").is_none(),
+        "private search rejects unreviewed custom C compiler wrappers"
+    );
 }

@@ -16,7 +16,7 @@ impl Ticket {
     fn new() -> Self {
         Self(Arc::new(AtomicBool::new(false)))
     }
-    fn cancel(&self) {
+    pub(crate) fn cancel(&self) {
         self.0.store(true, Ordering::Release);
     }
     pub(crate) fn cancellation(&self) -> &AtomicBool {
@@ -335,3 +335,13 @@ impl Drop for FindState {
 #[cfg(test)]
 #[path = "transcript_find_state_tests.rs"]
 mod tests;
+
+impl Destination {
+    pub(crate) fn sidebar(found: Match) -> Self {
+        Self {
+            search: Ticket::new(),
+            navigation: Ticket::new(),
+            found,
+        }
+    }
+}

@@ -54,6 +54,13 @@ jobs:
       - name: Run pure domain and filesystem tests
         # No GPUI application launch, permissions, keychain, capture or updater actions.
         run: cargo test --locked -p bello-agent-core
+      - name: Verify pinned sidebar SQLite and synthetic privacy fixtures
+        # Owned temporary fixtures only. Production cache readiness stays closed.
+        # The macOS run exercises native ACL/VFS code, not TCC or GUI acceptance.
+        run: |
+          cargo fetch --locked
+          python3 scripts/check-sidebar-sqlite.py --all-features
+          cargo test --locked -p bello-agent-core --all-features sidebar_search::cache:: -- --nocapture
       - name: Retain project skill source and Darwin alias characterization
         # Generated fixtures only; exact matrix plus separately labeled alias gap.
         run: cargo test --locked -p bello-agent-core --test project_skills_native -- --nocapture

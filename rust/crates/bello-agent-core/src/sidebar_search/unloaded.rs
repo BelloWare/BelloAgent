@@ -54,6 +54,20 @@ impl CoordinatedInspection<'_> {
     /// inspect_observed on the exact work member. Final closure follows CPU work
     /// while the cooperating writer lock and exclusive parse permit remain held.
     pub fn prepare_search(&self, work: &SearchWork) -> Result<UnloadedObserved, SearchError> {
+        self.prepare_search_impl(work, None)
+    }
+    pub fn prepare_search_with_cache(
+        &self,
+        work: &SearchWork,
+        cache: &mut super::cache::Replacement<'_>,
+    ) -> Result<UnloadedObserved, SearchError> {
+        self.prepare_search_impl(work, Some(cache))
+    }
+    fn prepare_search_impl(
+        &self,
+        work: &SearchWork,
+        cache: Option<&mut super::cache::Replacement<'_>>,
+    ) -> Result<UnloadedObserved, SearchError> {
         work.require_unloaded()?;
         if !self.matches_search_work(work) {
             return Err(SearchError::WrongRequest);
@@ -69,9 +83,12 @@ impl CoordinatedInspection<'_> {
             self.cancellation(),
             work.cancellation(),
         );
-        let (content_digest, outcome) =
-            work.request
-                .project(self.snapshot(), ActivePolicy::ObservedRetained, &cancel)?;
+        let (content_digest, outcome) = work.request.project_with_cache(
+            self.snapshot(),
+            ActivePolicy::ObservedRetained,
+            &cancel,
+            cache,
+        )?;
         #[cfg(test)]
         crate::inspection::observation_hook("projection");
         let source = self.observed_source().map_err(observation_error)?;

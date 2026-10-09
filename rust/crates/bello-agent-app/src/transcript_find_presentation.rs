@@ -23,6 +23,7 @@ pub(crate) struct Ranges {
     pub numbered: Arc<crate::transcript_find_numbered::NumberedPreviewMap>,
     pub role: String,
     pub tool_owner: Option<(String, String)>,
+    pub sidebar_input: Option<bello_agent_core::sidebar_search::OwnedHit>,
 }
 #[derive(Clone, Copy)]
 pub(crate) struct HostGeometry {
@@ -37,6 +38,7 @@ pub(crate) struct FindPaint {
     pub owner: uuid::Uuid,
     lifetime_cancel: Arc<AtomicBool>,
     pub landed: Cell<bool>,
+    sidebar_navigation_completed: Option<Rc<Cell<bool>>>,
     pub confirmed: Cell<bool>,
     #[cfg(test)]
     pub confirmed_geometry: Cell<Option<Bounds<Pixels>>>,
@@ -46,6 +48,8 @@ pub(crate) struct FindPaint {
     pub host_geometry: RefCell<Option<HostGeometry>>,
     pub layouts: RefCell<Vec<(usize, TextLayout, Range<usize>)>>,
     source: bello_agent_core::retained_find::FindSnapshot,
+    sidebar_admission: Option<Arc<bello_agent_core::sidebar_search::SearchAdmissionSlot>>,
+    sidebar_ui_admission: Option<crate::sidebar_search_controller::RevealAdmission>,
     prepared: HashMap<String, Ranges>,
 }
 pub(crate) struct Prepared {
@@ -146,6 +150,7 @@ pub(crate) fn prepare(
                     }
                     _ => None,
                 },
+                sidebar_input: None,
                 selected,
                 limited,
                 total: page.total,
@@ -174,6 +179,7 @@ impl FindPaint {
             owner,
             lifetime_cancel,
             landed: Cell::new(false),
+            sidebar_navigation_completed: None,
             confirmed: Cell::new(false),
             #[cfg(test)]
             confirmed_geometry: Cell::new(None),
@@ -183,6 +189,8 @@ impl FindPaint {
             host_geometry: RefCell::new(None),
             layouts: RefCell::new(vec![]),
             source: prepared.source,
+            sidebar_admission: None,
+            sidebar_ui_admission: None,
             prepared: prepared.ranges,
         })
     }
@@ -191,7 +199,22 @@ impl FindPaint {
         binding: Option<&bello_agent_core::retained_find::FindSnapshot>,
     ) -> bool {
         !self.lifetime_cancel.load(Ordering::Acquire)
+            && self
+                .sidebar_ui_admission
+                .as_ref()
+                .is_none_or(|admission| admission.is_current())
+            && self
+                .sidebar_admission
+                .as_ref()
+                .is_none_or(|slot| slot.current().is_ok_and(|candidate| candidate.is_some()))
             && binding.is_some_and(|b| self.source.same_content(b))
+    }
+    pub(crate) fn complete_navigation(&self) {
+        if self.matches_binding(Some(&self.source))
+            && let Some(completed) = &self.sidebar_navigation_completed
+        {
+            completed.set(true);
+        }
     }
     pub fn navigating(&self) -> bool {
         self.active_navigation()
@@ -205,6 +228,16 @@ impl FindPaint {
     }
     pub fn ranges(&self, id: &str) -> Option<Ranges> {
         self.prepared.get(id).cloned()
+    }
+    pub(crate) fn sidebar_input(&self) -> Option<&bello_agent_core::sidebar_search::OwnedHit> {
+        self.prepared
+            .values()
+            .find_map(|ranges| ranges.sidebar_input.as_ref())
+    }
+    pub(crate) fn prose_target(&self, id: &str) -> bool {
+        self.prepared
+            .get(id)
+            .is_some_and(|ranges| ranges.sidebar_input.is_none())
     }
     pub fn has_record(&self, id: &str) -> bool {
         self.prepared.contains_key(id)
@@ -355,6 +388,121 @@ impl Element for FindText {
                 .borrow_mut()
                 .push((self.row, self.styled.layout().clone(), range));
         }
+    }
+}
+
+/// Prepare exactly the already-admitted sidebar occurrence, using its byte
+/// mapping rather than Find's independently normalized query semantics.
+pub(crate) fn prepare_sidebar(
+    source: bello_agent_core::retained_find::FindSnapshot,
+    hit: &bello_agent_core::sidebar_search::OwnedHit,
+    slot: &bello_agent_core::sidebar_search::SearchAdmissionSlot,
+    cancel: &AtomicBool,
+) -> Result<Prepared, String> {
+    use bello_agent_core::sidebar_search::{projection::PieceKind, projection::SourceTarget};
+    let candidate = slot
+        .current()
+        .map_err(|_| "Search source changed")?
+        .ok_or("Search source changed")?;
+    let session = source.session();
+    let stamp = candidate.source_stamp();
+    if session.id != stamp.session_id()
+        || session.revision != stamp.revision()
+        || session.stream_generation != stamp.stream_generation()
+        || session.stream_sequence != stamp.stream_sequence()
+    {
+        return Err("Search display has not reached the accepted source".into());
+    }
+    let message = session
+        .messages
+        .get(hit.key().message_position)
+        .filter(|m| m.id == hit.key().message_id)
+        .ok_or("Search message identity changed")?;
+    let input = hit.key().kind == PieceKind::ToolInput;
+    let name = match &message.tool_record {
+        Some(bello_agent_core::tool_history::ToolRecord::Assistant(record)) => record
+            .calls
+            .iter()
+            .find(|call| hit.key().call_id.as_deref() == Some(call.id.as_str()))
+            .map(|call| call.name.as_str()),
+        _ => None,
+    };
+    let (text, selected) = match hit.target() {
+        SourceTarget::Message(range) => (message.text.as_str(), Some(range.clone())),
+        SourceTarget::ToolName(range) => (
+            name.ok_or("Search tool identity changed")?,
+            Some(range.clone()),
+        ),
+        _ => (message.text.as_str(), None),
+    };
+    if let Some(range) = &selected
+        && (range.is_empty()
+            || range.end > text.len()
+            || !text.is_char_boundary(range.start)
+            || !text.is_char_boundary(range.end))
+    {
+        return Err("Search range changed".into());
+    }
+    let numbered = Arc::new(crate::transcript_find_numbered::NumberedPreviewMap::new(
+        text,
+        &[],
+        selected.as_ref(),
+        cancel,
+    )?);
+    let owner = match &message.tool_record {
+        Some(bello_agent_core::tool_history::ToolRecord::Result(result)) => {
+            Some((result.assistant_id.clone(), result.call_id.clone()))
+        }
+        _ => None,
+    };
+    let mut ranges = HashMap::new();
+    ranges.insert(
+        message.id.clone(),
+        Ranges {
+            all: vec![],
+            selected,
+            limited: false,
+            total: 1,
+            numbered,
+            role: message.role.clone(),
+            tool_owner: owner,
+            sidebar_input: input.then(|| hit.clone()),
+        },
+    );
+    Ok(Prepared {
+        source,
+        ranges,
+        notice: matches!(hit.target(), SourceTarget::CardFallback)
+            .then(|| "The match crosses presentation fields; showing its owning card.".into()),
+    })
+}
+impl FindPaint {
+    pub(crate) fn new_sidebar(
+        prepared: Prepared,
+        slot: Arc<bello_agent_core::sidebar_search::SearchAdmissionSlot>,
+        hit: &bello_agent_core::sidebar_search::OwnedHit,
+        owner: uuid::Uuid,
+        ui_admission: crate::sidebar_search_controller::RevealAdmission,
+        navigation_completed: Rc<Cell<bool>>,
+    ) -> Rc<Self> {
+        let found = Match {
+            id: hit.key().message_id.clone(),
+            occurrence: hit.occurrence().ordinal,
+        };
+        let destination = crate::transcript_find_state::Destination::sidebar(found.clone());
+        let mut paint = Self::new(
+            prepared,
+            Some(found),
+            Some(destination),
+            1,
+            owner,
+            Arc::new(AtomicBool::new(false)),
+        );
+        let unique = Rc::get_mut(&mut paint).unwrap();
+        unique.sidebar_admission = Some(slot);
+        unique.sidebar_ui_admission = Some(ui_admission);
+        unique.sidebar_navigation_completed = Some(navigation_completed);
+        paint
     }
 }
 

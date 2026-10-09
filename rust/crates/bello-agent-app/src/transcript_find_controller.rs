@@ -39,6 +39,7 @@ pub(crate) struct FindBar {
     pub checked_session: Arc<bello_agent_core::Session>,
     pub destination: Option<Destination>,
     pending_navigation: bool,
+    automatic_navigation_blocked: bool,
     composing: bool,
     awaiting_display: bool,
     paint_operation: uuid::Uuid,
@@ -104,6 +105,7 @@ impl AgentView {
                 checked_session: binding.session_shared(),
                 destination: None,
                 pending_navigation: false,
+                automatic_navigation_blocked: false,
                 composing: false,
                 awaiting_display: false,
                 paint_operation: uuid::Uuid::new_v4(),
@@ -201,6 +203,12 @@ impl AgentView {
         }
     }
     fn transcript_find_query_changed(&mut self, cx: &mut Context<Self>) {
+        if self.transcript_find.as_ref().is_some_and(|bar| {
+            bar.query.read(cx).text() != bar.state.query
+                || (bar.query.read(cx).has_marked_text() && !bar.composing)
+        }) {
+            self.cancel_sidebar_reveal(cx);
+        }
         let Some(bar) = &mut self.transcript_find else {
             return;
         };
@@ -221,6 +229,7 @@ impl AgentView {
         if bar.state.query == query && !was_composing {
             return;
         }
+        bar.automatic_navigation_blocked = false;
         let ticket = if bar.state.query == query {
             bar.state.restart()
         } else {
@@ -346,7 +355,9 @@ impl AgentView {
                         bar.notice = Some(error);
                     }
                 }
-                let destination = first.then(|| bar.state.destination()).flatten();
+                let destination = (first && !bar.automatic_navigation_blocked)
+                    .then(|| bar.state.destination())
+                    .flatten();
                 let next = bar.state.next_page();
                 view.publish_find(destination, cx);
                 if let Some(next) = next {
@@ -358,6 +369,7 @@ impl AgentView {
         .detach();
     }
     pub(crate) fn step_transcript_find(&mut self, previous: bool, cx: &mut Context<Self>) {
+        self.cancel_sidebar_reveal(cx);
         let Some(bar) = self.transcript_find.as_ref() else {
             return;
         };
@@ -372,7 +384,9 @@ impl AgentView {
             self.refresh_find_content(cx);
             return;
         }
-        let destination = self.transcript_find.as_mut().unwrap().state.step(previous);
+        let bar = self.transcript_find.as_mut().unwrap();
+        bar.automatic_navigation_blocked = false;
+        let destination = bar.state.step(previous);
         self.publish_find(destination, cx);
         cx.notify();
     }
@@ -544,7 +558,21 @@ impl AgentView {
     pub(crate) fn refresh_find_viewport(&mut self, cx: &mut Context<Self>) {
         self.publish_find(None, cx);
     }
+    pub(crate) fn prepare_sidebar_navigation(&mut self, cx: &mut Context<Self>) {
+        // Consume an already-edited field before claiming the newer explicit
+        // sidebar action; delayed notify-only delivery then becomes a no-op.
+        self.transcript_find_query_changed(cx);
+        if let Some(bar) = &mut self.transcript_find {
+            bar.automatic_navigation_blocked = true;
+            bar.state.abandon_navigation();
+            bar.destination = None;
+            bar.pending_navigation = false;
+            bar.paint_cancel.store(true, Ordering::Release);
+            bar.paint_operation = uuid::Uuid::new_v4();
+        }
+    }
     pub(crate) fn abandon_find_navigation(&mut self) {
+        self.sidebar_search_reveal = None;
         if let Some(bar) = &mut self.transcript_find {
             bar.state.abandon_navigation();
             bar.destination = None;

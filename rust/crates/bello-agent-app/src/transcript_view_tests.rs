@@ -2004,7 +2004,7 @@ fn controller_snapshot_generation_rejects_late_selected_and_inactive_publication
     });
 }
 
-fn retained_tool_rows(count: usize, output: &str) -> Vec<Message> {
+pub(crate) fn retained_tool_rows(count: usize, output: &str) -> Vec<Message> {
     use bello_agent_core::{
         provider::ToolCall,
         tool_history::{

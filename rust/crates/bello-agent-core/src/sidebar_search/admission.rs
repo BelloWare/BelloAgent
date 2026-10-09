@@ -28,6 +28,8 @@ const MAX_BINDING_BYTES: usize = 16 * 1024;
 pub enum SearchError {
     #[error("Search was cancelled")]
     Cancelled,
+    #[error("Search cache unavailable: {0}")]
+    Cache(super::cache::CacheError),
     #[error("Search evidence changed")]
     Stale,
     #[error("Search source or membership unavailable")]
@@ -40,6 +42,11 @@ pub enum SearchError {
     Limit,
     #[error("Search projection unavailable: {0:?}")]
     Projection(projection::Error),
+}
+impl From<super::cache::CacheError> for SearchError {
+    fn from(error: super::cache::CacheError) -> Self {
+        Self::Cache(error)
+    }
 }
 impl From<projection::Error> for SearchError {
     fn from(error: projection::Error) -> Self {
@@ -81,24 +88,32 @@ impl SearchRequest {
     pub(crate) fn cancellation(&self) -> &AtomicBool {
         &self.0.cancelled
     }
-    pub(crate) fn project(
+    pub(crate) fn project_with_cache(
         &self,
         session: &Session,
         policy: ActivePolicy,
         cancel: &dyn super::CancellationProbe,
+        cache: Option<&mut super::cache::Replacement<'_>>,
     ) -> Result<([u8; 32], SearchOutcome), SearchError> {
         self.check()?;
         let projection = SidebarProjection::new(session, policy, cancel)?;
         let identity = ContentIdentity::of(&projection, cancel)?;
+        if let Some(cache) = cache {
+            cache.stage(&projection, identity.digest, cancel)?;
+        }
         let outcome = match projection.newest_match(&self.0.query, cancel)? {
             Some((index, occurrence)) => SearchOutcome::Match(Box::new(OwnedHit::new(
                 &projection.pieces[index],
                 occurrence,
-            ))),
+                cancel,
+            )?)),
             None => SearchOutcome::NoMatch,
         };
         self.check()?;
         Ok((identity.digest, outcome))
+    }
+    pub(crate) fn normalized_query(&self) -> String {
+        self.0.query.normalized()
     }
     pub fn generation(&self) -> u64 {
         self.0.generation
@@ -272,12 +287,27 @@ impl LoadedSearchEvidence {
         })
     }
     pub fn prepare(self) -> Result<Arc<PreparedSearchCandidate>, SearchError> {
+        self.prepare_impl(None)
+    }
+    pub fn prepare_with_cache(
+        self,
+        cache: &mut super::cache::Replacement<'_>,
+    ) -> Result<Arc<PreparedSearchCandidate>, SearchError> {
+        self.prepare_impl(Some(cache))
+    }
+    fn prepare_impl(
+        self,
+        cache: Option<&mut super::cache::Replacement<'_>>,
+    ) -> Result<Arc<PreparedSearchCandidate>, SearchError> {
         self.request.check()?;
         self.evidence.check()?;
         let cancel = &self.request.0.cancelled;
-        let (content_digest, outcome) =
-            self.request
-                .project(&self.session, ActivePolicy::AcceptedRetained, cancel)?;
+        let (content_digest, outcome) = self.request.project_with_cache(
+            &self.session,
+            ActivePolicy::AcceptedRetained,
+            cancel,
+            cache,
+        )?;
         self.request.check()?;
         self.evidence.check()?;
         Ok(Arc::new(PreparedSearchCandidate {
@@ -322,6 +352,7 @@ pub enum ExcerptCoverage {
 #[derive(Clone)]
 pub struct OwnedHit {
     key: OwnedPieceKey,
+    semantic_piece_digest: [u8; 32],
     occurrence: Occurrence,
     target: SourceTarget,
     excerpt: String,
@@ -330,7 +361,49 @@ pub struct OwnedHit {
     coverage: ExcerptCoverage,
 }
 impl OwnedHit {
-    fn new(piece: &Piece<'_>, occurrence: Occurrence) -> Self {
+    fn new(
+        piece: &Piece<'_>,
+        occurrence: Occurrence,
+        cancel: &dyn super::CancellationProbe,
+    ) -> Result<Self, SearchError> {
+        // Hash the same projection, without retaining or reconstructing its source.
+        // Exact bytes (not normalized text or the excerpt) bind a later reveal to
+        // this selected piece while allowing unrelated checkpoint rotation.
+        let mut digest = Sha256::new();
+        digest.update(b"bello.sidebar.selected-piece.v1");
+        digest.update(projection::PROJECTION_VERSION.to_le_bytes());
+        digest.update(projection::NORMALIZATION_VERSION.to_le_bytes());
+        digest.update(projection::CANONICAL_MAPPING_VERSION.to_le_bytes());
+        for value in [piece.key.message_position, piece.key.piece_ordinal] {
+            digest.update((value as u64).to_le_bytes());
+        }
+        digest.update([match piece.key.kind {
+            PieceKind::User => 0,
+            PieceKind::Assistant => 1,
+            PieceKind::ToolInput => 2,
+            PieceKind::ToolOutput => 3,
+        }]);
+        digest.update([u8::from(piece.input_start.is_some())]);
+        if let Some(start) = piece.input_start {
+            digest.update((start as u64).to_le_bytes());
+        }
+        for value in [
+            Some(piece.key.message_id),
+            piece.key.assistant_id,
+            piece.key.call_id,
+            Some(piece.source.as_ref()),
+        ] {
+            digest.update([u8::from(value.is_some())]);
+            if let Some(value) = value {
+                digest.update((value.len() as u64).to_le_bytes());
+                for chunk in value.as_bytes().chunks(4096) {
+                    projection::check_cancel(cancel)?;
+                    digest.update(chunk);
+                }
+            }
+        }
+        projection::check_cancel(cancel)?;
+        let semantic_piece_digest = digest.finalize().into();
         let source = &*piece.source;
         let envelope = occurrence.source.clone();
         let (mut start, mut end) = (envelope.start, envelope.end);
@@ -359,7 +432,8 @@ impl OwnedHit {
                 Some(envelope.start - start..envelope.end - start),
             )
         };
-        Self {
+        Ok(Self {
+            semantic_piece_digest,
             key: OwnedPieceKey {
                 message_id: piece.key.message_id.into(),
                 message_position: piece.key.message_position,
@@ -374,7 +448,16 @@ impl OwnedHit {
             excerpt_source: start..end,
             highlight,
             coverage,
-        }
+        })
+    }
+    /// Exact selected-piece identity only; this is not a source-admission receipt.
+    pub fn semantic_piece_digest(&self) -> [u8; 32] {
+        self.semantic_piece_digest
+    }
+    /// Independent of checkpoint rotation and other pieces. A caller must also
+    /// check the current receipt, scope, selected occurrence and reveal target.
+    pub fn same_semantic_piece(&self, other: &Self) -> bool {
+        self.key == other.key && self.semantic_piece_digest == other.semantic_piece_digest
     }
     pub fn key(&self) -> &OwnedPieceKey {
         &self.key
@@ -420,6 +503,14 @@ pub struct PreparedSearchCandidate {
     outcome: SearchOutcome,
 }
 impl PreparedSearchCandidate {
+    pub(crate) fn cache_check(&self) -> Result<(), SearchError> {
+        self.request.check()?;
+        self.evidence.check()
+    }
+    pub(crate) fn cache_request(&self) -> &SearchRequest {
+        &self.request
+    }
+
     pub(crate) fn check_for(&self, request: &SearchRequest) -> Result<(), SearchError> {
         if !self.request.same_request(request) {
             return Err(SearchError::WrongRequest);

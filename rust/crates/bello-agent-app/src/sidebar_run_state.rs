@@ -124,24 +124,6 @@ fn inspect_summary_then(
     }
 }
 
-fn inspect_coordinated(
-    record: &ChatRecord,
-    permit: &mut bello_agent_core::inspection::InspectionPermit,
-) -> bello_agent_core::Result<(
-    SavedRunState,
-    bello_agent_core::read_observation::OutputProjection,
-    Option<FileIdentity>,
-)> {
-    let output = crate::sidebar_inspection::inspect(
-        record,
-        permit,
-        crate::sidebar_inspection::InspectionDemand::run_read(),
-    )?;
-    Ok(output
-        .run_read
-        .expect("run/read demand always returns its summary"))
-}
-
 struct Scope {
     project: PathBuf,
     workspace: Weak<Mutex<WorkspaceStore>>,
@@ -184,6 +166,22 @@ pub(crate) struct SidebarRunStates {
     in_flight: Option<Uuid>,
 }
 impl SidebarRunStates {
+    pub(crate) fn is_idle(&self) -> bool {
+        self.in_flight.is_none()
+    }
+    pub(crate) fn reserve_reveal(&mut self, operation: Uuid) -> bool {
+        if self.in_flight.is_some() {
+            return false;
+        }
+        self.in_flight = Some(operation);
+        true
+    }
+    pub(crate) fn finish_reveal(&mut self, operation: Uuid) {
+        if self.in_flight == Some(operation) {
+            self.in_flight = None;
+        }
+    }
+
     pub(crate) fn cancel_pending(&mut self) {
         self.cancel.cancel();
         self.scope = None;
@@ -241,15 +239,32 @@ impl AgentView {
         if self.sidebar_run_states.in_flight.is_some() || self.window_binding.is_none() {
             return;
         }
-        let Some(record) = self.records.iter().find(|record| {
-            self.chat_ref(&record.id).is_none()
-                && !self
-                    .sidebar_run_states
-                    .observations
-                    .contains_key(&record.id)
-        }) else {
+        let search_id = self.sidebar_search.next_id().map(str::to_owned);
+        let record = search_id
+            .as_ref()
+            .and_then(|id| self.records.iter().find(|r| &r.id == id))
+            .or_else(|| {
+                self.records.iter().find(|record| {
+                    self.chat_ref(&record.id).is_none()
+                        && !self
+                            .sidebar_run_states
+                            .observations
+                            .contains_key(&record.id)
+                })
+            });
+        let Some(record) = record.cloned() else {
             return;
         };
+        let loaded = self
+            .chat_ref(&record.id)
+            .map(|chat| Arc::downgrade(&chat.controller));
+        let run_read = loaded.is_none()
+            && !self
+                .sidebar_run_states
+                .observations
+                .contains_key(&record.id);
+        let search = self.sidebar_search.take_work(&record.id);
+        let search_request = self.sidebar_search.request();
         let target = Target {
             request: Uuid::new_v4(),
             epoch: self.sidebar_run_states.epoch,
@@ -258,33 +273,176 @@ impl AgentView {
         self.sidebar_run_states.in_flight = Some(target.request);
         let record = target.record.clone();
         let workspace = self.workspace.clone();
+        let cache_owner = Arc::downgrade(&workspace);
         let cancel = self.sidebar_run_states.cancel.clone();
+        let worker_search = search.clone();
+        let mut cache = search
+            .as_ref()
+            .map(|_| std::mem::take(&mut self.sidebar_search.cache));
         let task = cx.background_executor().spawn(async move {
-            let lane = workspace
-                .lock()
-                .map_err(|_| bello_agent_core::Error::Invalid("Workspace is unavailable".into()))?
-                .inspection_coordinator();
-            let mut permit = lane.background(&cancel).await?;
-            inspect_coordinated(&record, &mut permit)
+            let result = async {
+                if worker_search.is_some()
+                    && cache.as_ref().is_none_or(|owner| owner.cache.is_none())
+                {
+                    return Err(bello_agent_core::Error::Invalid(
+                        "Content cache is unavailable".into(),
+                    ));
+                }
+                if let Some(controller) = loaded {
+                    let candidate = search_request
+                        .as_ref()
+                        .ok_or(bello_agent_core::sidebar_search::SearchError::Unavailable)
+                        .and_then(|request| {
+                            bello_agent_core::sidebar_search::LoadedSearchEvidence::capture(
+                                &workspace,
+                                &controller,
+                                &record.id,
+                                request,
+                            )
+                        })
+                        .and_then(|evidence| {
+                            let cache = cache
+                                .as_mut()
+                                .and_then(|owner| owner.cache.as_mut())
+                                .ok_or(
+                                    bello_agent_core::sidebar_search::SearchError::Unavailable,
+                                )?;
+                            let work = worker_search.as_ref().ok_or(
+                                bello_agent_core::sidebar_search::SearchError::Unavailable,
+                            )?;
+                            let mut replacement =
+                                cache.begin_replacement_for_work(work).map_err(|_| {
+                                    bello_agent_core::sidebar_search::SearchError::Unavailable
+                                })?;
+                            let candidate = evidence.prepare_with_cache(&mut replacement)?;
+                            replacement.commit_loaded(&candidate).map_err(|_| {
+                                bello_agent_core::sidebar_search::SearchError::Unavailable
+                            })?;
+                            cache.cleanup().map_err(|_| {
+                                bello_agent_core::sidebar_search::SearchError::Unavailable
+                            })?;
+                            let hint = cache
+                                .query_handle()
+                                .query_loaded(
+                                    &candidate,
+                                    Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                                )
+                                .map_err(|_| {
+                                    bello_agent_core::sidebar_search::SearchError::Unavailable
+                                })?;
+                            if hint.is_some()
+                                != matches!(
+                                    candidate.outcome(),
+                                    bello_agent_core::sidebar_search::SearchOutcome::Match(_)
+                                )
+                            {
+                                return Err(
+                                    bello_agent_core::sidebar_search::SearchError::Unavailable,
+                                );
+                            }
+                            Ok(candidate)
+                        });
+                    return Ok((None, None, Some(candidate)));
+                }
+                let lane = workspace
+                    .lock()
+                    .map_err(|_| {
+                        bello_agent_core::Error::Invalid("Workspace is unavailable".into())
+                    })?
+                    .inspection_coordinator();
+                let mut permit = lane.background(&cancel).await?;
+                let demand = match worker_search {
+                    Some(work) if run_read => {
+                        crate::sidebar_inspection::InspectionDemand::search(work).include_run_read()
+                    }
+                    Some(work) => crate::sidebar_inspection::InspectionDemand::search(work),
+                    None => crate::sidebar_inspection::InspectionDemand::run_read(),
+                };
+                let output = match cache.as_mut().and_then(|owner| owner.cache.as_mut()) {
+                    Some(cache) => crate::sidebar_inspection::inspect_with_cache(
+                        &record,
+                        &mut permit,
+                        demand,
+                        cache,
+                    )?,
+                    None => crate::sidebar_inspection::inspect(&record, &mut permit, demand)?,
+                };
+                Ok::<_, bello_agent_core::Error>((output.run_read, output.search, None))
+            }
+            .await;
+            if let Some(value) = cache.as_mut().and_then(|owner| owner.cache.as_mut())
+                && !value.readiness().is_ready()
+            {
+                let _ = value.cleanup();
+            }
+            (result, cache)
         });
         cx.spawn(async move |view, cx| {
-            let outcome = task.await;
+            let (outcome, cache) = task.await;
             let _ = view.update(cx, |view, cx| {
-                let (state, summary, file_identity) = match outcome {
-                    Ok(value) => value,
-                    Err(bello_agent_core::Error::Cancelled) => {
-                        if view.sidebar_run_states.in_flight == Some(target.request) {
-                            view.sidebar_run_states.in_flight = None;
+                if let Some(cache) = cache {
+                    view.finish_sidebar_cache_owner(&cache_owner, cache);
+                }
+                if let Some(work) = &search {
+                    let current = view.sidebar_run_states.in_flight == Some(target.request)
+                        && view.sidebar_run_states.epoch == target.epoch
+                        && view
+                            .sidebar_run_states
+                            .scope
+                            .as_ref()
+                            .is_some_and(|scope| scope.matches(view));
+                    if current {
+                        match (&mut view.sidebar_search.pass, &outcome) {
+                            (Some(pass), Ok((_, _, Some(Ok(candidate))))) => {
+                                let _ = pass.record_loaded(work, candidate.clone());
+                            }
+                            (_, Err(_)) | (_, Ok((_, _, Some(Err(_))))) => {
+                                view.sidebar_search.failed(work)
+                            }
+                            _ => {}
                         }
-                        view.refresh_sidebar_run_states(cx);
-                        cx.notify();
-                        return;
                     }
+                }
+                let (run_summary, observed, _) = match outcome {
+                    Ok(value) => value,
+                    Err(bello_agent_core::Error::Cancelled) => (None, None, None),
                     Err(_) => (
-                        SavedRunState::Unknown,
-                        bello_agent_core::read_observation::OutputProjection::Unknown,
+                        run_read.then_some((
+                            SavedRunState::Unknown,
+                            bello_agent_core::read_observation::OutputProjection::Unknown,
+                            None,
+                        )),
+                        None,
                         None,
                     ),
+                };
+                if let Some(work) = &search {
+                    let current = view.sidebar_run_states.in_flight == Some(target.request)
+                        && view.sidebar_run_states.epoch == target.epoch
+                        && view
+                            .sidebar_run_states
+                            .scope
+                            .as_ref()
+                            .is_some_and(|scope| scope.matches(view));
+                    if current {
+                        match observed {
+                            Some(Ok(value)) => {
+                                if let Some(pass) = &mut view.sidebar_search.pass {
+                                    let _ = pass.record_observed(value);
+                                }
+                            }
+                            Some(Err(_)) => view.sidebar_search.failed(work),
+                            None => {}
+                        }
+                    }
+                }
+                let Some((state, summary, file_identity)) = run_summary else {
+                    if view.sidebar_run_states.in_flight == Some(target.request) {
+                        view.sidebar_run_states.in_flight = None;
+                    }
+                    view.refresh_sidebar_run_states(cx);
+                    cx.notify();
+                    return;
                 };
                 let record = target.record.clone();
                 let accepted = view.finish_sidebar_run_state(target, state);

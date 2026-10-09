@@ -1,0 +1,144 @@
+{
+  "verifier_sha256": "54aa4435c61c676e0abaf2266f30c6207e1c95f3596278a59c5dbd23a758ea89",
+  "golden_classification_fixtures": 10,
+  "negative_controls": [
+    {
+      "name": "wrong-baseline-total",
+      "exit_code": 1,
+      "assertion_failure_observed": true,
+      "wall_seconds": 1.5671966150111984
+    },
+    {
+      "name": "wrong-baseline-hash",
+      "exit_code": 1,
+      "assertion_failure_observed": true,
+      "wall_seconds": 0.038049877010053024
+    },
+    {
+      "name": "omitted-baseline-path",
+      "exit_code": 1,
+      "assertion_failure_observed": true,
+      "wall_seconds": 0.6161288660077844
+    },
+    {
+      "name": "cfg-field-overreach",
+      "golden_fixture_rejected_mutant": true
+    },
+    {
+      "name": "omit-positive-test-span",
+      "golden_fixture_rejected_mutant": true
+    },
+    {
+      "name": "omit-current-path",
+      "output_tamper_rejected": true
+    },
+    {
+      "name": "shared-box-scope",
+      "output_tamper_rejected": true
+    }
+  ],
+  "all_seven_detected": true,
+  "rust_source_changed": false,
+  "golden_fixtures": [
+    {
+      "name": "test-field",
+      "path": "rust/crates/bello-agent-core/src/example.rs",
+      "source": "struct S {\n#[cfg(test)]\nfield: Option<(u8, u8)>,\nproduction: u8,\n}\n",
+      "expected": {
+        "production": 3,
+        "support": 2,
+        "benchmark": 0
+      }
+    },
+    {
+      "name": "initializer-field",
+      "path": "rust/crates/bello-agent-core/src/example.rs",
+      "source": "fn f() {\nlet s = S {\n#[cfg(test)]\nfield: call(1, 2),\nproduction: 1,\n};\n}\n",
+      "expected": {
+        "production": 5,
+        "support": 2,
+        "benchmark": 0
+      }
+    },
+    {
+      "name": "preceding-comment",
+      "path": "rust/crates/bello-agent-core/src/example.rs",
+      "source": "// production comment\n#[cfg(all(test, target_os = \"linux\"))]\nfn support() { assert!(true); }\npub fn production() {}\n",
+      "expected": {
+        "production": 2,
+        "support": 2,
+        "benchmark": 0
+      }
+    },
+    {
+      "name": "native-branch",
+      "path": "rust/crates/bello-agent-core/src/example.rs",
+      "source": "#[cfg(any(test, target_os = \"macos\"))]\nfn native() {}\n",
+      "expected": {
+        "production": 2,
+        "support": 0,
+        "benchmark": 0
+      }
+    },
+    {
+      "name": "synthetic-owner",
+      "path": "rust/crates/bello-agent-app/src/synthetic_sidebar_fixture.rs",
+      "source": "// synthetic fixture\nfn fixture() {}\n",
+      "expected": {
+        "production": 0,
+        "support": 2,
+        "benchmark": 0
+      }
+    },
+    {
+      "name": "observer-owner",
+      "path": "rust/crates/bello-agent-core/src/sidebar_search/cache/observer.rs",
+      "source": "// forwarding VFS test\nfn test() {}\n",
+      "expected": {
+        "production": 0,
+        "support": 2,
+        "benchmark": 0
+      }
+    },
+    {
+      "name": "negative-synthetic",
+      "path": "rust/crates/bello-agent-app/src/example.rs",
+      "source": "#[cfg(not(all(feature = \"synthetic-authority\", debug_assertions)))]\nfn ordinary() {}\n",
+      "expected": {
+        "production": 2,
+        "support": 0,
+        "benchmark": 0
+      }
+    },
+    {
+      "name": "statement-arm",
+      "path": "rust/crates/bello-agent-app/src/example.rs",
+      "source": "match value {\n#[cfg(feature = \"synthetic-authority\")]\n\"synthetic\" => call(1, 2),\n_ => ordinary(),\n}\n",
+      "expected": {
+        "production": 3,
+        "support": 2,
+        "benchmark": 0
+      }
+    },
+    {
+      "name": "braced-arm",
+      "path": "rust/crates/bello-agent-app/src/example.rs",
+      "source": "match value {\n#[cfg(feature = \"synthetic-authority\")]\n\"synthetic\" => {\ncall();\n},\n_ => ordinary(),\n}\n",
+      "expected": {
+        "production": 3,
+        "support": 4,
+        "benchmark": 0
+      }
+    },
+    {
+      "name": "braced-arm-no-comma",
+      "path": "rust/crates/bello-agent-app/src/example.rs",
+      "source": "match value {\n#[cfg(feature = \"synthetic-authority\")]\n\"synthetic\" => {\ncall();\n}\n_ => ordinary(),\n}\n",
+      "expected": {
+        "production": 3,
+        "support": 4,
+        "benchmark": 0
+      }
+    }
+  ]
+}

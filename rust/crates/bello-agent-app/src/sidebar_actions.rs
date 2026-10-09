@@ -71,6 +71,7 @@ impl AgentView {
                     && (record.archived_at.is_none() || self.effective_archive_visibility())
                     && (filter.is_empty()
                         || self.sidebar_title(record).to_lowercase().contains(&filter)
+                        || self.sidebar_search_matches(&record.id, cx)
                         || self.effective_topic_id(record).is_some_and(|id| {
                             self.topics.iter().any(|topic| {
                                 topic.id == id && topic.title.to_lowercase().contains(&filter)

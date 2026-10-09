@@ -390,6 +390,8 @@ impl AgentView {
         ));
     }
     pub(crate) fn open_connections(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sidebar_search.cancel();
+        self.cancel_sidebar_reveal(cx);
         if self.mcp.open
             || self.mcp.busy()
             || self.shutting_down
@@ -666,6 +668,7 @@ impl AgentView {
             let controllers = self.connection_controllers();
             let token = uuid::Uuid::new_v4();
             self.connections.cancel_catalog_loads();
+            let search_restore = self.sidebar_search.block_all();
             self.connections.operation = Some(token);
             self.connections.presentation.saving = true;
             self.connections.presentation.availability =
@@ -710,6 +713,11 @@ impl AgentView {
                     let names=result.saved.iter().map(|(_,_,n)|n.as_str()).collect::<Vec<_>>().join(", ");
                     if result.uncertain {view.connections.uncertain=true;view.connections.presentation.availability=ConnectionSettingsAvailability::Unconfirmed("A vault write may have committed. Drafts are retained; new connection actions remain blocked.".into());}
                     let success=result.failure.is_none();
+                    // Only uncertain saves retire actors. A definite partial
+                    // failure restores exact prior ownership, never health:
+                    // Loaded still requires fresh healthy Core evidence and
+                    // cannot fall back to disk; prior Blocked remains Blocked.
+                    if !result.uncertain { view.sidebar_search.restore_operation(search_restore,false); }
                     let mut message=if let Some(error)=result.failure{if names.is_empty(){format!("Connection save did not complete: {error}")}else{format!("Saved {names}. The following save did not complete: {error}")}}else{view.connections.presentation.mode.saved_notice().into()};
                     if forked {message.push_str(" Route changes created new connections; earlier chats keep their original connections.");}
                     for note in result.runtime_notices {message.push(' ');message.push_str(&note);}
@@ -787,6 +795,11 @@ impl AgentView {
             .filter(|r| r.connection_id.as_deref() == Some(&id))
             .map(|r| r.id.clone())
             .collect();
+        let search_members = all_ids
+            .iter()
+            .map(|id| (id.clone(), self.chat_ref(id).is_some()))
+            .collect();
+        let search_restore = self.sidebar_search.block_members(search_members);
         self.connections.blocked.extend(all_ids);
         for (_, controller, _) in &affected {
             let _ = controller.retire();
@@ -853,8 +866,10 @@ impl AgentView {
                                 "Connection deleted. Queued input stays paused: inspect or remove it before selecting another connection."
                             }.into());
                             view.connections.blocked.remove(&chat_id);
+                            view.sidebar_search.installed(&chat_id);
                         }
                     }
+                    view.sidebar_search.restore_operation(search_restore,true);
                     // Unloaded chats reopen disconnected by their missing saved ID.
                     let live: BTreeSet<_>=std::iter::once(&view.chat).chain(view.inactive.values()).map(|c|c.record.id.clone()).collect();
                     view.connections.blocked.retain(|chat|live.contains(chat));
@@ -1035,6 +1050,7 @@ impl AgentView {
         if let Some(g) = guard {
             g.retain_fence();
         }
+        self.sidebar_search.block(&self.record.id.clone());
         if let Err(e) = controller.retire() {
             self.error = Some(e.to_string());
             self.connections.blocked.insert(self.record.id.clone());
@@ -1123,6 +1139,7 @@ impl AgentView {
                     if let Some(record)=view.records.iter_mut().find(|r|r.id==chat_id){*record=changed.record.clone();}
                     if let Some(chat)=view.chat_mut(&chat_id){chat.record=changed.record;chat.loading=false;chat.load_failed=false;chat.replace_controller(changed.controller,cx);chat.error=Some("Next turn uses the selected saved connection and confirmed project settings.".into());}
                     view.connections.blocked.remove(&chat_id);
+                    view.sidebar_search.installed(&chat_id);
                 },
                 Err((message,uncertain,record))=>{
                     if !uncertain && let Some(mut record)=record {
@@ -1232,6 +1249,8 @@ impl AgentView {
             .update(cx, |view, cx| view.request_close(cx));
     }
     pub(crate) fn open_connection_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sidebar_search.cancel();
+        self.cancel_sidebar_reveal(cx);
         if self.shutting_down
             || self.projects.view.read(cx).is_open()
             || self.connections.operation.is_some()

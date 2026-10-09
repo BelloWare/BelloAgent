@@ -696,3 +696,102 @@ fn controller_drop_racing_final_admission_retires_without_guard_destruction_dead
     assert!(!witness.owner_alive_for_test());
     assert_eq!(slot.current().unwrap_err(), SearchError::Stale);
 }
+
+#[test]
+fn selected_piece_digest_binds_full_exact_bytes_ownership_order_and_split() {
+    use std::borrow::Cow;
+    let source = format!("needle {}tail", "x".repeat(600));
+    let piece = Piece {
+        key: projection::PieceKey {
+            message_id: "message",
+            message_position: 2,
+            kind: PieceKind::ToolInput,
+            piece_ordinal: 1,
+            assistant_id: Some("assistant"),
+            call_id: Some("call"),
+        },
+        source: Cow::Borrowed(&source),
+        input_start: Some(7),
+    };
+    let occurrence = Occurrence {
+        ordinal: 0,
+        normalized: 0..6,
+        source: 0..6,
+    };
+    let cancel = AtomicBool::new(false);
+    let baseline = OwnedHit::new(&piece, occurrence.clone(), &cancel).unwrap();
+    let same = OwnedHit::new(&piece, occurrence.clone(), &cancel).unwrap();
+    assert!(baseline.same_semantic_piece(&same));
+    assert_eq!(
+        baseline.semantic_piece_digest(),
+        same.semantic_piece_digest()
+    );
+
+    // The changed exact byte is outside the bounded excerpt and is normalization
+    // equivalent. Key, occurrence and target alone cannot reject this edit.
+    let mut changed = piece.clone();
+    changed.source = Cow::Owned(source.replace("tail", "taiL"));
+    let edited = OwnedHit::new(&changed, occurrence.clone(), &cancel).unwrap();
+    assert_eq!(baseline.excerpt(), edited.excerpt());
+    assert_eq!(baseline.occurrence(), edited.occurrence());
+    assert_eq!(baseline.target(), edited.target());
+    assert!(!baseline.same_semantic_piece(&edited));
+
+    let mut variants = vec![];
+    let mut changed = piece.clone();
+    changed.key.message_position += 1;
+    variants.push(changed);
+    let mut changed = piece.clone();
+    changed.key.piece_ordinal += 1;
+    variants.push(changed);
+    let mut changed = piece.clone();
+    changed.key.assistant_id = Some("other-owner");
+    variants.push(changed);
+    let mut changed = piece.clone();
+    changed.key.call_id = Some("other-call");
+    variants.push(changed);
+    let mut changed = piece.clone();
+    changed.key.kind = PieceKind::ToolOutput;
+    variants.push(changed);
+    let mut changed = piece.clone();
+    changed.input_start = Some(8);
+    variants.push(changed);
+    for changed in variants {
+        let other = OwnedHit::new(&changed, occurrence.clone(), &cancel).unwrap();
+        assert!(!baseline.same_semantic_piece(&other));
+    }
+    assert_eq!(
+        OwnedHit::new(&piece, occurrence, &AtomicBool::new(true)).unwrap_err(),
+        SearchError::Cancelled
+    );
+}
+
+#[test]
+fn selected_piece_identity_survives_unrelated_content_and_request_rotation() {
+    let f = fixture("needle unchanged selected piece");
+    let request = SearchRequest::new("needle", 1).unwrap();
+    let evidence = capture(&f, &request);
+    let mut changed = (*evidence.session).clone();
+    let (_, before) = request
+        .project_with_cache(
+            &changed,
+            ActivePolicy::AcceptedRetained,
+            &AtomicBool::new(false),
+            None,
+        )
+        .unwrap();
+    changed.messages.push(row("unrelated later message"));
+    let (_, after) = SearchRequest::new("needle", 2)
+        .unwrap()
+        .project_with_cache(
+            &changed,
+            ActivePolicy::AcceptedRetained,
+            &AtomicBool::new(false),
+            None,
+        )
+        .unwrap();
+    let (SearchOutcome::Match(before), SearchOutcome::Match(after)) = (before, after) else {
+        panic!("expected selected matches")
+    };
+    assert!(before.same_semantic_piece(&after));
+}

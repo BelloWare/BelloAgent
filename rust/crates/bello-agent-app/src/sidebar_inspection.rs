@@ -46,6 +46,22 @@ pub(crate) fn inspect(
     permit: &mut InspectionPermit,
     demand: InspectionDemand,
 ) -> Result<InspectionOutput> {
+    inspect_impl(record, permit, demand, None)
+}
+pub(crate) fn inspect_with_cache(
+    record: &ChatRecord,
+    permit: &mut InspectionPermit,
+    demand: InspectionDemand,
+    cache: &mut bello_agent_core::sidebar_search::cache::PrivateCache,
+) -> Result<InspectionOutput> {
+    inspect_impl(record, permit, demand, Some(cache))
+}
+fn inspect_impl(
+    record: &ChatRecord,
+    permit: &mut InspectionPermit,
+    demand: InspectionDemand,
+    mut cache: Option<&mut bello_agent_core::sidebar_search::cache::PrivateCache>,
+) -> Result<InspectionOutput> {
     let unknown = || InspectionOutput {
         run_read: demand.run_read.then_some((
             SavedRunState::Unknown,
@@ -104,12 +120,49 @@ pub(crate) fn inspect(
             before.clone(),
         )
     });
-    let search = if cancelled_search {
+    let query_handle = cache.as_ref().map(|cache| cache.query_handle());
+    let mut replacement = match (cache.as_deref_mut(), active_search) {
+        (Some(cache), Some(work)) => Some(cache.begin_replacement_for_work(work)),
+        _ => None,
+    };
+    let mut search = if cancelled_search {
         Some(Err(SearchError::Cancelled))
     } else {
-        active_search.map(|work| lease.prepare_search(work))
+        active_search.map(|work| match replacement.as_mut() {
+            Some(Ok(replacement)) => lease.prepare_search_with_cache(work, replacement),
+            Some(Err(_)) => Err(SearchError::Unavailable),
+            None => lease.prepare_search(work),
+        })
     };
     drop(lease);
+    if let Some(Ok(value)) = &search
+        && let Some(Ok(replacement)) = replacement.take()
+        && replacement.commit_observed(value).is_err()
+    {
+        search = Some(Err(SearchError::Unavailable));
+    }
+    drop(replacement);
+    if search.as_ref().is_some_and(|result| result.is_ok())
+        && let Some(cache) = cache
+        && cache.cleanup().is_err()
+    {
+        search = Some(Err(SearchError::Unavailable));
+    }
+    if let (Some(handle), Some(Ok(value))) = (query_handle, &search) {
+        let hint = handle.query_observed(
+            value,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        if !hint.is_ok_and(|hint| {
+            hint.is_some()
+                == matches!(
+                    value.outcome(),
+                    bello_agent_core::sidebar_search::SearchOutcome::Match(_)
+                )
+        }) {
+            search = Some(Err(SearchError::Unavailable));
+        }
+    }
     if cancel.is_cancelled() {
         return Err(Error::Cancelled);
     }

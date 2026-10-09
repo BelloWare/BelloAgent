@@ -1,0 +1,4 @@
+# Required for private sidebar cache SQLite builds. The Core build gate rejects
+# invocations outside this configuration search path unless explicitly supplied.
+[env]
+LIBSQLITE3_FLAGS = { value = "-DSQLITE_STMTJRNL_SPILL=-1 -DSQLITE_TEMP_STORE=3", force = true }

@@ -261,6 +261,7 @@ impl AgentView {
                 return;
             }
         };
+        self.sidebar_search.block(id);
         let runtime = self.runtime.clone();
         let workspace = self.workspace.clone();
         let project = self.project.clone();
@@ -386,6 +387,7 @@ impl AgentView {
                     chat.load_failed = false;
                     chat.replace_controller(controller, cx);
                     chat.error = notice;
+                    view.sidebar_search.installed(&ticket.id);
                     let snapshot = view
                         .chat_ref(&ticket.id)
                         .filter(|chat| chat.controller.is_persistent())

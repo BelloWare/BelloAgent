@@ -162,6 +162,75 @@ pub(super) fn wait(cx: &mut TestAppContext, mut done: impl FnMut(&mut TestAppCon
     }
 }
 
+#[gpui::test]
+fn sidebar_routes_recover_after_certain_partial_save_and_retry(cx: &mut TestAppContext) {
+    use bello_agent_core::sidebar_search::reconciliation::SourceRoute;
+    let (_dir, _control, window, root) = fixture(cx);
+    save_fixture(window, &root, cx);
+    window
+        .update(cx, |view, window, cx| view.open_connections(window, cx))
+        .unwrap();
+    cx.run_until_parked();
+    root.update(cx, |view, _| {
+        let id = view.record.id.clone();
+        view.sidebar_search.installed(&id);
+        view.sidebar_search.block("prior-retirement");
+    });
+    edit(&root, cx, |fields| {
+        fields.name = "First saved tab".into();
+        fields.key = SYNTHETIC_KEY.into();
+    });
+    act(window, Intent::New, cx);
+    edit(&root, cx, |fields| {
+        fields.name = "Second invalid tab".into();
+        fields.key = SYNTHETIC_KEY.into();
+        fields.context_window = "invalid-number".into();
+    });
+    act(window, Intent::SaveAll, cx);
+    root.update(cx, |view, _| {
+        assert_eq!(
+            view.connections.loaded.as_ref().unwrap().profiles().len(),
+            1
+        );
+        assert!(
+            view.connections
+                .presentation
+                .notice
+                .as_ref()
+                .unwrap()
+                .is_error
+        );
+        assert!(!view.connections.uncertain);
+        assert_eq!(
+            view.sidebar_search.test_route(&view.record.id),
+            Some(SourceRoute::Loaded)
+        );
+        assert_eq!(
+            view.sidebar_search.test_route("prior-retirement"),
+            Some(SourceRoute::Blocked)
+        );
+    });
+    edit(&root, cx, |fields| {
+        fields.name = "Corrected second tab".into();
+        fields.context_window = "128000".into();
+    });
+    act(window, Intent::SaveAll, cx);
+    root.update(cx, |view, _| {
+        assert_eq!(
+            view.connections.loaded.as_ref().unwrap().profiles().len(),
+            2
+        );
+        assert_eq!(
+            view.sidebar_search.test_route(&view.record.id),
+            Some(SourceRoute::Loaded)
+        );
+        assert_eq!(
+            view.sidebar_search.test_route("prior-retirement"),
+            Some(SourceRoute::Blocked)
+        );
+    });
+}
+
 #[test]
 fn model_alias_change_clears_old_catalog_ceiling_and_invalid_numbers_retain_text() {
     let mut form = new_form(crate::launch_authority::AuthorityMode::Fixture);
@@ -598,6 +667,10 @@ fn tab_drafts_route_fork_and_cancel_preserve_original_chat(cx: &mut TestAppConte
 #[gpui::test]
 fn uncertain_save_retains_form_and_reload_does_not_reopen_admission(cx: &mut TestAppContext) {
     let (_dir, control, window, root) = fixture(cx);
+    root.update(cx, |view, _| {
+        let id = view.record.id.clone();
+        view.sidebar_search.installed(&id);
+    });
     edit(&root, cx, |f| {
         f.name = "Retain me".into();
         f.key = SYNTHETIC_KEY.into();
@@ -609,6 +682,10 @@ fn uncertain_save_retains_form_and_reload_does_not_reopen_admission(cx: &mut Tes
     cx.read(|cx| {
         let view = root.read(cx);
         assert!(view.connections.uncertain);
+        assert_eq!(
+            view.sidebar_search.test_route(&view.record.id),
+            Some(bello_agent_core::sidebar_search::reconciliation::SourceRoute::Blocked)
+        );
         assert_eq!(
             view.connections
                 .presentation

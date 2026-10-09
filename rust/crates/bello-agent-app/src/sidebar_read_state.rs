@@ -492,6 +492,12 @@ impl AgentView {
         })
         .detach();
     }
+    pub(crate) fn sidebar_read_writes_pending(&self) -> bool {
+        self.read_write_inflight || {
+            let states = self.read_states.lock().unwrap();
+            !states.fenced && states.failures < 3 && states.entries.values().any(|e| e.dirty)
+        }
+    }
     pub(crate) fn flush_read_states(&mut self, cx: &mut Context<Self>) {
         if self.read_write_inflight {
             return;

@@ -15,6 +15,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
 thiserror = "2"
+rusqlite = { git = "https://github.com/rusqlite/rusqlite", rev = "91f876c80114122670f455190d03c81d1f78b0af", default-features = false, features = ["bundled", "hooks", "limits"] }
 
 [profile.dev]
 debug = 0
