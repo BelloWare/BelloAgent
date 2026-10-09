@@ -637,6 +637,7 @@ impl AgentView {
         let id = self.record.id.clone();
         let controller = self.controller.clone();
         let workspace = self.workspace.clone();
+        let identity_workspace = workspace.clone();
         let read_record = self.record.clone();
         let read_states = self.read_states.clone();
         let flush_id = id.clone();
@@ -675,7 +676,9 @@ impl AgentView {
             let (flushed, result, catalog_uncertain) = task.await;
             let failed = result.is_err();
             let _ = view.update(cx, move |view, cx| {
-                if view.project != identity_project {
+                if view.project != identity_project
+                    || !Arc::ptr_eq(&view.workspace, &identity_workspace)
+                {
                     return;
                 }
                 view.observe_catalog_uncertainty(catalog_uncertain, cx);

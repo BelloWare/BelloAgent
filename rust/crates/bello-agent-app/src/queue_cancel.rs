@@ -258,6 +258,7 @@ impl AgentView {
         let project = self.project.clone();
         let workspace = self.workspace.clone();
         let read_states = self.read_states.clone();
+        let identity_workspace = workspace.clone();
         let Some(chat) = self.chat_mut(id) else {
             return;
         };
@@ -343,6 +344,9 @@ impl AgentView {
         cx.spawn(async move |view, cx| {
             let (observed, confirmed_revision, result, uncertain) = task.await;
             let _ = view.update(cx, |view, cx| {
+                if !Arc::ptr_eq(&view.workspace, &identity_workspace) {
+                    return;
+                }
                 if view.project == key.project {
                     view.observe_catalog_uncertainty(uncertain, cx);
                 }

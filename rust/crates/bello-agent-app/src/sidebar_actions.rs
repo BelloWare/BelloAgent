@@ -233,14 +233,21 @@ impl AgentView {
         #[cfg(not(target_os = "macos"))]
         self.restore_sidebar_popup_focus(&menu, cx);
         if menu.project == self.project
-            && self
-                .records
-                .iter()
-                .any(|record| record.id == menu.chat_id && record.snapshot == menu.snapshot)
             && menu.binding == self.window_binding
             && !self.shutting_down
             && let Some(action) = choice
         {
+            // A missing Copy target retains its existing explanatory notice;
+            // a reused ID at another path must never act on the replacement.
+            if self
+                .records
+                .iter()
+                .find(|record| record.id == menu.chat_id)
+                .is_some_and(|record| record.snapshot != menu.snapshot)
+            {
+                cx.notify();
+                return;
+            }
             match action {
                 SidebarAction::TogglePinned => {
                     if let Some(record) =

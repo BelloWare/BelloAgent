@@ -538,6 +538,7 @@ impl AgentView {
         let source = Arc::downgrade(&controller);
         let project = self.project.clone();
         let workspace = self.workspace.clone();
+        let identity_workspace = workspace.clone();
         let receipt = intent.clone();
         let read_states = self.read_states.clone();
         let task = cx.background_executor().spawn(async move {
@@ -607,7 +608,7 @@ impl AgentView {
         cx.spawn(async move |view, cx| {
             let (accepted, registered, uncertain, error, catalog_uncertain, dispatch_started) = task.await;
             let _ = view.update(cx, move |view, cx| {
-                if view.project != project { return; }
+                if view.project != project || !Arc::ptr_eq(&view.workspace, &identity_workspace) { return; }
                 view.observe_catalog_uncertainty(catalog_uncertain, cx);
                 if view.chat_ref(&id).is_none_or(|chat| !source.ptr_eq(&Arc::downgrade(&chat.controller)) || chat.inflight_submission.as_ref() != Some(&receipt)) { return; }
                 let latest = view.workspace.lock().ok().and_then(|store| store.snapshot().chats.into_iter().find(|record| record.id == id));
@@ -1140,6 +1141,7 @@ impl AgentView {
             .chain(self.inactive.values())
             .map(|chat| (chat.record.clone(), chat.controller.clone()))
             .collect();
+        let shutdown_workspace = self.workspace.clone();
         let plan = crate::shutdown_barrier::ShutdownPlan {
             read_states: Some(self.read_states.clone()),
             read_controllers,
@@ -1156,6 +1158,9 @@ impl AgentView {
             let outcome = task.await;
             let remove_window = view
                 .update(cx, |view, cx| {
+                    if !Arc::ptr_eq(&view.workspace, &shutdown_workspace) {
+                        return false;
+                    }
                     let completed = view.finish_shutdown(operation, outcome, cx);
                     completed && view.window_binding == binding
                 })

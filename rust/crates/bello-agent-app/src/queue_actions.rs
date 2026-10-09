@@ -83,22 +83,25 @@ impl AgentView {
         let project = self.project.clone();
         let read_states = self.read_states.clone();
         let workspace = self.workspace.clone();
+        let identity_workspace = workspace.clone();
         let record = self.record.clone();
         let task = cx.background_executor().spawn(async move {
             let baseline = crate::chat_organization::catalog_operation(&workspace, |store| {
                 crate::sidebar_read_state::prepare_admission(&read_states, store, &record, &worker)
             });
             let uncertain = baseline.uncertain;
-            let result = baseline.display_result().and_then(|()| {
-                worker
-                    .resume()
-                    .map_err(|error| format!("Queued messages could not be resumed: {error}"))
-            });
+            let result = baseline
+                .display_result()
+                .and_then(|()| worker.resume().map_err(|error| error.to_string()))
+                .map_err(|error| format!("Queued messages could not be resumed: {error}"));
             (result, uncertain)
         });
         cx.spawn(async move |view, cx| {
             let (result, uncertain) = task.await;
             let _ = view.update(cx, |view, cx| {
+                if !Arc::ptr_eq(&view.workspace, &identity_workspace) {
+                    return;
+                }
                 if view.project == project {
                     view.observe_catalog_uncertainty(uncertain, cx);
                 }

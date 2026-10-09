@@ -775,6 +775,13 @@ fn archive_waits_for_real_generic_retry_failure_without_erasing_that_error(
     let first = id(&view, cx);
     window
         .update(cx, |view, _, cx| {
+            // Exercise the Controller's missing-connection failure, not the
+            // earlier read-baseline admission fence for an unregistered row.
+            view.workspace
+                .lock()
+                .unwrap()
+                .register(view.record.clone(), view.saved_draft(cx))
+                .unwrap();
             view.command(
                 cx,
                 None,
