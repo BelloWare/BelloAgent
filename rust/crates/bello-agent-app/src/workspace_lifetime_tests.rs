@@ -21,6 +21,17 @@ fn fixture(
     WindowHandle<AgentView>,
     Entity<AgentView>,
 ) {
+    fixture_with_title(cx, None)
+}
+
+fn fixture_with_title(
+    cx: &mut TestAppContext,
+    title: Option<&'static str>,
+) -> (
+    tempfile::TempDir,
+    WindowHandle<AgentView>,
+    Entity<AgentView>,
+) {
     let directory = tempfile::tempdir().unwrap();
     let project = std::fs::canonicalize(directory.path()).unwrap();
     let store = SessionStore::pending();
@@ -49,7 +60,10 @@ fn fixture(
         pending: true,
     };
     let window = cx
-        .update(|cx| WorkspaceLifetime::launch(launch, cx))
+        .update(|cx| match title {
+            Some(title) => WorkspaceLifetime::launch_with_title(launch, title, cx),
+            None => WorkspaceLifetime::launch(launch, cx),
+        })
         .unwrap();
     let root = window.root(cx).unwrap();
     cx.run_until_parked();
@@ -63,6 +77,84 @@ fn detach(window: WindowHandle<AgentView>, cx: &mut TestAppContext) {
         .update(cx, |_, window, _| window.remove_window())
         .unwrap();
     cx.run_until_parked();
+}
+
+#[gpui::test]
+fn ordinary_title_is_set_at_creation_and_preserved_on_reopen(cx: &mut TestAppContext) {
+    let (_dir, first, root) = fixture(cx);
+    assert_eq!(
+        VisualTestContext::from_window(first.into(), cx)
+            .window_title()
+            .as_deref(),
+        Some("Bello Agent")
+    );
+    assert_eq!(
+        cx.read(|cx| cx.global::<WorkspaceLifetime>().title),
+        "Bello Agent"
+    );
+    assert_eq!(cx.update(WorkspaceLifetime::ensure_window).unwrap(), first);
+    detach(first, cx);
+    let reopened = cx.update(WorkspaceLifetime::ensure_window).unwrap();
+    assert_ne!(first.window_id(), reopened.window_id());
+    assert_eq!(reopened.root(cx).unwrap().entity_id(), root.entity_id());
+    assert_eq!(
+        VisualTestContext::from_window(reopened.into(), cx)
+            .window_title()
+            .as_deref(),
+        Some("Bello Agent")
+    );
+}
+
+#[gpui::test]
+fn explicit_title_stays_with_retained_workspace_across_reuse_and_reopen(cx: &mut TestAppContext) {
+    const TITLE: &str = "Bello Agent — SYNTHETIC SIDEBAR VALIDATION — NO PROVIDER";
+    let (_dir, first, root) = fixture_with_title(cx, Some(TITLE));
+    assert_eq!(
+        VisualTestContext::from_window(first.into(), cx)
+            .window_title()
+            .as_deref(),
+        Some(TITLE)
+    );
+    assert_eq!(cx.read(|cx| cx.global::<WorkspaceLifetime>().title), TITLE);
+    let controller = cx.read(|cx| root.read(cx).controller.clone());
+    let composer = cx.read(|cx| root.read(cx).composer.clone());
+    cx.simulate_input(first.into(), "retained title draft");
+    assert_eq!(cx.update(WorkspaceLifetime::ensure_window).unwrap(), first);
+    assert_eq!(cx.read(|cx| cx.windows().len()), 1);
+    assert_eq!(
+        VisualTestContext::from_window(first.into(), cx)
+            .window_title()
+            .as_deref(),
+        Some(TITLE)
+    );
+    detach(first, cx);
+    let reopened = cx.update(WorkspaceLifetime::ensure_window).unwrap();
+    cx.run_until_parked();
+    assert_ne!(first.window_id(), reopened.window_id());
+    let retained = reopened.root(cx).unwrap();
+    assert_eq!(retained.entity_id(), root.entity_id());
+    assert_eq!(
+        VisualTestContext::from_window(reopened.into(), cx)
+            .window_title()
+            .as_deref(),
+        Some(TITLE)
+    );
+    assert_eq!(cx.read(|cx| cx.global::<WorkspaceLifetime>().title), TITLE);
+    assert_eq!(cx.read(|cx| cx.windows().len()), 1);
+    assert!(cx.read(|cx| Arc::ptr_eq(&retained.read(cx).controller, &controller)));
+    assert_eq!(
+        cx.read(|cx| retained.read(cx).composer.entity_id()),
+        composer.entity_id()
+    );
+    assert_eq!(
+        cx.read(|cx| composer.read(cx).text().to_owned()),
+        "retained title draft"
+    );
+    cx.simulate_keystrokes(reopened.into(), "cmd-z");
+    assert_ne!(
+        cx.read(|cx| composer.read(cx).text().to_owned()),
+        "retained title draft"
+    );
 }
 
 #[gpui::test]

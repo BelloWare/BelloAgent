@@ -53,7 +53,41 @@ jobs:
           python3 scripts/source-utf8-log-transfer.py emit "$RUNNER_TEMP/a4-modern-bundle" --receipt "$RUNNER_TEMP/a4-modern-receipt.json"
       - name: Run pure domain and filesystem tests
         # No GPUI application launch, permissions, keychain, capture or updater actions.
-        run: cargo test --locked -p bello-agent-core
+        run: |
+          set -o pipefail
+          cargo test --locked -p bello-agent-core 2>&1 | tee "$RUNNER_TEMP/bello-agent-core-native.log"
+      - name: Bound native Core diagnostic text
+        if: always()
+        run: |
+          python3 - <<'PYLOG'
+          import hashlib, os, pathlib
+          root = pathlib.Path(os.environ["RUNNER_TEMP"])
+          source = root / "bello-agent-core-native.log"
+          target = root / "bello-agent-core-native-bounded.log"
+          limit = 2 * 1024 * 1024
+          if source.is_file():
+              size = source.stat().st_size
+              digest = hashlib.sha256()
+              with source.open("rb") as stream:
+                  for chunk in iter(lambda: stream.read(65536), b""):
+                      digest.update(chunk)
+                  stream.seek(max(0, size - limit))
+                  tail = stream.read(limit)
+              header = (f"Synthetic native Core test log; original_bytes={size}; "
+                        f"sha256={digest.hexdigest()}; tail_truncated={size > limit}\n")
+              target.write_bytes(header.encode() + tail)
+          else:
+              target.write_text("Native Core test log was not produced; the test step may not have been reached.\n")
+          PYLOG
+      - name: Retain bounded native Core diagnostic text
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-core-text-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/bello-agent-core-native-bounded.log
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 9
       - name: Verify pinned sidebar SQLite and synthetic privacy fixtures
         # Owned temporary fixtures only. Production cache readiness stays closed.
         # The macOS run exercises native ACL/VFS code, not TCC or GUI acceptance.

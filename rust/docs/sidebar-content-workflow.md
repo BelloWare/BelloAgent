@@ -149,3 +149,7 @@ inference time is unavailable. Native cache ACL/VFS/dependency execution and nat
 UI acceptance remain separate gates. Production activation requires accepted
 privacy/platform readiness evidence and resolution of the outstanding scheduling
 and native workflow acceptance items; this commit does not turn it on.
+
+## Startup title and CI diagnostic follow-on
+
+See [the 2026-10-09 validation note](validation/sidebar-title-acl-followon-2026-10-09.md) for the exact `rust`/`main` baseline, supported Linux title-order correction, separately unproven ACL diagnosis, and bounded native Core failure logs. Production content-search admission remains closed.

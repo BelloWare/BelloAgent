@@ -26,6 +26,7 @@ impl WindowBinding {
 pub(crate) struct WorkspaceLifetime {
     view: Entity<AgentView>,
     window: WindowHandle<AgentView>,
+    title: &'static str,
 }
 impl Global for WorkspaceLifetime {}
 
@@ -46,19 +47,34 @@ impl WorkspaceLifetime {
         launch: LaunchState,
         cx: &mut App,
     ) -> Result<WindowHandle<AgentView>, String> {
+        Self::launch_with_title(launch, "Bello Agent", cx)
+    }
+
+    /// Set the final title in root construction before the first draw. The
+    /// Linux validation fixture must not retitle the window after open_window
+    /// returns: that extra synchronous X11 title update can stall initial paint.
+    pub(crate) fn launch_with_title(
+        launch: LaunchState,
+        title: &'static str,
+        cx: &mut App,
+    ) -> Result<WindowHandle<AgentView>, String> {
         if cx.has_global::<Self>() {
             return Err("Workspace lifetime is already installed".into());
         }
         let window = cx
             .open_window(options(cx), move |window, cx| {
-                window.set_window_title("Bello Agent");
+                window.set_window_title(title);
                 cx.new(|cx| AgentView::new(launch, window, cx))
             })
             .map_err(|error| error.to_string())?;
         let view = window
             .update(cx, |_, _, cx| cx.entity())
             .map_err(|error| error.to_string())?;
-        cx.set_global(Self { view, window });
+        cx.set_global(Self {
+            view,
+            window,
+            title,
+        });
         cx.on_app_quit(|cx| {
             // Match the old window-owned release timing: shutdown calls this
             // before clearing windows and flushing entity release effects.
@@ -79,6 +95,7 @@ impl WorkspaceLifetime {
         let owner = cx.global::<Self>();
         let handle = owner.window;
         let view = owner.view.clone();
+        let title = owner.title;
         if view.read(cx).shutting_down || view.read(cx).close_ready {
             return Err("Workspace is shutting down".into());
         }
@@ -96,7 +113,7 @@ impl WorkspaceLifetime {
         // request cannot interleave and create a duplicate workspace window.
         let replacement = cx
             .open_window(options(cx), move |window, cx| {
-                window.set_window_title("Bello Agent");
+                window.set_window_title(title);
                 view.update(cx, |view, cx| view.bind_window(window, cx));
                 view
             })

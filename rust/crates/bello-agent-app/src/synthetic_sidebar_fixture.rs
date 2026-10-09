@@ -131,21 +131,49 @@ fn owned_mode(metadata: &fs::Metadata, directory: bool, private: bool, expected_
             metadata.mode() & 0o022 == 0
         }
 }
-fn validate(file: &File, directory: bool, private: bool) -> Result<()> {
+/// The probe is bounded so repeated interruption remains a closed admission.
+fn exclude_acl(
+    role: &str,
+    attribute: &str,
+    mut probe: impl FnMut() -> (isize, Option<i32>),
+) -> Result<()> {
+    const MAX_ATTEMPTS: usize = 3;
+    for attempt in 1..=MAX_ATTEMPTS {
+        let (count, errno) = probe();
+        if count < 0 && matches!(errno, Some(libc::ENODATA) | Some(libc::ENOTSUP)) {
+            return Ok(());
+        }
+        if count < 0 && errno == Some(libc::EINTR) && attempt < MAX_ATTEMPTS {
+            continue;
+        }
+        return Err(format!(
+            "Synthetic fixture ACL could not be excluded: role={role}, attribute={attribute}, result={count}, errno={errno:?}, attempts={attempt}"
+        ).into());
+    }
+    unreachable!("the final interrupted probe returns a closed admission")
+}
+fn validate(file: &File, directory: bool, private: bool, role: &str) -> Result<()> {
     if !owned_mode(&file.metadata()?, directory, private, uid()) {
-        return Err("Unsafe synthetic fixture owner, type, links, or permissions".into());
+        return Err(format!(
+            "Unsafe synthetic fixture owner, type, links, or permissions: role={role}"
+        )
+        .into());
     }
     for attr in [c"system.posix_acl_access", c"system.posix_acl_default"] {
-        // SAFETY: valid owned descriptor, constant name, no output buffer.
-        let value =
-            unsafe { libc::fgetxattr(file.as_raw_fd(), attr.as_ptr(), std::ptr::null_mut(), 0) };
-        let error = std::io::Error::last_os_error().raw_os_error();
-        if value >= 0 || !matches!(error, Some(libc::ENODATA) | Some(libc::ENOTSUP)) {
-            return Err("Synthetic fixture ACL could not be excluded".into());
-        }
+        exclude_acl(role, attr.to_str()?, || {
+            // SAFETY: valid owned descriptor, constant name, no output buffer.
+            let count = unsafe {
+                libc::fgetxattr(file.as_raw_fd(), attr.as_ptr(), std::ptr::null_mut(), 0)
+            };
+            let errno = (count < 0)
+                .then(|| std::io::Error::last_os_error().raw_os_error())
+                .flatten();
+            (count, errno)
+        })?;
     }
     Ok(())
 }
+
 fn checked(fd: i32) -> Result<File> {
     if fd < 0 {
         return Err(std::io::Error::last_os_error().into());
@@ -179,7 +207,12 @@ fn directory_at(
                 | libc::O_NONBLOCK,
         )
     })?;
-    validate(&file, true, private)?;
+    validate(
+        &file,
+        true,
+        private,
+        &format!("directory component {name:?}; private={private}"),
+    )?;
     Ok(file)
 }
 fn regular(path: &Path) -> Result<File> {
@@ -187,7 +220,12 @@ fn regular(path: &Path) -> Result<File> {
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
         .open(path)?;
-    validate(&file, false, true)?;
+    validate(
+        &file,
+        false,
+        true,
+        &format!("private regular file {}", path.display()),
+    )?;
     Ok(file)
 }
 fn read_small(path: &Path, limit: u64) -> Result<Vec<u8>> {
@@ -212,7 +250,7 @@ impl DisposableRoot {
                 libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
             )
         })?;
-        validate(&parent, true, false)?;
+        validate(&parent, true, false, "filesystem root /")?;
         let parts: Vec<_> = path
             .components()
             .filter_map(|part| match part {
@@ -280,7 +318,12 @@ impl DisposableRoot {
     }
     fn walk(directory: &Path, relative: &Path, namespace: Option<&str>) -> Result<()> {
         let file = File::open(directory)?;
-        validate(&file, true, true)?;
+        validate(
+            &file,
+            true,
+            true,
+            &format!("private tree directory {}", directory.display()),
+        )?;
         for item in fs::read_dir(directory)? {
             let item = item?;
             let name = item.file_name();
@@ -614,13 +657,14 @@ pub(crate) fn run(path: PathBuf) -> Result<()> {
                 authority: Arc::new(bello_agent_core::project_authority::ProjectAuthority::new()),
                 mode: AuthorityMode::Unavailable,
             });
-            let window = WorkspaceLifetime::launch(launch, cx)
-                .expect("Could not create synthetic validation window");
+            let window = WorkspaceLifetime::launch_with_title(
+                launch,
+                "Bello Agent — SYNTHETIC SIDEBAR VALIDATION — NO PROVIDER",
+                cx,
+            )
+            .expect("Could not create synthetic validation window");
             window
-                .update(cx, |view, window, cx| {
-                    window.set_window_title(
-                        "Bello Agent — SYNTHETIC SIDEBAR VALIDATION — NO PROVIDER",
-                    );
+                .update(cx, |view, _, cx| {
                     assert!(
                         view.install_synthetic_sidebar_cache(cache, cx),
                         "Synthetic cache owner differs from launch workspace"
@@ -648,6 +692,7 @@ pub(crate) fn run(path: PathBuf) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use super::exclude_acl;
     use super::{
         DisposableRoot, IDS, MARKER, Marker, Prepared, allowed_path, owned_mode, prepare,
         requested, uid, validate_catalog,
@@ -664,6 +709,79 @@ mod tests {
             .permissions(fs::Permissions::from_mode(0o700))
             .tempdir_in(std::env::current_dir().unwrap())
             .unwrap()
+    }
+    #[test]
+    fn acl_probe_retries_only_interruption_with_a_fixed_bound() {
+        let mut calls = 0;
+        exclude_acl("injected directory", "access", || {
+            calls += 1;
+            (
+                -1,
+                Some(if calls < 3 {
+                    libc::EINTR
+                } else {
+                    libc::ENODATA
+                }),
+            )
+        })
+        .unwrap();
+        assert_eq!(calls, 3);
+        let mut calls = 0;
+        let error = exclude_acl("injected directory", "access", || {
+            calls += 1;
+            (-1, Some(libc::EINTR))
+        })
+        .unwrap_err()
+        .to_string();
+        assert_eq!(calls, 3);
+        assert!(error.contains("role=injected directory"));
+        assert!(error.contains("attribute=access"));
+        assert!(error.contains("result=-1"));
+        assert!(error.contains(&format!("errno=Some({})", libc::EINTR)));
+        assert!(error.contains("attempts=3"));
+    }
+    #[test]
+    fn acl_probe_never_accepts_real_acl_or_unexpected_failure() {
+        for result in [
+            (0, None),
+            (28, None),
+            (0, Some(libc::EINTR)),
+            (-1, Some(libc::EIO)),
+            (-1, Some(libc::EACCES)),
+            (-1, None),
+        ] {
+            let mut calls = 0;
+            assert!(
+                exclude_acl("injected file", "default", || {
+                    calls += 1;
+                    result
+                })
+                .is_err()
+            );
+            assert_eq!(calls, 1);
+        }
+        for errno in [libc::ENODATA, libc::ENOTSUP] {
+            let mut calls = 0;
+            exclude_acl("injected file", "default", || {
+                calls += 1;
+                (-1, Some(errno))
+            })
+            .unwrap();
+            assert_eq!(calls, 1);
+        }
+        let mut calls = 0;
+        assert!(
+            exclude_acl("injected file", "default", || {
+                calls += 1;
+                if calls == 1 {
+                    (-1, Some(libc::EINTR))
+                } else {
+                    (28, None)
+                }
+            })
+            .is_err()
+        );
+        assert_eq!(calls, 2);
     }
     fn args(args: &[&str]) -> Vec<OsString> {
         args.iter().map(OsString::from).collect()
