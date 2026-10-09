@@ -1,6 +1,6 @@
 # Next release: 0.1.122
 
-**Not released.** 0.1.121 (build 125, tag `v0.1.121`) is the latest release.
+**Packaged 2026-10-09** as 0.1.122 (build 126); record `docs/validation/Bello-Agent-0.1.122-2026-10-09.md`. 0.1.121 (build 125, tag `v0.1.121`) is the latest public release until publication is verified.
 
 **Scope (owner, 2026-10-08):**
 - [x] **Mark as Unread**: a chat can be marked unread from the sidebar's context menu and the File menu; it shows the unread dot until opened, and survives a relaunch. Done on `dev/sidebar`: row, side-row and marked-rows menus plus File ▸ Mark as Unread; it looks and counts like one unread reply, **including the Dock badge** (decided with Codex; a later run failure does not take it off); opening the chat (the reader focusing it, not launch reopening it) clears it, seeing a reply does not; persisted in the read state; not for archived chats, connection tests, background requests, unkept sides or unsent New chats. VoiceOver: "<title>, unread"; the dot says "Unread". Gallery `27-sidebar-marked-unread-*`.
@@ -17,11 +17,11 @@
 **Rules:** AppKit only (no SwiftUI); Pi components (`docs/appkit-components.md`); every change planned and reviewed with Codex (gpt-6.1-sol, xhigh, read-only) to no findings, plus a final whole-change Codex double-check with advice; mutation-checked tests; serial-lane classes alone; work on `dev/next` via workstream branches; `main` only at release.
 
 ## Before release
-- [ ] Codex whole-change double-check from 0.1.121 (`f4f80ddd`), with advice.
-- [ ] Full gate (`scripts/verify-release.sh`), run alone.
-- [ ] Hour-long soak of a Release build, no exceptions.
-- [ ] Gallery review of the new states (light/dark, 920×600).
-- [ ] Release notes.
+- [x] Codex whole-change double-check from 0.1.121 (`f4f80ddd`), with advice.
+- [x] Full gate (`scripts/verify-release.sh`), run alone.
+- [x] Hour-long soak of a Release build, no exceptions.
+- [x] Gallery review of the new states (light/dark, 920×600).
+- [x] Release notes.
 
 ---
 
