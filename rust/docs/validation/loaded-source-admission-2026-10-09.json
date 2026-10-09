@@ -1,0 +1,297 @@
+{
+  "scope": "Backend-only loaded source witness and paired Controller capture; no App search, catalog membership, projection integration or persistent index enablement.",
+  "baseline_commit": "9881049bb8b92bcf56a52d50ada61f38c0e3a290",
+  "baseline_tree": "b71ed5f5ae35a855e59544fe0afac0518449e46d",
+  "source_files": {
+    "rust/crates/bello-agent-core/src/lib.rs": "5e14a7d324ff5710b6f658d7006c3f46eab4af0c6502d00c8f5f6fa0cbe91924",
+    "rust/crates/bello-agent-core/src/runtime.rs": "842abddb98601ccd1ec0a08b717f8c2c399b5a53eb54eaeb84ebae9fd480358a",
+    "rust/crates/bello-agent-core/src/session.rs": "143afa8cd1c38e8dacab171703679817af38a3543369e61bc78bd6c56f4dba25",
+    "rust/crates/bello-agent-core/src/source_admission.rs": "fee47cf5fa3dd8c1d511b97b07f81783e5df2869b930e9352efc5bea4041b00c",
+    "rust/crates/bello-agent-core/src/runtime_source_admission_tests.rs": "8cb779c6674320ec85961fce7f68a46858efd530b1ce138bf3a81fbf5f52c257",
+    "rust/crates/bello-agent-core/src/session_source_admission_tests.rs": "915876a84952655094fecb24ef5b149d9f7a8d918ba99e5bae016bf45d546958"
+  },
+  "privacy": "Raw accepted Session contains reasoning, provider items, pending inputs and other private nonsearchable containers. Capture is not an approved projection. Future projection must explicitly exclude them; no raw Session fixture or user data is included here.",
+  "checks": [
+    {
+      "name": "focused-owner-fix",
+      "started": "2026-10-09T10:08:17.313821+00:00",
+      "finished": "2026-10-09T10:08:37.869151+00:00",
+      "seconds": 20.555336526005703,
+      "exit_code": 0,
+      "command": "cd /workspace/shared/agent-loaded-source-witness && source /workspace/shared/build-recovery/env.sh && rustfmt --edition 2024 rust/crates/bello-agent-core/src/{source_admission,session_source_admission_tests,runtime_source_admission_tests,session,runtime,lib}.rs && cargo test --offline --locked --manifest-path rust/Cargo.toml -p bello-agent-core --lib source_admission",
+      "log_sha256": "c142f16e16017cae46bc6de6078352c43cf2d24e3d85fd2b490910f5d60b6ca8",
+      "test_results": [
+        "test result: ok. 33 passed; 0 failed; 0 ignored; 0 measured; 589 filtered out; finished in 0.84s"
+      ]
+    },
+    {
+      "name": "final-core-default",
+      "started": "2026-10-09T10:15:54.943011+00:00",
+      "finished": "2026-10-09T10:16:31.734967+00:00",
+      "seconds": 36.791980043002695,
+      "exit_code": 0,
+      "command": "cd /workspace/shared/agent-loaded-source-witness && source /workspace/shared/build-recovery/env.sh && cargo test --offline --locked --manifest-path rust/Cargo.toml -p bello-agent-core",
+      "log_sha256": "2e170d151e6dbecc166b0fb50d29b0be531489b56141b20329b701590cbda1fd",
+      "test_results": [
+        "test result: ok. 622 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.88s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.22s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s",
+        "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s",
+        "test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.26s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.95s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s",
+        "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s",
+        "test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s",
+        "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s"
+      ]
+    },
+    {
+      "name": "final-core-all-features",
+      "started": "2026-10-09T10:16:31.761444+00:00",
+      "finished": "2026-10-09T10:17:17.168416+00:00",
+      "seconds": 45.40698219499609,
+      "exit_code": 0,
+      "command": "cd /workspace/shared/agent-loaded-source-witness && source /workspace/shared/build-recovery/env.sh && cargo test --offline --locked --manifest-path rust/Cargo.toml -p bello-agent-core --all-features",
+      "log_sha256": "6ab3110d43b29c0998ddee21196af781fef2da78683f18918477d498e5cbc698",
+      "test_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 806 filtered out; finished in 0.01s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 806 filtered out; finished in 0.01s",
+        "test result: ok. 807 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.62s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.22s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s",
+        "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s",
+        "test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.27s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.15s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s",
+        "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s",
+        "test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s",
+        "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s"
+      ]
+    },
+    {
+      "name": "final-core-clippy-format",
+      "started": "2026-10-09T10:17:17.202288+00:00",
+      "finished": "2026-10-09T10:17:39.223878+00:00",
+      "seconds": 22.021598819002975,
+      "exit_code": 0,
+      "command": "cd /workspace/shared/agent-loaded-source-witness && source /workspace/shared/build-recovery/env.sh && cargo clippy --offline --locked --manifest-path rust/Cargo.toml -p bello-agent-core --all-targets -- -D warnings && cargo clippy --offline --locked --manifest-path rust/Cargo.toml -p bello-agent-core --all-targets --all-features -- -D warnings && cargo fmt --manifest-path rust/Cargo.toml --all -- --check && git diff --check",
+      "log_sha256": "a0a56817ddd23398c8131845a99cde4174fb177daa14129fea43b1d1b8904dec",
+      "test_results": []
+    },
+    {
+      "name": "final-app-default-gpui-env",
+      "started": "2026-10-09T10:19:55.421330+00:00",
+      "finished": "2026-10-09T10:21:06.409108+00:00",
+      "seconds": 70.98778390500229,
+      "exit_code": 0,
+      "command": "cd /workspace/shared/agent-loaded-source-witness && source /workspace/shared/build-recovery/env.sh && source /workspace/shared/build-recovery/gpui-env.sh && cargo test --offline --locked --manifest-path rust/Cargo.toml -p bello-agent-app",
+      "log_sha256": "84014f9dd7c9e43d26a6f89b69e940fe5a83d350e645ea05224fe64867cecab9",
+      "test_results": [
+        "test result: ok. 637 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 10.87s"
+      ]
+    },
+    {
+      "name": "final-app-all-features",
+      "started": "2026-10-09T10:21:06.442167+00:00",
+      "finished": "2026-10-09T10:21:57.658933+00:00",
+      "seconds": 51.21672551800293,
+      "exit_code": 0,
+      "command": "cd /workspace/shared/agent-loaded-source-witness && source /workspace/shared/build-recovery/env.sh && source /workspace/shared/build-recovery/gpui-env.sh && cargo test --offline --locked --manifest-path rust/Cargo.toml -p bello-agent-app --all-features",
+      "log_sha256": "ab039eea667ba4c8b99663398d21fb7705332335abde55378d661d5ae72baebc",
+      "test_results": [
+        "test result: ok. 782 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 15.13s"
+      ]
+    },
+    {
+      "name": "final-app-clippy",
+      "started": "2026-10-09T10:21:57.689514+00:00",
+      "finished": "2026-10-09T10:22:32.308891+00:00",
+      "seconds": 34.61938256400026,
+      "exit_code": 0,
+      "command": "cd /workspace/shared/agent-loaded-source-witness && source /workspace/shared/build-recovery/env.sh && source /workspace/shared/build-recovery/gpui-env.sh && cargo clippy --offline --locked --manifest-path rust/Cargo.toml -p bello-agent-app --all-targets -- -D warnings && cargo clippy --offline --locked --manifest-path rust/Cargo.toml -p bello-agent-app --all-targets --all-features -- -D warnings",
+      "log_sha256": "499a4053488d2a2d271fa73db2e4b36ab9e22b694c9927c35db400c8828511d3",
+      "test_results": []
+    }
+  ],
+  "earlier_failures": [
+    {
+      "name": "focused-29",
+      "started": "2026-10-09T10:02:33.534064+00:00",
+      "finished": "2026-10-09T10:02:52.329671+00:00",
+      "seconds": 18.795611772002303,
+      "exit_code": 101,
+      "command": "cd /workspace/shared/agent-loaded-source-witness && source /workspace/shared/build-recovery/env.sh && rustfmt --edition 2024 rust/crates/bello-agent-core/src/{source_admission,session_source_admission_tests,runtime_source_admission_tests,session,runtime,lib}.rs && cargo test --offline --locked --manifest-path rust/Cargo.toml -p bello-agent-core --lib source_admission",
+      "log_sha256": "65800e51f0530403a379d4e0ccb8872317def93f681c2ececf8a22d39d5a6f54"
+    },
+    {
+      "name": "focused-notify",
+      "started": "2026-10-09T10:03:50.586743+00:00",
+      "finished": "2026-10-09T10:04:09.426379+00:00",
+      "seconds": 18.839641033002408,
+      "exit_code": 101,
+      "command": "cd /workspace/shared/agent-loaded-source-witness && source /workspace/shared/build-recovery/env.sh && rustfmt --edition 2024 rust/crates/bello-agent-core/src/{source_admission,session_source_admission_tests,runtime_source_admission_tests,session,runtime,lib}.rs && cargo test --offline --locked --manifest-path rust/Cargo.toml -p bello-agent-core --lib source_admission",
+      "log_sha256": "685775715d0574fd1d3e3efae8b86f756e263cd239780925e8d87937a6664e7c"
+    },
+    {
+      "name": "final-app-default",
+      "started": "2026-10-09T10:17:49.734471+00:00",
+      "finished": "2026-10-09T10:18:55.499638+00:00",
+      "seconds": 65.76517706399318,
+      "exit_code": 101,
+      "command": "cd /workspace/shared/agent-loaded-source-witness && source /workspace/shared/build-recovery/env.sh && cargo test --offline --locked --manifest-path rust/Cargo.toml -p bello-agent-app",
+      "log_sha256": "8eae98d82e0408551136b79a70439beca4328551f83b1add114ca98a1638cd3f"
+    }
+  ],
+  "early_compile_probe": {
+    "matched_tests": 0,
+    "cargo_build_seconds": 19.36,
+    "claim": "Compilation only, not a test pass."
+  },
+  "early_focused_probe": {
+    "passed": 25,
+    "cargo_build_seconds": 16.75,
+    "test_execution_seconds": 0.01,
+    "claim": "Earlier pre-review checkpoint only; superseded by final 33-test source."
+  },
+  "source_mutants": {
+    "results": [
+      {
+        "name": "omit-checkpoint-publication",
+        "test": "runtime::source_admission_tests::change_and_launch_failures_revoke_even_without_controller_publish",
+        "started": "2026-10-09T10:13:50.852781+00:00",
+        "seconds": 17.861700353001652,
+        "exit_code": 101,
+        "caught": true,
+        "command": "source /workspace/shared/build-recovery/env.sh && cargo test --offline --locked --manifest-path rust/Cargo.toml -p bello-agent-core --lib runtime::source_admission_tests::change_and_launch_failures_revoke_even_without_controller_publish -- --exact"
+      },
+      {
+        "name": "revive-retired-on-finish",
+        "test": "runtime::source_admission_tests::retirement_revokes_before_waiting_for_actor_and_late_success_cannot_revive",
+        "started": "2026-10-09T10:14:08.715227+00:00",
+        "seconds": 17.720381946004636,
+        "exit_code": 101,
+        "caught": true,
+        "command": "source /workspace/shared/build-recovery/env.sh && cargo test --offline --locked --manifest-path rust/Cargo.toml -p bello-agent-core --lib runtime::source_admission_tests::retirement_revokes_before_waiting_for_actor_and_late_success_cannot_revive -- --exact"
+      },
+      {
+        "name": "omit-owner-poison-check",
+        "test": "runtime::source_admission_tests::poisoned_actor_refuses_capture_and_drop_revokes_existing_receipt",
+        "started": "2026-10-09T10:14:26.437397+00:00",
+        "seconds": 16.816474991006544,
+        "exit_code": 101,
+        "caught": true,
+        "command": "source /workspace/shared/build-recovery/env.sh && cargo test --offline --locked --manifest-path rust/Cargo.toml -p bello-agent-core --lib runtime::source_admission_tests::poisoned_actor_refuses_capture_and_drop_revokes_existing_receipt -- --exact"
+      },
+      {
+        "name": "replace-materialization-witness",
+        "test": "runtime::source_admission_tests::bound_pending_materialization_keeps_probe_and_controller_drop_revokes_with_actor_retained",
+        "started": "2026-10-09T10:14:43.255147+00:00",
+        "seconds": 18.05850158499379,
+        "exit_code": 101,
+        "caught": true,
+        "command": "source /workspace/shared/build-recovery/env.sh && cargo test --offline --locked --manifest-path rust/Cargo.toml -p bello-agent-core --lib runtime::source_admission_tests::bound_pending_materialization_keeps_probe_and_controller_drop_revokes_with_actor_retained -- --exact"
+      },
+      {
+        "name": "omit-final-capture-recheck",
+        "test": "runtime::source_admission_tests::controller_final_check_rejects_mutation_after_actor_capture",
+        "started": "2026-10-09T10:15:01.314879+00:00",
+        "seconds": 16.869139203001396,
+        "exit_code": 101,
+        "caught": true,
+        "command": "source /workspace/shared/build-recovery/env.sh && cargo test --offline --locked --manifest-path rust/Cargo.toml -p bello-agent-core --lib runtime::source_admission_tests::controller_final_check_rejects_mutation_after_actor_capture -- --exact"
+      },
+      {
+        "name": "reuse-source-incarnation",
+        "test": "session::source_admission_tests::dropped_store_revokes_and_reopen_gets_new_incarnation",
+        "started": "2026-10-09T10:15:18.184548+00:00",
+        "seconds": 17.377234630999737,
+        "exit_code": 101,
+        "caught": true,
+        "command": "source /workspace/shared/build-recovery/env.sh && cargo test --offline --locked --manifest-path rust/Cargo.toml -p bello-agent-core --lib session::source_admission_tests::dropped_store_revokes_and_reopen_gets_new_incarnation -- --exact"
+      }
+    ],
+    "restored_sha256": {
+      "runtime.rs": "842abddb98601ccd1ec0a08b717f8c2c399b5a53eb54eaeb84ebae9fd480358a",
+      "session.rs": "143afa8cd1c38e8dacab171703679817af38a3543369e61bc78bd6c56f4dba25",
+      "source_admission.rs": "fee47cf5fa3dd8c1d511b97b07f81783e5df2869b930e9352efc5bea4041b00c"
+    }
+  },
+  "ledger_negative_controls": [
+    {
+      "name": "wrong-production-total",
+      "exit_code": 1,
+      "caught": true
+    },
+    {
+      "name": "wrong-source-hash",
+      "exit_code": 1,
+      "caught": true
+    },
+    {
+      "name": "lost-shared-exclusion",
+      "exit_code": 1,
+      "caught": true
+    }
+  ],
+  "loc": {
+    "baseline_ledger_sha256": "59f8becfc78904a2b7dad1710d43874f0f37adc9392d5937bedf495cb345de64",
+    "ledger_sha256": "4cfd95bdf4d77d6408768c5c7ffd746ee72d0c001633deb529640ac5630109b4",
+    "delta": {
+      "production": 455,
+      "support": 957,
+      "benchmark": 0
+    },
+    "cumulative_counts": {
+      "production": 57688,
+      "support": 80052,
+      "benchmark": 1192
+    },
+    "excluded_evidence_nonblank": 366,
+    "shared_box_excluded": true,
+    "meaning": "Physical nonblank Rust LOC including comments. Backend production code is not enabled feature coverage or performance evidence."
+  },
+  "review": {
+    "final_rereview_complete": "2026-10-09T10:16:30Z",
+    "outcome": "No remaining blocking source-admission issue in bounded independent read-only review. Final six source hashes verified.",
+    "fixes": [
+      "Removed blocking watch-borrow notification exposure; Notify/token subscriptions have no external read guard.",
+      "Direct nonlocking weak-owner poison probe makes old receipts fail closed before another Controller API is called.",
+      "Controller Drop revokes even with a temporarily retained private actor Arc.",
+      "Unexpected post-write apply error makes search unavailable without changing original store/error semantics.",
+      "Added pending/multiple/cancelled notification wait regressions."
+    ]
+  },
+  "gui_and_native": "No new UI or actual-GUI run; prior 9881049 navigation receipt remains prior evidence only. No native macOS, signing, vault, real credentials, production provider spend or user-data search acceptance.",
+  "known_notice": "Pre-existing proc-macro-error2 v2.0.1 future-compatibility notice; strict checks passed.",
+  "observed_timing": {
+    "design_start": "2026-10-09T09:50:38Z",
+    "design_saved": "2026-10-09T09:54:18Z",
+    "design_seconds": 220,
+    "implementation_start": "2026-10-09T09:54:54Z",
+    "validation_completed": "2026-10-09T10:22:32Z",
+    "implementation_to_validation_seconds": 1658,
+    "waiting_for_rereview_after_parallel_validation_seconds_approx": 190,
+    "mutant_command_seconds": 104.70343270900776,
+    "inference_only_time": "Unavailable",
+    "meaning": "Task/command wall durations include build overhead and wait; not application latency."
+  },
+  "prepared_at": "2026-10-09T10:24:12.366737+00:00"
+}

@@ -2296,3 +2296,19 @@ This is a prerequisite checkpoint, not enabled sidebar content search. Loaded
 versus durable-source certainty publication, persistent indexing, native latency
 and macOS Quit acceptance remain separate gates. The unintegrated pure projection
 experiment is not part of this source checkpoint.
+
+## Loaded-source search certainty prerequisite (2026-10-09)
+
+Core now provides a raw accepted Session paired with revocable source certainty,
+incarnation/revision/stream identity, and immediate retirement/poison fencing.
+Store-level guards cover success and failure even when display publication is
+skipped; materialization preserves the source lifetime, and reopened owners get
+fresh identities. Notifications expose no blocking borrow guard. Review fixes and
+six caught/restored mutation controls are recorded in the
+[bounded contract](loaded-source-admission.md).
+
+This supersedes only the loaded-source certainty gap in the preceding prerequisite.
+It does not enable catalog/project membership admission, App search UI, the separate
+pure projection, unloaded search or persistent indexing. Raw Session includes private
+containers that a future reviewed projection must exclude. No new actual-GUI or
+native acceptance is claimed; earlier navigation evidence remains prior evidence.

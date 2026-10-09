@@ -149,7 +149,8 @@ struct PreparedFindPublication {
 /// One provider worker per conversation. UI commands and response completion
 /// serialize through the same mutex; disk commits precede acknowledging commands.
 pub struct Controller {
-    inner: Mutex<Inner>,
+    source_witness: crate::source_admission::SourceWitness,
+    inner: Arc<Mutex<Inner>>,
     published: tokio::sync::watch::Sender<Arc<Session>>,
     find_published: RwLock<crate::FindSnapshot>,
     published_revision: AtomicU64,
@@ -186,6 +187,12 @@ pub struct Controller {
     runtime: tokio::runtime::Handle,
     worker: Mutex<Option<tokio::task::JoinHandle<()>>>,
     worker_joins: Mutex<Vec<(tokio::task::Id, WorkerJoin)>>,
+}
+impl Drop for Controller {
+    fn drop(&mut self) {
+        // Revoke even if an internal health probe briefly upgraded the actor.
+        self.source_witness.retire();
+    }
 }
 impl Controller {
     #[cfg(all(test, feature = "synthetic-authority"))]
@@ -263,7 +270,8 @@ impl Controller {
             client
         };
         let initial = Arc::new(store.snapshot());
-        Ok(Arc::new(Self {
+        let controller = Arc::new(Self {
+            source_witness: store.source_witness(),
             accepted_read: tokio::sync::watch::channel(store.read_observation()).0,
             find_published: RwLock::new(crate::FindSnapshot::new(
                 initial.clone(),
@@ -281,7 +289,7 @@ impl Controller {
             suspension_owner: AtomicU64::new(0),
             suspension_released: tokio::sync::Notify::new(),
             worker_active: AtomicBool::new(false),
-            inner: Mutex::new(Inner {
+            inner: Arc::new(Mutex::new(Inner {
                 live_tools: Vec::new(),
                 store,
                 worker_running: false,
@@ -294,7 +302,7 @@ impl Controller {
                 configuration_epoch: Arc::new(()),
                 #[cfg(feature = "synthetic-authority")]
                 applied_instructions: None,
-            }),
+            })),
             config: RwLock::new(configuration),
             configuration_generation: AtomicU64::new(0),
             project_resources: None,
@@ -317,7 +325,9 @@ impl Controller {
             runtime: shared_runtime()?.handle().clone(),
             worker: Mutex::new(None),
             worker_joins: Mutex::new(Vec::new()),
-        }))
+        });
+        controller.source_witness.bind_owner(&controller.inner);
+        Ok(controller)
     }
     pub fn configuration(&self) -> Option<Arc<Configuration>> {
         self.config.read().ok()?.clone()
@@ -471,6 +481,43 @@ impl Controller {
     }
     pub fn revision(&self) -> u64 {
         self.published_revision.load(Ordering::Acquire)
+    }
+    /// Small revocation publication; no actor mutex, filesystem or transcript clone.
+    pub fn search_source_witness(&self) -> crate::source_admission::SourceWitness {
+        if self.inner.is_poisoned() {
+            self.source_witness.unavailable();
+        }
+        self.source_witness.clone()
+    }
+    /// Capture raw accepted state under the actor lock. Run on a background
+    /// worker: it can wait for persistence and clone a large history. This is
+    /// search-content evidence only, never runtime, membership or tool authority.
+    pub fn loaded_search_source(
+        &self,
+    ) -> std::result::Result<
+        crate::source_admission::LoadedSourceSnapshot,
+        crate::source_admission::SourceUnavailable,
+    > {
+        let source = {
+            let inner = self.inner.lock().map_err(|_| {
+                self.source_witness.unavailable();
+                crate::source_admission::SourceUnavailable
+            })?;
+            if self.is_retired() {
+                return Err(crate::source_admission::SourceUnavailable);
+            }
+            inner.store.capture_search_source()?
+        };
+        #[cfg(test)]
+        SOURCE_CAPTURE_HOOK.with(|hook| {
+            if let Some(hook) = hook.borrow_mut().as_mut() {
+                hook();
+            }
+        });
+        if self.is_retired() || !source.is_current() {
+            return Err(crate::source_admission::SourceUnavailable);
+        }
+        Ok(source)
     }
     pub fn snapshot(&self) -> Session {
         (*self.snapshot_shared()).clone()
@@ -683,6 +730,7 @@ impl Controller {
     /// admitted work may settle; retire_and_wait releases the writer only after
     /// every worker successfully joins, even when stale Arcs still exist.
     pub fn retire(&self) -> Result<()> {
+        self.source_witness.retire();
         self.retired.store(true, Ordering::Release);
         let stopped = self.stop();
         // Admission, checkpointing, reservation and handle registration share the
@@ -2573,3 +2621,11 @@ mod read_observation_tests;
 #[cfg(test)]
 #[path = "retained_find_runtime_tests.rs"]
 mod retained_find_tests;
+
+#[cfg(test)]
+thread_local! {
+    static SOURCE_CAPTURE_HOOK: std::cell::RefCell<Option<Box<dyn FnMut()>>> = std::cell::RefCell::new(None);
+}
+#[cfg(test)]
+#[path = "runtime_source_admission_tests.rs"]
+mod source_admission_tests;

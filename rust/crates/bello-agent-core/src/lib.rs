@@ -22,6 +22,7 @@ pub mod session;
 mod skill_metadata;
 mod skill_schema;
 pub mod skills;
+pub mod source_admission;
 pub mod sse;
 mod stream_journal;
 #[cfg(feature = "synthetic-authority")]

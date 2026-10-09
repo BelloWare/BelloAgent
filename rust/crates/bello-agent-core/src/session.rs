@@ -928,8 +928,14 @@ pub(crate) enum WriteFault {
     AfterRename,
     StreamMetadata,
     StreamAppend,
+    StreamPartialAppend,
     StreamSync,
     StreamDirectorySync,
+    StreamApply,
+}
+#[cfg(test)]
+thread_local! {
+    static SOURCE_OPEN_FAULT: std::cell::Cell<WriteFault> = const { std::cell::Cell::new(WriteFault::None) };
 }
 const MAX_SNAPSHOT_BYTES: usize = 256 * 1024 * 1024;
 // Kept outside streamed text admission so cancellation/recovery can always
@@ -1131,6 +1137,7 @@ pub(crate) fn verify_inspection_file(
 }
 
 pub struct SessionStore {
+    source_witness: crate::source_admission::SourceWitness,
     find_token: crate::retained_find::ContentToken,
     read_observation: crate::read_observation::AcceptedReadObservation,
     #[cfg(test)]
@@ -1143,6 +1150,11 @@ pub struct SessionStore {
     journal: Option<File>,
     encoded_bytes: usize,
     snapshot_limit: usize,
+}
+impl Drop for SessionStore {
+    fn drop(&mut self) {
+        self.source_witness.retire();
+    }
 }
 impl SessionStore {
     /// An on-screen New chat has no file, lock, accepted input, or running work.
@@ -1158,6 +1170,11 @@ impl SessionStore {
             _lock: None,
             read_observation: crate::read_observation::AcceptedReadObservation::initial(&session),
             find_token: crate::retained_find::ContentToken::fresh(),
+            source_witness: crate::source_admission::SourceWitness::new(
+                &session,
+                &PathBuf::new(),
+                crate::source_admission::SourceStatus::Pending,
+            ),
             session,
             uncertain: false,
             retired: false,
@@ -1186,6 +1203,12 @@ impl SessionStore {
         self._lock.is_some()
     }
     pub fn persist_to(&mut self, path: impl AsRef<Path>) -> Result<()> {
+        let publication = self.source_witness.begin();
+        let result = self.persist_to_inner(path);
+        publication.finish(&self.session, &self.path, self.source_status());
+        result
+    }
+    fn persist_to_inner(&mut self, path: impl AsRef<Path>) -> Result<()> {
         self.require_live_writer()?;
         if self.is_persistent() {
             let requested = if path.as_ref().is_absolute() {
@@ -1212,6 +1235,9 @@ impl SessionStore {
                 if crate::retained_find::same_projection(&self.session, &store.session) {
                     store.find_token = self.find_token.clone();
                 }
+                // The old pending shell drops below. Give it the temporary
+                // store's unused witness, retaining this Controller's identity.
+                std::mem::swap(&mut store.source_witness, &mut self.source_witness);
                 *self = store;
                 Ok(())
             }
@@ -1367,8 +1393,13 @@ impl SessionStore {
 
         let encoded_bytes = encode_snapshot(&session)?.len();
         let store = Self {
+            source_witness: crate::source_admission::SourceWitness::new(
+                &session,
+                &path,
+                crate::source_admission::SourceStatus::Certain,
+            ),
             #[cfg(test)]
-            fault: WriteFault::None,
+            fault: SOURCE_OPEN_FAULT.with(std::cell::Cell::get),
             path,
             _lock: Some(lock),
             read_observation: crate::read_observation::AcceptedReadObservation::initial(&session),
@@ -1411,6 +1442,7 @@ impl SessionStore {
     /// every worker successfully joined. Cached snapshots remain readable, but
     /// this store can never regain write or authoritative recovery access.
     pub(crate) fn retire_writer(&mut self) {
+        self.source_witness.retire();
         self.retired = true;
         self.journal = None;
         self._lock = None;
@@ -1431,6 +1463,37 @@ impl SessionStore {
     pub(crate) fn find_token(&self) -> crate::retained_find::ContentToken {
         self.find_token.clone()
     }
+    fn source_status(&self) -> crate::source_admission::SourceStatus {
+        use crate::source_admission::SourceStatus;
+        if self.retired {
+            SourceStatus::Retired
+        } else if self.uncertain {
+            SourceStatus::Uncertain
+        } else if self.is_persistent() {
+            SourceStatus::Certain
+        } else if self.is_never_materialized() {
+            SourceStatus::Pending
+        } else {
+            SourceStatus::Unavailable
+        }
+    }
+    pub(crate) fn source_witness(&self) -> crate::source_admission::SourceWitness {
+        self.source_witness.clone()
+    }
+    /// Caller holds its Controller actor mutex. Never use a display snapshot.
+    pub(crate) fn capture_search_source(
+        &self,
+    ) -> std::result::Result<
+        crate::source_admission::LoadedSourceSnapshot,
+        crate::source_admission::SourceUnavailable,
+    > {
+        self.require_certain()
+            .map_err(|_| crate::source_admission::SourceUnavailable)?;
+        if !self.is_persistent() {
+            return Err(crate::source_admission::SourceUnavailable);
+        }
+        self.source_witness.capture(&self.session)
+    }
     pub fn snapshot_revision(&self) -> u64 {
         self.session.revision
     }
@@ -1443,6 +1506,12 @@ impl SessionStore {
         &self.session
     }
     pub fn transact<T>(&mut self, change: impl FnOnce(&mut Session) -> Result<T>) -> Result<T> {
+        let publication = self.source_witness.begin();
+        let result = self.transact_inner(change);
+        publication.finish(&self.session, &self.path, self.source_status());
+        result
+    }
+    fn transact_inner<T>(&mut self, change: impl FnOnce(&mut Session) -> Result<T>) -> Result<T> {
         self.require_live_writer()?;
         if !self.is_persistent() {
             return Err(invalid("Materialize this New chat before accepting input"));
@@ -1516,6 +1585,12 @@ impl SessionStore {
     /// Append and synchronize only the new stream fragment. Accepted input and
     /// queue/edit commands still use atomic full checkpoints through transact.
     pub fn append_delta(&mut self, reply_id: &str, delta: Delta) -> Result<()> {
+        let publication = self.source_witness.begin();
+        let result = self.append_delta_inner(reply_id, delta);
+        publication.finish(&self.session, &self.path, self.source_status());
+        result
+    }
+    fn append_delta_inner(&mut self, reply_id: &str, delta: Delta) -> Result<()> {
         self.require_live_writer()?;
         if !self.is_persistent() {
             return Err(invalid("Materialize this New chat before accepting output"));
@@ -1582,6 +1657,10 @@ impl SessionStore {
             WriteFault::StreamAppend => {
                 Err(std::io::Error::other("injected journal append failure"))
             }
+            WriteFault::StreamPartialAppend => {
+                std::io::Write::write_all(file, &bytes[..bytes.len() / 2])
+                    .and_then(|()| Err(std::io::Error::other("injected partial journal append")))
+            }
             WriteFault::StreamSync => std::io::Write::write_all(file, &bytes)
                 .and_then(|()| Err(std::io::Error::other("injected journal sync failure"))),
             _ => crate::stream_journal::append(file, &bytes),
@@ -1609,7 +1688,21 @@ impl SessionStore {
                 return Err(error);
             }
         }
-        self.session.delta(reply_id, delta)?;
+        #[cfg(test)]
+        let applied = if matches!(self.fault, WriteFault::StreamApply) {
+            Err(invalid("injected post-write delta application failure"))
+        } else {
+            self.session.delta(reply_id, delta)
+        };
+        #[cfg(not(test))]
+        let applied = self.session.delta(reply_id, delta);
+        if let Err(error) = applied {
+            // Current target prevalidation makes this unreachable absent a new
+            // fallible apply path. Preserve the original error/store semantics,
+            // but never certify the pre-apply memory after a successful write.
+            self.source_witness.unavailable();
+            return Err(error);
+        }
         if changes_find {
             self.find_token = crate::retained_find::ContentToken::fresh();
         }
@@ -3389,3 +3482,7 @@ mod attachment_storage_tests;
 #[cfg(test)]
 #[path = "skill_storage_tests.rs"]
 mod skill_storage_tests;
+
+#[cfg(test)]
+#[path = "session_source_admission_tests.rs"]
+mod source_admission_tests;
