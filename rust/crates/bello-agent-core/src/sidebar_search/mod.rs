@@ -1,8 +1,14 @@
-//! Loaded-only, worker-side search acquisition and bounded in-memory admission.
-//! No UI, cache, disk fallback, runtime authority or unloaded receipt is enabled.
+//! Worker-side loaded acceptance and unloaded as-of observation with bounded outputs.
+//! No content UI, persistent cache or runtime authority is enabled.
 mod admission;
-mod cancellation;
+pub(crate) mod cancellation;
 pub mod identity;
 pub mod projection;
 pub use admission::*;
 pub use cancellation::CancellationProbe;
+
+pub mod reconciliation;
+mod unloaded;
+pub use unloaded::UnloadedObserved;
+#[cfg(test)]
+mod unloaded_tests;

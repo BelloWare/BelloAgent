@@ -696,7 +696,7 @@ impl Session {
     }
     fn validate_checkpoint_cancelled(
         &self,
-        cancel: Option<&tokio_util::sync::CancellationToken>,
+        cancel: Option<&dyn crate::sidebar_search::CancellationProbe>,
     ) -> Result<()> {
         crate::inspection::check(cancel)?;
         self.validate_compaction()?;
@@ -971,6 +971,15 @@ impl Drop for SessionLock {
 pub struct SessionInspectionLease {
     _lock: SessionLock,
     session: Session,
+    observation: Option<InspectionObservation>,
+}
+struct InspectionObservation {
+    checkpoint: crate::observed_source::OpenObservation,
+    journal: crate::observed_source::JournalClosure,
+    ancestors: crate::observed_source::Ancestors,
+    lock_path: PathBuf,
+    lock_before: fs::Metadata,
+    source: crate::observed_source::ObservedSource,
 }
 /// An idle inspection reduced to writer ownership only. Converting drops the
 /// parsed history so inspecting many unloaded chats does not retain them all.
@@ -980,7 +989,7 @@ pub struct IdleSessionLease {
 }
 impl SessionInspectionLease {
     pub fn acquire(path: impl AsRef<Path>, expected_session_id: &str) -> Result<Self> {
-        Self::acquire_with_cancel(path.as_ref(), expected_session_id, None)
+        Self::acquire_with_cancel(path.as_ref(), expected_session_id, None, false)
     }
     /// Cooperative read/JSON/replay cancellation; no recovery writes. Existing
     /// semantic validators remain exact and have checks between stages only.
@@ -989,13 +998,22 @@ impl SessionInspectionLease {
         expected_session_id: &str,
         cancel: &tokio_util::sync::CancellationToken,
     ) -> Result<Self> {
-        Self::acquire_with_cancel(path.as_ref(), expected_session_id, Some(cancel))
+        Self::acquire_with_cancel(path.as_ref(), expected_session_id, Some(cancel), false)
+    }
+    pub(crate) fn acquire_observed(
+        path: &Path,
+        expected_session_id: &str,
+        cancel: &dyn crate::sidebar_search::CancellationProbe,
+    ) -> Result<Self> {
+        Self::acquire_with_cancel(path, expected_session_id, Some(cancel), true)
     }
     fn acquire_with_cancel(
         path: &Path,
         expected_session_id: &str,
-        cancel: Option<&tokio_util::sync::CancellationToken>,
+        cancel: Option<&dyn crate::sidebar_search::CancellationProbe>,
+        observed: bool,
     ) -> Result<Self> {
+        let started = std::time::Instant::now();
         crate::inspection::check(cancel)?;
         Uuid::parse_str(expected_session_id)
             .map_err(|_| invalid("Invalid inspected session identity"))?;
@@ -1004,11 +1022,17 @@ impl SessionInspectionLease {
         } else {
             std::env::current_dir()?.join(path)
         };
+        let ancestors = if observed {
+            Some(crate::observed_source::Ancestors::capture(&path)?)
+        } else {
+            None
+        };
         // Unlike opening a writer, inspection requires the existing lock and
         // checkpoint. A missing file is unknown state, never an empty chat.
         let lock_path = path.with_extension("lock");
         let lock = SessionLock::acquire(open_inspection_file(&lock_path, true)?)?;
-        verify_inspection_file(&lock_path, &lock.0, &lock.0.metadata()?)?;
+        let lock_before = lock.0.metadata()?;
+        verify_inspection_file(&lock_path, &lock.0, &lock_before)?;
 
         let file = open_inspection_file(&path, false)?;
         let before = file.metadata()?;
@@ -1020,6 +1044,9 @@ impl SessionInspectionLease {
             return Err(invalid("Session exceeds 256 MiB safety limit"));
         }
         verify_inspection_file(&path, &file, &before)?;
+        if observed && bytes.len() as u64 != before.len() {
+            return Err(invalid("Checkpoint consumption changed during observation"));
+        }
         let mut session: Session =
             crate::context_recovery::parse_snapshot_cancelled(&bytes, cancel)?;
         if session.id != expected_session_id {
@@ -1031,30 +1058,109 @@ impl SessionInspectionLease {
             ));
         }
         session.validate_checkpoint_cancelled(cancel)?;
-        if session.version == 1 {
+        let initial = crate::observed_source::ObservedRevision::of(&session);
+        let (journal_stamp, journal_closure) = if session.version == 1 {
             // Legacy snapshots predate the append journal. Observe the legacy
             // shape without the migration performed by SessionStore::open.
             if !session.stream_generation.is_empty() || session.stream_sequence != 0 {
                 return Err(invalid("Legacy session has unknown stream journal state"));
             }
+            (
+                crate::observed_source::ObservedJournal::LegacyNotApplicable,
+                crate::observed_source::JournalClosure::Legacy,
+            )
         } else {
-            let replay = match cancel {
-                Some(cancel) => {
-                    crate::stream_journal::replay_read_only_cancelled(&path, &mut session, cancel)?
+            let replay = if observed {
+                crate::stream_journal::replay_observed(&path, &mut session, cancel)?
+            } else {
+                match cancel {
+                    Some(cancel) => crate::stream_journal::replay_read_only_cancelled(
+                        &path,
+                        &mut session,
+                        cancel,
+                    )?,
+                    None => crate::stream_journal::replay_read_only(&path, &mut session)?,
                 }
-                None => crate::stream_journal::replay_read_only(&path, &mut session)?,
             };
             if replay.incomplete_tail {
                 return Err(invalid(
                     "Session has an incomplete stream journal; reopen it before changing project roots",
                 ));
             }
-        }
+            if observed {
+                replay
+                    .observation
+                    .ok_or_else(|| invalid("Missing read-only journal observation"))?
+            } else {
+                (
+                    crate::observed_source::ObservedJournal::LegacyNotApplicable,
+                    crate::observed_source::JournalClosure::Legacy,
+                )
+            }
+        };
         session.validate_checkpoint_cancelled(cancel)?;
-        Ok(Self {
+        let observation = if let Some(ancestors) = ancestors {
+            let stamp = crate::observed_source::ObservedFile::new(
+                &before,
+                crate::observed_source::digest(&bytes, cancel)?,
+            )?;
+            let source = crate::observed_source::ObservedSource {
+                id: Uuid::new_v4(),
+                path: path.clone(),
+                session_id: session.id.clone(),
+                checkpoint: stamp.clone(),
+                journal: journal_stamp,
+                initial,
+                final_revision: crate::observed_source::ObservedRevision::of(&session),
+                // The stable lock is an identity witness, not a content source.
+                lock: crate::observed_source::ObservedFile::new(&lock_before, [0; 32])?,
+                started,
+                finished: std::time::Instant::now(),
+            };
+            Some(InspectionObservation {
+                checkpoint: crate::observed_source::OpenObservation { path, file, before },
+                journal: journal_closure,
+                ancestors,
+                lock_path,
+                lock_before,
+                source,
+            })
+        } else {
+            None
+        };
+        let lease = Self {
             _lock: lock,
             session,
-        })
+            observation,
+        };
+        if observed {
+            lease.observed_source(cancel)?;
+        }
+        Ok(lease)
+    }
+
+    pub(crate) fn observed_source(
+        &self,
+        cancel: Option<&dyn crate::sidebar_search::CancellationProbe>,
+    ) -> Result<crate::observed_source::ObservedSource> {
+        crate::inspection::check(cancel)?;
+        let observation = self
+            .observation
+            .as_ref()
+            .ok_or_else(|| invalid("Inspection was not acquired for source observation"))?;
+        observation.ancestors.verify()?;
+        observation.checkpoint.verify()?;
+        observation.journal.verify()?;
+        verify_inspection_file(
+            &observation.lock_path,
+            &self._lock.0,
+            &observation.lock_before,
+        )?;
+        observation.ancestors.verify()?;
+        crate::inspection::check(cancel)?;
+        let mut source = observation.source.clone();
+        source.finished = std::time::Instant::now();
+        Ok(source)
     }
 
     /// Presentation and idle admission only; this is not a durability receipt.

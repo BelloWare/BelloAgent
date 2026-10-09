@@ -56,6 +56,8 @@ pub enum PieceKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ActivePolicy {
     AcceptedRetained,
+    /// Complete validated bytes observed read-only, without durability acceptance.
+    ObservedRetained,
     DeferActive,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]

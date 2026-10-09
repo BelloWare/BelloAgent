@@ -3,6 +3,7 @@
 //! after their atomic snapshot is durable, so deleting an older journal is safe.
 use crate::{Delta, Result, Session, invalid};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File, OpenOptions},
     io::{BufRead, BufReader, Write},
@@ -25,6 +26,10 @@ pub(crate) struct Replay {
     pub exists: bool,
     pub records: usize,
     pub incomplete_tail: bool,
+    pub observation: Option<(
+        crate::observed_source::ObservedJournal,
+        crate::observed_source::JournalClosure,
+    )>,
 }
 pub(crate) fn path(snapshot: &Path, generation: &str) -> Result<PathBuf> {
     Uuid::parse_str(generation).map_err(|_| invalid("Invalid stream journal generation"))?;
@@ -71,22 +76,30 @@ pub(crate) fn append(file: &mut File, bytes: &[u8]) -> std::io::Result<()> {
 /// old generation for inspection and checkpoint only its complete valid prefix.
 /// Malformed complete records, gaps and foreign identities are refused.
 pub(crate) fn replay(snapshot: &Path, session: &mut Session) -> Result<Replay> {
-    replay_with_confirmation(snapshot, session, true, None)
+    replay_with_confirmation(snapshot, session, true, None, false)
 }
 
 /// Inspection uses the same format/identity validation without opening the
 /// journal for writing or synchronizing it. Readable bytes do not prove a prior
 /// uncertain append durable, and this path cannot authorize recovery writes.
 pub(crate) fn replay_read_only(snapshot: &Path, session: &mut Session) -> Result<Replay> {
-    replay_with_confirmation(snapshot, session, false, None)
+    replay_with_confirmation(snapshot, session, false, None, false)
 }
 
 pub(crate) fn replay_read_only_cancelled(
     snapshot: &Path,
     session: &mut Session,
-    cancel: &tokio_util::sync::CancellationToken,
+    cancel: &dyn crate::sidebar_search::CancellationProbe,
 ) -> Result<Replay> {
-    replay_with_confirmation(snapshot, session, false, Some(cancel))
+    replay_with_confirmation(snapshot, session, false, Some(cancel), false)
+}
+
+pub(crate) fn replay_observed(
+    snapshot: &Path,
+    session: &mut Session,
+    cancel: Option<&dyn crate::sidebar_search::CancellationProbe>,
+) -> Result<Replay> {
+    replay_with_confirmation(snapshot, session, false, cancel, true)
 }
 
 fn open_after_metadata(
@@ -108,13 +121,24 @@ fn replay_with_confirmation(
     snapshot: &Path,
     session: &mut Session,
     confirm_durability: bool,
-    cancel: Option<&tokio_util::sync::CancellationToken>,
+    cancel: Option<&dyn crate::sidebar_search::CancellationProbe>,
+    observe: bool,
 ) -> Result<Replay> {
     crate::inspection::check(cancel)?;
     let path = path(snapshot, &session.stream_generation)?;
     let metadata = match fs::symlink_metadata(&path) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Replay::default()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Replay {
+                observation: observe.then(|| {
+                    (
+                        crate::observed_source::ObservedJournal::Absent,
+                        crate::observed_source::JournalClosure::Absent(path),
+                    )
+                }),
+                ..Default::default()
+            });
+        }
         Err(error) => return Err(error.into()),
     };
     if !metadata.is_file() || metadata.file_type().is_symlink() {
@@ -130,9 +154,14 @@ fn replay_with_confirmation(
         ..Default::default()
     };
     let mut consumed = 0u64;
+    let mut hash = observe.then(Sha256::new);
+    let initial_sequence = session.stream_sequence;
+    let mut final_record_end = 0;
     loop {
         let mut line = Vec::new();
         loop {
+            #[cfg(test)]
+            crate::inspection::observation_hook("journal");
             crate::inspection::check(cancel)?;
             let buffer = reader.fill_buf()?;
             if buffer.is_empty() {
@@ -148,6 +177,11 @@ fn replay_with_confirmation(
             consumed += count as u64;
             if consumed > MAX_JOURNAL_BYTES {
                 return Err(invalid("Stream journal exceeds its 512 MiB recovery limit"));
+            }
+            if let Some(hash) = &mut hash {
+                #[cfg(test)]
+                crate::inspection::observation_hook("journal_hash");
+                hash.update(&buffer[..count]);
             }
             line.extend_from_slice(&buffer[..count]);
             reader.consume(count);
@@ -184,6 +218,7 @@ fn replay_with_confirmation(
         session.stream_sequence = record.sequence;
         session.revision = revision;
         outcome.records += 1;
+        final_record_end = consumed;
     }
     // Confirm bytes readable after an earlier uncertain synchronization before
     // allowing a new durable checkpoint to depend on them.
@@ -193,6 +228,35 @@ fn replay_with_confirmation(
         crate::session::verify_inspection_file(&path, reader.get_ref(), &metadata)?;
     }
     crate::inspection::check(cancel)?;
+    if observe {
+        if consumed != metadata.len() {
+            return Err(invalid("Journal consumption changed during observation"));
+        }
+        let stamp = crate::observed_source::ObservedFile::new(
+            &metadata,
+            hash.expect("observed replay hashes every consumed byte")
+                .finalize()
+                .into(),
+        )?;
+        let evidence = crate::observed_source::ObservedJournal::Present {
+            file: stamp.clone(),
+            bytes_consumed: consumed,
+            complete_records: outcome.records,
+            first_sequence: (outcome.records > 0).then(|| initial_sequence + 1),
+            last_sequence: (outcome.records > 0).then_some(session.stream_sequence),
+            final_record_end,
+        };
+        outcome.observation = Some((
+            evidence,
+            crate::observed_source::JournalClosure::Present(
+                crate::observed_source::OpenObservation {
+                    path,
+                    file: reader.into_inner(),
+                    before: metadata,
+                },
+            ),
+        ));
+    }
     Ok(outcome)
 }
 #[cfg(test)]

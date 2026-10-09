@@ -60,7 +60,7 @@ pub(crate) fn parse_snapshot(bytes: &[u8]) -> Result<crate::Session> {
 }
 pub(crate) fn parse_snapshot_cancelled(
     bytes: &[u8],
-    cancel: Option<&tokio_util::sync::CancellationToken>,
+    cancel: Option<&dyn crate::sidebar_search::CancellationProbe>,
 ) -> Result<crate::Session> {
     let presence: SnapshotPresence = crate::inspection::parse(bytes, cancel)?;
     if presence.version < 9

@@ -11,8 +11,8 @@ use std::{
 use tokio::sync::Notify;
 pub use tokio_util::sync::CancellationToken as InspectionCancellation;
 
-pub(crate) fn check(cancel: Option<&CancellationToken>) -> Result<()> {
-    if cancel.is_some_and(CancellationToken::is_cancelled) {
+pub(crate) fn check(cancel: Option<&dyn crate::sidebar_search::CancellationProbe>) -> Result<()> {
+    if cancel.is_some_and(|cancel| cancel.is_cancelled()) {
         Err(Error::Cancelled)
     } else {
         Ok(())
@@ -23,12 +23,14 @@ pub(crate) fn check(cancel: Option<&CancellationToken>) -> Result<()> {
 pub(crate) fn read_checkpoint(
     reader: impl Read,
     limit: usize,
-    cancel: Option<&CancellationToken>,
+    cancel: Option<&dyn crate::sidebar_search::CancellationProbe>,
 ) -> Result<Vec<u8>> {
     let mut reader = reader.take(limit as u64 + 1);
     let mut bytes = Vec::new();
     let mut buffer = [0u8; 64 * 1024];
     loop {
+        #[cfg(test)]
+        observation_hook("checkpoint");
         check(cancel)?;
         let outcome = reader.read(&mut buffer);
         check(cancel)?;
@@ -43,19 +45,21 @@ pub(crate) fn read_checkpoint(
 /// inspection parser checks within large strings/ignored fields, not only rows.
 pub(crate) fn parse<T: DeserializeOwned>(
     bytes: &[u8],
-    cancel: Option<&CancellationToken>,
+    cancel: Option<&dyn crate::sidebar_search::CancellationProbe>,
 ) -> Result<T> {
     check(cancel)?;
     let parsed = if let Some(cancel) = cancel {
         struct Reader<'a> {
             bytes: &'a [u8],
-            cancel: &'a CancellationToken,
+            cancel: &'a dyn crate::sidebar_search::CancellationProbe,
             since: usize,
         }
         impl Read for Reader<'_> {
             fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
                 if self.since >= 4096 {
                     self.since = 0;
+                    #[cfg(test)]
+                    observation_hook("json");
                     #[cfg(test)]
                     PARSE_CHECK_HOOK.with(|hook| {
                         if let Some(hook) = hook.borrow_mut().as_mut() {
@@ -120,6 +124,42 @@ impl InspectionPermit {
     pub fn cancellation(&self) -> &CancellationToken {
         &self.cancel
     }
+    pub(crate) fn inspect_bound_search(
+        &mut self,
+        work: &crate::sidebar_search::reconciliation::SearchWork,
+    ) -> Result<CoordinatedInspection<'_>> {
+        let cancel = crate::sidebar_search::cancellation::CombinedCancellation(
+            work.request.cancellation(),
+            &self.cancel,
+            work.cancellation(),
+        );
+        let lease = crate::session::SessionInspectionLease::acquire_observed(
+            work.member().checkpoint_path(),
+            work.member().chat_id(),
+            &cancel,
+        )?;
+        Ok(CoordinatedInspection {
+            lease,
+            search_work: Some(work.clone()),
+            _permit: self,
+        })
+    }
+    pub fn inspect_observed<'a>(
+        &'a mut self,
+        path: impl AsRef<std::path::Path>,
+        expected_id: &str,
+    ) -> Result<CoordinatedInspection<'a>> {
+        let lease = crate::session::SessionInspectionLease::acquire_observed(
+            path.as_ref(),
+            expected_id,
+            &self.cancel,
+        )?;
+        Ok(CoordinatedInspection {
+            lease,
+            _permit: self,
+            search_work: None,
+        })
+    }
     /// The exclusive borrow prevents concurrent parses through one permit and
     /// dropping the parse permit before its writer lease.
     ///
@@ -145,6 +185,7 @@ impl InspectionPermit {
         Ok(CoordinatedInspection {
             lease,
             _permit: self,
+            search_work: None,
         })
     }
 }
@@ -152,8 +193,24 @@ impl InspectionPermit {
 pub struct CoordinatedInspection<'a> {
     lease: crate::session::SessionInspectionLease,
     _permit: &'a mut InspectionPermit,
+    search_work: Option<crate::sidebar_search::reconciliation::SearchWork>,
 }
 impl CoordinatedInspection<'_> {
+    pub fn observed_source(&self) -> Result<crate::observed_source::ObservedSource> {
+        self.lease.observed_source(Some(&self._permit.cancel))
+    }
+    pub(crate) fn cancellation(&self) -> &CancellationToken {
+        &self._permit.cancel
+    }
+    pub(crate) fn matches_search_work(
+        &self,
+        work: &crate::sidebar_search::reconciliation::SearchWork,
+    ) -> bool {
+        self.search_work
+            .as_ref()
+            .is_some_and(|bound| bound.same_attempt(work))
+    }
+
     /// Read-only presentation evidence only, not a durability/loaded-source receipt.
     pub fn snapshot(&self) -> &crate::Session {
         self.lease.snapshot()
@@ -344,3 +401,16 @@ thread_local! { static WAIT_CHECK_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce
 #[cfg(test)]
 #[path = "inspection_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+type ObservationHook = Option<Box<dyn FnMut(&str)>>;
+#[cfg(test)]
+thread_local! { pub(crate) static OBSERVATION_HOOK: std::cell::RefCell<ObservationHook> = std::cell::RefCell::new(None); }
+#[cfg(test)]
+pub(crate) fn observation_hook(stage: &str) {
+    OBSERVATION_HOOK.with(|hook| {
+        if let Some(hook) = hook.borrow_mut().as_mut() {
+            hook(stage);
+        }
+    });
+}

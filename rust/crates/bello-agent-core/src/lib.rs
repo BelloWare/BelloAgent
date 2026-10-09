@@ -9,6 +9,7 @@ pub mod inspection;
 pub mod instructions;
 pub mod mcp;
 pub mod model_catalog;
+pub mod observed_source;
 pub mod profile;
 pub mod project_authority;
 pub mod project_resources;

@@ -141,7 +141,12 @@ fn parser_cancels_inside_large_string_without_relabeling_typed_errors() {
     assert_eq!(checks.load(Ordering::SeqCst), 3);
     for cancel in [None, Some(CancellationToken::new())] {
         assert!(matches!(
-            parse::<String>(b"{broken", cancel.as_ref()),
+            parse::<String>(
+                b"{broken",
+                cancel
+                    .as_ref()
+                    .map(|c| c as &dyn crate::sidebar_search::CancellationProbe)
+            ),
             Err(Error::Json(_))
         ));
     }

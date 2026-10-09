@@ -2350,3 +2350,22 @@ in results. No sidebar UI, unloaded scan/receipt, SQLite/cache or production/nat
 authority gate is enabled. See [loaded-search-projection.md](loaded-search-projection.md)
 for exact bounds, caller App-routing responsibilities, remaining all-chat workflow,
 and validation scope. Backend code/test counts are not completion or speed claims.
+
+## Unloaded observed source and shared worker prerequisite — 2026-10-09
+
+Core now provides an opaque full checkpoint/journal byte observation under the
+existing inspection lease, bound before acquisition to exact query/pass/member/
+lifecycle work. Read-only observation is explicitly distinct from LoadedAccepted
+persistence/live-source evidence. Full negative/new-member/failure reconciliation
+cannot infer coverage from old cache misses. Loaded/blocked work has no disk
+fallback. Receipt closure and composed cancellation span acquisition/projection;
+ordinary run/read inspection opts out of the additional hashing/receipt work.
+
+Production restored run/read demand now uses a single shared worker adapter.
+Coalesced and search-only demand are tested APIs; production content query dispatch,
+App lifecycle tombstone integration, late-subscriber scheduling, persistent cache,
+holds and reveal remain disabled/unimplemented gates. This is not a usable all-chat
+search UI or RAM-only index substitute. See the [bounded contract](unloaded-observation.md)
+and [validation receipt](validation/unloaded-observation-2026-10-09.json).
+No new actual-GUI, native macOS, signing/Keychain, source capture or performance
+acceptance follows. Existing native and persistent-cache gates remain unchanged.

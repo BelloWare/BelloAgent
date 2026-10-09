@@ -1,12 +1,12 @@
 //! Read-only, point-in-time restored sidebar state. No controller is opened,
 //! recovered, resumed or retained for an unloaded row.
 use crate::{AgentView, workspace_lifetime::WindowBinding};
-#[cfg(test)]
-use bello_agent_core::session::SessionInspectionLease;
 use bello_agent_core::{
     RunState, Session,
-    workspace::{ChatMaterialization, ChatRecord, WorkspaceStore},
+    workspace::{ChatRecord, WorkspaceStore},
 };
+#[cfg(test)]
+use bello_agent_core::{session::SessionInspectionLease, workspace::ChatMaterialization};
 use gpui::Context;
 use std::{
     collections::BTreeMap,
@@ -35,7 +35,7 @@ impl SavedRunState {
             Self::Unknown => "Unavailable",
         }
     }
-    fn from_session(session: &Session) -> Self {
+    pub(crate) fn from_session(session: &Session) -> Self {
         // HistoryReader.RunStateRecord.hold: active wins, failures are not
         // paused holds, stopped empty queues still wait for Resume. Rust
         // pending/held work also cannot resume merely because a row is read.
@@ -132,36 +132,14 @@ fn inspect_coordinated(
     bello_agent_core::read_observation::OutputProjection,
     Option<FileIdentity>,
 )> {
-    use bello_agent_core::{
-        Error,
-        read_observation::{OutputProjection, project_outputs},
-    };
-    let unknown = || (SavedRunState::Unknown, OutputProjection::Unknown, None);
-    if record.materialization != ChatMaterialization::CheckpointRequired {
-        return Ok(unknown());
-    }
-    let Some(before) = FileIdentity::read(&record.snapshot) else {
-        return Ok(unknown());
-    };
-    let cancel = permit.cancellation().clone();
-    let lease = match permit.inspect(&record.snapshot, &record.id) {
-        Ok(lease) => lease,
-        Err(Error::Cancelled) => return Err(Error::Cancelled),
-        Err(_) => return Ok(unknown()),
-    };
-    let state = SavedRunState::from_session(lease.snapshot());
-    let summary = project_outputs(lease.snapshot());
-    drop(lease);
-    if cancel.is_cancelled() {
-        return Err(Error::Cancelled);
-    }
-    Ok(
-        if FileIdentity::read(&record.snapshot).as_ref() != Some(&before) {
-            unknown()
-        } else {
-            (state, summary, Some(before))
-        },
-    )
+    let output = crate::sidebar_inspection::inspect(
+        record,
+        permit,
+        crate::sidebar_inspection::InspectionDemand::run_read(),
+    )?;
+    Ok(output
+        .run_read
+        .expect("run/read demand always returns its summary"))
 }
 
 struct Scope {

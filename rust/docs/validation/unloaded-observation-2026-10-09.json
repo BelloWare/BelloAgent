@@ -1,0 +1,332 @@
+{
+  "baseline_commit": "61da953fb0f9394ace06be39f7bac9071971e49e",
+  "baseline_tree": "00cbb0345c2e4c936e87c71a063b59b45ce7686d",
+  "scope": "Core read-only observed receipt, all-member as-of reconciliation, existing run/read wired through shared worker; explicit tested search/lifecycle APIs remain production-disconnected",
+  "started_utc": "2026-10-09T11:34:32Z",
+  "finished_utc": "2026-10-09T12:10:12.187305+00:00",
+  "inference_timing": null,
+  "source_freeze": {
+    "changed_rust_files": 22,
+    "combined_sorted_path_hash_digest": "b93abc6aae67750b66703a2f39ace82dd0ac05a3a84fdec6e05ca1a87c63ac2a",
+    "sha256": {
+      "rust/crates/bello-agent-app/src/main.rs": "12ff6df6d68e4461843097aea63a64fceddc9b17a592531b039e3e9903c33ceb",
+      "rust/crates/bello-agent-app/src/sidebar_inspection.rs": "6af1469ea307b59f7eae80c3a1d0cadfe28932aa26e5cc60498e05b997f3714e",
+      "rust/crates/bello-agent-app/src/sidebar_inspection_tests.rs": "8afad2d10d18258d84257338aeccc1dd2f2750ffa469af231c2883c77f376d6a",
+      "rust/crates/bello-agent-app/src/sidebar_run_state.rs": "64bd480bf3348a31189ed05bacdd92cb240305269f83ce197d5bf1aa307ce645",
+      "rust/crates/bello-agent-app/src/sidebar_search_state.rs": "740ff6f4fcf16b648bd3ad69a4042ad6ccc2dce7baf25950475bc359982369ae",
+      "rust/crates/bello-agent-core/src/context_recovery.rs": "72197eaf6a777c1a9a599d18ce4a25536e11c9790f6b883cf3cdde6e3d3f2e85",
+      "rust/crates/bello-agent-core/src/inspection.rs": "ed50bdc710619fc6d3c6f54bb0ff65ac8b5fa0ab13f9a60759096a16ec12497f",
+      "rust/crates/bello-agent-core/src/inspection_tests.rs": "6590ec2497bf3e5ed4373b97be5dd70b44f5a2575d3bf97cdf9973b6d9a45755",
+      "rust/crates/bello-agent-core/src/lib.rs": "e95ab4576340ef896c2dd56d38e3010cc3814e59b49c2f5921515f22aac2ad0a",
+      "rust/crates/bello-agent-core/src/observed_source.rs": "c4820ff831ba98f3f3b3b004d701339d3f668a5c18946bababb0f2cf095ed9f5",
+      "rust/crates/bello-agent-core/src/session.rs": "400ef6737248c857335738ac2cd374a5ebf657517f7389f04d1c8275274c2372",
+      "rust/crates/bello-agent-core/src/sidebar_search/admission.rs": "4336d470ebd12dfd8b703d9633193639edb0d0da74a684f002f598ee4cf75011",
+      "rust/crates/bello-agent-core/src/sidebar_search/cancellation.rs": "9820127913587edee02c4b5e0f6d8a1a7126f5f07d7a271dca7cbe78673090ac",
+      "rust/crates/bello-agent-core/src/sidebar_search/mod.rs": "8dae696551d22e23713cc0a0e1bed63fed1e15fc80737f03c2e85e2eaba30a08",
+      "rust/crates/bello-agent-core/src/sidebar_search/projection.rs": "198a1cb82fe9cdcbc65763a46e62975b88268d934126d3c398fa4416e96f074c",
+      "rust/crates/bello-agent-core/src/sidebar_search/reconciliation.rs": "c32c1a26199f4a1cc539e07f6c59ba7b1e721b1296d3b84770150ca973572ae8",
+      "rust/crates/bello-agent-core/src/sidebar_search/unloaded.rs": "774e974af1dd1e2a5c1847fd5ae81042b3cdfd5db1ebabad3b77605376209d8c",
+      "rust/crates/bello-agent-core/src/sidebar_search/unloaded_tests.rs": "bca84a1dbf9d68614bdc7d2c421b372ff327f73758912bb67a4bc0a33e7b9f12",
+      "rust/crates/bello-agent-core/src/skill_schema.rs": "65c16bd7c60d1a375d274c7998cf770c2261f278ac31d16e248043b9cf833256",
+      "rust/crates/bello-agent-core/src/stream_journal.rs": "8f7e9cf7dea396c5cbc5805095cf728d2c13f22556ef1f60e2417644f0931590",
+      "rust/crates/bello-agent-core/tests/process_locks.rs": "59506c0e683ef7a9b88c5047972b42f14f93d5133e88a8ea9313bef4859c2bcb",
+      "rust/crates/bello-agent-core/tests/sidebar_search_projection.rs": "65ae78596facf016d588009091c819260b57f6e06156e6af2aa5fd2c3c205e26"
+    },
+    "documentation_only_delta": {
+      "changed_paths": [
+        "rust/crates/bello-agent-core/src/sidebar_search/mod.rs"
+      ],
+      "old_sha256": "ffe5194d28e1ae247270e085655509d46da92b0b19a6ffaa5a5166992a520cbe",
+      "new_sha256": "8dae696551d22e23713cc0a0e1bed63fed1e15fc80737f03c2e85e2eaba30a08",
+      "reversing_two_module_doc_lines_reproduces_r2": true,
+      "semantic_source_unchanged": true,
+      "default_gate_note": "Default Core ran on r2; default App began on r2 and two module documentation lines changed while its command ran. All 641 tests passed. Root accepted reuse of these tests because the r2/r3 delta is exactly those comments. The source-freeze guard stopped before all-feature gates; subsequent checks bind r3."
+    }
+  },
+  "review": {
+    "independent_review": "Accepted r2 Rust closure; no remaining source blockers",
+    "root_review": "Verified r3 differs only in two module documentation lines and accepted the delta",
+    "publication": "Root integrator only; this worktree did not move rust or publish source"
+  },
+  "final_gates": [
+    {
+      "name": "clean-restored",
+      "command": "cargo clean -p bello-agent-core -p bello-agent-app",
+      "started_utc": "2026-10-09T12:04:03.922116+00:00",
+      "wall_seconds": 0.3038763999938965,
+      "exit": 0,
+      "test_results": [],
+      "source_closure_note": "r2 source before two module documentation lines changed; runtime semantics identical to r3"
+    },
+    {
+      "name": "fmt",
+      "command": "cargo fmt --all -- --check",
+      "started_utc": "2026-10-09T12:04:04.227194+00:00",
+      "wall_seconds": 2.220287322998047,
+      "exit": 0,
+      "test_results": [],
+      "source_closure_note": "r2 source before two module documentation lines changed; runtime semantics identical to r3"
+    },
+    {
+      "name": "core-default",
+      "command": "cargo test --locked -p bello-agent-core",
+      "started_utc": "2026-10-09T12:04:06.448865+00:00",
+      "wall_seconds": 44.89352321624756,
+      "exit": 0,
+      "test_results": [
+        "test result: ok. 688 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.76s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.21s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s",
+        "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s",
+        "test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.26s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.14s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s",
+        "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 44 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.13s",
+        "test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s",
+        "test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s",
+        "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s"
+      ],
+      "source_closure_note": "r2 source before two module documentation lines changed; runtime semantics identical to r3"
+    },
+    {
+      "name": "app-default",
+      "command": "cargo test --locked -p bello-agent-app",
+      "started_utc": "2026-10-09T12:04:51.345724+00:00",
+      "wall_seconds": 50.712642431259155,
+      "exit": 0,
+      "test_results": [
+        "test result: ok. 641 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 10.77s"
+      ],
+      "source_closure_note": "r2 source before two module documentation lines changed; runtime semantics identical to r3"
+    },
+    {
+      "name": "core-all-features",
+      "command": "cargo test --locked -p bello-agent-core --all-features",
+      "source_manifest": "review-source-r3.json",
+      "started_utc": "2026-10-09T12:06:26.251647+00:00",
+      "wall_seconds": 77.35577368736267,
+      "exit": 0,
+      "test_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 872 filtered out; finished in 0.02s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 872 filtered out; finished in 0.01s",
+        "test result: ok. 873 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 14.03s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.21s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s",
+        "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s",
+        "test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.26s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.46s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s",
+        "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 44 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.38s",
+        "test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s",
+        "test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s",
+        "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s"
+      ]
+    },
+    {
+      "name": "app-all-features",
+      "command": "cargo test --locked -p bello-agent-app --all-features",
+      "source_manifest": "review-source-r3.json",
+      "started_utc": "2026-10-09T12:07:43.609894+00:00",
+      "wall_seconds": 64.231041431427,
+      "exit": 0,
+      "test_results": [
+        "test result: ok. 786 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 16.28s"
+      ]
+    },
+    {
+      "name": "clippy-default",
+      "command": "cargo clippy --locked --workspace --all-targets -- -D warnings",
+      "source_manifest": "review-source-r3.json",
+      "started_utc": "2026-10-09T12:08:47.846991+00:00",
+      "wall_seconds": 16.76473379135132,
+      "exit": 0,
+      "test_results": []
+    },
+    {
+      "name": "clippy-all-features",
+      "command": "cargo clippy --locked --workspace --all-targets --all-features -- -D warnings",
+      "source_manifest": "review-source-r3.json",
+      "started_utc": "2026-10-09T12:09:04.633042+00:00",
+      "wall_seconds": 20.72056531906128,
+      "exit": 0,
+      "test_results": []
+    },
+    {
+      "name": "clean-ordinary-app",
+      "command": "cargo clean -p bello-agent-app",
+      "source_manifest": "review-source-r3.json",
+      "started_utc": "2026-10-09T12:09:25.358868+00:00",
+      "wall_seconds": 0.3558666706085205,
+      "exit": 0,
+      "test_results": []
+    },
+    {
+      "name": "build-ordinary",
+      "command": "cargo build --locked --workspace",
+      "source_manifest": "review-source-r3.json",
+      "started_utc": "2026-10-09T12:09:25.716585+00:00",
+      "wall_seconds": 24.380730628967285,
+      "exit": 0,
+      "test_results": []
+    }
+  ],
+  "binary": {
+    "path": "/workspace/shared/build-recovery/target/debug/bello-agent",
+    "sha256": "5c26ef82238284e177e9caa97a22650f501351fe6251dffdc08716679d292740"
+  },
+  "negative_controls": [
+    {
+      "name": "wrong-journal-digest",
+      "test": "observed_checkpoint_journal_receipt_is_complete_bounded_and_read_only",
+      "exit": 101,
+      "caught": true,
+      "seconds": 18.95639395713806,
+      "original_sha256": "8f7e9cf7dea396c5cbc5805095cf728d2c13f22556ef1f60e2417644f0931590"
+    },
+    {
+      "name": "omit-journal",
+      "test": "observed_checkpoint_journal_receipt_is_complete_bounded_and_read_only",
+      "exit": 101,
+      "caught": true,
+      "seconds": 19.5801420211792,
+      "original_sha256": "400ef6737248c857335738ac2cd374a5ebf657517f7389f04d1c8275274c2372"
+    },
+    {
+      "name": "accept-torn",
+      "test": "torn_prefix_foreign_generation_gap_and_malformed_complete_records_never_escape",
+      "exit": 101,
+      "caught": true,
+      "seconds": 18.270013332366943,
+      "original_sha256": "400ef6737248c857335738ac2cd374a5ebf657517f7389f04d1c8275274c2372"
+    },
+    {
+      "name": "skip-final-closure",
+      "test": "final_closure_after_projection_rejects_changes_to_all_paths_and_absence",
+      "exit": 101,
+      "caught": true,
+      "seconds": 19.035866737365723,
+      "original_sha256": "774e974af1dd1e2a5c1847fd5ae81042b3cdfd5db1ebabad3b77605376209d8c"
+    },
+    {
+      "name": "late-work",
+      "test": "older_leases_cannot_be_relabelled_with_later_pass_or_attempt",
+      "exit": 101,
+      "caught": true,
+      "seconds": 18.611802101135254,
+      "original_sha256": "774e974af1dd1e2a5c1847fd5ae81042b3cdfd5db1ebabad3b77605376209d8c"
+    },
+    {
+      "name": "failure-as-negative",
+      "test": "failure_is_unavailable_not_negative_and_query_or_pass_reuse_is_stale",
+      "exit": 101,
+      "caught": true,
+      "seconds": 18.82910919189453,
+      "original_sha256": "c32c1a26199f4a1cc539e07f6c59ba7b1e721b1296d3b84770150ca973572ae8"
+    },
+    {
+      "name": "loaded-disk-fallback",
+      "test": "lifecycle_replacement_and_loaded_routes_cannot_use_disk_or_old_attempts",
+      "exit": 101,
+      "caught": true,
+      "seconds": 19.14238405227661,
+      "original_sha256": "c32c1a26199f4a1cc539e07f6c59ba7b1e721b1296d3b84770150ca973572ae8"
+    }
+  ],
+  "negative_control_source": "Reviewed r2 source, restored exactly after every mutant; final r3 differs only in two module documentation lines",
+  "failures_preserved": [
+    {
+      "log": "core-focused-initial.log",
+      "wall_seconds": 9.715,
+      "kind": "compile",
+      "reason": "Two internal cancellation signature seams (skill_schema and an existing test coercion) were initially missed; fixed before passing tests"
+    },
+    {
+      "log": "core-focused-r2.log",
+      "wall_seconds": 28.014,
+      "kind": "fixture",
+      "reason": "The legacy v1 fixture serialized a v9-only tool_timing field; removed from the legacy fixture. Product rejection remained intact. Projection integration harness also needed explicit ObservedRetained coverage for strict dead-code checking"
+    },
+    {
+      "log": "adapter-focused-initial.log",
+      "wall_seconds": 10.836,
+      "kind": "strict-check",
+      "reason": "Extracted test-only ChatMaterialization import and test-hook type-complexity warning; corrected with cfg(test) import and type alias"
+    },
+    {
+      "kind": "source-freeze-stop",
+      "reason": "The final guard stopped after successful default tests because two module documentation lines were corrected. Root independently verified the exact comment-only delta; old default receipts were retained and remaining checks resumed on r3"
+    }
+  ],
+  "runtime_test_summary": {
+    "core_default": 688,
+    "core_all_features": 873,
+    "app_default_passed": 641,
+    "app_default_ignored": 1,
+    "app_all_features_passed": 786,
+    "app_all_features_ignored": 3,
+    "focused_observed": 20,
+    "app_adapter": 4,
+    "restored_run_state": 13,
+    "inspection_coordinator": 17,
+    "process_locks": 5,
+    "projection": 44,
+    "integration_and_compile_fail": "All targets passed in default and all-feature Core matrices"
+  },
+  "loc": {
+    "delta": {
+      "production": 1124,
+      "support": 970,
+      "benchmark": 0
+    },
+    "cumulative": {
+      "production": 60690,
+      "support": 82902,
+      "benchmark": 1192
+    },
+    "total": 144784,
+    "excluded_evidence_nonblank": 366,
+    "shared_box_excluded": true,
+    "method": "Nonblank physical Rust including comments; positive cfg(test) spans and test-owned files are support. Backend and dormant App APIs count as production, not feature completion"
+  },
+  "limitations": [
+    "Observation is as-of complete bytes under cooperating writer exclusion, not fsync acceptance or ongoing disk currency",
+    "Strict source ancestors reject noncanonical aliases; advisory exclusion does not sandbox arbitrary same-user noncooperating mutation",
+    "Individual filesystem calls and existing semantic-validator inner loops remain cooperative cancellation latency gaps",
+    "Production content query/lifecycle/late-subscriber dispatch, persistent cache/privacy/SQLite, holds/reveal and full-input UI mapping remain separate gates",
+    "No new actual GUI or native macOS interaction, signing/Keychain, user-computer, production capture or performance acceptance"
+  ],
+  "warnings": [
+    "Existing proc-macro-error2 2.0.1 future-compatibility notice remains; no strict-check failure"
+  ],
+  "final_source_checks": {
+    "fmt_r3": "passed",
+    "diff_check": "passed",
+    "r3_hashes_verified_after_all_gates": true
+  },
+  "review_findings_resolved": [
+    "Bound work attempt into acquisition to prevent later-pass relabeling of an older lease",
+    "Propagated composed request/lifecycle/permit cancellation through all checkpoint/schema/journal acquisition seams",
+    "Made generation exhaustion revoke old results before any fallible increment and remain sticky blocked",
+    "Separated ordinary read-only replay from opt-in observation SHA/receipt/descriptor retention",
+    "Canonicalized synthetic fixture roots for macOS symlinked temporary-directory layouts; explicit alias rejection remains",
+    "Restored public exclusive-permit compile-fail documentation and tested exact byte hashes"
+  ]
+}

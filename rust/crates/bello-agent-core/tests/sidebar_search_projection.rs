@@ -551,3 +551,22 @@ fn source_nul_makes_whole_projection_unavailable_and_diagnostics_are_redacted() 
         Error::UnsupportedNul
     );
 }
+
+#[test]
+fn observed_retained_uses_same_text_mapping_without_loaded_durability_semantics() {
+    let source = session();
+    let cancel = cancel();
+    let observed =
+        SidebarProjection::new(&source, ActivePolicy::ObservedRetained, &cancel).unwrap();
+    let accepted =
+        SidebarProjection::new(&source, ActivePolicy::AcceptedRetained, &cancel).unwrap();
+    assert_eq!(
+        ContentIdentity::of(&observed, &cancel).unwrap().digest,
+        ContentIdentity::of(&accepted, &cancel).unwrap().digest
+    );
+    let query = Query::new("needle", &cancel).unwrap();
+    assert_eq!(
+        observed.newest_match(&query, &cancel).unwrap(),
+        accepted.newest_match(&query, &cancel).unwrap()
+    );
+}

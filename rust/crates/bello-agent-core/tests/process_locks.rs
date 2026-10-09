@@ -46,6 +46,19 @@ fn subprocess_lock_probe() {
             // A second open also proves the acquired guard releases on drop.
             drop(open_store(&kind, Path::new(&path), Path::new(&project)).unwrap());
         }
+        "append_needle" => {
+            let mut store = *result.unwrap().downcast::<SessionStore>().unwrap();
+            store
+                .transact(|session| {
+                    session.submit(bello_agent_core::Submission::new(
+                        "needle".into(),
+                        bello_agent_core::Lane::FollowUp,
+                    ))?;
+                    session.start_next()?;
+                    Ok(())
+                })
+                .unwrap();
+        }
         "exit_held" => {
             let _store = result.unwrap();
             println!("BELLO_LOCK_PROBE_OK:{kind}");
@@ -132,4 +145,67 @@ fn session_excludes_other_process_and_reopens_after_drop() {
 #[test]
 fn workspace_excludes_other_process_and_reopens_after_drop() {
     exercise("workspace");
+}
+
+#[test]
+fn observed_source_lease_excludes_actual_process_writer_until_receipt_released() {
+    let _case = PROCESS_CASE.lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let path = root.join("observed.json");
+    let store = SessionStore::open(&path).unwrap();
+    let id = store.snapshot().id;
+    drop(store);
+    let lane = bello_agent_core::inspection::InspectionCoordinator::default();
+    let mut permit = lane.try_background().unwrap().unwrap();
+    let lease = permit.inspect_observed(&path, &id).unwrap();
+    let receipt = lease.observed_source().unwrap();
+    probe("session", &path, dir.path(), "locked");
+    assert_eq!(
+        lease.observed_source().unwrap().observation_id(),
+        receipt.observation_id()
+    );
+    drop(lease);
+    drop(permit);
+    probe("session", &path, dir.path(), "available");
+}
+
+#[test]
+fn external_writer_after_observation_can_change_negative_to_positive() {
+    use bello_agent_core::{
+        inspection::InspectionCoordinator,
+        sidebar_search::{SearchOutcome, SearchRequest, reconciliation::ReconciliationPass},
+        workspace::{ChatRecord, DraftRecord},
+    };
+    let _case = PROCESS_CASE.lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let path = root.join("external.json");
+    let store = SessionStore::open(&path).unwrap();
+    let id = store.snapshot().id;
+    drop(store);
+    let mut catalog = WorkspaceStore::open(root.join("catalog.json"), &root).unwrap();
+    catalog
+        .register(
+            ChatRecord::new(id.clone(), "private".into(), path.clone()),
+            DraftRecord::default(),
+        )
+        .unwrap();
+    let owner = std::sync::Arc::new(Mutex::new(catalog));
+    let lane = InspectionCoordinator::default();
+    for expected in [false, true] {
+        if expected {
+            probe("session", &path, dir.path(), "append_needle");
+        }
+        let membership = WorkspaceStore::search_membership_snapshot(&owner).unwrap();
+        let mut pass =
+            ReconciliationPass::begin(&SearchRequest::new("needle", 1).unwrap(), &membership)
+                .unwrap();
+        let work = pass.work(&id).unwrap();
+        let mut permit = lane.try_background().unwrap().unwrap();
+        let lease = permit.inspect_search(&work).unwrap();
+        let value = lease.prepare_search(&work).unwrap();
+        assert_eq!(matches!(value.outcome(), SearchOutcome::Match(_)), expected);
+        probe("session", &path, dir.path(), "locked");
+    }
 }

@@ -118,7 +118,7 @@ pub(crate) fn parse_snapshot(bytes: &[u8]) -> Result<Session> {
 }
 pub(crate) fn parse_snapshot_cancelled(
     bytes: &[u8],
-    cancel: Option<&tokio_util::sync::CancellationToken>,
+    cancel: Option<&dyn crate::sidebar_search::CancellationProbe>,
 ) -> Result<Session> {
     fn present<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<bool, D::Error> {
         serde::de::IgnoredAny::deserialize(d)?;

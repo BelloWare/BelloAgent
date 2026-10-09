@@ -75,6 +75,31 @@ impl SearchRequest {
             cancelled,
         })))
     }
+    pub(crate) fn same_request(&self, other: &Self) -> bool {
+        self.0.id == other.0.id
+    }
+    pub(crate) fn cancellation(&self) -> &AtomicBool {
+        &self.0.cancelled
+    }
+    pub(crate) fn project(
+        &self,
+        session: &Session,
+        policy: ActivePolicy,
+        cancel: &dyn super::CancellationProbe,
+    ) -> Result<([u8; 32], SearchOutcome), SearchError> {
+        self.check()?;
+        let projection = SidebarProjection::new(session, policy, cancel)?;
+        let identity = ContentIdentity::of(&projection, cancel)?;
+        let outcome = match projection.newest_match(&self.0.query, cancel)? {
+            Some((index, occurrence)) => SearchOutcome::Match(Box::new(OwnedHit::new(
+                &projection.pieces[index],
+                occurrence,
+            ))),
+            None => SearchOutcome::NoMatch,
+        };
+        self.check()?;
+        Ok((identity.digest, outcome))
+    }
     pub fn generation(&self) -> u64 {
         self.0.generation
     }
@@ -84,7 +109,7 @@ impl SearchRequest {
     pub fn is_cancelled(&self) -> bool {
         self.0.cancelled.load(Ordering::Acquire)
     }
-    fn check(&self) -> Result<(), SearchError> {
+    pub(crate) fn check(&self) -> Result<(), SearchError> {
         if self.is_cancelled() {
             Err(SearchError::Cancelled)
         } else {
@@ -250,22 +275,15 @@ impl LoadedSearchEvidence {
         self.request.check()?;
         self.evidence.check()?;
         let cancel = &self.request.0.cancelled;
-        let projection =
-            SidebarProjection::new(&self.session, ActivePolicy::AcceptedRetained, cancel)?;
-        let identity = ContentIdentity::of(&projection, cancel)?;
-        let outcome = match projection.newest_match(&self.request.0.query, cancel)? {
-            Some((index, occurrence)) => SearchOutcome::Match(Box::new(OwnedHit::new(
-                &projection.pieces[index],
-                occurrence,
-            ))),
-            None => SearchOutcome::NoMatch,
-        };
+        let (content_digest, outcome) =
+            self.request
+                .project(&self.session, ActivePolicy::AcceptedRetained, cancel)?;
         self.request.check()?;
         self.evidence.check()?;
         Ok(Arc::new(PreparedSearchCandidate {
             evidence: self.evidence,
             request: self.request,
-            content_digest: identity.digest,
+            content_digest,
             outcome,
         }))
     }
@@ -402,6 +420,14 @@ pub struct PreparedSearchCandidate {
     outcome: SearchOutcome,
 }
 impl PreparedSearchCandidate {
+    pub(crate) fn check_for(&self, request: &SearchRequest) -> Result<(), SearchError> {
+        if !self.request.same_request(request) {
+            return Err(SearchError::WrongRequest);
+        }
+        self.request.check()?;
+        self.evidence.check()
+    }
+
     pub fn generation(&self) -> u64 {
         self.request.generation()
     }

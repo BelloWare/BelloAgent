@@ -45,8 +45,10 @@ mod saved_runtime_adapter;
 mod shutdown_barrier;
 mod sidebar_actions;
 mod sidebar_activity;
+mod sidebar_inspection;
 mod sidebar_read_state;
 mod sidebar_run_state;
+mod sidebar_search_state;
 #[cfg(test)]
 mod sidebar_title_tests;
 mod stop_shortcut;
