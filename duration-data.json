@@ -3,7 +3,7 @@
   "evidence_cutoff_utc": "2026-10-09T06:00:00Z",
   "schema_version": 1,
   "repository": "BelloWare/BelloAgent",
-  "as_of_utc": "2026-10-09T14:47:00Z",
+  "as_of_utc": "2026-10-09T14:57:00Z",
   "source_commit": "885a5bcf6e608361692e877d7c77941b0db2f4d8",
   "summary": {
     "window_start_utc": "2026-10-04T05:13:30Z",
@@ -59846,6 +59846,873 @@
       "original_source_sha256": "579b2d9d175608056b47ea31ed35635018c4bcc48e81d203eee0304f0754dba4",
       "mutant_source_sha256": "a971e8c74206be48e946924d54522144453c11444d1374ed22df8a1b78c89a7f",
       "effective_jobs": 1
+    },
+    {
+      "id": "20261009-1457-prior-timing-preparation-0",
+      "repository_assignment": "BelloAgent",
+      "activity": "Prepare, upload and verify paired 14:47 timing candidates",
+      "category": "review/publication/waiting (mixed)",
+      "start_utc": "2026-10-09T14:42:54Z",
+      "end_utc": "2026-10-09T14:49:24Z",
+      "duration_seconds": 390,
+      "source": [
+        {
+          "receipt_sha256": "ebdff68896bf3eb4fd92f2f6514646475d6413d80fd4cad4c7c93f3a8935f66e",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "completed",
+      "accounting_group": "task_window",
+      "include_in_totals": false,
+      "resource": "mixed task window",
+      "duration_basis": "Observed mixed task/workflow interval includes tools, coordination and waiting; overlaps command resources and other workers",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1457",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "coverage_note": "Late-added earlier evidence, deduplicated against all prior timed intervals."
+    },
+    {
+      "id": "20261009-1457-prior-paired-publication",
+      "repository_assignment": "BelloAgent",
+      "activity": "Publish paired compact 14:47 timing checkpoint (shared once)",
+      "category": "publication (mixed)",
+      "start_utc": "2026-10-09T14:49:55.543Z",
+      "end_utc": "2026-10-09T14:50:20.577Z",
+      "duration_seconds": 25.034,
+      "source": [
+        {
+          "receipt_sha256": "5418d77b032a2b31a9885808c9e3894074f3a03b697cc0a01e225b4a8bf098bb",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "completed",
+      "accounting_group": "task_window",
+      "include_in_totals": false,
+      "resource": "mixed task window",
+      "duration_basis": "Observed mixed task/workflow interval includes tools, coordination and waiting; overlaps command resources and other workers",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1457",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time."
+    },
+    {
+      "id": "20261009-1457-gui-v2-0",
+      "repository_assignment": "BelloAgent",
+      "activity": "Synthetic sidebar v2 GUI process lifetime",
+      "category": "interactive GUI diagnostics",
+      "start_utc": "2026-10-09T14:42:21.828547815+00:00",
+      "end_utc": "2026-10-09T14:48:43.502424143+00:00",
+      "duration_seconds": 381.673877,
+      "source": [
+        {
+          "receipt_sha256": "1bbf8aa30e6cda9ac795a6aec7265a3b2eef62a341ed88525ae0c1e214c64b3f",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "partial positive evidence only; independently confirmed timer-owner defect requires another seal/rerun",
+      "accounting_group": "catchup_gui_process",
+      "include_in_totals": true,
+      "resource": "GUI process lifetime",
+      "duration_basis": "mixed closed GUI process lifetime, not performance or inference time",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1457",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "binary_sha256": "d43432bbe46409311aa3743907e6eb4b15df6a0ad9188ca51fe8858e8a074eea",
+      "exit_code": 0,
+      "final_interaction_acceptance": false,
+      "coverage_note": "Late-added earlier evidence, deduplicated against all prior timed intervals."
+    },
+    {
+      "id": "20261009-1457-core-preupload-batch",
+      "repository_assignment": "BelloAgent",
+      "activity": "Immutable Core blob preparation parallel batch",
+      "category": "publication (mixed)",
+      "start_utc": "2026-10-09T14:53:21.668Z",
+      "end_utc": "2026-10-09T14:55:24.799Z",
+      "duration_seconds": 123.131,
+      "source": [
+        {
+          "receipt_sha256": "cc43a208991b5702e970b9a4e2d6e8f1e582ad88b3a44fd21b257f2c2430ceb6",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "completed",
+      "accounting_group": "task_window",
+      "include_in_totals": false,
+      "resource": "mixed task window",
+      "duration_basis": "Observed mixed task/workflow interval includes tools, coordination and waiting; overlaps command resources and other workers",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1457",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "scope": "19 observed calls overlap inside batch; one earlier call has unknown duration; no trees, commits or refs"
+    },
+    {
+      "id": "20261009-1457-core-preupload-0",
+      "repository_assignment": "BelloAgent",
+      "activity": "Create immutable Core blob: .cargo/config.toml",
+      "category": "publication",
+      "start_utc": null,
+      "end_utc": null,
+      "duration_seconds": null,
+      "source": [
+        {
+          "receipt_sha256": "cc43a208991b5702e970b9a4e2d6e8f1e582ad88b3a44fd21b257f2c2430ceb6",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "Returned blob SHA matched local Git content SHA",
+      "accounting_group": "unknown",
+      "include_in_totals": false,
+      "resource": "mixed task window",
+      "duration_basis": "Observed client API interval; includes tool/network waiting, not isolated processing or inference",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1457",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "git_blob_sha": "e8bb6ba08fff72b6e92ac9d43c71bac3fdc6ee2c",
+      "refs_moved": false
+    },
+    {
+      "id": "20261009-1457-core-preupload-1",
+      "repository_assignment": "BelloAgent",
+      "activity": "Create immutable Core blob: rust/crates/bello-agent-core/build.rs",
+      "category": "publication",
+      "start_utc": "2026-10-09T14:53:22.125Z",
+      "end_utc": "2026-10-09T14:53:29.116Z",
+      "duration_seconds": 6.991,
+      "source": [
+        {
+          "receipt_sha256": "cc43a208991b5702e970b9a4e2d6e8f1e582ad88b3a44fd21b257f2c2430ceb6",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "Returned blob SHA matched local Git content SHA",
+      "accounting_group": "catchup_api",
+      "include_in_totals": true,
+      "resource": "pending API/client operation",
+      "duration_basis": "Observed client API interval; includes tool/network waiting, not isolated processing or inference",
+      "parent_id": "20261009-1457-core-preupload-batch",
+      "prospective": true,
+      "checkpoint": "20261009-1457",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "git_blob_sha": "4bc91161258c7d26dbecbe9f256ee7415f7ac277",
+      "refs_moved": false
+    },
+    {
+      "id": "20261009-1457-core-preupload-2",
+      "repository_assignment": "BelloAgent",
+      "activity": "Create immutable Core blob: rust/crates/bello-agent-core/Cargo.toml",
+      "category": "publication",
+      "start_utc": "2026-10-09T14:53:22.125Z",
+      "end_utc": "2026-10-09T14:53:38.954Z",
+      "duration_seconds": 16.829,
+      "source": [
+        {
+          "receipt_sha256": "cc43a208991b5702e970b9a4e2d6e8f1e582ad88b3a44fd21b257f2c2430ceb6",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "Returned blob SHA matched local Git content SHA",
+      "accounting_group": "catchup_api",
+      "include_in_totals": true,
+      "resource": "pending API/client operation",
+      "duration_basis": "Observed client API interval; includes tool/network waiting, not isolated processing or inference",
+      "parent_id": "20261009-1457-core-preupload-batch",
+      "prospective": true,
+      "checkpoint": "20261009-1457",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "git_blob_sha": "0903eea5c579f6ce2bc4d1de7641fb5a0152ea3e",
+      "refs_moved": false
+    },
+    {
+      "id": "20261009-1457-core-preupload-3",
+      "repository_assignment": "BelloAgent",
+      "activity": "Create immutable Core blob: rust/Cargo.toml",
+      "category": "publication",
+      "start_utc": "2026-10-09T14:53:22.125Z",
+      "end_utc": "2026-10-09T14:53:47.408Z",
+      "duration_seconds": 25.283,
+      "source": [
+        {
+          "receipt_sha256": "cc43a208991b5702e970b9a4e2d6e8f1e582ad88b3a44fd21b257f2c2430ceb6",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "Returned blob SHA matched local Git content SHA",
+      "accounting_group": "catchup_api",
+      "include_in_totals": true,
+      "resource": "pending API/client operation",
+      "duration_basis": "Observed client API interval; includes tool/network waiting, not isolated processing or inference",
+      "parent_id": "20261009-1457-core-preupload-batch",
+      "prospective": true,
+      "checkpoint": "20261009-1457",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "git_blob_sha": "798c23e3306e84a2f70da4a514b6ecdb6b87f0ae",
+      "refs_moved": false
+    },
+    {
+      "id": "20261009-1457-core-preupload-4",
+      "repository_assignment": "BelloAgent",
+      "activity": "Create immutable Core blob: rust/Cargo.lock",
+      "category": "publication",
+      "start_utc": "2026-10-09T14:53:22.128Z",
+      "end_utc": "2026-10-09T14:54:04.649Z",
+      "duration_seconds": 42.521,
+      "source": [
+        {
+          "receipt_sha256": "cc43a208991b5702e970b9a4e2d6e8f1e582ad88b3a44fd21b257f2c2430ceb6",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "Returned blob SHA matched local Git content SHA",
+      "accounting_group": "catchup_api",
+      "include_in_totals": true,
+      "resource": "pending API/client operation",
+      "duration_basis": "Observed client API interval; includes tool/network waiting, not isolated processing or inference",
+      "parent_id": "20261009-1457-core-preupload-batch",
+      "prospective": true,
+      "checkpoint": "20261009-1457",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "git_blob_sha": "b85bfb71e9efdb1083f274fb18ba1707eee94651",
+      "refs_moved": false
+    },
+    {
+      "id": "20261009-1457-core-preupload-5",
+      "repository_assignment": "BelloAgent",
+      "activity": "Create immutable Core blob: rust/crates/bello-agent-core/src/sidebar_search/admission.rs",
+      "category": "publication",
+      "start_utc": "2026-10-09T14:54:05.044Z",
+      "end_utc": "2026-10-09T14:54:10.158Z",
+      "duration_seconds": 5.114,
+      "source": [
+        {
+          "receipt_sha256": "cc43a208991b5702e970b9a4e2d6e8f1e582ad88b3a44fd21b257f2c2430ceb6",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "Returned blob SHA matched local Git content SHA",
+      "accounting_group": "catchup_api",
+      "include_in_totals": true,
+      "resource": "pending API/client operation",
+      "duration_basis": "Observed client API interval; includes tool/network waiting, not isolated processing or inference",
+      "parent_id": "20261009-1457-core-preupload-batch",
+      "prospective": true,
+      "checkpoint": "20261009-1457",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "git_blob_sha": "f6f1018f955d10f50280c2e9bc336a5188dfd96d",
+      "refs_moved": false
+    },
+    {
+      "id": "20261009-1457-core-preupload-6",
+      "repository_assignment": "BelloAgent",
+      "activity": "Create immutable Core blob: rust/crates/bello-agent-core/src/sidebar_search/cache/mac_acl.rs",
+      "category": "publication",
+      "start_utc": "2026-10-09T14:54:05.044Z",
+      "end_utc": "2026-10-09T14:54:15.989Z",
+      "duration_seconds": 10.945,
+      "source": [
+        {
+          "receipt_sha256": "cc43a208991b5702e970b9a4e2d6e8f1e582ad88b3a44fd21b257f2c2430ceb6",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "Returned blob SHA matched local Git content SHA",
+      "accounting_group": "catchup_api",
+      "include_in_totals": true,
+      "resource": "pending API/client operation",
+      "duration_basis": "Observed client API interval; includes tool/network waiting, not isolated processing or inference",
+      "parent_id": "20261009-1457-core-preupload-batch",
+      "prospective": true,
+      "checkpoint": "20261009-1457",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "git_blob_sha": "d722131bd7bab279afb3cfd6fbfd9601290940f1",
+      "refs_moved": false
+    },
+    {
+      "id": "20261009-1457-core-preupload-7",
+      "repository_assignment": "BelloAgent",
+      "activity": "Create immutable Core blob: rust/crates/bello-agent-core/src/sidebar_search/admission_tests.rs",
+      "category": "publication",
+      "start_utc": "2026-10-09T14:54:05.044Z",
+      "end_utc": "2026-10-09T14:54:22.604Z",
+      "duration_seconds": 17.56,
+      "source": [
+        {
+          "receipt_sha256": "cc43a208991b5702e970b9a4e2d6e8f1e582ad88b3a44fd21b257f2c2430ceb6",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "Returned blob SHA matched local Git content SHA",
+      "accounting_group": "catchup_api",
+      "include_in_totals": true,
+      "resource": "pending API/client operation",
+      "duration_basis": "Observed client API interval; includes tool/network waiting, not isolated processing or inference",
+      "parent_id": "20261009-1457-core-preupload-batch",
+      "prospective": true,
+      "checkpoint": "20261009-1457",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "git_blob_sha": "1cd8575ba1d9daea334c6112401e95f6ccedf27d",
+      "refs_moved": false
+    },
+    {
+      "id": "20261009-1457-core-preupload-8",
+      "repository_assignment": "BelloAgent",
+      "activity": "Create immutable Core blob: rust/crates/bello-agent-core/src/sidebar_search/cache/mod.rs",
+      "category": "publication",
+      "start_utc": "2026-10-09T14:54:05.065Z",
+      "end_utc": "2026-10-09T14:54:29.558Z",
+      "duration_seconds": 24.493,
+      "source": [
+        {
+          "receipt_sha256": "cc43a208991b5702e970b9a4e2d6e8f1e582ad88b3a44fd21b257f2c2430ceb6",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "Returned blob SHA matched local Git content SHA",
+      "accounting_group": "catchup_api",
+      "include_in_totals": true,
+      "resource": "pending API/client operation",
+      "duration_basis": "Observed client API interval; includes tool/network waiting, not isolated processing or inference",
+      "parent_id": "20261009-1457-core-preupload-batch",
+      "prospective": true,
+      "checkpoint": "20261009-1457",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "git_blob_sha": "66c9e24ae2076e4023afeccc0dc30e5128bdad36",
+      "refs_moved": false
+    },
+    {
+      "id": "20261009-1457-core-preupload-9",
+      "repository_assignment": "BelloAgent",
+      "activity": "Create immutable Core blob: rust/crates/bello-agent-core/src/sidebar_search/cache/privacy.rs",
+      "category": "publication",
+      "start_utc": "2026-10-09T14:54:29.885Z",
+      "end_utc": "2026-10-09T14:54:35.537Z",
+      "duration_seconds": 5.652,
+      "source": [
+        {
+          "receipt_sha256": "cc43a208991b5702e970b9a4e2d6e8f1e582ad88b3a44fd21b257f2c2430ceb6",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "Returned blob SHA matched local Git content SHA",
+      "accounting_group": "catchup_api",
+      "include_in_totals": true,
+      "resource": "pending API/client operation",
+      "duration_basis": "Observed client API interval; includes tool/network waiting, not isolated processing or inference",
+      "parent_id": "20261009-1457-core-preupload-batch",
+      "prospective": true,
+      "checkpoint": "20261009-1457",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "git_blob_sha": "922c500b9852b3af16a1c9f094bf2675bdcd4952",
+      "refs_moved": false
+    },
+    {
+      "id": "20261009-1457-core-preupload-10",
+      "repository_assignment": "BelloAgent",
+      "activity": "Create immutable Core blob: rust/crates/bello-agent-core/src/sidebar_search/cache/runtime.rs",
+      "category": "publication",
+      "start_utc": "2026-10-09T14:54:29.907Z",
+      "end_utc": "2026-10-09T14:54:42.094Z",
+      "duration_seconds": 12.187,
+      "source": [
+        {
+          "receipt_sha256": "cc43a208991b5702e970b9a4e2d6e8f1e582ad88b3a44fd21b257f2c2430ceb6",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "Returned blob SHA matched local Git content SHA",
+      "accounting_group": "catchup_api",
+      "include_in_totals": true,
+      "resource": "pending API/client operation",
+      "duration_basis": "Observed client API interval; includes tool/network waiting, not isolated processing or inference",
+      "parent_id": "20261009-1457-core-preupload-batch",
+      "prospective": true,
+      "checkpoint": "20261009-1457",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "git_blob_sha": "54255438e23b8e3d50be51d0db198a8002721d18",
+      "refs_moved": false
+    },
+    {
+      "id": "20261009-1457-core-preupload-11",
+      "repository_assignment": "BelloAgent",
+      "activity": "Create immutable Core blob: rust/crates/bello-agent-core/src/sidebar_search/cache/observer.rs",
+      "category": "publication",
+      "start_utc": "2026-10-09T14:54:29.907Z",
+      "end_utc": "2026-10-09T14:54:50.585Z",
+      "duration_seconds": 20.678,
+      "source": [
+        {
+          "receipt_sha256": "cc43a208991b5702e970b9a4e2d6e8f1e582ad88b3a44fd21b257f2c2430ceb6",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "Returned blob SHA matched local Git content SHA",
+      "accounting_group": "catchup_api",
+      "include_in_totals": true,
+      "resource": "pending API/client operation",
+      "duration_basis": "Observed client API interval; includes tool/network waiting, not isolated processing or inference",
+      "parent_id": "20261009-1457-core-preupload-batch",
+      "prospective": true,
+      "checkpoint": "20261009-1457",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "git_blob_sha": "ad8b6ced541f0b983efea133a160af94e6171699",
+      "refs_moved": false
+    },
+    {
+      "id": "20261009-1457-core-preupload-12",
+      "repository_assignment": "BelloAgent",
+      "activity": "Create immutable Core blob: rust/crates/bello-agent-core/src/sidebar_search/cache/query.rs",
+      "category": "publication",
+      "start_utc": "2026-10-09T14:54:29.908Z",
+      "end_utc": "2026-10-09T14:54:57.416Z",
+      "duration_seconds": 27.508,
+      "source": [
+        {
+          "receipt_sha256": "cc43a208991b5702e970b9a4e2d6e8f1e582ad88b3a44fd21b257f2c2430ceb6",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "Returned blob SHA matched local Git content SHA",
+      "accounting_group": "catchup_api",
+      "include_in_totals": true,
+      "resource": "pending API/client operation",
+      "duration_basis": "Observed client API interval; includes tool/network waiting, not isolated processing or inference",
+      "parent_id": "20261009-1457-core-preupload-batch",
+      "prospective": true,
+      "checkpoint": "20261009-1457",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "git_blob_sha": "e7b4992dbf4b73cb85b98bd9cb1f7d228e9fd46d",
+      "refs_moved": false
+    },
+    {
+      "id": "20261009-1457-core-preupload-13",
+      "repository_assignment": "BelloAgent",
+      "activity": "Create immutable Core blob: rust/crates/bello-agent-core/src/sidebar_search/mod.rs",
+      "category": "publication",
+      "start_utc": "2026-10-09T14:54:57.782Z",
+      "end_utc": "2026-10-09T14:55:05.363Z",
+      "duration_seconds": 7.581,
+      "source": [
+        {
+          "receipt_sha256": "cc43a208991b5702e970b9a4e2d6e8f1e582ad88b3a44fd21b257f2c2430ceb6",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "Returned blob SHA matched local Git content SHA",
+      "accounting_group": "catchup_api",
+      "include_in_totals": true,
+      "resource": "pending API/client operation",
+      "duration_basis": "Observed client API interval; includes tool/network waiting, not isolated processing or inference",
+      "parent_id": "20261009-1457-core-preupload-batch",
+      "prospective": true,
+      "checkpoint": "20261009-1457",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "git_blob_sha": "a3f85c6c572ec0d01556dfef4d3833593bbf87d1",
+      "refs_moved": false
+    },
+    {
+      "id": "20261009-1457-core-preupload-14",
+      "repository_assignment": "BelloAgent",
+      "activity": "Create immutable Core blob: rust/crates/bello-agent-core/src/sidebar_search/unloaded.rs",
+      "category": "publication",
+      "start_utc": "2026-10-09T14:54:57.783Z",
+      "end_utc": "2026-10-09T14:55:11.637Z",
+      "duration_seconds": 13.854,
+      "source": [
+        {
+          "receipt_sha256": "cc43a208991b5702e970b9a4e2d6e8f1e582ad88b3a44fd21b257f2c2430ceb6",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "Returned blob SHA matched local Git content SHA",
+      "accounting_group": "catchup_api",
+      "include_in_totals": true,
+      "resource": "pending API/client operation",
+      "duration_basis": "Observed client API interval; includes tool/network waiting, not isolated processing or inference",
+      "parent_id": "20261009-1457-core-preupload-batch",
+      "prospective": true,
+      "checkpoint": "20261009-1457",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "git_blob_sha": "e051d0883f8d16633c447be3d000378f6522f38e",
+      "refs_moved": false
+    },
+    {
+      "id": "20261009-1457-core-preupload-15",
+      "repository_assignment": "BelloAgent",
+      "activity": "Create immutable Core blob: rust/crates/bello-agent-core/tests/sidebar_search_projection.rs",
+      "category": "publication",
+      "start_utc": "2026-10-09T14:55:05.683Z",
+      "end_utc": "2026-10-09T14:55:12.265Z",
+      "duration_seconds": 6.582,
+      "source": [
+        {
+          "receipt_sha256": "cc43a208991b5702e970b9a4e2d6e8f1e582ad88b3a44fd21b257f2c2430ceb6",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "Returned blob SHA matched local Git content SHA",
+      "accounting_group": "catchup_api",
+      "include_in_totals": true,
+      "resource": "pending API/client operation",
+      "duration_basis": "Observed client API interval; includes tool/network waiting, not isolated processing or inference",
+      "parent_id": "20261009-1457-core-preupload-batch",
+      "prospective": true,
+      "checkpoint": "20261009-1457",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "git_blob_sha": "44cf4fe2d3955e10ba85b2e5e16e36c0c80b0b9a",
+      "refs_moved": false
+    },
+    {
+      "id": "20261009-1457-core-preupload-16",
+      "repository_assignment": "BelloAgent",
+      "activity": "Create immutable Core blob: rust/crates/bello-agent-core/src/sidebar_search/projection.rs",
+      "category": "publication",
+      "start_utc": "2026-10-09T14:54:57.783Z",
+      "end_utc": "2026-10-09T14:55:17.976Z",
+      "duration_seconds": 20.193,
+      "source": [
+        {
+          "receipt_sha256": "cc43a208991b5702e970b9a4e2d6e8f1e582ad88b3a44fd21b257f2c2430ceb6",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "Returned blob SHA matched local Git content SHA",
+      "accounting_group": "catchup_api",
+      "include_in_totals": true,
+      "resource": "pending API/client operation",
+      "duration_basis": "Observed client API interval; includes tool/network waiting, not isolated processing or inference",
+      "parent_id": "20261009-1457-core-preupload-batch",
+      "prospective": true,
+      "checkpoint": "20261009-1457",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "git_blob_sha": "b6b985cd4105fd251d2eb27eaf0ede32f6674496",
+      "refs_moved": false
+    },
+    {
+      "id": "20261009-1457-core-preupload-17",
+      "repository_assignment": "BelloAgent",
+      "activity": "Create immutable Core blob: rust/scripts/check-sidebar-sqlite.py",
+      "category": "publication",
+      "start_utc": "2026-10-09T14:55:12.581Z",
+      "end_utc": "2026-10-09T14:55:18.086Z",
+      "duration_seconds": 5.505,
+      "source": [
+        {
+          "receipt_sha256": "cc43a208991b5702e970b9a4e2d6e8f1e582ad88b3a44fd21b257f2c2430ceb6",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "Returned blob SHA matched local Git content SHA",
+      "accounting_group": "catchup_api",
+      "include_in_totals": true,
+      "resource": "pending API/client operation",
+      "duration_basis": "Observed client API interval; includes tool/network waiting, not isolated processing or inference",
+      "parent_id": "20261009-1457-core-preupload-batch",
+      "prospective": true,
+      "checkpoint": "20261009-1457",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "git_blob_sha": "ff2ab015dbac65080f62d7ebcf6a02b90f9074f1",
+      "refs_moved": false
+    },
+    {
+      "id": "20261009-1457-core-preupload-18",
+      "repository_assignment": "BelloAgent",
+      "activity": "Create immutable Core blob: rust/docs/sidebar-private-cache.md",
+      "category": "publication",
+      "start_utc": "2026-10-09T14:55:12.581Z",
+      "end_utc": "2026-10-09T14:55:24.378Z",
+      "duration_seconds": 11.797,
+      "source": [
+        {
+          "receipt_sha256": "cc43a208991b5702e970b9a4e2d6e8f1e582ad88b3a44fd21b257f2c2430ceb6",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "Returned blob SHA matched local Git content SHA",
+      "accounting_group": "catchup_api",
+      "include_in_totals": true,
+      "resource": "pending API/client operation",
+      "duration_basis": "Observed client API interval; includes tool/network waiting, not isolated processing or inference",
+      "parent_id": "20261009-1457-core-preupload-batch",
+      "prospective": true,
+      "checkpoint": "20261009-1457",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "git_blob_sha": "1d409855f77986d638f88d849cffadfeef73d549",
+      "refs_moved": false
+    },
+    {
+      "id": "20261009-1457-core-preupload-19",
+      "repository_assignment": "BelloAgent",
+      "activity": "Create immutable Core blob: rust/crates/bello-agent-core/src/sidebar_search/cache/tests.rs",
+      "category": "publication",
+      "start_utc": "2026-10-09T14:54:57.783Z",
+      "end_utc": "2026-10-09T14:55:24.799Z",
+      "duration_seconds": 27.016,
+      "source": [
+        {
+          "receipt_sha256": "cc43a208991b5702e970b9a4e2d6e8f1e582ad88b3a44fd21b257f2c2430ceb6",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "Returned blob SHA matched local Git content SHA",
+      "accounting_group": "catchup_api",
+      "include_in_totals": true,
+      "resource": "pending API/client operation",
+      "duration_basis": "Observed client API interval; includes tool/network waiting, not isolated processing or inference",
+      "parent_id": "20261009-1457-core-preupload-batch",
+      "prospective": true,
+      "checkpoint": "20261009-1457",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "git_blob_sha": "1526394cbfedaab3e3161a22d96e765f52f63e9b",
+      "refs_moved": false
+    },
+    {
+      "id": "20261009-1457-validation-continuation",
+      "repository_assignment": "BelloAgent",
+      "activity": "Timer-owner repair, validation and coordination",
+      "category": "implementation/review/validation (mixed)",
+      "start_utc": "2026-10-09T14:46:00Z",
+      "end_utc": "2026-10-09T14:57:00Z",
+      "duration_seconds": 660.0,
+      "source": [
+        {
+          "receipt_sha256": "780db1e113a639c5665baa2b2989af625b7c7b40bfe8902a1b76294a44db89de",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "completed",
+      "accounting_group": "task_window",
+      "include_in_totals": false,
+      "resource": "mixed task window",
+      "duration_basis": "Observed mixed task/workflow interval includes tools, coordination and waiting; overlaps command resources and other workers",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1457",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "coverage_note": "Late-added earlier evidence, deduplicated against all prior timed intervals."
+    },
+    {
+      "id": "20261009-1457-app-phase-33",
+      "repository_assignment": "BelloAgent",
+      "activity": "app-timer-owner-r33",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T14:52:57Z",
+      "end_utc": "2026-10-09T14:54:03Z",
+      "duration_seconds": 66.0,
+      "source": [
+        {
+          "receipt_sha256": "780db1e113a639c5665baa2b2989af625b7c7b40bfe8902a1b76294a44db89de",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "0",
+      "accounting_group": "catchup_command",
+      "include_in_totals": true,
+      "resource": "cloud command process",
+      "duration_basis": "Measured command/resource elapsed; not active labor or inference",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1457",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "effective_jobs": 1,
+      "scope": "v3 focused/strict/build phase; final controls, restored matrix and GUI still separate"
+    },
+    {
+      "id": "20261009-1457-app-phase-34",
+      "repository_assignment": "BelloAgent",
+      "activity": "app-strict-timer-r34",
+      "category": "automated lint/check",
+      "start_utc": "2026-10-09T14:54:12Z",
+      "end_utc": "2026-10-09T14:54:29Z",
+      "duration_seconds": 17.0,
+      "source": [
+        {
+          "receipt_sha256": "780db1e113a639c5665baa2b2989af625b7c7b40bfe8902a1b76294a44db89de",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "0",
+      "accounting_group": "catchup_command",
+      "include_in_totals": true,
+      "resource": "cloud command process",
+      "duration_basis": "Measured command/resource elapsed; not active labor or inference",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1457",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "effective_jobs": 1,
+      "scope": "v3 focused/strict/build phase; final controls, restored matrix and GUI still separate"
+    },
+    {
+      "id": "20261009-1457-app-phase-35",
+      "repository_assignment": "BelloAgent",
+      "activity": "synthetic-build-timer-r35",
+      "category": "build",
+      "start_utc": "2026-10-09T14:54:29Z",
+      "end_utc": "2026-10-09T14:54:50Z",
+      "duration_seconds": 21.0,
+      "source": [
+        {
+          "receipt_sha256": "780db1e113a639c5665baa2b2989af625b7c7b40bfe8902a1b76294a44db89de",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "0",
+      "accounting_group": "catchup_command",
+      "include_in_totals": true,
+      "resource": "cloud command process",
+      "duration_basis": "Measured command/resource elapsed; not active labor or inference",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1457",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "effective_jobs": 1,
+      "scope": "v3 focused/strict/build phase; final controls, restored matrix and GUI still separate"
+    },
+    {
+      "id": "20261009-1457-lane-constraint-0",
+      "repository_assignment": "BelloAgent",
+      "activity": "Shared Cargo lane yielded to Regex",
+      "category": "waiting (mixed)",
+      "start_utc": "2026-10-09T14:45:43Z",
+      "end_utc": "2026-10-09T14:52:56Z",
+      "duration_seconds": 433.0,
+      "source": [
+        {
+          "receipt_sha256": "780db1e113a639c5665baa2b2989af625b7c7b40bfe8902a1b76294a44db89de",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "Closed build-lane constraint; parallel source/coordination work may continue",
+      "accounting_group": "task_window",
+      "include_in_totals": false,
+      "resource": "mixed task window",
+      "duration_basis": "Observed lane handoff interval, not pure idle or active labor",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1457",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "coverage_note": "Late-added earlier evidence, deduplicated against all prior timed intervals."
+    },
+    {
+      "id": "20261009-1457-lane-constraint-1",
+      "repository_assignment": "BelloAgent",
+      "activity": "Shared Cargo lane yielded to Regex",
+      "category": "waiting (mixed)",
+      "start_utc": "2026-10-09T14:55:25Z",
+      "end_utc": null,
+      "duration_seconds": null,
+      "source": [
+        {
+          "receipt_sha256": "780db1e113a639c5665baa2b2989af625b7c7b40bfe8902a1b76294a44db89de",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "Open at cutoff; final duration unknown",
+      "accounting_group": "task_window",
+      "include_in_totals": false,
+      "resource": "mixed task window",
+      "duration_basis": "Observed lane handoff interval, not pure idle or active labor",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1457",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time."
+    },
+    {
+      "id": "20261009-1457-gui-v3-storage-failure",
+      "repository_assignment": "BelloAgent",
+      "activity": "Final-v3 GUI startup attempt",
+      "category": "interactive GUI diagnostics",
+      "start_utc": "2026-10-09T14:56:23.265230068+00:00",
+      "end_utc": "2026-10-09T14:56:23.271909516+00:00",
+      "duration_seconds": 0.006679,
+      "source": [
+        {
+          "receipt_sha256": "266862f6af985d8f783fef75e10bfdcdb0e345c03c0cce6ec0a42b10dec46cad",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "Failed startup before window creation: OS StorageFull error; no interaction acceptance",
+      "accounting_group": "catchup_gui_process",
+      "include_in_totals": true,
+      "resource": "GUI process lifetime",
+      "duration_basis": "Actual failed process lifetime before window creation; no performance/inference claim",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1457",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "exit_code": 1,
+      "final_interaction_acceptance": false,
+      "original_receipt_hashes": {
+        "start-20261009T145623.txt": "59430a0cff587f98e87b28e8f68519f92fefa93586844ef81567d6ab90cc8103",
+        "end-20261009T145623.txt": "fa3368b0959d2253c4fdd73bb2cd638324381a5b3dae81f552568685d22083a8",
+        "exit-20261009T145623.txt": "cf205dbb8cea84897b488abcc281bf96698d5e94b1096b16657b4caba9082a22"
+      }
     }
   ],
   "unattributed_ci_gaps": [
@@ -63578,15 +64445,15 @@
         }
       },
       "catchup_command": {
-        "count": 167,
-        "known_duration_count": 167,
-        "resource_seconds_sum": 4084.7978662006453,
-        "wall_coverage_seconds": 2012.698368,
+        "count": 170,
+        "known_duration_count": 170,
+        "resource_seconds_sum": 4188.797866200645,
+        "wall_coverage_seconds": 2116.698368,
         "category_seconds": {
-          "build + test/check (combined)": 2885.1683825696864,
-          "automated lint/check": 431.6459922344409,
+          "build + test/check (combined)": 2951.1683825696864,
+          "automated lint/check": 448.6459922344409,
           "dependency/environment or verification": 37.10394264559292,
-          "build": 94.89373062896729,
+          "build": 115.89373062896729,
           "build/test/rework (combined)": 48.565,
           "automated negative-control validation": 0.011169794990564696,
           "automated accounting validation": 1.996808834010153,
@@ -63596,31 +64463,31 @@
           "build + negative-control test (combined)": 584.6012947349664
         },
         "resource_seconds": {
-          "cloud command process": 4084.7978662006453
+          "cloud command process": 4188.797866200645
         }
       },
       "catchup_api": {
-        "count": 24,
-        "known_duration_count": 24,
-        "resource_seconds_sum": 277.836,
-        "wall_coverage_seconds": 0,
+        "count": 43,
+        "known_duration_count": 43,
+        "resource_seconds_sum": 586.125,
+        "wall_coverage_seconds": 121.586,
         "category_seconds": {
-          "publication": 277.836
+          "publication": 586.125
         },
         "resource_seconds": {
-          "pending API/client operation": 277.836
+          "pending API/client operation": 586.125
         }
       },
       "catchup_gui_process": {
-        "count": 2,
-        "known_duration_count": 2,
-        "resource_seconds_sum": 653.5067720000001,
-        "wall_coverage_seconds": 653.5067720000001,
+        "count": 4,
+        "known_duration_count": 4,
+        "resource_seconds_sum": 1035.1873280000002,
+        "wall_coverage_seconds": 1035.187328,
         "category_seconds": {
-          "interactive GUI diagnostics": 653.5067720000001
+          "interactive GUI diagnostics": 1035.1873280000002
         },
         "resource_seconds": {
-          "GUI process lifetime": 653.5067720000001
+          "GUI process lifetime": 1035.1873280000002
         }
       }
     }
@@ -64255,6 +65122,63 @@
           },
           "known_endpoint_items": 9,
           "known_endpoint_resource_seconds": 339.335798287997
+        }
+      },
+      "ci_coverage_within_window_seconds": 0,
+      "window_seconds": 600.0,
+      "outside_selected_ci_job_intervals_seconds": 600.0,
+      "warning": "Outside selected CI intervals includes other productive work and unobserved periods; never classify as idle or inference. Selected receipt coverage remains incomplete.",
+      "nested_ci_step_seconds": {}
+    },
+    {
+      "checkpoint": "20261009-1457",
+      "through_utc": "2026-10-09T14:57:00Z",
+      "coverage_window_start_utc": "2026-10-09T14:47:00Z",
+      "new_items": 31,
+      "groups": {
+        "catchup_gui_process": {
+          "count": 2,
+          "known_duration_count": 2,
+          "resource_seconds_sum": 381.680556,
+          "wall_coverage_seconds": 381.680556,
+          "category_seconds": {
+            "interactive GUI diagnostics": 381.680556
+          },
+          "resource_seconds": {
+            "GUI process lifetime": 381.680556
+          },
+          "known_endpoint_items": 2,
+          "known_endpoint_resource_seconds": 381.680556
+        },
+        "catchup_api": {
+          "count": 19,
+          "known_duration_count": 19,
+          "resource_seconds_sum": 308.289,
+          "wall_coverage_seconds": 121.586,
+          "category_seconds": {
+            "publication": 308.289
+          },
+          "resource_seconds": {
+            "pending API/client operation": 308.289
+          },
+          "known_endpoint_items": 19,
+          "known_endpoint_resource_seconds": 308.289
+        },
+        "catchup_command": {
+          "count": 3,
+          "known_duration_count": 3,
+          "resource_seconds_sum": 104.0,
+          "wall_coverage_seconds": 104.0,
+          "category_seconds": {
+            "build + test/check (combined)": 66.0,
+            "automated lint/check": 17.0,
+            "build": 21.0
+          },
+          "resource_seconds": {
+            "cloud command process": 104.0
+          },
+          "known_endpoint_items": 3,
+          "known_endpoint_resource_seconds": 104.0
         }
       },
       "ci_coverage_within_window_seconds": 0,
