@@ -7,6 +7,7 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
 };
+use unicode_segmentation::UnicodeSegmentation;
 use uuid::Uuid;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -368,11 +369,7 @@ impl Session {
         let content = checked_prepared(&item, prepared)?;
         self.pending.remove(index);
         if self.messages.is_empty() {
-            self.title = if item.text.is_empty() {
-                submission_label(&item)
-            } else {
-                item.text.chars().take(60).collect()
-            };
+            self.title = initial_submission_title(&item);
         }
         let mut message = Message::new(
             item.id.clone(),
@@ -849,6 +846,21 @@ pub(crate) fn same_submission(a: &Submission, b: &Submission) -> bool {
         && a.attachments == b.attachments
         && a.frozen_skills == b.frozen_skills
 }
+// Swift WorkspaceRun.firstMessageTitle: prefix Characters before replacing LF.
+// Keep this separate from queue labels and never normalize persisted titles on read.
+fn initial_submission_title(item: &Submission) -> String {
+    let source = if item.text.is_empty() {
+        submission_label(item)
+    } else {
+        item.text.clone()
+    };
+    source
+        .graphemes(true)
+        .take(60)
+        .collect::<String>()
+        .replace('\n', " ")
+}
+
 pub fn submission_label(item: &Submission) -> String {
     if !item.text.is_empty() {
         item.text.chars().take(60).collect()
@@ -1734,6 +1746,108 @@ mod inspection_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn initial_title_prefixes_graphemes_before_replacing_only_lf() {
+        let prefix = "a".repeat(59);
+        for cluster in ["e\u{301}", "👨‍👩‍👧‍👦", "👍🏽", "🇺🇸", "\r\n"] {
+            let text = format!("{prefix}{cluster}X");
+            let mut session = Session::new();
+            let item = Submission::new(text.clone(), Lane::FollowUp);
+            session.submit(item.clone()).unwrap();
+            let delivered = session.start_next().unwrap().unwrap();
+            assert_eq!(delivered.id, item.id);
+            assert_eq!(delivered.text, item.text);
+            assert_eq!(
+                session.title,
+                format!("{prefix}{}", cluster.replace('\n', " "))
+            );
+            assert_eq!(session.messages[0].text, text);
+            assert_eq!(session.active.as_ref().unwrap().text, text);
+        }
+        for text in [
+            "  a  b  ",
+            "\t a\rb\u{85}c\u{2028}d\u{2029} ",
+            "a\n\nb",
+            "\r\nX",
+        ] {
+            let item = Submission::new(text.into(), Lane::FollowUp);
+            assert_eq!(initial_submission_title(&item), text.replace('\n', " "));
+        }
+    }
+
+    #[test]
+    fn initial_title_bounds_joined_skills_without_changing_queue_labels_or_image_fallback() {
+        let mut item = Submission::new(String::new(), Lane::FollowUp);
+        for name in ["a".repeat(40), "e\u{301}".repeat(40)] {
+            item.frozen_skills.push(crate::skills::FrozenSkill {
+                id: name.clone(),
+                name,
+                path: String::new(),
+                base_dir: String::new(),
+                body: String::new(),
+                body_hash: String::new(),
+                content_hash: String::new(),
+                metadata_hash: String::new(),
+                arguments: String::new(),
+                description: None,
+                scope: None,
+                policy: None,
+            });
+        }
+        let label = submission_label(&item);
+        assert_eq!(
+            label,
+            format!("/{} /{}", "a".repeat(40), "e\u{301}".repeat(40))
+        );
+        assert_eq!(
+            initial_submission_title(&item),
+            format!("/{} /{}", "a".repeat(40), "e\u{301}".repeat(17))
+        );
+        assert_eq!(submission_label(&item), label);
+        item.frozen_skills.clear();
+        // Preserve the Rust fallback rather than claiming the Swift empty source.
+        assert_eq!(initial_submission_title(&item), "0 images");
+        assert_eq!(image_label(1), "Image");
+        assert_eq!(image_label(2), "2 images");
+    }
+
+    #[test]
+    fn existing_multiline_title_and_history_survive_reopen_and_later_delivery() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("session.json");
+        let raw_title = "  persisted\nsecond\r\nthird  ";
+        let mut store = SessionStore::open(&path).unwrap();
+        store
+            .transact(|session| {
+                session.title = raw_title.into();
+                session.messages.push(Message::new(
+                    "old".into(),
+                    "user",
+                    "raw\nmessage".into(),
+                    true,
+                    "complete",
+                    None,
+                ));
+                Ok(())
+            })
+            .unwrap();
+        let bytes = fs::read(&path).unwrap();
+        drop(store);
+        let mut reopened = SessionStore::open(&path).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert_eq!(reopened.snapshot().title, raw_title);
+        reopened
+            .transact(|session| {
+                session.submit(Submission::new("new\nmessage".into(), Lane::FollowUp))?;
+                session.start_next()?;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(reopened.snapshot().title, raw_title);
+        assert_eq!(reopened.snapshot().messages[0].text, "raw\nmessage");
+        assert_eq!(reopened.snapshot().messages[1].text, "new\nmessage");
+    }
+
     #[test]
     fn unknown_cancel_tombstone_is_atomic_before_begin_and_beside_another_hold() {
         for unrelated_hold in [false, true] {
