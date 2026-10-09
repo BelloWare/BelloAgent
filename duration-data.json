@@ -3,7 +3,7 @@
   "evidence_cutoff_utc": "2026-10-09T06:00:00Z",
   "schema_version": 1,
   "repository": "BelloWare/BelloAgent",
-  "as_of_utc": "2026-10-09T16:37:00Z",
+  "as_of_utc": "2026-10-09T16:47:00Z",
   "source_commit": "885a5bcf6e608361692e877d7c77941b0db2f4d8",
   "summary": {
     "window_start_utc": "2026-10-04T05:13:30Z",
@@ -66586,6 +66586,878 @@
       "inference_status": "unavailable",
       "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
       "scope": "Source-bound local repair validation; native rerun and production acceptance remain separate"
+    },
+    {
+      "id": "20261009-1647-previous-timing-publication",
+      "repository_assignment": "BelloAgent",
+      "activity": "Root paired timing verification and normal publication (shared once)",
+      "category": "publication (mixed)",
+      "start_utc": "2026-10-09T16:39:28.769Z",
+      "end_utc": "2026-10-09T16:40:12.429Z",
+      "duration_seconds": 43.66,
+      "source": [
+        {
+          "receipt_sha256": "5d2552797517946e90066aaeedddfd9f1b9de1ddefacf01af38b2651b8edcf6f",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "completed",
+      "accounting_group": "task_window",
+      "include_in_totals": false,
+      "resource": "mixed task window",
+      "duration_basis": "Observed mixed task/workflow interval includes tools, coordination and waiting; overlaps command resources and other workers",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1647",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time."
+    },
+    {
+      "id": "20261009-1647-fixture-source-publication",
+      "repository_assignment": "BelloAgent",
+      "activity": "Root isolated fixture repair source publication and verification",
+      "category": "publication (mixed)",
+      "start_utc": "2026-10-09T16:40:24.870Z",
+      "end_utc": "2026-10-09T16:41:20.417Z",
+      "duration_seconds": 55.547,
+      "source": [
+        {
+          "receipt_sha256": "2dd83b896673c325873ce8cf7c84c66e302244f4c51b8ade4d5eeddcca13c62d",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "completed",
+      "accounting_group": "task_window",
+      "include_in_totals": false,
+      "resource": "mixed task window",
+      "duration_basis": "Observed mixed task/workflow interval includes tools, coordination and waiting; overlaps command resources and other workers",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1647",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time."
+    },
+    {
+      "id": "20261009-1647-root-duration-audit-0",
+      "repository_assignment": "BelloAgent",
+      "activity": "Independent duration audit and historical-prefix verification",
+      "category": "automated accounting validation",
+      "start_utc": "2026-10-09T16:37:35.847813+00:00",
+      "end_utc": "2026-10-09T16:37:36.048848+00:00",
+      "duration_seconds": 0.20104156900197268,
+      "source": [
+        {
+          "receipt_sha256": "4cad0a99f86caeed0b53809330c2a337025793909457556a797400da825a7fcd",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "0",
+      "accounting_group": "catchup_command",
+      "include_in_totals": true,
+      "resource": "cloud command process",
+      "duration_basis": "Measured command/resource elapsed; not active labor or inference",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1647",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time."
+    },
+    {
+      "id": "20261009-1647-fixture-root-assertion-0",
+      "repository_assignment": "BelloAgent",
+      "activity": "Final fixture repair root-assertion focused",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T16:34:54.408917+00:00",
+      "end_utc": "2026-10-09T16:35:48.363019+00:00",
+      "duration_seconds": 53.954110140010016,
+      "source": [
+        {
+          "receipt_sha256": "1eb450c060c1a2df7038b21760b8e1b487d3a565776e8cf84f5ed49fd1605e2f",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "0",
+      "accounting_group": "catchup_command",
+      "include_in_totals": true,
+      "resource": "cloud command process",
+      "duration_basis": "Measured command/resource elapsed; not active labor or inference",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1647",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "coverage_note": "Late-added earlier evidence, deduplicated against all prior timed intervals.",
+      "scope": "Late-added earlier local validation receipt; remote CI acceptance separate"
+    },
+    {
+      "id": "20261009-1647-fixture-root-assertion-1",
+      "repository_assignment": "BelloAgent",
+      "activity": "Final fixture repair root-assertion strictall",
+      "category": "automated lint/check",
+      "start_utc": "2026-10-09T16:35:48.365526+00:00",
+      "end_utc": "2026-10-09T16:36:04.520905+00:00",
+      "duration_seconds": 16.155395948007936,
+      "source": [
+        {
+          "receipt_sha256": "1eb450c060c1a2df7038b21760b8e1b487d3a565776e8cf84f5ed49fd1605e2f",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "0",
+      "accounting_group": "catchup_command",
+      "include_in_totals": true,
+      "resource": "cloud command process",
+      "duration_basis": "Measured command/resource elapsed; not active labor or inference",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1647",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "coverage_note": "Late-added earlier evidence, deduplicated against all prior timed intervals.",
+      "scope": "Late-added earlier local validation receipt; remote CI acceptance separate"
+    },
+    {
+      "id": "20261009-1647-fixture-root-assertion-2",
+      "repository_assignment": "BelloAgent",
+      "activity": "Final fixture repair root-assertion fmt",
+      "category": "automated lint/check",
+      "start_utc": "2026-10-09T16:36:04.521563+00:00",
+      "end_utc": "2026-10-09T16:36:06.973968+00:00",
+      "duration_seconds": 2.4524203530017985,
+      "source": [
+        {
+          "receipt_sha256": "1eb450c060c1a2df7038b21760b8e1b487d3a565776e8cf84f5ed49fd1605e2f",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "0",
+      "accounting_group": "catchup_command",
+      "include_in_totals": true,
+      "resource": "cloud command process",
+      "duration_basis": "Measured command/resource elapsed; not active labor or inference",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1647",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "coverage_note": "Late-added earlier evidence, deduplicated against all prior timed intervals.",
+      "scope": "Late-added earlier local validation receipt; remote CI acceptance separate"
+    },
+    {
+      "id": "20261009-1647-fixture-final-aggregate-0",
+      "repository_assignment": "BelloAgent",
+      "activity": "Final fixture repair final-aggregate allfeatures",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T16:36:11.689508+00:00",
+      "end_utc": "2026-10-09T16:36:28.270047+00:00",
+      "duration_seconds": 16.580548910002108,
+      "source": [
+        {
+          "receipt_sha256": "3b388c124b6d4c6d3e05bcb1cd5dae367e03cbc00b253589f7bb7247c037e842",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "0",
+      "accounting_group": "catchup_command",
+      "include_in_totals": true,
+      "resource": "cloud command process",
+      "duration_basis": "Measured command/resource elapsed; not active labor or inference",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1647",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "coverage_note": "Late-added earlier evidence, deduplicated against all prior timed intervals.",
+      "scope": "Late-added earlier local validation receipt; remote CI acceptance separate"
+    },
+    {
+      "id": "20261009-1647-fixture-workflow-controls-0",
+      "repository_assignment": "BelloAgent",
+      "activity": "Fixture workflow preservation controls",
+      "category": "automated lint/check",
+      "start_utc": "2026-10-09T16:31:40.238141+00:00",
+      "end_utc": "2026-10-09T16:31:40.265656+00:00",
+      "duration_seconds": 0.02752124599646777,
+      "source": [
+        {
+          "receipt_sha256": "9e6fadf4bee4fc1e20db3589a8b7f81f20efbbb87106f6e9edaa2d3855c4fa98",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "completed",
+      "accounting_group": "catchup_command",
+      "include_in_totals": true,
+      "resource": "cloud command process",
+      "duration_basis": "Measured command/resource elapsed; not active labor or inference",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1647",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "coverage_note": "Late-added earlier evidence, deduplicated against all prior timed intervals."
+    },
+    {
+      "id": "20261009-1647-fixture-mutant-0",
+      "repository_assignment": "BelloAgent",
+      "activity": "Fixture control omit-real-acl-denial",
+      "category": "negative-control test (existing script)",
+      "start_utc": "2026-10-09T16:32:34.723674+00:00",
+      "end_utc": "2026-10-09T16:32:34.903285+00:00",
+      "duration_seconds": 0.17961245600599796,
+      "source": [
+        {
+          "receipt_sha256": "9ba697aeecf4f230c4981b96aacdedb0a0b161a8b5cbc0528a5ef236bdb6f66e",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "Expected negative-control failure; source restored",
+      "accounting_group": "catchup_command",
+      "include_in_totals": true,
+      "resource": "cloud command process",
+      "duration_basis": "Measured command/resource elapsed; not active labor or inference",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1647",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "coverage_note": "Late-added earlier evidence, deduplicated against all prior timed intervals."
+    },
+    {
+      "id": "20261009-1647-fixture-mutant-1",
+      "repository_assignment": "BelloAgent",
+      "activity": "Fixture control omit-marker-equality",
+      "category": "negative-control test (existing script)",
+      "start_utc": "2026-10-09T16:32:34.903797+00:00",
+      "end_utc": "2026-10-09T16:32:35.074489+00:00",
+      "duration_seconds": 0.17070302899810486,
+      "source": [
+        {
+          "receipt_sha256": "9ba697aeecf4f230c4981b96aacdedb0a0b161a8b5cbc0528a5ef236bdb6f66e",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "Expected negative-control failure; source restored",
+      "accounting_group": "catchup_command",
+      "include_in_totals": true,
+      "resource": "cloud command process",
+      "duration_basis": "Measured command/resource elapsed; not active labor or inference",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1647",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "coverage_note": "Late-added earlier evidence, deduplicated against all prior timed intervals."
+    },
+    {
+      "id": "20261009-1647-agent-fixture-create_blob-b12d7c6955f90b3c2a5ca706aae2a97aa9a70d96@2026-10-09T16:38:26.995Z",
+      "repository_assignment": "BelloAgent",
+      "activity": "Create fixture repair blob: .github/workflows/rust.yml",
+      "category": "publication",
+      "start_utc": "2026-10-09T16:38:26.995Z",
+      "end_utc": "2026-10-09T16:38:40.778Z",
+      "duration_seconds": 13.783,
+      "source": [
+        {
+          "receipt_sha256": "50e44aabb61029dc943fd8f2582fdbd2090e3242236f8d823500cdcb30632f6e",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "SHA/full-byte readback verified; superseded earlier documentation blob retained as performed work",
+      "accounting_group": "catchup_api",
+      "include_in_totals": true,
+      "resource": "observed API/client operation",
+      "duration_basis": "Observed connector interval; concurrent resource intervals are not additive elapsed time",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1647",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "operation_identity": "agent-fixture-create_blob-b12d7c6955f90b3c2a5ca706aae2a97aa9a70d96@2026-10-09T16:38:26.995Z",
+      "operation_method": "create_blob",
+      "operation_target": "BelloWare/BelloAgent/git/blobs/b12d7c6955f90b3c2a5ca706aae2a97aa9a70d96",
+      "operation_content_hash": "b12d7c6955f90b3c2a5ca706aae2a97aa9a70d96"
+    },
+    {
+      "id": "20261009-1647-agent-fixture-get_blob-b12d7c6955f90b3c2a5ca706aae2a97aa9a70d96@2026-10-09T16:38:40.778Z",
+      "repository_assignment": "BelloAgent",
+      "activity": "Read back fixture repair blob: .github/workflows/rust.yml",
+      "category": "publication",
+      "start_utc": "2026-10-09T16:38:40.778Z",
+      "end_utc": "2026-10-09T16:38:49.212Z",
+      "duration_seconds": 8.434,
+      "source": [
+        {
+          "receipt_sha256": "50e44aabb61029dc943fd8f2582fdbd2090e3242236f8d823500cdcb30632f6e",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "SHA/full-byte readback verified; superseded earlier documentation blob retained as performed work",
+      "accounting_group": "catchup_api",
+      "include_in_totals": true,
+      "resource": "observed API/client operation",
+      "duration_basis": "Observed connector interval; concurrent resource intervals are not additive elapsed time",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1647",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "operation_identity": "agent-fixture-get_blob-b12d7c6955f90b3c2a5ca706aae2a97aa9a70d96@2026-10-09T16:38:40.778Z",
+      "operation_method": "get_blob",
+      "operation_target": "BelloWare/BelloAgent/git/blobs/b12d7c6955f90b3c2a5ca706aae2a97aa9a70d96",
+      "operation_content_hash": "b12d7c6955f90b3c2a5ca706aae2a97aa9a70d96"
+    },
+    {
+      "id": "20261009-1647-agent-fixture-create_blob-c8bc773fc4b4711cea3a3ca5efb99f21b5368abb@2026-10-09T16:38:26.996Z",
+      "repository_assignment": "BelloAgent",
+      "activity": "Create fixture repair blob: .github/workflows/rust-macos.yml",
+      "category": "publication",
+      "start_utc": "2026-10-09T16:38:26.996Z",
+      "end_utc": "2026-10-09T16:38:34.791Z",
+      "duration_seconds": 7.795,
+      "source": [
+        {
+          "receipt_sha256": "50e44aabb61029dc943fd8f2582fdbd2090e3242236f8d823500cdcb30632f6e",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "SHA/full-byte readback verified; superseded earlier documentation blob retained as performed work",
+      "accounting_group": "catchup_api",
+      "include_in_totals": true,
+      "resource": "observed API/client operation",
+      "duration_basis": "Observed connector interval; concurrent resource intervals are not additive elapsed time",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1647",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "operation_identity": "agent-fixture-create_blob-c8bc773fc4b4711cea3a3ca5efb99f21b5368abb@2026-10-09T16:38:26.996Z",
+      "operation_method": "create_blob",
+      "operation_target": "BelloWare/BelloAgent/git/blobs/c8bc773fc4b4711cea3a3ca5efb99f21b5368abb",
+      "operation_content_hash": "c8bc773fc4b4711cea3a3ca5efb99f21b5368abb"
+    },
+    {
+      "id": "20261009-1647-agent-fixture-get_blob-c8bc773fc4b4711cea3a3ca5efb99f21b5368abb@2026-10-09T16:38:34.791Z",
+      "repository_assignment": "BelloAgent",
+      "activity": "Read back fixture repair blob: .github/workflows/rust-macos.yml",
+      "category": "publication",
+      "start_utc": "2026-10-09T16:38:34.791Z",
+      "end_utc": "2026-10-09T16:38:49.235Z",
+      "duration_seconds": 14.444,
+      "source": [
+        {
+          "receipt_sha256": "50e44aabb61029dc943fd8f2582fdbd2090e3242236f8d823500cdcb30632f6e",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "SHA/full-byte readback verified; superseded earlier documentation blob retained as performed work",
+      "accounting_group": "catchup_api",
+      "include_in_totals": true,
+      "resource": "observed API/client operation",
+      "duration_basis": "Observed connector interval; concurrent resource intervals are not additive elapsed time",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1647",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "operation_identity": "agent-fixture-get_blob-c8bc773fc4b4711cea3a3ca5efb99f21b5368abb@2026-10-09T16:38:34.791Z",
+      "operation_method": "get_blob",
+      "operation_target": "BelloWare/BelloAgent/git/blobs/c8bc773fc4b4711cea3a3ca5efb99f21b5368abb",
+      "operation_content_hash": "c8bc773fc4b4711cea3a3ca5efb99f21b5368abb"
+    },
+    {
+      "id": "20261009-1647-agent-fixture-create_blob-cc0dc051988953df0b3681f91e9d1fc03a827cfd@2026-10-09T16:38:26.996Z",
+      "repository_assignment": "BelloAgent",
+      "activity": "Create fixture repair blob: rust/crates/bello-agent-app/src/synthetic_sidebar_fixture.rs",
+      "category": "publication",
+      "start_utc": "2026-10-09T16:38:26.996Z",
+      "end_utc": "2026-10-09T16:38:45.114Z",
+      "duration_seconds": 18.118,
+      "source": [
+        {
+          "receipt_sha256": "50e44aabb61029dc943fd8f2582fdbd2090e3242236f8d823500cdcb30632f6e",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "SHA/full-byte readback verified; superseded earlier documentation blob retained as performed work",
+      "accounting_group": "catchup_api",
+      "include_in_totals": true,
+      "resource": "observed API/client operation",
+      "duration_basis": "Observed connector interval; concurrent resource intervals are not additive elapsed time",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1647",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "operation_identity": "agent-fixture-create_blob-cc0dc051988953df0b3681f91e9d1fc03a827cfd@2026-10-09T16:38:26.996Z",
+      "operation_method": "create_blob",
+      "operation_target": "BelloWare/BelloAgent/git/blobs/cc0dc051988953df0b3681f91e9d1fc03a827cfd",
+      "operation_content_hash": "cc0dc051988953df0b3681f91e9d1fc03a827cfd"
+    },
+    {
+      "id": "20261009-1647-agent-fixture-get_blob-cc0dc051988953df0b3681f91e9d1fc03a827cfd@2026-10-09T16:38:45.114Z",
+      "repository_assignment": "BelloAgent",
+      "activity": "Read back fixture repair blob: rust/crates/bello-agent-app/src/synthetic_sidebar_fixture.rs",
+      "category": "publication",
+      "start_utc": "2026-10-09T16:38:45.114Z",
+      "end_utc": "2026-10-09T16:38:49.204Z",
+      "duration_seconds": 4.09,
+      "source": [
+        {
+          "receipt_sha256": "50e44aabb61029dc943fd8f2582fdbd2090e3242236f8d823500cdcb30632f6e",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "SHA/full-byte readback verified; superseded earlier documentation blob retained as performed work",
+      "accounting_group": "catchup_api",
+      "include_in_totals": true,
+      "resource": "observed API/client operation",
+      "duration_basis": "Observed connector interval; concurrent resource intervals are not additive elapsed time",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1647",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "operation_identity": "agent-fixture-get_blob-cc0dc051988953df0b3681f91e9d1fc03a827cfd@2026-10-09T16:38:45.114Z",
+      "operation_method": "get_blob",
+      "operation_target": "BelloWare/BelloAgent/git/blobs/cc0dc051988953df0b3681f91e9d1fc03a827cfd",
+      "operation_content_hash": "cc0dc051988953df0b3681f91e9d1fc03a827cfd"
+    },
+    {
+      "id": "20261009-1647-agent-fixture-create_blob-aa6eae59a17de6736a81697dd521f0c9a5d93560@2026-10-09T16:38:26.997Z",
+      "repository_assignment": "BelloAgent",
+      "activity": "Create fixture repair blob: rust/scripts/sidebar-ci-fixture.py",
+      "category": "publication",
+      "start_utc": "2026-10-09T16:38:26.997Z",
+      "end_utc": "2026-10-09T16:38:48.890Z",
+      "duration_seconds": 21.893,
+      "source": [
+        {
+          "receipt_sha256": "50e44aabb61029dc943fd8f2582fdbd2090e3242236f8d823500cdcb30632f6e",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "SHA/full-byte readback verified; superseded earlier documentation blob retained as performed work",
+      "accounting_group": "catchup_api",
+      "include_in_totals": true,
+      "resource": "observed API/client operation",
+      "duration_basis": "Observed connector interval; concurrent resource intervals are not additive elapsed time",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1647",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "operation_identity": "agent-fixture-create_blob-aa6eae59a17de6736a81697dd521f0c9a5d93560@2026-10-09T16:38:26.997Z",
+      "operation_method": "create_blob",
+      "operation_target": "BelloWare/BelloAgent/git/blobs/aa6eae59a17de6736a81697dd521f0c9a5d93560",
+      "operation_content_hash": "aa6eae59a17de6736a81697dd521f0c9a5d93560"
+    },
+    {
+      "id": "20261009-1647-agent-fixture-get_blob-aa6eae59a17de6736a81697dd521f0c9a5d93560@2026-10-09T16:38:48.890Z",
+      "repository_assignment": "BelloAgent",
+      "activity": "Read back fixture repair blob: rust/scripts/sidebar-ci-fixture.py",
+      "category": "publication",
+      "start_utc": "2026-10-09T16:38:48.890Z",
+      "end_utc": "2026-10-09T16:38:49.229Z",
+      "duration_seconds": 0.339,
+      "source": [
+        {
+          "receipt_sha256": "50e44aabb61029dc943fd8f2582fdbd2090e3242236f8d823500cdcb30632f6e",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "SHA/full-byte readback verified; superseded earlier documentation blob retained as performed work",
+      "accounting_group": "catchup_api",
+      "include_in_totals": true,
+      "resource": "observed API/client operation",
+      "duration_basis": "Observed connector interval; concurrent resource intervals are not additive elapsed time",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1647",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "operation_identity": "agent-fixture-get_blob-aa6eae59a17de6736a81697dd521f0c9a5d93560@2026-10-09T16:38:48.890Z",
+      "operation_method": "get_blob",
+      "operation_target": "BelloWare/BelloAgent/git/blobs/aa6eae59a17de6736a81697dd521f0c9a5d93560",
+      "operation_content_hash": "aa6eae59a17de6736a81697dd521f0c9a5d93560"
+    },
+    {
+      "id": "20261009-1647-agent-fixture-create_blob-d815b42483db1c8cd9b288187ed693b1fe15005a@2026-10-09T16:39:01.466Z",
+      "repository_assignment": "BelloAgent",
+      "activity": "Create fixture repair blob: rust/docs/validation/sidebar-ci-fixture-2026-10-09.md",
+      "category": "publication",
+      "start_utc": "2026-10-09T16:39:01.466Z",
+      "end_utc": "2026-10-09T16:39:06.690Z",
+      "duration_seconds": 5.224,
+      "source": [
+        {
+          "receipt_sha256": "50e44aabb61029dc943fd8f2582fdbd2090e3242236f8d823500cdcb30632f6e",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "SHA/full-byte readback verified; superseded earlier documentation blob retained as performed work",
+      "accounting_group": "catchup_api",
+      "include_in_totals": true,
+      "resource": "observed API/client operation",
+      "duration_basis": "Observed connector interval; concurrent resource intervals are not additive elapsed time",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1647",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "operation_identity": "agent-fixture-create_blob-d815b42483db1c8cd9b288187ed693b1fe15005a@2026-10-09T16:39:01.466Z",
+      "operation_method": "create_blob",
+      "operation_target": "BelloWare/BelloAgent/git/blobs/d815b42483db1c8cd9b288187ed693b1fe15005a",
+      "operation_content_hash": "d815b42483db1c8cd9b288187ed693b1fe15005a"
+    },
+    {
+      "id": "20261009-1647-agent-fixture-get_blob-d815b42483db1c8cd9b288187ed693b1fe15005a@2026-10-09T16:39:06.691Z",
+      "repository_assignment": "BelloAgent",
+      "activity": "Read back fixture repair blob: rust/docs/validation/sidebar-ci-fixture-2026-10-09.md",
+      "category": "publication",
+      "start_utc": "2026-10-09T16:39:06.691Z",
+      "end_utc": "2026-10-09T16:39:07.081Z",
+      "duration_seconds": 0.39,
+      "source": [
+        {
+          "receipt_sha256": "50e44aabb61029dc943fd8f2582fdbd2090e3242236f8d823500cdcb30632f6e",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "SHA/full-byte readback verified; superseded earlier documentation blob retained as performed work",
+      "accounting_group": "catchup_api",
+      "include_in_totals": true,
+      "resource": "observed API/client operation",
+      "duration_basis": "Observed connector interval; concurrent resource intervals are not additive elapsed time",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1647",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "operation_identity": "agent-fixture-get_blob-d815b42483db1c8cd9b288187ed693b1fe15005a@2026-10-09T16:39:06.691Z",
+      "operation_method": "get_blob",
+      "operation_target": "BelloWare/BelloAgent/git/blobs/d815b42483db1c8cd9b288187ed693b1fe15005a",
+      "operation_content_hash": "d815b42483db1c8cd9b288187ed693b1fe15005a"
+    },
+    {
+      "id": "20261009-1647-agent-fixture-create_blob-6adb83e0cd98ba1eb3ad431f7d590ea060febe9a@2026-10-09T16:39:30.681Z",
+      "repository_assignment": "BelloAgent",
+      "activity": "Create fixture repair blob: rust/docs/validation/sidebar-ci-fixture-2026-10-09.md",
+      "category": "publication",
+      "start_utc": "2026-10-09T16:39:30.681Z",
+      "end_utc": "2026-10-09T16:39:38.836Z",
+      "duration_seconds": 8.155,
+      "source": [
+        {
+          "receipt_sha256": "bfa26a666363959b9d36038696ab114103c0ef9970c9a29c57414cd3ba185b28",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "SHA/full-byte readback verified; superseded earlier documentation blob retained as performed work",
+      "accounting_group": "catchup_api",
+      "include_in_totals": true,
+      "resource": "observed API/client operation",
+      "duration_basis": "Observed connector interval; concurrent resource intervals are not additive elapsed time",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1647",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "operation_identity": "agent-fixture-create_blob-6adb83e0cd98ba1eb3ad431f7d590ea060febe9a@2026-10-09T16:39:30.681Z",
+      "operation_method": "create_blob",
+      "operation_target": "BelloWare/BelloAgent/git/blobs/6adb83e0cd98ba1eb3ad431f7d590ea060febe9a",
+      "operation_content_hash": "6adb83e0cd98ba1eb3ad431f7d590ea060febe9a"
+    },
+    {
+      "id": "20261009-1647-agent-fixture-get_blob-6adb83e0cd98ba1eb3ad431f7d590ea060febe9a@2026-10-09T16:39:38.836Z",
+      "repository_assignment": "BelloAgent",
+      "activity": "Read back fixture repair blob: rust/docs/validation/sidebar-ci-fixture-2026-10-09.md",
+      "category": "publication",
+      "start_utc": "2026-10-09T16:39:38.836Z",
+      "end_utc": "2026-10-09T16:39:39.331Z",
+      "duration_seconds": 0.495,
+      "source": [
+        {
+          "receipt_sha256": "bfa26a666363959b9d36038696ab114103c0ef9970c9a29c57414cd3ba185b28",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "SHA/full-byte readback verified; superseded earlier documentation blob retained as performed work",
+      "accounting_group": "catchup_api",
+      "include_in_totals": true,
+      "resource": "observed API/client operation",
+      "duration_basis": "Observed connector interval; concurrent resource intervals are not additive elapsed time",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1647",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "operation_identity": "agent-fixture-get_blob-6adb83e0cd98ba1eb3ad431f7d590ea060febe9a@2026-10-09T16:39:38.836Z",
+      "operation_method": "get_blob",
+      "operation_target": "BelloWare/BelloAgent/git/blobs/6adb83e0cd98ba1eb3ad431f7d590ea060febe9a",
+      "operation_content_hash": "6adb83e0cd98ba1eb3ad431f7d590ea060febe9a"
+    },
+    {
+      "id": "20261009-1647-fixture-ci-113923200632",
+      "repository_assignment": "BelloAgent",
+      "activity": "Exact fixture repair linux CI job",
+      "category": "ci",
+      "start_utc": "2026-10-09T16:41:24Z",
+      "end_utc": "2026-10-09T16:42:02Z",
+      "duration_seconds": 38.0,
+      "source": [
+        {
+          "receipt_sha256": "c08aa4255d37de8a2ef6ec48330232a29cdc7a5752b24f556ea23d886e1b84aa",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated",
+          "url": "https://github.com/BelloWare/BelloAgent/actions/runs/37960912130/job/113923200632"
+        }
+      ],
+      "outcome": "failure",
+      "accounting_group": "catchup_ci_job",
+      "include_in_totals": true,
+      "resource": "CI runner",
+      "duration_basis": "Official GitHub job endpoints; setup refused insecure ancestor before fixture creation",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1647",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "job_id": 113923200632,
+      "run_id": 37960912130,
+      "source_commit": "48de4803b97a52a9ddca41d0c8f8c85461c3a5a1",
+      "nested_steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-10-09T16:41:25Z",
+          "completed_at": "2026-10-09T16:41:25Z",
+          "include_in_totals": false
+        },
+        {
+          "name": "Run actions/checkout@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-10-09T16:41:25Z",
+          "completed_at": "2026-10-09T16:41:28Z",
+          "include_in_totals": false
+        },
+        {
+          "name": "Install Linux build dependencies",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-10-09T16:41:28Z",
+          "completed_at": "2026-10-09T16:41:50Z",
+          "include_in_totals": false
+        },
+        {
+          "name": "Install pinned Rust toolchain",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-10-09T16:41:50Z",
+          "completed_at": "2026-10-09T16:41:59Z",
+          "include_in_totals": false
+        },
+        {
+          "name": "Prepare private synthetic fixture parent",
+          "status": "completed",
+          "conclusion": "failure",
+          "number": 5,
+          "started_at": "2026-10-09T16:41:59Z",
+          "completed_at": "2026-10-09T16:41:59Z",
+          "include_in_totals": false
+        },
+        {
+          "name": "Formatting",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 6,
+          "started_at": "2026-10-09T16:41:59Z",
+          "completed_at": "2026-10-09T16:41:59Z",
+          "include_in_totals": false
+        },
+        {
+          "name": "Core and integration tests",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 7,
+          "started_at": "2026-10-09T16:41:59Z",
+          "completed_at": "2026-10-09T16:41:59Z",
+          "include_in_totals": false
+        },
+        {
+          "name": "Verify pinned sidebar SQLite and synthetic privacy fixtures",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 8,
+          "started_at": "2026-10-09T16:41:59Z",
+          "completed_at": "2026-10-09T16:41:59Z",
+          "include_in_totals": false
+        },
+        {
+          "name": "Project authority fixtures and coordinator checks",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 9,
+          "started_at": "2026-10-09T16:41:59Z",
+          "completed_at": "2026-10-09T16:41:59Z",
+          "include_in_totals": false
+        },
+        {
+          "name": "Trusted Bash full feature regressions",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 10,
+          "started_at": "2026-10-09T16:41:59Z",
+          "completed_at": "2026-10-09T16:41:59Z",
+          "include_in_totals": false
+        },
+        {
+          "name": "Lints",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 11,
+          "started_at": "2026-10-09T16:41:59Z",
+          "completed_at": "2026-10-09T16:41:59Z",
+          "include_in_totals": false
+        },
+        {
+          "name": "Explicit native authority composition with fake storage",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 12,
+          "started_at": "2026-10-09T16:41:59Z",
+          "completed_at": "2026-10-09T16:41:59Z",
+          "include_in_totals": false
+        },
+        {
+          "name": "Build native applications",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 13,
+          "started_at": "2026-10-09T16:41:59Z",
+          "completed_at": "2026-10-09T16:41:59Z",
+          "include_in_totals": false
+        },
+        {
+          "name": "UI evidence harness self-tests",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 14,
+          "started_at": "2026-10-09T16:41:59Z",
+          "completed_at": "2026-10-09T16:41:59Z",
+          "include_in_totals": false
+        },
+        {
+          "name": "Transcript benchmark parser self-tests",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 15,
+          "started_at": "2026-10-09T16:41:59Z",
+          "completed_at": "2026-10-09T16:41:59Z",
+          "include_in_totals": false
+        },
+        {
+          "name": "Capture current Linux software-rendered UI",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 16,
+          "started_at": "2026-10-09T16:41:59Z",
+          "completed_at": "2026-10-09T16:41:59Z",
+          "include_in_totals": false
+        },
+        {
+          "name": "Summarize Linux UI smoke without artifact storage",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 17,
+          "started_at": "2026-10-09T16:41:59Z",
+          "completed_at": "2026-10-09T16:41:59Z",
+          "include_in_totals": false
+        },
+        {
+          "name": "Clean private synthetic fixture parent",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 18,
+          "started_at": "2026-10-09T16:41:59Z",
+          "completed_at": "2026-10-09T16:41:59Z",
+          "include_in_totals": false
+        },
+        {
+          "name": "Post Run actions/checkout@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 36,
+          "started_at": "2026-10-09T16:41:59Z",
+          "completed_at": "2026-10-09T16:42:00Z",
+          "include_in_totals": false
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 37,
+          "started_at": "2026-10-09T16:42:00Z",
+          "completed_at": "2026-10-09T16:42:00Z",
+          "include_in_totals": false
+        }
+      ]
+    },
+    {
+      "id": "20261009-1647-fixture-ci-open-113923200295",
+      "repository_assignment": "BelloAgent",
+      "activity": "Exact fixture repair apple-silicon CI status",
+      "category": "ci",
+      "start_utc": null,
+      "end_utc": null,
+      "duration_seconds": null,
+      "source": [
+        {
+          "receipt_sha256": "c08aa4255d37de8a2ef6ec48330232a29cdc7a5752b24f556ea23d886e1b84aa",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated",
+          "url": "https://github.com/BelloWare/BelloAgent/actions/runs/37960911867/job/113923200295"
+        }
+      ],
+      "outcome": "in_progress at 2026-10-09T16:45:55.689Z; final duration unavailable",
+      "accounting_group": "status_only",
+      "include_in_totals": false,
+      "resource": "mixed task window",
+      "duration_basis": "Status only; no open execution duration inferred",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1647",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "job_id": 113923200295,
+      "run_id": 37960911867
     }
   ],
   "unattributed_ci_gaps": [
@@ -70291,16 +71163,16 @@
         }
       },
       "catchup_ci_job": {
-        "count": 16,
-        "known_duration_count": 16,
-        "resource_seconds_sum": 14841.0,
-        "wall_coverage_seconds": 9974.0,
+        "count": 17,
+        "known_duration_count": 17,
+        "resource_seconds_sum": 14879.0,
+        "wall_coverage_seconds": 10012.0,
         "category_seconds": {
           "CI runner": 12690.0,
-          "ci": 2151.0
+          "ci": 2189.0
         },
         "resource_seconds": {
-          "CI runner": 14841.0
+          "CI runner": 14879.0
         }
       },
       "catchup_native_command": {
@@ -70319,18 +71191,18 @@
         }
       },
       "catchup_command": {
-        "count": 229,
-        "known_duration_count": 229,
-        "resource_seconds_sum": 5556.175954670713,
-        "wall_coverage_seconds": 3460.972471,
+        "count": 237,
+        "known_duration_count": 237,
+        "resource_seconds_sum": 5645.897308321737,
+        "wall_coverage_seconds": 3550.315931,
         "category_seconds": {
-          "build + test/check (combined)": 3679.2910584326796,
-          "automated lint/check": 615.3070308174678,
+          "build + test/check (combined)": 3749.8257174826917,
+          "automated lint/check": 633.942368364474,
           "dependency/environment or verification": 38.221929973591635,
           "build": 321.2369446289673,
           "build/test/rework (combined)": 48.565,
           "automated negative-control validation": 0.011169794990564696,
-          "automated accounting validation": 6.12672721403942,
+          "automated accounting validation": 6.3277687830413925,
           "implementation tool execution": 0.0012905570038128644,
           "implementation + structural validation tool execution": 0.018711002005147748,
           "automated configuration validation": 0.7915431989822537,
@@ -70339,23 +71211,24 @@
           "packaging/source validation": 0.5563400880055269,
           "test execution (existing binary)": 0.004658502992242575,
           "build + test/lint (combined)": 133.3069439539977,
-          "remote evidence retrieval": 17.599489358006394
+          "remote evidence retrieval": 17.599489358006394,
+          "negative-control test (existing script)": 0.3503154850041028
         },
         "resource_seconds": {
-          "cloud command process": 5556.175954670713
+          "cloud command process": 5645.897308321737
         }
       },
       "catchup_api": {
-        "count": 118,
-        "known_duration_count": 118,
-        "resource_seconds_sum": 1088.4470000000001,
-        "wall_coverage_seconds": 424.003,
+        "count": 130,
+        "known_duration_count": 130,
+        "resource_seconds_sum": 1191.6069999999997,
+        "wall_coverage_seconds": 460.507,
         "category_seconds": {
-          "publication": 1088.4470000000001
+          "publication": 1191.6069999999997
         },
         "resource_seconds": {
           "pending API/client operation": 958.3380000000001,
-          "observed API/client operation": 130.10899999999998
+          "observed API/client operation": 233.26899999999992
         }
       },
       "catchup_gui_process": {
@@ -71397,6 +72270,71 @@
         "dependency/environment setup": 17.0,
         "build/test/check (combined)": 715.0,
         "build": 0.0
+      }
+    },
+    {
+      "checkpoint": "20261009-1647",
+      "through_utc": "2026-10-09T16:47:00Z",
+      "coverage_window_start_utc": "2026-10-09T16:37:00Z",
+      "new_items": 24,
+      "groups": {
+        "catchup_command": {
+          "count": 8,
+          "known_duration_count": 8,
+          "resource_seconds_sum": 89.7213536510244,
+          "wall_coverage_seconds": 89.721278,
+          "category_seconds": {
+            "automated accounting validation": 0.20104156900197268,
+            "build + test/check (combined)": 70.53465905001212,
+            "automated lint/check": 18.635337547006202,
+            "negative-control test (existing script)": 0.3503154850041028
+          },
+          "resource_seconds": {
+            "cloud command process": 89.7213536510244
+          },
+          "known_endpoint_items": 8,
+          "known_endpoint_resource_seconds": 89.7213536510244
+        },
+        "catchup_api": {
+          "count": 12,
+          "known_duration_count": 12,
+          "resource_seconds_sum": 103.16000000000001,
+          "wall_coverage_seconds": 36.504,
+          "category_seconds": {
+            "publication": 103.16000000000001
+          },
+          "resource_seconds": {
+            "observed API/client operation": 103.16000000000001
+          },
+          "known_endpoint_items": 12,
+          "known_endpoint_resource_seconds": 103.16
+        },
+        "catchup_ci_job": {
+          "count": 1,
+          "known_duration_count": 1,
+          "resource_seconds_sum": 38.0,
+          "wall_coverage_seconds": 38.0,
+          "category_seconds": {
+            "ci": 38.0
+          },
+          "resource_seconds": {
+            "CI runner": 38.0
+          },
+          "known_endpoint_items": 1,
+          "known_endpoint_resource_seconds": 38.0
+        }
+      },
+      "ci_coverage_within_window_seconds": 38.0,
+      "window_seconds": 600.0,
+      "outside_selected_ci_job_intervals_seconds": 562.0,
+      "warning": "Outside selected CI intervals includes other productive work and unobserved periods; never classify as idle or inference. Selected receipt coverage remains incomplete.",
+      "nested_ci_step_seconds": {
+        "CI orchestration": 4.0,
+        "dependency/environment setup": 31.0,
+        "build/test/check (combined)": 0.0,
+        "build + automated lint/check": 0.0,
+        "build": 0.0,
+        "CI reporting": 0.0
       }
     }
   ]

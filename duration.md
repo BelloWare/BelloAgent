@@ -1,6 +1,6 @@
 # BelloAgent Rust migration: where the time went
 
-## Current accounting checkpoint: 2026-10-09T16:37:00Z
+## Current accounting checkpoint: 2026-10-09T16:47:00Z
 
 This catch-up incorporates selected verified receipts through the stated cutoff, including late-added earlier observations. Every earlier item and checkpoint remains in the complete ledger and SHA-pinned historical view linked below. It is not a complete timesheet. Model inference duration remains unavailable, not zero. Shared coordination/publication appears once; local receipt hashes establish provenance without claiming independent public timing verification.
 
@@ -12,15 +12,15 @@ These top totals cover only this catch-up receipt cohort, including late-added e
 |---|---|
 | Implementation | Active effort unavailable; no isolated implementation timer |
 | Review | Active effort unavailable; only review-focused observations: 0 mixed windows; 0 with endpoints, unavailable union |
-| Mixed implementation/review/validation windows | 1 mixed windows; 1 with endpoints, 11m 56.6s union; scopes overlap resources and do not measure Review alone |
+| Mixed implementation/review/validation windows | 0 mixed windows; 0 with endpoints, unavailable union; scopes overlap resources and do not measure Review alone |
 | Builds | Unavailable separately |
 | Tests | Unavailable separately from compilation in these command receipts |
-| Build + test/check (combined) | 3m 18.0s measured command resource time |
+| Build + test/check (combined) | 1m 10.5s measured command resource time |
 | Interactive GUI validation | No new completed GUI process receipt |
-| CI | 12m 21.0s runner time across 1 completed jobs (1 failed); 12m 21.0s wall union |
-| Dependency/environment setup | 17.0s nested CI phase time (already inside CI jobs); command setup shown separately below |
+| CI | 38.0s runner time across 1 completed jobs (1 failed); 38.0s wall union |
+| Dependency/environment setup | 31.0s nested CI phase time (already inside CI jobs); command setup shown separately below |
 | Retries/rework | Unavailable separately; retained successful checks do not establish zero rework |
-| Publication | No isolated API total; 1 mixed windows; 1 with endpoints, 1m 0.2s union |
+| Publication | 1m 43.2s measured API/client time; 2 mixed windows; 2 with endpoints, 1m 39.2s union |
 | Waiting | Unavailable separately; waiting is mixed into recorded workflow windows |
 | Model inference | Unavailable; no timing telemetry |
 
@@ -28,38 +28,43 @@ These top totals cover only this catch-up receipt cohort, including late-added e
 
 | Group | Timed items | Resource/client seconds | Known-endpoint items | Endpoint-subset seconds | Endpoint union seconds |
 |---|---:|---:|---:|---:|---:|
-| catchup_command | 9 | 239.812 | 9 | 239.812 | 239.812 |
-| catchup_ci_job | 1 | 741.000 | 1 | 741.000 | 741.000 |
+| catchup_command | 8 | 89.721 | 8 | 89.721 | 89.721 |
+| catchup_api | 12 | 103.160 | 12 | 103.160 | 36.504 |
+| catchup_ci_job | 1 | 38.000 | 1 | 38.000 | 38.000 |
 
 Groups overlap each other and mixed work windows; never add them into project elapsed or active-work time. Derived endpoints are excluded from unions. Monotonic timers and separately recorded UTC clocks can differ slightly. Whole-second 0s means below receipt resolution. CI steps and native subcommands are nested within job durations, not extra runner time.
 
 | Resource group / category | Seconds |
 |---|---:|
-| catchup_command: automated accounting validation | 0.154 |
-| catchup_command: build + test/check (combined) | 198.000 |
-| catchup_command: dependency/environment or verification | 0.278 |
-| catchup_command: automated lint/check | 41.381 |
-| catchup_ci_job: ci | 741.000 |
+| catchup_command: automated accounting validation | 0.201 |
+| catchup_command: build + test/check (combined) | 70.535 |
+| catchup_command: automated lint/check | 18.635 |
+| catchup_command: negative-control test (existing script) | 0.350 |
+| catchup_api: publication | 103.160 |
+| catchup_ci_job: ci | 38.000 |
 
 ### Nested CI phases (already included in CI jobs)
 
 | Phase class | Runner step time |
 |---|---:|
-| CI orchestration | 7.0s |
-| dependency/environment setup | 17.0s |
-| build/test/check (combined) | 11m 55.0s |
+| CI orchestration | 4.0s |
+| dependency/environment setup | 31.0s |
+| build/test/check (combined) | 0.0s |
+| build + automated lint/check | 0.0s |
 | build | 0.0s |
+| CI reporting | 0.0s |
 
 These conservative phase groups can include compilation and execution together; do not add them to the CI job totals.
 
-Within 2026-10-09T16:22:00Z–2026-10-09T16:37:00Z, newly recorded CI jobs cover 227.000 overlap-safe seconds. Remaining time is unclassified, not proven idle or inference.
+Within 2026-10-09T16:37:00Z–2026-10-09T16:47:00Z, newly recorded CI jobs cover 38.000 overlap-safe seconds. Remaining time is unclassified, not proven idle or inference.
 
 ### Mixed workflows and waits (excluded from resource totals)
 
 | Activity | Start UTC | End UTC | Seconds | Outcome |
 |---|---|---|---:|---|
-| Root paired timing verification and normal publication (shared once) | 2026-10-09T16:24:55.180Z | 2026-10-09T16:25:55.425Z | 60.245 | completed |
-| Root cross-repository package review, publication, failure investigation, coordination and waits (shared once) | 2026-10-09T16:21:26Z | 2026-10-09T16:33:22.579839+00:00 | 716.579839 | completed |
+| Root paired timing verification and normal publication (shared once) | 2026-10-09T16:39:28.769Z | 2026-10-09T16:40:12.429Z | 43.66 | completed |
+| Root isolated fixture repair source publication and verification | 2026-10-09T16:40:24.870Z | 2026-10-09T16:41:20.417Z | 55.547 | completed |
+| Exact fixture repair apple-silicon CI status | unknown | unknown | unknown | in_progress at 2026-10-09T16:45:55.689Z; final duration unavailable |
 
 Open task and CI rows retain unknown final duration. Failed source attempts and the original failed native URL job remain in preserved earlier accounting. Mixed windows overlap useful parallel work; they are not pure idle or active-review time.
 
@@ -67,23 +72,34 @@ Open task and CI rows retain unknown final duration. Failed source attempts and 
 
 | Activity | Category | Start UTC | End UTC | Seconds | Outcome |
 |---|---|---|---|---:|---|
-| Independent duration audit and historical-prefix verification | automated accounting validation | 2026-10-09T16:23:38.513477+00:00 | 2026-10-09T16:23:38.667288+00:00 | 0.1538214720058022 | 0 |
-| Exact title/ACL follow-on apple-silicon CI job | ci | 2026-10-09T16:13:26Z | 2026-10-09T16:25:47Z | 741.0 | failure |
-| CI fixture repair script-controls | build + test/check (combined) | 2026-10-09T16:30:25.585434+00:00 | 2026-10-09T16:30:25.700512+00:00 | 0.1150884689996019 | 0 |
-| CI fixture repair package-clean | dependency/environment or verification | 2026-10-09T16:30:25.701040+00:00 | 2026-10-09T16:30:25.978529+00:00 | 0.277506327998708 | 0 |
-| CI fixture repair focused | build + test/check (combined) | 2026-10-09T16:30:25.979108+00:00 | 2026-10-09T16:31:24.382027+00:00 | 58.40293668699451 | 0 |
-| CI fixture repair allfeatures | build + test/check (combined) | 2026-10-09T16:31:24.384158+00:00 | 2026-10-09T16:32:41.864600+00:00 | 77.48045678100607 | 0 |
-| CI fixture repair default | build + test/check (combined) | 2026-10-09T16:32:41.866208+00:00 | 2026-10-09T16:33:43.868016+00:00 | 62.00182438199408 | 0 |
-| CI fixture repair strictall | automated lint/check | 2026-10-09T16:33:43.870456+00:00 | 2026-10-09T16:34:05.780661+00:00 | 21.9102432540094 | 0 |
-| CI fixture repair strictdefault | automated lint/check | 2026-10-09T16:34:05.781501+00:00 | 2026-10-09T16:34:22.774708+00:00 | 16.993223752011545 | 0 |
-| CI fixture repair fmt | automated lint/check | 2026-10-09T16:34:22.775663+00:00 | 2026-10-09T16:34:25.252763+00:00 | 2.477112577005755 | 0 |
+| Independent duration audit and historical-prefix verification | automated accounting validation | 2026-10-09T16:37:35.847813+00:00 | 2026-10-09T16:37:36.048848+00:00 | 0.20104156900197268 | 0 |
+| Final fixture repair root-assertion focused | build + test/check (combined) | 2026-10-09T16:34:54.408917+00:00 | 2026-10-09T16:35:48.363019+00:00 | 53.954110140010016 | 0 |
+| Final fixture repair root-assertion strictall | automated lint/check | 2026-10-09T16:35:48.365526+00:00 | 2026-10-09T16:36:04.520905+00:00 | 16.155395948007936 | 0 |
+| Final fixture repair root-assertion fmt | automated lint/check | 2026-10-09T16:36:04.521563+00:00 | 2026-10-09T16:36:06.973968+00:00 | 2.4524203530017985 | 0 |
+| Final fixture repair final-aggregate allfeatures | build + test/check (combined) | 2026-10-09T16:36:11.689508+00:00 | 2026-10-09T16:36:28.270047+00:00 | 16.580548910002108 | 0 |
+| Fixture workflow preservation controls | automated lint/check | 2026-10-09T16:31:40.238141+00:00 | 2026-10-09T16:31:40.265656+00:00 | 0.02752124599646777 | completed |
+| Fixture control omit-real-acl-denial | negative-control test (existing script) | 2026-10-09T16:32:34.723674+00:00 | 2026-10-09T16:32:34.903285+00:00 | 0.17961245600599796 | Expected negative-control failure; source restored |
+| Fixture control omit-marker-equality | negative-control test (existing script) | 2026-10-09T16:32:34.903797+00:00 | 2026-10-09T16:32:35.074489+00:00 | 0.17070302899810486 | Expected negative-control failure; source restored |
+| Create fixture repair blob: .github/workflows/rust.yml | publication | 2026-10-09T16:38:26.995Z | 2026-10-09T16:38:40.778Z | 13.783 | SHA/full-byte readback verified; superseded earlier documentation blob retained as performed work |
+| Read back fixture repair blob: .github/workflows/rust.yml | publication | 2026-10-09T16:38:40.778Z | 2026-10-09T16:38:49.212Z | 8.434 | SHA/full-byte readback verified; superseded earlier documentation blob retained as performed work |
+| Create fixture repair blob: .github/workflows/rust-macos.yml | publication | 2026-10-09T16:38:26.996Z | 2026-10-09T16:38:34.791Z | 7.795 | SHA/full-byte readback verified; superseded earlier documentation blob retained as performed work |
+| Read back fixture repair blob: .github/workflows/rust-macos.yml | publication | 2026-10-09T16:38:34.791Z | 2026-10-09T16:38:49.235Z | 14.444 | SHA/full-byte readback verified; superseded earlier documentation blob retained as performed work |
+| Create fixture repair blob: rust/crates/bello-agent-app/src/synthetic_sidebar_fixture.rs | publication | 2026-10-09T16:38:26.996Z | 2026-10-09T16:38:45.114Z | 18.118 | SHA/full-byte readback verified; superseded earlier documentation blob retained as performed work |
+| Read back fixture repair blob: rust/crates/bello-agent-app/src/synthetic_sidebar_fixture.rs | publication | 2026-10-09T16:38:45.114Z | 2026-10-09T16:38:49.204Z | 4.09 | SHA/full-byte readback verified; superseded earlier documentation blob retained as performed work |
+| Create fixture repair blob: rust/scripts/sidebar-ci-fixture.py | publication | 2026-10-09T16:38:26.997Z | 2026-10-09T16:38:48.890Z | 21.893 | SHA/full-byte readback verified; superseded earlier documentation blob retained as performed work |
+| Read back fixture repair blob: rust/scripts/sidebar-ci-fixture.py | publication | 2026-10-09T16:38:48.890Z | 2026-10-09T16:38:49.229Z | 0.339 | SHA/full-byte readback verified; superseded earlier documentation blob retained as performed work |
+| Create fixture repair blob: rust/docs/validation/sidebar-ci-fixture-2026-10-09.md | publication | 2026-10-09T16:39:01.466Z | 2026-10-09T16:39:06.690Z | 5.224 | SHA/full-byte readback verified; superseded earlier documentation blob retained as performed work |
+| Read back fixture repair blob: rust/docs/validation/sidebar-ci-fixture-2026-10-09.md | publication | 2026-10-09T16:39:06.691Z | 2026-10-09T16:39:07.081Z | 0.39 | SHA/full-byte readback verified; superseded earlier documentation blob retained as performed work |
+| Create fixture repair blob: rust/docs/validation/sidebar-ci-fixture-2026-10-09.md | publication | 2026-10-09T16:39:30.681Z | 2026-10-09T16:39:38.836Z | 8.155 | SHA/full-byte readback verified; superseded earlier documentation blob retained as performed work |
+| Read back fixture repair blob: rust/docs/validation/sidebar-ci-fixture-2026-10-09.md | publication | 2026-10-09T16:39:38.836Z | 2026-10-09T16:39:39.331Z | 0.495 | SHA/full-byte readback verified; superseded earlier documentation blob retained as performed work |
+| Exact fixture repair linux CI job | ci | 2026-10-09T16:41:24Z | 2026-10-09T16:42:02Z | 38.0 | failure |
 
 Full source hashes, source URLs, nested job steps and timing limitations are in duration-data.json. Native macOS full logs were unavailable for some Agent runs; verified job/step metadata is retained without a full-log claim. Later source CI may be running and is not silently promoted to success by this snapshot.
 
 
 ## All recorded resource groups
 
-The ledger retains 1,393 items; 821 are flagged for their own resource-group totals. These are all recorded observations, not a complete migration budget. Groups retain their existing definitions and checkpoint-era names; they must not be added into one elapsed or effort total. Mixed work windows and nested phases remain excluded. Missing endpoints make some interval unions unavailable.
+The ledger retains 1,417 items; 842 are flagged for their own resource-group totals. These are all recorded observations, not a complete migration budget. Groups retain their existing definitions and checkpoint-era names; they must not be added into one elapsed or effort total. Mixed work windows and nested phases remain excluded. Missing endpoints make some interval unions unavailable.
 
 | Existing resource group | Counted timed items | Resource seconds | Items with endpoints | Endpoint-subset seconds | Subset interval union seconds |
 |---|---:|---:|---:|---:|---:|
@@ -94,10 +110,10 @@ The ledger retains 1,393 items; 821 are flagged for their own resource-group tot
 | new_local_command | 8 | 209.302 | 8 | 209.302 | 209.302 |
 | new_api_operation | 7 | 45.653 | 0 | 0.000 | unavailable |
 | new_native_command | 75 | 506.149 | 74 | 500.224 | 500.244 |
-| catchup_ci_job | 16 | 14841.000 | 16 | 14841.000 | 9974.000 |
+| catchup_ci_job | 17 | 14879.000 | 17 | 14879.000 | 10012.000 |
 | catchup_native_command | 36 | 718.272 | 36 | 718.272 | 718.281 |
-| catchup_command | 229 | 5556.176 | 125 | 3486.989 | 3460.972 |
-| catchup_api | 118 | 1088.447 | 94 | 810.611 | 424.003 |
+| catchup_command | 237 | 5645.897 | 133 | 3576.710 | 3550.316 |
+| catchup_api | 130 | 1191.607 | 106 | 913.771 | 460.507 |
 | catchup_gui_process | 22 | 2313.456 | 22 | 2313.456 | 2313.456 |
 
 ## Complete detail and immutable history
