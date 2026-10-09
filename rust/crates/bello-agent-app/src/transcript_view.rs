@@ -803,6 +803,14 @@ impl TranscriptView {
             .is_some_and(|f| f.scope_matches(message))
     }
     #[cfg(test)]
+    pub(crate) fn find_confirmed_geometry(&self) -> Option<Bounds<Pixels>> {
+        self.tool_editors
+            .borrow()
+            .find
+            .as_ref()
+            .and_then(|f| f.confirmed_geometry.get())
+    }
+    #[cfg(test)]
     pub(crate) fn find_landed(&self) -> bool {
         self.tool_editors
             .borrow()
@@ -877,6 +885,9 @@ impl TranscriptView {
         self.update_inputs(input, cx);
         if !navigate && let Some(old) = &self.tool_editors.borrow().find {
             find.landed.set(old.landed.get());
+            find.confirmed.set(old.confirmed.get());
+            #[cfg(test)]
+            find.confirmed_geometry.set(old.confirmed_geometry.get());
         }
         self.set_find(Some(find), cx);
         if !navigate {
@@ -934,6 +945,8 @@ impl TranscriptView {
         find: &Rc<crate::transcript_find_presentation::FindPaint>,
         index: usize,
         point: Point<Pixels>,
+        span_height: Pixels,
+        line_height: Pixels,
         cx: &mut Context<Self>,
     ) {
         if !find.navigating()
@@ -951,19 +964,84 @@ impl TranscriptView {
             return;
         };
         let bounds = viewport.list.viewport_bounds();
-        find.landed.set(true);
-        if point.y >= bounds.top() + px(24.) && point.y + px(21.) <= bounds.bottom() - px(24.) {
+        if !f32::from(bounds.size.height).is_finite()
+            || !f32::from(bounds.size.width).is_finite()
+            || bounds.size.height <= px(0.)
+            || bounds.size.width <= px(0.)
+        {
             return;
         }
-        let offset = (point.y - row.top() - bounds.size.height / 3.).max(px(0.));
-        let target = ListOffset {
-            item_ix: index,
-            offset_in_item: offset,
+        if !f32::from(point.y).is_finite()
+            || !f32::from(span_height).is_finite()
+            || !f32::from(line_height).is_finite()
+            || line_height <= px(0.)
+            || span_height <= px(0.)
+        {
+            return;
+        }
+        let partial = span_height > bounds.size.height;
+        let visible_height = if partial { line_height } else { span_height };
+        let fully_visible = point.y >= bounds.top() && point.y + visible_height <= bounds.bottom();
+        let padding =
+            (bounds.size.height / 3.).min((bounds.size.height - visible_height).max(px(0.)) / 2.);
+        let confirm = || {
+            find.landed.set(true);
+            find.confirmed.set(true);
+            #[cfg(test)]
+            find.confirmed_geometry.set(Some(Bounds {
+                origin: point,
+                size: size(px(1.), visible_height),
+            }));
+            if partial {
+                *find.notice.borrow_mut() = Some("This match is taller than the available transcript viewport; only its first line is shown.".into());
+            }
         };
-        viewport.pending_scroll = None;
+        let margin = px(24.).min((bounds.size.height - visible_height).max(px(0.)) / 2.);
+        if fully_visible
+            && point.y >= bounds.top() + margin
+            && point.y + visible_height <= bounds.bottom() - margin
+        {
+            confirm();
+            if partial {
+                cx.notify();
+            }
+            return;
+        }
+        let target = wheel_anchor(
+            &self.presentation,
+            &viewport.heights,
+            bounds.size.width,
+            ListOffset {
+                item_ix: index,
+                offset_in_item: point.y - row.top(),
+            },
+            -padding,
+        );
+        let previous = viewport.list.logical_scroll_top();
+        if target.item_ix == previous.item_ix
+            && (target.offset_in_item - previous.offset_in_item).abs() < px(0.5)
+            && fully_visible
+        {
+            confirm();
+            if partial {
+                cx.notify();
+            }
+            return;
+        }
+        viewport.pending_scroll = Some(target);
         viewport.reveal = None;
         viewport.list.scroll_to(target);
-        viewport.painted_scroll = target;
+        // A scroll request is not visibility evidence. Keep navigation active
+        // and require another fresh painted receipt at the resulting origin.
+        self.rearm_find_geometry(cx);
+    }
+    fn rearm_find_geometry(&self, cx: &mut Context<Self>) {
+        for entry in self.tool_editors.borrow_mut().entries.values_mut() {
+            entry.find_installed = None;
+            entry
+                .editor
+                .update(cx, |e, cx| e.invalidate_presentation_geometry(cx));
+        }
         cx.notify();
     }
     pub(crate) fn cancel_find_navigation(&mut self, cx: &mut Context<Self>) {
@@ -983,7 +1061,7 @@ impl TranscriptView {
         cx: &mut Context<Self>,
     ) -> Option<crate::transcript_find_state::Destination> {
         let find = self.tool_editors.borrow().find.clone()?;
-        if find.serial != serial || !find.navigating() {
+        if find.serial != serial || !find.active_navigation() {
             return None;
         }
         find.landed.set(true);
@@ -1548,8 +1626,30 @@ impl Element for ViewportList {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
-        if let Some(find) = &self.tool_editors.borrow().find {
+        let current_find = self.tool_editors.borrow().find.clone();
+        if let Some(find) = current_find {
             find.layouts.borrow_mut().clear();
+            let changed = self.viewport.borrow().list.viewport_bounds() != bounds;
+            let live = find.destination.as_ref().is_some_and(|d| {
+                !d.search
+                    .cancellation()
+                    .load(std::sync::atomic::Ordering::Acquire)
+                    && !d
+                        .navigation
+                        .cancellation()
+                        .load(std::sync::atomic::Ordering::Acquire)
+            });
+            if changed && find.confirmed.get() && live {
+                find.confirmed.set(false);
+                find.landed.set(false);
+                find.attempts.set(0);
+                for entry in self.tool_editors.borrow_mut().entries.values_mut() {
+                    entry.find_installed = None;
+                    entry
+                        .editor
+                        .update(cx, |e, cx| e.invalidate_presentation_geometry(cx));
+                }
+            }
         }
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
         #[cfg(test)]
@@ -1780,10 +1880,17 @@ impl Element for ViewportList {
                 .layouts
                 .borrow()
                 .iter()
-                .find_map(|(row, layout, start)| {
-                    layout.position_for_index(*start).map(|point| (*row, point))
+                .find_map(|(row, layout, range)| {
+                    let point = layout.position_for_index(range.start)?;
+                    let end = layout.position_for_index(range.end)?;
+                    Some((
+                        *row,
+                        point,
+                        end.y - point.y + layout.line_height(),
+                        layout.line_height(),
+                    ))
                 });
-            if let Some((row, point)) = measured {
+            if let Some((row, point, span_height, line_height)) = measured {
                 let child = self.child.clone();
                 let presentation = self.presentation.clone();
                 let size = window.viewport_size();
@@ -1791,21 +1898,36 @@ impl Element for ViewportList {
                 let painted_viewport = self.viewport.borrow().list.viewport_bounds();
                 let painted_row = self.viewport.borrow().list.bounds_for_item(row);
                 window.defer(cx, move |window, cx| {
-                    if size != window.viewport_size() {
+                    let complete = move |window: &mut Window, cx: &mut App| {
+                        if size != window.viewport_size() {
+                            return;
+                        }
+                        let _ = child.update(cx, |view, cx| {
+                            let now = view.viewport.borrow().list.logical_scroll_top();
+                            if Rc::ptr_eq(&view.presentation, &presentation)
+                                && now.item_ix == origin.item_ix
+                                && now.offset_in_item == origin.offset_in_item
+                                && view.viewport.borrow().list.viewport_bounds() == painted_viewport
+                                && view.viewport.borrow().list.bounds_for_item(row) == painted_row
+                                && painted_row.is_some()
+                            {
+                                view.land_find_point(
+                                    &find,
+                                    row,
+                                    point,
+                                    span_height,
+                                    line_height,
+                                    cx,
+                                );
+                            }
+                        });
+                    };
+                    #[cfg(test)]
+                    if FIND_GEOMETRY_PAUSED.with(|v| v.get()) {
+                        FIND_GEOMETRY_CALLBACKS.with(|v| v.borrow_mut().push(Box::new(complete)));
                         return;
                     }
-                    let _ = child.update(cx, |view, cx| {
-                        let now = view.viewport.borrow().list.logical_scroll_top();
-                        if Rc::ptr_eq(&view.presentation, &presentation)
-                            && now.item_ix == origin.item_ix
-                            && now.offset_in_item == origin.offset_in_item
-                            && view.viewport.borrow().list.viewport_bounds() == painted_viewport
-                            && view.viewport.borrow().list.bounds_for_item(row) == painted_row
-                            && painted_row.is_some()
-                        {
-                            view.land_find_point(&find, row, point, cx);
-                        }
-                    });
+                    complete(window, cx);
                 });
             }
         }
@@ -2474,8 +2596,19 @@ fn decorate_find_tool(
                                     &callback_find,
                                     index,
                                     geometry.first_visible_fragment.origin,
+                                    geometry.first_visible_fragment.size.height,
+                                    geometry.first_visible_fragment.size.height,
                                     cx,
                                 );
+                                if callback_find.landed.get() {
+                                    let viewport = view.viewport.borrow();
+                                    let bounds = viewport.list.viewport_bounds();
+                                    let whole_card_visible = viewport.list.bounds_for_item(index).is_some_and(|row| row.top() >= bounds.top() && row.bottom() <= bounds.bottom());
+                                    if !geometry.fully_visible || !whole_card_visible {
+                                        *callback_find.notice.borrow_mut() = Some("Showing the first visible match fragment; the entire occurrence is not confirmed visible in this output.".into());
+                                        cx.notify();
+                                    }
+                                }
                             } else {
                                 // Reservation is released; the next fresh child render
                                 // may re-arm at most three times, never spin forever.

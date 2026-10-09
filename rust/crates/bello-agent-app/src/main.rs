@@ -2217,6 +2217,16 @@ impl AgentView {
                 .cached(StyleRefinement::default().flex_1().min_h_0().w_full())
                 .into_any_element()
         };
+        // Keep the aggregate first slot stable for queue geometry.
+        let transcript = div()
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .w_full()
+            .flex()
+            .flex_col()
+            .children(self.find_bar_element(cx))
+            .child(transcript);
         let queue = self.queue(window, cx);
         let field_height = self
             .composer
@@ -2673,7 +2683,6 @@ impl AgentView {
         } else {
             composer
         };
-        let find_bar = self.find_bar_element(cx);
         view.child(composer)
             .child(
                 div()
@@ -2721,7 +2730,6 @@ impl AgentView {
                     .child(self.badge("Capture off".into(), "bug")),
             )
             .child(div().absolute().inset_0())
-            .children(find_bar)
     }
     fn sidebar(&self, cx: &mut Context<Self>) -> Div {
         let p = self.palette;

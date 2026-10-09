@@ -37,11 +37,14 @@ pub(crate) struct FindPaint {
     pub owner: uuid::Uuid,
     lifetime_cancel: Arc<AtomicBool>,
     pub landed: Cell<bool>,
+    pub confirmed: Cell<bool>,
+    #[cfg(test)]
+    pub confirmed_geometry: Cell<Option<Bounds<Pixels>>>,
     pub measuring: Cell<bool>,
     pub attempts: Cell<u8>,
     pub host_row: Cell<Option<usize>>,
     pub host_geometry: RefCell<Option<HostGeometry>>,
-    pub layouts: RefCell<Vec<(usize, TextLayout, usize)>>,
+    pub layouts: RefCell<Vec<(usize, TextLayout, Range<usize>)>>,
     source: bello_agent_core::retained_find::FindSnapshot,
     prepared: HashMap<String, Ranges>,
 }
@@ -171,6 +174,9 @@ impl FindPaint {
             owner,
             lifetime_cancel,
             landed: Cell::new(false),
+            confirmed: Cell::new(false),
+            #[cfg(test)]
+            confirmed_geometry: Cell::new(None),
             measuring: Cell::new(false),
             attempts: Cell::new(0),
             host_row: Cell::new(None),
@@ -188,6 +194,9 @@ impl FindPaint {
             && binding.is_some_and(|b| self.source.same_content(b))
     }
     pub fn navigating(&self) -> bool {
+        self.active_navigation()
+    }
+    pub fn active_navigation(&self) -> bool {
         !self.landed.get()
             && self.destination.as_ref().is_some_and(|d| {
                 !d.search.cancellation().load(Ordering::Acquire)
@@ -254,7 +263,7 @@ impl FindPaint {
             styled,
             find: self.clone(),
             row,
-            selected: ranges.and_then(|r| r.selected).map(|r| r.start),
+            selected: ranges.and_then(|r| r.selected),
         }
     }
 }
@@ -288,7 +297,7 @@ pub(crate) struct FindText {
     styled: StyledText,
     find: Rc<FindPaint>,
     row: usize,
-    selected: Option<usize>,
+    selected: Option<Range<usize>>,
 }
 impl IntoElement for FindText {
     type Element = Self;
@@ -339,12 +348,12 @@ impl Element for FindText {
         self.styled
             .paint(id, inspector, bounds, state, prepaint, window, cx);
         if self.find.navigating()
-            && let Some(start) = self.selected
+            && let Some(range) = self.selected.clone()
         {
             self.find
                 .layouts
                 .borrow_mut()
-                .push((self.row, self.styled.layout().clone(), start));
+                .push((self.row, self.styled.layout().clone(), range));
         }
     }
 }

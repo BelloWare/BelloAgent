@@ -185,3 +185,31 @@ fn dropping_state_cancels_pending_work_and_navigation() {
     assert!(t.cancellation().load(Ordering::Acquire));
     assert!(target.navigation.cancellation().load(Ordering::Acquire));
 }
+
+#[test]
+fn initial_visible_preference_is_limited_to_first_available_page_like_swift() {
+    let (mut state, ticket) = state();
+    let visible = HashSet::from(["later".to_string()]);
+    state
+        .append(
+            &ticket,
+            0,
+            page(240, Some(100), &[("first", 1, 1)]),
+            &visible,
+        )
+        .unwrap();
+    assert_eq!(state.current().unwrap().id, "first");
+    state
+        .append(
+            &ticket,
+            100,
+            page(240, None, &[("later", 150, 1)]),
+            &visible,
+        )
+        .unwrap();
+    assert_eq!(
+        state.current().unwrap().id,
+        "first",
+        "later pages do not steal established navigation"
+    );
+}

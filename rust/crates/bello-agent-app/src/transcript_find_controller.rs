@@ -665,47 +665,47 @@ impl AgentView {
         let p = self.palette;
         Some(
             div()
-                .id("conversation-find-bar")
-                .debug_selector(|| "conversation-find-bar".into())
-                .absolute()
-                .top(px(6.))
-                .right(px(14.))
-                .w(px(420.))
-                .max_w_full()
-                .p(px(6.))
-                .rounded(px(10.))
-                .bg(rgb(p.surface))
-                .border_1()
-                .border_color(p.hairline())
+                .w_full()
+                .flex_shrink_0()
                 .flex()
-                .flex_col()
-                .gap(px(3.))
+                .justify_end()
+                .pt(px(6.))
+                .pr(px(14.))
                 .child(
                     div()
+                        .id("conversation-find-bar")
+                        .debug_selector(|| "conversation-find-bar".into())
+                        .w(px(420.))
+                        .max_w_full()
+                        .p(px(6.))
+                        .rounded(px(10.))
+                        .bg(rgb(p.surface))
+                        .border_1()
+                        .border_color(p.hairline())
                         .flex()
-                        .items_center()
-                        .gap(px(4.))
-                        .child(div().h(px(32.)).flex_1().min_w_0().child(query))
-                        .child(div().text_size(px(11.)).child(label))
+                        .flex_col()
+                        .gap(px(3.))
                         .child(
-                            self.button("find-previous", "↑").on_click(
-                                cx.listener(|v, _, _, cx| v.step_transcript_find(true, cx)),
-                            ),
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(4.))
+                                .child(div().h(px(32.)).flex_1().min_w_0().child(query))
+                                .child(div().text_size(px(11.)).child(label))
+                                .child(self.button("find-previous", "↑").on_click(
+                                    cx.listener(|v, _, _, cx| v.step_transcript_find(true, cx)),
+                                ))
+                                .child(self.button("find-next", "↓").on_click(
+                                    cx.listener(|v, _, _, cx| v.step_transcript_find(false, cx)),
+                                ))
+                                .child(self.button("find-close", "×").on_click(
+                                    cx.listener(|v, _, w, cx| v.close_transcript_find(w, cx)),
+                                )),
                         )
-                        .child(
-                            self.button("find-next", "↓").on_click(
-                                cx.listener(|v, _, _, cx| v.step_transcript_find(false, cx)),
-                            ),
-                        )
-                        .child(
-                            self.button("find-close", "×").on_click(
-                                cx.listener(|v, _, w, cx| v.close_transcript_find(w, cx)),
-                            ),
-                        ),
+                        .when_some(notice, |d, text| {
+                            d.child(div().text_size(px(11.)).child(text))
+                        }),
                 )
-                .when_some(notice, |d, text| {
-                    d.child(div().text_size(px(11.)).child(text))
-                })
                 .into_any_element(),
         )
     }

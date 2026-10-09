@@ -823,3 +823,232 @@ fn find_real_tool_geometry_retries_are_bounded_after_repeated_outer_changes(
         );
     });
 }
+
+fn assert_find_outside_measured_bar(
+    window: WindowHandle<AgentView>,
+    _root: &Entity<AgentView>,
+    child: &Entity<TranscriptView>,
+    cx: &mut TestAppContext,
+) {
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let bar = visual.debug_bounds("conversation-find-bar").unwrap();
+    cx.read(|cx| {
+        let viewport = child.read(cx).list_state().viewport_bounds();
+        let selected = child
+            .read(cx)
+            .find_confirmed_geometry()
+            .expect("fresh visibility confirmation");
+        assert!(
+            viewport.top() >= bar.bottom(),
+            "viewport {viewport:?}, bar {bar:?}"
+        );
+        assert!(
+            selected.top() >= viewport.top() && selected.bottom() <= viewport.bottom(),
+            "selected {selected:?}, viewport {viewport:?}"
+        );
+    });
+}
+
+#[gpui::test]
+fn find_landmark_first_and_early_later_row_clear_actual_bar_and_wrapped_notice(
+    cx: &mut TestAppContext,
+) {
+    let mut rows = messages(240);
+    rows[0].text = "landmark first".into();
+    rows[119].text = "landmark early in row\nsecond landmark on next line".into();
+    rows[239].text = "landmark last".into();
+    let (_dir, window, root) = fixture(cx, rows, 0);
+    search(window, "landmark", cx);
+    let child = transcript(&root, cx);
+    assert_find_outside_measured_bar(window, &root, &child, cx);
+    for _ in 0..2 {
+        window
+            .update(cx, |v, _, cx| v.step_transcript_find(false, cx))
+            .unwrap();
+        cx.run_until_parked();
+        assert_find_outside_measured_bar(window, &root, &child, cx);
+    }
+    root.update(cx, |v,cx| { v.transcript_find.as_mut().unwrap().notice=Some("A deliberately tall wrapped notice tests the measured exclusion band across narrow windows and multiple lines. ".repeat(3)); cx.notify(); });
+    let visual = VisualTestContext::from_window(window.into(), cx);
+    visual.simulate_resize(size(px(760.), px(840.)));
+    cx.run_until_parked();
+    window
+        .update(cx, |v, _, cx| v.step_transcript_find(true, cx))
+        .unwrap();
+    cx.run_until_parked();
+    assert_find_outside_measured_bar(window, &root, &child, cx);
+    window
+        .update(cx, |v, w, cx| v.close_transcript_find(w, cx))
+        .unwrap();
+    cx.run_until_parked();
+    assert!(cx.read(|cx| root.read(cx).transcript_find.is_none()));
+}
+
+#[gpui::test]
+fn find_long_prose_scroll_request_requires_next_actual_paint_confirmation(cx: &mut TestAppContext) {
+    let text = (0..300)
+        .map(|i| {
+            if i == 260 {
+                "needle".to_string()
+            } else {
+                format!("line {i}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let (_dir, window, root) = fixture(cx, vec![message("long", "assistant", &text)], 0);
+    crate::transcript_view::pause_find_geometry(true);
+    search(window, "needle", cx);
+    let child = transcript(&root, cx);
+    assert!(!cx.read(|cx| child.read(cx).find_landed()));
+    window
+        .update(cx, |_, w, cx| {
+            assert!(crate::transcript_view::resume_find_geometry(w, cx) > 0);
+            assert!(
+                !child.read(cx).find_landed(),
+                "requesting scroll is not confirmation"
+            );
+        })
+        .unwrap();
+    crate::transcript_view::pause_find_geometry(false);
+    window
+        .update(cx, |_, w, cx| {
+            crate::transcript_view::resume_find_geometry(w, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    assert_find_outside_measured_bar(window, &root, &child, cx);
+}
+
+#[gpui::test]
+fn find_flow_resize_notice_close_reopen_rejects_old_prose_geometry(cx: &mut TestAppContext) {
+    let text = (0..150)
+        .map(|i| {
+            if i == 100 {
+                "needle needle".to_string()
+            } else {
+                format!("line {i}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let (_dir, window, root) = fixture(cx, vec![message("long", "assistant", &text)], 0);
+    crate::transcript_view::pause_find_geometry(true);
+    search(window, "needle", cx);
+    let child = transcript(&root, cx);
+    root.update(cx, |v, cx| {
+        v.transcript_find.as_mut().unwrap().notice = Some("a tall wrapping notice ".repeat(18));
+        cx.notify();
+    });
+    let visual = VisualTestContext::from_window(window.into(), cx);
+    visual.simulate_resize(size(px(760.), px(840.)));
+    cx.run_until_parked();
+    window
+        .update(cx, |_, w, cx| {
+            crate::transcript_view::resume_find_geometry(w, cx);
+        })
+        .unwrap();
+    assert!(!cx.read(|cx| child.read(cx).find_landed()));
+    crate::transcript_view::pause_find_geometry(false);
+    window
+        .update(cx, |_, w, cx| {
+            crate::transcript_view::resume_find_geometry(w, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    assert_find_outside_measured_bar(window, &root, &child, cx);
+    crate::transcript_view::pause_find_geometry(true);
+    window
+        .update(cx, |v, _, cx| v.step_transcript_find(false, cx))
+        .unwrap();
+    cx.run_until_parked();
+    window
+        .update(cx, |v, w, cx| {
+            v.close_transcript_find(w, cx);
+            v.show_transcript_find(w, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    crate::transcript_view::pause_find_geometry(false);
+    window
+        .update(cx, |v, w, cx| {
+            crate::transcript_view::resume_find_geometry(w, cx);
+            assert!(v.transcript_find.as_ref().unwrap().state.query.is_empty());
+        })
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(
+        cx.read(|cx| child.read(cx).find_decoration_state()),
+        (false, 0)
+    );
+    let with_bar = scroll(&child, cx).viewport_bounds();
+    window
+        .update(cx, |v, w, cx| v.close_transcript_find(w, cx))
+        .unwrap();
+    cx.run_until_parked();
+    assert!(
+        scroll(&child, cx).viewport_bounds().size.height > with_bar.size.height,
+        "closing removes all reserved bar space"
+    );
+}
+
+#[gpui::test]
+fn find_multiline_span_fits_adaptive_padding_and_oversized_notice_keeps_first_line_visible(
+    cx: &mut TestAppContext,
+) {
+    let text = format!(
+        "{}{}END\n{}",
+        "prefix\n".repeat(80),
+        "z\n".repeat(100),
+        "tail\n".repeat(100)
+    );
+    let (_dir, window, root) = fixture(cx, vec![message("long", "assistant", &text)], 0);
+    window
+        .update(cx, |v, w, cx| v.show_transcript_find(w, cx))
+        .unwrap();
+    cx.run_until_parked();
+    let child = transcript(&root, cx);
+    let height = f32::from(scroll(&child, cx).viewport_bounds().size.height);
+    let fitting_lines = (height * 0.8 / 21.).floor() as usize;
+    let query = format!("{}END", "z\n".repeat(fitting_lines));
+    search(window, &query, cx);
+    assert_find_outside_measured_bar(window, &root, &child, cx);
+    cx.read(|cx| {
+        let measured = child.read(cx).find_confirmed_geometry().unwrap();
+        let viewport = child.read(cx).list_state().viewport_bounds();
+        assert!(measured.size.height > viewport.size.height * (2. / 3.));
+        assert!(measured.size.height <= viewport.size.height);
+    });
+    let query = format!("{}END", "z\n".repeat((height / 21.).ceil() as usize + 12));
+    search(window, &query, cx);
+    assert_find_outside_measured_bar(window, &root, &child, cx);
+    cx.read(|cx| {
+        assert!(
+            root.read(cx)
+                .transcript_find
+                .as_ref()
+                .unwrap()
+                .notice
+                .as_deref()
+                .is_some_and(|n| n.contains("only its first line"))
+        );
+        assert!(
+            child
+                .read(cx)
+                .find_confirmed_geometry()
+                .unwrap()
+                .size
+                .height
+                < px(30.)
+        );
+    });
+    let before = scroll(&child, cx).logical_scroll_top();
+    for _ in 0..12 {
+        root.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+    }
+    let after = scroll(&child, cx).logical_scroll_top();
+    assert_eq!(before.item_ix, after.item_ix);
+    assert_eq!(before.offset_in_item, after.offset_in_item);
+    assert_find_outside_measured_bar(window, &root, &child, cx);
+}
