@@ -1,5 +1,93 @@
 # BelloAgent Rust migration: where the time went
 
+## Current accounting checkpoint: 2026-10-09T13:27:00Z
+
+This catch-up incorporates selected verified receipts through the stated cutoff, including late-added earlier observations. Every earlier item and checkpoint remains preserved below. It is not a complete timesheet. Model inference duration remains unavailable, not zero. Shared coordination/publication appears once; local receipt hashes establish provenance without claiming independent public timing verification.
+
+### At a glance
+
+These top totals cover only this catch-up receipt cohort, including late-added earlier observations; they are not whole-migration cumulative totals. These are overlapping accounting views, not shares of one total. Mixed windows do not measure active labor.
+
+| Where time went | What is actually measured |
+|---|---|
+| Implementation | Active effort unavailable; no isolated implementation timer |
+| Review | Active effort unavailable; only review-focused observations: 0 mixed windows; 0 with endpoints, unavailable union |
+| Mixed implementation/review/validation windows | 2 mixed windows; 2 with endpoints, 11m 30.0s union; scopes overlap resources and do not measure Review alone |
+| Builds | Unavailable separately |
+| Tests | Unavailable separately from compilation in these command receipts |
+| Build + test/check (combined) | 1m 26.3s measured command resource time |
+| Interactive GUI validation | No new completed GUI process receipt |
+| CI | No new completed job duration in this cohort; prior terminal jobs are preserved below |
+| Dependency/environment setup | 1.0s measured command resource time |
+| Retries/rework | 11.9s across 2 failed command receipts; total rework effort unavailable |
+| Publication | No isolated API total; 2 mixed windows; 2 with endpoints, 4m 20.4s union |
+| Waiting | Unavailable separately; waiting is mixed into recorded workflow windows |
+| Model inference | Unavailable; no timing telemetry |
+
+### Separate measured resource groups
+
+| Group | Timed items | Resource/client seconds | Known-endpoint items | Endpoint-subset seconds | Endpoint union seconds |
+|---|---:|---:|---:|---:|---:|
+| catchup_command | 19 | 99.246 | 0 | 0.000 | unavailable |
+
+Groups overlap each other and mixed work windows; never add them into project elapsed or active-work time. Derived endpoints are excluded from unions. Monotonic timers and separately recorded UTC clocks can differ slightly. Whole-second 0s means below receipt resolution. CI steps and native subcommands are nested within job durations, not extra runner time.
+
+| Resource group / category | Seconds |
+|---|---:|
+| catchup_command: build + test/check (combined) | 86.293 |
+| catchup_command: automated lint/check | 11.910 |
+| catchup_command: dependency/environment or verification | 1.032 |
+| catchup_command: automated negative-control validation | 0.011 |
+
+### Nested CI phases (already included in CI jobs)
+
+| Phase class | Runner step time |
+|---|---:|
+
+These conservative phase groups can include compilation and execution together; do not add them to the CI job totals.
+
+This cohort adds no CI job execution intervals; prior verified terminal runs remain in earlier accounting. Coverage of 2026-10-09T13:17:00Z–2026-10-09T13:27:00Z is partial and does not establish an idle-time or inference budget.
+
+### Mixed workflows and waits (excluded from resource totals)
+
+| Activity | Start UTC | End UTC | Seconds | Outcome |
+|---|---|---|---:|---|
+| Prepare, upload and verify paired 13:17 timing candidates | 2026-10-09T13:15:30Z | 2026-10-09T13:19:19Z | 229 | completed |
+| Publish paired 13:17 timing checkpoint (shared once) | 2026-10-09T13:21:04.434Z | 2026-10-09T13:21:35.868Z | 31.434 | completed |
+| Ongoing sidebar integration observed source workflow segment | 2026-10-09T13:16:00+00:00 | 2026-10-09T13:27:00Z | 660.0 | completed |
+| Delimiter failure observation to source correction | 2026-10-09T13:22:35Z | 2026-10-09T13:22:51Z | 16.0 | completed |
+| App next validation phase | unknown | unknown | unknown | Source fixes continued; no new Cargo result since13:12:20 while cache lane occupied |
+
+Open task and CI rows retain unknown final duration. Failed source attempts and the original failed native URL job remain in preserved earlier accounting. Mixed windows overlap useful parallel work; they are not pure idle or active-review time.
+
+### Measured items
+
+| Activity | Category | Start UTC | End UTC | Seconds | Outcome |
+|---|---|---|---|---:|---|
+| cache-tests-r3 | build + test/check (combined) | unknown | unknown | 11.869974346001982 | 101 |
+| cache-tests-r4 | build + test/check (combined) | unknown | unknown | 42.495874414002174 | 0 |
+| core-cache-strict-r5 | automated lint/check | unknown | unknown | 11.909587062007631 | 0 |
+| dependency-closure | dependency/environment or verification | unknown | unknown | 1.0317538840026828 | 0 |
+| missing-temp | build + test/check (combined) | unknown | unknown | 10.934402336992207 | 0 |
+| missing-stmt | build + test/check (combined) | unknown | unknown | 7.427134122990537 | 0 |
+| missing-both | build + test/check (combined) | unknown | unknown | 7.251228840003023 | 0 |
+| wrong-source | build + test/check (combined) | unknown | unknown | 0.008529349011951126 | 101 |
+| wrong-source-r2 | build + test/check (combined) | unknown | unknown | 6.123852966004051 | 0 |
+| build-gate-link | build + test/check (combined) | unknown | unknown | 0.18229897400306072 | 0 |
+| Build gate: plain-compiler | automated negative-control validation | unknown | unknown | 0.001601342999492772 | 0 |
+| Build gate: cc-embedded-define | automated negative-control validation | unknown | unknown | 0.0012881699949502945 | Expected negative-control failure |
+| Build gate: host-cc-embedded-define | automated negative-control validation | unknown | unknown | 0.0011807699920609593 | Expected negative-control failure |
+| Build gate: target-cc-embedded-define | automated negative-control validation | unknown | unknown | 0.0010886130039580166 | Expected negative-control failure |
+| Build gate: target-underscore-cc-define | automated negative-control validation | unknown | unknown | 0.0012294519983697683 | Expected negative-control failure |
+| Build gate: target-hyphen-cc-define | automated negative-control validation | unknown | unknown | 0.0011545609886525199 | Expected negative-control failure |
+| Build gate: cflags-shm-define | automated negative-control validation | unknown | unknown | 0.0013320150028448552 | Expected negative-control failure |
+| Build gate: missing-build-flags | automated negative-control validation | unknown | unknown | 0.0011438150104368106 | Expected negative-control failure |
+| Build gate: system-link-override | automated negative-control validation | unknown | unknown | 0.0011510559997987002 | Expected negative-control failure |
+
+Full source hashes, source URLs, nested job steps and timing limitations are in duration-data.json. Native macOS full logs were unavailable for some Agent runs; verified job/step metadata is retained without a full-log claim. Later source CI may be running and is not silently promoted to success by this snapshot.
+
+### Earlier accounting (unchanged)
+
 ## Current accounting checkpoint: 2026-10-09T13:17:00Z
 
 This catch-up incorporates selected verified receipts through the stated cutoff, including late-added earlier observations. Every earlier item and checkpoint remains preserved below. It is not a complete timesheet. Model inference duration remains unavailable, not zero. Shared coordination/publication appears once; local receipt hashes establish provenance without claiming independent public timing verification.
