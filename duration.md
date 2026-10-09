@@ -1,6 +1,6 @@
 # BelloAgent Rust migration: where the time went
 
-## Current accounting checkpoint: 2026-10-09T15:47:00Z
+## Current accounting checkpoint: 2026-10-09T16:07:00Z
 
 This catch-up incorporates selected verified receipts through the stated cutoff, including late-added earlier observations. Every earlier item and checkpoint remains in the complete ledger and SHA-pinned historical view linked below. It is not a complete timesheet. Model inference duration remains unavailable, not zero. Shared coordination/publication appears once; local receipt hashes establish provenance without claiming independent public timing verification.
 
@@ -12,15 +12,15 @@ These top totals cover only this catch-up receipt cohort, including late-added e
 |---|---|
 | Implementation | Active effort unavailable; no isolated implementation timer |
 | Review | Active effort unavailable; only review-focused observations: 0 mixed windows; 0 with endpoints, unavailable union |
-| Mixed implementation/review/validation windows | 0 mixed windows; 0 with endpoints, unavailable union; scopes overlap resources and do not measure Review alone |
-| Builds | 1m 49.5s measured command resource time |
+| Mixed implementation/review/validation windows | 1 mixed windows; 1 with endpoints, 5m 44.4s union; scopes overlap resources and do not measure Review alone |
+| Builds | Unavailable separately |
 | Tests | Unavailable separately from compilation in these command receipts |
-| Build + test/check (combined) | 3m 36.8s measured command resource time |
-| Interactive GUI validation | 2m 5.3s scoped validation + 5m 50.0s diagnostic process lifetimes; no rendering-latency inference |
-| CI | 16m 11.0s runner time across 2 completed jobs (2 failed); 8m 42.0s wall union |
-| Dependency/environment setup | 37.0s nested CI phase time (already inside CI jobs); command setup shown separately below |
-| Retries/rework | 5.2s across 1 failed process/API receipts; total rework effort unavailable |
-| Publication | No isolated API total; 1 mixed windows; 1 with endpoints, 29.8s union |
+| Build + test/check (combined) | 1m 56.1s measured command resource time |
+| Interactive GUI validation | 2m 25.0s observed process lifetime; overlaps workflow windows, limited acceptance only |
+| CI | No new completed job duration in this cohort; prior terminal jobs remain in the ledger and linked history |
+| Dependency/environment setup | 387.936ms measured command resource time |
+| Retries/rework | 1m 9.7s across 2 failed process/API receipts; total rework effort unavailable |
+| Publication | No isolated API total; 1 mixed windows; 1 with endpoints, 43.4s union |
 | Waiting | Unavailable separately; waiting is mixed into recorded workflow windows |
 | Model inference | Unavailable; no timing telemetry |
 
@@ -28,44 +28,36 @@ These top totals cover only this catch-up receipt cohort, including late-added e
 
 | Group | Timed items | Resource/client seconds | Known-endpoint items | Endpoint-subset seconds | Endpoint union seconds |
 |---|---:|---:|---:|---:|---:|
-| catchup_command | 21 | 377.617 | 21 | 377.617 | 357.913 |
-| catchup_gui_process | 11 | 475.315 | 11 | 475.315 | 475.315 |
-| catchup_ci_job | 2 | 971.000 | 2 | 971.000 | 522.000 |
+| catchup_command | 9 | 270.192 | 9 | 270.192 | 269.976 |
+| catchup_gui_process | 2 | 145.020 | 2 | 145.020 | 145.020 |
 
 Groups overlap each other and mixed work windows; never add them into project elapsed or active-work time. Derived endpoints are excluded from unions. Monotonic timers and separately recorded UTC clocks can differ slightly. Whole-second 0s means below receipt resolution. CI steps and native subcommands are nested within job durations, not extra runner time.
 
 | Resource group / category | Seconds |
 |---|---:|
-| catchup_command: automated accounting validation | 0.193 |
-| catchup_command: build | 109.531 |
-| catchup_command: build + test/check (combined) | 216.801 |
-| catchup_command: dependency/environment or verification | 0.453 |
-| catchup_command: automated lint/check | 50.638 |
-| catchup_gui_process: interactive GUI diagnostics | 349.971 |
-| catchup_gui_process: interactive GUI validation | 125.343 |
-| catchup_ci_job: ci | 971.000 |
+| catchup_command: automated accounting validation | 0.216 |
+| catchup_command: build + test/lint (combined) | 133.307 |
+| catchup_command: build + test/check (combined) | 116.088 |
+| catchup_command: remote evidence retrieval | 17.599 |
+| catchup_command: dependency/environment or verification | 0.388 |
+| catchup_command: automated lint/check | 2.594 |
+| catchup_gui_process: interactive GUI validation | 145.020 |
 
 ### Nested CI phases (already included in CI jobs)
 
 | Phase class | Runner step time |
 |---|---:|
-| CI orchestration | 12.0s |
-| dependency/environment setup | 37.0s |
-| build + automated lint/check | 3.0s |
-| build/test/check (combined) | 15m 14.0s |
-| build | 0.0s |
-| CI reporting | 0.0s |
 
 These conservative phase groups can include compilation and execution together; do not add them to the CI job totals.
 
-Within 2026-10-09T15:37:00Z–2026-10-09T15:47:00Z, newly recorded CI jobs cover 436.000 overlap-safe seconds. Remaining time is unclassified, not proven idle or inference.
+This cohort adds no CI job execution intervals; prior verified terminal runs remain in earlier accounting. Coverage of 2026-10-09T15:47:00Z–2026-10-09T16:07:00Z is partial and does not establish an idle-time or inference budget.
 
 ### Mixed workflows and waits (excluded from resource totals)
 
 | Activity | Start UTC | End UTC | Seconds | Outcome |
 |---|---|---|---:|---|
-| Root paired timing verification and normal publication (shared once) | 2026-10-09T15:41:13.735Z | 2026-10-09T15:41:43.499Z | 29.764 | completed |
-| Initial first-frame diagnostic build setup failed | unknown | unknown | unknown | Required compile-time asset omitted; corrected in subsequent build; full elapsed unavailable |
+| Root paired timing verification and normal publication (shared once) | 2026-10-09T15:59:05.961Z | 2026-10-09T15:59:49.391Z | 43.43 | completed |
+| Root cross-repository review, timing audit, source verification and coordination (shared once) | 2026-10-09T15:57:11Z | 2026-10-09T16:02:55.430922+00:00 | 344.430922 | completed |
 
 Open task and CI rows retain unknown final duration. Failed source attempts and the original failed native URL job remain in preserved earlier accounting. Mixed windows overlap useful parallel work; they are not pure idle or active-review time.
 
@@ -73,47 +65,24 @@ Open task and CI rows retain unknown final duration. Failed source attempts and 
 
 | Activity | Category | Start UTC | End UTC | Seconds | Outcome |
 |---|---|---|---|---:|---|
-| Independent duration global-identity and historical-prefix audit | automated accounting validation | 2026-10-09T15:39:02.067678+00:00 | 2026-10-09T15:39:02.260634+00:00 | 0.19296199901145883 | completed |
-| First-frame diagnostic GUI mode sealed-original | interactive GUI diagnostics | 2026-10-09T15:25:52.854958451+00:00 | 2026-10-09T15:26:33.497567887+00:00 | 40.642609 | black; exit=0 |
-| First-frame diagnostic GUI mode original | interactive GUI diagnostics | 2026-10-09T15:27:09.983488610+00:00 | 2026-10-09T15:27:34.240597681+00:00 | 24.257109 | black; exit=0 |
-| First-frame diagnostic GUI mode no-install | interactive GUI diagnostics | 2026-10-09T15:28:07.765241296+00:00 | 2026-10-09T15:28:29.344707067+00:00 | 21.579466 | black; exit=0 |
-| First-frame diagnostic GUI mode no-update | interactive GUI diagnostics | 2026-10-09T15:28:45.095136845+00:00 | 2026-10-09T15:29:22.467957636+00:00 | 37.372821 | painted selected101 and five Ready rows; exit=0 |
-| First-frame diagnostic GUI mode deferred | interactive GUI diagnostics | 2026-10-09T15:29:39.581095020+00:00 | 2026-10-09T15:30:33.232733591+00:00 | 53.651638 | painted selected101 and five Ready rows; exit=0 |
-| First-frame diagnostic GUI mode noop-update | interactive GUI diagnostics | 2026-10-09T15:32:26.484227713+00:00 | 2026-10-09T15:32:49.740674501+00:00 | 23.256447 | painted selected101 and five Ready rows; exit=0 |
-| First-frame diagnostic GUI mode cache-only | interactive GUI diagnostics | 2026-10-09T15:33:05.706682872+00:00 | 2026-10-09T15:33:29.504294832+00:00 | 23.797612 | painted selected101 and five Ready rows; exit=0 |
-| First-frame diagnostic GUI mode early-title | interactive GUI diagnostics | 2026-10-09T15:33:45.400235444+00:00 | 2026-10-09T15:35:00.243931571+00:00 | 74.843696 | painted selected101 and five Ready rows with synthetic title; exit=0 |
-| First-frame diagnostic GUI mode original-v2 | interactive GUI diagnostics | 2026-10-09T15:35:16.480410097+00:00 | 2026-10-09T15:35:41.533937708+00:00 | 25.053527 | black; exit=0 |
-| First-frame diagnostic GUI mode early-title-restart | interactive GUI diagnostics | 2026-10-09T15:35:58.458004056+00:00 | 2026-10-09T15:36:23.974454775+00:00 | 25.51645 | painted persisted selected102 and five Ready rows with synthetic title; exit=0 |
-| First-frame diagnostic v1 build wrapper | build | 2026-10-09T15:26:09.931785904+00:00 | 2026-10-09T15:26:31.954693001+00:00 | 22.022908 | passed |
-| First-frame diagnostic v2 build wrapper | build | 2026-10-09T15:31:21.821440269+00:00 | 2026-10-09T15:31:42.270532963+00:00 | 20.449092 | passed |
-| First-frame repair aggregate-default | build + test/check (combined) | 2026-10-09T15:46:23.672631+00:00 | 2026-10-09T15:46:36.103634+00:00 | 12.431003 | 0 |
-| First-frame repair aggregate-synthetic | build + test/check (combined) | 2026-10-09T15:45:46.526438+00:00 | 2026-10-09T15:46:23.495431+00:00 | 36.968993 | 0 |
-| First-frame repair build-default | build | 2026-10-09T15:45:28.003270+00:00 | 2026-10-09T15:46:06.230097+00:00 | 38.226827 | 0 |
-| First-frame repair build-synthetic | build | 2026-10-09T15:43:44.848585+00:00 | 2026-10-09T15:44:13.680924+00:00 | 28.832339 | 0 |
-| First-frame repair clean-app | dependency/environment or verification | 2026-10-09T15:42:17.029257+00:00 | 2026-10-09T15:42:17.295019+00:00 | 0.265762 | 0 |
-| First-frame repair clippy-default | automated lint/check | 2026-10-09T15:45:07.664569+00:00 | 2026-10-09T15:45:27.471460+00:00 | 19.806891 | 0 |
-| First-frame repair clippy-synthetic | automated lint/check | 2026-10-09T15:43:23.485843+00:00 | 2026-10-09T15:43:44.469816+00:00 | 20.983973 | 0 |
-| First-frame repair fixture-synthetic | build + test/check (combined) | 2026-10-09T15:43:20.794747+00:00 | 2026-10-09T15:43:22.105081+00:00 | 1.310334 | 0 |
-| First-frame repair fmt | automated lint/check | 2026-10-09T15:42:17.459492+00:00 | 2026-10-09T15:42:19.798063+00:00 | 2.338571 | 0 |
-| First-frame repair search-synthetic | build + test/check (combined) | 2026-10-09T15:43:22.268850+00:00 | 2026-10-09T15:43:23.318548+00:00 | 1.049698 | 0 |
-| First-frame repair workspace-default | build + test/check (combined) | 2026-10-09T15:44:14.445234+00:00 | 2026-10-09T15:45:07.103760+00:00 | 52.658526 | 0 |
-| First-frame repair workspace-synthetic | build + test/check (combined) | 2026-10-09T15:42:19.964614+00:00 | 2026-10-09T15:43:20.245012+00:00 | 60.280398 | 0 |
-| First-frame initial incomplete-input clean-app | dependency/environment or verification | 2026-10-09T15:40:38.309828+00:00 | 2026-10-09T15:40:38.496611+00:00 | 0.186783 | 0 |
-| First-frame initial incomplete-input clippy-synthetic | automated lint/check | 2026-10-09T15:41:33.861086+00:00 | 2026-10-09T15:41:39.013855+00:00 | 5.152769 | 101 |
-| First-frame initial incomplete-input fixture-synthetic | build + test/check (combined) | 2026-10-09T15:41:31.304392+00:00 | 2026-10-09T15:41:32.508140+00:00 | 1.203748 | 0 |
-| First-frame initial incomplete-input fmt | automated lint/check | 2026-10-09T15:40:38.611376+00:00 | 2026-10-09T15:40:40.967583+00:00 | 2.356207 | 0 |
-| First-frame initial incomplete-input search-synthetic | build + test/check (combined) | 2026-10-09T15:41:32.642575+00:00 | 2026-10-09T15:41:33.738930+00:00 | 1.096355 | 0 |
-| First-frame initial incomplete-input workspace-synthetic | build + test/check (combined) | 2026-10-09T15:40:41.100351+00:00 | 2026-10-09T15:41:30.902784+00:00 | 49.802433 | 0 |
-| Repaired first-frame fresh synthetic GUI process | interactive GUI validation | 2026-10-09T15:44:49.623980579+00:00 | 2026-10-09T15:46:54.967314949+00:00 | 125.343334 | Normal exit0; first untouched capture painted; scoped synthetic cloud interaction |
-| Exact integrated sidebar linux CI job | ci | 2026-10-09T15:35:34Z | 2026-10-09T15:43:05Z | 451.0 | failure |
-| Exact integrated sidebar apple-silicon CI job | ci | 2026-10-09T15:35:36Z | 2026-10-09T15:44:16Z | 520.0 | failure |
+| Independent duration audit and historical-prefix verification | automated accounting validation | 2026-10-09T15:57:46.290938+00:00 | 2026-10-09T15:57:46.506864+00:00 | 0.21593388300971128 | 0 |
+| Repaired first-frame restart GUI process | interactive GUI validation | 2026-10-09T15:47:29.399043882+00:00 | 2026-10-09T15:49:11.972619442+00:00 | 102.573576 | painted persisted selected102 and five Ready rows with exact synthetic title; exit=0 |
+| Repaired first-frame ordinary GUI process | interactive GUI validation | 2026-10-09T15:49:30.429001202+00:00 | 2026-10-09T15:50:12.875862098+00:00 | 42.446861 | painted pending New chat, No connection, Tools unavailable, exact ordinary Bello Agent title; exit=0 |
+| ACL diagnostic r1 | build + test/lint (combined) | 2026-10-09T15:55:03.086872+00:00 | 2026-10-09T15:55:55.224274+00:00 | 52.137414324999554 | 101 |
+| ACL diagnostic focused-strict | build + test/lint (combined) | 2026-10-09T15:56:38.717248+00:00 | 2026-10-09T15:57:59.886766+00:00 | 81.16952962899813 | 0 |
+| ACL diagnostic workflow-check | build + test/check (combined) | 2026-10-09T15:59:36.314807+00:00 | 2026-10-09T15:59:36.447425+00:00 | 0.13262218999443576 | completed |
+| Public native CI log recovery request | remote evidence retrieval | 2026-10-09T15:50:20.317112+00:00 | 2026-10-09T15:50:37.916597+00:00 | 17.599489358006394 | Failed HTTP403; no log recovered |
+| Combined title/ACL aggregate-synthetic | build + test/check (combined) | 2026-10-09T16:04:27.638132+00:00 | 2026-10-09T16:06:23.477903+00:00 | 115.839771 | 0 |
+| Combined title/ACL clean-app | dependency/environment or verification | 2026-10-09T16:04:24.257562+00:00 | 2026-10-09T16:04:24.645498+00:00 | 0.387936 | 0 |
+| Combined title/ACL fmt | automated lint/check | 2026-10-09T16:04:24.864532+00:00 | 2026-10-09T16:04:27.458091+00:00 | 2.593559 | 0 |
+| Combined title/ACL workflow-check | build + test/check (combined) | 2026-10-09T16:03:28.672892+00:00 | 2026-10-09T16:03:28.788927+00:00 | 0.11603935400489718 | completed |
 
 Full source hashes, source URLs, nested job steps and timing limitations are in duration-data.json. Native macOS full logs were unavailable for some Agent runs; verified job/step metadata is retained without a full-log claim. Later source CI may be running and is not silently promoted to success by this snapshot.
 
 
 ## All recorded resource groups
 
-The ledger retains 1,357 items; 793 are flagged for their own resource-group totals. These are all recorded observations, not a complete migration budget. Groups retain their existing definitions and checkpoint-era names; they must not be added into one elapsed or effort total. Mixed work windows and nested phases remain excluded. Missing endpoints make some interval unions unavailable.
+The ledger retains 1,370 items; 804 are flagged for their own resource-group totals. These are all recorded observations, not a complete migration budget. Groups retain their existing definitions and checkpoint-era names; they must not be added into one elapsed or effort total. Mixed work windows and nested phases remain excluded. Missing endpoints make some interval unions unavailable.
 
 | Existing resource group | Counted timed items | Resource seconds | Items with endpoints | Endpoint-subset seconds | Subset interval union seconds |
 |---|---:|---:|---:|---:|---:|
@@ -126,9 +95,9 @@ The ledger retains 1,357 items; 793 are flagged for their own resource-group tot
 | new_native_command | 75 | 506.149 | 74 | 500.224 | 500.244 |
 | catchup_ci_job | 14 | 13661.000 | 14 | 13661.000 | 9227.000 |
 | catchup_native_command | 36 | 718.272 | 36 | 718.272 | 718.281 |
-| catchup_command | 205 | 4865.855 | 101 | 2796.668 | 2771.091 |
+| catchup_command | 214 | 5136.048 | 110 | 3066.860 | 3041.067 |
 | catchup_api | 118 | 1088.447 | 94 | 810.611 | 424.003 |
-| catchup_gui_process | 20 | 2168.436 | 20 | 2168.436 | 2168.436 |
+| catchup_gui_process | 22 | 2313.456 | 22 | 2313.456 | 2313.456 |
 
 ## Complete detail and immutable history
 

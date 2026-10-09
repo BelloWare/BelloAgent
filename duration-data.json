@@ -3,7 +3,7 @@
   "evidence_cutoff_utc": "2026-10-09T06:00:00Z",
   "schema_version": 1,
   "repository": "BelloWare/BelloAgent",
-  "as_of_utc": "2026-10-09T15:47:00Z",
+  "as_of_utc": "2026-10-09T16:07:00Z",
   "source_commit": "885a5bcf6e608361692e877d7c77941b0db2f4d8",
   "summary": {
     "window_start_utc": "2026-10-04T05:13:30Z",
@@ -65244,6 +65244,359 @@
       ],
       "log_limitation": "macOS full log unavailable after two transport failures; job and step metadata verified",
       "coverage_note": "Late-added earlier evidence, deduplicated against all prior timed intervals."
+    },
+    {
+      "id": "20261009-1607-previous-timing-publication",
+      "repository_assignment": "BelloAgent",
+      "activity": "Root paired timing verification and normal publication (shared once)",
+      "category": "publication (mixed)",
+      "start_utc": "2026-10-09T15:59:05.961Z",
+      "end_utc": "2026-10-09T15:59:49.391Z",
+      "duration_seconds": 43.43,
+      "source": [
+        {
+          "receipt_sha256": "0de01147fb419f511b7b729bce70325ec48159bbd76570bf4dfe7a0a55efd094",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "completed",
+      "accounting_group": "task_window",
+      "include_in_totals": false,
+      "resource": "mixed task window",
+      "duration_basis": "Observed mixed task/workflow interval includes tools, coordination and waiting; overlaps command resources and other workers",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1607",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time."
+    },
+    {
+      "id": "20261009-1607-root-duration-audit-0",
+      "repository_assignment": "BelloAgent",
+      "activity": "Independent duration audit and historical-prefix verification",
+      "category": "automated accounting validation",
+      "start_utc": "2026-10-09T15:57:46.290938+00:00",
+      "end_utc": "2026-10-09T15:57:46.506864+00:00",
+      "duration_seconds": 0.21593388300971128,
+      "source": [
+        {
+          "receipt_sha256": "3a620f3dcbb2b48f0b6abb5e11cbabdc2c3c524fa0cf31d58b4b512669405868",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "0",
+      "accounting_group": "catchup_command",
+      "include_in_totals": true,
+      "resource": "cloud command process",
+      "duration_basis": "Measured command/resource elapsed; not active labor or inference",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1607",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time."
+    },
+    {
+      "id": "20261009-1607-first-frame-final-gui-restart",
+      "repository_assignment": "BelloAgent",
+      "activity": "Repaired first-frame restart GUI process",
+      "category": "interactive GUI validation",
+      "start_utc": "2026-10-09T15:47:29.399043882+00:00",
+      "end_utc": "2026-10-09T15:49:11.972619442+00:00",
+      "duration_seconds": 102.573576,
+      "source": [
+        {
+          "receipt_sha256": "c442a27a2ba8a05b4fd607fcb76eef638382d4312433f90bab98ef489efbfc98",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "painted persisted selected102 and five Ready rows with exact synthetic title; exit=0",
+      "accounting_group": "catchup_gui_process",
+      "include_in_totals": true,
+      "resource": "mixed task window",
+      "duration_basis": "Whole process lifetime, not first-render latency; exact fresh process from this receipt already counted in previous checkpoint",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1607",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "binary_sha256": "078d530b9a999081aae3a54901dac8107d289a3a1ae20132e412f3ae18a9cae7",
+      "first_capture_utc": "2026-10-09T15:48:20.898Z"
+    },
+    {
+      "id": "20261009-1607-first-frame-final-gui-ordinary",
+      "repository_assignment": "BelloAgent",
+      "activity": "Repaired first-frame ordinary GUI process",
+      "category": "interactive GUI validation",
+      "start_utc": "2026-10-09T15:49:30.429001202+00:00",
+      "end_utc": "2026-10-09T15:50:12.875862098+00:00",
+      "duration_seconds": 42.446861,
+      "source": [
+        {
+          "receipt_sha256": "c442a27a2ba8a05b4fd607fcb76eef638382d4312433f90bab98ef489efbfc98",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "painted pending New chat, No connection, Tools unavailable, exact ordinary Bello Agent title; exit=0",
+      "accounting_group": "catchup_gui_process",
+      "include_in_totals": true,
+      "resource": "mixed task window",
+      "duration_basis": "Whole process lifetime, not first-render latency; exact fresh process from this receipt already counted in previous checkpoint",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1607",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "binary_sha256": "744eda71544f71f185331a977e7a796370e0a18cf32263338ad68d797453f2fa",
+      "first_capture_utc": "2026-10-09T15:49:49.617Z"
+    },
+    {
+      "id": "20261009-1607-acl-diagnostic-r1-0",
+      "repository_assignment": "BelloAgent",
+      "activity": "ACL diagnostic r1",
+      "category": "build + test/lint (combined)",
+      "start_utc": "2026-10-09T15:55:03.086872+00:00",
+      "end_utc": "2026-10-09T15:55:55.224274+00:00",
+      "duration_seconds": 52.137414324999554,
+      "source": [
+        {
+          "receipt_sha256": "961aa78147da35f036bcd7aa410bacecee1d7d13334ad3c458ef78983f20a563",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "101",
+      "accounting_group": "catchup_command",
+      "include_in_totals": true,
+      "resource": "cloud command process",
+      "duration_basis": "Measured command/resource elapsed; not active labor or inference",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1607",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "scope": "Diagnostic-only receipt and local focused tests; published native acceptance remains failed/pending repair"
+    },
+    {
+      "id": "20261009-1607-acl-diagnostic-focused-strict-0",
+      "repository_assignment": "BelloAgent",
+      "activity": "ACL diagnostic focused-strict",
+      "category": "build + test/lint (combined)",
+      "start_utc": "2026-10-09T15:56:38.717248+00:00",
+      "end_utc": "2026-10-09T15:57:59.886766+00:00",
+      "duration_seconds": 81.16952962899813,
+      "source": [
+        {
+          "receipt_sha256": "91026315ff13bbe4cc0609df1fa8229d70dd43cdf04562c774c9f312d72c27e2",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "0",
+      "accounting_group": "catchup_command",
+      "include_in_totals": true,
+      "resource": "cloud command process",
+      "duration_basis": "Measured command/resource elapsed; not active labor or inference",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1607",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "scope": "Diagnostic-only receipt and local focused tests; published native acceptance remains failed/pending repair"
+    },
+    {
+      "id": "20261009-1607-acl-diagnostic-workflow-check-0",
+      "repository_assignment": "BelloAgent",
+      "activity": "ACL diagnostic workflow-check",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T15:59:36.314807+00:00",
+      "end_utc": "2026-10-09T15:59:36.447425+00:00",
+      "duration_seconds": 0.13262218999443576,
+      "source": [
+        {
+          "receipt_sha256": "ccbae2ec05f81c21f7624b524ba06c21f892b7229c5dd155480f5cd2f414134e",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "completed",
+      "accounting_group": "catchup_command",
+      "include_in_totals": true,
+      "resource": "cloud command process",
+      "duration_basis": "Measured command/resource elapsed; not active labor or inference",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1607",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "scope": "Diagnostic-only receipt and local focused tests; published native acceptance remains failed/pending repair"
+    },
+    {
+      "id": "20261009-1607-root-shared-review",
+      "repository_assignment": "BelloAgent",
+      "activity": "Root cross-repository review, timing audit, source verification and coordination (shared once)",
+      "category": "review/coordination/waiting (mixed)",
+      "start_utc": "2026-10-09T15:57:11Z",
+      "end_utc": "2026-10-09T16:02:55.430922+00:00",
+      "duration_seconds": 344.430922,
+      "source": [
+        {
+          "receipt_sha256": "d0c7fdc518905d7e0b9518dc80912687dcf70b3446839abe0c7a213017319d42",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "completed",
+      "accounting_group": "task_window",
+      "include_in_totals": false,
+      "resource": "mixed task window",
+      "duration_basis": "Observed mixed task/workflow interval includes tools, coordination and waiting; overlaps command resources and other workers",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1607",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "nested_observations_additive": false
+    },
+    {
+      "id": "20261009-1607-native-log-recovery-0",
+      "repository_assignment": "BelloAgent",
+      "activity": "Public native CI log recovery request",
+      "category": "remote evidence retrieval",
+      "start_utc": "2026-10-09T15:50:20.317112+00:00",
+      "end_utc": "2026-10-09T15:50:37.916597+00:00",
+      "duration_seconds": 17.599489358006394,
+      "source": [
+        {
+          "receipt_sha256": "7b7c45df0347b98d53c6562ae8daed356cc3e339157f80bc2b59071fdb567b2d",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "Failed HTTP403; no log recovered",
+      "accounting_group": "catchup_command",
+      "include_in_totals": true,
+      "resource": "cloud command process",
+      "duration_basis": "Measured command/resource elapsed; not active labor or inference",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1607",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "http_status": 403
+    },
+    {
+      "id": "20261009-1607-title-acl-aggregate-synthetic-0",
+      "repository_assignment": "BelloAgent",
+      "activity": "Combined title/ACL aggregate-synthetic",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T16:04:27.638132+00:00",
+      "end_utc": "2026-10-09T16:06:23.477903+00:00",
+      "duration_seconds": 115.839771,
+      "source": [
+        {
+          "receipt_sha256": "08012e1acf44b9c45639e0bc068abcd7f058f81a6d992193c3557f452b9d7b01",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "0",
+      "accounting_group": "catchup_command",
+      "include_in_totals": true,
+      "resource": "cloud command process",
+      "duration_basis": "Observed subprocess UTC interval; wider monotonic wrapper includes later source verification and is excluded from additive totals",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1607",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "wrapper_elapsed_seconds_including_post_command_source_verification": 116.72487429399916,
+      "wrapper_elapsed_additive": false
+    },
+    {
+      "id": "20261009-1607-title-acl-clean-app-0",
+      "repository_assignment": "BelloAgent",
+      "activity": "Combined title/ACL clean-app",
+      "category": "dependency/environment or verification",
+      "start_utc": "2026-10-09T16:04:24.257562+00:00",
+      "end_utc": "2026-10-09T16:04:24.645498+00:00",
+      "duration_seconds": 0.387936,
+      "source": [
+        {
+          "receipt_sha256": "ed8e03f131c5abca17bb0f495d2b1f85dd2a2014fdcd3af8450cc93e8bb70670",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "0",
+      "accounting_group": "catchup_command",
+      "include_in_totals": true,
+      "resource": "cloud command process",
+      "duration_basis": "Observed subprocess UTC interval; wider monotonic wrapper includes later source verification and is excluded from additive totals",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1607",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "wrapper_elapsed_seconds_including_post_command_source_verification": 0.48930277400359046,
+      "wrapper_elapsed_additive": false
+    },
+    {
+      "id": "20261009-1607-title-acl-fmt-0",
+      "repository_assignment": "BelloAgent",
+      "activity": "Combined title/ACL fmt",
+      "category": "automated lint/check",
+      "start_utc": "2026-10-09T16:04:24.864532+00:00",
+      "end_utc": "2026-10-09T16:04:27.458091+00:00",
+      "duration_seconds": 2.593559,
+      "source": [
+        {
+          "receipt_sha256": "301b2c0dc16539f2a3702853294d265c2546265d65fc63151814dcb89f67c829",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "0",
+      "accounting_group": "catchup_command",
+      "include_in_totals": true,
+      "resource": "cloud command process",
+      "duration_basis": "Observed subprocess UTC interval; wider monotonic wrapper includes later source verification and is excluded from additive totals",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1607",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "wrapper_elapsed_seconds_including_post_command_source_verification": 2.6845817040011752,
+      "wrapper_elapsed_additive": false
+    },
+    {
+      "id": "20261009-1607-title-acl-workflow-check-0",
+      "repository_assignment": "BelloAgent",
+      "activity": "Combined title/ACL workflow-check",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T16:03:28.672892+00:00",
+      "end_utc": "2026-10-09T16:03:28.788927+00:00",
+      "duration_seconds": 0.11603935400489718,
+      "source": [
+        {
+          "receipt_sha256": "c74ae1355078c228a8d4fc228bf6e3911095ed5b39ded48bfa56e17ba9904dcf",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "completed",
+      "accounting_group": "catchup_command",
+      "include_in_totals": true,
+      "resource": "cloud command process",
+      "duration_basis": "Measured command/resource elapsed; not active labor or inference",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1607",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time."
     }
   ],
   "unattributed_ci_gaps": [
@@ -68977,28 +69330,30 @@
         }
       },
       "catchup_command": {
-        "count": 205,
-        "known_duration_count": 205,
-        "resource_seconds_sum": 4865.855228086669,
-        "wall_coverage_seconds": 2771.091102,
+        "count": 214,
+        "known_duration_count": 214,
+        "resource_seconds_sum": 5136.047522825682,
+        "wall_coverage_seconds": 3041.067426,
         "category_seconds": {
-          "build + test/check (combined)": 3291.969870569686,
-          "automated lint/check": 530.284403234441,
-          "dependency/environment or verification": 37.556487645592924,
+          "build + test/check (combined)": 3408.0583031136853,
+          "automated lint/check": 532.877962234441,
+          "dependency/environment or verification": 37.94442364559293,
           "build": 255.4248966289673,
           "build/test/rework (combined)": 48.565,
           "automated negative-control validation": 0.011169794990564696,
-          "automated accounting validation": 5.533739716018317,
+          "automated accounting validation": 5.7496735990280285,
           "implementation tool execution": 0.0012905570038128644,
           "implementation + structural validation tool execution": 0.018711002005147748,
           "automated configuration validation": 0.7915431989822537,
           "build + negative-control test (combined)": 694.6452068899816,
           "dependency/environment recovery": 0.4919102580024628,
           "packaging/source validation": 0.5563400880055269,
-          "test execution (existing binary)": 0.004658502992242575
+          "test execution (existing binary)": 0.004658502992242575,
+          "build + test/lint (combined)": 133.3069439539977,
+          "remote evidence retrieval": 17.599489358006394
         },
         "resource_seconds": {
-          "cloud command process": 4865.855228086669
+          "cloud command process": 5136.047522825682
         }
       },
       "catchup_api": {
@@ -69015,16 +69370,17 @@
         }
       },
       "catchup_gui_process": {
-        "count": 20,
-        "known_duration_count": 20,
-        "resource_seconds_sum": 2168.435809,
-        "wall_coverage_seconds": 2168.435809,
+        "count": 22,
+        "known_duration_count": 22,
+        "resource_seconds_sum": 2313.456246,
+        "wall_coverage_seconds": 2313.456246,
         "category_seconds": {
           "interactive GUI diagnostics": 1385.158703,
-          "interactive GUI validation": 783.277106
+          "interactive GUI validation": 928.297543
         },
         "resource_seconds": {
-          "GUI process lifetime": 2168.435809
+          "GUI process lifetime": 2168.435809,
+          "mixed task window": 145.02043700000002
         }
       }
     }
@@ -69907,6 +70263,52 @@
         "build": 0.0,
         "CI reporting": 0.0
       }
+    },
+    {
+      "checkpoint": "20261009-1607",
+      "through_utc": "2026-10-09T16:07:00Z",
+      "coverage_window_start_utc": "2026-10-09T15:47:00Z",
+      "new_items": 13,
+      "groups": {
+        "catchup_command": {
+          "count": 9,
+          "known_duration_count": 9,
+          "resource_seconds_sum": 270.19229473901316,
+          "wall_coverage_seconds": 269.976324,
+          "category_seconds": {
+            "automated accounting validation": 0.21593388300971128,
+            "build + test/lint (combined)": 133.3069439539977,
+            "build + test/check (combined)": 116.08843254399933,
+            "remote evidence retrieval": 17.599489358006394,
+            "dependency/environment or verification": 0.387936,
+            "automated lint/check": 2.593559
+          },
+          "resource_seconds": {
+            "cloud command process": 270.19229473901316
+          },
+          "known_endpoint_items": 9,
+          "known_endpoint_resource_seconds": 270.1922947390131
+        },
+        "catchup_gui_process": {
+          "count": 2,
+          "known_duration_count": 2,
+          "resource_seconds_sum": 145.02043700000002,
+          "wall_coverage_seconds": 145.02043700000002,
+          "category_seconds": {
+            "interactive GUI validation": 145.02043700000002
+          },
+          "resource_seconds": {
+            "mixed task window": 145.02043700000002
+          },
+          "known_endpoint_items": 2,
+          "known_endpoint_resource_seconds": 145.02043700000002
+        }
+      },
+      "ci_coverage_within_window_seconds": 0,
+      "window_seconds": 1200.0,
+      "outside_selected_ci_job_intervals_seconds": 1200.0,
+      "warning": "Outside selected CI intervals includes other productive work and unobserved periods; never classify as idle or inference. Selected receipt coverage remains incomplete.",
+      "nested_ci_step_seconds": {}
     }
   ]
 }
