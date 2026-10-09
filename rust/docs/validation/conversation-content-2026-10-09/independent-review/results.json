@@ -1,0 +1,50 @@
+{
+  "source_sha256": "ebc5135f57b97beb377f0ebb63e686514177ba6774e798b67f174a22a905f838",
+  "results": [
+    {
+      "name": "baseline",
+      "exit": 0,
+      "expected_pass": true
+    },
+    {
+      "name": "overlapping_count",
+      "exit": 101,
+      "expected_pass": false
+    },
+    {
+      "name": "first_occurrence_only",
+      "exit": 101,
+      "expected_pass": false
+    },
+    {
+      "name": "empty_count_one",
+      "exit": 101,
+      "expected_pass": false
+    },
+    {
+      "name": "leak_reasoning",
+      "exit": 101,
+      "expected_pass": false
+    },
+    {
+      "name": "weak_text_fence",
+      "exit": 101,
+      "expected_pass": false
+    },
+    {
+      "name": "exclusive_copy_limit",
+      "exit": 101,
+      "expected_pass": false
+    },
+    {
+      "name": "include_stream",
+      "exit": 101,
+      "expected_pass": false
+    },
+    {
+      "name": "ignore_search_cancel",
+      "exit": 101,
+      "expected_pass": false
+    }
+  ]
+}

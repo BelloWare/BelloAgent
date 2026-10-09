@@ -1,0 +1,20 @@
+
+running 1 test
+test conversation_content::tests::occurrence_counts_nonoverlapping ... FAILED
+
+failures:
+
+---- conversation_content::tests::occurrence_counts_nonoverlapping stdout ----
+
+thread 'conversation_content::tests::occurrence_counts_nonoverlapping' (101) panicked at /tmp/conversation-independent-review-r2/conversation_content_tests.rs:10:120:
+assertion `left == right` failed
+  left: [Some(1), Some(1)]
+ right: [Some(2), Some(3)]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    conversation_content::tests::occurrence_counts_nonoverlapping
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+

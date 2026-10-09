@@ -1,0 +1,37 @@
+{
+  "status": "R2 harness only, separately inventoried for possible docs publication; r1 harness is not counted here.",
+  "files": [
+    {
+      "file": "conversation_content.rs",
+      "sha256": "ebc5135f57b97beb377f0ebb63e686514177ba6774e798b67f174a22a905f838",
+      "nonblank": 277,
+      "source_path": "/workspace/shared/conversation-content-r2-independent-review/conversation_content.rs",
+      "audit_copy": "independent-harness-evidence/conversation_content.rs",
+      "classification": "excluded standalone r2 validation evidence",
+      "exact_product_copy": true
+    },
+    {
+      "file": "conversation_content_tests.rs",
+      "sha256": "bcfc0982919ec3caa2d78b33fa046be60d77e4ab4deac377966943b43921b99c",
+      "nonblank": 12,
+      "source_path": "/workspace/shared/conversation-content-r2-independent-review/conversation_content_tests.rs",
+      "audit_copy": "independent-harness-evidence/conversation_content_tests.rs",
+      "classification": "excluded standalone r2 validation evidence",
+      "exact_product_copy": false
+    },
+    {
+      "file": "main.rs",
+      "sha256": "192a1ed9ccc45ccb3b48f2d45f5a4b8776712307503b052cb0d10fbf90a27538",
+      "nonblank": 4,
+      "source_path": "/workspace/shared/conversation-content-r2-independent-review/main.rs",
+      "audit_copy": "independent-harness-evidence/main.rs",
+      "classification": "excluded standalone r2 validation evidence",
+      "exact_product_copy": false
+    }
+  ],
+  "new_excluded_nonblank": 293,
+  "prior_oracle_nonblank": 73,
+  "combined_excluded_nonblank": 366,
+  "product_copy_sha256_restored": true,
+  "product_counts_unchanged": true
+}

@@ -1,0 +1,14 @@
+{
+  "range": {
+    "bytes": 378,
+    "expected_sha256": "8e133b01c345c91bcad2a9d1ef634b0470fccfc1a3dcc3de3cc41be6574694dd",
+    "actual_sha256": "8e133b01c345c91bcad2a9d1ef634b0470fccfc1a3dcc3de3cc41be6574694dd",
+    "equal": true
+  },
+  "whole": {
+    "bytes": 392,
+    "expected_sha256": "c243386e08df615781ed07fd5b6371ffd78f297af9bb1752e390edcee858fd48",
+    "actual_sha256": "c243386e08df615781ed07fd5b6371ffd78f297af9bb1752e390edcee858fd48",
+    "equal": true
+  }
+}

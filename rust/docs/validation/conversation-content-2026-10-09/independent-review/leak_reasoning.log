@@ -1,0 +1,18 @@
+
+running 1 test
+test conversation_content::tests::hidden_never_searched ... FAILED
+
+failures:
+
+---- conversation_content::tests::hidden_never_searched stdout ----
+
+thread 'conversation_content::tests::hidden_never_searched' (157) panicked at /tmp/conversation-independent-review-r2/conversation_content_tests.rs:6:76:
+assertion failed: s.search("SECRET", 0).unwrap().hits.is_empty()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    conversation_content::tests::hidden_never_searched
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+

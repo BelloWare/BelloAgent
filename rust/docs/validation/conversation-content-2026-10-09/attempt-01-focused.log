@@ -1,0 +1,42 @@
+   Compiling bello-agent-app v0.1.0 (/workspace/shared/agent-conversation-content/rust/crates/bello-agent-app)
+    Finished `test` profile [unoptimized] target(s) in 19.58s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running unittests src/main.rs (/workspace/shared/build-recovery/target/debug/deps/bello_agent-a54be717f3dcc926)
+
+running 32 tests
+test conversation_content::tests::content_fence_detects_equal_length_text_identity_order_and_session_changes ... ok
+test conversation_content::tests::collect_is_inclusive_exact_concatenation_without_invented_separators ... ok
+test conversation_content::tests::latest_loaded_empty_query_supplies_zero_and_legacy_count_is_optional ... ok
+test conversation_content::tests::latest_loaded_occurrence_counts_are_nonoverlapping_case_insensitive_and_record_scoped ... ok
+test conversation_content::tests::duplicate_identity_is_retained_positionally_but_never_silently_deduplicated ... ok
+test conversation_content::tests::active_streaming_reply_is_not_retained_until_terminal_and_deltas_keep_selection ... ok
+test conversation_content::tests::previews_follow_source_byte_prefix_and_edge_replacement_trimming ... ok
+test conversation_content::tests::queue_usage_and_hidden_payload_changes_do_not_invalidate_display_selection ... ok
+test conversation_content::tests::search_and_copy_never_project_tool_provider_images_or_expanded_skill_payloads ... ok
+test conversation_content::tests::starting_or_replacing_only_active_stream_does_not_change_retained_content ... ok
+test conversation_content::tests::pages_all_retained_rows_and_keeps_original_positions ... ok
+test conversation_content::tests::query_limit_counts_graphemes_and_portable_canonical_case_matching ... ok
+test conversation_content::tests::huge_single_grapheme_query_is_refused_before_grapheme_or_normalization_work ... ok
+test conversation_content::tests::pathological_message_combining_segment_has_visible_error_not_partial_results ... ok
+test conversation_content::tests::copy_limit_is_inclusive_and_unicode_pages_never_lose_bytes ... ok
+test conversation_content_controller::tests::archived_footer_opens_loaded_sheet_without_connection ... ok
+test conversation_content_controller::tests::archived_search_covers_retained_history_without_mutating_store_or_composer ... ok
+test conversation_content::tests::occurrence_counting_keeps_unicode_streaming_and_page_limits ... ok
+test conversation_content_controller::tests::equal_length_stale_copy_finishes_with_notice_without_touching_clipboard ... ok
+test conversation_content_controller::tests::cancelled_copy_cannot_replace_clipboard ... ok
+test conversation_content_controller::tests::actions_menu_opens_loaded_sheet_without_connection ... ok
+test conversation_content_controller::tests::marked_composer_is_preserved_and_query_ime_escape_does_not_close ... ok
+test conversation_content_controller::tests::inclusive_range_and_whole_copy_are_exact_plain_retained_text ... ok
+test conversation_content_controller::tests::latest_loaded_count_contract_survives_search_and_next_query_edits ... ok
+test conversation_content_controller::tests::older_result_reveal_targets_exact_id_and_keeps_transcript_virtualized ... ok
+test conversation_content_controller::tests::next_keeps_searched_query_after_editor_changes ... ok
+test conversation_content_controller::tests::real_buttons_search_copy_and_escape_preserve_draft ... ok
+test conversation_content_controller::tests::replaced_controller_and_old_sheet_callbacks_cannot_copy ... ok
+test conversation_content_controller::tests::navigation_and_window_rebind_fence_pending_copy ... ok
+test conversation_content_controller::tests::modal_keys_cannot_submit_background_composer_and_tab_stays_in_sheet ... ok
+test conversation_content::tests::large_nonmatching_and_overlapping_kmp_search_streams_without_full_text_projection ... ok
+test conversation_content_controller::tests::oversize_and_invalid_range_leave_clipboard_unchanged ... ok
+
+test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 622 filtered out; finished in 8.16s
+

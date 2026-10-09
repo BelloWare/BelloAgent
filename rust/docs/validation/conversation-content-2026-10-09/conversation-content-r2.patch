@@ -1,0 +1,2193 @@
+diff --git a/rust/crates/bello-agent-app/src/compaction_actions.rs b/rust/crates/bello-agent-app/src/compaction_actions.rs
+index c61a09ca..ce579615 100644
+--- a/rust/crates/bello-agent-app/src/compaction_actions.rs
++++ b/rust/crates/bello-agent-app/src/compaction_actions.rs
+@@ -110,6 +110,7 @@ impl AgentView {
+     }
+     pub(crate) fn compaction_menu_element(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+         let menu = self.compaction_menu.as_ref()?;
++        let navigation = self.navigation_generation;
+         let p = self.palette;
+         Some(
+             deferred(
+@@ -133,6 +134,32 @@ impl AgentView {
+                                 view.compaction_menu = None;
+                                 cx.notify();
+                             }))
++                            .child(
++                                div()
++                                    .id("search-copy-conversation")
++                                    .debug_selector(|| "search-copy-conversation".into())
++                                    .px(px(8.))
++                                    .py(px(6.))
++                                    .text_size(px(13.))
++                                    .text_color(rgb(p.ink))
++                                    .cursor_pointer()
++                                    .hover(|style| style.bg(p.accent_soft()))
++                                    .child("Search and Copy Conversation")
++                                    .on_click(cx.listener(move |view, _, window, cx| {
++                                        let Some(menu) = view.compaction_menu.take() else {
++                                            return;
++                                        };
++                                        if navigation == view.navigation_generation
++                                            && menu.chat_id == view.record.id
++                                            && menu.project == view.project
++                                            && menu.binding == view.window_binding
++                                            && Arc::ptr_eq(&menu.controller, &view.controller)
++                                        {
++                                            view.open_conversation_content(window, cx);
++                                        }
++                                        cx.notify();
++                                    })),
++                            )
+                             .child(
+                                 div()
+                                     .id("compact-now")
+diff --git a/rust/crates/bello-agent-app/src/conversation_content.rs b/rust/crates/bello-agent-app/src/conversation_content.rs
+new file mode 100644
+index 00000000..6115a210
+--- /dev/null
++++ b/rust/crates/bello-agent-app/src/conversation_content.rs
+@@ -0,0 +1,284 @@
++//! Loaded-chat Search and Copy Conversation, based on Swift SessionReads.
++//!
++//! This projects only the app's retained display text (Message.text), never
++//! serialized messages, provider items, exposed reasoning, image bytes, tool
++//! arguments or expanded skill bodies. The unopened Swift HistoryReader has a
++//! different Markdown projection and is deliberately outside this module.
++//!
++//! Portable search uses canonical normalization plus Unicode lowercase. It is
++//! not Foundation's locale-sensitive case-insensitive matching (for example,
++//! full case folding and locale-specific I are not implemented). Query limits
++//! count extended grapheme clusters, as Swift String.count does.
++use bello_agent_core::Session;
++use std::sync::{
++    Arc,
++    atomic::{AtomicBool, Ordering},
++};
++use unicode_normalization::UnicodeNormalization;
++use unicode_segmentation::UnicodeSegmentation;
++
++const COPY_LIMIT: usize = 8 * 1024 * 1024;
++const PAGE_BYTES: usize = 64 * 1024;
++const SEARCH_LIMIT: usize = 100;
++const MAX_START: usize = 100_000;
++pub(crate) const QUERY_BYTE_LIMIT: usize = 16 * 1024;
++const MAX_NONSTARTERS: usize = 16 * 1024;
++const CANCEL_INTERVAL: usize = 1024;
++
++#[derive(Clone)]
++pub(crate) struct Snapshot {
++    session: Arc<Session>,
++    rows: Arc<Vec<usize>>,
++}
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub(crate) struct Hit {
++    pub id: String,
++    pub position: usize,
++    pub preview: String,
++    /// Latest loaded SessionReads always supplies a count, including zero for
++    /// an empty query. Older/unopened sources may omit it (consumer fallback: one).
++    pub count: Option<usize>,
++}
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub(crate) struct SearchPage {
++    pub total: usize,
++    pub next: Option<usize>,
++    pub hits: Vec<Hit>,
++}
++impl Snapshot {
++    pub(crate) fn new(session: Arc<Session>) -> Self {
++        let rows = Arc::new(
++            session
++                .messages
++                .iter()
++                .enumerate()
++                .filter(|(_, row)| retained(&session, row))
++                .map(|(index, _)| index)
++                .collect(),
++        );
++        Self { session, rows }
++    }
++
++    /// Equal counts/byte lengths are insufficient: every identity, order and
++    /// projected byte must match. Queue, usage and other non-content updates do
++    /// not invalidate a selection. Controller/window fences belong to the UI.
++    pub(crate) fn matches(&self, current: &Arc<Session>) -> bool {
++        Arc::ptr_eq(&self.session, current)
++            || (self.session.id == current.id
++                && self
++                    .rows
++                    .iter()
++                    .map(|&index| {
++                        let row = &self.session.messages[index];
++                        (&row.id, &row.text)
++                    })
++                    .eq(current
++                        .messages
++                        .iter()
++                        .filter(|row| retained(current, row))
++                        .map(|row| (&row.id, &row.text))))
++    }
++
++    #[cfg(test)]
++    pub(crate) fn search(&self, query: &str, start: usize) -> Result<SearchPage, String> {
++        self.search_cancelled(query, start, &AtomicBool::new(false))
++    }
++
++    pub(crate) fn search_cancelled(
++        &self,
++        query: &str,
++        start: usize,
++        cancel: &AtomicBool,
++    ) -> Result<SearchPage, String> {
++        search_check_cancel(cancel)?;
++        // Byte admission precedes grapheme scanning: one grapheme may contain
++        // arbitrarily many combining marks. This is an explicit Rust bound.
++        if query.len() > QUERY_BYTE_LIMIT {
++            return Err("Search query exceeds the 16 KiB text limit.".into());
++        }
++        if query.graphemes(true).take(257).count() > 256 {
++            return Err("Search query exceeds 256 characters.".into());
++        }
++        if start > MAX_START {
++            return Err("Search position exceeds the supported range.".into());
++        }
++        normalization_preflight(query, cancel)?;
++        let query: Vec<char> = normalized_chars(query, cancel).collect();
++        search_check_cancel(cancel)?;
++        let prefix = prefix_table(&query);
++        let total = self.rows.len();
++        let mut cursor = start.min(total);
++        let mut hits = Vec::new();
++        while cursor < total && hits.len() < SEARCH_LIMIT {
++            search_check_cancel(cancel)?;
++            let row = &self.session.messages[self.rows[cursor]];
++            let count = occurrences_normalized(&row.text, &query, &prefix, cancel)?;
++            if query.is_empty() || count > 0 {
++                hits.push(Hit {
++                    id: row.id.clone(),
++                    position: cursor + 1,
++                    preview: preview(&row.text),
++                    count: Some(count),
++                });
++            }
++            cursor += 1;
++        }
++        search_check_cancel(cancel)?;
++        Ok(SearchPage {
++            total,
++            next: (cursor < total).then_some(cursor),
++            hits,
++        })
++    }
++
++    /// Inclusive one-based range, with the live host's exact concatenation:
++    /// no invented headings or separators. All bytes are collected before the
++    /// caller may replace the clipboard. Cancellation/error returns no prefix.
++    pub(crate) fn collect(
++        &self,
++        first: usize,
++        last: usize,
++        cancel: &AtomicBool,
++    ) -> Result<String, String> {
++        check_cancel(cancel)?;
++        if first == 0 || last < first || last > self.rows.len() {
++            return Err("Invalid retained message range.".into());
++        }
++        let mut output = String::new();
++        for &index in &self.rows[first - 1..last] {
++            let row = &self.session.messages[index];
++            check_cancel(cancel)?;
++            if row.text.len() > COPY_LIMIT - output.len() {
++                return Err("This copy exceeds 8 MiB. Choose a smaller message range. The clipboard was not changed.".into());
++            }
++            let mut offset = 0;
++            while offset < row.text.len() {
++                check_cancel(cancel)?;
++                let mut end = (offset + PAGE_BYTES).min(row.text.len());
++                while !row.text.is_char_boundary(end) {
++                    end -= 1;
++                }
++                output.push_str(&row.text[offset..end]);
++                offset = end;
++            }
++        }
++        check_cancel(cancel)?;
++        Ok(output)
++    }
++}
++// Swift keeps partialID/partialText separate from shown rows until append.
++// Rust publishes that transient reply among messages. Exclude precisely that
++// active streaming row, while retaining interrupted/cancelled terminal text.
++fn retained(session: &Session, row: &bello_agent_core::Message) -> bool {
++    !(session.active_reply.as_deref() == Some(row.id.as_str()) && row.state == "streaming")
++}
++fn check_cancel(cancel: &AtomicBool) -> Result<(), String> {
++    if cancel.load(Ordering::Acquire) {
++        Err("Conversation copy was cancelled. The clipboard was not changed.".into())
++    } else {
++        Ok(())
++    }
++}
++fn search_check_cancel(cancel: &AtomicBool) -> Result<(), String> {
++    if cancel.load(Ordering::Acquire) {
++        Err("Conversation search was cancelled.".into())
++    } else {
++        Ok(())
++    }
++}
++// NFC's iterator internally buffers a nonstarter segment. Preflight canonical
++// decomposition without materializing text, so hostile combining runs cannot
++// turn streaming normalization into an unbounded allocation. This conservative
++// Rust-only limit is a visible error rather than a silently incomplete search.
++fn normalization_preflight(text: &str, cancel: &AtomicBool) -> Result<(), String> {
++    let mut nonstarters = 0usize;
++    for (index, character) in text.chars().enumerate() {
++        if index % CANCEL_INTERVAL == 0 {
++            search_check_cancel(cancel)?;
++        }
++        unicode_normalization::char::decompose_canonical(character, |part| {
++            if unicode_normalization::char::canonical_combining_class(part) == 0 {
++                nonstarters = 0;
++            } else {
++                nonstarters = nonstarters.saturating_add(1);
++            }
++        });
++        if nonstarters > MAX_NONSTARTERS {
++            return Err("A message contains an unsupported combining-character sequence. Search could not be completed.".into());
++        }
++    }
++    search_check_cancel(cancel)
++}
++// Input cancellation also runs while normalization is buffering a segment.
++// Every caller checks cancellation after consuming this iterator and before
++// publishing a match, so stopping early can never become a false success.
++fn normalized_chars<'a>(text: &'a str, cancel: &'a AtomicBool) -> impl Iterator<Item = char> + 'a {
++    text.chars()
++        .enumerate()
++        .take_while(move |(index, _)| {
++            index % CANCEL_INTERVAL != 0 || !cancel.load(Ordering::Acquire)
++        })
++        .map(|(_, character)| character)
++        .nfc()
++        .flat_map(char::to_lowercase)
++        .nfc()
++}
++fn prefix_table(query: &[char]) -> Vec<usize> {
++    let mut prefix = vec![0; query.len()];
++    let mut matched = 0;
++    for index in 1..query.len() {
++        while matched > 0 && query[index] != query[matched] {
++            matched = prefix[matched - 1];
++        }
++        if query[index] == query[matched] {
++            matched += 1;
++        }
++        prefix[index] = matched;
++    }
++    prefix
++}
++fn occurrences_normalized(
++    text: &str,
++    query: &[char],
++    prefix: &[usize],
++    cancel: &AtomicBool,
++) -> Result<usize, String> {
++    search_check_cancel(cancel)?;
++    if query.is_empty() {
++        return Ok(0);
++    }
++    normalization_preflight(text, cancel)?;
++    let mut matched = 0;
++    let mut count = 0;
++    for (index, character) in normalized_chars(text, cancel).enumerate() {
++        if index % CANCEL_INTERVAL == 0 {
++            search_check_cancel(cancel)?;
++        }
++        while matched > 0 && character != query[matched] {
++            matched = prefix[matched - 1];
++        }
++        if character == query[matched] {
++            matched += 1;
++        }
++        if matched == query.len() {
++            search_check_cancel(cancel)?;
++            count += 1;
++            // Swift advances to found.upperBound: overlapping starts cannot
++            // reuse the suffix of the previous occurrence.
++            matched = 0;
++        }
++    }
++    search_check_cancel(cancel)?;
++    Ok(count)
++}
++/// Swift TextPreviews.preview: prefix in bytes, decode lossily, then trim only
++/// replacement characters at either edge. Interior original U+FFFD remains.
++fn preview(text: &str) -> String {
++    String::from_utf8_lossy(&text.as_bytes()[..text.len().min(240)])
++        .trim_matches('\u{fffd}')
++        .to_owned()
++}
++
++#[cfg(test)]
++#[path = "conversation_content_tests.rs"]
++mod tests;
+diff --git a/rust/crates/bello-agent-app/src/conversation_content_controller.rs b/rust/crates/bello-agent-app/src/conversation_content_controller.rs
+new file mode 100644
+index 00000000..e7c3da98
+--- /dev/null
++++ b/rust/crates/bello-agent-app/src/conversation_content_controller.rs
+@@ -0,0 +1,322 @@
++//! Read-only operations on one loaded chat. Every completion is fenced by the
++//! sheet, operation, navigation, controller, workspace and immutable content.
++use crate::{AgentView, conversation_content::Snapshot, conversation_content_view::ContentSheet};
++use bello_agent_core::Controller;
++use gpui::{ClipboardItem, Context, Window};
++use std::sync::{
++    Arc, Weak,
++    atomic::{AtomicBool, Ordering},
++};
++
++#[derive(Clone)]
++pub(crate) struct Target {
++    project: std::path::PathBuf,
++    workspace: Weak<std::sync::Mutex<bello_agent_core::workspace::WorkspaceStore>>,
++    window: Option<crate::workspace_lifetime::WindowBinding>,
++    chat: String,
++    controller: Weak<Controller>,
++    navigation: u64,
++    load: u64,
++}
++impl Target {
++    pub(crate) fn capture(view: &AgentView) -> Self {
++        Self {
++            project: view.project.clone(),
++            workspace: Arc::downgrade(&view.workspace),
++            window: view.window_binding,
++            chat: view.record.id.clone(),
++            controller: Arc::downgrade(&view.controller),
++            navigation: view.navigation_generation,
++            load: view.load_generation,
++        }
++    }
++    pub(crate) fn matches(&self, view: &AgentView) -> bool {
++        !view.shutting_down
++            && !view.close_ready
++            && !view.loading
++            && !view.load_failed
++            && self.window.is_some()
++            && self.window == view.window_binding
++            && self.project == view.project
++            && self.workspace.ptr_eq(&Arc::downgrade(&view.workspace))
++            && self.chat == view.record.id
++            && self.chat == view.session.id
++            && self.navigation == view.navigation_generation
++            && self.load == view.load_generation
++            && self.controller.ptr_eq(&Arc::downgrade(&view.controller))
++            && !view.controller.is_retired()
++    }
++}
++#[derive(Clone)]
++pub(crate) enum Control {
++    Search,
++    Next,
++    CopyRange,
++    CopyAll,
++    Reveal,
++    Start,
++    End,
++    Select(usize),
++    Close,
++}
++impl AgentView {
++    pub(crate) fn open_conversation_content(
++        &mut self,
++        window: &mut Window,
++        cx: &mut Context<Self>,
++    ) {
++        let target = Target::capture(self);
++        if !target.matches(self) || self.composer.read(cx).has_marked_text() {
++            return;
++        }
++        self.conversation_content = Some(ContentSheet::new(target, self.palette, window, cx));
++        let token = self.conversation_content.as_ref().unwrap().token;
++        self.content_control(token, Control::Search, window, cx);
++    }
++    pub(crate) fn content_control(
++        &mut self,
++        token: uuid::Uuid,
++        control: Control,
++        window: &mut Window,
++        cx: &mut Context<Self>,
++    ) {
++        let Some(sheet) = self.conversation_content.as_ref() else {
++            return;
++        };
++        if sheet.token != token {
++            return;
++        }
++        if matches!(control, Control::Close) {
++            self.conversation_content = None;
++            self.focus_visible_composer(window, cx);
++            cx.notify();
++            return;
++        }
++        if !sheet.target.matches(self) {
++            self.conversation_content = None;
++            cx.notify();
++            return;
++        }
++        if sheet.busy {
++            return;
++        }
++        match control {
++            Control::Search | Control::Next => {
++                self.search_content(matches!(control, Control::Next), cx)
++            }
++            Control::CopyRange | Control::CopyAll => {
++                self.copy_content(matches!(control, Control::CopyAll), cx)
++            }
++            Control::Select(position) => {
++                let sheet = self.conversation_content.as_mut().unwrap();
++                if sheet
++                    .result
++                    .as_ref()
++                    .is_some_and(|result| result.hits.iter().any(|hit| hit.position == position))
++                {
++                    sheet.selected = Some(position);
++                }
++            }
++            Control::Start | Control::End => {
++                let sheet = self.conversation_content.as_mut().unwrap();
++                if let Some(position) = sheet.selected {
++                    let editor = if matches!(control, Control::Start) {
++                        &sheet.first
++                    } else {
++                        &sheet.last
++                    };
++                    editor.update(cx, |editor, cx| editor.set_text(position.to_string(), cx));
++                }
++            }
++            Control::Reveal => self.reveal_content(window, cx),
++            Control::Close => unreachable!(),
++        }
++        cx.notify();
++    }
++    fn search_content(&mut self, next: bool, cx: &mut Context<Self>) {
++        let snapshot = Snapshot::new(self.controller.snapshot_shared());
++        let sheet = self.conversation_content.as_mut().unwrap();
++        if !next
++            && sheet.query.read(cx).text().len() > crate::conversation_content::QUERY_BYTE_LIMIT
++        {
++            sheet.notice = Some("Search query exceeds the 16 KiB safety limit.".into());
++            return;
++        }
++        let (query, start) = if next {
++            let Some(start) = sheet.result.as_ref().and_then(|result| result.next) else {
++                return;
++            };
++            (sheet.searched.clone(), start)
++        } else {
++            (sheet.query.read(cx).text().to_owned(), 0)
++        };
++        let worker = snapshot.clone();
++        let (token, operation, cancel) = sheet.begin();
++        let flag = cancel.clone();
++        let task = cx.background_executor().spawn(async move {
++            worker
++                .search_cancelled(&query, start, &flag)
++                .map(|result| (query, result))
++        });
++        cx.spawn(async move |view, cx| {
++            let result = task.await;
++            let _ = view.update(cx, |view, cx| {
++                if !view.content_completion_current(token, operation, &snapshot, &cancel) {
++                    cx.notify();
++                    return;
++                }
++                let sheet = view.conversation_content.as_mut().unwrap();
++                sheet.busy = false;
++                match result {
++                    Ok((query, result)) => {
++                        if sheet.result.is_none() {
++                            sheet.last.update(cx, |editor, cx| {
++                                editor.set_text(result.total.max(1).to_string(), cx)
++                            });
++                        }
++                        sheet.snapshot = Some(snapshot);
++                        sheet.result = Some(result);
++                        sheet.searched = query;
++                        sheet.selected = None;
++                        sheet.notice = None;
++                    }
++                    Err(error) => sheet.notice = Some(error),
++                }
++                cx.notify();
++            });
++        })
++        .detach();
++    }
++    fn copy_content(&mut self, all: bool, cx: &mut Context<Self>) {
++        let sheet = self.conversation_content.as_mut().unwrap();
++        let Some(snapshot) = sheet.snapshot.clone() else {
++            return;
++        };
++        let total = sheet.result.as_ref().map_or(0, |result| result.total);
++        let range = if all {
++            Some((1, total))
++        } else {
++            sheet
++                .first
++                .read(cx)
++                .text()
++                .trim()
++                .parse::<usize>()
++                .ok()
++                .zip(sheet.last.read(cx).text().trim().parse::<usize>().ok())
++        };
++        let Some((first, last)) = range else {
++            sheet.notice = Some("Enter a valid inclusive message range.".into());
++            return;
++        };
++        let (token, operation, cancel) = sheet.begin();
++        let worker = snapshot.clone();
++        let flag = cancel.clone();
++        let task = cx
++            .background_executor()
++            .spawn(async move { worker.collect(first, last, &flag) });
++        cx.spawn(async move |view, cx| {
++            let result = task.await;
++            let _ = view.update(cx, |view, cx| {
++                if !view.content_completion_current(token, operation, &snapshot, &cancel) {
++                    cx.notify();
++                    return;
++                }
++                let sheet = view.conversation_content.as_mut().unwrap();
++                sheet.busy = false;
++                match result {
++                    Ok(text) => {
++                        let bytes = text.len();
++                        cx.write_to_clipboard(ClipboardItem::new_string(text));
++                        sheet.notice = Some(format!(
++                            "Copied messages {first}–{last} ({bytes} UTF-8 bytes)."
++                        ));
++                    }
++                    Err(error) => sheet.notice = Some(error),
++                }
++                cx.notify();
++            });
++        })
++        .detach();
++    }
++    fn content_completion_current(
++        &mut self,
++        token: uuid::Uuid,
++        operation: uuid::Uuid,
++        snapshot: &Snapshot,
++        cancel: &AtomicBool,
++    ) -> bool {
++        let Some(sheet) = self.conversation_content.as_ref() else {
++            return false;
++        };
++        if sheet.token != token || sheet.operation != operation || cancel.load(Ordering::Acquire) {
++            return false;
++        }
++        if !sheet.target.matches(self) {
++            self.conversation_content = None;
++            return false;
++        }
++        if !snapshot.matches(&self.controller.snapshot_shared()) {
++            let sheet = self.conversation_content.as_mut().unwrap();
++            sheet.busy = false;
++            sheet.notice = Some(
++                "The conversation changed. Search again. The clipboard was not changed.".into(),
++            );
++            return false;
++        }
++        true
++    }
++    fn reveal_content(&mut self, window: &mut Window, cx: &mut Context<Self>) {
++        let sheet = self.conversation_content.as_ref().unwrap();
++        let Some(position) = sheet.selected else {
++            return;
++        };
++        let Some(snapshot) = sheet.snapshot.as_ref() else {
++            return;
++        };
++        let fresh = self.controller.snapshot_shared();
++        if !snapshot.matches(&fresh) {
++            self.conversation_content.as_mut().unwrap().notice =
++                Some("The conversation changed. Search again.".into());
++            return;
++        }
++        let Some(hit) = sheet
++            .result
++            .as_ref()
++            .and_then(|r| r.hits.iter().find(|hit| hit.position == position))
++        else {
++            return;
++        };
++        let id = hit.id.clone();
++        if fresh
++            .messages
++            .iter()
++            .filter(|message| message.id == id)
++            .count()
++            != 1
++        {
++            self.conversation_content.as_mut().unwrap().notice =
++                Some("This message has an ambiguous identity and cannot be revealed.".into());
++            return;
++        }
++        let Some(index) = fresh.messages.iter().position(|message| message.id == id) else {
++            return;
++        };
++        self.session = fresh;
++        self.visible_messages = self
++            .visible_messages
++            .max(self.session.messages.len() - index);
++        self.sync_transcript_inputs(cx);
++        if let Some(transcript) = self.transcript.clone() {
++            let input = self.transcript_input();
++            let revealed = transcript.update(cx, |view, cx| view.reveal_message(input, &id, cx));
++            if revealed {
++                self.conversation_content = None;
++                self.focus_visible_composer(window, cx);
++            }
++        }
++    }
++}
++#[cfg(test)]
++#[path = "conversation_content_view_tests.rs"]
++mod tests;
+diff --git a/rust/crates/bello-agent-app/src/conversation_content_tests.rs b/rust/crates/bello-agent-app/src/conversation_content_tests.rs
+new file mode 100644
+index 00000000..c88b9bad
+--- /dev/null
++++ b/rust/crates/bello-agent-app/src/conversation_content_tests.rs
+@@ -0,0 +1,390 @@
++use super::*;
++use bello_agent_core::provider::ToolCall;
++use bello_agent_core::tool_content::ContentBlock;
++use bello_agent_core::tool_history::{AssistantRecord, Completion, ReplayBinding, ToolRecord};
++use bello_agent_core::{Lane, Message, Submission};
++
++fn message(id: &str, text: &str) -> Message {
++    Message {
++        task_root_id: None,
++        user_content: None,
++        id: id.into(),
++        role: "assistant".into(),
++        text: text.into(),
++        reasoning: String::new(),
++        replay_eligible: true,
++        state: "complete".into(),
++        usage: serde_json::Value::Null,
++        model: None,
++        tool_record: None,
++        compaction: None,
++    }
++}
++fn session(texts: &[&str]) -> Arc<Session> {
++    let mut value = Session::new();
++    value.messages = texts
++        .iter()
++        .enumerate()
++        .map(|(i, text)| message(&format!("row-{i}"), text))
++        .collect();
++    Arc::new(value)
++}
++fn not_cancelled() -> AtomicBool {
++    AtomicBool::new(false)
++}
++
++#[test]
++fn pages_all_retained_rows_and_keeps_original_positions() {
++    let mut value = Session::new();
++    value.messages = (0..205)
++        .map(|i| message(&format!("row-{i}"), &format!("Match {i}")))
++        .collect();
++    let snapshot = Snapshot::new(Arc::new(value));
++    let first = snapshot.search("match", 0).unwrap();
++    assert_eq!(first.total, 205);
++    assert_eq!(first.hits.len(), 100);
++    assert_eq!(first.hits[0].position, 1);
++    assert_eq!(first.next, Some(100));
++    let second = snapshot.search("match", first.next.unwrap()).unwrap();
++    assert_eq!(second.hits[0].position, 101);
++    assert_eq!(second.next, Some(200));
++    let last = snapshot.search("match", second.next.unwrap()).unwrap();
++    assert_eq!(last.hits.len(), 5);
++    assert_eq!(last.hits[4].position, 205);
++    assert_eq!(last.next, None);
++    let no_match = snapshot.search("absent", 0).unwrap();
++    assert!(no_match.hits.is_empty());
++    assert_eq!(no_match.total, 205);
++    assert_eq!(no_match.next, None);
++    assert!(snapshot.search("", 100_001).is_err());
++    assert!(snapshot.search("", 206).unwrap().hits.is_empty());
++}
++#[test]
++fn query_limit_counts_graphemes_and_portable_canonical_case_matching() {
++    let snapshot = Snapshot::new(session(&["CAFÉ", "Straße", "İstanbul"]));
++    assert_eq!(snapshot.search("cafe\u{301}", 0).unwrap().hits.len(), 1);
++    assert!(snapshot.search(&"👩🏽‍💻".repeat(256), 0).is_ok());
++    assert!(snapshot.search(&"e\u{301}".repeat(256), 0).is_ok());
++    assert!(snapshot.search(&"e\u{301}".repeat(257), 0).is_err());
++    // Explicit portability boundary: lowercase is not locale/full case folding.
++    assert!(snapshot.search("STRASSE", 0).unwrap().hits.is_empty());
++    assert!(snapshot.search("istanbul", 0).unwrap().hits.is_empty());
++}
++#[test]
++fn previews_follow_source_byte_prefix_and_edge_replacement_trimming() {
++    assert_eq!(preview(&format!("{}é", "a".repeat(239))), "a".repeat(239));
++    assert_eq!(preview(&format!("{}é", "a".repeat(238))).len(), 240);
++    assert_eq!(preview("\u{fffd}a\u{fffd}b\u{fffd}"), "a\u{fffd}b");
++    assert_eq!(preview("\r\n  text \t"), "\r\n  text \t");
++    let snapshot = Snapshot::new(session(&[&format!("{} needle", "x".repeat(300))]));
++    assert_eq!(
++        snapshot.search("needle", 0).unwrap().hits[0].preview,
++        "x".repeat(240)
++    );
++}
++#[test]
++fn collect_is_inclusive_exact_concatenation_without_invented_separators() {
++    let snapshot = Snapshot::new(session(&[
++        "  **one**\r\n",
++        "",
++        "你好 e\u{301} 👩🏽‍💻\t",
++        "last",
++    ]));
++    assert_eq!(
++        snapshot.collect(1, 3, &not_cancelled()).unwrap(),
++        "  **one**\r\n你好 e\u{301} 👩🏽‍💻\t"
++    );
++    assert_eq!(snapshot.collect(2, 2, &not_cancelled()).unwrap(), "");
++    assert_eq!(snapshot.collect(4, 4, &not_cancelled()).unwrap(), "last");
++    for (first, last) in [(0, 1), (2, 1), (1, 5), (5, 5)] {
++        assert!(snapshot.collect(first, last, &not_cancelled()).is_err());
++    }
++    let empty = Snapshot::new(session(&[]));
++    assert_eq!(empty.search("", 0).unwrap().total, 0);
++    assert!(empty.collect(1, 1, &not_cancelled()).is_err());
++}
++#[test]
++fn copy_limit_is_inclusive_and_unicode_pages_never_lose_bytes() {
++    let text = format!(
++        "{}🦀{}",
++        "a".repeat(PAGE_BYTES - 1),
++        "x".repeat(COPY_LIMIT - PAGE_BYTES - 3)
++    );
++    assert_eq!(text.len(), COPY_LIMIT);
++    let snapshot = Snapshot::new(session(&[&text, "z"]));
++    assert_eq!(snapshot.collect(1, 1, &not_cancelled()).unwrap(), text);
++    assert!(
++        snapshot
++            .collect(1, 2, &not_cancelled())
++            .unwrap_err()
++            .contains("8 MiB")
++    );
++    assert!(
++        Snapshot::new(session(&[&"x".repeat(COPY_LIMIT + 1)]))
++            .collect(1, 1, &not_cancelled())
++            .is_err()
++    );
++    assert!(
++        snapshot
++            .collect(1, 1, &AtomicBool::new(true))
++            .unwrap_err()
++            .contains("cancelled")
++    );
++}
++#[test]
++fn content_fence_detects_equal_length_text_identity_order_and_session_changes() {
++    let original = session(&["same", "size"]);
++    let snapshot = Snapshot::new(original.clone());
++    assert!(snapshot.matches(&original));
++    let mut changed = (*original).clone();
++    changed.messages[0].text = "else".into();
++    assert!(!snapshot.matches(&Arc::new(changed)));
++    let mut changed = (*original).clone();
++    changed.messages[0].id = "replacement".into();
++    assert!(!snapshot.matches(&Arc::new(changed)));
++    let mut changed = (*original).clone();
++    changed.messages.swap(0, 1);
++    assert!(!snapshot.matches(&Arc::new(changed)));
++    let mut changed = (*original).clone();
++    changed.id = "another session".into();
++    assert!(!snapshot.matches(&Arc::new(changed)));
++    let mut changed = (*original).clone();
++    changed.messages.push(message("new", ""));
++    assert!(!snapshot.matches(&Arc::new(changed)));
++}
++#[test]
++fn queue_usage_and_hidden_payload_changes_do_not_invalidate_display_selection() {
++    let original = session(&["display"]);
++    let snapshot = Snapshot::new(original.clone());
++    let mut changed = (*original).clone();
++    changed.revision += 1;
++    changed.title = "renamed".into();
++    changed.queue_paused = true;
++    changed
++        .pending
++        .push(Submission::new("unsent draft".into(), Lane::FollowUp));
++    changed.messages[0].usage = serde_json::json!({"tokens":12});
++    changed.messages[0].reasoning = "not display".into();
++    assert!(snapshot.matches(&Arc::new(changed)));
++}
++#[test]
++fn duplicate_identity_is_retained_positionally_but_never_silently_deduplicated() {
++    let mut original = (*session(&["first", "second"])).clone();
++    original.messages[1].id = original.messages[0].id.clone();
++    let snapshot = Snapshot::new(Arc::new(original.clone()));
++    let page = snapshot.search("", 0).unwrap();
++    assert_eq!(page.hits[0].id, page.hits[1].id);
++    assert_eq!(page.hits[0].position, 1);
++    assert_eq!(page.hits[1].position, 2);
++    assert_eq!(
++        snapshot.collect(1, 2, &not_cancelled()).unwrap(),
++        "firstsecond"
++    );
++    original.messages.swap(0, 1);
++    assert!(!snapshot.matches(&Arc::new(original)));
++    // Reveal is separately required to reject non-unique IDs in the controller.
++}
++#[test]
++fn search_and_copy_never_project_tool_provider_images_or_expanded_skill_payloads() {
++    let mut value = Session::new();
++    let mut row = message("input", "Literal skill arguments");
++    row.role = "user".into();
++    row.reasoning = "SECRET_REASONING".into();
++    row.task_root_id = Some("SECRET_CONTEXT_ID".into());
++    row.user_content = Some(Arc::new(bello_agent_core::user_content::UserContent {
++        skills: Vec::new(),
++        attachments: vec![bello_agent_core::attachments::AttachmentRecord {
++            id: uuid::Uuid::new_v4().to_string(),
++            path: "/SECRET_ATTACHMENT_PATH.png".into(),
++            sha256: "a".repeat(64),
++            bytes: 3,
++            mime_type: "image/png".into(),
++        }],
++        blocks: vec![
++            ContentBlock::Text {
++                text: "SECRET_EXPANDED_SKILL_BODY".into(),
++            },
++            ContentBlock::Image {
++                data: "SECRET_IMAGE_BYTES".into(),
++                mime_type: "image/png".into(),
++            },
++        ],
++    }));
++    let mut tool = message("tool", "Visible tool result");
++    tool.tool_record = Some(ToolRecord::Assistant(AssistantRecord {
++        tool_batch_timing: None,
++        completion: Completion::Complete,
++        calls: vec![ToolCall {
++            id: "call".into(),
++            name: "mcp".into(),
++            arguments: serde_json::json!({"headers":"SECRET_CREDENTIAL"}),
++        }],
++        binding: ReplayBinding {
++            profile_id: "SECRET_PROFILE".into(),
++            api: "openai-responses".into(),
++            provider: "litellm".into(),
++            model: "model".into(),
++            endpoint_sha256: "a".repeat(64),
++        },
++        provider_items: vec![
++            serde_json::json!({"encrypted_content":"SECRET_OPAQUE_PROVIDER_STATE"}),
++        ],
++    }));
++    value.messages = vec![row, tool, message("image-only", "")];
++    let snapshot = Snapshot::new(Arc::new(value));
++    assert!(snapshot.search("SECRET", 0).unwrap().hits.is_empty());
++    assert_eq!(
++        snapshot.collect(1, 3, &not_cancelled()).unwrap(),
++        "Literal skill argumentsVisible tool result"
++    );
++    assert_eq!(snapshot.search("", 0).unwrap().hits[2].preview, "");
++}
++
++#[test]
++fn active_streaming_reply_is_not_retained_until_terminal_and_deltas_keep_selection() {
++    let mut value = (*session(&["before", "partial", "after"])).clone();
++    value.active_reply = Some("row-1".into());
++    value.messages[1].state = "streaming".into();
++    let snapshot = Snapshot::new(Arc::new(value.clone()));
++    let page = snapshot.search("", 0).unwrap();
++    assert_eq!(page.total, 2);
++    assert_eq!(
++        page.hits.iter().map(|hit| hit.position).collect::<Vec<_>>(),
++        vec![1, 2]
++    );
++    assert_eq!(page.hits[1].id, "row-2");
++    assert!(snapshot.search("partial", 0).unwrap().hits.is_empty());
++    assert_eq!(
++        snapshot.collect(1, 2, &not_cancelled()).unwrap(),
++        "beforeafter"
++    );
++    assert_eq!(snapshot.collect(2, 2, &not_cancelled()).unwrap(), "after");
++    value.messages[1].text.push_str(" more streaming bytes");
++    assert!(snapshot.matches(&Arc::new(value.clone())));
++    for state in ["complete", "cancelled", "interrupted", "failed"] {
++        let mut terminal = value.clone();
++        terminal.messages[1].state = state.into();
++        terminal.active_reply = None;
++        assert!(!snapshot.matches(&Arc::new(terminal.clone())));
++        let terminal = Snapshot::new(Arc::new(terminal));
++        assert_eq!(terminal.search("partial", 0).unwrap().hits[0].position, 2);
++        assert_eq!(
++            terminal.collect(2, 2, &not_cancelled()).unwrap(),
++            "partial more streaming bytes"
++        );
++    }
++}
++#[test]
++fn starting_or_replacing_only_active_stream_does_not_change_retained_content() {
++    let base = session(&["completed"]);
++    let snapshot = Snapshot::new(base.clone());
++    let mut streaming = (*base).clone();
++    let mut partial = message("new-stream", "not yet retained");
++    partial.state = "streaming".into();
++    streaming.messages.push(partial);
++    streaming.active_reply = Some("new-stream".into());
++    assert!(snapshot.matches(&Arc::new(streaming.clone())));
++    streaming.messages[1].id = "replacement-stream".into();
++    streaming.active_reply = Some("replacement-stream".into());
++    assert!(snapshot.matches(&Arc::new(streaming)));
++}
++
++#[test]
++fn huge_single_grapheme_query_is_refused_before_grapheme_or_normalization_work() {
++    let snapshot = Snapshot::new(session(&["ordinary"]));
++    let query = format!("a{}", "\u{301}".repeat(QUERY_BYTE_LIMIT));
++    assert_eq!(query.graphemes(true).count(), 1);
++    assert!(snapshot.search(&query, 0).unwrap_err().contains("16 KiB"));
++}
++#[test]
++fn pathological_message_combining_segment_has_visible_error_not_partial_results() {
++    let bad = format!("a{}", "\u{301}".repeat(MAX_NONSTARTERS + 1));
++    let snapshot = Snapshot::new(session(&["match", &bad]));
++    assert!(
++        snapshot
++            .search("match", 0)
++            .unwrap_err()
++            .contains("combining-character")
++    );
++    let boundary = format!("a{}", "\u{301}".repeat(MAX_NONSTARTERS));
++    assert!(
++        Snapshot::new(session(&[&boundary]))
++            .search("absent", 0)
++            .is_ok()
++    );
++}
++#[test]
++fn large_nonmatching_and_overlapping_kmp_search_streams_without_full_text_projection() {
++    let text = format!("{}Z", "abab".repeat(1024 * 1024));
++    let snapshot = Snapshot::new(session(&[&text]));
++    assert!(snapshot.search("absent", 0).unwrap().hits.is_empty());
++    assert_eq!(snapshot.search("abababz", 0).unwrap().hits.len(), 1);
++    let source = "a".repeat(2 * 1024 * 1024);
++    let cancel = AtomicBool::new(false);
++    let mut normalized = normalized_chars(&source, &cancel);
++    assert_eq!(normalized.next(), Some('a'));
++    cancel.store(true, Ordering::Release);
++    assert!(normalized.count() <= CANCEL_INTERVAL + 1);
++    assert!(search_check_cancel(&cancel).is_err());
++    assert!(
++        snapshot
++            .search_cancelled("match", 0, &cancel)
++            .unwrap_err()
++            .contains("cancelled")
++    );
++}
++
++#[test]
++fn latest_loaded_occurrence_counts_are_nonoverlapping_case_insensitive_and_record_scoped() {
++    let snapshot = Snapshot::new(session(&["AaAaA", "AAA", "aA-aa-AA", "absent"]));
++    let page = snapshot.search("aa", 0).unwrap();
++    assert_eq!(
++        page.hits.iter().map(|hit| hit.count).collect::<Vec<_>>(),
++        vec![Some(2), Some(1), Some(3)]
++    );
++    assert_eq!(
++        page.hits.iter().map(|hit| hit.position).collect::<Vec<_>>(),
++        vec![1, 2, 3]
++    );
++    assert_eq!(page.total, 4);
++    assert_eq!(snapshot.search("aaa", 0).unwrap().hits[0].count, Some(1));
++    assert!(snapshot.search("missing", 0).unwrap().hits.is_empty());
++}
++
++#[test]
++fn latest_loaded_empty_query_supplies_zero_and_legacy_count_is_optional() {
++    let page = Snapshot::new(session(&["", "aaa"])).search("", 0).unwrap();
++    assert_eq!(page.hits.len(), 2);
++    assert!(page.hits.iter().all(|hit| hit.count == Some(0)));
++    let mut legacy_hit = page.hits[0].clone();
++    legacy_hit.count = None;
++    assert_eq!(legacy_hit.count.unwrap_or(1), 1);
++}
++
++#[test]
++fn occurrence_counting_keeps_unicode_streaming_and_page_limits() {
++    let row = "CAFÉ cafe\u{301} CAFÉ ";
++    let mut value = Session::new();
++    value.messages = (0..101)
++        .map(|index| message(&format!("row-{index}"), row))
++        .collect();
++    let snapshot = Snapshot::new(Arc::new(value));
++    let first = snapshot.search("cafe\u{301}", 0).unwrap();
++    assert_eq!(first.hits.len(), 100);
++    assert!(first.hits.iter().all(|hit| hit.count == Some(3)));
++    assert_eq!(first.next, Some(100));
++    let last = snapshot.search("CAFÉ", first.next.unwrap()).unwrap();
++    assert_eq!(last.hits[0].position, 101);
++    assert_eq!(last.hits[0].count, Some(3));
++    assert_eq!(last.next, None);
++    // Scans beyond the first occurrence without retaining a normalized text copy.
++    let text = format!("Aa{}aA", "x".repeat(PAGE_BYTES * 3));
++    assert_eq!(
++        Snapshot::new(session(&[&text]))
++            .search("aa", 0)
++            .unwrap()
++            .hits[0]
++            .count,
++        Some(2)
++    );
++}
+diff --git a/rust/crates/bello-agent-app/src/conversation_content_view.rs b/rust/crates/bello-agent-app/src/conversation_content_view.rs
+new file mode 100644
+index 00000000..54868e05
+--- /dev/null
++++ b/rust/crates/bello-agent-app/src/conversation_content_view.rs
+@@ -0,0 +1,395 @@
++use crate::{
++    AgentView, Palette,
++    conversation_content::{SearchPage, Snapshot},
++    conversation_content_controller::{Control, Target},
++};
++use bello_workbench_ui::{EditorEvent, EditorView};
++use gpui::{prelude::*, *};
++use std::{
++    collections::BTreeMap,
++    sync::{
++        Arc,
++        atomic::{AtomicBool, Ordering},
++    },
++};
++
++pub(crate) struct ContentSheet {
++    pub token: uuid::Uuid,
++    pub operation: uuid::Uuid,
++    pub target: Target,
++    pub query: Entity<EditorView>,
++    pub first: Entity<EditorView>,
++    pub last: Entity<EditorView>,
++    pub snapshot: Option<Snapshot>,
++    pub result: Option<SearchPage>,
++    pub searched: String,
++    pub selected: Option<usize>,
++    pub busy: bool,
++    pub notice: Option<String>,
++    cancel: Arc<AtomicBool>,
++    focuses: BTreeMap<&'static str, FocusHandle>,
++    controls: Vec<(FocusHandle, Control)>,
++    _events: Vec<Subscription>,
++}
++impl Drop for ContentSheet {
++    fn drop(&mut self) {
++        self.cancel.store(true, Ordering::Release);
++    }
++}
++impl ContentSheet {
++    pub fn new(
++        target: Target,
++        palette: Palette,
++        window: &mut Window,
++        cx: &mut Context<AgentView>,
++    ) -> Self {
++        let mut editor = |text: &str| {
++            cx.new(|cx| {
++                let mut editor = EditorView::new(text.into(), window, cx);
++                editor.set_composer_mode(cx);
++                editor.set_appearance(AgentView::composer_style(palette), cx);
++                editor
++            })
++        };
++        let query = editor("");
++        let first = editor("1");
++        let last = editor("1");
++        query.read(cx).focus(window);
++        let events = [&query, &first, &last]
++            .iter()
++            .map(|editor| {
++                cx.subscribe(editor, |_, _, event, cx| {
++                    if matches!(event, EditorEvent::Changed) {
++                        cx.notify();
++                    }
++                })
++            })
++            .collect();
++        Self {
++            token: uuid::Uuid::new_v4(),
++            operation: uuid::Uuid::new_v4(),
++            target,
++            query,
++            first,
++            last,
++            snapshot: None,
++            result: None,
++            searched: String::new(),
++            selected: None,
++            busy: false,
++            notice: None,
++            cancel: Arc::new(AtomicBool::new(false)),
++            focuses: BTreeMap::new(),
++            controls: Vec::new(),
++            _events: events,
++        }
++    }
++    pub fn begin(&mut self) -> (uuid::Uuid, uuid::Uuid, Arc<AtomicBool>) {
++        self.cancel.store(true, Ordering::Release);
++        self.cancel = Arc::new(AtomicBool::new(false));
++        self.operation = uuid::Uuid::new_v4();
++        self.busy = true;
++        self.notice = Some("Reading retained conversation…".into());
++        (self.token, self.operation, self.cancel.clone())
++    }
++    fn button(
++        &mut self,
++        id: &'static str,
++        label: &'static str,
++        control: Control,
++        enabled: bool,
++        palette: Palette,
++        cx: &mut Context<AgentView>,
++    ) -> Stateful<Div> {
++        let focus = self
++            .focuses
++            .entry(id)
++            .or_insert_with(|| cx.focus_handle())
++            .clone();
++        if enabled {
++            self.controls.push((focus.clone(), control.clone()));
++        }
++        let token = self.token;
++        div()
++            .id(id)
++            .debug_selector(move || id.into())
++            .px(px(9.))
++            .py(px(6.))
++            .rounded(px(5.))
++            .border_1()
++            .border_color(palette.hairline())
++            .text_size(px(12.))
++            .child(label)
++            .when(!enabled, |d| d.opacity(0.45))
++            .when(enabled, |d| {
++                d.track_focus(&focus)
++                    .tab_index(0)
++                    .cursor_pointer()
++                    .hover(|d| d.bg(palette.accent_soft()))
++                    .focus(|d| d.border_color(rgb(palette.accent)))
++            })
++            .on_click(cx.listener(move |view, _, window, cx| {
++                if enabled {
++                    view.content_control(token, control.clone(), window, cx);
++                }
++            }))
++    }
++}
++impl AgentView {
++    pub(crate) fn conversation_content_key(
++        &mut self,
++        event: &KeyDownEvent,
++        window: &mut Window,
++        cx: &mut Context<Self>,
++    ) {
++        let Some(sheet) = self.conversation_content.as_ref() else {
++            return;
++        };
++        let token = sheet.token;
++        let editor_focused = [&sheet.query, &sheet.first, &sheet.last]
++            .iter()
++            .any(|editor| editor.read(cx).focus_handle(cx).is_focused(window));
++        let control_focused = sheet
++            .controls
++            .iter()
++            .any(|(focus, _)| focus.is_focused(window));
++        if !editor_focused && !control_focused {
++            sheet.query.read(cx).focus(window);
++            cx.stop_propagation();
++            return;
++        }
++        let marked = [&sheet.query, &sheet.first, &sheet.last]
++            .iter()
++            .any(|editor| editor.read(cx).has_marked_text());
++        if marked {
++            return;
++        }
++        let key = &event.keystroke;
++        if key.key == "tab"
++            && !key.modifiers.platform
++            && !key.modifiers.control
++            && !key.modifiers.alt
++        {
++            let mut focuses = vec![
++                sheet.query.read(cx).focus_handle(cx),
++                sheet.first.read(cx).focus_handle(cx),
++                sheet.last.read(cx).focus_handle(cx),
++            ];
++            focuses.extend(sheet.controls.iter().map(|(focus, _)| focus.clone()));
++            let current = focuses.iter().position(|focus| focus.is_focused(window));
++            let next = match current {
++                Some(index) if key.modifiers.shift => (index + focuses.len() - 1) % focuses.len(),
++                Some(index) => (index + 1) % focuses.len(),
++                None => 0,
++            };
++            focuses[next].focus(window);
++            cx.stop_propagation();
++            return;
++        }
++        if key.modifiers.platform || key.modifiers.control || key.modifiers.alt {
++            return;
++        }
++        let control = match event.keystroke.key.as_str() {
++            "escape" => Some(Control::Close),
++            "enter" | "space" => sheet
++                .controls
++                .iter()
++                .find(|(focus, _)| focus.is_focused(window))
++                .map(|(_, control)| control.clone())
++                .or_else(|| {
++                    (event.keystroke.key == "enter"
++                        && sheet.query.read(cx).focus_handle(cx).is_focused(window))
++                    .then_some(Control::Search)
++                }),
++            _ => None,
++        };
++        if let Some(control) = control {
++            self.content_control(token, control, window, cx);
++            self.cancelled_prompt_key = Some(event.keystroke.key.clone());
++            cx.stop_propagation();
++        }
++    }
++    pub(crate) fn conversation_content_element(
++        &mut self,
++        window: &Window,
++        cx: &mut Context<Self>,
++    ) -> Option<Div> {
++        let mut sheet = self.conversation_content.take()?;
++        if !sheet.target.matches(self) {
++            return None;
++        }
++        let p = self.palette;
++        let token = sheet.token;
++        let ready = !sheet.busy;
++        sheet.controls.clear();
++        let mut panel = div().id("conversation-content-sheet").debug_selector(|| "conversation-content-sheet".into()).w(px(860.)).max_w(window.viewport_size().width - px(40.)).max_h(window.viewport_size().height - px(40.)).p(px(20.)).rounded(px(12.)).bg(rgb(p.surface)).border_1().border_color(p.hairline()).text_color(rgb(p.ink)).flex().flex_col().gap(px(10.)).occlude().on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
++            .child(div().text_size(px(18.)).child("Search and copy conversation"))
++            .child(div().text_size(px(12.)).text_color(rgb(p.secondary)).child("Retained text in this loaded chat, including older messages. Hidden context, provider state and image bytes are omitted."));
++        panel = panel.child(
++            div()
++                .flex()
++                .gap(px(8.))
++                .child(
++                    div()
++                        .id("content-query")
++                        .debug_selector(|| "content-query".into())
++                        .h(px(38.))
++                        .flex_1()
++                        .border_1()
++                        .border_color(p.hairline())
++                        .child(sheet.query.clone()),
++                )
++                .child(sheet.button("content-search", "Search", Control::Search, ready, p, cx)),
++        );
++        let mut results = div()
++            .id("content-results")
++            .debug_selector(|| "content-results".into())
++            .h(px(
++                (f32::from(window.viewport_size().height) - 405.).clamp(100., 330.)
++            ))
++            .overflow_y_scroll()
++            .flex()
++            .flex_col()
++            .gap(px(3.));
++        if let Some(result) = &sheet.result {
++            for hit in &result.hits {
++                let position = hit.position;
++                results = results.child(
++                    div()
++                        .id(SharedString::from(format!("content-hit-{position}")))
++                        .debug_selector(move || format!("content-hit-{position}"))
++                        .p(px(7.))
++                        .rounded(px(4.))
++                        .text_size(px(12.))
++                        .when(sheet.selected == Some(position), |d| d.bg(p.accent_soft()))
++                        .child(format!("{} · {}", position, hit.preview))
++                        .cursor_pointer()
++                        .on_click(cx.listener(move |view, _, window, cx| {
++                            view.content_control(token, Control::Select(position), window, cx)
++                        })),
++                );
++            }
++            if result.hits.is_empty() {
++                results = results.child("No matches on this page");
++            }
++        }
++        let total = sheet.result.as_ref().map_or(0, |r| r.total);
++        let hits = sheet.result.as_ref().map_or(0, |r| r.hits.len());
++        let next = ready && sheet.result.as_ref().is_some_and(|r| r.next.is_some());
++        let selected = ready && sheet.selected.is_some();
++        panel = panel.child(results).child(
++            div()
++                .flex()
++                .gap(px(8.))
++                .items_center()
++                .child(div().flex_1().text_size(px(12.)).child(format!(
++                    "{hits} matches on this page · {total} retained messages"
++                )))
++                .child(sheet.button("content-next", "Next Results", Control::Next, next, p, cx))
++                .child(sheet.button(
++                    "content-reveal",
++                    "Show in Transcript",
++                    Control::Reveal,
++                    selected,
++                    p,
++                    cx,
++                )),
++        );
++        panel = panel.child(
++            div()
++                .flex()
++                .gap(px(8.))
++                .items_center()
++                .child(div().text_size(px(12.)).child("From"))
++                .child(
++                    div()
++                        .id("content-first")
++                        .debug_selector(|| "content-first".into())
++                        .w(px(70.))
++                        .h(px(36.))
++                        .border_1()
++                        .border_color(p.hairline())
++                        .child(sheet.first.clone()),
++                )
++                .child(div().text_size(px(12.)).child("through"))
++                .child(
++                    div()
++                        .id("content-last")
++                        .debug_selector(|| "content-last".into())
++                        .w(px(70.))
++                        .h(px(36.))
++                        .border_1()
++                        .border_color(p.hairline())
++                        .child(sheet.last.clone()),
++                )
++                .child(sheet.button(
++                    "content-start",
++                    "Start at Selection",
++                    Control::Start,
++                    selected,
++                    p,
++                    cx,
++                ))
++                .child(sheet.button(
++                    "content-end",
++                    "End at Selection",
++                    Control::End,
++                    selected,
++                    p,
++                    cx,
++                )),
++        );
++        if let Some(notice) = &sheet.notice {
++            panel = panel.child(div().text_size(px(12.)).child(notice.clone()));
++        }
++        let valid = sheet
++            .first
++            .read(cx)
++            .text()
++            .trim()
++            .parse::<usize>()
++            .ok()
++            .zip(sheet.last.read(cx).text().trim().parse::<usize>().ok())
++            .is_some_and(|(first, last)| first >= 1 && last >= first && last <= total);
++        panel = panel
++            .child(div().text_size(px(11.)).text_color(rgb(p.secondary)).child(
++                "Copy limit: 8 MiB. Use a smaller inclusive range for larger conversations.",
++            ))
++            .child(
++                div()
++                    .flex()
++                    .gap(px(8.))
++                    .justify_end()
++                    .child(sheet.button("content-close", "Done", Control::Close, true, p, cx))
++                    .child(sheet.button(
++                        "content-copy-range",
++                        "Copy Range",
++                        Control::CopyRange,
++                        ready && valid,
++                        p,
++                        cx,
++                    ))
++                    .child(sheet.button(
++                        "content-copy-all",
++                        "Copy Conversation",
++                        Control::CopyAll,
++                        ready && total > 0,
++                        p,
++                        cx,
++                    )),
++            );
++        self.conversation_content = Some(sheet);
++        Some(
++            div()
++                .absolute()
++                .inset_0()
++                .flex()
++                .items_center()
++                .justify_center()
++                .bg(rgba(0x00000060))
++                .occlude()
++                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
++                .child(panel),
++        )
++    }
++}
+diff --git a/rust/crates/bello-agent-app/src/conversation_content_view_tests.rs b/rust/crates/bello-agent-app/src/conversation_content_view_tests.rs
+new file mode 100644
+index 00000000..8c2d9b71
+--- /dev/null
++++ b/rust/crates/bello-agent-app/src/conversation_content_view_tests.rs
+@@ -0,0 +1,462 @@
++use super::Control;
++use crate::{AgentView, LaunchState};
++use bello_agent_core::{
++    Controller, Lane, Message, RunState, SessionStore, Submission,
++    workspace::{ChatRecord, DraftRecord, WorkspaceStore},
++};
++use gpui::{
++    ClipboardItem, Entity, Modifiers, TestAppContext, VisualTestContext, WindowHandle, px, size,
++};
++use std::sync::{Arc, Mutex};
++
++fn fixture(
++    cx: &mut TestAppContext,
++    count: usize,
++    archived: bool,
++    huge: bool,
++) -> (
++    tempfile::TempDir,
++    WindowHandle<AgentView>,
++    Entity<AgentView>,
++) {
++    let directory = tempfile::tempdir().unwrap();
++    let project = std::fs::canonicalize(directory.path()).unwrap();
++    let path = project.join("session.json");
++    let mut store = SessionStore::open(&path).unwrap();
++    store
++        .transact(|session| {
++            session.messages = (0..count)
++                .map(|i| Message {
++                    task_root_id: None,
++                    user_content: None,
++                    id: format!("row-{i}"),
++                    role: "assistant".into(),
++                    text: if huge {
++                        "x".repeat(8 * 1024 * 1024 + 1)
++                    } else {
++                        format!("match {i}\n")
++                    },
++                    reasoning: "hidden-reasoning".into(),
++                    replay_eligible: true,
++                    state: "complete".into(),
++                    usage: serde_json::Value::Null,
++                    model: None,
++                    tool_record: None,
++                    compaction: None,
++                })
++                .collect();
++            session.state = RunState::Paused;
++            session.queue_paused = true;
++            session
++                .pending
++                .push(Submission::new("queued untouched".into(), Lane::FollowUp));
++            Ok(())
++        })
++        .unwrap();
++    let mut record = ChatRecord::new(store.snapshot().id, "Content fixture".into(), path);
++    record.archived_at = archived.then_some(1);
++    let draft = DraftRecord {
++        text: "Draft 日本語".into(),
++        ..Default::default()
++    };
++    let mut workspace = WorkspaceStore::open(project.join("workspace.json"), &project).unwrap();
++    workspace.register(record.clone(), draft.clone()).unwrap();
++    let launch = LaunchState {
++        controller: Controller::new(store, None).unwrap(),
++        workspace: Arc::new(Mutex::new(workspace)),
++        project,
++        record,
++        draft,
++        pending: false,
++    };
++    let window = cx.add_window(|window, cx| AgentView::new(launch, window, cx));
++    let root = window.root(cx).unwrap();
++    let visual = VisualTestContext::from_window(window.into(), cx);
++    visual.simulate_resize(size(px(1180.), px(812.)));
++    cx.run_until_parked();
++    (directory, window, root)
++}
++fn open(window: WindowHandle<AgentView>, cx: &mut TestAppContext) {
++    window
++        .update(cx, |view, window, cx| {
++            view.open_conversation_content(window, cx)
++        })
++        .unwrap();
++    cx.run_until_parked();
++}
++fn action(window: WindowHandle<AgentView>, control: Control, cx: &mut TestAppContext) {
++    window
++        .update(cx, |view, window, cx| {
++            let token = view.conversation_content.as_ref().unwrap().token;
++            view.content_control(token, control, window, cx);
++        })
++        .unwrap();
++    cx.run_until_parked();
++}
++fn clipboard(cx: &TestAppContext) -> String {
++    cx.read(|cx| cx.read_from_clipboard().unwrap().text().unwrap())
++}
++
++#[gpui::test]
++fn archived_search_covers_retained_history_without_mutating_store_or_composer(
++    cx: &mut TestAppContext,
++) {
++    let (directory, window, root) = fixture(cx, 240, true, false);
++    let files: Vec<_> = std::fs::read_dir(directory.path())
++        .unwrap()
++        .map(|entry| {
++            let path = entry.unwrap().path();
++            let bytes = std::fs::read(&path).unwrap();
++            (path, bytes)
++        })
++        .collect();
++    let before = cx.read(|cx| {
++        let view = root.read(cx);
++        (
++            view.composer.entity_id(),
++            view.composer.read(cx).text().to_owned(),
++            serde_json::to_value(view.controller.snapshot()).unwrap(),
++            view.visible_messages,
++        )
++    });
++    open(window, cx);
++    cx.read(|cx| {
++        let view = root.read(cx);
++        let sheet = view.conversation_content.as_ref().unwrap();
++        let page = sheet.result.as_ref().unwrap();
++        assert_eq!(page.total, 240);
++        assert_eq!(page.hits.len(), 100);
++        assert_eq!(page.hits[0].id, "row-0");
++        assert_eq!(view.composer.entity_id(), before.0);
++        assert_eq!(view.composer.read(cx).text(), before.1);
++        assert_eq!(
++            serde_json::to_value(view.controller.snapshot()).unwrap(),
++            before.2
++        );
++        assert_eq!(view.visible_messages, before.3);
++    });
++    for (path, bytes) in files {
++        assert_eq!(std::fs::read(path).unwrap(), bytes);
++    }
++}
++#[gpui::test]
++fn next_keeps_searched_query_after_editor_changes(cx: &mut TestAppContext) {
++    let (_dir, window, root) = fixture(cx, 205, false, false);
++    open(window, cx);
++    window
++        .update(cx, |view, _, cx| {
++            view.conversation_content
++                .as_ref()
++                .unwrap()
++                .query
++                .update(cx, |editor, cx| editor.set_text("no match".into(), cx));
++        })
++        .unwrap();
++    action(window, Control::Next, cx);
++    cx.read(|cx| {
++        let sheet = root.read(cx).conversation_content.as_ref().unwrap();
++        assert_eq!(sheet.searched, "");
++        assert_eq!(sheet.result.as_ref().unwrap().hits[0].position, 101);
++        assert_eq!(sheet.query.read(cx).text(), "no match");
++    });
++}
++#[gpui::test]
++fn inclusive_range_and_whole_copy_are_exact_plain_retained_text(cx: &mut TestAppContext) {
++    let (_dir, window, root) = fixture(cx, 3, false, false);
++    open(window, cx);
++    action(window, Control::Select(2), cx);
++    action(window, Control::Start, cx);
++    action(window, Control::Select(3), cx);
++    action(window, Control::End, cx);
++    action(window, Control::CopyRange, cx);
++    assert_eq!(clipboard(cx), "match 1\nmatch 2\n");
++    action(window, Control::CopyAll, cx);
++    assert_eq!(clipboard(cx), "match 0\nmatch 1\nmatch 2\n");
++    cx.read(|cx| assert_eq!(root.read(cx).composer.read(cx).text(), "Draft 日本語"));
++}
++#[gpui::test]
++fn cancelled_copy_cannot_replace_clipboard(cx: &mut TestAppContext) {
++    let (_dir, window, _root) = fixture(cx, 3, false, false);
++    open(window, cx);
++    window
++        .update(cx, |view, window, cx| {
++            cx.write_to_clipboard(ClipboardItem::new_string("sentinel".into()));
++            let token = view.conversation_content.as_ref().unwrap().token;
++            view.content_control(token, Control::CopyAll, window, cx);
++            view.content_control(token, Control::Close, window, cx);
++        })
++        .unwrap();
++    cx.run_until_parked();
++    assert_eq!(clipboard(cx), "sentinel");
++}
++#[gpui::test]
++fn oversize_and_invalid_range_leave_clipboard_unchanged(cx: &mut TestAppContext) {
++    let (_dir, window, root) = fixture(cx, 1, false, true);
++    open(window, cx);
++    cx.update(|cx| cx.write_to_clipboard(ClipboardItem::new_string("sentinel".into())));
++    action(window, Control::CopyAll, cx);
++    assert_eq!(clipboard(cx), "sentinel");
++    window
++        .update(cx, |view, _, cx| {
++            view.conversation_content
++                .as_ref()
++                .unwrap()
++                .first
++                .update(cx, |editor, cx| editor.set_text("0".into(), cx));
++        })
++        .unwrap();
++    action(window, Control::CopyRange, cx);
++    assert_eq!(clipboard(cx), "sentinel");
++    cx.read(|cx| assert!(!root.read(cx).conversation_content.as_ref().unwrap().busy));
++}
++#[gpui::test]
++fn navigation_and_window_rebind_fence_pending_copy(cx: &mut TestAppContext) {
++    for rebind in [false, true] {
++        let (_dir, window, _root) = fixture(cx, 3, false, false);
++        open(window, cx);
++        window
++            .update(cx, |view, window, cx| {
++                cx.write_to_clipboard(ClipboardItem::new_string("sentinel".into()));
++                let token = view.conversation_content.as_ref().unwrap().token;
++                view.content_control(token, Control::CopyAll, window, cx);
++                if rebind {
++                    view.window_binding = None;
++                } else {
++                    view.navigation_generation += 1;
++                }
++            })
++            .unwrap();
++        cx.run_until_parked();
++        assert_eq!(clipboard(cx), "sentinel");
++    }
++}
++#[gpui::test]
++fn older_result_reveal_targets_exact_id_and_keeps_transcript_virtualized(cx: &mut TestAppContext) {
++    let (_dir, window, root) = fixture(cx, 240, false, false);
++    open(window, cx);
++    action(window, Control::Select(2), cx);
++    action(window, Control::Reveal, cx);
++    cx.read(|cx| {
++        let view = root.read(cx);
++        assert!(view.conversation_content.is_none());
++        assert_eq!(view.visible_messages, 239);
++        let transcript = view.transcript.as_ref().unwrap().read(cx);
++        assert!(transcript.materialized_indexes().len() < 100);
++        assert!(
++            transcript
++                .materialized_texts()
++                .iter()
++                .any(|(_, text)| text.contains("match 1\n"))
++        );
++    });
++}
++#[gpui::test]
++fn real_buttons_search_copy_and_escape_preserve_draft(cx: &mut TestAppContext) {
++    let (_dir, window, root) = fixture(cx, 3, false, false);
++    open(window, cx);
++    let mut visual = VisualTestContext::from_window(window.into(), cx);
++    let copy = visual
++        .debug_bounds("content-copy-all")
++        .expect("copy button");
++    visual.simulate_click(copy.center(), Modifiers::none());
++    cx.run_until_parked();
++    assert_eq!(clipboard(cx), "match 0\nmatch 1\nmatch 2\n");
++    cx.simulate_keystrokes(window.into(), "escape");
++    cx.run_until_parked();
++    cx.read(|cx| {
++        let view = root.read(cx);
++        assert!(view.conversation_content.is_none());
++        assert_eq!(view.composer.read(cx).text(), "Draft 日本語");
++    });
++}
++#[gpui::test]
++fn modal_keys_cannot_submit_background_composer_and_tab_stays_in_sheet(cx: &mut TestAppContext) {
++    let (_dir, window, root) = fixture(cx, 3, false, false);
++    open(window, cx);
++    let before = cx.read(|cx| serde_json::to_value(root.read(cx).controller.snapshot()).unwrap());
++    window
++        .update(cx, |view, window, cx| view.composer.read(cx).focus(window))
++        .unwrap();
++    cx.simulate_keystrokes(window.into(), "enter");
++    cx.run_until_parked();
++    for _ in 0..20 {
++        cx.simulate_keystrokes(window.into(), "tab");
++    }
++    cx.read(|cx| {
++        let view = root.read(cx);
++        assert_eq!(
++            serde_json::to_value(view.controller.snapshot()).unwrap(),
++            before
++        );
++        assert_eq!(view.composer.read(cx).text(), "Draft 日本語");
++    });
++}
++#[gpui::test]
++fn replaced_controller_and_old_sheet_callbacks_cannot_copy(cx: &mut TestAppContext) {
++    let (_dir, window, _root) = fixture(cx, 3, false, false);
++    open(window, cx);
++    window
++        .update(cx, |view, window, cx| {
++            cx.write_to_clipboard(ClipboardItem::new_string("sentinel".into()));
++            let token = view.conversation_content.as_ref().unwrap().token;
++            view.content_control(token, Control::CopyAll, window, cx);
++            view.controller = Controller::new(SessionStore::pending(), None).unwrap();
++        })
++        .unwrap();
++    cx.run_until_parked();
++    assert_eq!(clipboard(cx), "sentinel");
++}
++#[gpui::test]
++fn marked_composer_is_preserved_and_query_ime_escape_does_not_close(cx: &mut TestAppContext) {
++    use gpui::EntityInputHandler;
++    let (_dir, window, root) = fixture(cx, 3, false, false);
++    window
++        .update(cx, |view, window, cx| {
++            view.composer.update(cx, |editor, cx| {
++                editor.replace_and_mark_text_in_range(None, "未確定", Some(1..2), window, cx)
++            });
++            let before = view.composer.read(cx).text().to_owned();
++            view.open_conversation_content(window, cx);
++            assert!(view.conversation_content.is_none());
++            assert_eq!(view.composer.read(cx).text(), before);
++            assert!(view.composer.read(cx).has_marked_text());
++            view.composer
++                .update(cx, |editor, cx| editor.unmark_text(window, cx));
++            view.open_conversation_content(window, cx);
++        })
++        .unwrap();
++    cx.run_until_parked();
++    window
++        .update(cx, |view, window, cx| {
++            view.conversation_content
++                .as_ref()
++                .unwrap()
++                .query
++                .update(cx, |editor, cx| {
++                    editor.replace_and_mark_text_in_range(None, "未確定", Some(1..2), window, cx)
++                });
++        })
++        .unwrap();
++    cx.simulate_keystrokes(window.into(), "escape");
++    cx.run_until_parked();
++    cx.read(|cx| assert!(root.read(cx).conversation_content.is_some()));
++}
++#[gpui::test]
++fn archived_footer_opens_loaded_sheet_without_connection(cx: &mut TestAppContext) {
++    let (_dir, window, root) = fixture(cx, 3, true, false);
++    let mut visual = VisualTestContext::from_window(window.into(), cx);
++    let entry = visual.debug_bounds("archived-search-copy").unwrap();
++    visual.simulate_click(entry.center(), Modifiers::none());
++    cx.run_until_parked();
++    cx.read(|cx| {
++        assert_eq!(
++            root.read(cx)
++                .conversation_content
++                .as_ref()
++                .unwrap()
++                .result
++                .as_ref()
++                .unwrap()
++                .total,
++            3
++        )
++    });
++}
++#[gpui::test]
++fn equal_length_stale_copy_finishes_with_notice_without_touching_clipboard(
++    cx: &mut TestAppContext,
++) {
++    let (_dir, window, root) = fixture(cx, 3, false, false);
++    open(window, cx);
++    window
++        .update(cx, |view, _, cx| {
++            cx.write_to_clipboard(ClipboardItem::new_string("sentinel".into()));
++            let mut stale = view.controller.snapshot();
++            stale.messages[0].text.replace_range(..1, "M");
++            view.conversation_content.as_mut().unwrap().snapshot =
++                Some(crate::conversation_content::Snapshot::new(Arc::new(stale)));
++        })
++        .unwrap();
++    action(window, Control::CopyAll, cx);
++    assert_eq!(clipboard(cx), "sentinel");
++    cx.read(|cx| {
++        let sheet = root.read(cx).conversation_content.as_ref().unwrap();
++        assert!(!sheet.busy);
++        assert!(
++            sheet
++                .notice
++                .as_ref()
++                .unwrap()
++                .contains("conversation changed")
++        );
++    });
++    let mut visual = VisualTestContext::from_window(window.into(), cx);
++    assert!(visual.debug_bounds("content-search").is_some());
++}
++
++#[gpui::test]
++fn actions_menu_opens_loaded_sheet_without_connection(cx: &mut TestAppContext) {
++    let (_dir, window, root) = fixture(cx, 3, false, false);
++    let mut visual = VisualTestContext::from_window(window.into(), cx);
++    let actions = visual.debug_bounds("conversation-actions-open").unwrap();
++    visual.simulate_click(actions.center(), Modifiers::none());
++    cx.run_until_parked();
++    let entry = visual.debug_bounds("search-copy-conversation").unwrap();
++    visual.simulate_click(entry.center(), Modifiers::none());
++    cx.run_until_parked();
++    cx.read(|cx| assert!(root.read(cx).conversation_content.is_some()));
++}
++
++#[gpui::test]
++fn latest_loaded_count_contract_survives_search_and_next_query_edits(cx: &mut TestAppContext) {
++    let (_dir, window, root) = fixture(cx, 205, false, false);
++    open(window, cx);
++    cx.read(|cx| {
++        assert!(
++            root.read(cx)
++                .conversation_content
++                .as_ref()
++                .unwrap()
++                .result
++                .as_ref()
++                .unwrap()
++                .hits
++                .iter()
++                .all(|hit| hit.count == Some(0))
++        )
++    });
++    window
++        .update(cx, |view, _, cx| {
++            view.conversation_content
++                .as_ref()
++                .unwrap()
++                .query
++                .update(cx, |editor, cx| editor.set_text("MATCH".into(), cx))
++        })
++        .unwrap();
++    action(window, Control::Search, cx);
++    window
++        .update(cx, |view, _, cx| {
++            view.conversation_content
++                .as_ref()
++                .unwrap()
++                .query
++                .update(cx, |editor, cx| editor.set_text("absent".into(), cx))
++        })
++        .unwrap();
++    action(window, Control::Next, cx);
++    cx.read(|cx| {
++        let sheet = root.read(cx).conversation_content.as_ref().unwrap();
++        assert_eq!(sheet.searched, "MATCH");
++        assert_eq!(sheet.result.as_ref().unwrap().hits[0].position, 101);
++        assert!(
++            sheet
++                .result
++                .as_ref()
++                .unwrap()
++                .hits
++                .iter()
++                .all(|hit| hit.count == Some(1))
++        );
++    });
++}
+diff --git a/rust/crates/bello-agent-app/src/main.rs b/rust/crates/bello-agent-app/src/main.rs
+index 025e747f..d6f0c8cf 100644
+--- a/rust/crates/bello-agent-app/src/main.rs
++++ b/rust/crates/bello-agent-app/src/main.rs
+@@ -11,6 +11,9 @@ mod composer_skills;
+ mod connection_settings_controller;
+ mod connection_settings_view;
+ mod context_inspector;
++mod conversation_content;
++mod conversation_content_controller;
++mod conversation_content_view;
+ mod draft_status;
+ mod file_tab;
+ mod launch_authority;
+@@ -160,6 +163,7 @@ struct AgentView {
+     cancelled_prompt_key: Option<String>,
+     sidebar_menu: Option<sidebar_actions::SidebarMenu>,
+     compaction_menu: Option<compaction_actions::CompactionMenu>,
++    conversation_content: Option<conversation_content_view::ContentSheet>,
+     #[cfg(not(target_os = "macos"))]
+     root_focus: FocusHandle,
+     #[cfg(not(target_os = "macos"))]
+@@ -418,6 +422,7 @@ impl AgentView {
+             cancelled_prompt_key: None,
+             sidebar_menu: None,
+             compaction_menu: None,
++            conversation_content: None,
+             #[cfg(not(target_os = "macos"))]
+             root_focus,
+             #[cfg(not(target_os = "macos"))]
+@@ -465,6 +470,10 @@ impl AgentView {
+         self.queue_geometry = None;
+         self.sidebar_menu = None;
+         self.compaction_menu = None;
++        self.conversation_content = None;
++        if let Some(transcript) = &self.transcript {
++            transcript.update(cx, |view, _| view.clear_content_reveal());
++        }
+         let binding = workspace_lifetime::WindowBinding::new(window.window_handle().window_id());
+         self.window_binding = Some(binding);
+         self.organization_window = Some(window.window_handle());
+@@ -904,6 +913,10 @@ impl AgentView {
+         }
+     }
+     fn global_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
++        if self.conversation_content.is_some() {
++            self.conversation_content_key(event, window, cx);
++            return;
++        }
+         if self.skill_picker.is_some() {
+             self.skill_picker_key(event, window, cx);
+             return;
+@@ -2096,6 +2109,7 @@ impl AgentView {
+     fn conversation(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
+         let p = self.palette;
+         let inspector_target = self.context_inspector_target();
++        let content_target = conversation_content_controller::Target::capture(self);
+         let transcript = if self.session.messages.is_empty() {
+             // Do not retain a removed/cleared history behind the starter.
+             self.transcript = None;
+@@ -2584,6 +2598,15 @@ impl AgentView {
+                             view.set_chat_archived(&id, false, cx)
+                         })),
+                 )
++                .child(
++                    self.button("archived-search-copy", "Search and Copy Conversation")
++                        .debug_selector(|| "archived-search-copy".into())
++                        .on_click(cx.listener(move |view, _, window, cx| {
++                            if content_target.matches(view) {
++                                view.open_conversation_content(window, cx);
++                            }
++                        })),
++                )
+                 .when(self.session.state == RunState::Running, |footer| {
+                     footer.child(
+                         self.button("stop-archived-chat", "Stop")
+@@ -3230,6 +3253,9 @@ impl Render for AgentView {
+         if let Some(picker) = self.skill_picker_element(window, cx) {
+             element = element.child(picker);
+         }
++        if let Some(sheet) = self.conversation_content_element(window, cx) {
++            element = element.child(sheet);
++        }
+         if self.quick_open.read(cx).is_open() {
+             element = element.child(
+                 div()
+diff --git a/rust/crates/bello-agent-app/src/transcript_view.rs b/rust/crates/bello-agent-app/src/transcript_view.rs
+index 1f120438..428e2d5f 100644
+--- a/rust/crates/bello-agent-app/src/transcript_view.rs
++++ b/rust/crates/bello-agent-app/src/transcript_view.rs
+@@ -355,6 +355,7 @@ struct ViewportState {
+     buffer: Pixels,
+     heights: HashMap<RowKey, Pixels>,
+     pending_scroll: Option<ListOffset>,
++    reveal: Option<RowKey>,
+     painted_scroll: ListOffset,
+     #[cfg(test)]
+     target_preflights: Vec<usize>,
+@@ -371,6 +372,7 @@ impl ViewportState {
+             buffer,
+             heights: HashMap::new(),
+             pending_scroll: None,
++            reveal: None,
+             #[cfg(test)]
+             target_preflights: Vec::new(),
+             #[cfg(test)]
+@@ -487,6 +489,18 @@ impl ViewportState {
+             self.list.scroll_to(anchor);
+         }
+         self.presentation = next;
++        if let Some(key) = self.reveal.take()
++            && let Some(item_ix) = self.presentation.rows.iter().position(|row| row.key == key)
++        {
++            let target = ListOffset {
++                item_ix,
++                offset_in_item: px(0.),
++            };
++            self.pending_scroll = None;
++            self.painted_scroll = target;
++            self.list.scroll_to(target);
++            return Some(target);
++        }
+         remeasure_anchor.then_some(anchor)
+     }
+ }
+@@ -725,6 +739,53 @@ impl TranscriptView {
+         }
+     }
+ 
++    pub(crate) fn clear_content_reveal(&mut self) {
++        self.viewport.borrow_mut().reveal = None;
++    }
++
++    /// Reveal a uniquely identified retained message, including a result paired
++    /// into its owning tool card. Never select a duplicate or a stale controller.
++    pub(crate) fn reveal_message(
++        &mut self,
++        input: TranscriptInput,
++        id: &str,
++        cx: &mut Context<Self>,
++    ) -> bool {
++        if self.presentation.input.chat_id != input.chat_id
++            || !self.presentation.input.controller.ptr_eq(&input.controller)
++            || input
++                .session
++                .messages
++                .iter()
++                .filter(|message| message.id == id)
++                .count()
++                != 1
++        {
++            return false;
++        }
++        let Some(index) = input
++            .session
++            .messages
++            .iter()
++            .position(|message| message.id == id)
++        else {
++            return false;
++        };
++        self.update_inputs(input, cx);
++        let row = self.presentation.rows.iter().find(|row| {
++            row.message_index == Some(index)
++                || row
++                    .projected
++                    .is_some_and(|projected| projected.result() == Some(index))
++        });
++        let Some(row) = row else {
++            return false;
++        };
++        self.viewport.borrow_mut().reveal = Some(row.key.clone());
++        cx.notify();
++        true
++    }
++
+     pub(crate) fn update_inputs(&mut self, input: TranscriptInput, cx: &mut Context<Self>) {
+         let old = &self.presentation.input;
+         if Weak::ptr_eq(&old.controller, &input.controller)
+@@ -738,7 +799,11 @@ impl TranscriptView {
+         {
+             return;
+         }
++        if !Arc::ptr_eq(&old.session, &input.session) {
++            self.viewport.borrow_mut().reveal = None;
++        }
+         if old.chat_id != input.chat_id || !Weak::ptr_eq(&old.controller, &input.controller) {
++            self.viewport.borrow_mut().reveal = None;
+             self.collapsed.clear();
+             self.expanded_reads.clear();
+             self.removed_tool_focus.borrow_mut().extend(
+diff --git a/rust/docs/conversation-content.md b/rust/docs/conversation-content.md
+new file mode 100644
+index 00000000..025f6f06
+--- /dev/null
++++ b/rust/docs/conversation-content.md
+@@ -0,0 +1,68 @@
++# Loaded conversation search and copy
++
++Search and Copy Conversation, in the Actions menu or archived read-only footer,
++reads the selected loaded
++chat, including archived chats and completed retained messages outside the transcript's
++100-message initial window. Active streaming reply text is excluded until terminal;
++interrupted/cancelled retained partial replies remain readable. It does not load a catalog entry, send a provider
++request, persist any data, export a file, change a queue or change the composer.
++
++## Source and bounded projection
++
++Specification: Swift main `6319e368c6ddb7c3ef18605e78f23b1a5b69e63a`,
++`ConversationContentView.swift`, `WorkspaceContent.swift`, and the loaded host
++`SessionReads.swift` contentSearch/contentPage paths. These paths differ from
++unopened journal HistoryReader/ConversationContent formatting. Rust copies the
++retained message text without adding headings, separators, reasoning, raw tool
++arguments, provider items, hidden skill bodies, context metadata or image bytes.
++Execution/request-ledger timeline models not represented in Rust are not invented.
++Existing raw per-message Copy remains unchanged.
++
++Search pages contain at most 100 hits, positions are one-based, and previews use
++240 UTF-8 bytes from the start. Queries are bounded to 256 extended grapheme
++clusters and a documented Rust safety limit of 16 KiB, checked before segmentation
++or copying input. Matching uses normalized portable Unicode lowercase substring search;
++this is not a claim of Foundation locale-aware matching equivalence. Next Results
++continues the previously searched query even if the editor has since changed.
++Each loaded hit carries the latest source's optional occurrence-count contract:
++non-overlapping case-insensitive occurrences per retained record, with zero for an
++empty query. This loaded reader always supplies the value; absent values remain
++representable for source compatibility (downstream fallback is one). Occurrences
++do not consume the 100-record search page limit. The Search/Copy sheet itself does
++not display counts, matching the latest source view; full Transcript Find and
++sidebar Find/navigation are separate unimplemented parity work.
++Matching streams normalization into a bounded-pattern substring matcher; it never
++allocates a normalized copy of an entire message. Cancellation is checked at
++1,024-scalar intervals during preflight, normalization input and match output.
++Normalization rejects a canonical sequence longer than 16,384 consecutive
++nonstarters with a visible error, rather than silently omitting a row. These
++explicit resource limits adapt Swift semantics to the Rust worker model.
++
++Range endpoints are inclusive. Copy concatenates the retained text exactly, with
++an 8 MiB UTF-8 ceiling and bounded collection chunks. Only successful complete
++collection writes the clipboard. Invalid ranges, oversize, cancellation, content
++changes and stale completions leave it unchanged. Closing the sheet cancels work;
++callbacks cannot affect a later sheet or a switched/rebound/replaced chat.
++
++## Identity and revision
++
++The source snapshot comes from Controller.snapshot_shared, not an actor/store lock.
++A content fence compares session identity, ordered message identities and projected
++text, including equal-length edits. Queue/draft changes alone do not invalidate
++retained content. Sheet/operation tokens, selected navigation generation, load
++generation, project/workspace identity, window binding and controller identity
++are checked before publishing results, copying or revealing. Duplicate message
++IDs cannot resolve a reveal to an arbitrary row.
++
++Show in Transcript expands only the retained page needed to reach the selected
++exact message. The virtualized list keeps viewport-limited materialization and
++its bounded preflight machinery. Tool results paired into cards reveal the
++owning card. The reveal is cleared on chat/controller replacement.
++
++## Acceptance scope
++
++Pure projection, bounds, Unicode and revision tests and real GPUI test-platform
++controls cover the implemented workflow. Actual desktop interaction evidence,
++macOS Foundation matching, native IME/accessibility and native clipboard/focus
++acceptance remain separate gates; compilation or fake-platform tests do not
++establish those outcomes.

@@ -1,0 +1,13 @@
+warning: unreachable statement
+   --> /tmp/conversation-independent-review-r2/conversation_content.rs:268:13
+    |
+265 |             count += 1; return Ok(count);
+    |                         ---------------- any code following this expression is unreachable
+...
+268 |             matched = 0;
+    |             ^^^^^^^^^^^^ unreachable statement
+    |
+    = note: `#[warn(unreachable_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: 1 warning emitted
+

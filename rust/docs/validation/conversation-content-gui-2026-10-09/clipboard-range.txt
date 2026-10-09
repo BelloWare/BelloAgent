@@ -1,0 +1,7 @@
+Content-match ALPHA
+Exact retained text 1: café / café / 日本語 / 👩🏽‍💻.
+  Markdown **source** and trailing spaces  
+Only an explicit GUI Send produced this response.second questionContent-match BETA
+Exact retained text 2: café / café / 日本語 / 👩🏽‍💻.
+  Markdown **source** and trailing spaces  
+Only an explicit GUI Send produced this response.

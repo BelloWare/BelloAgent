@@ -1,0 +1,48 @@
+{
+  "binary_sha256": "1ccee19cbadf3dc6d42e4fcea96775454c17ebab347e1586c5ada84575820740",
+  "source_manifest_sha256": "c60009ad190c322f19088e2eff4dc71ae7a84d75942a50c7d9af379a180c60fc",
+  "swift_spec_commit": "6319e368c6ddb7c3ef18605e78f23b1a5b69e63a",
+  "environment": "Own cloud Linux desktop; Mesa lavapipe software rendering; official CUA Sky",
+  "status": "PASS for focused actual GUI cases",
+  "prepared_by_normal_ui": true,
+  "explicit_send_count": 2,
+  "requests_during_search_copy": 0,
+  "request_log_identical": true,
+  "persisted_state_identical": true,
+  "draft_before_and_after": "retain draft",
+  "clipboard_verification": {
+    "range": {
+      "bytes": 378,
+      "expected_sha256": "8e133b01c345c91bcad2a9d1ef634b0470fccfc1a3dcc3de3cc41be6574694dd",
+      "actual_sha256": "8e133b01c345c91bcad2a9d1ef634b0470fccfc1a3dcc3de3cc41be6574694dd",
+      "equal": true
+    },
+    "whole": {
+      "bytes": 392,
+      "expected_sha256": "c243386e08df615781ed07fd5b6371ffd78f297af9bb1752e390edcee858fd48",
+      "actual_sha256": "c243386e08df615781ed07fd5b6371ffd78f297af9bb1752e390edcee858fd48",
+      "equal": true
+    }
+  },
+  "passed": [
+    "Fresh isolated profile, HOME and state; normal Projects create/trust and connection selection",
+    "Two explicit GUI Send clicks produced four retained messages",
+    "alpha query returned only message 2 ALPHA; selection and Show in Transcript worked",
+    "Reopened sheet reset query; Start at Selection selected range 2 through 4",
+    "Copy Range used actual control; native Mousepad paste and UTF-8 save matched exact retained text",
+    "Copy Conversation used actual control; native Mousepad paste and UTF-8 save matched exact retained text",
+    "Dismissal preserved unsent composer draft",
+    "Chat and workspace catalog SHA256 hashes unchanged across search and copy",
+    "Provider request log stayed exactly two prep requests, byte-identical through search and copy",
+    "Normal titlebar close; launcher returned exit 0; gateway stopped by launcher EXIT trap"
+  ],
+  "limitations": [
+    "Per-record occurrence counts are not displayed by this UI; no claim of visible occurrence-count verification",
+    "No actual GUI archive, >100-hit paging, native macOS clipboard, IME or accessibility acceptance in this focused run",
+    "No packet-level capture: zero additional provider requests is from the structural loopback gateway request trace, not every OS network operation"
+  ],
+  "no_source_or_git_writes": true,
+  "r1_evidence_untouched": true,
+  "app_exit_code": 0,
+  "screenshots_for_publication": false
+}

@@ -110,6 +110,7 @@ impl AgentView {
     }
     pub(crate) fn compaction_menu_element(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let menu = self.compaction_menu.as_ref()?;
+        let navigation = self.navigation_generation;
         let p = self.palette;
         Some(
             deferred(
@@ -133,6 +134,32 @@ impl AgentView {
                                 view.compaction_menu = None;
                                 cx.notify();
                             }))
+                            .child(
+                                div()
+                                    .id("search-copy-conversation")
+                                    .debug_selector(|| "search-copy-conversation".into())
+                                    .px(px(8.))
+                                    .py(px(6.))
+                                    .text_size(px(13.))
+                                    .text_color(rgb(p.ink))
+                                    .cursor_pointer()
+                                    .hover(|style| style.bg(p.accent_soft()))
+                                    .child("Search and Copy Conversation")
+                                    .on_click(cx.listener(move |view, _, window, cx| {
+                                        let Some(menu) = view.compaction_menu.take() else {
+                                            return;
+                                        };
+                                        if navigation == view.navigation_generation
+                                            && menu.chat_id == view.record.id
+                                            && menu.project == view.project
+                                            && menu.binding == view.window_binding
+                                            && Arc::ptr_eq(&menu.controller, &view.controller)
+                                        {
+                                            view.open_conversation_content(window, cx);
+                                        }
+                                        cx.notify();
+                                    })),
+                            )
                             .child(
                                 div()
                                     .id("compact-now")

@@ -11,6 +11,9 @@ mod composer_skills;
 mod connection_settings_controller;
 mod connection_settings_view;
 mod context_inspector;
+mod conversation_content;
+mod conversation_content_controller;
+mod conversation_content_view;
 mod draft_status;
 mod file_tab;
 mod launch_authority;
@@ -160,6 +163,7 @@ struct AgentView {
     cancelled_prompt_key: Option<String>,
     sidebar_menu: Option<sidebar_actions::SidebarMenu>,
     compaction_menu: Option<compaction_actions::CompactionMenu>,
+    conversation_content: Option<conversation_content_view::ContentSheet>,
     #[cfg(not(target_os = "macos"))]
     root_focus: FocusHandle,
     #[cfg(not(target_os = "macos"))]
@@ -418,6 +422,7 @@ impl AgentView {
             cancelled_prompt_key: None,
             sidebar_menu: None,
             compaction_menu: None,
+            conversation_content: None,
             #[cfg(not(target_os = "macos"))]
             root_focus,
             #[cfg(not(target_os = "macos"))]
@@ -465,6 +470,10 @@ impl AgentView {
         self.queue_geometry = None;
         self.sidebar_menu = None;
         self.compaction_menu = None;
+        self.conversation_content = None;
+        if let Some(transcript) = &self.transcript {
+            transcript.update(cx, |view, _| view.clear_content_reveal());
+        }
         let binding = workspace_lifetime::WindowBinding::new(window.window_handle().window_id());
         self.window_binding = Some(binding);
         self.organization_window = Some(window.window_handle());
@@ -904,6 +913,10 @@ impl AgentView {
         }
     }
     fn global_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.conversation_content.is_some() {
+            self.conversation_content_key(event, window, cx);
+            return;
+        }
         if self.skill_picker.is_some() {
             self.skill_picker_key(event, window, cx);
             return;
@@ -2096,6 +2109,7 @@ impl AgentView {
     fn conversation(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let p = self.palette;
         let inspector_target = self.context_inspector_target();
+        let content_target = conversation_content_controller::Target::capture(self);
         let transcript = if self.session.messages.is_empty() {
             // Do not retain a removed/cleared history behind the starter.
             self.transcript = None;
@@ -2582,6 +2596,15 @@ impl AgentView {
                     self.button("restore-archived-chat", "Restore Chat")
                         .on_click(cx.listener(move |view, _, _, cx| {
                             view.set_chat_archived(&id, false, cx)
+                        })),
+                )
+                .child(
+                    self.button("archived-search-copy", "Search and Copy Conversation")
+                        .debug_selector(|| "archived-search-copy".into())
+                        .on_click(cx.listener(move |view, _, window, cx| {
+                            if content_target.matches(view) {
+                                view.open_conversation_content(window, cx);
+                            }
                         })),
                 )
                 .when(self.session.state == RunState::Running, |footer| {
@@ -3229,6 +3252,9 @@ impl Render for AgentView {
         }
         if let Some(picker) = self.skill_picker_element(window, cx) {
             element = element.child(picker);
+        }
+        if let Some(sheet) = self.conversation_content_element(window, cx) {
+            element = element.child(sheet);
         }
         if self.quick_open.read(cx).is_open() {
             element = element.child(

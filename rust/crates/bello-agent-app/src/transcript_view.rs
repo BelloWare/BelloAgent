@@ -355,6 +355,7 @@ struct ViewportState {
     buffer: Pixels,
     heights: HashMap<RowKey, Pixels>,
     pending_scroll: Option<ListOffset>,
+    reveal: Option<RowKey>,
     painted_scroll: ListOffset,
     #[cfg(test)]
     target_preflights: Vec<usize>,
@@ -371,6 +372,7 @@ impl ViewportState {
             buffer,
             heights: HashMap::new(),
             pending_scroll: None,
+            reveal: None,
             #[cfg(test)]
             target_preflights: Vec::new(),
             #[cfg(test)]
@@ -487,6 +489,18 @@ impl ViewportState {
             self.list.scroll_to(anchor);
         }
         self.presentation = next;
+        if let Some(key) = self.reveal.take()
+            && let Some(item_ix) = self.presentation.rows.iter().position(|row| row.key == key)
+        {
+            let target = ListOffset {
+                item_ix,
+                offset_in_item: px(0.),
+            };
+            self.pending_scroll = None;
+            self.painted_scroll = target;
+            self.list.scroll_to(target);
+            return Some(target);
+        }
         remeasure_anchor.then_some(anchor)
     }
 }
@@ -725,6 +739,53 @@ impl TranscriptView {
         }
     }
 
+    pub(crate) fn clear_content_reveal(&mut self) {
+        self.viewport.borrow_mut().reveal = None;
+    }
+
+    /// Reveal a uniquely identified retained message, including a result paired
+    /// into its owning tool card. Never select a duplicate or a stale controller.
+    pub(crate) fn reveal_message(
+        &mut self,
+        input: TranscriptInput,
+        id: &str,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.presentation.input.chat_id != input.chat_id
+            || !self.presentation.input.controller.ptr_eq(&input.controller)
+            || input
+                .session
+                .messages
+                .iter()
+                .filter(|message| message.id == id)
+                .count()
+                != 1
+        {
+            return false;
+        }
+        let Some(index) = input
+            .session
+            .messages
+            .iter()
+            .position(|message| message.id == id)
+        else {
+            return false;
+        };
+        self.update_inputs(input, cx);
+        let row = self.presentation.rows.iter().find(|row| {
+            row.message_index == Some(index)
+                || row
+                    .projected
+                    .is_some_and(|projected| projected.result() == Some(index))
+        });
+        let Some(row) = row else {
+            return false;
+        };
+        self.viewport.borrow_mut().reveal = Some(row.key.clone());
+        cx.notify();
+        true
+    }
+
     pub(crate) fn update_inputs(&mut self, input: TranscriptInput, cx: &mut Context<Self>) {
         let old = &self.presentation.input;
         if Weak::ptr_eq(&old.controller, &input.controller)
@@ -738,7 +799,11 @@ impl TranscriptView {
         {
             return;
         }
+        if !Arc::ptr_eq(&old.session, &input.session) {
+            self.viewport.borrow_mut().reveal = None;
+        }
         if old.chat_id != input.chat_id || !Weak::ptr_eq(&old.controller, &input.controller) {
+            self.viewport.borrow_mut().reveal = None;
             self.collapsed.clear();
             self.expanded_reads.clear();
             self.removed_tool_focus.borrow_mut().extend(

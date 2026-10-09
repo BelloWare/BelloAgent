@@ -1,0 +1,7 @@
+Observed implementation gate failures, in order (summary, not reconstructed raw logs):
+1. Initial compile began while pure tests file was still being written: module file not found. Retried after file creation.
+2. E0502 in search_content: sheet mutable borrow overlapped Controller snapshot read. Snapshot capture moved before sheet borrow.
+3. Final added stale-notice GPUI test needed a mutable VisualTestContext for debug_bounds (E0596). Test-only binding fixed.
+4. First full all-feature run: 645 passed, 1 failed, 3 ignored. actions_menu_opens_loaded_archived_sheet_without_connection failed at conversation_content_view_tests.rs348 (None unwrap for conversation-actions-open). Archived footer replaces the ordinary composer Actions entry. Added explicit read-only archived-footer Search/Copy button and separate active Actions click test. Next full run: 647 passed, 3 ignored.
+5. Independent review then required render-time Target fencing on the new archived-footer callback. Added target check and reran final gates.
+Initial raw log files were reused before this evidence directory was prepared. Earlier failures are preserved here as explicit summaries only; available original successful intermediate logs are copied alongside final raw logs.

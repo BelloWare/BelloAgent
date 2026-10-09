@@ -1,0 +1,18 @@
+{
+  "VALIDATION.md": "0ab9c1efddd6112c16b3a8515dd0ea7eb67948c3fd946246b9c24837c4bce6b9",
+  "app.exit": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+  "app.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "clipboard-equality.json": "9326fddc93dc5de528431d93868f99dda9e8d5539dcbd305c6d9edba507ba0f1",
+  "clipboard-range.txt": "8e133b01c345c91bcad2a9d1ef634b0470fccfc1a3dcc3de3cc41be6574694dd",
+  "clipboard-whole.txt": "c243386e08df615781ed07fd5b6371ffd78f297af9bb1752e390edcee858fd48",
+  "desktop-launch.sh": "cf8ae64972623b212b853f59108b707f3f66104c709a12642a0e47e609ba7c20",
+  "expected-range.txt": "8e133b01c345c91bcad2a9d1ef634b0470fccfc1a3dcc3de3cc41be6574694dd",
+  "expected-whole.txt": "c243386e08df615781ed07fd5b6371ffd78f297af9bb1752e390edcee858fd48",
+  "gateway.log": "3ec7b1bec830f4e74535a3b7654abea64ac9ebf7bf688f796fbabdd421a91076",
+  "gui-report.json": "9b02aa5399065473b44a62998fbc5f9a5db9bae67ffb7b2a8da5bbda1aac8e04",
+  "requests-before.jsonl": "348446b95720b8b17ff99e77f3aa34d1a063ae265ebdc29ec0804eb4399ec709",
+  "requests.jsonl": "348446b95720b8b17ff99e77f3aa34d1a063ae265ebdc29ec0804eb4399ec709",
+  "sealed-build.json": "a6ab8c309ebd46a39e463ce7ffc400d88489ed1a785ef9b0a4bf5d390a6b71eb",
+  "state-after.json": "1367b3b64236459ce5cacf2260dd4b8be274019d7fd6a85fe6007454bd18181c",
+  "state-before.json": "1367b3b64236459ce5cacf2260dd4b8be274019d7fd6a85fe6007454bd18181c"
+}

@@ -1,0 +1,38 @@
+{
+  "base_commit": "4c4315bc7a8c9f36e59a1bb8992a33e5813fa830",
+  "swift_spec_commit": "6319e368c6ddb7c3ef18605e78f23b1a5b69e63a",
+  "worktree": "/workspace/shared/agent-conversation-content",
+  "binary": "/workspace/shared/conversation-content-r2-evidence/bin/bello-agent-search-copy-r2",
+  "binary_sha256": "1ccee19cbadf3dc6d42e4fcea96775454c17ebab347e1586c5ada84575820740",
+  "patch": "/workspace/shared/conversation-content-r2-evidence/conversation-content-r2.patch",
+  "patch_sha256": "1854a436e0bfc4c432c91b9831a1ceaf7271858ba96e3adcd13d90ec109ba368",
+  "incremental_r1_patch": "/workspace/shared/conversation-content-r2-evidence/r1-to-r2.patch",
+  "incremental_r1_patch_sha256": "61228ffefda45781e35670462a6351ca9e0520ef1e28981233f8a23e4866f058",
+  "source_manifest": "/workspace/shared/conversation-content-r2-evidence/source-sha256.txt",
+  "source_manifest_sha256": "c60009ad190c322f19088e2eff4dc71ae7a84d75942a50c7d9af379a180c60fc",
+  "changed_since_r1": [
+    "rust/crates/bello-agent-app/src/conversation_content.rs",
+    "rust/crates/bello-agent-app/src/conversation_content_tests.rs",
+    "rust/crates/bello-agent-app/src/conversation_content_view_tests.rs",
+    "rust/docs/conversation-content.md"
+  ],
+  "gates": {
+    "fmt": "passed",
+    "focused_all_feature_tests": 32,
+    "all_feature_app_tests": {
+      "passed": 651,
+      "ignored_native": 3,
+      "failed": 0
+    },
+    "strict_all_feature_all_target_app_clippy": "passed",
+    "ordinary_all_feature_app_build": "passed"
+  },
+  "r1_immutable_archive": "/workspace/shared/conversation-content-r1",
+  "limitations": [
+    "No fresh actual GUI run of r2 binary yet; r1 GUI evidence remains r1 only.",
+    "Native macOS acceptance remains separate.",
+    "Portable Unicode normalized lowercase differs from Foundation matching; explicit query and combining-run bounds remain documented.",
+    "New full Transcript Find/sidebar workflows remain outside this slice."
+  ],
+  "no_git_writes_in_r2": true
+}

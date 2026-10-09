@@ -1,0 +1,10 @@
+warning: unused variable: `cancel`
+   --> /tmp/conversation-independent-review-r2/conversation_content.rs:182:24
+    |
+182 | fn search_check_cancel(cancel: &AtomicBool) -> Result<(), String> {
+    |                        ^^^^^^ help: if this is intentional, prefix it with an underscore: `_cancel`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: 1 warning emitted
+
