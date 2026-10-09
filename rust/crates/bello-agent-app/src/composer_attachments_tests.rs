@@ -483,7 +483,10 @@ fn held_draft_reopen_retains_ordinary_images_and_cancel_restores_them(cx: &mut T
             assert_eq!(saved.attachments, vec![selected.clone()]);
             let reloaded = crate::chat::ChatState::new(
                 view.controller.clone(),
-                view.record.clone(),
+                crate::chat::ChatSource {
+                    record: view.record.clone(),
+                    workspace: view.workspace.clone(),
+                },
                 crate::chat::RestoredDraft {
                     draft: saved,
                     cancellation: None,

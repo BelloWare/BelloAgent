@@ -385,6 +385,7 @@ impl Controller {
             return Err(invalid("Materialize this saved chat before sending"));
         }
         inner.store.transact(|session| session.submit(item))?;
+        self.note_semantic_activity();
         self.publish(&inner);
         self.launch(&mut inner, None);
         Ok(())

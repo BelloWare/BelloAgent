@@ -19,7 +19,7 @@ pub(crate) enum SidebarAction {
 
 #[derive(Clone)]
 pub(crate) struct SidebarMenu {
-    token: uuid::Uuid,
+    pub(super) token: uuid::Uuid,
     chat_id: String,
     project: PathBuf,
     binding: Option<WindowBinding>,
@@ -82,7 +82,13 @@ impl AgentView {
                     a.archived_at
                         .is_some()
                         .cmp(&b.archived_at.is_some())
-                        .then_with(|| a.sidebar_cmp(b))
+                        .then_with(|| {
+                            a.sidebar_cmp_with_activity(
+                                b,
+                                self.sidebar_activity_hold.key(a),
+                                self.sidebar_activity_hold.key(b),
+                            )
+                        })
                 })
         });
         records
@@ -170,6 +176,8 @@ impl AgentView {
                 self.changes_open,
             ),
         };
+        self.recheck_sidebar_pointer(Some(position));
+        self.sidebar_activity_hold.begin_menu(menu.token);
         self.sidebar_menu = Some(menu.clone());
         #[cfg(target_os = "macos")]
         {
@@ -180,9 +188,16 @@ impl AgentView {
                 position,
                 menu.pinned,
                 menu.archived,
-                move |choice, cx| {
+                move |choice, pointer, cx| {
                     let _ = owner.update(cx, |view, cx| {
-                        view.finish_sidebar_menu(menu.token, choice, cx)
+                        if view
+                            .sidebar_menu
+                            .as_ref()
+                            .is_some_and(|current| current.token == menu.token)
+                        {
+                            view.recheck_sidebar_pointer(pointer);
+                            view.finish_sidebar_menu(menu.token, choice, cx);
+                        }
                     });
                 },
             );
@@ -205,6 +220,7 @@ impl AgentView {
         else {
             return;
         };
+        self.sidebar_activity_hold.end_menu(token);
         self.sidebar_menu = None;
         #[cfg(not(target_os = "macos"))]
         self.restore_sidebar_popup_focus(&menu, cx);

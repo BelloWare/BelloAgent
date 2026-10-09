@@ -62,11 +62,7 @@ fn selected_action(selected: u8, pinned: bool) -> Option<SidebarAction> {
     }
 }
 
-fn finish_if_open(
-    open: bool,
-    choice: Option<SidebarAction>,
-    completion: impl FnOnce(Option<SidebarAction>),
-) {
+fn finish_if_open<T>(open: bool, choice: T, completion: impl FnOnce(T)) {
     if open {
         completion(choice);
     }
@@ -124,6 +120,34 @@ fn anchor_in_view(
     ))
 }
 
+// Inverse of the menu anchor mapping, except a fresh pointer may legitimately
+// be outside the content area. Do not clamp it: that would hide a real exit.
+// Both AppKit points and GPUI logical pixels are unscaled here (not Retina
+// backing pixels). Unknown/nonrepresentable geometry must not release a hold.
+fn pointer_from_view(
+    position: (f64, f64),
+    origin: (f64, f64),
+    size: (f64, f64),
+    flipped: bool,
+) -> Option<(f32, f32)> {
+    let (width, height) = size;
+    if ![position.0, position.1, origin.0, origin.1, width, height]
+        .iter()
+        .all(|value| value.is_finite())
+        || width <= 0.0
+        || height <= 0.0
+    {
+        return None;
+    }
+    let x = (position.0 - origin.0) as f32;
+    let y = if flipped {
+        position.1 - origin.1
+    } else {
+        height - (position.1 - origin.1)
+    } as f32;
+    (x.is_finite() && y.is_finite()).then_some((x, y))
+}
+
 #[derive(Clone, Copy, Default)]
 struct ViewCategory {
     gpui_view: bool,
@@ -150,19 +174,19 @@ fn gpui_child_index(content_attached: bool, children: &[ViewCategory]) -> Option
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) use native::show_sidebar_menu;
+pub(crate) use native::{current_sidebar_pointer, show_sidebar_menu};
 
 #[cfg(target_os = "macos")]
 mod native {
     use super::{
         SidebarAction, Tracking, ViewCategory, anchor_in_view, archive_command, copy_id_command,
-        finish_if_open, gpui_child_index, pin_command, selected_action,
+        finish_if_open, gpui_child_index, pin_command, pointer_from_view, selected_action,
     };
     use cocoa::{
         base::{BOOL, NO, YES, id, nil},
         foundation::{NSArray, NSPoint, NSRect, NSString},
     };
-    use gpui::{AnyWindowHandle, App, AsyncApp, Pixels, Point, WindowId};
+    use gpui::{AnyWindowHandle, App, AsyncApp, Pixels, Point, WindowId, point, px};
     use objc::{
         class,
         declare::ClassDecl,
@@ -172,7 +196,8 @@ mod native {
     };
     use std::{ffi::c_void, sync::OnceLock};
 
-    type Completion = Box<dyn FnOnce(Option<SidebarAction>, &mut App)>;
+    type MenuResult = (Option<SidebarAction>, Option<Point<Pixels>>);
+    type Completion = Box<dyn FnOnce(Option<SidebarAction>, Option<Point<Pixels>>, &mut App)>;
 
     struct Request {
         app: AsyncApp,
@@ -197,14 +222,17 @@ mod native {
     /// Asynchronously opens source sidebar actions at a content-area position.
     /// Cancellation or an unavailable native anchor returns None. A closed GPUI
     /// window discards the completion. Callers additionally validate their own
-    /// chat, project and request generation before applying a selected action.
+    /// chat, project and request generation before consuming either result. The
+    /// pointer is sampled directly from AppKit after tracking; None means unknown,
+    /// never proof of a sidebar exit. Preserve any pointer hold until a later
+    /// fresh pointer event or the independent background/window-detach release.
     pub(crate) fn show_sidebar_menu(
         cx: &mut App,
         window: AnyWindowHandle,
         position: Point<Pixels>,
         pinned: bool,
         archived: bool,
-        completion: impl FnOnce(Option<SidebarAction>, &mut App) + 'static,
+        completion: impl FnOnce(Option<SidebarAction>, Option<Point<Pixels>>, &mut App) + 'static,
     ) {
         let request = Box::new(Request {
             app: cx.to_async(),
@@ -232,34 +260,16 @@ mod native {
         let request = unsafe { Box::from_raw(context.cast::<Request>()) };
         let native_window = request
             .app
-            .update(|cx| {
-                if !cx.windows()
-                    .iter()
-                    .any(|window| window.window_id() == request.expected)
-                    // Pinned GPUI MacWindow::active_window reads NSApp.mainWindow,
-                    // checks GPUIWindow, and returns that window's stored handle.
-                    || !cx
-                        .active_window()
-                        .is_some_and(|window| window.window_id() == request.expected)
-                {
-                    return None;
-                }
-                // Retain that exact process-owned native identity now; update()
-                // flushes GPUI effects after this callback returns. Tracking will
-                // recheck that it is still the visible main window afterward.
-                unsafe {
-                    let app: id = msg_send![class!(NSApplication), sharedApplication];
-                    let window: id = msg_send![app, mainWindow];
-                    OwnedObject::retain(window)
-                }
-            })
+            .update(|cx| retained_active_window(request.expected, cx))
             .ok()
             .flatten();
 
         // All App/Window borrows above have ended before any NSMenu is opened.
-        let choice = native_window.and_then(|window| {
-            Tracking::begin().and_then(|_tracking| unsafe { track_menu(&request, &window) })
-        });
+        let result = native_window
+            .and_then(|window| {
+                Tracking::begin().and_then(|_tracking| unsafe { track_menu(&request, &window) })
+            })
+            .unwrap_or_default();
 
         let Request {
             app,
@@ -274,8 +284,44 @@ mod native {
                 .windows()
                 .iter()
                 .any(|window| window.window_id() == expected);
-            finish_if_open(open, choice, |choice| completion(choice, cx));
+            finish_if_open(open, result, |(choice, pointer)| {
+                completion(choice, pointer, cx)
+            });
         });
+    }
+
+    /// Queries the exact active window's current native pointer without entering
+    /// a tracking loop or consulting GPUI's cached mouse position. Suitable for
+    /// first layout and activation. None is unknown and must remain conservative.
+    pub(crate) fn current_sidebar_pointer(
+        window: AnyWindowHandle,
+        cx: &App,
+    ) -> Option<Point<Pixels>> {
+        // AppKit property reads and coordinate conversion do not run a nested
+        // event loop. Unlike menu presentation, this query may hold an App borrow.
+        unsafe {
+            let _pool = OwnedObject::from_owned(msg_send![class!(NSAutoreleasePool), new])?;
+            let native_window = retained_active_window(window.window_id(), cx)?;
+            let (content, view) = retained_content_views(&native_window)?;
+            current_pointer(&native_window, &content, &view)
+        }
+    }
+
+    fn retained_active_window(expected: WindowId, cx: &App) -> Option<OwnedObject> {
+        if !cx.windows().iter().any(|window| window.window_id() == expected)
+            // Pinned GPUI MacWindow::active_window reads NSApp.mainWindow,
+            // checks GPUIWindow, and returns that window's stored handle.
+            || !cx.active_window().is_some_and(|window| window.window_id() == expected)
+        {
+            return None;
+        }
+        // Retain this exact identity, never the first window or a title match.
+        // The menu path checks it again after update() flushes GPUI effects.
+        unsafe {
+            let app: id = msg_send![class!(NSApplication), sharedApplication];
+            let window: id = msg_send![app, mainWindow];
+            OwnedObject::retain(window)
+        }
     }
 
     // A +1 reference, used only on the main thread. Each allocation/retain has
@@ -341,45 +387,10 @@ mod native {
         unsafe { target.set_ivar(SELECTED_IVAR, 3u8) };
     }
 
-    unsafe fn track_menu(request: &Request, window: &OwnedObject) -> Option<SidebarAction> {
+    unsafe fn track_menu(request: &Request, window: &OwnedObject) -> Option<MenuResult> {
         unsafe {
             let _pool = OwnedObject::from_owned(msg_send![class!(NSAutoreleasePool), new])?;
-            let app: id = msg_send![class!(NSApplication), sharedApplication];
-            let main_window: id = msg_send![app, mainWindow];
-            if main_window != window.0 {
-                return None;
-            }
-            let gpui_class = Class::get("GPUIWindow")?;
-            let gpui_window: BOOL = msg_send![window.0, isKindOfClass: gpui_class];
-            let visible: BOOL = msg_send![window.0, isVisible];
-            let main: BOOL = msg_send![window.0, isMainWindow];
-            if gpui_window != YES || visible != YES || main != YES {
-                return None;
-            }
-            // This is the exact window retained after cx.active_window matched
-            // the expected handle. Never pick the first window or use its title.
-            let content: id = msg_send![window.0, contentView];
-            let content = OwnedObject::retain(content)?;
-            let attached_window: id = msg_send![content.0, window];
-            let subviews: id = msg_send![content.0, subviews];
-            if subviews == nil || subviews.count() > 64 {
-                return None;
-            }
-            let view_class = Class::get("GPUIView")?;
-            let mut children = Vec::new();
-            for i in 0..subviews.count() {
-                let child = subviews.objectAtIndex(i);
-                let gpui_view: BOOL = msg_send![child, isKindOfClass: view_class];
-                let child_window: id = msg_send![child, window];
-                let superview: id = msg_send![child, superview];
-                children.push(ViewCategory {
-                    gpui_view: gpui_view == YES,
-                    expected_window: child_window == window.0,
-                    direct_child: superview == content.0,
-                });
-            }
-            let index = gpui_child_index(attached_window == window.0, &children)?;
-            let view = OwnedObject::retain(subviews.objectAtIndex(index as u64))?;
+            let (content, view) = retained_content_views(window)?;
 
             // GPUI's mouse coordinate conversion uses the content area's height
             // (MacWindowState::content_size and convert_mouse_position). First
@@ -445,7 +456,111 @@ mod native {
                 popUpMenuPositioningItem: nil atLocation: anchor inView: view.0
             ];
             let selected = *(*target.0).get_ivar::<u8>(SELECTED_IVAR);
-            selected_action(selected, request.pinned)
+            let pointer = current_pointer(window, &content, &view);
+            Some((selected_action(selected, request.pinned), pointer))
+        }
+    }
+
+    // Both query paths validate the same unique GPUIView and retain both views
+    // before reading coordinates. Unknown/replaced native hierarchies are not
+    // silently treated as the expected GPUI content area.
+    unsafe fn retained_content_views(window: &OwnedObject) -> Option<(OwnedObject, OwnedObject)> {
+        unsafe {
+            let app: id = msg_send![class!(NSApplication), sharedApplication];
+            let main_window: id = msg_send![app, mainWindow];
+            if main_window != window.0 {
+                return None;
+            }
+            let gpui_class = Class::get("GPUIWindow")?;
+            let gpui_window: BOOL = msg_send![window.0, isKindOfClass: gpui_class];
+            let visible: BOOL = msg_send![window.0, isVisible];
+            let main: BOOL = msg_send![window.0, isMainWindow];
+            if gpui_window != YES || visible != YES || main != YES {
+                return None;
+            }
+            // This is the exact window retained after cx.active_window matched
+            // the expected handle. Never pick the first window or use its title.
+            let content: id = msg_send![window.0, contentView];
+            let content = OwnedObject::retain(content)?;
+            let attached_window: id = msg_send![content.0, window];
+            let subviews: id = msg_send![content.0, subviews];
+            if subviews == nil || subviews.count() > 64 {
+                return None;
+            }
+            let view_class = Class::get("GPUIView")?;
+            let mut children = Vec::new();
+            for i in 0..subviews.count() {
+                let child = subviews.objectAtIndex(i);
+                let gpui_view: BOOL = msg_send![child, isKindOfClass: view_class];
+                let child_window: id = msg_send![child, window];
+                let superview: id = msg_send![child, superview];
+                children.push(ViewCategory {
+                    gpui_view: gpui_view == YES,
+                    expected_window: child_window == window.0,
+                    direct_child: superview == content.0,
+                });
+            }
+            let index = gpui_child_index(attached_window == window.0, &children)?;
+            let view = OwnedObject::retain(subviews.objectAtIndex(index as u64))?;
+
+            Some((content, view))
+        }
+    }
+
+    // Called directly for layout/activation, or after native menu tracking ends,
+    // while the exact window and both views remain retained on the main thread.
+    // GPUI's Window cache can be stale after activation or nested tracking.
+    unsafe fn current_pointer(
+        window: &OwnedObject,
+        content: &OwnedObject,
+        view: &OwnedObject,
+    ) -> Option<Point<Pixels>> {
+        unsafe {
+            let app: id = msg_send![class!(NSApplication), sharedApplication];
+            // Both query paths already required this exact main window. If its
+            // activation/main ownership has changed, do not interpret the sample
+            // as an exit. The owner handles background/detach independently; a
+            // later successful query or real pointer event can recheck position.
+            let active: BOOL = msg_send![app, isActive];
+            let main: id = msg_send![app, mainWindow];
+            let visible: BOOL = msg_send![window.0, isVisible];
+            let current_content: id = msg_send![window.0, contentView];
+            let attached: id = msg_send![content.0, window];
+            let view_window: id = msg_send![view.0, window];
+            let parent: id = msg_send![view.0, superview];
+            if active != YES
+                || main != window.0
+                || visible != YES
+                || current_content != content.0
+                || attached != window.0
+                || view_window != window.0
+                || parent != content.0
+            {
+                return None;
+            }
+            // GPUI creates an untransformed content container. If an unexpected
+            // native transform appeared during tracking, retain the hold rather
+            // than confuse view units with GPUI logical pixels. This check may
+            // conservatively remain true even after a transform was reset.
+            let transformed: BOOL = msg_send![content.0, isRotatedOrScaledFromBase];
+            if transformed != NO {
+                return None;
+            }
+            // Apple defines this as the current pointer independent of both
+            // the event being handled and events pending in the event queue:
+            // https://developer.apple.com/documentation/appkit/nswindow/mouselocationoutsideofeventstream
+            let base: NSPoint = msg_send![window.0, mouseLocationOutsideOfEventStream];
+            // nil means the same window's base coordinates, not screen pixels.
+            let local: NSPoint = msg_send![content.0, convertPoint: base fromView: nil];
+            let bounds: NSRect = msg_send![content.0, bounds];
+            let flipped: BOOL = msg_send![content.0, isFlipped];
+            let (x, y) = pointer_from_view(
+                (local.x, local.y),
+                (bounds.origin.x, bounds.origin.y),
+                (bounds.size.width, bounds.size.height),
+                flipped == YES,
+            )?;
+            Some(point(px(x), px(y)))
         }
     }
 }
@@ -564,6 +679,58 @@ mod tests {
         );
     }
 
+    #[test]
+    fn completion_pointer_inverts_anchor_in_points_for_both_axes() {
+        for flipped in [false, true] {
+            let origin = (2.0, 3.0);
+            let size = (800.0, 600.0);
+            let anchored = anchor_in_view((40.0, 60.0), origin, size, flipped).unwrap();
+            assert_eq!(
+                pointer_from_view(anchored, origin, size, flipped),
+                Some((40.0, 60.0))
+            );
+        }
+    }
+
+    #[test]
+    fn completion_pointer_preserves_outside_coordinates_without_clamping() {
+        assert_eq!(
+            pointer_from_view((-10.0, 650.0), (0.0, 0.0), (800.0, 600.0), false),
+            Some((-10.0, -50.0))
+        );
+        assert_eq!(
+            pointer_from_view((900.0, 650.0), (0.0, 0.0), (800.0, 600.0), true),
+            Some((900.0, 650.0))
+        );
+    }
+
+    #[test]
+    fn invalid_completion_pointer_remains_unknown_not_a_synthetic_exit() {
+        for position in [(f64::NAN, 0.0), (0.0, f64::INFINITY), (f64::MAX, 0.0)] {
+            assert_eq!(
+                pointer_from_view(position, (0.0, 0.0), (800.0, 600.0), false),
+                None
+            );
+        }
+        for size in [(0.0, 600.0), (800.0, -1.0), (800.0, f64::NAN)] {
+            assert_eq!(
+                pointer_from_view((40.0, 60.0), (0.0, 0.0), size, false),
+                None
+            );
+        }
+        assert_eq!(
+            pointer_from_view((40.0, 60.0), (f64::INFINITY, 0.0), (800.0, 600.0), false),
+            None
+        );
+        finish_if_open(
+            true,
+            (None::<SidebarAction>, None::<(f32, f32)>),
+            |result| {
+                assert_eq!(result, (None, None));
+            },
+        );
+    }
+
     struct DropCount(Rc<Cell<usize>>);
     impl Drop for DropCount {
         fn drop(&mut self) {
@@ -601,6 +768,18 @@ mod tests {
             panic!("a closed window must never receive the selection");
         });
         assert_eq!(drops.get(), 1);
+    }
+
+    #[test]
+    fn closed_window_discards_fresh_pointer_alongside_selection() {
+        finish_if_open(
+            false,
+            (
+                Some(SidebarAction::CopySessionId),
+                Some((-10.0f32, 20.0f32)),
+            ),
+            |_| panic!("a detached owner must never consume the pointer sample"),
+        );
     }
 
     #[test]

@@ -36,6 +36,7 @@ fn fixture(retain_rewrite: bool) -> Fixture {
         id: session.snapshot().id,
         title: "Durable Cancel fixture".into(),
         snapshot: session_path,
+        last_activity_at: None,
         sidebar_order: Some(1),
         pinned_at: None,
         archived_at: None,

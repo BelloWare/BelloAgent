@@ -1,3 +1,7 @@
+#[path = "semantic_activity.rs"]
+mod semantic_activity;
+pub use semantic_activity::SemanticActivity;
+
 #[cfg(all(test, feature = "synthetic-authority"))]
 #[path = "context_recovery_mcp_tests.rs"]
 mod context_recovery_mcp_tests;
@@ -142,6 +146,7 @@ pub struct Controller {
     inner: Mutex<Inner>,
     published: tokio::sync::watch::Sender<Arc<Session>>,
     published_revision: AtomicU64,
+    semantic_activity: tokio::sync::watch::Sender<SemanticActivity>,
     active_cancel: RwLock<Option<CancellationToken>>,
     stop_requested: AtomicBool,
     stop_epoch: AtomicU64,
@@ -253,6 +258,7 @@ impl Controller {
         Ok(Arc::new(Self {
             published: tokio::sync::watch::channel(initial).0,
             published_revision: AtomicU64::new(0),
+            semantic_activity: tokio::sync::watch::channel(SemanticActivity::default()).0,
             active_cancel: RwLock::new(None),
             stop_requested: AtomicBool::new(false),
             stop_epoch: AtomicU64::new(0),
@@ -485,6 +491,7 @@ impl Controller {
         // All preparation is outside the watch critical section. Generic queue
         // or durable publications can race Stop too: they still publish required
         // state but must strip a live preview prepared before the fence.
+        let mut hold_changed = false;
         if self.published.send_if_modified(|current| {
             if self.is_retired()
                 || self.stop_requested.load(Ordering::Acquire)
@@ -495,10 +502,15 @@ impl Controller {
                 }
                 snapshot.live_tools.clear();
             }
+            hold_changed =
+                semantic_activity::run_hold(current) != semantic_activity::run_hold(&snapshot);
             *current = Arc::new(snapshot);
             true
         }) {
             self.published_revision.fetch_add(1, Ordering::Release);
+            if hold_changed {
+                self.note_semantic_activity();
+            }
         }
     }
     fn worker_finished(&self, inner: &mut Inner) {
@@ -571,6 +583,7 @@ impl Controller {
         item.model = Some(config.profile.model_id.clone());
         item.effort = Some(config.profile.thinking_level.clone());
         inner.store.transact(|session| session.submit(item))?;
+        self.note_semantic_activity();
         self.publish(&inner);
         self.launch(&mut inner, None);
         Ok(())
@@ -821,8 +834,16 @@ impl Controller {
         outcome: &str,
         text: Option<&str>,
     ) -> Result<()> {
-        self.change_and_launch(|session| {
-            session.resolve_edit(edit_id, outcome, text).map(|()| None)
+        self.change_and_launch_activity(|session| {
+            // Only the first accepted Save is activity, even if its text is
+            // unchanged. Replaying a resolved identity is an acknowledgment.
+            let saved = outcome == "saved"
+                && session
+                    .edit
+                    .as_ref()
+                    .is_some_and(|edit| edit.edit_id == edit_id);
+            session.resolve_edit(edit_id, outcome, text)?;
+            Ok((None, saved))
         })
     }
     pub fn remove(self: &Arc<Self>, id: &str) -> Result<()> {
@@ -896,6 +917,12 @@ impl Controller {
         self: &Arc<Self>,
         action: impl FnOnce(&mut Session) -> Result<Option<Submission>>,
     ) -> Result<()> {
+        self.change_and_launch_activity(|session| action(session).map(|first| (first, false)))
+    }
+    fn change_and_launch_activity(
+        self: &Arc<Self>,
+        action: impl FnOnce(&mut Session) -> Result<(Option<Submission>, bool)>,
+    ) -> Result<()> {
         let confirmed = self.confirm_resources()?;
         let mut inner = self
             .inner
@@ -911,7 +938,10 @@ impl Controller {
                 "Compaction is waiting for the current run to stop. Try this action after it settles; queued input is retained.",
             ));
         }
-        let first = inner.store.transact(action)?;
+        let (first, activity) = inner.store.transact(action)?;
+        if activity {
+            self.note_semantic_activity();
+        }
         self.publish(&inner);
         self.launch(&mut inner, first);
         Ok(())

@@ -459,7 +459,10 @@ fn active_inactive_and_recovery_state_refuse_before_save(cx: &mut TestAppContext
             );
             let mut chat = crate::ChatState::new(
                 controller,
-                record.clone(),
+                crate::chat::ChatSource {
+                    record: record.clone(),
+                    workspace: view.workspace.clone(),
+                },
                 crate::chat::RestoredDraft {
                     draft: DraftRecord::default(),
                     cancellation: None,
@@ -859,7 +862,10 @@ async fn completed_save_preserves_both_chat_drafts_after_newer_selection(cx: &mu
             record.materialization = bello_agent_core::workspace::ChatMaterialization::Pending;
             let chat = crate::ChatState::new(
                 second.clone(),
-                record.clone(),
+                crate::chat::ChatSource {
+                    record: record.clone(),
+                    workspace: view.workspace.clone(),
+                },
                 crate::chat::RestoredDraft {
                     draft: DraftRecord {
                         skills: Vec::new(),

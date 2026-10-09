@@ -18,6 +18,7 @@ fn fixture() -> (tempfile::TempDir, ShutdownPlan) {
     let record = ChatRecord {
         materialization: bello_agent_core::workspace::ChatMaterialization::Pending,
         sidebar_order: None,
+        last_activity_at: None,
         pinned_at: None,
         archived_at: None,
         tool_mode: Default::default(),
@@ -284,4 +285,56 @@ fn block_external<T>(future: impl std::future::Future<Output = T>) -> T {
             .expect("external worker timed out");
         std::thread::park_timeout(remaining);
     }
+}
+
+#[gpui::test]
+fn activity_flush_reads_final_actor_watermark_after_stop_boundary(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let project = std::fs::canonicalize(dir.path()).unwrap();
+    let path = project.join("session.json");
+    let mut store = SessionStore::open(&path).unwrap();
+    let item = bello_agent_core::Submission::new("queued".into(), Lane::FollowUp);
+    let item_id = item.id.clone();
+    store.transact(|session| session.submit(item)).unwrap();
+    let controller = Controller::new(store, None).unwrap();
+    controller.begin_edit(&item_id, "final-save").unwrap();
+    assert_eq!(controller.activity().timestamp_micros, None);
+    let record = ChatRecord::new(controller.snapshot().id, "Shutdown".into(), path);
+    let id = record.id.clone();
+    let workspace = Arc::new(Mutex::new(
+        WorkspaceStore::open(project.join("catalog.json"), &project).unwrap(),
+    ));
+    let plan = ShutdownPlan {
+        drafts: vec![(
+            record,
+            DraftRecord {
+                text: "preserved draft".into(),
+                revision: 1,
+                ..Default::default()
+            },
+        )],
+        controllers: vec![controller.clone()],
+        selected: id.clone(),
+        selection_revision: 1,
+        workspace: workspace.clone(),
+    };
+    let outcome = cx
+        .background_executor
+        .block_test(plan.execute_with_stop(|controller| {
+            assert_eq!(
+                workspace.lock().unwrap().snapshot().drafts[&id].text,
+                "preserved draft"
+            );
+            controller
+                .resolve_edit("final-save", "saved", Some("queued"))
+                .unwrap();
+            async { Ok(()) }
+        }));
+    assert!(outcome.result.is_ok());
+    let final_stamp = controller.activity().timestamp_micros;
+    assert!(final_stamp.is_some());
+    assert_eq!(
+        workspace.lock().unwrap().snapshot().chats[0].last_activity_at,
+        final_stamp
+    );
 }

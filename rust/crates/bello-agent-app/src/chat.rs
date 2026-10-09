@@ -3,15 +3,20 @@
 use super::{AgentView, Palette};
 use bello_agent_core::{
     Controller, Session,
-    workspace::{ChatRecord, DraftRecord, QueuedDraft, SubmissionIntent},
+    workspace::{ChatRecord, DraftRecord, QueuedDraft, SubmissionIntent, WorkspaceStore},
 };
 use bello_workbench_ui::{EditorEvent, EditorView};
 use gpui::*;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 pub(crate) struct RestoredDraft<'a> {
     pub draft: DraftRecord,
     pub cancellation: Option<&'a bello_agent_core::workspace::QueuedCancelReceipt>,
+}
+
+pub(crate) struct ChatSource {
+    pub record: ChatRecord,
+    pub workspace: Arc<Mutex<WorkspaceStore>>,
 }
 
 pub struct ChatState {
@@ -60,21 +65,36 @@ pub struct ChatState {
     pub inflight_submission: Option<SubmissionIntent>,
     pub _editor_events: Subscription,
     pub _poll: Task<()>,
+    pub activity_write: crate::sidebar_activity::ActivityWriteState,
+    pub _activity_poll: Task<()>,
+    activity_workspace: Arc<Mutex<WorkspaceStore>>,
 }
 impl ChatState {
     pub fn new(
         controller: Arc<Controller>,
-        record: ChatRecord,
+        source: ChatSource,
         restored: RestoredDraft<'_>,
         pending: bool,
         palette: Palette,
         window: &mut Window,
         cx: &mut Context<AgentView>,
     ) -> Self {
+        let ChatSource {
+            mut record,
+            workspace: activity_workspace,
+        } = source;
         let RestoredDraft {
             draft,
             cancellation,
         } = restored;
+        let mut activity_write = crate::sidebar_activity::ActivityWriteState::for_record(&record);
+        crate::sidebar_activity::capture_current(&mut record, &mut activity_write, &controller);
+        let activity_poll = crate::sidebar_activity::subscribe(
+            &controller,
+            &record,
+            activity_workspace.clone(),
+            cx,
+        );
         let session = controller.snapshot_shared();
         let pending_cancel = cancellation.and_then(|receipt| match &receipt.state {
             bello_agent_core::workspace::QueuedCancelState::Pending { edit_id, turn_id } => {
@@ -205,6 +225,9 @@ impl ChatState {
             inflight_submission: None,
             _editor_events: editor_events,
             _poll: poll,
+            activity_write,
+            activity_workspace,
+            _activity_poll: activity_poll,
         }
     }
     fn subscribe(
@@ -233,6 +256,24 @@ impl ChatState {
     /// Presentation replacement only. The owner must explicitly retire/join
     /// any outgoing runtime before transferring persistent-store authority.
     pub fn replace_controller(&mut self, controller: Arc<Controller>, cx: &mut Context<AgentView>) {
+        if self.activity_write.adopt_record(&self.record) {
+            crate::sidebar_activity::capture_current(
+                &mut self.record,
+                &mut self.activity_write,
+                &self.controller,
+            );
+        }
+        crate::sidebar_activity::capture_current(
+            &mut self.record,
+            &mut self.activity_write,
+            &controller,
+        );
+        self._activity_poll = crate::sidebar_activity::subscribe(
+            &controller,
+            &self.record,
+            self.activity_workspace.clone(),
+            cx,
+        );
         if !Arc::ptr_eq(&self.controller, &controller) {
             self.transcript = None;
             self.skill_catalog = Default::default();

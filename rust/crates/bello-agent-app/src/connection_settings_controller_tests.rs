@@ -1057,7 +1057,14 @@ fn post_catalog_switch_open_failure_adopts_new_binding_and_never_revives_old_rou
     // A registered, never-sent chat has no journal. A directory in its place
     // causes a real reopen failure after the catalog selection was committed.
     std::fs::create_dir_all(&path).unwrap();
-    root.update(cx, |view, cx| view.select_connection(&second, cx));
+    let late_activity = bello_agent_core::workspace::organization_timestamp();
+    root.update(cx, |view, cx| {
+        view.select_connection(&second, cx);
+        let id = view.record.id.clone();
+        // A genuine event accepted before retirement may arrive through its
+        // watch callback while retirement/reopen is still outstanding.
+        view.test_activity_event(&id, late_activity, cx);
+    });
     cx.run_until_parked();
     cx.read(|cx| {
         let view = root.read(cx);
@@ -1069,6 +1076,15 @@ fn post_catalog_switch_open_failure_adopts_new_binding_and_never_revives_old_rou
             Some(second.as_str())
         );
         assert!(old.is_retired());
+        assert_eq!(view.record.last_activity_at, Some(late_activity));
+        assert_eq!(
+            view.records
+                .iter()
+                .find(|row| row.id == view.record.id)
+                .unwrap()
+                .last_activity_at,
+            Some(late_activity)
+        );
         assert!(view.connections.blocked.contains(&view.record.id));
     });
     assert!(
@@ -1076,12 +1092,22 @@ fn post_catalog_switch_open_failure_adopts_new_binding_and_never_revives_old_rou
             .is_err()
     );
     std::fs::remove_dir(&path).unwrap();
-    root.update(cx, |view, cx| view.select_connection(&second, cx));
+    let retry_activity = late_activity.saturating_add(1);
+    root.update(cx, |view, cx| {
+        view.select_connection(&second, cx);
+        let id = view.record.id.clone();
+        view.test_activity_event(&id, retry_activity, cx);
+    });
     cx.run_until_parked();
     cx.read(|cx| {
         let view = root.read(cx);
         assert!(!view.connections.blocked.contains(&view.record.id));
         assert_eq!(view.controller.profile().unwrap().model_id, "second-alias");
+        assert_eq!(view.record.last_activity_at, Some(retry_activity));
+        assert_eq!(
+            view.workspace.lock().unwrap().snapshot().chats[0].last_activity_at,
+            Some(retry_activity)
+        );
         assert!(old.is_retired());
     });
 }

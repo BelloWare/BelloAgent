@@ -312,6 +312,7 @@ mod tests {
                 materialization:
                     bello_agent_core::workspace::ChatMaterialization::CheckpointRequired,
                 sidebar_order: None,
+                last_activity_at: None,
                 pinned_at: None,
                 archived_at: None,
                 tool_mode: Default::default(),

@@ -41,7 +41,9 @@ impl AgentView {
         {
             return;
         }
-        self.sidebar_menu = None;
+        if let Some(menu) = self.sidebar_menu.take() {
+            self.sidebar_activity_hold.end_menu(menu.token);
+        }
         self.compaction_menu = None;
         self.skill_picker = None;
         let editor = cx.new(|cx| {

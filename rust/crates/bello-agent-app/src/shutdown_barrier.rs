@@ -38,6 +38,13 @@ impl ShutdownPlan {
         Fut: std::future::Future<Output = Result<(), String>>,
     {
         let mut registered = Vec::new();
+        // Only records already admitted by the existing draft policy. Activity
+        // alone must not materialize an untouched pending chat on shutdown.
+        let activity_records: Vec<_> = self
+            .drafts
+            .iter()
+            .map(|(record, _)| record.clone())
+            .collect();
         let saved = crate::chat_organization::catalog_operation(&self.workspace, |store| {
             for (record, draft) in self.drafts {
                 store.register(record.clone(), draft.clone())?;
@@ -56,12 +63,12 @@ impl ShutdownPlan {
             }
             Ok(())
         });
-        let catalog_uncertain = saved.uncertain;
+        let mut catalog_uncertain = saved.uncertain;
         let saved = saved.display_result();
-        let result = if saved.is_ok() {
+        let mut result = if saved.is_ok() {
             let mut result = Ok(());
-            for controller in self.controllers {
-                if let Err(error) = stop(controller).await {
+            for controller in &self.controllers {
+                if let Err(error) = stop(controller.clone()).await {
                     result = Err(error);
                     break;
                 }
@@ -70,6 +77,27 @@ impl ShutdownPlan {
         } else {
             saved
         };
+        if result.is_ok() {
+            // Stop/join may publish a final interruption/completion watermark.
+            // Read it after every worker has joined, not from a stale UI watch.
+            let activity = crate::chat_organization::catalog_operation(&self.workspace, |store| {
+                for record in &activity_records {
+                    let final_stamp = self
+                        .controllers
+                        .iter()
+                        .find(|controller| controller.snapshot_shared().id == record.id)
+                        .and_then(|controller| controller.activity().timestamp_micros)
+                        .unwrap_or(0)
+                        .max(record.last_activity_at.unwrap_or(0));
+                    if final_stamp > 0 {
+                        store.record_activity(&record.id, &record.snapshot, final_stamp)?;
+                    }
+                }
+                Ok(())
+            });
+            catalog_uncertain |= activity.uncertain;
+            result = activity.display_result();
+        }
         ShutdownOutcome {
             registered,
             result,

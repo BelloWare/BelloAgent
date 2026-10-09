@@ -232,7 +232,10 @@ impl AgentView {
             Ok((record, controller)) => {
                 let chat = ChatState::new(
                     controller,
-                    record.clone(),
+                    crate::chat::ChatSource {
+                        record: record.clone(),
+                        workspace: self.workspace.clone(),
+                    },
                     chat::RestoredDraft {
                         draft: DraftRecord::default(),
                         cancellation: None,
@@ -349,7 +352,10 @@ impl AgentView {
         self.unloaded_drafts.remove(id);
         let chat = ChatState::new(
             placeholder,
-            record.clone(),
+            crate::chat::ChatSource {
+                record: record.clone(),
+                workspace: self.workspace.clone(),
+            },
             chat::RestoredDraft {
                 draft,
                 cancellation: self.queued_cancellations.get(id),
@@ -1076,6 +1082,14 @@ impl AgentView {
         let mut drafts = Vec::new();
         let mut controllers = Vec::new();
         for chat in std::iter::once(&mut self.chat).chain(self.inactive.values_mut()) {
+            if chat.activity_write.is_pending() {
+                chat.activity_write.flush();
+            }
+            crate::sidebar_activity::capture_current(
+                &mut chat.record,
+                &mut chat.activity_write,
+                &chat.controller,
+            );
             chat.draft_task = None;
             chat.draft_revision = chat
                 .draft_revision

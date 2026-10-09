@@ -34,6 +34,7 @@ fn fixture(
         record: ChatRecord {
             materialization: bello_agent_core::workspace::ChatMaterialization::Pending,
             sidebar_order: None,
+            last_activity_at: None,
             pinned_at: None,
             archived_at: None,
             tool_mode: Default::default(),
@@ -644,6 +645,7 @@ fn add_navigation_records(window: WindowHandle<AgentView>, cx: &mut TestAppConte
                     title: title.into(),
                     snapshot: view.project.join(format!("{id}.json")),
                     sidebar_order: Some(order),
+                    last_activity_at: None,
                     pinned_at: pin,
                     archived_at: None,
                     tool_mode: Default::default(),
@@ -1194,7 +1196,10 @@ fn shortcut_run_with_partial(
             view.records.push(record.clone());
             let chat = crate::chat::ChatState::new(
                 controller.clone(),
-                record,
+                crate::chat::ChatSource {
+                    record,
+                    workspace: view.workspace.clone(),
+                },
                 crate::chat::RestoredDraft {
                     draft: DraftRecord {
                         skills: Vec::new(),

@@ -1118,13 +1118,15 @@ impl AgentView {
             let valid=view.chat_ref(&chat_id).is_some_and(|c|previous.ptr_eq(&Arc::downgrade(&c.controller)));
             if !valid{return;}
             match result{
-                Ok(changed)=>{
+                Ok(mut changed)=>{
+                    view.preserve_connection_activity(&mut changed.record);
                     if let Some(record)=view.records.iter_mut().find(|r|r.id==chat_id){*record=changed.record.clone();}
                     if let Some(chat)=view.chat_mut(&chat_id){chat.record=changed.record;chat.loading=false;chat.load_failed=false;chat.replace_controller(changed.controller,cx);chat.error=Some("Next turn uses the selected saved connection and confirmed project settings.".into());}
                     view.connections.blocked.remove(&chat_id);
                 },
                 Err((message,uncertain,record))=>{
-                    if !uncertain && let Some(record)=record {
+                    if !uncertain && let Some(mut record)=record {
+                        view.preserve_connection_activity(&mut record);
                         if let Some(row)=view.records.iter_mut().find(|r|r.id==chat_id){*row=record.clone();}
                         if let Some(chat)=view.chat_mut(&chat_id){chat.record=record;}
                     }

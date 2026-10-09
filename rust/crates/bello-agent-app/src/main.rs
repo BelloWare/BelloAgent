@@ -43,6 +43,7 @@ mod quick_open;
 mod saved_runtime_adapter;
 mod shutdown_barrier;
 mod sidebar_actions;
+mod sidebar_activity;
 mod sidebar_run_state;
 mod stop_shortcut;
 mod theme;
@@ -163,6 +164,7 @@ struct AgentView {
     archive_visibility_errors: BTreeMap<String, String>,
     cancelled_prompt_key: Option<String>,
     sidebar_menu: Option<sidebar_actions::SidebarMenu>,
+    sidebar_activity_hold: sidebar_activity::SidebarActivityHold,
     sidebar_run_states: sidebar_run_state::SidebarRunStates,
     compaction_menu: Option<compaction_actions::CompactionMenu>,
     conversation_content: Option<conversation_content_view::ContentSheet>,
@@ -275,7 +277,10 @@ impl AgentView {
         let cancel_receipt = state.queued_cancellations.get(&record.id).cloned();
         let mut chat = ChatState::new(
             controller,
-            record,
+            crate::chat::ChatSource {
+                record,
+                workspace: workspace.clone(),
+            },
             chat::RestoredDraft {
                 draft,
                 cancellation: cancel_receipt.as_ref(),
@@ -313,6 +318,7 @@ impl AgentView {
             // notify issued from Render is too late for that frame's cache key.
             cx.observe_self(|view, cx| view.sync_transcript_inputs(cx)),
             cx.observe_self(|view, cx| view.request_organization_drain(cx)),
+            cx.observe_self(|view, cx| view.request_activity_drain(cx)),
         ];
         let workbench = cx.new(|cx| WorkbenchView::new(project.clone(), window, cx));
         workbench.update(cx, |view, cx| {
@@ -423,6 +429,7 @@ impl AgentView {
             archive_visibility_errors: BTreeMap::new(),
             cancelled_prompt_key: None,
             sidebar_menu: None,
+            sidebar_activity_hold: Default::default(),
             sidebar_run_states: Default::default(),
             compaction_menu: None,
             conversation_content: None,
@@ -480,6 +487,7 @@ impl AgentView {
         let binding = workspace_lifetime::WindowBinding::new(window.window_handle().window_id());
         self.window_binding = Some(binding);
         self.organization_window = Some(window.window_handle());
+        self.bind_activity_window(window, cx);
         self.bind_projects(window, cx);
         self.bind_connections(window, cx);
         self.bind_mcp(window, cx);
@@ -3003,7 +3011,7 @@ impl AgentView {
                             }),
                     ),
             )
-            .child(list)
+            .child(self.activity_held_sidebar_list(list, cx))
             .child(footer)
     }
 }

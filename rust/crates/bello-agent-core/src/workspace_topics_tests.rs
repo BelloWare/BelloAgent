@@ -50,7 +50,7 @@ fn topics_create_rename_expand_reopen_and_stale_callbacks() {
     assert_eq!(first.title, "Work topics");
     assert!(first.expanded);
     assert_eq!(first.revision, 0);
-    assert_eq!(store.snapshot().version, 10);
+    assert_eq!(store.snapshot().version, CURRENT_VERSION);
     let unchanged = bytes(&store);
     assert_eq!(
         store.rename_topic(&first.id, "Work topics", 0).unwrap(),
@@ -293,7 +293,7 @@ fn topics_reject_invalid_records_future_versions_and_revision_overflow_atomicall
         assert!(parsed.is_err() || parsed.unwrap().validate().is_err());
     }
     let mut value = serde_json::to_value(store.snapshot()).unwrap();
-    value["version"] = 11.into();
+    value["version"] = (CURRENT_VERSION + 1).into();
     assert!(serde_json::from_value::<WorkspaceSnapshot>(value).is_err());
 }
 
@@ -316,7 +316,7 @@ fn topics_noop_move_does_not_promote_old_catalog_but_real_move_does() {
     assert_eq!(reopened.snapshot().version, 9);
     assert_eq!(bytes(&reopened), original);
     reopened.create_topic("First topic").unwrap();
-    assert_eq!(reopened.snapshot().version, 10);
+    assert_eq!(reopened.snapshot().version, CURRENT_VERSION);
 }
 #[test]
 fn topics_all_mutations_are_transactional_at_both_failure_boundaries() {

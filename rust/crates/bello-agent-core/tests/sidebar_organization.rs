@@ -13,6 +13,7 @@ fn record(root: &Path, order: u64, title: &str) -> ChatRecord {
         snapshot: root.join(format!("{id}.json")),
         id,
         title: title.into(),
+        last_activity_at: None,
         sidebar_order: Some(order),
         pinned_at: None,
         archived_at: None,
@@ -219,15 +220,15 @@ fn new_organization_format_is_explicit_and_mislabeled_v1_is_preserved() {
     store
         .register(chat.clone(), DraftRecord::default())
         .unwrap();
-    assert_eq!(store.snapshot().version, 10);
+    assert_eq!(store.snapshot().version, 11);
     store
         .set_pinned(chat.clone(), DraftRecord::default(), true, 4)
         .unwrap();
-    assert_eq!(store.snapshot().version, 10);
+    assert_eq!(store.snapshot().version, 11);
     store
         .set_pinned(chat.clone(), DraftRecord::default(), false, 5)
         .unwrap();
-    assert_eq!(store.snapshot().version, 10); // Never downgrade after metadata use.
+    assert_eq!(store.snapshot().version, 11); // Never downgrade after metadata use.
     store
         .set_pinned(chat, DraftRecord::default(), true, 6)
         .unwrap();

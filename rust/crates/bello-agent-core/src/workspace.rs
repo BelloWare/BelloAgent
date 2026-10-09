@@ -12,11 +12,14 @@ use uuid::Uuid;
 const MAX_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CHATS: usize = 512;
 const MAX_DRAFT_BYTES: usize = 262_144;
-const CURRENT_VERSION: u32 = 10;
+const CURRENT_VERSION: u32 = 11;
 
 #[path = "workspace_topics.rs"]
 mod topics;
 pub use topics::TopicRecord;
+#[cfg(test)]
+#[path = "workspace_activity_tests.rs"]
+mod activity_tests;
 #[cfg(test)]
 #[path = "workspace_topics_tests.rs"]
 mod topics_tests;
@@ -159,6 +162,9 @@ pub struct ChatRecord {
     pub connection_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sidebar_order: Option<u64>,
+    /// Latest accepted semantic activity, in Unix microseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_activity_at: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pinned_at: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -178,27 +184,37 @@ impl ChatRecord {
             tool_mode: ChatToolMode::Editing,
             connection_id: None,
             sidebar_order: Some(organization_timestamp()),
+            last_activity_at: None,
             pinned_at: None,
             archived_at: None,
             topic_id: None,
             topic_revision: 0,
         }
     }
+    pub fn activity_stamp(&self) -> u64 {
+        self.last_activity_at
+            .unwrap_or(0)
+            .max(self.sidebar_order.unwrap_or(0))
+    }
     /// Source ChatRecord.sidebarPrecedes, without the unported manual drag order.
     pub fn sidebar_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.sidebar_cmp_with_activity(other, None, None)
+    }
+    /// Presentation holds override only activity keys; current pin state stays live.
+    pub fn sidebar_cmp_with_activity(
+        &self,
+        other: &Self,
+        activity_override: Option<u64>,
+        other_activity_override: Option<u64>,
+    ) -> std::cmp::Ordering {
         other
             .pinned_at
             .is_some()
             .cmp(&self.pinned_at.is_some())
-            .then_with(|| match (self.pinned_at, other.pinned_at) {
-                (Some(a), Some(b)) => a.cmp(&b),
-                _ => std::cmp::Ordering::Equal,
-            })
             .then_with(|| {
-                other
-                    .sidebar_order
-                    .unwrap_or(0)
-                    .cmp(&self.sidebar_order.unwrap_or(0))
+                other_activity_override
+                    .unwrap_or_else(|| other.activity_stamp())
+                    .cmp(&activity_override.unwrap_or_else(|| self.activity_stamp()))
             })
             .then_with(|| self.id.cmp(&other.id))
     }
@@ -208,6 +224,14 @@ impl ChatRecord {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ArchiveChange {
     pub record: ChatRecord,
+    pub changed: bool,
+}
+/// A confirmed activity-column receipt, never a replacement for a cached full row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActivityChange {
+    pub id: String,
+    pub snapshot: PathBuf,
+    pub last_activity_at: Option<u64>,
     pub changed: bool,
 }
 pub fn organization_timestamp() -> u64 {
@@ -408,6 +432,17 @@ impl<'de> Deserialize<'de> for WorkspaceSnapshot {
                 "Unsupported Rust workspace catalog version",
             ));
         }
+        if record.version < 11 {
+            for raw in &record.chats {
+                let fields: BTreeMap<String, Box<serde_json::value::RawValue>> =
+                    serde_json::from_str(raw.get()).map_err(serde::de::Error::custom)?;
+                if fields.contains_key("last_activity_at") {
+                    return Err(serde::de::Error::custom(
+                        "Activity metadata requires Rust workspace catalog version 11",
+                    ));
+                }
+            }
+        }
         if record.version < 10 {
             if record.topics.is_some() {
                 return Err(serde::de::Error::custom(
@@ -445,6 +480,7 @@ impl<'de> Deserialize<'de> for WorkspaceSnapshot {
                         tool_mode: chat.tool_mode,
                         connection_id: chat.connection_id,
                         sidebar_order: chat.sidebar_order,
+                        last_activity_at: None,
                         pinned_at: chat.pinned_at,
                         archived_at: chat.archived_at,
                         topic_id: None,
@@ -459,6 +495,7 @@ impl<'de> Deserialize<'de> for WorkspaceSnapshot {
                         tool_mode: chat.tool_mode,
                         connection_id: None,
                         sidebar_order: chat.sidebar_order,
+                        last_activity_at: None,
                         pinned_at: chat.pinned_at,
                         archived_at: chat.archived_at,
                         topic_id: None,
@@ -473,6 +510,7 @@ impl<'de> Deserialize<'de> for WorkspaceSnapshot {
                         tool_mode: ChatToolMode::Editing,
                         connection_id: None,
                         sidebar_order: chat.sidebar_order,
+                        last_activity_at: None,
                         pinned_at: chat.pinned_at,
                         archived_at: chat.archived_at,
                         topic_id: None,
@@ -570,6 +608,16 @@ impl WorkspaceSnapshot {
     }
     fn validate(&self) -> Result<()> {
         self.validate_topics()?;
+        if self.version < 11
+            && self
+                .chats
+                .iter()
+                .any(|chat| chat.last_activity_at.is_some())
+        {
+            return Err(invalid(
+                "Activity metadata requires Rust workspace catalog version 11",
+            ));
+        }
         if !(1..=CURRENT_VERSION).contains(&self.version)
             || self.chats.len() > MAX_CHATS
             || self.intents.len() > MAX_CHATS
@@ -933,6 +981,48 @@ impl WorkspaceStore {
             state.drafts.insert(chat.id.clone(), draft);
             state.chats.push(chat);
             Ok(())
+        })
+    }
+    /// Patch only confirmed activity for an already registered identity. Callers
+    /// serialize this operation with the same catalog mutex as all other writers.
+    /// Pending UI-only chats must carry their activity into explicit registration.
+    pub fn record_activity(
+        &mut self,
+        id: &str,
+        expected_snapshot: &Path,
+        at: u64,
+    ) -> Result<ActivityChange> {
+        self.ensure_certain()?;
+        let chat = self
+            .state
+            .chats
+            .iter()
+            .find(|chat| chat.id == id)
+            .ok_or_else(|| invalid("Chat is no longer registered"))?;
+        if chat.snapshot != expected_snapshot {
+            return Err(invalid("Chat identity is already registered differently"));
+        }
+        let receipt = ActivityChange {
+            id: chat.id.clone(),
+            snapshot: chat.snapshot.clone(),
+            last_activity_at: chat.last_activity_at,
+            changed: false,
+        };
+        if at <= chat.last_activity_at.unwrap_or(0) {
+            return Ok(receipt);
+        }
+        self.transact(|state| {
+            let chat = state
+                .chats
+                .iter_mut()
+                .find(|chat| chat.id == id)
+                .expect("checked chat");
+            chat.last_activity_at = Some(at);
+            Ok(ActivityChange {
+                last_activity_at: Some(at),
+                changed: true,
+                ..receipt
+            })
         })
     }
     pub fn name_chat(&mut self, id: &str, title: &str) -> Result<()> {
@@ -1660,6 +1750,7 @@ mod tests {
             connection_id: None,
             materialization: ChatMaterialization::CheckpointRequired,
             sidebar_order: None,
+            last_activity_at: None,
             pinned_at: None,
             archived_at: None,
             topic_id: None,
