@@ -3,7 +3,7 @@
 //! and the source's max(240px, half a viewport) buffer, never the whole history.
 use crate::{AgentView, Palette, layout, transcript_actions};
 use bello_agent_core::{Controller, Session};
-use bello_workbench_ui::{EditorAppearance, EditorView};
+use bello_workbench_ui::{EditorAppearance, EditorView, TextDecoration, TextPresentation};
 #[path = "transcript_edit_presentation.rs"]
 mod edit_presentation;
 #[path = "transcript_read_presentation.rs"]
@@ -19,6 +19,29 @@ use std::{
 };
 use tool_presentation::ProjectedRow;
 
+// TestPlatform can hold the actual fresh-paint callback while changing the host.
+// Production always consumes it immediately through the same handler.
+#[cfg(test)]
+type FindGeometryCallback = Box<dyn FnOnce(&mut Window, &mut App)>;
+#[cfg(test)]
+thread_local! {
+    static FIND_GEOMETRY_PAUSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static FIND_GEOMETRY_CALLBACKS: RefCell<Vec<FindGeometryCallback>> = const { RefCell::new(Vec::new()) };
+}
+#[cfg(test)]
+pub(crate) fn pause_find_geometry(paused: bool) {
+    FIND_GEOMETRY_PAUSED.with(|v| v.set(paused));
+}
+#[cfg(test)]
+pub(crate) fn resume_find_geometry(window: &mut Window, cx: &mut App) -> usize {
+    let callbacks = FIND_GEOMETRY_CALLBACKS.with(|v| std::mem::take(&mut *v.borrow_mut()));
+    let count = callbacks.len();
+    for callback in callbacks {
+        callback(window, cx);
+    }
+    count
+}
+
 #[derive(Clone)]
 pub(crate) struct TranscriptInput {
     pub controller: Weak<Controller>,
@@ -29,6 +52,7 @@ pub(crate) struct TranscriptInput {
     pub pane_width: f32,
     pub loading: bool,
     pub load_failed: bool,
+    pub find_binding: Option<bello_agent_core::retained_find::FindSnapshot>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -750,6 +774,227 @@ impl TranscriptView {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn find_decoration_state(&self) -> (bool, usize) {
+        let editors = self.tool_editors.borrow();
+        (
+            editors.find.is_some(),
+            editors
+                .entries
+                .values()
+                .filter(|e| e.find_installed.is_some())
+                .count(),
+        )
+    }
+    #[cfg(test)]
+    pub(crate) fn find_geometry_state(&self) -> Option<(u8, bool, bool)> {
+        self.tool_editors
+            .borrow()
+            .find
+            .as_ref()
+            .map(|f| (f.attempts.get(), f.measuring.get(), f.landed.get()))
+    }
+    #[cfg(test)]
+    pub(crate) fn find_scope_matches(&self, message: &bello_agent_core::Message) -> bool {
+        self.tool_editors
+            .borrow()
+            .find
+            .as_ref()
+            .is_some_and(|f| f.scope_matches(message))
+    }
+    #[cfg(test)]
+    pub(crate) fn find_landed(&self) -> bool {
+        self.tool_editors
+            .borrow()
+            .find
+            .as_ref()
+            .is_some_and(|f| f.landed.get())
+    }
+    #[cfg(test)]
+    pub(crate) fn find_has_current_binding(&self) -> bool {
+        self.tool_editors
+            .borrow()
+            .find
+            .as_ref()
+            .is_some_and(|f| f.matches_binding(self.presentation.input.find_binding.as_ref()))
+    }
+    pub(crate) fn find_visible_ids(&self) -> HashSet<String> {
+        let viewport = self.viewport.borrow();
+        let bounds = viewport.list.viewport_bounds();
+        self.presentation
+            .rows
+            .iter()
+            .enumerate()
+            .filter_map(|(i, row)| {
+                let drawn = viewport.list.bounds_for_item(i)?;
+                if drawn.bottom() <= bounds.top() || drawn.top() >= bounds.bottom() {
+                    return None;
+                }
+                row.projected
+                    .and_then(|p| p.result())
+                    .or(row.message_index)
+                    .map(|i| self.presentation.input.session.messages[i].id.clone())
+            })
+            .collect()
+    }
+    pub(crate) fn clear_find_owner(&mut self, owner: uuid::Uuid, cx: &mut Context<Self>) {
+        let matches = self
+            .tool_editors
+            .borrow()
+            .find
+            .as_ref()
+            .is_some_and(|find| find.owner == owner);
+        if matches {
+            self.set_find(None, cx);
+        }
+    }
+    pub(crate) fn set_find(
+        &mut self,
+        find: Option<Rc<crate::transcript_find_presentation::FindPaint>>,
+        cx: &mut Context<Self>,
+    ) {
+        let mut editors = self.tool_editors.borrow_mut();
+        if find.is_none() {
+            self.viewport.borrow_mut().reveal = None;
+            for entry in editors.entries.values_mut() {
+                entry.editor.update(cx, |e, cx| {
+                    let _ = e.set_text_presentation(None, cx);
+                });
+                entry.find_installed = None;
+            }
+        }
+        editors.find = find;
+        cx.notify();
+    }
+    pub(crate) fn reveal_find(
+        &mut self,
+        input: TranscriptInput,
+        find: Rc<crate::transcript_find_presentation::FindPaint>,
+        navigate: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let target = find.destination.as_ref().map(|d| d.found.id.clone());
+        self.update_inputs(input, cx);
+        if !navigate && let Some(old) = &self.tool_editors.borrow().find {
+            find.landed.set(old.landed.get());
+        }
+        self.set_find(Some(find), cx);
+        if !navigate {
+            return true;
+        }
+        let Some(id) = target else {
+            return true;
+        };
+        if self
+            .presentation
+            .input
+            .session
+            .messages
+            .iter()
+            .filter(|m| m.id == id)
+            .count()
+            != 1
+        {
+            return false;
+        }
+        let Some(source) = self
+            .presentation
+            .input
+            .session
+            .messages
+            .iter()
+            .position(|m| m.id == id)
+        else {
+            return false;
+        };
+        let Some(row) = self.presentation.rows.iter().find(|r| {
+            r.projected.and_then(|p| p.result()) == Some(source)
+                || (r.message_index == Some(source)
+                    && matches!(r.projected, Some(ProjectedRow::Message(_))))
+        }) else {
+            return false;
+        };
+        let key = row.key.clone();
+        let read_key = row.read_key.clone();
+        self.collapsed.remove(&key);
+        if let Some(read_key) = read_key {
+            self.expanded_reads.insert(read_key);
+        }
+        self.presentation = Rc::new(Presentation::with_disclosure(
+            self.presentation.input.clone(),
+            &self.collapsed,
+            &self.expanded_reads,
+        ));
+        self.viewport.borrow_mut().reveal = Some(key);
+        cx.notify();
+        true
+    }
+    fn land_find_point(
+        &mut self,
+        find: &Rc<crate::transcript_find_presentation::FindPaint>,
+        index: usize,
+        point: Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        if !find.navigating()
+            || !self
+                .tool_editors
+                .borrow()
+                .find
+                .as_ref()
+                .is_some_and(|own| Rc::ptr_eq(own, find))
+        {
+            return;
+        }
+        let mut viewport = self.viewport.borrow_mut();
+        let Some(row) = viewport.list.bounds_for_item(index) else {
+            return;
+        };
+        let bounds = viewport.list.viewport_bounds();
+        find.landed.set(true);
+        if point.y >= bounds.top() + px(24.) && point.y + px(21.) <= bounds.bottom() - px(24.) {
+            return;
+        }
+        let offset = (point.y - row.top() - bounds.size.height / 3.).max(px(0.));
+        let target = ListOffset {
+            item_ix: index,
+            offset_in_item: offset,
+        };
+        viewport.pending_scroll = None;
+        viewport.reveal = None;
+        viewport.list.scroll_to(target);
+        viewport.painted_scroll = target;
+        cx.notify();
+    }
+    pub(crate) fn cancel_find_navigation(&mut self, cx: &mut Context<Self>) {
+        self.viewport.borrow_mut().reveal = None;
+        if let Some(find) = self.tool_editors.borrow().find.clone() {
+            find.measuring.set(false);
+            for entry in self.tool_editors.borrow().entries.values() {
+                entry
+                    .editor
+                    .update(cx, |e, cx| e.cancel_presentation_reveal(find.serial, cx));
+            }
+        }
+    }
+    pub(crate) fn finish_find_wait(
+        &mut self,
+        serial: u64,
+        cx: &mut Context<Self>,
+    ) -> Option<crate::transcript_find_state::Destination> {
+        let find = self.tool_editors.borrow().find.clone()?;
+        if find.serial != serial || !find.navigating() {
+            return None;
+        }
+        find.landed.set(true);
+        find.measuring.set(false);
+        for entry in self.tool_editors.borrow().entries.values() {
+            entry
+                .editor
+                .update(cx, |e, cx| e.cancel_presentation_reveal(serial, cx));
+        }
+        find.destination.clone()
+    }
     pub(crate) fn clear_content_reveal(&mut self) {
         self.viewport.borrow_mut().reveal = None;
     }
@@ -1303,6 +1548,9 @@ impl Element for ViewportList {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
+        if let Some(find) = &self.tool_editors.borrow().find {
+            find.layouts.borrow_mut().clear();
+        }
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
         #[cfg(test)]
         {
@@ -1483,7 +1731,20 @@ impl Element for ViewportList {
         // measured-only extent clamp with a logical measured/estimated anchor.
         // Unlike List's hardcoded20px/coalescing, preserve the original Div's
         // inherited line height and sum every delta from this painted origin.
+        let find_parent = self.parent.clone();
         window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
+            if phase == DispatchPhase::Capture && bounds.contains(&event.position) {
+                let _ = find_parent.update(cx, |view, cx| {
+                    view.abandon_find_navigation();
+                    if let Some(t) = view.transcript.clone() {
+                        t.update(cx, |t, cx| t.cancel_find_navigation(cx));
+                    }
+                });
+                let parent = find_parent.clone();
+                window.defer(cx, move |_, cx| {
+                    let _ = parent.update(cx, |v, cx| v.refresh_find_viewport(cx));
+                });
+            }
             if phase == DispatchPhase::Bubble && hitbox.should_handle_scroll(window) {
                 distance += vertical_wheel_distance(event.delta, line_height);
                 let anchor = wheel_anchor(
@@ -1500,6 +1761,63 @@ impl Element for ViewportList {
         });
         self.list
             .paint(id, inspector_id, bounds, state, &mut prepaint.0, window, cx);
+        if let Some(find) = self.tool_editors.borrow().find.clone()
+            && find.navigating()
+        {
+            if find.measuring.get()
+                && find.host_geometry.borrow().is_none()
+                && let Some(index) = find.host_row.get()
+            {
+                let viewport = self.viewport.borrow();
+                *find.host_geometry.borrow_mut() =
+                    Some(crate::transcript_find_presentation::HostGeometry {
+                        origin: viewport.list.logical_scroll_top(),
+                        viewport: viewport.list.viewport_bounds(),
+                        row: viewport.list.bounds_for_item(index),
+                    });
+            }
+            let measured = find
+                .layouts
+                .borrow()
+                .iter()
+                .find_map(|(row, layout, start)| {
+                    layout.position_for_index(*start).map(|point| (*row, point))
+                });
+            if let Some((row, point)) = measured {
+                let child = self.child.clone();
+                let presentation = self.presentation.clone();
+                let size = window.viewport_size();
+                let origin = self.viewport.borrow().list.logical_scroll_top();
+                let painted_viewport = self.viewport.borrow().list.viewport_bounds();
+                let painted_row = self.viewport.borrow().list.bounds_for_item(row);
+                window.defer(cx, move |window, cx| {
+                    if size != window.viewport_size() {
+                        return;
+                    }
+                    let _ = child.update(cx, |view, cx| {
+                        let now = view.viewport.borrow().list.logical_scroll_top();
+                        if Rc::ptr_eq(&view.presentation, &presentation)
+                            && now.item_ix == origin.item_ix
+                            && now.offset_in_item == origin.offset_in_item
+                            && view.viewport.borrow().list.viewport_bounds() == painted_viewport
+                            && view.viewport.borrow().list.bounds_for_item(row) == painted_row
+                            && painted_row.is_some()
+                        {
+                            view.land_find_point(&find, row, point, cx);
+                        }
+                    });
+                });
+            }
+        }
+        if let Some(find) = self.tool_editors.borrow().find.clone()
+            && let Some(notice) = find.notice.borrow_mut().take()
+            && let Some(destination) = find.destination.clone()
+        {
+            let parent = self.parent.clone();
+            window.defer(cx, move |_, cx| {
+                let _ = parent.update(cx, |v, cx| v.find_landing_notice(&destination, notice, cx));
+            });
+        }
         let list = self.viewport.borrow().list.clone();
         // List has completed layout/paint. Bounds may include overdraw, so
         // only the actual end of the last projected row of the exact newest
@@ -1782,7 +2100,20 @@ fn render_row(
                         .max_w_full()
                         .text_size(px(14.5))
                         .line_height(px(21.))
-                        .child(crate::composer_attachments::message_label(message).into_owned()),
+                        .child({
+                            let text =
+                                crate::composer_attachments::message_label(message).into_owned();
+                            if !ambiguous
+                                && text == message.text
+                                && let Some(find) = &tool_editors.borrow().find
+                                && find.matches_binding(input.find_binding.as_ref())
+                                && find.scope_matches(message)
+                            {
+                                find.prose(&message.id, text, index).into_any_element()
+                            } else {
+                                text.into_any_element()
+                            }
+                        }),
                 );
                 if message.state == "interrupted" {
                     body = body.child(
@@ -1860,6 +2191,7 @@ fn render_row(
 const TOOL_EDITOR_LIMIT: usize = 64;
 #[derive(Default)]
 struct ToolEditors {
+    find: Option<Rc<crate::transcript_find_presentation::FindPaint>>,
     entries: HashMap<(RowKey, &'static str), ToolEditor>,
     edit_previews: edit_presentation::EditCache,
     tick: u64,
@@ -1869,6 +2201,7 @@ struct ToolEditor {
     editor: Entity<EditorView>,
     style: ToolEditorStyle,
     used: u64,
+    find_installed: Option<Rc<crate::transcript_find_presentation::FindPaint>>,
 }
 #[derive(Clone, Copy, PartialEq)]
 struct ToolEditorStyle {
@@ -1915,6 +2248,7 @@ impl ToolEditors {
                     editor,
                     style,
                     used: self.tick,
+                    find_installed: None,
                 },
             );
         }
@@ -1926,6 +2260,7 @@ impl ToolEditors {
         let height = entry.editor.update(cx, |editor, cx| {
             if editor.text() != preview {
                 editor.set_text(preview.into(), cx);
+                entry.find_installed = None;
             }
             if entry.style != style {
                 editor.set_appearance(tool_editor_appearance(p, failed), cx);
@@ -1938,6 +2273,242 @@ impl ToolEditors {
         (entry.editor.clone(), height)
     }
 }
+fn find_host_geometry_current(
+    find: &crate::transcript_find_presentation::FindPaint,
+    viewport: &ViewportState,
+    index: usize,
+) -> bool {
+    let Some(crate::transcript_find_presentation::HostGeometry {
+        origin,
+        viewport: bounds,
+        row,
+    }) = *find.host_geometry.borrow()
+    else {
+        return false;
+    };
+    let now = viewport.list.logical_scroll_top();
+    now.item_ix == origin.item_ix
+        && now.offset_in_item == origin.offset_in_item
+        && viewport.list.viewport_bounds() == bounds
+        && row.is_some()
+        && viewport.list.bounds_for_item(index) == row
+}
+
+#[allow(clippy::too_many_arguments)]
+fn decorate_find_tool(
+    presentation: &Presentation,
+    index: usize,
+    label: &'static str,
+    shown: &str,
+    numbered: Option<usize>,
+    editor: &Entity<EditorView>,
+    editors: &Rc<RefCell<ToolEditors>>,
+    child: &WeakEntity<TranscriptView>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let find = editors.borrow().find.clone();
+    let Some(find) = find else {
+        return;
+    };
+    if !find.matches_binding(presentation.input.find_binding.as_ref()) {
+        editor.update(cx, |e, cx| {
+            let _ = e.set_text_presentation(None, cx);
+        });
+        return;
+    }
+    let row = &presentation.rows[index];
+    let source = row
+        .projected
+        .and_then(|p| p.result())
+        .map(|i| &presentation.input.session.messages[i]);
+    let key = (row.key.clone(), label);
+    if label == "OUT" && source.is_some_and(|m| find.has_record(&m.id) && !find.scope_matches(m)) {
+        editor.update(cx, |e, cx| {
+            let _ = e.set_text_presentation(None, cx);
+        });
+        if let Some(entry) = editors.borrow_mut().entries.get_mut(&key) {
+            entry.find_installed = None;
+        }
+        *find.notice.borrow_mut() = Some(
+            "This tool preview changed. Choose the match again after the conversation settles."
+                .into(),
+        );
+        return;
+    }
+    let installed = editors
+        .borrow()
+        .entries
+        .get(&key)
+        .and_then(|e| e.find_installed.as_ref())
+        .is_some_and(|old| Rc::ptr_eq(old, &find));
+    if installed {
+        return;
+    }
+    let mut selected = None;
+    let mut decorations = vec![];
+    if label == "OUT"
+        && let Some(source) = source
+        && let Some(ranges) = find.ranges(&source.id)
+    {
+        let prefix = source.text.len().min(tool_presentation::PREVIEW_BYTES);
+        let mut prefix = prefix.min(shown.len());
+        while !source.text.is_char_boundary(prefix) {
+            prefix -= 1;
+        }
+        let generic_verified = shown.starts_with(&source.text[..prefix]);
+        let map = |range: &std::ops::Range<usize>| {
+            if let Some(first) = numbered {
+                (ranges.numbered.expected_len(first, row.read_expanded) == Some(shown.len()))
+                    .then(|| ranges.numbered.map_range(range, first, row.read_expanded))
+                    .flatten()
+            } else {
+                (generic_verified && range.end <= prefix).then_some(range.clone())
+            }
+        };
+        decorations = crate::transcript_find_presentation::merge_ranges(
+            ranges.all.iter().filter_map(map).collect(),
+        );
+        selected = ranges.selected.as_ref().and_then(map);
+        if ranges.selected.is_some() && selected.is_none() {
+            *find.notice.borrow_mut() = Some("Match is outside this card’s displayed preview; showing its row. Full retained text remains searchable.".into());
+        } else if ranges.limited {
+            *find.notice.borrow_mut() = Some("Only the first 4096 matches in this output are softly highlighted; the selected occurrence is still revealed.".into());
+        }
+        if let Some(destination) = find.destination.clone()
+            && destination.found.id == source.id
+            && !ranges.limited
+            && selected.is_some()
+        {
+            let parent = child.upgrade().map(|c| c.read(cx).parent.clone());
+            if let Some(parent) = parent {
+                let count = ranges.total;
+                window.defer(cx, move |_, cx| {
+                    let _ = parent.update(cx, |v, cx| v.find_render_count(&destination, count, cx));
+                });
+            }
+        }
+    }
+    let presentation_value = TextPresentation {
+        token: find.serial,
+        text: Arc::from(shown),
+        decorations: decorations
+            .into_iter()
+            .map(|range| TextDecoration {
+                range,
+                color: rgba(0xe6a83b44).into(),
+            })
+            .collect(),
+        emphasized: selected.clone().map(|range| TextDecoration {
+            range,
+            color: rgba(0xe6a83b99).into(),
+        }),
+    };
+    let installed = editor.update(cx, |editor, cx| {
+        editor.set_text_presentation(Some(presentation_value), cx)
+    });
+    if let Err(error) = installed {
+        *find.notice.borrow_mut() = Some(format!(
+            "Couldn’t decorate this preview: {error:?}. Showing its row."
+        ));
+        return;
+    }
+    if let Some(entry) = editors.borrow_mut().entries.get_mut(&key) {
+        entry.find_installed = Some(find.clone());
+    }
+    if let Some(range) = selected
+        && find.navigating()
+        && !find.measuring.get()
+    {
+        let Some(host) = child.upgrade() else {
+            return;
+        };
+        let bound = host.read(cx).presentation.clone();
+        if !std::ptr::eq(bound.as_ref(), presentation) {
+            return;
+        }
+        if find.attempts.get() >= 3 {
+            find.landed.set(true);
+            *find.notice.borrow_mut() = Some("The preview kept changing during navigation; showing its row. Choose the match again to retry.".into());
+            return;
+        }
+        find.attempts.set(find.attempts.get() + 1);
+        find.measuring.set(true);
+        find.host_row.set(Some(index));
+        *find.host_geometry.borrow_mut() = None;
+        let token = find.serial;
+        let child = child.clone();
+        let callback_find = find.clone();
+        let window_id = window.window_handle().window_id();
+        let size = window.viewport_size();
+        let result = editor.update(cx, |editor, cx| {
+            editor.reveal_presented_range(token, range.clone(), cx)?;
+            editor.measure_presented_range(
+                token,
+                range,
+                token,
+                move |geometry, window, cx| {
+                    let complete = move |window: &mut Window, cx: &mut App| {
+                        callback_find.measuring.set(false);
+                        let valid = geometry.token == token
+                            && geometry.host_generation == token
+                            && geometry.window_id == window_id
+                            && window.viewport_size() == size;
+                        let _ = child.update(cx, |view, cx| {
+                            let current = view
+                                .tool_editors
+                                .borrow()
+                                .find
+                                .as_ref()
+                                .is_some_and(|f| Rc::ptr_eq(f, &callback_find));
+                            if !current || !callback_find.navigating() {
+                                return;
+                            }
+                            let geometry_current = find_host_geometry_current(
+                                &callback_find,
+                                &view.viewport.borrow(),
+                                index,
+                            );
+                            if valid && geometry_current && Rc::ptr_eq(&view.presentation, &bound) {
+                                view.land_find_point(
+                                    &callback_find,
+                                    index,
+                                    geometry.first_visible_fragment.origin,
+                                    cx,
+                                );
+                            } else {
+                                // Reservation is released; the next fresh child render
+                                // may re-arm at most three times, never spin forever.
+                                for entry in view.tool_editors.borrow_mut().entries.values_mut() {
+                                    entry.find_installed = None;
+                                    entry.editor.update(cx, |editor, cx| {
+                                        editor.invalidate_presentation_geometry(cx)
+                                    });
+                                }
+                                cx.notify();
+                            }
+                        });
+                    };
+                    #[cfg(test)]
+                    if FIND_GEOMETRY_PAUSED.with(|v| v.get()) {
+                        FIND_GEOMETRY_CALLBACKS.with(|v| v.borrow_mut().push(Box::new(complete)));
+                        return;
+                    }
+                    complete(window, cx);
+                },
+                cx,
+            )
+        });
+        if let Err(error) = result {
+            find.measuring.set(false);
+            find.landed.set(true);
+            *find.notice.borrow_mut() = Some(format!(
+                "Couldn’t reveal this preview: {error:?}. Showing its row."
+            ));
+        }
+    }
+}
+
 fn tool_editor_appearance(p: Palette, failed: bool) -> EditorAppearance {
     EditorAppearance {
         font_family: "monospace".into(),
@@ -2197,6 +2768,18 @@ fn render_tool_card(
                 failed: label == "OUT" && status.is_error(),
             },
             body_width,
+            window,
+            cx,
+        );
+        decorate_find_tool(
+            presentation,
+            index,
+            label,
+            &preview.text,
+            read_window.as_ref().map(|r| r.first_line),
+            &editor,
+            editors,
+            child,
             window,
             cx,
         );

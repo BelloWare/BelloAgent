@@ -130,6 +130,14 @@ impl AgentView {
         self.cancel_queue_drag(window, cx);
         self.skill_picker = None;
         let outgoing = std::mem::replace(&mut self.chat, chat);
+        let selected_id = self.record.id.clone();
+        let selected_source = Arc::downgrade(&self.controller);
+        self.receive_snapshot(
+            &selected_id,
+            &selected_source,
+            self.controller.snapshot_shared(),
+            cx,
+        );
         let id = outgoing.record.id.clone();
         if outgoing.pending
             && !outgoing.busy
@@ -718,6 +726,43 @@ impl AgentView {
         snapshot: Arc<bello_agent_core::Session>,
         cx: &mut Context<Self>,
     ) {
+        if self
+            .chat_ref(id)
+            .is_none_or(|chat| !source.ptr_eq(&Arc::downgrade(&chat.controller)))
+        {
+            return;
+        }
+        // Only the selected ordinary watch path adopts the atomic latest pair.
+        // Inactive chat behavior and all lifecycle fences remain unchanged.
+        let binding = (self.record.id == id)
+            .then(|| self.controller.find_snapshot())
+            .flatten();
+        let snapshot = binding
+            .as_ref()
+            .map(|b| b.session_shared())
+            .unwrap_or(snapshot);
+        self.adopt_snapshot(id, source, snapshot, binding, cx);
+    }
+    /// Synthetic transcript projection tests intentionally supply impossible or
+    /// historical display states. They get no verified Find binding or authority.
+    #[cfg(test)]
+    pub(crate) fn receive_fixture_snapshot(
+        &mut self,
+        id: &str,
+        source: &std::sync::Weak<Controller>,
+        snapshot: Arc<bello_agent_core::Session>,
+        cx: &mut Context<Self>,
+    ) {
+        self.adopt_snapshot(id, source, snapshot, None, cx);
+    }
+    fn adopt_snapshot(
+        &mut self,
+        id: &str,
+        source: &std::sync::Weak<Controller>,
+        snapshot: Arc<bello_agent_core::Session>,
+        binding: Option<bello_agent_core::retained_find::FindSnapshot>,
+        cx: &mut Context<Self>,
+    ) {
         // Reject before title writes, edit recovery, errors or notifications.
         if self
             .chat_ref(id)
@@ -741,6 +786,7 @@ impl AgentView {
                 title = Some(snapshot.title.clone());
             }
             chat.session = snapshot;
+            chat.display_find_binding = binding;
         }
         if let Some(title) = title {
             if let Some(record) = self.records.iter_mut().find(|record| record.id == id) {

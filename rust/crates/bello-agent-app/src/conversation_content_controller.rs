@@ -69,6 +69,7 @@ impl AgentView {
         if !target.matches(self) || self.composer.read(cx).has_marked_text() {
             return;
         }
+        self.clear_transcript_find(cx);
         self.conversation_content = Some(ContentSheet::new(target, self.palette, window, cx));
         let token = self.conversation_content.as_ref().unwrap().token;
         self.content_control(token, Control::Search, window, cx);

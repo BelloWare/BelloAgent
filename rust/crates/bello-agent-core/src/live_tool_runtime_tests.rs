@@ -136,8 +136,8 @@ fn prepared_generic_publication_after_stop_preserves_durable_state_but_strips_li
     let (_root, controller, identity) = active();
     identity.update(1, "before stop".into());
     let inner = controller.inner.lock().unwrap();
-    let mut prepared = controller.display_snapshot(&inner);
-    prepared.title = "legitimate queue/durable update".into();
+    let mut prepared = controller.prepare_find_publication(&inner);
+    prepared.session.title = "legitimate queue/durable update".into();
     drop(inner);
     controller.stop().unwrap();
     controller.publish_prepared(prepared, identity.stop, false);

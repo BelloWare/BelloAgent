@@ -91,21 +91,10 @@ impl Snapshot {
         cancel: &AtomicBool,
     ) -> Result<SearchPage, String> {
         search_check_cancel(cancel)?;
-        // Byte admission precedes grapheme scanning: one grapheme may contain
-        // arbitrarily many combining marks. This is an explicit Rust bound.
-        if query.len() > QUERY_BYTE_LIMIT {
-            return Err("Search query exceeds the 16 KiB text limit.".into());
-        }
-        if query.graphemes(true).take(257).count() > 256 {
-            return Err("Search query exceeds 256 characters.".into());
-        }
+        let (query, prefix) = prepare_query(query, cancel)?;
         if start > MAX_START {
             return Err("Search position exceeds the supported range.".into());
         }
-        normalization_preflight(query, cancel)?;
-        let query: Vec<char> = normalized_chars(query, cancel).collect();
-        search_check_cancel(cancel)?;
-        let prefix = prefix_table(&query);
         let total = self.rows.len();
         let mut cursor = start.min(total);
         let mut hits = Vec::new();
@@ -169,8 +158,8 @@ impl Snapshot {
 // Swift keeps partialID/partialText separate from shown rows until append.
 // Rust publishes that transient reply among messages. Exclude precisely that
 // active streaming row, while retaining interrupted/cancelled terminal text.
-fn retained(session: &Session, row: &bello_agent_core::Message) -> bool {
-    !(session.active_reply.as_deref() == Some(row.id.as_str()) && row.state == "streaming")
+fn retained(session: &Session, message: &bello_agent_core::Message) -> bool {
+    bello_agent_core::retained_find::is_retained(session, message)
 }
 fn check_cancel(cancel: &AtomicBool) -> Result<(), String> {
     if cancel.load(Ordering::Acquire) {
@@ -179,7 +168,7 @@ fn check_cancel(cancel: &AtomicBool) -> Result<(), String> {
         Ok(())
     }
 }
-fn search_check_cancel(cancel: &AtomicBool) -> Result<(), String> {
+pub(crate) fn search_check_cancel(cancel: &AtomicBool) -> Result<(), String> {
     if cancel.load(Ordering::Acquire) {
         Err("Conversation search was cancelled.".into())
     } else {
@@ -190,7 +179,7 @@ fn search_check_cancel(cancel: &AtomicBool) -> Result<(), String> {
 // decomposition without materializing text, so hostile combining runs cannot
 // turn streaming normalization into an unbounded allocation. This conservative
 // Rust-only limit is a visible error rather than a silently incomplete search.
-fn normalization_preflight(text: &str, cancel: &AtomicBool) -> Result<(), String> {
+pub(crate) fn normalization_preflight(text: &str, cancel: &AtomicBool) -> Result<(), String> {
     let mut nonstarters = 0usize;
     for (index, character) in text.chars().enumerate() {
         if index % CANCEL_INTERVAL == 0 {
@@ -208,6 +197,25 @@ fn normalization_preflight(text: &str, cancel: &AtomicBool) -> Result<(), String
         }
     }
     search_check_cancel(cancel)
+}
+pub(crate) fn prepare_query(
+    query: &str,
+    cancel: &AtomicBool,
+) -> Result<(Vec<char>, Vec<usize>), String> {
+    search_check_cancel(cancel)?;
+    // Byte admission precedes grapheme scanning: one grapheme may contain
+    // arbitrarily many combining marks. This is an explicit Rust bound.
+    if query.len() > QUERY_BYTE_LIMIT {
+        return Err("Search query exceeds the 16 KiB text limit.".into());
+    }
+    if query.graphemes(true).take(257).count() > 256 {
+        return Err("Search query exceeds 256 characters.".into());
+    }
+    normalization_preflight(query, cancel)?;
+    let query: Vec<char> = normalized_chars(query, cancel).collect();
+    search_check_cancel(cancel)?;
+    let prefix = prefix_table(&query);
+    Ok((query, prefix))
 }
 // Input cancellation also runs while normalization is buffering a segment.
 // Every caller checks cancellation after consuming this iterator and before
@@ -249,7 +257,7 @@ fn occurrences_normalized(
     }
     normalization_preflight(text, cancel)?;
     let mut matched = 0;
-    let mut count = 0;
+    let mut count: usize = 0;
     for (index, character) in normalized_chars(text, cancel).enumerate() {
         if index % CANCEL_INTERVAL == 0 {
             search_check_cancel(cancel)?;
@@ -262,7 +270,9 @@ fn occurrences_normalized(
         }
         if matched == query.len() {
             search_check_cancel(cancel)?;
-            count += 1;
+            count = count
+                .checked_add(1)
+                .ok_or("Search occurrence count overflow.")?;
             // Swift advances to found.upperBound: overlapping starts cannot
             // reuse the suffix of the previous occurrence.
             matched = 0;

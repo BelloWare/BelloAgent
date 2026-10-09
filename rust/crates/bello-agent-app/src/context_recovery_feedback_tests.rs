@@ -173,7 +173,7 @@ fn context_recovery_feedback_publishes_real_transcript_rows_and_preserves_compos
         snapshot.revision += 1;
         root.update(cx, |view, cx| {
             view.visible_messages = usize::MAX;
-            view.receive_snapshot(
+            view.receive_fixture_snapshot(
                 &id,
                 &Arc::downgrade(&controller),
                 Arc::new(snapshot.clone()),
@@ -230,7 +230,7 @@ fn context_recovery_feedback_publishes_real_transcript_rows_and_preserves_compos
     receipt.retry_reply_id = Some("retry-reply".into());
     receipt.retry_turn_id = Some(receipt.turn_id.clone());
     root.update(cx, |view, cx| {
-        view.receive_snapshot(
+        view.receive_fixture_snapshot(
             &id,
             &Arc::downgrade(&controller),
             Arc::new(snapshot.clone()),
@@ -390,7 +390,7 @@ fn context_recovery_usage_narrow_footer_preserves_reading_composer_selection_and
     }
     root.update(cx, |view, cx| {
         view.visible_messages = usize::MAX;
-        view.receive_snapshot(
+        view.receive_fixture_snapshot(
             &snapshot.id,
             &Arc::downgrade(&controller),
             Arc::new(snapshot.clone()),

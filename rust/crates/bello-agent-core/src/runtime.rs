@@ -140,11 +140,18 @@ impl Configuration {
         }
     }
 }
+// Constructed only from one actor/store boundary; never pair independent reads.
+struct PreparedFindPublication {
+    session: Session,
+    token: crate::retained_find::ContentToken,
+}
+
 /// One provider worker per conversation. UI commands and response completion
 /// serialize through the same mutex; disk commits precede acknowledging commands.
 pub struct Controller {
     inner: Mutex<Inner>,
     published: tokio::sync::watch::Sender<Arc<Session>>,
+    find_published: RwLock<crate::FindSnapshot>,
     published_revision: AtomicU64,
     semantic_activity: tokio::sync::watch::Sender<SemanticActivity>,
     accepted_read: tokio::sync::watch::Sender<crate::read_observation::AcceptedReadObservation>,
@@ -258,6 +265,10 @@ impl Controller {
         let initial = Arc::new(store.snapshot());
         Ok(Arc::new(Self {
             accepted_read: tokio::sync::watch::channel(store.read_observation()).0,
+            find_published: RwLock::new(crate::FindSnapshot::new(
+                initial.clone(),
+                store.find_token(),
+            )),
             published: tokio::sync::watch::channel(initial).0,
             published_revision: AtomicU64::new(0),
             semantic_activity: tokio::sync::watch::channel(SemanticActivity::default()).0,
@@ -468,6 +479,14 @@ impl Controller {
     pub fn snapshot_shared(&self) -> Arc<Session> {
         self.published.borrow().clone()
     }
+    /// Clone a complete, atomically paired Find snapshot without the actor lock.
+    /// Poisoned publication has no usable content evidence; never mix with legacy data.
+    pub fn find_snapshot(&self) -> Option<crate::FindSnapshot> {
+        self.find_published
+            .read()
+            .ok()
+            .map(|snapshot| snapshot.clone())
+    }
     pub fn subscribe(&self) -> tokio::sync::watch::Receiver<Arc<Session>> {
         self.published.subscribe()
     }
@@ -510,12 +529,19 @@ impl Controller {
             true
         });
         let stop = self.stop_epoch.load(Ordering::Acquire);
-        self.publish_prepared(self.display_snapshot(inner), stop, false);
+        self.publish_prepared(self.prepare_find_publication(inner), stop, false);
     }
     fn publish_live(&self, inner: &Inner, stop: u64) {
-        self.publish_prepared(self.display_snapshot(inner), stop, true);
+        self.publish_prepared(self.prepare_find_publication(inner), stop, true);
     }
-    fn publish_prepared(&self, mut snapshot: Session, stop: u64, live_only: bool) {
+    fn prepare_find_publication(&self, inner: &Inner) -> PreparedFindPublication {
+        PreparedFindPublication {
+            session: self.display_snapshot(inner),
+            token: inner.store.find_token(),
+        }
+    }
+    fn publish_prepared(&self, prepared: PreparedFindPublication, stop: u64, live_only: bool) {
+        let PreparedFindPublication { mut session, token } = prepared;
         // All preparation is outside the watch critical section. Generic queue
         // or durable publications can race Stop too: they still publish required
         // state but must strip a live preview prepared before the fence.
@@ -528,11 +554,18 @@ impl Controller {
                 if live_only {
                     return false;
                 }
-                snapshot.live_tools.clear();
+                session.live_tools.clear();
             }
             hold_changed =
-                semantic_activity::run_hold(current) != semantic_activity::run_hold(&snapshot);
-            *current = Arc::new(snapshot);
+                semantic_activity::run_hold(current) != semantic_activity::run_hold(&session);
+            // Lock order is legacy watch -> paired publication. No accessor holds
+            // a paired guard or acquires the legacy watch under this lock.
+            let Ok(mut paired) = self.find_published.write() else {
+                return false;
+            };
+            let snapshot = Arc::new(session);
+            *paired = crate::FindSnapshot::new(snapshot.clone(), token);
+            *current = snapshot;
             true
         }) {
             self.published_revision.fetch_add(1, Ordering::Release);
@@ -2536,3 +2569,7 @@ pub(crate) mod worker_tail_test_gate;
 #[cfg(test)]
 #[path = "runtime_read_observation_tests.rs"]
 mod read_observation_tests;
+
+#[cfg(test)]
+#[path = "retained_find_runtime_tests.rs"]
+mod retained_find_tests;

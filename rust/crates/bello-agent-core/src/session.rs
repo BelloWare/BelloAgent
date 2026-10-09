@@ -904,6 +904,9 @@ pub(crate) enum WriteFault {
     BeforeRename,
     AfterRename,
     StreamMetadata,
+    StreamAppend,
+    StreamSync,
+    StreamDirectorySync,
 }
 const MAX_SNAPSHOT_BYTES: usize = 256 * 1024 * 1024;
 // Kept outside streamed text admission so cancellation/recovery can always
@@ -1085,6 +1088,7 @@ pub(crate) fn verify_inspection_file(
 }
 
 pub struct SessionStore {
+    find_token: crate::retained_find::ContentToken,
     read_observation: crate::read_observation::AcceptedReadObservation,
     #[cfg(test)]
     pub(crate) fault: WriteFault,
@@ -1110,6 +1114,7 @@ impl SessionStore {
             path: PathBuf::new(),
             _lock: None,
             read_observation: crate::read_observation::AcceptedReadObservation::initial(&session),
+            find_token: crate::retained_find::ContentToken::fresh(),
             session,
             uncertain: false,
             retired: false,
@@ -1161,6 +1166,9 @@ impl SessionStore {
                 // it therefore has no terminal/failure sequence to carry. The
                 // same Controller lifetime survives this first materialization.
                 store.read_observation.generation = self.read_observation.generation.clone();
+                if crate::retained_find::same_projection(&self.session, &store.session) {
+                    store.find_token = self.find_token.clone();
+                }
                 *self = store;
                 Ok(())
             }
@@ -1321,6 +1329,7 @@ impl SessionStore {
             path,
             _lock: Some(lock),
             read_observation: crate::read_observation::AcceptedReadObservation::initial(&session),
+            find_token: crate::retained_find::ContentToken::fresh(),
             session,
             uncertain: false,
             retired: false,
@@ -1375,6 +1384,9 @@ impl SessionStore {
             observation.invalidate();
         }
         observation
+    }
+    pub(crate) fn find_token(&self) -> crate::retained_find::ContentToken {
+        self.find_token.clone()
     }
     pub fn snapshot_revision(&self) -> u64 {
         self.session.revision
@@ -1446,6 +1458,9 @@ impl SessionStore {
                 return Err(error);
             }
         };
+        if !crate::retained_find::same_projection(&self.session, &next) {
+            self.find_token = crate::retained_find::ContentToken::fresh();
+        }
         self.read_observation.accept(&self.session, &next);
         self.session = next;
         self.encoded_bytes = encoded_bytes;
@@ -1467,15 +1482,18 @@ impl SessionStore {
                 "Session persistence is uncertain. Reopen before continuing.",
             ));
         }
-        if self.session.active_reply.as_deref() != Some(reply_id)
-            || !self
-                .session
-                .messages
-                .iter()
-                .any(|message| message.id == reply_id)
-        {
+        if self.session.active_reply.as_deref() != Some(reply_id) {
             return Err(invalid("Stale response delta"));
         }
+        let message = self
+            .session
+            .messages
+            .iter()
+            .find(|message| message.id == reply_id)
+            .ok_or_else(|| invalid("Stale response delta"))?;
+        // Reuse the required target lookup; never compare retained history on a token.
+        let changes_find = matches!(&delta, Delta::Text(text) if !text.is_empty())
+            && crate::retained_find::is_retained(&self.session, message);
         let growth = encoded_delta_growth(&self.session, &delta)?;
         let next_size = self
             .encoded_bytes
@@ -1516,18 +1534,42 @@ impl SessionStore {
                 "Stream journal exceeds 512 MiB; previous data is preserved",
             ));
         }
-        if let Err(error) = crate::stream_journal::append(file, &bytes) {
+        #[cfg(test)]
+        let appended = match self.fault {
+            WriteFault::StreamAppend => {
+                Err(std::io::Error::other("injected journal append failure"))
+            }
+            WriteFault::StreamSync => std::io::Write::write_all(file, &bytes)
+                .and_then(|()| Err(std::io::Error::other("injected journal sync failure"))),
+            _ => crate::stream_journal::append(file, &bytes),
+        };
+        #[cfg(not(test))]
+        let appended = crate::stream_journal::append(file, &bytes);
+        if let Err(error) = appended {
             self.uncertain = true;
             return Err(Error::PersistenceUncertain(error.to_string()));
         }
-        if created
-            && let Err(error) =
+        if created {
+            #[cfg(test)]
+            let directory = if matches!(self.fault, WriteFault::StreamDirectorySync) {
+                Err(Error::PersistenceUncertain(
+                    "injected journal directory sync failure".into(),
+                ))
+            } else {
                 sync_committed_directory(self.path.parent().expect("snapshot directory checked"))
-        {
-            self.uncertain = true;
-            return Err(error);
+            };
+            #[cfg(not(test))]
+            let directory =
+                sync_committed_directory(self.path.parent().expect("snapshot directory checked"));
+            if let Err(error) = directory {
+                self.uncertain = true;
+                return Err(error);
+            }
         }
         self.session.delta(reply_id, delta)?;
+        if changes_find {
+            self.find_token = crate::retained_find::ContentToken::fresh();
+        }
         self.session.stream_sequence += 1;
         self.session.revision += 1;
         self.encoded_bytes = next_size;

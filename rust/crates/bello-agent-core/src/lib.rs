@@ -14,6 +14,7 @@ pub mod project_resources;
 pub mod provider;
 pub mod provider_failure;
 pub mod read_observation;
+pub mod retained_find;
 pub mod runtime;
 pub mod saved_runtime;
 pub mod session;
@@ -34,6 +35,7 @@ pub mod workspace_read_state;
 
 pub use profile::{Credential, Profile};
 pub use provider::{Delta, Reply, ResponsesClient};
+pub use retained_find::FindSnapshot;
 pub use runtime::Controller;
 pub use session::{
     Lane, Message, QueueEditState, QueueEditStatus, RunState, Session, SessionStore, Submission,

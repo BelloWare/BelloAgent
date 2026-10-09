@@ -205,7 +205,7 @@ fn snapshot_change(
         let mut session = (*view.session).clone();
         change(&mut session);
         let id = view.record.id.clone();
-        view.receive_snapshot(
+        view.receive_fixture_snapshot(
             &id,
             &Arc::downgrade(&view.controller),
             Arc::new(session),
@@ -227,6 +227,7 @@ fn input(root: &Entity<AgentView>, cx: &TestAppContext) -> TranscriptInput {
             pane_width: view.pane_width,
             loading: view.loading,
             load_failed: view.load_failed,
+            find_binding: None,
         }
     })
 }
@@ -1068,7 +1069,7 @@ fn fresh_session_arc_same_ids_reasoning_state_and_order_invalidate(cx: &mut Test
     let count = renders(&child, cx);
     root.update(cx, |view, cx| {
         let id = view.record.id.clone();
-        view.receive_snapshot(
+        view.receive_fixture_snapshot(
             &id,
             &Arc::downgrade(&view.controller),
             view.session.clone(),
@@ -2694,3 +2695,6 @@ fn unread_geometry_repaints_cached_child_on_late_observation_and_surface_reveal(
         "ordinary unchanged parent paints still use caching"
     );
 }
+
+#[path = "transcript_find_ui_tests.rs"]
+mod find_ui;

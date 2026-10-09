@@ -55,6 +55,11 @@ mod transcript_actions;
 #[cfg(test)]
 #[path = "../../../benches/transcript.rs"]
 mod transcript_benchmark;
+mod transcript_find_controller;
+mod transcript_find_numbered;
+mod transcript_find_presentation;
+mod transcript_find_search;
+mod transcript_find_state;
 mod transcript_skills;
 mod transcript_view;
 #[cfg(test)]
@@ -173,6 +178,7 @@ struct AgentView {
     read_manual_operations: BTreeMap<String, uuid::Uuid>,
     compaction_menu: Option<compaction_actions::CompactionMenu>,
     conversation_content: Option<conversation_content_view::ContentSheet>,
+    transcript_find: Option<transcript_find_controller::FindBar>,
     #[cfg(not(target_os = "macos"))]
     root_focus: FocusHandle,
     #[cfg(not(target_os = "macos"))]
@@ -444,6 +450,7 @@ impl AgentView {
             read_manual_operations: BTreeMap::new(),
             compaction_menu: None,
             conversation_content: None,
+            transcript_find: None,
             #[cfg(not(target_os = "macos"))]
             root_focus,
             #[cfg(not(target_os = "macos"))]
@@ -493,6 +500,7 @@ impl AgentView {
         self.sidebar_menu = None;
         self.compaction_menu = None;
         self.conversation_content = None;
+        self.clear_transcript_find(cx);
         if let Some(transcript) = &self.transcript {
             transcript.update(cx, |view, _| view.clear_content_reveal());
         }
@@ -1085,6 +1093,9 @@ impl AgentView {
                 cx.stop_propagation();
                 return;
             }
+        }
+        if self.transcript_find_key(event, window, cx) {
+            return;
         }
         let navigation_command = if cfg!(target_os = "macos") {
             mods.platform && !mods.control
@@ -2136,9 +2147,15 @@ impl AgentView {
             pane_width: self.pane_width,
             loading: self.loading,
             load_failed: self.load_failed,
+            find_binding: self
+                .display_find_binding
+                .as_ref()
+                .filter(|binding| Arc::ptr_eq(&self.session, &binding.session_shared()))
+                .cloned(),
         }
     }
     fn sync_transcript_inputs(&mut self, cx: &mut Context<Self>) {
+        self.refresh_find_content(cx);
         if self.session.messages.is_empty() {
             self.transcript = None;
         } else if let Some(view) = self.transcript.clone() {
@@ -2656,6 +2673,7 @@ impl AgentView {
         } else {
             composer
         };
+        let find_bar = self.find_bar_element(cx);
         view.child(composer)
             .child(
                 div()
@@ -2703,6 +2721,7 @@ impl AgentView {
                     .child(self.badge("Capture off".into(), "bug")),
             )
             .child(div().absolute().inset_0())
+            .children(find_bar)
     }
     fn sidebar(&self, cx: &mut Context<Self>) -> Div {
         let p = self.palette;

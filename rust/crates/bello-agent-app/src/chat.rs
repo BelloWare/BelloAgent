@@ -24,6 +24,7 @@ pub struct ChatState {
     pub record: ChatRecord,
     pub controller: Arc<Controller>,
     pub session: Arc<Session>,
+    pub display_find_binding: Option<bello_agent_core::retained_find::FindSnapshot>,
     pub composer: Entity<EditorView>,
     pub transcript: Option<Entity<crate::transcript_view::TranscriptView>>,
     pub error: Option<String>,
@@ -105,7 +106,11 @@ impl ChatState {
             activity_workspace.clone(),
             cx,
         );
-        let session = controller.snapshot_shared();
+        let display_find_binding = controller.find_snapshot();
+        let session = display_find_binding
+            .as_ref()
+            .map(|b| b.session_shared())
+            .unwrap_or_else(|| controller.snapshot_shared());
         let pending_cancel = cancellation.and_then(|receipt| match &receipt.state {
             bello_agent_core::workspace::QueuedCancelState::Pending { edit_id, turn_id } => {
                 Some((edit_id, turn_id))
@@ -153,6 +158,7 @@ impl ChatState {
             controller,
             record,
             session,
+            display_find_binding,
             composer,
             transcript: None,
             editing: if retain_unowned {

@@ -110,6 +110,7 @@ impl AgentView {
             cx.notify();
             return false;
         };
+        self.clear_transcript_find(cx);
         self.navigation_generation = next;
         true
     }
