@@ -3,7 +3,7 @@
   "evidence_cutoff_utc": "2026-10-09T06:00:00Z",
   "schema_version": 1,
   "repository": "BelloWare/BelloAgent",
-  "as_of_utc": "2026-10-09T17:10:00Z",
+  "as_of_utc": "2026-10-09T17:23:00Z",
   "source_commit": "885a5bcf6e608361692e877d7c77941b0db2f4d8",
   "summary": {
     "window_start_utc": "2026-10-04T05:13:30Z",
@@ -68360,6 +68360,58 @@
       "inference_status": "unavailable",
       "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
       "observed_utc": "2026-10-09T17:06:07Z"
+    },
+    {
+      "id": "20261009-1723-previous-timing-publication",
+      "repository_assignment": "BelloAgent",
+      "activity": "Root paired timing publication/readback with intervening approval notification (shared once)",
+      "category": "publication (mixed)",
+      "start_utc": "2026-10-09T17:15:24.256Z",
+      "end_utc": "2026-10-09T17:16:06.498Z",
+      "duration_seconds": 42.242,
+      "source": [
+        {
+          "receipt_sha256": "b3e7de85ca9bfa25cd81fa33029d9667f0bdcdc46a7f14287fd00a75b27007fa",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "completed",
+      "accounting_group": "task_window",
+      "include_in_totals": false,
+      "resource": "mixed task window",
+      "duration_basis": "Observed mixed task/workflow interval includes tools, coordination and waiting; overlaps command resources and other workers",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1723",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time."
+    },
+    {
+      "id": "20261009-1723-fixture-upload-still-pending",
+      "repository_assignment": "BelloAgent",
+      "activity": "Fixture source publication confirmation still pending",
+      "category": "publication/waiting",
+      "start_utc": null,
+      "end_utc": null,
+      "duration_seconds": null,
+      "source": [
+        {
+          "receipt_sha256": "e6cc58f9ce899f9e01d001503161f6f305edfa0bebf7e92ac1095133dd17180e",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "Fixture source publication remains paused pending required new confirmation; previously recorded blocker unchanged",
+      "accounting_group": "status_only",
+      "include_in_totals": false,
+      "resource": "mixed task window",
+      "duration_basis": "Status update only; no duplicate timed wait interval",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1723",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time."
     }
   ],
   "unattributed_ci_gaps": [
@@ -73312,6 +73364,18 @@
           "known_endpoint_resource_seconds": 317.11641247999796
         }
       },
+      "ci_coverage_within_window_seconds": 0,
+      "window_seconds": 780.0,
+      "outside_selected_ci_job_intervals_seconds": 780.0,
+      "warning": "Outside selected CI intervals includes other productive work and unobserved periods; never classify as idle or inference. Selected receipt coverage remains incomplete.",
+      "nested_ci_step_seconds": {}
+    },
+    {
+      "checkpoint": "20261009-1723",
+      "through_utc": "2026-10-09T17:23:00Z",
+      "coverage_window_start_utc": "2026-10-09T17:10:00Z",
+      "new_items": 2,
+      "groups": {},
       "ci_coverage_within_window_seconds": 0,
       "window_seconds": 780.0,
       "outside_selected_ci_job_intervals_seconds": 780.0,
