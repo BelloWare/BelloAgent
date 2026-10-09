@@ -3,7 +3,7 @@
   "evidence_cutoff_utc": "2026-10-09T06:00:00Z",
   "schema_version": 1,
   "repository": "BelloWare/BelloAgent",
-  "as_of_utc": "2026-10-09T17:23:00Z",
+  "as_of_utc": "2026-10-09T17:33:00Z",
   "source_commit": "885a5bcf6e608361692e877d7c77941b0db2f4d8",
   "summary": {
     "window_start_utc": "2026-10-04T05:13:30Z",
@@ -68412,6 +68412,32 @@
       "inference_duration_seconds": null,
       "inference_status": "unavailable",
       "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time."
+    },
+    {
+      "id": "20261009-1733-previous-timing-publication",
+      "repository_assignment": "BelloAgent",
+      "activity": "Root paired timing publication and readback (shared once)",
+      "category": "publication (mixed)",
+      "start_utc": "2026-10-09T17:25:48.963Z",
+      "end_utc": "2026-10-09T17:26:21.104Z",
+      "duration_seconds": 32.141,
+      "source": [
+        {
+          "receipt_sha256": "6d90d931f4b67c81fdf785f203a1ab7464219c65a13c11baf8cb40647d85bade",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "completed",
+      "accounting_group": "task_window",
+      "include_in_totals": false,
+      "resource": "mixed task window",
+      "duration_basis": "Observed mixed task/workflow interval includes tools, coordination and waiting; overlaps command resources and other workers",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1733",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time."
     }
   ],
   "unattributed_ci_gaps": [
@@ -73379,6 +73405,18 @@
       "ci_coverage_within_window_seconds": 0,
       "window_seconds": 780.0,
       "outside_selected_ci_job_intervals_seconds": 780.0,
+      "warning": "Outside selected CI intervals includes other productive work and unobserved periods; never classify as idle or inference. Selected receipt coverage remains incomplete.",
+      "nested_ci_step_seconds": {}
+    },
+    {
+      "checkpoint": "20261009-1733",
+      "through_utc": "2026-10-09T17:33:00Z",
+      "coverage_window_start_utc": "2026-10-09T17:23:00Z",
+      "new_items": 1,
+      "groups": {},
+      "ci_coverage_within_window_seconds": 0,
+      "window_seconds": 600.0,
+      "outside_selected_ci_job_intervals_seconds": 600.0,
       "warning": "Outside selected CI intervals includes other productive work and unobserved periods; never classify as idle or inference. Selected receipt coverage remains incomplete.",
       "nested_ci_step_seconds": {}
     }

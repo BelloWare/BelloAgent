@@ -1,6 +1,6 @@
 # BelloAgent Rust migration: where the time went
 
-## Current accounting checkpoint: 2026-10-09T17:23:00Z
+## Current accounting checkpoint: 2026-10-09T17:33:00Z
 
 This catch-up incorporates selected verified receipts through the stated cutoff, including late-added earlier observations. Every earlier item and checkpoint remains in the complete ledger and SHA-pinned historical view linked below. It is not a complete timesheet. Model inference duration remains unavailable, not zero. Shared coordination/publication appears once; local receipt hashes establish provenance without claiming independent public timing verification.
 
@@ -20,7 +20,7 @@ These top totals cover only this catch-up receipt cohort, including late-added e
 | CI | No new completed job duration in this cohort; prior terminal jobs remain in the ledger and linked history |
 | Dependency/environment setup | Unavailable |
 | Retries/rework | Unavailable separately; retained successful checks do not establish zero rework |
-| Publication | No isolated API total; 1 mixed windows; 1 with endpoints, 42.2s union |
+| Publication | No isolated API total; 1 mixed windows; 1 with endpoints, 32.1s union |
 | Waiting | Unavailable separately; waiting is mixed into recorded workflow windows |
 | Model inference | Unavailable; no timing telemetry |
 
@@ -41,14 +41,13 @@ Groups overlap each other and mixed work windows; never add them into project el
 
 These conservative phase groups can include compilation and execution together; do not add them to the CI job totals.
 
-This cohort adds no CI job execution intervals; prior verified terminal runs remain in earlier accounting. Coverage of 2026-10-09T17:10:00Z–2026-10-09T17:23:00Z is partial and does not establish an idle-time or inference budget.
+This cohort adds no CI job execution intervals; prior verified terminal runs remain in earlier accounting. Coverage of 2026-10-09T17:23:00Z–2026-10-09T17:33:00Z is partial and does not establish an idle-time or inference budget.
 
 ### Mixed workflows and waits (excluded from resource totals)
 
 | Activity | Start UTC | End UTC | Seconds | Outcome |
 |---|---|---|---:|---|
-| Root paired timing publication/readback with intervening approval notification (shared once) | 2026-10-09T17:15:24.256Z | 2026-10-09T17:16:06.498Z | 42.242 | completed |
-| Fixture source publication confirmation still pending | unknown | unknown | unknown | Fixture source publication remains paused pending required new confirmation; previously recorded blocker unchanged |
+| Root paired timing publication and readback (shared once) | 2026-10-09T17:25:48.963Z | 2026-10-09T17:26:21.104Z | 32.141 | completed |
 
 Open task and CI rows retain unknown final duration. Failed source attempts and the original failed native URL job remain in preserved earlier accounting. Mixed windows overlap useful parallel work; they are not pure idle or active-review time.
 
@@ -62,7 +61,7 @@ Full source hashes, source URLs, nested job steps and timing limitations are in 
 
 ## All recorded resource groups
 
-The ledger retains 1,445 items; 861 are flagged for their own resource-group totals. These are all recorded observations, not a complete migration budget. Groups retain their existing definitions and checkpoint-era names; they must not be added into one elapsed or effort total. Mixed work windows and nested phases remain excluded. Missing endpoints make some interval unions unavailable.
+The ledger retains 1,446 items; 861 are flagged for their own resource-group totals. These are all recorded observations, not a complete migration budget. Groups retain their existing definitions and checkpoint-era names; they must not be added into one elapsed or effort total. Mixed work windows and nested phases remain excluded. Missing endpoints make some interval unions unavailable.
 
 | Existing resource group | Counted timed items | Resource seconds | Items with endpoints | Endpoint-subset seconds | Subset interval union seconds |
 |---|---:|---:|---:|---:|---:|
