@@ -659,6 +659,7 @@ impl AgentView {
                 }
                 if let Some((record, draft)) = restore {
                     let workspace = view.workspace.clone();
+                    let recovery_workspace = workspace.clone();
                     let intent = receipt.clone();
                     let task = cx.background_executor().spawn(async move {
                         catalog_operation(&workspace, |store| {
@@ -672,8 +673,7 @@ impl AgentView {
                     cx.spawn(async move |view, cx| {
                         let outcome = task.await;
                         let _ = view.update(cx, |view, cx| {
-                            if view.project != recovery_project { return; }
-                            view.observe_catalog_uncertainty(outcome.uncertain, cx);
+                            if view.project != recovery_project || !view.observe_bound_catalog_uncertainty(&recovery_workspace, outcome.uncertain, cx) { return; }
                             if view.chat_ref(&settled_chat).is_none_or(|chat| !recovery_source.ptr_eq(&Arc::downgrade(&chat.controller))) { return; }
                             let result = outcome.display_result();
                             if let Some(chat) = view.chat_mut(&settled_chat) {

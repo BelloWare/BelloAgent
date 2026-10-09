@@ -517,6 +517,7 @@ impl AgentView {
             });
         }
         let workspace = self.workspace.clone();
+        let settlement_workspace = workspace.clone();
         let id = key.chat.clone();
         let expected = receipt.clone();
         let saved_source = source.clone();
@@ -533,8 +534,14 @@ impl AgentView {
         cx.spawn(async move |view, cx| {
             let (observed, outcome) = task.await;
             let _ = view.update(cx, |view, cx| {
-                if view.project == key.project {
-                    view.observe_catalog_uncertainty(outcome.uncertain, cx);
+                if view.project != key.project
+                    || !view.observe_bound_catalog_uncertainty(
+                        &settlement_workspace,
+                        outcome.uncertain,
+                        cx,
+                    )
+                {
+                    return;
                 }
                 view.finish_cancel_settlement(
                     key,

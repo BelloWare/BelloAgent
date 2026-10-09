@@ -1332,3 +1332,58 @@ fn uncertain_read_notice_preserves_live_drafts_without_reopen_advice() {
     assert!(!notice.to_lowercase().contains("reopen"));
     assert!(!notice.to_lowercase().contains("restart"));
 }
+
+#[gpui::test]
+fn catalog_lock_failure_has_bounded_read_writer_retries(cx: &mut TestAppContext) {
+    let (_dir, _window, root) = fixture(cx);
+    let workspace = cx.read(|cx| root.read(cx).workspace.clone());
+    let poisoned = workspace.clone();
+    assert!(
+        std::thread::spawn(move || {
+            let _guard = poisoned.lock().unwrap();
+            panic!("injected catalog mutex poison");
+        })
+        .join()
+        .is_err()
+    );
+    root.update(cx, |view, cx| {
+        let record = view.record.clone();
+        view.read_states
+            .lock()
+            .unwrap()
+            .apply(&record, ReadEvent::MarkUnread, true, false)
+            .unwrap();
+        view.flush_read_states(cx);
+    });
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let view = root.read(cx);
+        assert!(!view.read_write_inflight);
+        let states = view.read_states.lock().unwrap();
+        assert_eq!(states.failures, 3);
+        assert!(states.entry(&view.record).unwrap().dirty);
+        assert!(!view.close_ready);
+    });
+}
+
+#[gpui::test]
+fn chained_catalog_uncertainty_rejects_same_project_replacement_workspace(cx: &mut TestAppContext) {
+    let (dir, _window, root) = fixture(cx);
+    root.update(cx, |view, cx| {
+        let previous = view.workspace.clone();
+        let draft = view.composer.read(cx).text().to_owned();
+        let replacement = Arc::new(Mutex::new(
+            WorkspaceStore::open(dir.path().join("replacement-catalog.json"), &view.project)
+                .unwrap(),
+        ));
+        view.workspace = replacement.clone();
+        // Both rejected-Send recovery and Cancel settlement use this exact
+        // adoption boundary before observing their captured outcome.
+        assert!(!view.observe_bound_catalog_uncertainty(&previous, true, cx));
+        assert!(!view.known_catalog_uncertainty);
+        assert_eq!(view.composer.read(cx).text(), draft);
+        assert!(view.observe_bound_catalog_uncertainty(&replacement, true, cx));
+        assert!(view.known_catalog_uncertainty);
+        assert_eq!(view.composer.read(cx).text(), draft);
+    });
+}

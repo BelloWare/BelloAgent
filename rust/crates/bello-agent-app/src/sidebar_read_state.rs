@@ -496,6 +496,7 @@ impl AgentView {
             return;
         }
         self.read_write_inflight = true;
+        let failures_before = self.read_states.lock().unwrap().failures;
         let shared = self.read_states.clone();
         let workspace = self.workspace.clone();
         let identity = workspace.clone();
@@ -511,6 +512,15 @@ impl AgentView {
                 view.read_write_inflight = false;
                 view.observe_catalog_uncertainty(outcome.uncertain, cx);
                 if let Err(error) = outcome.display_result() {
+                    let mut states = view.read_states.lock().unwrap();
+                    // The catalog lock itself may fail before flush_shared runs.
+                    // Account for that failure too, without double-counting an
+                    // ordinary transaction error already recorded by the batch.
+                    if states.failures <= failures_before {
+                        states.failures = failures_before.saturating_add(1);
+                    }
+                    states.error = Some(error.clone());
+                    drop(states);
                     view.error = Some(format!("Read state could not be saved: {error}"));
                     cx.notify();
                 }
@@ -519,6 +529,20 @@ impl AgentView {
             });
         })
         .detach();
+    }
+    /// Chained admission/settlement callbacks must reject an old workspace
+    /// before a storage-uncertainty result can fence the current workspace.
+    pub(crate) fn observe_bound_catalog_uncertainty(
+        &mut self,
+        expected: &Arc<Mutex<WorkspaceStore>>,
+        uncertain: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !Arc::ptr_eq(expected, &self.workspace) {
+            return false;
+        }
+        self.observe_catalog_uncertainty(uncertain, cx);
+        true
     }
     pub(crate) fn inspect_read_baseline(
         &mut self,

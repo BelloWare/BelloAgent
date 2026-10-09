@@ -28,8 +28,15 @@ One background writer per workspace coalesces dirty state. It releases the UI
 metadata mutex before filesystem I/O. Receipts acknowledge only their own saved
 revision; a newer mutation remains dirty. Definite failures have a bounded
 three-attempt automatic budget. Explicit admission/close can retry; uncertain
-storage retains the admission fence. Removed/path-replaced rows are pruned from
+storage retains the admission fence. Errors before the flush body runs (including
+an unavailable catalog mutex) also consume the bounded retry budget. Removed/path-replaced rows are pruned from
 background work, while an admission for such a row fails explicitly.
+
+The read-state writes and the modified output-admission completion chains use
+exact workspace Arc identity, including rejected-Send draft recovery and Cancel
+settlement before adopting uncertainty. This is a bounded lifecycle integration,
+not a whole-app concurrency retrofit: older unrelated selection, title and draft
+debounce callbacks are outside this change.
 
 Orderly close joins Controllers before directly capturing their final accepted
 observations. The final flush includes every dirty read-map entry, including
