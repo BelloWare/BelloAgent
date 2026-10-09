@@ -2275,3 +2275,24 @@ including the explicit Darwin path-derived identity compatibility gap.
 No home/auth/config discovery, script execution, implicit slash selection,
 dependency installation, additional tool grants, production gate lifting, owner
 Mac acceptance, real credentials/provider spend, release or signing is included.
+
+## Coordinated retained inspection and safe selected opening (2026-10-09)
+
+A shared, cancellable inspection lane now coordinates restored sidebar run-state
+reads with selected chat opening. Selected requests have FIFO priority and do not
+block the UI while waiting. Read/parse/replay cancellation preserves recovery and
+writer authority. A bounded app-lifetime retirement owner retains never-installed
+Controllers through stale completion, cleanup failure and window rebind, with
+workspace Retry and shutdown close-veto coverage. Four review findings around
+queued completion, foreground cleanup, newer selection and cancelled-scope renewal
+were fixed and regression-tested. Default/all-feature tests and strict checks
+passed. A sealed ordinary Linux GUI pass covered rapid saved-chat navigation,
+Projects/Connections transitions and draft preservation with zero provider/tool
+calls; it did not capture a pending-load phase or establish mid-I/O races or
+native detach/rebind. See the
+[contract and evidence scope](coordinated-session-inspection.md).
+
+This is a prerequisite checkpoint, not enabled sidebar content search. Loaded
+versus durable-source certainty publication, persistent indexing, native latency
+and macOS Quit acceptance remain separate gates. The unintegrated pure projection
+experiment is not part of this source checkpoint.

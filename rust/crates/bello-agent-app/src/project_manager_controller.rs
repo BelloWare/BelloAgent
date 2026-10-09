@@ -141,6 +141,9 @@ impl ProjectManagerController {
 
 impl AgentView {
     pub(crate) fn project_actions_blocked(&self) -> bool {
+        self.load_retirement.occupied() || self.project_actions_blocked_without_load()
+    }
+    pub(crate) fn project_actions_blocked_without_load(&self) -> bool {
         self.mcp.open
             || self.mcp.busy()
             || self.mcp.admission_blocked
@@ -579,6 +582,9 @@ impl AgentView {
     }
 
     fn project_idle_error(&self) -> Option<String> {
+        if self.load_retirement.occupied() {
+            return Some(crate::chat_load::CLEANUP_BLOCKER.into());
+        }
         if self.mcp.busy()
             || self.mcp.admission_blocked
             || self.shutting_down

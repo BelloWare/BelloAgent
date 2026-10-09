@@ -56,7 +56,13 @@ struct SnapshotPresence {
     retry: Option<RowPresence>,
 }
 pub(crate) fn parse_snapshot(bytes: &[u8]) -> Result<crate::Session> {
-    let presence: SnapshotPresence = serde_json::from_slice(bytes)?;
+    parse_snapshot_cancelled(bytes, None)
+}
+pub(crate) fn parse_snapshot_cancelled(
+    bytes: &[u8],
+    cancel: Option<&tokio_util::sync::CancellationToken>,
+) -> Result<crate::Session> {
+    let presence: SnapshotPresence = crate::inspection::parse(bytes, cancel)?;
     if presence.version < 9
         && (presence.tool_timing
             || presence.messages.iter().any(|row| {
@@ -80,7 +86,7 @@ pub(crate) fn parse_snapshot(bytes: &[u8]) -> Result<crate::Session> {
     {
         return Err(invalid("Skill fields require Rust snapshot version 8"));
     }
-    Ok(serde_json::from_slice(bytes)?)
+    crate::inspection::parse(bytes, cancel)
 }
 pub(crate) fn old_catalog_record_has_skills(
     text: &str,

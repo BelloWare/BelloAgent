@@ -58,6 +58,7 @@ pub struct ChatState {
     pub loading: bool,
     pub load_failed: bool,
     pub load_generation: u64,
+    pub(crate) load_cancellation: crate::chat_load::LoadCancellation,
     pub pending: bool,
     pub error_expanded: bool,
     pub dismissed_error: Option<String>,
@@ -232,6 +233,7 @@ impl ChatState {
             loading: false,
             load_failed: false,
             load_generation: 0,
+            load_cancellation: Default::default(),
             pending,
             error_expanded: false,
             dismissed_error: None,
@@ -274,6 +276,7 @@ impl ChatState {
     /// Presentation replacement only. The owner must explicitly retire/join
     /// any outgoing runtime before transferring persistent-store authority.
     pub fn replace_controller(&mut self, controller: Arc<Controller>, cx: &mut Context<AgentView>) {
+        self.load_cancellation.cancel();
         if self.controller.is_persistent()
             && let Err(error) = self.read_states.lock().unwrap().observe(
                 &self.record,

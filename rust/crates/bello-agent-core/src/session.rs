@@ -692,10 +692,21 @@ impl Session {
         })
     }
     pub(crate) fn validate_checkpoint(&self) -> Result<()> {
+        self.validate_checkpoint_cancelled(None)
+    }
+    fn validate_checkpoint_cancelled(
+        &self,
+        cancel: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<()> {
+        crate::inspection::check(cancel)?;
         self.validate_compaction()?;
+        crate::inspection::check(cancel)?;
         self.validate_context_recoveries()?;
+        crate::inspection::check(cancel)?;
         self.validate_tool_history()?;
+        crate::inspection::check(cancel)?;
         self.validate_edits()?;
+        crate::inspection::check(cancel)?;
         let active = self.active.is_some();
         let reply = self.active_reply.is_some();
         if self.state == RunState::Running {
@@ -719,7 +730,7 @@ impl Session {
                 "Inactive checkpoint unexpectedly contains an active turn",
             ));
         }
-        Ok(())
+        crate::inspection::check(cancel)
     }
     fn require_idle_for_host_change(&self) -> Result<()> {
         if self.state == RunState::Running
@@ -963,10 +974,27 @@ pub struct IdleSessionLease {
 }
 impl SessionInspectionLease {
     pub fn acquire(path: impl AsRef<Path>, expected_session_id: &str) -> Result<Self> {
+        Self::acquire_with_cancel(path.as_ref(), expected_session_id, None)
+    }
+    /// Cooperative read/JSON/replay cancellation; no recovery writes. Existing
+    /// semantic validators remain exact and have checks between stages only.
+    pub fn acquire_cancelled(
+        path: impl AsRef<Path>,
+        expected_session_id: &str,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> Result<Self> {
+        Self::acquire_with_cancel(path.as_ref(), expected_session_id, Some(cancel))
+    }
+    fn acquire_with_cancel(
+        path: &Path,
+        expected_session_id: &str,
+        cancel: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<Self> {
+        crate::inspection::check(cancel)?;
         Uuid::parse_str(expected_session_id)
             .map_err(|_| invalid("Invalid inspected session identity"))?;
-        let path = if path.as_ref().is_absolute() {
-            path.as_ref().to_owned()
+        let path = if path.is_absolute() {
+            path.to_owned()
         } else {
             std::env::current_dir()?.join(path)
         };
@@ -981,15 +1009,13 @@ impl SessionInspectionLease {
         if before.len() > MAX_SNAPSHOT_BYTES as u64 {
             return Err(invalid("Session exceeds 256 MiB safety limit"));
         }
-        let mut bytes = Vec::new();
-        (&file)
-            .take(MAX_SNAPSHOT_BYTES as u64 + 1)
-            .read_to_end(&mut bytes)?;
+        let bytes = crate::inspection::read_checkpoint(&file, MAX_SNAPSHOT_BYTES, cancel)?;
         if bytes.len() > MAX_SNAPSHOT_BYTES {
             return Err(invalid("Session exceeds 256 MiB safety limit"));
         }
         verify_inspection_file(&path, &file, &before)?;
-        let mut session: Session = crate::context_recovery::parse_snapshot(&bytes)?;
+        let mut session: Session =
+            crate::context_recovery::parse_snapshot_cancelled(&bytes, cancel)?;
         if session.id != expected_session_id {
             return Err(invalid("The session file belongs to another chat"));
         }
@@ -998,7 +1024,7 @@ impl SessionInspectionLease {
                 "Unsupported Rust session format. Swift journals are not imported automatically.",
             ));
         }
-        session.validate_checkpoint()?;
+        session.validate_checkpoint_cancelled(cancel)?;
         if session.version == 1 {
             // Legacy snapshots predate the append journal. Observe the legacy
             // shape without the migration performed by SessionStore::open.
@@ -1006,14 +1032,19 @@ impl SessionInspectionLease {
                 return Err(invalid("Legacy session has unknown stream journal state"));
             }
         } else {
-            let replay = crate::stream_journal::replay_read_only(&path, &mut session)?;
+            let replay = match cancel {
+                Some(cancel) => {
+                    crate::stream_journal::replay_read_only_cancelled(&path, &mut session, cancel)?
+                }
+                None => crate::stream_journal::replay_read_only(&path, &mut session)?,
+            };
             if replay.incomplete_tail {
                 return Err(invalid(
                     "Session has an incomplete stream journal; reopen it before changing project roots",
                 ));
             }
         }
-        session.validate_checkpoint()?;
+        session.validate_checkpoint_cancelled(cancel)?;
         Ok(Self {
             _lock: lock,
             session,

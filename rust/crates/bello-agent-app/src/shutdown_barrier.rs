@@ -7,6 +7,7 @@ use bello_agent_core::{
 use std::sync::{Arc, Mutex};
 
 pub(super) struct ShutdownPlan {
+    pub load_retirement: crate::chat_load::LoadRetirementOwner,
     pub drafts: Vec<(ChatRecord, DraftRecord)>,
     pub controllers: Vec<Arc<Controller>>,
     pub read_states: Option<crate::sidebar_read_state::SharedReadStates>,
@@ -68,8 +69,13 @@ impl ShutdownPlan {
         let mut catalog_uncertain = saved.uncertain;
         let saved = saved.display_result();
         let mut result = if saved.is_ok() {
-            let mut result = Ok(());
+            // Draft saves precede retirement; never use ordinary shutdown()
+            // for an uninstalled actor whose writer ownership must be released.
+            let mut result = self.load_retirement.retry().await;
             for controller in &self.controllers {
+                if result.is_err() {
+                    break;
+                }
                 if let Err(error) = stop(controller.clone()).await {
                     result = Err(error);
                     break;

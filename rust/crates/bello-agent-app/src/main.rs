@@ -2,6 +2,7 @@ mod assets;
 #[cfg(all(feature = "synthetic-authority", debug_assertions))]
 mod attachment_fixture;
 mod chat;
+mod chat_load;
 mod chat_navigation;
 mod chat_organization;
 mod chat_tool_mode;
@@ -174,6 +175,7 @@ struct AgentView {
     sidebar_menu: Option<sidebar_actions::SidebarMenu>,
     sidebar_activity_hold: sidebar_activity::SidebarActivityHold,
     sidebar_run_states: sidebar_run_state::SidebarRunStates,
+    load_retirement: chat_load::LoadRetirementOwner,
     read_states: sidebar_read_state::SharedReadStates,
     read_write_inflight: bool,
     read_surface_ready: bool,
@@ -446,6 +448,7 @@ impl AgentView {
             sidebar_menu: None,
             sidebar_activity_hold: Default::default(),
             sidebar_run_states: Default::default(),
+            load_retirement: Default::default(),
             read_states,
             read_write_inflight: false,
             read_surface_ready: false,
@@ -2302,6 +2305,12 @@ impl AgentView {
                     ),
             )
             .child(div().flex_1());
+        if self.load_retirement.occupied() {
+            bar = bar.child(
+                self.button("retry-workspace-load-cleanup", "Retry workspace cleanup")
+                    .on_click(cx.listener(|view, _, _, cx| view.retry_workspace_load_cleanup(cx))),
+            );
+        }
         if self.editing.is_some() {
             let cancel_chat = self.record.id.clone();
             bar = bar.child(

@@ -71,14 +71,22 @@ pub(crate) fn append(file: &mut File, bytes: &[u8]) -> std::io::Result<()> {
 /// old generation for inspection and checkpoint only its complete valid prefix.
 /// Malformed complete records, gaps and foreign identities are refused.
 pub(crate) fn replay(snapshot: &Path, session: &mut Session) -> Result<Replay> {
-    replay_with_confirmation(snapshot, session, true)
+    replay_with_confirmation(snapshot, session, true, None)
 }
 
 /// Inspection uses the same format/identity validation without opening the
 /// journal for writing or synchronizing it. Readable bytes do not prove a prior
 /// uncertain append durable, and this path cannot authorize recovery writes.
 pub(crate) fn replay_read_only(snapshot: &Path, session: &mut Session) -> Result<Replay> {
-    replay_with_confirmation(snapshot, session, false)
+    replay_with_confirmation(snapshot, session, false, None)
+}
+
+pub(crate) fn replay_read_only_cancelled(
+    snapshot: &Path,
+    session: &mut Session,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<Replay> {
+    replay_with_confirmation(snapshot, session, false, Some(cancel))
 }
 
 fn open_after_metadata(
@@ -100,7 +108,9 @@ fn replay_with_confirmation(
     snapshot: &Path,
     session: &mut Session,
     confirm_durability: bool,
+    cancel: Option<&tokio_util::sync::CancellationToken>,
 ) -> Result<Replay> {
+    crate::inspection::check(cancel)?;
     let path = path(snapshot, &session.stream_generation)?;
     let metadata = match fs::symlink_metadata(&path) {
         Ok(metadata) => metadata,
@@ -123,6 +133,7 @@ fn replay_with_confirmation(
     loop {
         let mut line = Vec::new();
         loop {
+            crate::inspection::check(cancel)?;
             let buffer = reader.fill_buf()?;
             if buffer.is_empty() {
                 break;
@@ -151,7 +162,9 @@ fn replay_with_confirmation(
             outcome.incomplete_tail = true;
             break;
         }
-        let record: Record = serde_json::from_slice(&line).map_err(|_| {
+        let parsed = crate::inspection::parse::<Record>(&line, cancel);
+        crate::inspection::check(cancel)?;
+        let record = parsed.map_err(|_| {
             invalid("Malformed complete stream journal record; original data is preserved")
         })?;
         if record.version != 1
@@ -179,6 +192,7 @@ fn replay_with_confirmation(
     } else {
         crate::session::verify_inspection_file(&path, reader.get_ref(), &metadata)?;
     }
+    crate::inspection::check(cancel)?;
     Ok(outcome)
 }
 #[cfg(test)]

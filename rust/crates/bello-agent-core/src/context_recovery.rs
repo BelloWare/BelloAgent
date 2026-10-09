@@ -114,6 +114,12 @@ fn fingerprint(value: &str) -> Result<()> {
 /// Even an empty/null new field must not be silently accepted under an old
 /// marker. Inspect presence without copying any retained transcript bodies.
 pub(crate) fn parse_snapshot(bytes: &[u8]) -> Result<Session> {
+    parse_snapshot_cancelled(bytes, None)
+}
+pub(crate) fn parse_snapshot_cancelled(
+    bytes: &[u8],
+    cancel: Option<&tokio_util::sync::CancellationToken>,
+) -> Result<Session> {
     fn present<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<bool, D::Error> {
         serde::de::IgnoredAny::deserialize(d)?;
         Ok(true)
@@ -124,13 +130,16 @@ pub(crate) fn parse_snapshot(bytes: &[u8]) -> Result<Session> {
         #[serde(default, deserialize_with = "present")]
         context_recoveries: bool,
     }
-    let presence: Presence = serde_json::from_slice(bytes)?;
+    let presence: Presence = crate::inspection::parse(bytes, cancel)?;
     if presence.version < 10 && presence.context_recoveries {
         return Err(invalid(
             "Context recovery requires Rust snapshot version 10",
         ));
     }
-    crate::skill_schema::parse_snapshot(bytes)
+    match cancel {
+        Some(cancel) => crate::skill_schema::parse_snapshot_cancelled(bytes, Some(cancel)),
+        None => crate::skill_schema::parse_snapshot(bytes),
+    }
 }
 
 impl Session {

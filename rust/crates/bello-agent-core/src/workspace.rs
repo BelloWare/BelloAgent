@@ -833,6 +833,7 @@ impl Drop for WorkspaceLock {
 /// Single writer, atomic small-file transactions. Revision receipts reject stale
 /// debounce work independently of wall-clock changes and task cancellation.
 pub struct WorkspaceStore {
+    inspection_coordinator: crate::inspection::InspectionCoordinator,
     pub(crate) mcp_manager: Option<std::sync::Arc<crate::mcp::McpManager>>,
     pub(crate) mcp_creation_gate: std::sync::Arc<std::sync::Mutex<()>>,
     path: PathBuf,
@@ -903,6 +904,7 @@ impl WorkspaceStore {
             WorkspaceSnapshot::new(project)
         };
         Ok(Self {
+            inspection_coordinator: crate::inspection::InspectionCoordinator::default(),
             mcp_manager: None,
             mcp_creation_gate: std::sync::Arc::new(std::sync::Mutex::new(())),
             path,
@@ -914,6 +916,12 @@ impl WorkspaceStore {
             #[cfg(feature = "synthetic-authority")]
             synthetic_read_state_after_rename: false,
         })
+    }
+
+    /// All factories/windows sharing this catalog owner share one parse lane.
+    /// Clone under the catalog mutex, then release that mutex before waiting.
+    pub fn inspection_coordinator(&self) -> crate::inspection::InspectionCoordinator {
+        self.inspection_coordinator.clone()
     }
 
     pub(crate) fn state_directory(&self) -> PathBuf {

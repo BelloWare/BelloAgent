@@ -486,3 +486,32 @@ async fn cold_view_reads_catalog_rows_without_opening_or_recovering_saved_chats(
         .unwrap();
     assert_eq!(files(directory.path()), before);
 }
+#[gpui::test]
+async fn cancelled_scope_renews_after_shutdown_failure_without_blocked_render(
+    cx: &mut TestAppContext,
+) {
+    let (directory, window, view) = fixture(cx);
+    let (record, store) = saved(directory.path());
+    drop(store);
+    window
+        .update(cx, |view, _, cx| {
+            view.sidebar_run_states.scope = Some(Scope::capture(view));
+            view.sidebar_run_states.cancel_pending();
+            // Simulate shutdown failing before another render clears its scope.
+            view.shutting_down = false;
+            view.records.push(record.clone());
+            view.refresh_sidebar_run_states(cx);
+            assert!(
+                !view.sidebar_run_states.cancel.is_cancelled(),
+                "cancelled scope must renew before scheduling"
+            );
+        })
+        .unwrap();
+    cx.condition(&view, |view, _| {
+        view.sidebar_run_states
+            .observations
+            .contains_key(&record.id)
+    })
+    .await;
+    assert!(view.read_with(cx, |view, _| !view.sidebar_run_states.cancel.is_cancelled()));
+}

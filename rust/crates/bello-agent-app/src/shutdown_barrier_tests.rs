@@ -30,6 +30,7 @@ fn fixture() -> (tempfile::TempDir, ShutdownPlan) {
         snapshot: project.join("session.json"),
     };
     let plan = ShutdownPlan {
+        load_retirement: Default::default(),
         read_states: None,
         read_controllers: Vec::new(),
         selected: record.id.clone(),
@@ -232,6 +233,7 @@ fn later_stop_failure_allows_retry_of_already_stopped_controller() {
     let second = Controller::new(SessionStore::pending(), None).unwrap();
     plan.controllers.push(second.clone());
     let retry = ShutdownPlan {
+        load_retirement: Default::default(),
         read_states: plan.read_states.clone(),
         read_controllers: plan.read_controllers.clone(),
         drafts: plan.drafts.clone(),
@@ -309,6 +311,7 @@ fn activity_flush_reads_final_actor_watermark_after_stop_boundary(cx: &mut TestA
         WorkspaceStore::open(project.join("catalog.json"), &project).unwrap(),
     ));
     let plan = ShutdownPlan {
+        load_retirement: Default::default(),
         read_states: None,
         read_controllers: Vec::new(),
         drafts: vec![(

@@ -531,6 +531,7 @@ fn shutdown_joins_real_partial_worker_then_captures_without_foreground_watch() {
     assert!(controller.read_observation().terminal.is_none());
     let workspace = Arc::new(Mutex::new(store));
     let plan = crate::shutdown_barrier::ShutdownPlan {
+        load_retirement: Default::default(),
         // Deliberately no draft records: dirty read state and post-join capture
         // must not depend on the draft list or a delivered UI callback.
         drafts: Vec::new(),
@@ -586,6 +587,7 @@ fn quit_during_grace_flushes_unloaded_dirty_entry_without_draft_record(cx: &mut 
     let workspace = Arc::new(Mutex::new(store));
     let outcome = cx.background_executor.block_test(
         crate::shutdown_barrier::ShutdownPlan {
+            load_retirement: Default::default(),
             drafts: Vec::new(),
             controllers: vec![controller],
             read_states: Some(states.clone()),

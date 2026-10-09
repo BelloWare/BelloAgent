@@ -1,9 +1,10 @@
 //! Read-only, point-in-time restored sidebar state. No controller is opened,
 //! recovered, resumed or retained for an unloaded row.
 use crate::{AgentView, workspace_lifetime::WindowBinding};
+#[cfg(test)]
+use bello_agent_core::session::SessionInspectionLease;
 use bello_agent_core::{
     RunState, Session,
-    session::SessionInspectionLease,
     workspace::{ChatMaterialization, ChatRecord, WorkspaceStore},
 };
 use gpui::Context;
@@ -92,6 +93,7 @@ fn inspect_then(record: &ChatRecord, after_read: impl FnOnce()) -> SavedRunState
 }
 
 // One lease, one parse, small output summary. Never acquire a second scanner.
+#[cfg(test)]
 fn inspect_summary_then(
     record: &ChatRecord,
     after_read: impl FnOnce(),
@@ -120,6 +122,46 @@ fn inspect_summary_then(
     } else {
         (state, summary, Some(before))
     }
+}
+
+fn inspect_coordinated(
+    record: &ChatRecord,
+    permit: &mut bello_agent_core::inspection::InspectionPermit,
+) -> bello_agent_core::Result<(
+    SavedRunState,
+    bello_agent_core::read_observation::OutputProjection,
+    Option<FileIdentity>,
+)> {
+    use bello_agent_core::{
+        Error,
+        read_observation::{OutputProjection, project_outputs},
+    };
+    let unknown = || (SavedRunState::Unknown, OutputProjection::Unknown, None);
+    if record.materialization != ChatMaterialization::CheckpointRequired {
+        return Ok(unknown());
+    }
+    let Some(before) = FileIdentity::read(&record.snapshot) else {
+        return Ok(unknown());
+    };
+    let cancel = permit.cancellation().clone();
+    let lease = match permit.inspect(&record.snapshot, &record.id) {
+        Ok(lease) => lease,
+        Err(Error::Cancelled) => return Err(Error::Cancelled),
+        Err(_) => return Ok(unknown()),
+    };
+    let state = SavedRunState::from_session(lease.snapshot());
+    let summary = project_outputs(lease.snapshot());
+    drop(lease);
+    if cancel.is_cancelled() {
+        return Err(Error::Cancelled);
+    }
+    Ok(
+        if FileIdentity::read(&record.snapshot).as_ref() != Some(&before) {
+            unknown()
+        } else {
+            (state, summary, Some(before))
+        },
+    )
 }
 
 struct Scope {
@@ -155,6 +197,7 @@ struct Observation {
 }
 #[derive(Default)]
 pub(crate) struct SidebarRunStates {
+    cancel: bello_agent_core::inspection::InspectionCancellation,
     scope: Option<Scope>,
     epoch: Uuid,
     observations: BTreeMap<String, Observation>,
@@ -162,6 +205,22 @@ pub(crate) struct SidebarRunStates {
     // parsed at a time, including across navigation and window replacement.
     in_flight: Option<Uuid>,
 }
+impl SidebarRunStates {
+    pub(crate) fn cancel_pending(&mut self) {
+        self.cancel.cancel();
+        self.scope = None;
+    }
+    fn renew_scope(&mut self) {
+        self.cancel.cancel();
+        self.cancel = bello_agent_core::inspection::InspectionCancellation::new();
+    }
+}
+impl Drop for SidebarRunStates {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+    }
+}
+
 struct Target {
     request: Uuid,
     epoch: Uuid,
@@ -173,6 +232,7 @@ impl AgentView {
     /// are cached too: redraws cannot create an unbounded busy-writer retry.
     pub(crate) fn refresh_sidebar_run_states(&mut self, cx: &mut Context<Self>) {
         if self.shutting_down || self.close_ready || self.known_catalog_uncertainty {
+            self.sidebar_run_states.cancel_pending();
             self.sidebar_run_states.scope = None;
             self.sidebar_run_states.observations.clear();
             self.sidebar_run_states.epoch = Uuid::new_v4();
@@ -184,6 +244,7 @@ impl AgentView {
             .as_ref()
             .is_none_or(|scope| !scope.matches(self))
         {
+            self.sidebar_run_states.renew_scope();
             self.sidebar_run_states.scope = Some(Scope::capture(self));
             self.sidebar_run_states.epoch = Uuid::new_v4();
             self.sidebar_run_states.observations.clear();
@@ -218,12 +279,35 @@ impl AgentView {
         };
         self.sidebar_run_states.in_flight = Some(target.request);
         let record = target.record.clone();
-        let task = cx
-            .background_executor()
-            .spawn(async move { inspect_summary_then(&record, || {}) });
+        let workspace = self.workspace.clone();
+        let cancel = self.sidebar_run_states.cancel.clone();
+        let task = cx.background_executor().spawn(async move {
+            let lane = workspace
+                .lock()
+                .map_err(|_| bello_agent_core::Error::Invalid("Workspace is unavailable".into()))?
+                .inspection_coordinator();
+            let mut permit = lane.background(&cancel).await?;
+            inspect_coordinated(&record, &mut permit)
+        });
         cx.spawn(async move |view, cx| {
-            let (state, summary, file_identity) = task.await;
+            let outcome = task.await;
             let _ = view.update(cx, |view, cx| {
+                let (state, summary, file_identity) = match outcome {
+                    Ok(value) => value,
+                    Err(bello_agent_core::Error::Cancelled) => {
+                        if view.sidebar_run_states.in_flight == Some(target.request) {
+                            view.sidebar_run_states.in_flight = None;
+                        }
+                        view.refresh_sidebar_run_states(cx);
+                        cx.notify();
+                        return;
+                    }
+                    Err(_) => (
+                        SavedRunState::Unknown,
+                        bello_agent_core::read_observation::OutputProjection::Unknown,
+                        None,
+                    ),
+                };
                 let record = target.record.clone();
                 let accepted = view.finish_sidebar_run_state(target, state);
                 if accepted

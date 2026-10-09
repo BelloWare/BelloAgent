@@ -386,81 +386,7 @@ impl AgentView {
         self.load_chat(id, cx);
     }
     pub(super) fn load_chat(&mut self, id: &str, cx: &mut Context<Self>) {
-        if self.shutting_down
-            || self.project_actions_blocked()
-            || self.chat_mode_blocked.contains(id)
-            || self.connections.switches.contains_key(id)
-        {
-            return;
-        }
-        let runtime = self.runtime.clone();
-        let Some(chat) = self.chat_mut(id) else {
-            return;
-        };
-        if chat.loading || chat.busy || chat.queue_operation.is_some() {
-            return;
-        }
-        chat.load_generation = chat.load_generation.saturating_add(1);
-        let generation = chat.load_generation;
-        chat.loading = true;
-        chat.load_failed = false;
-        chat.error = None;
-        let record = chat.record.clone();
-        let previous = chat.controller.clone();
-        let source = Arc::downgrade(&previous);
-        let id = id.to_owned();
-        let project = self.project.clone();
-        let task = cx.background_executor().spawn(async move {
-            // Join before opening any same-path writer, including a failed load.
-            previous.retire_and_wait().await?;
-            match runtime.open_registered(&record) {
-                Ok(controller) => Ok((controller, None)),
-                Err(error) => runtime
-                    .disconnected(&record, Some(&previous))
-                    .map(|controller| (controller, Some(format!("Chat is disconnected: {error}")))),
-            }
-        });
-        cx.spawn(async move |view, cx| {
-            let loaded = task.await;
-            let success = loaded.is_ok();
-            let _ = view.update(cx, |view, cx| {
-                if view.project != project
-                    || view.chat_ref(&id).is_none_or(|chat| {
-                        chat.load_generation != generation
-                            || !source.ptr_eq(&Arc::downgrade(&chat.controller))
-                    })
-                {
-                    return;
-                }
-                if let Some(chat) = view.chat_mut(&id) {
-                    chat.loading = false;
-                    match loaded {
-                        Ok((controller, notice)) => {
-                            chat.replace_controller(controller, cx);
-                            chat.error = notice;
-                        }
-                        Err(error) => {
-                            chat.load_failed = true;
-                            chat.error = Some(format!("Chat could not be opened: {error}"));
-                        }
-                    }
-                }
-                if success {
-                    let snapshot = view
-                        .chat_ref(&id)
-                        .filter(|chat| chat.controller.is_persistent())
-                        .map(|chat| (Arc::downgrade(&chat.controller), chat.session.clone()));
-                    if let Some((source, snapshot)) = snapshot {
-                        view.receive_snapshot(&id, &source, snapshot, cx);
-                    }
-                    view.reconcile_edit(&id, cx);
-                    view.reconcile_intents(&id, cx);
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-        cx.notify();
+        self.begin_coordinated_chat_load(id, cx);
     }
     pub(super) fn submit_chat(&mut self, lane: Lane, cx: &mut Context<Self>) {
         if self.actor_mutation_blocked(&self.record.id)
@@ -1099,6 +1025,11 @@ impl AgentView {
         if self.shutting_down {
             return;
         }
+        // Failure-held permits may have newer selected waiters. Cancel them
+        // before the legacy loading veto, so draft-save + cleanup is reachable.
+        if self.load_retirement.failed() {
+            self.cancel_queued_chat_loads();
+        }
         if self.projects.operation.is_some() {
             self.error =
                 Some("Wait for the project folder change to finish before closing.".into());
@@ -1148,6 +1079,7 @@ impl AgentView {
         }
         self.connections.cancel_catalog_loads();
         self.shutting_down = true;
+        self.sidebar_run_states.cancel_pending();
         self.close_dialog = false;
         let mut drafts = Vec::new();
         let mut controllers = Vec::new();
@@ -1189,6 +1121,7 @@ impl AgentView {
             .collect();
         let shutdown_workspace = self.workspace.clone();
         let plan = crate::shutdown_barrier::ShutdownPlan {
+            load_retirement: self.load_retirement.clone(),
             read_states: Some(self.read_states.clone()),
             read_controllers,
             drafts,

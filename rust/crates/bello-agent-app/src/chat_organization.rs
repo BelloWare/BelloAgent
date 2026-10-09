@@ -101,7 +101,9 @@ impl AgentView {
             || self.has_pending_archive(id)
     }
     pub(crate) fn advance_navigation(&mut self, cx: &mut Context<Self>) -> bool {
-        if self.project_actions_blocked() {
+        // A normal in-progress loader queues subsequent chat opens. Only its
+        // failed cleanup fences navigation; other project gates are unchanged.
+        if self.project_actions_blocked_without_load() || self.load_retirement.failed() {
             return false;
         }
         let Some(next) = self.navigation_generation.checked_add(1) else {

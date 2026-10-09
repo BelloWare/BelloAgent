@@ -5,6 +5,7 @@ pub mod compaction;
 #[path = "compaction_session.rs"]
 mod compaction_session;
 pub mod context_recovery;
+pub mod inspection;
 pub mod instructions;
 pub mod mcp;
 pub mod model_catalog;
