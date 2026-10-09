@@ -1,6 +1,6 @@
 # Next release: 0.1.122
 
-**Packaged 2026-10-09** as 0.1.122 (build 126); record `docs/validation/Bello-Agent-0.1.122-2026-10-09.md`. 0.1.121 (build 125, tag `v0.1.121`) is the latest public release until publication is verified.
+**Released 2026-10-09:** 0.1.122 (build 126, tag `v0.1.122`) is the latest release; record `docs/validation/Bello-Agent-0.1.122-2026-10-09.md`. Nothing is planned beyond it yet.
 
 **Scope (owner, 2026-10-08):**
 - [x] **Mark as Unread**: a chat can be marked unread from the sidebar's context menu and the File menu; it shows the unread dot until opened, and survives a relaunch. Done on `dev/sidebar`: row, side-row and marked-rows menus plus File ▸ Mark as Unread; it looks and counts like one unread reply, **including the Dock badge** (decided with Codex; a later run failure does not take it off); opening the chat (the reader focusing it, not launch reopening it) clears it, seeing a reply does not; persisted in the read state; not for archived chats, connection tests, background requests, unkept sides or unsent New chats. VoiceOver: "<title>, unread"; the dot says "Unread". Gallery `27-sidebar-marked-unread-*`.
