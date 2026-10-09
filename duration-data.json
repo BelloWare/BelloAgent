@@ -3,7 +3,7 @@
   "evidence_cutoff_utc": "2026-10-09T06:00:00Z",
   "schema_version": 1,
   "repository": "BelloWare/BelloAgent",
-  "as_of_utc": "2026-10-09T14:27:00Z",
+  "as_of_utc": "2026-10-09T14:37:00Z",
   "source_commit": "885a5bcf6e608361692e877d7c77941b0db2f4d8",
   "summary": {
     "window_start_utc": "2026-10-04T05:13:30Z",
@@ -59251,6 +59251,269 @@
       "inference_status": "unavailable",
       "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
       "observed_utc": "2026-10-09T14:27:00Z"
+    },
+    {
+      "id": "20261009-1437-prior-timing-preparation-0",
+      "repository_assignment": "BelloAgent",
+      "activity": "Prepare, upload and verify paired 14:27 timing candidates",
+      "category": "review/publication/waiting (mixed)",
+      "start_utc": "2026-10-09T14:22:41Z",
+      "end_utc": "2026-10-09T14:30:02Z",
+      "duration_seconds": 441,
+      "source": [
+        {
+          "receipt_sha256": "c37b9b3415505f2f370a0184f4b0bd59b81b25745d21fde766a35269cfa73693",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "completed",
+      "accounting_group": "task_window",
+      "include_in_totals": false,
+      "resource": "mixed task window",
+      "duration_basis": "Observed mixed task/workflow interval includes tools, coordination and waiting; overlaps command resources and other workers",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1437",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "coverage_note": "Late-added earlier evidence, deduplicated against all prior timed intervals."
+    },
+    {
+      "id": "20261009-1437-prior-paired-publication",
+      "repository_assignment": "BelloAgent",
+      "activity": "Publish paired compact 14:27 timing checkpoint (shared once)",
+      "category": "publication (mixed)",
+      "start_utc": "2026-10-09T14:30:34.802Z",
+      "end_utc": "2026-10-09T14:31:03.232Z",
+      "duration_seconds": 28.43,
+      "source": [
+        {
+          "receipt_sha256": "0da33d8e936ce692123016c3a9ed1beb0bfcf9181d4401ef1751e6ac88fbb8a7",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "completed",
+      "accounting_group": "task_window",
+      "include_in_totals": false,
+      "resource": "mixed task window",
+      "duration_basis": "Observed mixed task/workflow interval includes tools, coordination and waiting; overlaps command resources and other workers",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1437",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time."
+    },
+    {
+      "id": "20261009-1437-root-shared-review",
+      "repository_assignment": "BelloAgent",
+      "activity": "Cross-repository review, GUI/LOC coordination, publication and waits (shared once)",
+      "category": "review/coordination/waiting (mixed)",
+      "start_utc": "2026-10-09T14:14:48+00:00",
+      "end_utc": "2026-10-09T14:28:35.112850+00:00",
+      "duration_seconds": 827.11285,
+      "source": [
+        {
+          "receipt_sha256": "388ef25e07f937faebf49fd2f5aa783a2f4a390666d1eac0e0db9f8e82e103c9",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "completed",
+      "accounting_group": "task_window",
+      "include_in_totals": false,
+      "resource": "mixed task window",
+      "duration_basis": "Observed mixed task/workflow interval includes tools, coordination and waiting; overlaps command resources and other workers",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1437",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "coverage_note": "Late-added earlier evidence, deduplicated against all prior timed intervals.",
+      "nested_scope": "Contains previously recorded publication window; never additive"
+    },
+    {
+      "id": "20261009-1437-app-repair-phase-0",
+      "repository_assignment": "BelloAgent",
+      "activity": "app-repair-r24",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T14:31:56Z",
+      "end_utc": "2026-10-09T14:32:59Z",
+      "duration_seconds": 63.0,
+      "source": [
+        {
+          "receipt_sha256": "06e1c7410df17c51c09100e51413cecb0c2b06a89a432f61cacef09a5299b71e",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        },
+        {
+          "receipt_sha256": "5b3303034497b3c6563007a3cbeebbb26aadf5195dd0a7c9030c2cae18d128ab",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "101",
+      "accounting_group": "catchup_command",
+      "include_in_totals": true,
+      "resource": "cloud command process",
+      "duration_basis": "Whole-second command receipt endpoints, not model inference",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1437",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "scope": "Recorded repair-phase source; later landing-receipt distinction still under review, no final GUI acceptance",
+      "effective_jobs": 1
+    },
+    {
+      "id": "20261009-1437-app-repair-phase-1",
+      "repository_assignment": "BelloAgent",
+      "activity": "app-repair-r25",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T14:33:44Z",
+      "end_utc": "2026-10-09T14:34:40Z",
+      "duration_seconds": 56.0,
+      "source": [
+        {
+          "receipt_sha256": "f137d455a255a9514c9baf5c502eb7b4af3ed82cb20695c58dd983b32b1f75b7",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        },
+        {
+          "receipt_sha256": "5b3303034497b3c6563007a3cbeebbb26aadf5195dd0a7c9030c2cae18d128ab",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "0",
+      "accounting_group": "catchup_command",
+      "include_in_totals": true,
+      "resource": "cloud command process",
+      "duration_basis": "Whole-second command receipt endpoints, not model inference",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1437",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "scope": "Recorded repair-phase source; later landing-receipt distinction still under review, no final GUI acceptance",
+      "effective_jobs": 1
+    },
+    {
+      "id": "20261009-1437-app-repair-phase-2",
+      "repository_assignment": "BelloAgent",
+      "activity": "app-strict-repair-r26",
+      "category": "automated lint/check",
+      "start_utc": "2026-10-09T14:35:05Z",
+      "end_utc": "2026-10-09T14:35:20Z",
+      "duration_seconds": 15.0,
+      "source": [
+        {
+          "receipt_sha256": "7ec663490685a452280adb8871fff6527ccd48fa81a8a2d5f4fe9b6ef5f5be31",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        },
+        {
+          "receipt_sha256": "5b3303034497b3c6563007a3cbeebbb26aadf5195dd0a7c9030c2cae18d128ab",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "0",
+      "accounting_group": "catchup_command",
+      "include_in_totals": true,
+      "resource": "cloud command process",
+      "duration_basis": "Whole-second command receipt endpoints, not model inference",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1437",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "scope": "Recorded repair-phase source; later landing-receipt distinction still under review, no final GUI acceptance",
+      "effective_jobs": 1
+    },
+    {
+      "id": "20261009-1437-launcher-v2-format-0",
+      "repository_assignment": "BelloAgent",
+      "activity": "Synthetic launcher v2 formatting check",
+      "category": "automated lint/check",
+      "start_utc": "2026-10-09T14:32:16.061719+00:00",
+      "end_utc": "2026-10-09T14:32:16.185061+00:00",
+      "duration_seconds": 0.12333190199569799,
+      "source": [
+        {
+          "receipt_sha256": "509d547535f6cf11e4cae234fc8c4f09bb7a4af0160c76df653c2b91ae74a153",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "0",
+      "accounting_group": "catchup_command",
+      "include_in_totals": true,
+      "resource": "cloud command process",
+      "duration_basis": "Measured command/resource elapsed; not active labor or inference",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1437",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "module_sha256": "0ad602627f5c3d8b45d1b320a09815232891a79cc7aeab0fd1f54056ae4ef42c",
+      "scope": "Formatting only; fixture tests are already included in App r25 and not counted again"
+    },
+    {
+      "id": "20261009-1437-repair-validation-continuation",
+      "repository_assignment": "BelloAgent",
+      "activity": "GUI-discovered reveal repair, validation and coordination",
+      "category": "implementation/review/validation (mixed)",
+      "start_utc": "2026-10-09T14:27:00Z",
+      "end_utc": "2026-10-09T14:37:00Z",
+      "duration_seconds": 600.0,
+      "source": [
+        {
+          "receipt_sha256": "5b3303034497b3c6563007a3cbeebbb26aadf5195dd0a7c9030c2cae18d128ab",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "completed",
+      "accounting_group": "task_window",
+      "include_in_totals": false,
+      "resource": "mixed task window",
+      "duration_basis": "Observed mixed task/workflow interval includes tools, coordination and waiting; overlaps command resources and other workers",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1437",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time."
+    },
+    {
+      "id": "20261009-1437-app-extra-repair-27",
+      "repository_assignment": "BelloAgent",
+      "activity": "app-all-repair-r27",
+      "category": "build + test/check (combined)",
+      "start_utc": "2026-10-09T14:35:29Z",
+      "end_utc": "2026-10-09T14:36:53Z",
+      "duration_seconds": 84.0,
+      "source": [
+        {
+          "receipt_sha256": "5b3303034497b3c6563007a3cbeebbb26aadf5195dd0a7c9030c2cae18d128ab",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        },
+        {
+          "receipt_sha256": "5b3303034497b3c6563007a3cbeebbb26aadf5195dd0a7c9030c2cae18d128ab",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "0",
+      "accounting_group": "catchup_command",
+      "include_in_totals": true,
+      "resource": "cloud command process",
+      "duration_basis": "Measured command/resource elapsed; not active labor or inference",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1437",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "effective_jobs": 1,
+      "scope": "Recorded repair-phase source; later landing-receipt distinction still under review, no final GUI acceptance"
     }
   ],
   "unattributed_ci_gaps": [
@@ -62983,13 +63246,13 @@
         }
       },
       "catchup_command": {
-        "count": 153,
-        "known_duration_count": 153,
-        "resource_seconds_sum": 3527.3387360106526,
-        "wall_coverage_seconds": 1457.257213,
+        "count": 158,
+        "known_duration_count": 158,
+        "resource_seconds_sum": 3745.4620679126483,
+        "wall_coverage_seconds": 1675.257213,
         "category_seconds": {
-          "build + test/check (combined)": 2562.1683825696864,
-          "automated lint/check": 400.5226603324452,
+          "build + test/check (combined)": 2765.1683825696864,
+          "automated lint/check": 415.6459922344409,
           "dependency/environment or verification": 37.10394264559292,
           "build": 75.89373062896729,
           "build/test/rework (combined)": 48.565,
@@ -63001,7 +63264,7 @@
           "build + negative-control test (combined)": 402.16011983997305
         },
         "resource_seconds": {
-          "cloud command process": 3527.3387360106526
+          "cloud command process": 3745.4620679126483
         }
       },
       "catchup_api": {
@@ -63601,6 +63864,34 @@
           },
           "known_endpoint_items": 7,
           "known_endpoint_resource_seconds": 402.16011983997305
+        }
+      },
+      "ci_coverage_within_window_seconds": 0,
+      "window_seconds": 600.0,
+      "outside_selected_ci_job_intervals_seconds": 600.0,
+      "warning": "Outside selected CI intervals includes other productive work and unobserved periods; never classify as idle or inference. Selected receipt coverage remains incomplete.",
+      "nested_ci_step_seconds": {}
+    },
+    {
+      "checkpoint": "20261009-1437",
+      "through_utc": "2026-10-09T14:37:00Z",
+      "coverage_window_start_utc": "2026-10-09T14:27:00Z",
+      "new_items": 9,
+      "groups": {
+        "catchup_command": {
+          "count": 5,
+          "known_duration_count": 5,
+          "resource_seconds_sum": 218.1233319019957,
+          "wall_coverage_seconds": 218.0,
+          "category_seconds": {
+            "build + test/check (combined)": 203.0,
+            "automated lint/check": 15.123331901995698
+          },
+          "resource_seconds": {
+            "cloud command process": 218.1233319019957
+          },
+          "known_endpoint_items": 5,
+          "known_endpoint_resource_seconds": 218.1233319019957
         }
       },
       "ci_coverage_within_window_seconds": 0,
