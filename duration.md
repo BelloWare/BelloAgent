@@ -1,5 +1,105 @@
 # BelloAgent Rust migration: where the time went
 
+## Current accounting checkpoint: 2026-10-09T12:40:00Z
+
+This catch-up incorporates selected verified receipts through the stated cutoff, including late-added earlier observations. Every earlier item and checkpoint remains preserved below. It is not a complete timesheet. Model inference duration remains unavailable, not zero. Shared coordination/publication appears once; local receipt hashes establish provenance without claiming independent public timing verification.
+
+### At a glance
+
+These top totals cover only this catch-up receipt cohort, including late-added earlier observations; they are not whole-migration cumulative totals. These are overlapping accounting views, not shares of one total. Mixed windows do not measure active labor.
+
+| Where time went | What is actually measured |
+|---|---|
+| Implementation | Active effort unavailable; mixed source/test windows recorded below |
+| Review | Active effort unavailable; only review-focused observations: 1 mixed windows; 1 with endpoints, 8m 42.1s union |
+| Mixed implementation/review/validation windows | 2 mixed windows; 2 with endpoints, 47m 24.2s union; scopes overlap resources and do not measure Review alone |
+| Builds | 24.4s measured command resource time |
+| Tests | Unavailable separately from compilation in these command receipts |
+| Build + test/check (combined) | 6m 9.6s measured command resource time |
+| CI | 8m 45.0s runner time across 1 completed jobs (0 failed); 8m 45.0s wall union |
+| Dependency/environment setup | 0.7s measured resource time |
+| Retries/rework | 48.6s across 3 failed command receipts; total rework effort unavailable |
+| Publication | No isolated API total; 3 mixed windows; 3 with endpoints, 11m 44.0s union |
+| Waiting | Unavailable separately; waiting is mixed into recorded workflow windows |
+| Model inference | Unavailable; no timing telemetry |
+
+### Separate measured resource groups
+
+| Group | Timed items | Resource/client seconds | Known-endpoint items | Endpoint-subset seconds | Endpoint union seconds |
+|---|---:|---:|---:|---:|---:|
+| catchup_command | 20 | 482.930 | 0 | 0.000 | unavailable |
+| catchup_ci_job | 1 | 525.000 | 1 | 525.000 | 525.000 |
+
+Groups overlap each other and mixed work windows; never add them into project elapsed or active-work time. Derived endpoints are excluded from unions. Monotonic timers and separately recorded UTC clocks can differ slightly. Whole-second 0s means below receipt resolution. CI steps and native subcommands are nested within job durations, not extra runner time.
+
+| Resource group / category | Seconds |
+|---|---:|
+| catchup_command: dependency/environment or verification | 0.660 |
+| catchup_command: automated lint/check | 39.706 |
+| catchup_command: build + test/check (combined) | 369.619 |
+| catchup_command: build | 24.381 |
+| catchup_command: build/test/rework (combined) | 48.565 |
+| catchup_ci_job: CI runner | 525.000 |
+
+### Nested CI phases (already included in CI jobs)
+
+| Phase class | Runner step time |
+|---|---:|
+| CI orchestration | 3.0s |
+| dependency/environment setup | 45.0s |
+| build + automated lint/check | 11.0s |
+| build/test/check (combined) | 7m 18.0s |
+| build | 23.0s |
+| CI reporting | 0.0s |
+
+These conservative phase groups can include compilation and execution together; do not add them to the CI job totals.
+
+Within 2026-10-09T12:20:16Z–2026-10-09T12:40:00Z, the selected CI jobs cover 525.000 overlap-safe wall seconds; 659.000 seconds are outside those jobs. This remainder includes implementation, tests, review, publication, waiting and unknown time; it is neither proven idle nor model inference.
+
+### Mixed workflows and waits (excluded from resource totals)
+
+| Activity | Start UTC | End UTC | Seconds | Outcome |
+|---|---|---|---:|---|
+| Unloaded source observation implementation, review and validation | 2026-10-09T11:34:32Z | 2026-10-09T12:10:12.187305+00:00 | 2140.187305 | completed |
+| source-freeze-stop correction | unknown | unknown | unknown | Failed attempt/source stop retained: The final guard stopped after successful default tests because two module documentation lines were corrected. Root independently verified the exact comment-only delta; old default receipts were retained and remaining checks resumed on r3 |
+| Inspect source and plan sidebar integration | 2026-10-09T12:23:14Z | 2026-10-09T12:31:56.126068+00:00 | 522.126068 | completed |
+| Publish unloaded source observation and verify branch readback | 2026-10-09T12:22:41Z | 2026-10-09T12:23:02Z | 21 | completed |
+| Prepare catch-up timing reports, verify source receipts and build source-preserving candidates | 2026-10-09T12:20:44Z | 2026-10-09T12:32:28Z | 704 | completed |
+| Publish Agent catch-up timing checkpoint | 2026-10-09T12:31:40Z | 2026-10-09T12:32:08Z | 28 | completed |
+| Rust macOS native checks / apple-silicon | 2026-10-09T12:23:12Z | unknown | unknown | in_progress |
+
+Open task and CI rows retain unknown final duration. Failed source attempts and the original failed native URL job remain in this cohort. Mixed windows overlap useful parallel work; they are not pure idle or active-review time.
+
+### Measured items
+
+| Activity | Category | Start UTC | End UTC | Seconds | Outcome |
+|---|---|---|---|---:|---|
+| clean-restored | dependency/environment or verification | 2026-10-09T12:04:03.922116+00:00 | unknown | 0.3038763999938965 | 0 |
+| fmt | automated lint/check | 2026-10-09T12:04:04.227194+00:00 | unknown | 2.220287322998047 | 0 |
+| core-default | build + test/check (combined) | 2026-10-09T12:04:06.448865+00:00 | unknown | 44.89352321624756 | 0 |
+| app-default | build + test/check (combined) | 2026-10-09T12:04:51.345724+00:00 | unknown | 50.712642431259155 | 0 |
+| core-all-features | build + test/check (combined) | 2026-10-09T12:06:26.251647+00:00 | unknown | 77.35577368736267 | 0 |
+| app-all-features | build + test/check (combined) | 2026-10-09T12:07:43.609894+00:00 | unknown | 64.231041431427 | 0 |
+| clippy-default | automated lint/check | 2026-10-09T12:08:47.846991+00:00 | unknown | 16.76473379135132 | 0 |
+| clippy-all-features | automated lint/check | 2026-10-09T12:09:04.633042+00:00 | unknown | 20.72056531906128 | 0 |
+| clean-ordinary-app | dependency/environment or verification | 2026-10-09T12:09:25.358868+00:00 | unknown | 0.3558666706085205 | 0 |
+| build-ordinary | build | 2026-10-09T12:09:25.716585+00:00 | unknown | 24.380730628967285 | 0 |
+| wrong-journal-digest | build + test/check (combined) | unknown | unknown | 18.95639395713806 | Expected negative-control failure; source restored |
+| omit-journal | build + test/check (combined) | unknown | unknown | 19.5801420211792 | Expected negative-control failure; source restored |
+| accept-torn | build + test/check (combined) | unknown | unknown | 18.270013332366943 | Expected negative-control failure; source restored |
+| skip-final-closure | build + test/check (combined) | unknown | unknown | 19.035866737365723 | Expected negative-control failure; source restored |
+| late-work | build + test/check (combined) | unknown | unknown | 18.611802101135254 | Expected negative-control failure; source restored |
+| failure-as-negative | build + test/check (combined) | unknown | unknown | 18.82910919189453 | Expected negative-control failure; source restored |
+| loaded-disk-fallback | build + test/check (combined) | unknown | unknown | 19.14238405227661 | Expected negative-control failure; source restored |
+| compile correction | build/test/rework (combined) | unknown | unknown | 9.715 | Failed attempt/source stop retained: Two internal cancellation signature seams (skill_schema and an existing test coercion) were initially missed; fixed before passing tests |
+| fixture correction | build/test/rework (combined) | unknown | unknown | 28.014 | Failed attempt/source stop retained: The legacy v1 fixture serialized a v9-only tool_timing field; removed from the legacy fixture. Product rejection remained intact. Projection integration harness also needed explicit ObservedRetained coverage for strict dead-code checking |
+| strict-check correction | build/test/rework (combined) | unknown | unknown | 10.836 | Failed attempt/source stop retained: Extracted test-only ChatMaterialization import and test-hook type-complexity warning; corrected with cfg(test) import and type alias |
+| Rust Linux checks / linux | CI runner | 2026-10-09T12:23:06Z | 2026-10-09T12:31:51Z | 525.0 | success |
+
+Full source hashes, source URLs, nested job steps and timing limitations are in duration-data.json. Native macOS full logs were unavailable for some Agent runs; verified job/step metadata is retained without a full-log claim. Later source CI may be running and is not silently promoted to success by this snapshot.
+
+### Earlier accounting (unchanged)
+
 ## Current accounting checkpoint: 2026-10-09T12:20:16Z
 
 This catch-up incorporates selected verified receipts through the stated cutoff, including late-added earlier observations. Every earlier item and checkpoint remains preserved below. It is not a complete timesheet. Model inference duration remains unavailable, not zero. Shared coordination/publication appears once; local receipt hashes establish provenance without claiming independent public timing verification.
