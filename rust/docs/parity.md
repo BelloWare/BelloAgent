@@ -2338,3 +2338,15 @@ nonblank Rust lines. Shared Box and 366 documentation/evidence Rust lines remain
 excluded; five negative controls reject incorrect totals, hashes, exclusions or
 test ownership. LOC and command durations do not measure completion or performance.
 No new actual-GUI, native macOS, signing, Keychain or owner-Mac acceptance is claimed.
+
+## Loaded search acquisition and bounded admission — 2026-10-09
+
+Core now joins exact certain catalog membership with an accepted loaded Session,
+consumes the reviewed pure projection/matcher, and prepares bounded Match/NoMatch
+candidates with explicit cancellation/errors. A concrete request-scoped slot
+jointly checks membership → source → slot, final pinned owner health, cancellation
+and candidate identity. Full Session/Controller/projected corpus are not retained
+in results. No sidebar UI, unloaded scan/receipt, SQLite/cache or production/native
+authority gate is enabled. See [loaded-search-projection.md](loaded-search-projection.md)
+for exact bounds, caller App-routing responsibilities, remaining all-chat workflow,
+and validation scope. Backend code/test counts are not completion or speed claims.

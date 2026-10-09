@@ -80,6 +80,18 @@ impl<T: Send> OwnerHealth for Mutex<T> {
         self.is_poisoned()
     }
 }
+// Private to Core: never exported to callers or held across worker work.
+pub(crate) struct MembershipAdmissionGuard<'a> {
+    _state: std::sync::MutexGuard<'a, State>,
+}
+
+/// Pinned outside all witness guards; drop only after those guards release.
+pub(crate) struct MembershipOwnerLease(Arc<dyn OwnerHealth>);
+impl MembershipOwnerLease {
+    pub(crate) fn healthy(&self) -> bool {
+        !self.0.poisoned()
+    }
+}
 struct Shared {
     state: Mutex<State>,
     changed: tokio::sync::Notify,
@@ -97,6 +109,40 @@ impl fmt::Debug for MembershipWitness {
     }
 }
 impl MembershipWitness {
+    #[cfg(test)]
+    pub(crate) fn admission_locked_for_test(&self) -> bool {
+        matches!(
+            self.0.state.try_lock(),
+            Err(std::sync::TryLockError::WouldBlock)
+        )
+    }
+
+    pub(crate) fn pin_owner(&self) -> Result<MembershipOwnerLease, MembershipUnavailable> {
+        let owner = self
+            .0
+            .owner
+            .get()
+            .and_then(Weak::upgrade)
+            .ok_or(MembershipUnavailable)?;
+        if owner.poisoned() {
+            self.unavailable();
+            return Err(MembershipUnavailable);
+        }
+        Ok(MembershipOwnerLease(owner))
+    }
+
+    /// Only the concrete search slot nests these guards: membership → source → slot.
+    pub(crate) fn lock_current(
+        &self,
+        stamp: &MembershipStamp,
+    ) -> Result<MembershipAdmissionGuard<'_>, MembershipUnavailable> {
+        let state = self.0.state.lock().map_err(|_| MembershipUnavailable)?;
+        if state.status != MembershipStatus::Certain || state.stamp.as_ref() != Some(stamp) {
+            return Err(MembershipUnavailable);
+        }
+        Ok(MembershipAdmissionGuard { _state: state })
+    }
+
     pub(crate) fn new(catalog: &WorkspaceSnapshot, path: &Path) -> Self {
         let witness = Self(Arc::new(Shared {
             state: Mutex::new(State {
@@ -347,6 +393,10 @@ pub struct MembershipSnapshot {
     witness: MembershipWitness,
 }
 impl MembershipSnapshot {
+    pub(crate) fn witness(&self) -> MembershipWitness {
+        self.witness.clone()
+    }
+
     pub fn members(&self) -> &[MembershipMember] {
         &self.members
     }

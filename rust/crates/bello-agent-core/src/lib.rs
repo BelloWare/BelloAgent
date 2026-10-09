@@ -19,6 +19,7 @@ pub mod retained_find;
 pub mod runtime;
 pub mod saved_runtime;
 pub mod session;
+pub mod sidebar_search;
 mod skill_metadata;
 mod skill_schema;
 pub mod skills;

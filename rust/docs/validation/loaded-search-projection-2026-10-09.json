@@ -1,0 +1,1321 @@
+{
+  "schema": 1,
+  "scope": "Core loaded-only search acquisition, pure projection and bounded joint admission; no App search routing, unloaded receipt, cache, SQLite, production authority or native acceptance",
+  "baseline_commit": "be66ab6551ba3b1114e05f86055ff7a0618048ae",
+  "baseline_tree": "6061b1e7a7dfcdc5de8c7fe2b3fcbea12cf0ac93",
+  "source_files": {
+    "rust/crates/bello-agent-core/src/lib.rs": {
+      "sha256": "8c5a3a46db8d351216d08d1621793aa1ad287d0c372e86b30061c72afdf95af3",
+      "bytes": 2140
+    },
+    "rust/crates/bello-agent-core/src/sidebar_search/admission.rs": {
+      "sha256": "3cc80ea7cafc240e2837dfbdb60cd7c5c2e189c179dfefa149cc9a3652680d26",
+      "bytes": 19242
+    },
+    "rust/crates/bello-agent-core/src/sidebar_search/admission_tests.rs": {
+      "sha256": "43af24d9521d6e77a7cad16a9c2bc9b337a5c102eae840f8184e7fb2876f6930",
+      "bytes": 26806
+    },
+    "rust/crates/bello-agent-core/src/sidebar_search/cancellation.rs": {
+      "sha256": "a1cb912826612aa4d182d2b7d671bf845775a471f7d07f0039c4508f10038b31",
+      "bytes": 748
+    },
+    "rust/crates/bello-agent-core/src/sidebar_search/identity.rs": {
+      "sha256": "6e87165c905761618119fb4d51ddb4394b9bf3fe919ae6f540578a9539911790",
+      "bytes": 3771
+    },
+    "rust/crates/bello-agent-core/src/sidebar_search/mod.rs": {
+      "sha256": "9974d10bdf917434808f22450af0d0d08e13a43be64dfdc77c43a7737ea0869a",
+      "bytes": 298
+    },
+    "rust/crates/bello-agent-core/src/sidebar_search/projection.rs": {
+      "sha256": "7ca40debeb24857b1b8fffaec1147b37d49c171a1c55786366fce4fa68affbad",
+      "bytes": 24782
+    },
+    "rust/crates/bello-agent-core/src/source_admission.rs": {
+      "sha256": "e68629b3cf56ce5de882dc443226ba44cde388b7bb92338cf3f1eef95ad60c3c",
+      "bytes": 17618
+    },
+    "rust/crates/bello-agent-core/src/workspace_membership.rs": {
+      "sha256": "1e05680baaa20b5a56fb56d8c3d87e5e4e78f7f2bba7a6158b2d441b6ba302e5",
+      "bytes": 18674
+    },
+    "rust/crates/bello-agent-core/tests/sidebar_search_projection.rs": {
+      "sha256": "0d5c0e334c786a98d0f81dbadbe07ba30d16279124f0f21c20f2257d79c3c947",
+      "bytes": 18752
+    },
+    "rust/docs/loaded-search-projection.md": {
+      "sha256": "9bb864346d07c46b71bd29a53cd6926e37a0ca87dbb58cbc9978dd9b0038481c",
+      "bytes": 9442
+    },
+    "rust/docs/parity.md": {
+      "sha256": "caf88cbbc0b8ed119b3929e1196ef38393b1b43394ce8ad9a74e0e38321da89f",
+      "bytes": 167291
+    },
+    "rust/docs/validation/loc-loaded-search-projection-2026-10-09-delta.json": {
+      "sha256": "100f0bf58b2682ef821dee0ff484b5210a72a5e70ceb92c39d517f7162ea7325",
+      "bytes": 72605
+    },
+    "rust/scripts/verify-loc-loaded-search-projection.py": {
+      "sha256": "c7857b54b9e2d776bbd02922437107c4b7494fed4cb1ce0307def34d2a5cdc33",
+      "bytes": 6477
+    }
+  },
+  "frozen_rust_manifest": {
+    "baseline": "be66ab6551ba3b1114e05f86055ff7a0618048ae",
+    "frozen_utc": "2026-10-09T11:21:54.306076+00:00",
+    "files": {
+      "rust/crates/bello-agent-core/src/lib.rs": {
+        "sha256": "8c5a3a46db8d351216d08d1621793aa1ad287d0c372e86b30061c72afdf95af3",
+        "bytes": 2140
+      },
+      "rust/crates/bello-agent-core/src/sidebar_search/admission.rs": {
+        "sha256": "3cc80ea7cafc240e2837dfbdb60cd7c5c2e189c179dfefa149cc9a3652680d26",
+        "bytes": 19242
+      },
+      "rust/crates/bello-agent-core/src/sidebar_search/admission_tests.rs": {
+        "sha256": "43af24d9521d6e77a7cad16a9c2bc9b337a5c102eae840f8184e7fb2876f6930",
+        "bytes": 26806
+      },
+      "rust/crates/bello-agent-core/src/sidebar_search/cancellation.rs": {
+        "sha256": "a1cb912826612aa4d182d2b7d671bf845775a471f7d07f0039c4508f10038b31",
+        "bytes": 748
+      },
+      "rust/crates/bello-agent-core/src/sidebar_search/identity.rs": {
+        "sha256": "6e87165c905761618119fb4d51ddb4394b9bf3fe919ae6f540578a9539911790",
+        "bytes": 3771
+      },
+      "rust/crates/bello-agent-core/src/sidebar_search/mod.rs": {
+        "sha256": "9974d10bdf917434808f22450af0d0d08e13a43be64dfdc77c43a7737ea0869a",
+        "bytes": 298
+      },
+      "rust/crates/bello-agent-core/src/sidebar_search/projection.rs": {
+        "sha256": "7ca40debeb24857b1b8fffaec1147b37d49c171a1c55786366fce4fa68affbad",
+        "bytes": 24782
+      },
+      "rust/crates/bello-agent-core/src/source_admission.rs": {
+        "sha256": "e68629b3cf56ce5de882dc443226ba44cde388b7bb92338cf3f1eef95ad60c3c",
+        "bytes": 17618
+      },
+      "rust/crates/bello-agent-core/src/workspace_membership.rs": {
+        "sha256": "1e05680baaa20b5a56fb56d8c3d87e5e4e78f7f2bba7a6158b2d441b6ba302e5",
+        "bytes": 18674
+      },
+      "rust/crates/bello-agent-core/tests/sidebar_search_projection.rs": {
+        "sha256": "0d5c0e334c786a98d0f81dbadbe07ba30d16279124f0f21c20f2257d79c3c947",
+        "bytes": 18752
+      }
+    }
+  },
+  "swift_spec_proof": [
+    {
+      "path": "apps/macos/PiApp/Storage/ChatSearchIndex.swift",
+      "spec_commit": "6319e368c6ddb7c3ef18605e78f23b1a5b69e63a",
+      "sha256": "fbb224e560509ff92b64079bb51b7fc6fe8e50bac4ef675f33d3b918d04c4025",
+      "bytes": 39231,
+      "copied_source_match": true
+    },
+    {
+      "path": "apps/macos/PiApp/Workspaces/SidebarSearch.swift",
+      "spec_commit": "6319e368c6ddb7c3ef18605e78f23b1a5b69e63a",
+      "sha256": "325960845acf8cd8c4c210ca021cb5d40880f59a1105a50b2e382610ec0bcfd4",
+      "bytes": 22422,
+      "copied_source_match": true
+    }
+  ],
+  "fresh_head_checks": {
+    "checked_utc": "2026-10-09T11:34:17.699Z",
+    "checks": [
+      {
+        "branch": "rust",
+        "ref": "refs/heads/rust",
+        "node_id": "REF_kwDOUfj1pq9yZWZzL2hlYWRzL3J1c3Q",
+        "url": "https://api.github.com/repos/BelloWare/BelloAgent/git/refs/heads/rust",
+        "object": {
+          "sha": "be66ab6551ba3b1114e05f86055ff7a0618048ae",
+          "type": "commit",
+          "url": "https://api.github.com/repos/BelloWare/BelloAgent/git/commits/be66ab6551ba3b1114e05f86055ff7a0618048ae"
+        }
+      },
+      {
+        "branch": "main",
+        "ref": "refs/heads/main",
+        "node_id": "REF_kwDOUfj1pq9yZWZzL2hlYWRzL21haW4",
+        "url": "https://api.github.com/repos/BelloWare/BelloAgent/git/refs/heads/main",
+        "object": {
+          "sha": "6319e368c6ddb7c3ef18605e78f23b1a5b69e63a",
+          "type": "commit",
+          "url": "https://api.github.com/repos/BelloWare/BelloAgent/git/commits/6319e368c6ddb7c3ef18605e78f23b1a5b69e63a"
+        }
+      }
+    ]
+  },
+  "dependency_closure": {
+    "rust/Cargo.toml": {
+      "sha256": "7e11506a61e5fd6a8761f7e0b60728363de3f62411544efb92b77a8db8f98538",
+      "unchanged_from_baseline": true
+    },
+    "rust/Cargo.lock": {
+      "sha256": "c433808c5f6860b530381e56373f862d054500cb91cd4493a6b0b3636074ea4c",
+      "unchanged_from_baseline": true
+    },
+    "rust/crates/bello-agent-app/Cargo.toml": {
+      "sha256": "93138343af2b10f959badd2e5b214f8753db425cfa6e8a80c15794c3a9c543a9",
+      "unchanged_from_baseline": true
+    }
+  },
+  "toolchain": "rustc 1.99.0 (b940084d7 2026-09-28); cargo 1.99.0 (5f94df478 2026-08-27); manifest minimum 1.89; existing official toolchain/dependency cache; jobs=2; locked/offline; GPUI sysroot environment only for App targets",
+  "verification_utc": "2026-10-09T11:34:31.889387+00:00",
+  "new_admission_tests": 24,
+  "pure_projection_target_tests": 43,
+  "new_projection_tests_in_target": 18,
+  "unchanged_find_conversation_tests_in_target": 25,
+  "gates": {
+    "final-core-default": {
+      "name": "final-core-default",
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "--manifest-path",
+        "/workspace/shared/agent-loaded-search-projection/rust/Cargo.toml",
+        "-p",
+        "bello-agent-core"
+      ],
+      "started_utc": "2026-10-09T11:28:00.770043+00:00",
+      "wall_seconds": 25.417021,
+      "exit_code": 0,
+      "test_summaries": [
+        {
+          "passed": 668,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 10,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 11,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 3,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 6,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 18,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 5,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 6,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 16,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 7,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 43,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 18,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 20,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 7,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0
+        }
+      ],
+      "log_sha256": "ae57a514249995ac327b5569568d4e58d455cb8ef9a45b7eef8c380408d39894"
+    },
+    "final-core-all-features": {
+      "name": "final-core-all-features",
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "--manifest-path",
+        "/workspace/shared/agent-loaded-search-projection/rust/Cargo.toml",
+        "-p",
+        "bello-agent-core",
+        "--all-features"
+      ],
+      "started_utc": "2026-10-09T11:28:26.226821+00:00",
+      "wall_seconds": 82.724481,
+      "exit_code": 0,
+      "test_summaries": [
+        {
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 853,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 10,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 11,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 3,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 6,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 18,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 5,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 6,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 16,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 7,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 43,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 18,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 20,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 7,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0
+        }
+      ],
+      "log_sha256": "885bf487643b864dc243b2d0365a03aab4fb2ff23038a8078e12f77d99a22c8f"
+    },
+    "final-core-clippy-default": {
+      "name": "final-core-clippy-default",
+      "command": [
+        "cargo",
+        "clippy",
+        "--offline",
+        "--locked",
+        "--manifest-path",
+        "/workspace/shared/agent-loaded-search-projection/rust/Cargo.toml",
+        "-p",
+        "bello-agent-core",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "started_utc": "2026-10-09T11:29:48.979461+00:00",
+      "wall_seconds": 9.989475,
+      "exit_code": 0,
+      "test_summaries": [],
+      "log_sha256": "f8c22dae50d1790c7e884b95c9b64f00e3b303694c40ff2911d21d0b87d09b4e"
+    },
+    "final-core-clippy-all-features": {
+      "name": "final-core-clippy-all-features",
+      "command": [
+        "cargo",
+        "clippy",
+        "--offline",
+        "--locked",
+        "--manifest-path",
+        "/workspace/shared/agent-loaded-search-projection/rust/Cargo.toml",
+        "-p",
+        "bello-agent-core",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "started_utc": "2026-10-09T11:29:58.995985+00:00",
+      "wall_seconds": 12.827144,
+      "exit_code": 0,
+      "test_summaries": [],
+      "log_sha256": "10244385a294ededb508329da9eb222e3288ee26a477faac11cefde6cdec2c93"
+    },
+    "final-app-default": {
+      "name": "final-app-default",
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "--manifest-path",
+        "/workspace/shared/agent-loaded-search-projection/rust/Cargo.toml",
+        "-p",
+        "bello-agent-app"
+      ],
+      "started_utc": "2026-10-09T11:30:12.034290+00:00",
+      "wall_seconds": 65.083309,
+      "exit_code": 0,
+      "test_summaries": [
+        {
+          "passed": 637,
+          "failed": 0,
+          "ignored": 1
+        }
+      ],
+      "log_sha256": "4a7b5e9929584f70e5bbf3c3bd0460366b246dfd51a883fac3feb0d23ac2a34e"
+    },
+    "final-app-all-features": {
+      "name": "final-app-all-features",
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "--manifest-path",
+        "/workspace/shared/agent-loaded-search-projection/rust/Cargo.toml",
+        "-p",
+        "bello-agent-app",
+        "--all-features"
+      ],
+      "started_utc": "2026-10-09T11:31:17.146727+00:00",
+      "wall_seconds": 66.124266,
+      "exit_code": 0,
+      "test_summaries": [
+        {
+          "passed": 782,
+          "failed": 0,
+          "ignored": 3
+        }
+      ],
+      "log_sha256": "190d02d9b6cd953cd80bb93a7922252c061b654430cb50c7beaceffa53487b4c"
+    },
+    "final-app-clippy-default": {
+      "name": "final-app-clippy-default",
+      "command": [
+        "cargo",
+        "clippy",
+        "--offline",
+        "--locked",
+        "--manifest-path",
+        "/workspace/shared/agent-loaded-search-projection/rust/Cargo.toml",
+        "-p",
+        "bello-agent-app",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "started_utc": "2026-10-09T11:32:23.303562+00:00",
+      "wall_seconds": 20.4253,
+      "exit_code": 0,
+      "test_summaries": [],
+      "log_sha256": "65903db5144cb957f88700f4eb98f6984c62cb5828b0ed8f463a385abe7247ed"
+    },
+    "final-app-clippy-all-features": {
+      "name": "final-app-clippy-all-features",
+      "command": [
+        "cargo",
+        "clippy",
+        "--offline",
+        "--locked",
+        "--manifest-path",
+        "/workspace/shared/agent-loaded-search-projection/rust/Cargo.toml",
+        "-p",
+        "bello-agent-app",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "started_utc": "2026-10-09T11:32:43.760535+00:00",
+      "wall_seconds": 15.824093,
+      "exit_code": 0,
+      "test_summaries": [],
+      "log_sha256": "f322521cdbd9144f6ef78203203605fc989d080fdfe6c42c0b085a2b01355935"
+    },
+    "final-workspace-format": {
+      "name": "final-workspace-format",
+      "command": [
+        "cargo",
+        "fmt",
+        "--manifest-path",
+        "/workspace/shared/agent-loaded-search-projection/rust/Cargo.toml",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "started_utc": "2026-10-09T11:32:59.612092+00:00",
+      "wall_seconds": 2.081215,
+      "exit_code": 0,
+      "test_summaries": [],
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "final-source-whitespace": {
+      "name": "final-source-whitespace",
+      "command": [
+        "git",
+        "-C",
+        "/workspace/shared/agent-loaded-search-projection",
+        "diff",
+        "--check"
+      ],
+      "started_utc": "2026-10-09T11:33:01.720291+00:00",
+      "wall_seconds": 0.023249,
+      "exit_code": 0,
+      "test_summaries": [],
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "commands": [
+    {
+      "name": "initial-focused",
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "--manifest-path",
+        "/workspace/shared/agent-loaded-search-projection/rust/Cargo.toml",
+        "-p",
+        "bello-agent-core",
+        "--lib",
+        "sidebar_search::"
+      ],
+      "started_utc": "2026-10-09T11:05:30.422733+00:00",
+      "wall_seconds": 19.342222,
+      "exit_code": 0
+    },
+    {
+      "name": "guarded-focused",
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "--manifest-path",
+        "/workspace/shared/agent-loaded-search-projection/rust/Cargo.toml",
+        "-p",
+        "bello-agent-core",
+        "--lib",
+        "sidebar_search::"
+      ],
+      "started_utc": "2026-10-09T11:09:30.552932+00:00",
+      "wall_seconds": 9.105983,
+      "exit_code": 101
+    },
+    {
+      "name": "guarded-focused-fixed",
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "--manifest-path",
+        "/workspace/shared/agent-loaded-search-projection/rust/Cargo.toml",
+        "-p",
+        "bello-agent-core",
+        "--lib",
+        "sidebar_search::"
+      ],
+      "started_utc": "2026-10-09T11:10:03.617526+00:00",
+      "wall_seconds": 18.640265,
+      "exit_code": 0
+    },
+    {
+      "name": "pure-projection",
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "--manifest-path",
+        "/workspace/shared/agent-loaded-search-projection/rust/Cargo.toml",
+        "-p",
+        "bello-agent-core",
+        "--test",
+        "sidebar_search_projection"
+      ],
+      "started_utc": "2026-10-09T11:10:35.247515+00:00",
+      "wall_seconds": 12.272778,
+      "exit_code": 0
+    },
+    {
+      "name": "final-focused-before-controls",
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "--manifest-path",
+        "/workspace/shared/agent-loaded-search-projection/rust/Cargo.toml",
+        "-p",
+        "bello-agent-core",
+        "--lib",
+        "sidebar_search::"
+      ],
+      "started_utc": "2026-10-09T11:14:53.452229+00:00",
+      "wall_seconds": 19.934243,
+      "exit_code": 0
+    },
+    {
+      "name": "strict-core-before-controls",
+      "command": [
+        "cargo",
+        "clippy",
+        "--offline",
+        "--locked",
+        "--manifest-path",
+        "/workspace/shared/agent-loaded-search-projection/rust/Cargo.toml",
+        "-p",
+        "bello-agent-core",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "started_utc": "2026-10-09T11:15:13.428623+00:00",
+      "wall_seconds": 9.702933,
+      "exit_code": 101
+    },
+    {
+      "name": "strict-core-fixed",
+      "command": [
+        "cargo",
+        "clippy",
+        "--offline",
+        "--locked",
+        "--manifest-path",
+        "/workspace/shared/agent-loaded-search-projection/rust/Cargo.toml",
+        "-p",
+        "bello-agent-core",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "started_utc": "2026-10-09T11:15:54.078660+00:00",
+      "wall_seconds": 0.372263,
+      "exit_code": 101
+    },
+    {
+      "name": "strict-core-final",
+      "command": [
+        "cargo",
+        "clippy",
+        "--offline",
+        "--locked",
+        "--manifest-path",
+        "/workspace/shared/agent-loaded-search-projection/rust/Cargo.toml",
+        "-p",
+        "bello-agent-core",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "started_utc": "2026-10-09T11:16:04.737550+00:00",
+      "wall_seconds": 10.557313,
+      "exit_code": 0
+    },
+    {
+      "name": "workspace-format",
+      "command": [
+        "cargo",
+        "fmt",
+        "--manifest-path",
+        "/workspace/shared/agent-loaded-search-projection/rust/Cargo.toml",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "started_utc": "2026-10-09T11:17:12.103575+00:00",
+      "wall_seconds": 2.310065,
+      "exit_code": 0
+    },
+    {
+      "name": "source-whitespace",
+      "command": [
+        "git",
+        "-C",
+        "/workspace/shared/agent-loaded-search-projection",
+        "diff",
+        "--check"
+      ],
+      "started_utc": "2026-10-09T11:17:14.447877+00:00",
+      "wall_seconds": 0.013395,
+      "exit_code": 0
+    },
+    {
+      "name": "restored-focused",
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "--manifest-path",
+        "/workspace/shared/agent-loaded-search-projection/rust/Cargo.toml",
+        "-p",
+        "bello-agent-core",
+        "--lib",
+        "sidebar_search::"
+      ],
+      "started_utc": "2026-10-09T11:20:03.765796+00:00",
+      "wall_seconds": 0.268485,
+      "exit_code": 101
+    },
+    {
+      "name": "clean-core-after-mutants",
+      "command": [
+        "cargo",
+        "clean",
+        "--offline",
+        "--manifest-path",
+        "/workspace/shared/agent-loaded-search-projection/rust/Cargo.toml",
+        "-p",
+        "bello-agent-core"
+      ],
+      "started_utc": "2026-10-09T11:20:29.318743+00:00",
+      "wall_seconds": 0.212498,
+      "exit_code": 0
+    },
+    {
+      "name": "clean-restored-focused",
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "--manifest-path",
+        "/workspace/shared/agent-loaded-search-projection/rust/Cargo.toml",
+        "-p",
+        "bello-agent-core",
+        "--lib",
+        "sidebar_search::"
+      ],
+      "started_utc": "2026-10-09T11:20:29.560998+00:00",
+      "wall_seconds": 19.740731,
+      "exit_code": 0
+    },
+    {
+      "name": "clean-restored-pure",
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "--manifest-path",
+        "/workspace/shared/agent-loaded-search-projection/rust/Cargo.toml",
+        "-p",
+        "bello-agent-core",
+        "--test",
+        "sidebar_search_projection"
+      ],
+      "started_utc": "2026-10-09T11:20:49.337161+00:00",
+      "wall_seconds": 13.185227,
+      "exit_code": 0
+    },
+    {
+      "name": "loc-verifier",
+      "command": [
+        "python3",
+        "/workspace/shared/agent-loaded-search-projection/rust/scripts/verify-loc-loaded-search-projection.py",
+        "--repo",
+        "/workspace/shared/agent-loaded-search-projection",
+        "--output",
+        "/workspace/shared/agent-loaded-search-projection/rust/docs/validation/loc-loaded-search-projection-2026-10-09-delta.json"
+      ],
+      "started_utc": "2026-10-09T11:21:52.685010+00:00",
+      "wall_seconds": 1.565317,
+      "exit_code": 0
+    },
+    {
+      "name": "final-core-default",
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "--manifest-path",
+        "/workspace/shared/agent-loaded-search-projection/rust/Cargo.toml",
+        "-p",
+        "bello-agent-core"
+      ],
+      "started_utc": "2026-10-09T11:28:00.770043+00:00",
+      "wall_seconds": 25.417021,
+      "exit_code": 0
+    },
+    {
+      "name": "final-core-all-features",
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "--manifest-path",
+        "/workspace/shared/agent-loaded-search-projection/rust/Cargo.toml",
+        "-p",
+        "bello-agent-core",
+        "--all-features"
+      ],
+      "started_utc": "2026-10-09T11:28:26.226821+00:00",
+      "wall_seconds": 82.724481,
+      "exit_code": 0
+    },
+    {
+      "name": "final-core-clippy-default",
+      "command": [
+        "cargo",
+        "clippy",
+        "--offline",
+        "--locked",
+        "--manifest-path",
+        "/workspace/shared/agent-loaded-search-projection/rust/Cargo.toml",
+        "-p",
+        "bello-agent-core",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "started_utc": "2026-10-09T11:29:48.979461+00:00",
+      "wall_seconds": 9.989475,
+      "exit_code": 0
+    },
+    {
+      "name": "final-core-clippy-all-features",
+      "command": [
+        "cargo",
+        "clippy",
+        "--offline",
+        "--locked",
+        "--manifest-path",
+        "/workspace/shared/agent-loaded-search-projection/rust/Cargo.toml",
+        "-p",
+        "bello-agent-core",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "started_utc": "2026-10-09T11:29:58.995985+00:00",
+      "wall_seconds": 12.827144,
+      "exit_code": 0
+    },
+    {
+      "name": "clean-app-final",
+      "command": [
+        "cargo",
+        "clean",
+        "--offline",
+        "--manifest-path",
+        "/workspace/shared/agent-loaded-search-projection/rust/Cargo.toml",
+        "-p",
+        "bello-agent-app"
+      ],
+      "started_utc": "2026-10-09T11:30:11.855840+00:00",
+      "wall_seconds": 0.146464,
+      "exit_code": 0
+    },
+    {
+      "name": "final-app-default",
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "--manifest-path",
+        "/workspace/shared/agent-loaded-search-projection/rust/Cargo.toml",
+        "-p",
+        "bello-agent-app"
+      ],
+      "started_utc": "2026-10-09T11:30:12.034290+00:00",
+      "wall_seconds": 65.083309,
+      "exit_code": 0
+    },
+    {
+      "name": "final-app-all-features",
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "--manifest-path",
+        "/workspace/shared/agent-loaded-search-projection/rust/Cargo.toml",
+        "-p",
+        "bello-agent-app",
+        "--all-features"
+      ],
+      "started_utc": "2026-10-09T11:31:17.146727+00:00",
+      "wall_seconds": 66.124266,
+      "exit_code": 0
+    },
+    {
+      "name": "final-app-clippy-default",
+      "command": [
+        "cargo",
+        "clippy",
+        "--offline",
+        "--locked",
+        "--manifest-path",
+        "/workspace/shared/agent-loaded-search-projection/rust/Cargo.toml",
+        "-p",
+        "bello-agent-app",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "started_utc": "2026-10-09T11:32:23.303562+00:00",
+      "wall_seconds": 20.4253,
+      "exit_code": 0
+    },
+    {
+      "name": "final-app-clippy-all-features",
+      "command": [
+        "cargo",
+        "clippy",
+        "--offline",
+        "--locked",
+        "--manifest-path",
+        "/workspace/shared/agent-loaded-search-projection/rust/Cargo.toml",
+        "-p",
+        "bello-agent-app",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "started_utc": "2026-10-09T11:32:43.760535+00:00",
+      "wall_seconds": 15.824093,
+      "exit_code": 0
+    },
+    {
+      "name": "final-workspace-format",
+      "command": [
+        "cargo",
+        "fmt",
+        "--manifest-path",
+        "/workspace/shared/agent-loaded-search-projection/rust/Cargo.toml",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "started_utc": "2026-10-09T11:32:59.612092+00:00",
+      "wall_seconds": 2.081215,
+      "exit_code": 0
+    },
+    {
+      "name": "final-source-whitespace",
+      "command": [
+        "git",
+        "-C",
+        "/workspace/shared/agent-loaded-search-projection",
+        "diff",
+        "--check"
+      ],
+      "started_utc": "2026-10-09T11:33:01.720291+00:00",
+      "wall_seconds": 0.023249,
+      "exit_code": 0
+    }
+  ],
+  "negative_controls": [
+    {
+      "name": "omit-final-owner-health",
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "--manifest-path",
+        "/workspace/shared/agent-loaded-search-negative/rust/Cargo.toml",
+        "-p",
+        "bello-agent-core",
+        "--lib",
+        "poison_between_initial_owner_check"
+      ],
+      "started_utc": "2026-10-09T11:16:43.721973+00:00",
+      "wall_seconds": 18.786334,
+      "exit_code": 101,
+      "original_sha256": "3cc80ea7cafc240e2837dfbdb60cd7c5c2e189c179dfefa149cc9a3652680d26",
+      "mutant_sha256": "b4e900c6e681744128426ca36e34cfa788442fb6fd8cb90868802d529b2432b7",
+      "restored_sha256": "3cc80ea7cafc240e2837dfbdb60cd7c5c2e189c179dfefa149cc9a3652680d26",
+      "expected_failure_observed": true,
+      "failing_tests": [
+        "sidebar_search::admission::tests::poison_between_initial_owner_check_and_final_admission_is_rejected",
+        "sidebar_search::admission::tests::actor_poison_between_initial_owner_check_and_final_admission_is_rejected"
+      ]
+    },
+    {
+      "name": "release-witnesses-before-slot",
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "--manifest-path",
+        "/workspace/shared/agent-loaded-search-negative/rust/Cargo.toml",
+        "-p",
+        "bello-agent-core",
+        "--lib",
+        "both_witnesses_are_held_through_final"
+      ],
+      "started_utc": "2026-10-09T11:17:02.509247+00:00",
+      "wall_seconds": 18.422129,
+      "exit_code": 101,
+      "original_sha256": "3cc80ea7cafc240e2837dfbdb60cd7c5c2e189c179dfefa149cc9a3652680d26",
+      "mutant_sha256": "f768c546932eaa2031d7d0c2f11911cd8bce62a3e4d18228f8bf7319e0411ce9",
+      "restored_sha256": "3cc80ea7cafc240e2837dfbdb60cd7c5c2e189c179dfefa149cc9a3652680d26",
+      "expected_failure_observed": true,
+      "failing_tests": [
+        "sidebar_search::admission::tests::both_witnesses_are_held_through_final_install_and_current_checks"
+      ]
+    },
+    {
+      "name": "omit-current-pointer",
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "--manifest-path",
+        "/workspace/shared/agent-loaded-search-negative/rust/Cargo.toml",
+        "-p",
+        "bello-agent-core",
+        "--lib",
+        "current_rechecks_same_installed_pointer"
+      ],
+      "started_utc": "2026-10-09T11:18:40.884785+00:00",
+      "wall_seconds": 18.623668,
+      "exit_code": 101,
+      "original_sha256": "3cc80ea7cafc240e2837dfbdb60cd7c5c2e189c179dfefa149cc9a3652680d26",
+      "mutant_sha256": "98303f81d5dbaff3e5d7e8de93cfe1847b81d073418268649ffd017c6d761d00",
+      "restored_sha256": "3cc80ea7cafc240e2837dfbdb60cd7c5c2e189c179dfefa149cc9a3652680d26",
+      "expected_failure_observed": true,
+      "failing_tests": [
+        "sidebar_search::admission::tests::current_rechecks_same_installed_pointer_after_releasing_initial_slot_lock"
+      ]
+    },
+    {
+      "name": "omit-request-identity",
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "--manifest-path",
+        "/workspace/shared/agent-loaded-search-negative/rust/Cargo.toml",
+        "-p",
+        "bello-agent-core",
+        "--lib",
+        "cancellation_and_request_identity"
+      ],
+      "started_utc": "2026-10-09T11:18:59.509280+00:00",
+      "wall_seconds": 18.387118,
+      "exit_code": 101,
+      "original_sha256": "3cc80ea7cafc240e2837dfbdb60cd7c5c2e189c179dfefa149cc9a3652680d26",
+      "mutant_sha256": "6c4cad575abcd8cb8922de851a2b3610ea2388d41257e49f1984e0cb24219685",
+      "restored_sha256": "3cc80ea7cafc240e2837dfbdb60cd7c5c2e189c179dfefa149cc9a3652680d26",
+      "expected_failure_observed": true,
+      "failing_tests": [
+        "sidebar_search::admission::tests::cancellation_and_request_identity_are_explicit"
+      ]
+    },
+    {
+      "name": "omit-tool-input-digest",
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "--manifest-path",
+        "/workspace/shared/agent-loaded-search-negative/rust/Cargo.toml",
+        "-p",
+        "bello-agent-core",
+        "--test",
+        "sidebar_search_projection",
+        "tool_input_identity_includes_same_size_argument_edit"
+      ],
+      "started_utc": "2026-10-09T11:19:17.897164+00:00",
+      "wall_seconds": 9.503422,
+      "exit_code": 101,
+      "original_sha256": "6e87165c905761618119fb4d51ddb4394b9bf3fe919ae6f540578a9539911790",
+      "mutant_sha256": "6dbf63b4b0df9c64189008edf32d724d133a345439fb011db5f37fae1c2e9d24",
+      "restored_sha256": "6e87165c905761618119fb4d51ddb4394b9bf3fe919ae6f540578a9539911790",
+      "expected_failure_observed": true,
+      "failing_tests": [
+        "tool_input_identity_includes_same_size_argument_edit"
+      ]
+    },
+    {
+      "name": "include-reasoning",
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "--manifest-path",
+        "/workspace/shared/agent-loaded-search-negative/rust/Cargo.toml",
+        "-p",
+        "bello-agent-core",
+        "--lib",
+        "projection_errors_are_not_no_match"
+      ],
+      "started_utc": "2026-10-09T11:19:27.401050+00:00",
+      "wall_seconds": 18.449626,
+      "exit_code": 101,
+      "original_sha256": "7ca40debeb24857b1b8fffaec1147b37d49c171a1c55786366fce4fa68affbad",
+      "mutant_sha256": "a890d10d7022809b45af2869852a24c0d7cf915871020f12b0e276973b30e7d1",
+      "restored_sha256": "7ca40debeb24857b1b8fffaec1147b37d49c171a1c55786366fce4fa68affbad",
+      "expected_failure_observed": true,
+      "failing_tests": [
+        "sidebar_search::admission::tests::projection_errors_are_not_no_match_and_hidden_data_is_excluded"
+      ]
+    }
+  ],
+  "initial_failures": [
+    {
+      "name": "guarded-focused",
+      "cause": "Explicit error type missing from new installation closure; corrected before tests ran."
+    },
+    {
+      "name": "strict-core-before-controls",
+      "cause": "Strict Clippy found late initialization, large enum variant and test hook type complexity; corrected with tuple expression, boxed bounded hit and test alias."
+    },
+    {
+      "name": "strict-core-fixed",
+      "cause": "First boxing edit missed one closing delimiter; corrected immediately; rustfmt also rejected this syntax."
+    },
+    {
+      "name": "omit-current-pointer-first-attempt",
+      "cause": "Removing the only explicit Err in this mutant broke inference, so the first control did not count. A mutant-only Result annotation allowed the dedicated assertion to fail. Production source was unchanged.",
+      "record": {
+        "name": "omit-current-pointer",
+        "command": [
+          "cargo",
+          "test",
+          "--offline",
+          "--locked",
+          "--manifest-path",
+          "/workspace/shared/agent-loaded-search-negative/rust/Cargo.toml",
+          "-p",
+          "bello-agent-core",
+          "--lib",
+          "current_rechecks_same_installed_pointer"
+        ],
+        "started_utc": "2026-10-09T11:17:20.932385+00:00",
+        "wall_seconds": 9.393361,
+        "exit_code": 101,
+        "original_sha256": "3cc80ea7cafc240e2837dfbdb60cd7c5c2e189c179dfefa149cc9a3652680d26",
+        "mutant_sha256": "dc8c1408cea00909f78a698b3783e5be35206abc69485b5eaa5ce4b7f28cf813",
+        "restored_sha256": "3cc80ea7cafc240e2837dfbdb60cd7c5c2e189c179dfefa149cc9a3652680d26",
+        "expected_failure_observed": false,
+        "failing_tests": []
+      }
+    },
+    {
+      "name": "restored-focused",
+      "cause": "Shared Cargo target reused last reasoning-mutant binary without rebuilding after switching worktrees. Source hashes were restored but this execution was not the final source. Package-scoped cargo clean removed 997 files / 1.2 GiB; real final-worktree rebuild passed 24 focused + 43 pure, then all final gates."
+    }
+  ],
+  "log_sha256": {
+    "clean-app-final.log": "f136043d411e369f8700eadf5b2e4a1cec2ef8b9054ef61ecad9e349d5384c44",
+    "clean-core-after-mutants.log": "668e34b758b9f0dbc7c609ae01a5849160b24acfc5841718dac51d592c5e447f",
+    "clean-restored-focused.log": "233e7710910e99d9767cac62213e3769856ebaca3a7dc8d1b95c51e709f97b6a",
+    "clean-restored-pure.log": "b8af2231ca03c8be1c3c513c785546c9dc15ebbbbe0c12caea9c403d975f634c",
+    "final-app-all-features.log": "190d02d9b6cd953cd80bb93a7922252c061b654430cb50c7beaceffa53487b4c",
+    "final-app-clippy-all-features.log": "f322521cdbd9144f6ef78203203605fc989d080fdfe6c42c0b085a2b01355935",
+    "final-app-clippy-default.log": "65903db5144cb957f88700f4eb98f6984c62cb5828b0ed8f463a385abe7247ed",
+    "final-app-default.log": "4a7b5e9929584f70e5bbf3c3bd0460366b246dfd51a883fac3feb0d23ac2a34e",
+    "final-core-all-features.log": "885bf487643b864dc243b2d0365a03aab4fb2ff23038a8078e12f77d99a22c8f",
+    "final-core-clippy-all-features.log": "10244385a294ededb508329da9eb222e3288ee26a477faac11cefde6cdec2c93",
+    "final-core-clippy-default.log": "f8c22dae50d1790c7e884b95c9b64f00e3b303694c40ff2911d21d0b87d09b4e",
+    "final-core-default.log": "ae57a514249995ac327b5569568d4e58d455cb8ef9a45b7eef8c380408d39894",
+    "final-focused-before-controls.log": "6840b33b593bf09bb0b3ec8bddb8be30540ba3ed9aa9358442fd5c251119fe5e",
+    "final-source-whitespace.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "final-workspace-format.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "guarded-focused-fixed.log": "1d33bd3a475ac1326a685d2a75a66acecb5f5b566febe8c3df78b6c46a51893d",
+    "guarded-focused.log": "165a32d003a00e3596073999efa92d6ebf7541748c4ec8cfa0e1fd69ed15bf6b",
+    "include-reasoning.log": "eb60fd19ac5fd51be1b8ed1be15dacb77845ff7dd1709a3d81bbfe3694b37aef",
+    "initial-focused.log": "fbbe31757b76a132301fb14e17c9f98d41856d48c8dfe687ee9098ed14c3b9eb",
+    "loc-verifier.log": "74abb6afaddddda4345e74ed9bd69554d882de8d4fc832a52b0400be308ab8ab",
+    "omit-current-pointer-first-attempt.log": "afc660778d516292b3ad229e748ba74325712c88b110cd6d3904c6b534609594",
+    "omit-current-pointer.log": "e70cc1a78046bca8d5acccfd1b006b1616bef6477806e41933de5a6597484634",
+    "omit-final-owner-health.log": "d5a02294138deab98802ccf1cf560352883d4e74d29ccca7f22bbb09c7d2712b",
+    "omit-request-identity.log": "41550f95e43261ab29f5205b486d34021674e24d1140b1b1e595b6f5017300b9",
+    "omit-tool-input-digest.log": "d6bdfc185f2a0943486e531a7ca28c275bfb647186ad2697bc6121caa54d67cf",
+    "pure-projection.log": "d12a2129653c203d772c71cd3968158913dc6bbc37fa4f18ed8ac91d95b26a55",
+    "release-witnesses-before-slot.log": "ef84c2b99ab3f39736bb9d09ee0e5a39f48eb7a2dba65c7e1db672720fe4d796",
+    "restored-focused.log": "49c12f5e081a85874880473ba1da1b98e4111ed342f8a5c2ae798e759f3f60b2",
+    "source-whitespace.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "strict-core-before-controls.log": "2589578ce6898e4ddf50889147f1c0527e3a75524db7640e60b20ae263309a41",
+    "strict-core-final.log": "799ec92a8fd6619ff3327fadd2027194f38a32c4ab07f43cfc1ba2f1bb656941",
+    "strict-core-fixed.log": "63e03470a300fc7f59d9c31d0684d36433ab69b362dc11e6da3a4a80c2243d12",
+    "workspace-format.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "review": "Root independently reviewed actual source/docs, final owner-health leases, held-lock and destruction races, six intended negative assertion failures, and clean restored runs. No remaining blocking scoped-Core design finding before full matrix.",
+  "loc": {
+    "baseline_counts": {
+      "production": 58142,
+      "support": 80622,
+      "benchmark": 1192
+    },
+    "delta": {
+      "production": 1424,
+      "support": 1310,
+      "benchmark": 0
+    },
+    "cumulative_counts": {
+      "production": 59566,
+      "support": 81932,
+      "benchmark": 1192
+    },
+    "changed_rust_files": 10,
+    "method": "Nonblank physical Rust including comments. Immutable be66ab65 inventory verified byte-for-byte. Reviewed cfg(test) spans/test-owned files are support; exported loaded Core backend/projection counts as production, not feature completion. No benchmark delta; shared Box and existing documentation evidence excluded."
+  },
+  "timing": {
+    "task_received_utc": "2026-10-09T10:59:33+00:00",
+    "validation_recorded_utc": "2026-10-09T11:34:31.889387+00:00",
+    "observed_task_wall_seconds": 2098.889,
+    "recorded_command_wall_seconds": 437.89,
+    "negative_control_wall_seconds": 102.172,
+    "inference_only_seconds": null,
+    "meaning": "Observed command/task wall time, not application speed or isolated inference. Task time includes coordinated shared-lane waits; exploratory read/edit command times are not part of validation-command sum."
+  },
+  "limitations": [
+    "Point-in-time request-scoped admission, not a perpetual result capability or App project/window/row fence.",
+    "No unloadedObserved adapter, persistent index, full-input UI reveal, sidebar health/scheduling/visibility integration or all-chat usable workflow.",
+    "No provider traffic, screenshots, production tool/capture/vault/native gate changes, new dependency download, user Mac access or spending.",
+    "Portable normalization and synthetic Linux gates do not establish Foundation linguistic parity, real GUI/native acceptance or performance.",
+    "Cargo reported the existing proc-macro-error2 2.0.1 future-incompatibility warning; strict checks exited zero and that dependency was unchanged."
+  ],
+  "publication_preparation_note": "First local temporary-index manifest attempt enumerated paths before initializing the temporary index and failed its exact-changed-set assertion. Initializing the temporary index first corrected this local preparation error; no source or ref changed.",
+  "publication": "Unreferenced candidate preparation only after final gates; parent alone updates rust ref with expected-base check. No main/force/release action."
+}

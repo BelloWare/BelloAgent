@@ -81,10 +81,33 @@ struct State {
 // callback and the only operation is the standard mutex poison-bit read.
 trait OwnerHealth: Send + Sync {
     fn poisoned(&self) -> bool;
+    #[cfg(test)]
+    fn poison_for_test(&self);
 }
 impl<T: Send> OwnerHealth for Mutex<T> {
+    #[cfg(test)]
+    fn poison_for_test(&self) {
+        let _held = self.lock().unwrap();
+        panic!("synthetic actor poison");
+    }
     fn poisoned(&self) -> bool {
         self.is_poisoned()
+    }
+}
+// Private to Core: never exported to callers or held across worker work.
+pub(crate) struct SourceAdmissionGuard<'a> {
+    _state: std::sync::MutexGuard<'a, State>,
+}
+
+/// Pinned outside all witness guards; drop only after those guards release.
+pub(crate) struct SourceOwnerLease(Arc<dyn OwnerHealth>);
+impl SourceOwnerLease {
+    #[cfg(test)]
+    pub(crate) fn poison_for_test(&self) {
+        self.0.poison_for_test();
+    }
+    pub(crate) fn healthy(&self) -> bool {
+        !self.0.poisoned()
     }
 }
 struct Shared {
@@ -104,6 +127,48 @@ impl fmt::Debug for SourceWitness {
     }
 }
 impl SourceWitness {
+    #[cfg(test)]
+    pub(crate) fn owner_alive_for_test(&self) -> bool {
+        self.0
+            .owner
+            .get()
+            .is_some_and(|owner| owner.strong_count() > 0)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn admission_locked_for_test(&self) -> bool {
+        matches!(
+            self.0.state.try_lock(),
+            Err(std::sync::TryLockError::WouldBlock)
+        )
+    }
+
+    pub(crate) fn pin_owner(&self) -> Result<SourceOwnerLease, SourceUnavailable> {
+        let owner = self
+            .0
+            .owner
+            .get()
+            .and_then(Weak::upgrade)
+            .ok_or(SourceUnavailable)?;
+        if owner.poisoned() {
+            self.unavailable();
+            return Err(SourceUnavailable);
+        }
+        Ok(SourceOwnerLease(owner))
+    }
+
+    /// Only the concrete search slot nests these guards: membership → source → slot.
+    pub(crate) fn lock_current(
+        &self,
+        stamp: &LoadedSourceStamp,
+    ) -> Result<SourceAdmissionGuard<'_>, SourceUnavailable> {
+        let state = self.0.state.lock().map_err(|_| SourceUnavailable)?;
+        if state.status != SourceStatus::Certain || state.stamp.as_ref() != Some(stamp) {
+            return Err(SourceUnavailable);
+        }
+        Ok(SourceAdmissionGuard { _state: state })
+    }
+
     pub(crate) fn new(session: &Session, path: &Path, status: SourceStatus) -> Self {
         let witness = Self(Arc::new(Shared {
             state: Mutex::new(State {
@@ -328,6 +393,14 @@ pub struct LoadedSourceSnapshot {
     witness: SourceWitness,
 }
 impl LoadedSourceSnapshot {
+    pub(crate) fn into_session(self) -> Arc<Session> {
+        self.session
+    }
+
+    pub(crate) fn witness(&self) -> SourceWitness {
+        self.witness.clone()
+    }
+
     pub fn session(&self) -> &Session {
         &self.session
     }
